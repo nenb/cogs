@@ -630,10 +630,11 @@ def parse_netns_identity(raw, stat, path=NETNS_PATH):
     if len(found) != 1:
         raise NetworkError("netns mount cardinality")
     identity = found[0]
-    optional_ok = (not identity.optional_fields
-                   or (len(identity.optional_fields) == 1
-                       and re.fullmatch(r"shared:[1-9][0-9]*",
-                                        identity.optional_fields[0]) is not None))
+    propagation = tuple(field.split(":", 1)[0] for field in identity.optional_fields)
+    optional_ok = (len(identity.optional_fields) <= 2
+                   and len(set(propagation)) == len(propagation)
+                   and all(re.fullmatch(r"(?:shared|master):[1-9][0-9]*", field) is not None
+                           for field in identity.optional_fields))
     if (identity.device != expected_device or identity.root != f"net:[{stat.inode}]"
             or identity.mount_options != ("rw",) or not optional_ok
             or identity.fs_type != "nsfs" or identity.source != "nsfs"
