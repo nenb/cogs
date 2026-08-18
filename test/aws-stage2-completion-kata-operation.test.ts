@@ -42,7 +42,7 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.match(operation, /__slots__ = \(\)/u);
   assert.match(operation, /O_TMPFILE/u);
   assert.match(operation, /identity_flags = fs\._O_PATH \| fs\._O_CLOEXEC/u);
-  assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_FLAGS\)/u);
+  assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_IDENTITY_FLAGS\)/u);
   assert.match(operation, /generation == original and generation\.key == original\.key/u);
   assert.match(operation, /def create_fixed_operation_test_local\(authority, body\):/u);
   assert.match(operation, /validate_layout\(self, records, journal_generation\)/u);

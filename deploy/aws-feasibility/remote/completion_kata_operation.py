@@ -1156,7 +1156,7 @@ def _make_authority():
                     f"/proc/self/fd/{descriptor.number}", identity_flags,
                     "operation-journal-identity", self.control,
                 )
-                mount_id = fs._mount_id(identity, self.control, fs.FDINFO_FLAGS)
+                mount_id = fs._mount_id(identity, self.control, fs.FDINFO_IDENTITY_FLAGS)
                 generation = fs._generation(identity, mount_id, self.control)
                 original = fs._generation(descriptor, mount_id, self.control)
                 _fail(generation == original and generation.key == original.key)
