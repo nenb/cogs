@@ -1154,7 +1154,7 @@ def production_owner_test():
                     "after_parent": generation(50, stamp=40),
                     "before_child": None, "after_child": generation(51),
                 }
-                fixture_journal(completion, (intent, ("ROOTFS_LEASED", leased),
+                production_fixture((intent, ("ROOTFS_LEASED", leased),
                     ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
                     ("FS_SETTLED", baseline_observed)))
                 production_network = operation._open_fixed_operation(); retained_tools = []
