@@ -2321,7 +2321,8 @@ def _remove_fixed_network(journal, ip, nft, tc):
                 if os.path.lexists(path): raise NetworkError("private netns residue")
         for name in _BASELINE_KEYS[:5]:
             if fresh[name] != baselines[name]:
-                raise NetworkError("complete network baseline not restored")
+                raise NetworkError(
+                    f"complete network baseline not restored:{name}:{baselines[name]}:{fresh[name]}")
         body = _snapshot(journal, "network-absent", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         operation._settle_network_phase(journal, "NETWORK_ABSENT"); return body
