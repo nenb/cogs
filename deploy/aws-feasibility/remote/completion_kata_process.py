@@ -1508,6 +1508,24 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
                     pass
 
 
+def _recover_daemon_reap(preexec, deadline, errors):
+    """Boundedly reap when parent, otherwise prove the recorded PID absent."""
+    leader_done = descendants_done = False
+    while _boottime_ns() < deadline:
+        try:
+            observed, _status = os.waitpid(preexec["pid"], os.WNOHANG)
+            leader_done = leader_done or observed == preexec["pid"]
+        except ChildProcessError:
+            leader_done = _observe_proc(preexec["pid"]).kind is ObservationKind.ABSENT
+        except OSError as error:
+            if error.errno != errno.EINTR: errors.append(f"daemon-wait:{error.errno}")
+        census_leader, descendants_done = _wait_all_children(preexec["pid"], errors)
+        leader_done = leader_done or census_leader
+        if leader_done and descendants_done: return True, True
+        time.sleep(0.005)
+    return leader_done, descendants_done
+
+
 def _recover_pending_fixed(journal):
     """Cleanup-only crash continuation; absence never fabricates wait/reap proof."""
     if hasattr(journal, "recovery_command"):
@@ -1519,9 +1537,13 @@ def _recover_pending_fixed(journal):
     state = {"term": False, "kill": False}
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
     expected = None if preexec is None else _generation_tuple(preexec["cgroup_generation"])
-    deadline = _boottime_ns() + 2_000_000_000
-    cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, deadline, state, errors)
+    deadline = _boottime_ns() + (4_000_000_000 if intent["command_id"] == "CONTAINERD_START" else 2_000_000_000)
+    cgroup_deadline = deadline - 2_000_000_000 if intent["command_id"] == "CONTAINERD_START" else deadline
+    cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, cgroup_deadline, state, errors)
     closure = (cgroup_empty, False, cgroup_removed, False)
+    if intent["command_id"] == "CONTAINERD_START" and preexec is not None:
+        leader_reaped, descendants_reaped = _recover_daemon_reap(preexec, deadline, errors)
+        closure = (cgroup_empty, descendants_reaped, cgroup_removed, leader_reaped)
     if terminal is not None:
         return kata_operation.DurableCommandOutcome(
             terminal["command_serial"], terminal["command_id"],

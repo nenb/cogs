@@ -768,5 +768,7 @@ def fixture_journal_path(completion):
 
 
 owner_qualified = production_owner_test()
+if os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1" and not owner_qualified:
+    raise RuntimeError("root Linux fsynced journal foundations were required")
 qualification = "EUID-0 LINUX QUALIFIED" if owner_qualified else "EUID-0 Linux matrix SKIPPED"
 print(f"completion Kata operation foundation matrix passed; {qualification}")

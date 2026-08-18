@@ -568,9 +568,14 @@ def linux_supervisor_tests():
 import signal
 required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
 qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
+foundations_required = os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
 if required and not qualified:
     raise RuntimeError("Linux amd64 process qualification was required")
+if foundations_required and (not qualified or os.geteuid() != 0):
+    raise RuntimeError("root Linux amd64 Kata native foundations were required")
 root_cgroup = authentic_root_cgroup_recovery()
+if foundations_required and not root_cgroup:
+    raise RuntimeError("journal/cgroup crash and settlement foundations were required")
 if qualified:
     linux_supervisor_tests()
     print("completion Kata process LINUX AMD64 QUALIFIED matrix passed" +

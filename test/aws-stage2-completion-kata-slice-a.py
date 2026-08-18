@@ -151,8 +151,8 @@ def run_success(raw, serial, command_id, phase, status=0):
     return add(raw, "COMMAND_OUTCOME_V2", outcome(command, status=status)), serial + 1
 
 
-def complete_trace(raw, serial, phase):
-    for command_id in operation.command_policy.PHASE_COMMAND_TRACES[phase]:
+def complete_trace(raw, serial, phase, trace_key=None):
+    for command_id in operation.command_policy.PHASE_COMMAND_TRACES[trace_key or phase]:
         if command_id in operation.command_policy.DEFERRED_COMMANDS:
             break
         raw, serial = run_success(raw, serial, command_id, phase)
@@ -174,6 +174,14 @@ failed = add(add(add(raw, "COMMAND_INTENT_V2", command), "COMMAND_PREEXEC_V2", p
              "COMMAND_OUTCOME_V2", outcome(command, status=7))
 reject(lambda: add(failed, "NETWORK_READY",
                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
+cleanup = add(failed, "READINESS_REVOKED", {"operation_token": "a" * 64})
+cleanup, cleanup_serial = complete_trace(cleanup, 1, "READINESS_REVOKED")
+cleanup = add(cleanup, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
+    "proof_sha256": "9" * 64, "task": "absent", "container": "absent",
+    "runtime": "absent", "share": "absent"})
+cleanup, cleanup_serial = complete_trace(
+    cleanup, cleanup_serial, "OWNERSHIP_OBSERVED", "OWNERSHIP_OBSERVED:task-absent")
+add(cleanup, "NETWORK_ABSENT", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
@@ -262,9 +270,46 @@ not_started_output = outcome(command, b"x")
 not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
 reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
 
-# Policy is deeply immutable, exactly partitioned, and independently regenerated
-# from the process compositions rather than trusted as matching literals.
+# Policy is deeply immutable and checked against an independent complete oracle.
 policy = operation.command_policy
+EXPECTED_PHASE_TRACES = {
+    "BASELINES_CAPTURED": ("IP_NETNS_ADD", "IP_LINK_ADD", "IP_LINK_MOVE",
+        "IP_HOST_ADDRESS_ADD", "IP_HOST_LINK_UP", "IP_PEER_RENAME",
+        "IP_PEER_ADDRGEN_NONE", "IP_LOOPBACK_UP", "IP_GUEST_ADDRESS_ADD",
+        "IP_GUEST_LINK_UP", "NFT_INSTALL", "IP_HOST_LINKS", "IP_HOST_ADDRESSES",
+        "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES",
+        "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
+    "NETWORK_READY": ("CONTAINERD_START", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST",
+        "IP_HOST_LINKS", "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6",
+        "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
+        "NFT_TABLE", "CTR_RUN"),
+    "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST", "SSH_READY"),
+    "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
+    "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST",
+        "CTR_TASK_KILL", "CTR_TASK_LIST"),
+    "OWNERSHIP_OBSERVED:task-absent": ("IP_NETNS_REMOVE", "IP_HOST_LINKS",
+        "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS",
+        "IP_NS_ADDRESSES", "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
+    "TASK_STOPPED": ("IP_NETNS_REMOVE", "IP_HOST_LINKS", "IP_HOST_ADDRESSES",
+        "IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES",
+        "IP_NS_ROUTES4", "IP_NS_ROUTES6", "NFT_TABLE"),
+    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
+    "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
+    "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",),
+    "SHARE_ABSENT": ("NFT_REMOVE", "NFT_TABLE"),
+}
+EXPECTED_LIFECYCLE_REQUIREMENTS = {
+    "NETWORK_READY": ("BASELINES_CAPTURED",), "RUNTIME_READY": ("NETWORK_READY",),
+    "SSH_READY": ("RUNTIME_READY",), "OWNERSHIP_OBSERVED": ("READINESS_REVOKED",),
+    "TASK_STOPPED": ("OWNERSHIP_OBSERVED",),
+    "NETWORK_ABSENT": ("TASK_STOPPED", "OWNERSHIP_OBSERVED"),
+    "TASK_ABSENT": ("NETWORK_ABSENT",), "CONTAINER_ABSENT": ("TASK_ABSENT",),
+    "RUNTIME_ABSENT": ("CONTAINER_ABSENT",), "FIREWALL_ABSENT": ("SHARE_ABSENT",),
+}
+check(dict(policy.PHASE_COMMAND_TRACES) == EXPECTED_PHASE_TRACES, "complete phase trace drift")
+check(dict(policy.LIFECYCLE_REQUIREMENTS) == EXPECTED_LIFECYCLE_REQUIREMENTS,
+      "complete lifecycle requirement drift")
+# Command bytes are independently regenerated from process compositions.
 for mapping in (policy.POLICY_SHA256, policy.OCCURRENCES, policy.PHASES,
                 policy.MAX_OCCURRENCES, policy.MUTATION_ORDERS,
                 policy.PHASE_COMMAND_TRACES, policy.LIFECYCLE_REQUIREMENTS):
@@ -302,7 +347,7 @@ add(setup_raw, "COMMAND_INTENT_V2",
     intent(1, "IP_LINK_ADD", "BASELINES_CAPTURED"))
 
 # TERM, fresh observation, KILL, and final observation occupy exact positions.
-check(policy.PHASE_COMMAND_TRACES["OWNERSHIP_OBSERVED"] == (
+check(policy.PHASE_COMMAND_TRACES["OWNERSHIP_OBSERVED:task-exact"] == (
     "CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL", "CTR_TASK_LIST"),
     "TERM-observe-KILL trace drift")
 
@@ -350,11 +395,17 @@ with patch.object(process, "_recover_cgroup", return_value=(True, True)):
 check(terminal_result.body["uncertain"] and not terminal_journal.recorded,
       "terminal-uncertain cleanup changed durable uncertainty")
 daemon_journal = TerminalRecoveryJournal((daemon, daemon_preexec, uncertain_daemon))
-with patch.object(process, "_recover_cgroup", return_value=(True, True)) as daemon_recover:
+with patch.object(process, "_recover_cgroup", return_value=(True, True)) as daemon_recover, \
+     patch.object(process.os, "waitpid", side_effect=[(daemon_preexec["pid"], 0), ChildProcessError()]) as daemon_wait:
     daemon_result = process._recover_pending_fixed(daemon_journal)
 check(daemon_result.body is uncertain_daemon and not daemon_journal.recorded
-      and daemon_recover.call_args.args[1] == process._generation_tuple(daemon_preexec["cgroup_generation"]),
-      "daemon residue lost exact cleanup-only continuation")
+      and daemon_recover.call_args.args[1] == process._generation_tuple(daemon_preexec["cgroup_generation"])
+      and daemon_wait.call_count == 2, "daemon residue lost cgroup/reap cleanup continuation")
+with patch.object(process, "_recover_cgroup", return_value=(True, True)), \
+     patch.object(process.os, "waitpid", side_effect=ChildProcessError()), \
+     patch.object(process, "_observe_proc", return_value=process.RecoveryObservation(process.ObservationKind.ABSENT)) as absent:
+    process._recover_pending_fixed(daemon_journal)
+check(absent.called, "ECHILD daemon recovery did not poll exact proc absence")
 check(not process._cleanup_closed((False, False, False, False), 10),
       "owned residue was considered terminally closed")
 

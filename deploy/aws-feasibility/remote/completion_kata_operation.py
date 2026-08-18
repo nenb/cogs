@@ -628,7 +628,7 @@ def _policy_tables():
               for name, order in maps[4].items()))
     _fail(len(flattened) == len(set(flattened)) and set(flattened) <= implemented)
     trace_ids = {item for trace in maps[5].values() for item in trace}
-    _fail(all(type(phase) is str and type(trace) is tuple for phase, trace in maps[5].items()) and trace_ids <= implemented | deferred and all(value in maps[5] for value in maps[6].values()))
+    _fail(all(type(phase) is str and type(trace) is tuple for phase, trace in maps[5].items()) and trace_ids <= implemented | deferred and all(type(value) is tuple and value for value in maps[6].values()))
     return maps
 def _v2_policy_digest(intent):
     names = ("command_id", "executable_role", "executable_path", "argv", "stdin_hex",
@@ -671,20 +671,18 @@ def _settled_v2(records, intent, index):
     outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2" and item.body["command_serial"] == serial]
     return bool(outcomes and not outcomes[-1].body["uncertain"] and outcomes[-1].body["outcome"] == "exited"
                 and outcomes[-1].body["status"] == 0)
-def _phase_trace(records, index, phase, candidate=None, complete=False):
-    _policy_tables(); trace = command_policy.PHASE_COMMAND_TRACES.get(phase, ())
+def _phase_trace(records, index, phase, ownership=None, candidate=None, complete=False):
+    _policy_tables(); key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
+    trace = command_policy.PHASE_COMMAND_TRACES.get(key, ())
     intents = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
     observed = tuple(item.body["command_id"] for item in intents) + (() if candidate is None else (candidate,))
     _fail(observed == trace if complete else observed == trace[:len(observed)] and len(observed) <= len(trace))
     _fail(all(_settled_v2(records, item, index) for item in intents))
-def _v2_occurrence(records, index, phase, body):
+def _v2_occurrence(records, index, phase, body, ownership):
     _policy_tables(); command_id = body["command_id"]
     prior_v2 = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2"]
     _fail(bool(prior_v2) or phase == "BASELINES_CAPTURED")
-    prior = [item for item in prior_v2 if item.body["command_id"] == command_id]
-    expected = command_policy.OCCURRENCES[command_id]
-    _fail(len(prior) < len(expected) and expected[len(prior)] == phase)
-    _phase_trace(records, index, phase, command_id)
+    _phase_trace(records, index, phase, ownership, command_id)
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
     genesis = records[0].body
@@ -712,7 +710,7 @@ def _legal(records):
             })
             _fail(body["command_serial"] == next_serial)
             _v2_lineage(genesis, phase, body)
-            _v2_occurrence(records, index, phase, body)
+            _v2_occurrence(records, index, phase, body, ownership)
             next_serial += 1
             command_phase = kind
             command_intent_v2 = record
@@ -815,7 +813,7 @@ def _legal(records):
             _fail(rootfs)
             seen = {item.record_type for item in records[:index]}
             if (requirement := command_policy.LIFECYCLE_REQUIREMENTS.get(kind)) is not None and "COMMAND_INTENT_V2" in seen:
-                _fail(requirement == phase); _phase_trace(records, index, phase, complete=True)
+                _fail(phase in requirement); _phase_trace(records, index, phase, ownership, complete=True)
             if kind == "BASELINES_CAPTURED":
                 _fail(phase in {"ROOTFS_LEASED", "FS_SETTLED"})
             elif kind == "NETWORK_READY":
