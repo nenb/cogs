@@ -284,7 +284,7 @@ def parse_links(raw, namespace, host_if=HOST_IF):
             if (host.kind != "veth" or host.mac != HOST_MAC or host.peer_ifindex is None
                     or host.qdisc != "noqueue" or host.addrgenmode not in ("none", 1)
                     or not valid_state):
-                raise NetworkError("host veth drift")
+                raise NetworkError(f"host veth drift:{host!r}")
     return result
 
 
