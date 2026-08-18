@@ -63,8 +63,8 @@ ROOTFS_PIN = {
 MOUNT_SHA = "22157f258386d8d4be07ec6eb086a582936c23037be403caa829b644bf4e058e"
 KEY_INPUT_PHASES = frozenset({"ROOTFS_LEASED", "FS_INTENT", "UNCERTAIN"})
 
-def _stage_candidates(names):
-    candidates = set(names) - COMPLETION_NAMES - RUNTIME_NAMES
+def _stage_candidates(names, allowed=()):
+    candidates = set(names) - COMPLETION_NAMES - RUNTIME_NAMES - set(allowed)
     _fail(len(candidates) <= 1)
     for raw in candidates:
         suffix = raw[len(KEY_STAGE_PREFIX):] if raw.startswith(KEY_STAGE_PREFIX) else b""
@@ -81,7 +81,15 @@ def _validate_runtime_layout(names, records):
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
     _validate_runtime_layout(names, records)
-    candidates = _stage_candidates(names)
+    token = records[0].body["operation_token"] if records else ""
+    expected_temporary = (b".cogs-grant-" + token[:32].encode("ascii") + b"-"
+                          + hashlib.sha256(b".").hexdigest()[:16].encode("ascii"))
+    root_grants = [item.body for item in records if item.record_type == "INPUT_GRANT"
+                   and item.body["path"] == "." and item.body["action"] == "intent"]
+    _fail(len(root_grants) <= 1 and all(
+        item["name"].encode("ascii") == expected_temporary for item in root_grants))
+    allowed_temporaries = {expected_temporary} if root_grants else set()
+    candidates = _stage_candidates(names, allowed_temporaries)
     if not candidates: return
     _fail(records and phase in KEY_INPUT_PHASES)
     token = records[0].body["operation_token"].encode("ascii")
@@ -99,7 +107,8 @@ def _validate_stage_layout(raw_names, records, phase, completion_key):
                        and item.body["resource_id"] == "input-root"
                        and item.body["action"] == "create" for item in records)
     baseline_names = [os.fsdecode(name) for name in raw_names
-                      if name not in candidates and not (name == INPUT_NAME.raw and input_create)]
+                      if name not in candidates and name not in allowed_temporaries
+                      and not (name == INPUT_NAME.raw and input_create)]
     _fail(all(mkdirs[0]["parent_key"][name] == parent[name] == completion_key[name]
               for name in key_names)
           and mkdirs[0]["names_sha256"] == hashlib.sha256(_canonical(baseline_names)).hexdigest()
