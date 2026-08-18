@@ -121,21 +121,8 @@ jobs:
           sudo -n test ! -L "$fixture"
           sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
           sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
-          command -v clang || true
-          command -v clang-18 || true
-          command -v ld.lld || true
-          /usr/bin/find /opt /usr/local /usr -maxdepth 7 -type f \
-            \( -name clang -o -name clang-18 -o -name ld.lld -o -name ld.lld-18 \) -print 2>/dev/null || true
-          fixture_cc= fixture_ld=
-          for pair in \
-            '/usr/bin/clang-18 /usr/bin/ld.lld-18' \
-            '/usr/bin/clang-18 /usr/bin/ld.lld' \
-            '/usr/lib/llvm-18/bin/clang /usr/lib/llvm-18/bin/ld.lld' \
-            '/usr/local/swift/usr/bin/clang /usr/local/swift/usr/bin/ld.lld'; do
-            set -- $pair
-            if test -x "$1" && test -x "$2"; then fixture_cc="$1"; fixture_ld="$2"; break; fi
-          done
-          test -n "$fixture_cc" && test -n "$fixture_ld"
+          fixture_cc=/usr/bin/clang-18 fixture_ld=/usr/bin/ld
+          sudo -n test -x "$fixture_cc" && sudo -n test -x "$fixture_ld"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \

@@ -19,6 +19,7 @@ def ensure_attested_static_fixture():
         configured = (os.environ.get("COGS_STAGE2_SYNTHETIC_CLANG"),
                       os.environ.get("COGS_STAGE2_SYNTHETIC_LLD"))
         reviewed = {
+            ("/usr/bin/clang-18", "/usr/bin/ld"),
             ("/usr/bin/clang-18", "/usr/bin/ld.lld-18"),
             ("/usr/bin/clang-18", "/usr/bin/ld.lld"),
             ("/usr/lib/llvm-18/bin/clang", "/usr/lib/llvm-18/bin/ld.lld"),
@@ -44,8 +45,9 @@ def ensure_attested_static_fixture():
             if result.returncode != 0:
                 raise RuntimeError("reviewed synthetic fixture build failed")
             raw = temporary.read_bytes()
-            if len(raw) != SIZE or hashlib.sha256(raw).hexdigest() != SHA256:
-                raise RuntimeError("reviewed synthetic fixture bytes differ")
+            actual_sha256 = hashlib.sha256(raw).hexdigest()
+            if len(raw) != SIZE or actual_sha256 != SHA256:
+                raise RuntimeError(f"reviewed synthetic fixture bytes differ: {len(raw)}:{actual_sha256}")
             os.chmod(temporary, 0o500)
             os.rename(temporary, OUTPUT)
         except BaseException:
