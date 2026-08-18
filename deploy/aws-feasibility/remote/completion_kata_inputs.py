@@ -1769,15 +1769,18 @@ def _owner_routes():
                     names = sorted((os.fsdecode(raw) for raw in
                                     fs._enumerate_stable(state["completion"], state["control"]).raw_names),
                                    key=lambda value: value.encode("utf-8"))
-                    absent = {**intent,
-                              "parent_observation": operation._generation_value(observed_parent),
-                              "observed_names": names}
-                    try:
-                        operation._record_fs_absent(state["journal"], absent)
-                        operation._record_fs_settled(state["journal"], absent)
-                    except BaseException as error:
+                    parent_observation = operation._generation_value(observed_parent)
+                    if parent_observation != intent["expected_parent_generation"]:
                         operation._record_uncertain(state["journal"], "identity-mismatch")
-                        raise error
+                    else:
+                        absent = {**intent, "parent_observation": parent_observation,
+                                  "observed_names": names}
+                        try:
+                            operation._record_fs_absent(state["journal"], absent)
+                            operation._record_fs_settled(state["journal"], absent)
+                        except BaseException as error:
+                            operation._record_uncertain(state["journal"], "identity-mismatch")
+                            raise error
                 elif phase == "ROOTFS_LEASED":
                     operation._record_uncertain(state["journal"], "incomplete")
                 elif phase == "FIREWALL_ABSENT":
