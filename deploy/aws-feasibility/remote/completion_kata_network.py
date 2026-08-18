@@ -1832,7 +1832,7 @@ def _setup_fixed_network(journal, ip, nft, tc):
     if len(rows) != 1 or any(kind in operation.network_journal.RECORDS
                              for kind, _body in operation._network_history(journal)):
         raise NetworkError("setup replay forbidden")
-    identity = _empty_identity()
+    identity = rows[0]["identity"]
     for index, action in enumerate(_SETUP_ACTIONS):
         identity = _effect(journal, action, ip, nft, tc, identity,
                            index == len(_SETUP_ACTIONS) - 1)
