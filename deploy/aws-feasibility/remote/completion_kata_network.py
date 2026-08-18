@@ -1561,6 +1561,36 @@ def _descriptor_remove_netns(journal, retained):
             except OSError: pass
 
 
+def _cleanup_detached_placeholders(journal):
+    """Remove only exact regular placeholders after durable nsfs detachment."""
+    original, quarantine = _bound_names(journal)[0], _quarantine_name(journal)
+    stage = _quarantine_stage(journal)
+    if stage is None or stage[0] != "NETWORK_DETACHED_V2":
+        raise NetworkError("detached placeholder cleanup authority")
+    expected = {
+        original: _original_placeholder(journal),
+        quarantine: stage[1]["placeholder"],
+    }
+    if any(value is None for value in expected.values()):
+        raise NetworkError("detached placeholder identity absent")
+    parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name, identity in expected.items():
+            try: observed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError: continue
+            if (observed.st_dev, observed.st_ino) != (identity["device"], identity["inode"]):
+                raise NetworkError("detached placeholder replacement preserved")
+            os.unlink(name, dir_fd=parent); os.fsync(parent)
+        try: preserved = os.stat(PRESERVED_DIR, follow_symlinks=False)
+        except FileNotFoundError: preserved = None
+        if preserved is not None:
+            if (not os.path.isdir(PRESERVED_DIR) or preserved.st_uid != 0 or
+                    preserved.st_gid != 0 or preserved.st_mode & 0o7777 != 0o700):
+                raise NetworkError("preserved directory replacement")
+            os.rmdir(PRESERVED_DIR); os.fsync(parent)
+    finally: os.close(parent)
+
+
 def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     if type(raws) is not tuple or len(raws) != 6:
         raise NetworkError("complete baseline outputs required")
@@ -2230,14 +2260,18 @@ def _remove_fixed_network(journal, ip, nft, tc):
             absent = (_effect(journal, Action.IP_NETNS_REMOVE, ip, nft, tc, retained["identity"])
                       if not settled or settled[-1]["action"] != Action.IP_NETNS_REMOVE.value
                       else settled[-1]["identity"])
+        if _quarantine_stage(journal) is not None:
+            _cleanup_detached_placeholders(journal)
         raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
         if _netns_identity(journal, mountinfo) is not None:
             raise NetworkError("namespace remains after removal")
         qstage = _quarantine_stage(journal)
         if qstage is not None:
-            qstat = os.stat("/run/netns/" + _quarantine_name(journal), follow_symlinks=False)
-            if ((qstat.st_dev, qstat.st_ino) != (qstage[1]["placeholder"]["device"], qstage[1]["placeholder"]["inode"])):
-                raise NetworkError("quarantine placeholder replacement")
+            if qstage[0] != "NETWORK_DETACHED_V2":
+                raise NetworkError("quarantine not detached at baseline")
+            for path in ("/run/netns/" + _bound_names(journal)[0],
+                         "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR):
+                if os.path.lexists(path): raise NetworkError("private netns residue")
         for name in _BASELINE_KEYS[:5]:
             if fresh[name] != baselines[name]:
                 raise NetworkError("complete network baseline not restored")
