@@ -1256,9 +1256,9 @@ def _establish_netns(journal):
             descriptor = temporary; planned = _placeholder_identity(os.fstat(descriptor))
             _original_placeholder_record(journal, planned)
         else:
-            mounted = None
+            mounted = None; mount_error = None
             try: mounted = _netns_identity(journal=None, name=name)
-            except NetworkError: pass
+            except NetworkError as error: mount_error = error
             if mounted is not None:
                 created = _created_nsfs(journal)
                 if created is None or any(getattr(mounted, field) != created[field]
@@ -1267,6 +1267,8 @@ def _establish_netns(journal):
                 _record_observation(journal, Action.IP_NETNS_ADD.value, b"", None); return
             observed_identity = _placeholder_identity(observed)
             if planned is None or (observed.st_dev, observed.st_ino) != (planned["device"], planned["inode"]):
+                if mount_error is not None:
+                    raise NetworkError(f"mounted namespace identity invalid:{mount_error}") from mount_error
                 raise NetworkError("original namespace placeholder replacement")
             if observed_identity != planned:
                 if planned["nlink"] != 0 or observed_identity["nlink"] != 1:
