@@ -388,8 +388,12 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
         raise NetworkError("complete route link binding")
     result = []
     for row in value:
-        _keys(row, ("dst", "dev", "protocol"),
-              ("table", "prefsrc", "src", "type", "scope", "metric", "flags", "pref"))
+        try:
+            _keys(row, ("dst", "dev", "protocol"),
+                  ("table", "prefsrc", "src", "type", "scope", "metric", "flags", "pref"))
+        except NetworkError as error:
+            keys = sorted(row) if type(row) is dict and all(type(key) is str for key in row) else []
+            raise NetworkError(f"unexpected route JSON keys:{keys!r}") from error
         if row["dst"] == "default" or row["dev"] not in bound or row["protocol"] != "kernel":
             raise NetworkError("default, foreign, or misbound route")
         try:
