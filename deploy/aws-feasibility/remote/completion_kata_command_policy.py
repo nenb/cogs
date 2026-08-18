@@ -24,9 +24,9 @@ ATTESTED_COMMANDS = frozenset({"SSH_READY", *KEY_COMMANDS})
 REVIEWED_HOST_TOOL_CONTRACTS = MappingProxyType({})
 REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS = MappingProxyType({
     "ssh": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-contract-v1.json",
-                              "contract_sha256": "88a62e7144946777503689829eba8eca0322be9ae2c8c2684306c8c27e6f9ce5"}),
+                              "contract_sha256": "33bb651509a266f2e5f9c40f259cf18b3699d8a66da99725903f5bfae2a0b527"}),
     "ssh-keygen": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-keygen-contract-v1.json",
-                                     "contract_sha256": "f996af01c71b1096bb97d8474900ab6ac672ab196f8b98ff61fef4d05f33c304"}),
+                                     "contract_sha256": "82c40b2972fe0ea40b860fcf4aaee0b5b885ceba93aa0a6ac2f58f9ba91c501c"}),
 })
 _ATTESTED_EXECUTABLES = {}
 ATTESTED_EXECUTABLES = MappingProxyType(_ATTESTED_EXECUTABLES)

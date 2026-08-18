@@ -90,8 +90,8 @@ jobs:
                 sudo -n test -f "$target" || return 1
                 sudo -n test "$(sudo -n stat -c '%u:%g' -- "$target")" = 0:0 || return 1
                 if [[ "$2" = - ]]; then
-                  sudo -n test "$(sudo -n stat -c '%s' -- "$target")" = 5968 || return 1
-                  sudo -n test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = 195f8c4f5812eb29247a6d99882f868a0266fbb237016285da49fdf53bd7c74f || return 1
+                  sudo -n test "$(sudo -n stat -c '%s' -- "$target")" = 13160 || return 1
+                  sudo -n test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = 6a4e31c3fe1bf1d593660b4a95fc9b21229f70abfbec00218294b47c9e3ae383 || return 1
                 else
                   sudo -n cmp --silent "$target" "$source" || return 1
                 fi

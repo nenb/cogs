@@ -8,8 +8,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "test/fixtures/stage2-completion/attested-static-v1.c"
 OUTPUT = Path("/tmp/cogs-stage2-attested-static-v1.elf")
-SHA256 = "195f8c4f5812eb29247a6d99882f868a0266fbb237016285da49fdf53bd7c74f"
-SIZE = 5968
+SHA256 = "6a4e31c3fe1bf1d593660b4a95fc9b21229f70abfbec00218294b47c9e3ae383"
+SIZE = 13160
 
 
 def ensure_attested_static_fixture():
@@ -26,7 +26,8 @@ def ensure_attested_static_fixture():
             ("/usr/local/swift/usr/bin/clang", "/usr/local/swift/usr/bin/ld.lld"),
         }
         if configured == (None, None):
-            compiler, linker = shutil.which("clang"), "lld"
+            native = ("/usr/bin/clang-18", "/usr/bin/ld")
+            compiler, linker = native if all(Path(path).is_file() for path in native) else (shutil.which("clang"), "lld")
         elif configured in reviewed:
             compiler, linker = configured
         else:
@@ -47,7 +48,7 @@ def ensure_attested_static_fixture():
             raw = temporary.read_bytes()
             actual_sha256 = hashlib.sha256(raw).hexdigest()
             if len(raw) != SIZE or actual_sha256 != SHA256:
-                raise RuntimeError(f"reviewed synthetic fixture bytes differ: {len(raw)}:{actual_sha256}")
+                raise RuntimeError("reviewed synthetic fixture bytes differ")
             os.chmod(temporary, 0o500)
             os.rename(temporary, OUTPUT)
         except BaseException:

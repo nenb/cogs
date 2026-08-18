@@ -38,8 +38,8 @@ RUNTIME_STAGING_NAME = fs._name(".kata-runtime-v1.staging")
 KEY_STAGE_PREFIX = b"kata-key-stage-v1-"
 COMPLETION_NAMES = frozenset({
     STATE_NAME.raw, ARTIFACTS_NAME.raw, ROOTFS_NAME.raw, INPUT_NAME.raw,
-    RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw,
 })
+RUNTIME_NAMES = frozenset({RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw})
 MAX_LINE = 300_000
 MAX_RECORDS = 16_384
 MAX_BYTES = 16 * 1024 * 1024
@@ -64,7 +64,7 @@ MOUNT_SHA = "22157f258386d8d4be07ec6eb086a582936c23037be403caa829b644bf4e058e"
 KEY_INPUT_PHASES = frozenset({"ROOTFS_LEASED", "FS_INTENT", "UNCERTAIN"})
 
 def _stage_candidates(names):
-    candidates = set(names) - COMPLETION_NAMES
+    candidates = set(names) - COMPLETION_NAMES - RUNTIME_NAMES
     _fail(len(candidates) <= 1)
     for raw in candidates:
         suffix = raw[len(KEY_STAGE_PREFIX):] if raw.startswith(KEY_STAGE_PREFIX) else b""
@@ -73,7 +73,7 @@ def _stage_candidates(names):
     return candidates
 
 def _validate_runtime_layout(names, records):
-    present = names & {RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw}
+    present = names & RUNTIME_NAMES
     _fail(len(present) <= 1)
     if present:
         _fail(any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records))
@@ -1636,8 +1636,8 @@ def _make_authority():
                 if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw not in names)
             else:
-                _fail(not candidates and not names & {RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw}
-                      and names <= COMPLETION_NAMES)
+                _fail(not candidates and not names & RUNTIME_NAMES
+                      and names <= COMPLETION_NAMES | RUNTIME_NAMES)
             observed_completion = fs._observe_node(
                 self.completion.identity_fd, self.completion.operation_fd, self.control)
             expected_completion = self.completion.generation
