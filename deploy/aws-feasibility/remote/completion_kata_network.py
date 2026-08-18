@@ -1494,7 +1494,8 @@ def _quarantine_netns(journal, retained):
                 if (placeholder is None or (target_stat.st_dev, target_stat.st_ino) !=
                         (placeholder["device"], placeholder["inode"])):
                     raise NetworkError("quarantine target changed before move")
-                if syscall(429, tree_fd, b"", parent, quarantine.encode(), 0x4) != 0:  # F_EMPTY_PATH
+                if libc.mount(("/run/netns/" + original).encode(),
+                              ("/run/netns/" + quarantine).encode(), None, 8192, None) != 0:
                     saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
                 moved = open_identity(quarantine)
             if any(getattr(moved[1], name) != expected[name] for name in fields):
