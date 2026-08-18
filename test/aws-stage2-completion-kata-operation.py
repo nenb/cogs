@@ -1883,9 +1883,6 @@ def production_owner_test():
                                         return value
                                     inputs.os.rmdir = after_removal
                                 producer.create()
-                        except BaseException:
-                            import traceback
-                            traceback.print_exc()
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)

@@ -265,10 +265,12 @@ def _command_v2_header(body):
     _hex(body["binding_sha256"])
     return names
 def _argv(value):
-    _fail(type(value) is list and 1 <= len(value) <= 256)
+    _fail(type(value) is list and 1 <= len(value) <= 256
+          and type(value[0]) is str and value[0] != "")
     for item in value:
-        _text(item, True)
-        _fail(0 < len(item.encode("ascii")) <= 4096)
+        _fail(type(item) is str)
+        if item: _text(item, True)
+        _fail(len(item.encode("ascii")) <= 4096)
 def _fd_binding(value):
     _keys(value, ("role", "target_fd", "generation", "content_sha256", "content_length"))
     _text(value["role"], True)
