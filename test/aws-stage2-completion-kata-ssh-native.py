@@ -15,6 +15,11 @@ environment = {
     "HOME": "/root", "LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
     "PYTHONDONTWRITEBYTECODE": "1", "COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS": "1",
 }
+shard = os.environ.get("COGS_STAGE2_KATA_NATIVE_TEST_SHARD")
+if shard is not None:
+    if shard != "baseline":
+        raise RuntimeError("native SSH/input wrapper only admits the baseline shard")
+    environment["COGS_STAGE2_KATA_NATIVE_TEST_SHARD"] = shard
 for probe in ("test/aws-stage2-completion-kata-operation.py",
               "test/aws-stage2-completion-kata-process.py",
               "test/aws-stage2-completion-kata-ssh-production.py"):
