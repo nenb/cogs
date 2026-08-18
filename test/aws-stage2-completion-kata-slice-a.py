@@ -127,11 +127,11 @@ def preexec(command):
     }
 
 
-def outcome(command, stdout=b"", truncated=False, uncertain=False):
+def outcome(command, stdout=b"", truncated=False, uncertain=False, status=0):
     return {
         "operation_token": command["operation_token"], "command_serial": command["command_serial"],
         "command_id": command["command_id"], "binding_sha256": command["binding_sha256"],
-        "outcome": "uncertain" if uncertain else "exited", "status": None if uncertain else 0,
+        "outcome": "uncertain" if uncertain else "exited", "status": None if uncertain else status,
         "errno": None, "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
         "stdout_length": len(stdout), "stdout_truncated": truncated,
         "stderr_sha256": hashlib.sha256(b"").hexdigest(), "stderr_length": 0,
@@ -144,30 +144,52 @@ def outcome(command, stdout=b"", truncated=False, uncertain=False):
     }
 
 
-raw = prefix()
-for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
-    raw = add(raw, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-command = intent()
+def run_success(raw, serial, command_id, phase, status=0):
+    command = intent(serial, command_id, phase)
+    raw = add(raw, "COMMAND_INTENT_V2", command)
+    raw = add(raw, "COMMAND_PREEXEC_V2", preexec(command))
+    return add(raw, "COMMAND_OUTCOME_V2", outcome(command, status=status)), serial + 1
+
+
+def complete_trace(raw, serial, phase):
+    for command_id in operation.command_policy.PHASE_COMMAND_TRACES[phase]:
+        if command_id in operation.command_policy.DEFERRED_COMMANDS:
+            break
+        raw, serial = run_success(raw, serial, command_id, phase)
+    return raw, serial
+
+
+raw = add(prefix(), "BASELINES_CAPTURED",
+          {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+command = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
 with_intent = add(raw, "COMMAND_INTENT_V2", command)
 with_preexec = add(with_intent, "COMMAND_PREEXEC_V2", preexec(command))
 settled = add(with_preexec, "COMMAND_OUTCOME_V2", outcome(command))
-check(operation._legal(operation._parse(settled)) == "RUNTIME_READY", "v2 changed lifecycle")
-reject(lambda: add(settled, "COMMAND_INTENT_V2", intent(1)))
+check(operation._legal(operation._parse(settled)) == "BASELINES_CAPTURED", "v2 changed lifecycle")
+reject(lambda: add(settled, "NETWORK_READY",
+                   {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
+reject(lambda: add(settled, "COMMAND_INTENT_V2",
+                   intent(1, "IP_NETNS_ADD", "BASELINES_CAPTURED")))
+failed = add(add(add(raw, "COMMAND_INTENT_V2", command), "COMMAND_PREEXEC_V2", preexec(command)),
+             "COMMAND_OUTCOME_V2", outcome(command, status=7))
+reject(lambda: add(failed, "NETWORK_READY",
+                   {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
 
 # Replay semantics bind genesis, current phase, fd roles, cgroup lineage, limits,
 # overflow and wait classification rather than trusting a shared digest header.
-for hostile in (
+for hostile_index, hostile in enumerate((
     rebound({**command, "argv": ["/usr/bin/ctr", "--address", "/attacker.sock", "tasks", "kill"]}),
     rebound({**command, "deadline_class": "remove"}),
     rebound({**command, "duration_ns": 1}),
-    rebound({**command, "output_grammar": "json"}),
+    rebound({**command, "output_grammar": "text"}),
     {**command, "journal_key": key(99)},
     rebound({**command, "inherited_fds": [{
         "role": "CLIENT_KEY", "target_fd": 200, "generation": generation(93, "file", 0o400),
         "content_sha256": "e" * 64, "content_length": 0,
     }]}),
-):
-    reject(lambda hostile=hostile: add(raw, "COMMAND_INTENT_V2", hostile))
+)):
+    reject(lambda hostile=hostile: add(raw, "COMMAND_INTENT_V2", hostile),
+           f"hostile binding accepted: {hostile_index}")
 bad_preexec = {**preexec(command), "host_boot_id": "22222222-2222-2222-2222-222222222222"}
 reject(lambda: add(with_intent, "COMMAND_PREEXEC_V2", bad_preexec))
 for hostile_outcome in (
@@ -176,17 +198,19 @@ for hostile_outcome in (
     {**outcome(command), "stdout_truncated": True},
 ):
     reject(lambda hostile=hostile_outcome: add(with_preexec, "COMMAND_OUTCOME_V2", hostile))
-overflow_command = intent()
+overflow_command = intent(command_id="IP_NETNS_ADD", phase="BASELINES_CAPTURED")
 overflow_prefix = add(add(raw, "COMMAND_INTENT_V2", overflow_command),
                       "COMMAND_PREEXEC_V2", preexec(overflow_command))
 add(overflow_prefix, "COMMAND_OUTCOME_V2", outcome(overflow_command, b"x" * 65536, True))
 
 # Long-lived containerd settles into a separate retained state; serial 1 short
 # commands remain legal, and daemon retirement is independently journaled.
-daemon_prefix = prefix()
-for kind in ("BASELINES_CAPTURED", "NETWORK_READY"):
-    daemon_prefix = add(daemon_prefix, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-daemon = intent(command_id="CONTAINERD_START", phase="NETWORK_READY")
+daemon_prefix = add(prefix(), "BASELINES_CAPTURED",
+                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+daemon_prefix, daemon_serial = complete_trace(daemon_prefix, 0, "BASELINES_CAPTURED")
+daemon_prefix = add(daemon_prefix, "NETWORK_READY",
+                    {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+daemon = intent(daemon_serial, "CONTAINERD_START", "NETWORK_READY")
 daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
@@ -195,7 +219,8 @@ reject(lambda: operation._key(key(95, "socket")))
 operation._daemon_socket_generation(retained["socket_generation"])
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
 retained_raw = daemon_raw
-daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2", intent(1, "CTR_CONTAINER_INFO", "NETWORK_READY"))
+daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2",
+                 intent(daemon_serial + 1, "CTR_CONTAINER_INFO", "NETWORK_READY"))
 check(operation._legal(operation._parse(daemon_raw)) == "NETWORK_READY",
       "retained daemon blocked later command")
 
@@ -205,20 +230,9 @@ legacy_daemon = {"operation_token": "a" * 64, "command_serial": 0,
                  "command_id": "CONTAINERD_START", "binding_sha256": "9" * 64,
                  "deadline_class": "runtime-start"}
 reject(lambda: add(prefix(), "COMMAND_INTENT", legacy_daemon))
-progress = add(retained_raw, "RUNTIME_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-progress = add(progress, "SSH_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64,
-    "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(),
-    "authentication_attempts": 1})
-progress = add(progress, "READINESS_REVOKED", {"operation_token": "a" * 64})
-progress = add(progress, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
-    "proof_sha256": "9" * 64, "task": "absent", "container": "exact-owned",
-    "runtime": "exact-owned", "share": "exact-owned"})
-for kind in ("NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
-             "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT"):
-    progress = add(progress, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
-reject(lambda: add(progress, "INPUT_REMOVED", {"operation_token": "a" * 64,
-                                                "proof_sha256": "9" * 64}))
-daemon_outcome = {"operation_token": "a" * 64, "command_serial": 0,
+reject(lambda: add(retained_raw, "RUNTIME_READY",
+                   {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
+daemon_outcome = {"operation_token": "a" * 64, "command_serial": daemon_serial,
     "command_id": "CONTAINERD_START", "binding_sha256": daemon["binding_sha256"],
     "pid": daemon_preexec["pid"], "proc_start_time": daemon_preexec["proc_start_time"],
     "status": 0, "leader_reaped": True, "descendants_reaped": True,
@@ -228,19 +242,22 @@ check(operation._legal(operation._parse(early_daemon)) == "UNCERTAIN",
       "early daemon exit was not terminal")
 reject(lambda: add(early_daemon, "RUNTIME_READY", {"operation_token": "a" * 64,
                                                     "proof_sha256": "9" * 64}))
-closed_daemon = add(progress, "DAEMON_OUTCOME_V2", daemon_outcome)
-closed_daemon = add(closed_daemon, "INPUT_REMOVED", {"operation_token": "a" * 64,
-                                                      "proof_sha256": "9" * 64})
+uncertain_daemon = {**daemon_outcome, "status": None, "leader_reaped": False,
+    "descendants_reaped": False, "cgroup_empty": False, "cgroup_removed": False,
+    "uncertain": True, "errors": ["daemon-cleanup-pending"]}
+uncertain_daemon_raw = add(retained_raw, "DAEMON_OUTCOME_V2", uncertain_daemon)
+check(operation._legal(operation._parse(uncertain_daemon_raw)) == "UNCERTAIN",
+      "daemon residue did not remain terminal uncertain")
 # The exact command policy rejects foreign owner IDs, wrong lifecycle, repeats,
 # and impossible output on a command which was never released.
 reject(lambda: add(raw, "COMMAND_INTENT_V2", intent(command_id="CTR_TASK_TERM")))
 unsupported = copy.deepcopy(command); unsupported["command_id"] = "CTR_RUN"
 unsupported = rebound(unsupported)
 reject(lambda: add(raw, "COMMAND_INTENT_V2", unsupported))
-ssh_intent = intent(command_id="SSH_READY")
-ssh_done = add(add(add(raw, "COMMAND_INTENT_V2", ssh_intent), "COMMAND_PREEXEC_V2", preexec(ssh_intent)),
-               "COMMAND_OUTCOME_V2", outcome(ssh_intent, operation.FIXED["ssh_marker"].encode()))
-reject(lambda: add(ssh_done, "COMMAND_INTENT_V2", intent(1, "SSH_READY")))
+mixed = prefix()
+for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
+    mixed = add(mixed, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
+reject(lambda: add(mixed, "COMMAND_INTENT_V2", intent(command_id="SSH_READY")))
 not_started_output = outcome(command, b"x")
 not_started_output.update({"outcome": "not-started", "status": None, "release_count": 0})
 reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output))
@@ -249,7 +266,8 @@ reject(lambda: operation._validate_body("COMMAND_OUTCOME_V2", not_started_output
 # from the process compositions rather than trusted as matching literals.
 policy = operation.command_policy
 for mapping in (policy.POLICY_SHA256, policy.OCCURRENCES, policy.PHASES,
-                policy.MAX_OCCURRENCES, policy.MUTATION_ORDERS):
+                policy.MAX_OCCURRENCES, policy.MUTATION_ORDERS,
+                policy.PHASE_COMMAND_TRACES, policy.LIFECYCLE_REQUIREMENTS):
     reject(lambda mapping=mapping: mapping.__setitem__("CTR_TASK_LIST", ("RUNTIME_READY",)))
 original_policy = policy.POLICY_SHA256
 try:
@@ -283,31 +301,10 @@ setup_raw = add(add(add(setup_raw, "COMMAND_INTENT_V2", netns),
 add(setup_raw, "COMMAND_INTENT_V2",
     intent(1, "IP_LINK_ADD", "BASELINES_CAPTURED"))
 
-# KILL requires successful TERM and a distinct fresh task observation after it.
-ownership = settled
-ownership = add(ownership, "SSH_READY", {"operation_token": "a" * 64,
-    "proof_sha256": "9" * 64,
-    "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(),
-    "authentication_attempts": 1})
-ownership = add(ownership, "READINESS_REVOKED", {"operation_token": "a" * 64})
-ownership = add(ownership, "OWNERSHIP_OBSERVED", {"operation_token": "a" * 64,
-    "proof_sha256": "9" * 64, "task": "exact-owned", "container": "exact-owned",
-    "runtime": "exact-owned", "share": "exact-owned"})
-observed = intent(1, "CTR_TASK_LIST", "OWNERSHIP_OBSERVED")
-ownership = add(add(add(ownership, "COMMAND_INTENT_V2", observed),
-                    "COMMAND_PREEXEC_V2", preexec(observed)),
-                "COMMAND_OUTCOME_V2", outcome(observed))
-term = intent(2, "CTR_TASK_TERM", "OWNERSHIP_OBSERVED")
-ownership = add(add(add(ownership, "COMMAND_INTENT_V2", term),
-                    "COMMAND_PREEXEC_V2", preexec(term)),
-                "COMMAND_OUTCOME_V2", outcome(term))
-reject(lambda: add(ownership, "COMMAND_INTENT_V2",
-                   intent(3, "CTR_TASK_KILL", "OWNERSHIP_OBSERVED")))
-fresh = intent(3, "CTR_TASK_LIST", "OWNERSHIP_OBSERVED")
-ownership = add(add(add(ownership, "COMMAND_INTENT_V2", fresh),
-                    "COMMAND_PREEXEC_V2", preexec(fresh)),
-                "COMMAND_OUTCOME_V2", outcome(fresh))
-add(ownership, "COMMAND_INTENT_V2", intent(4, "CTR_TASK_KILL", "OWNERSHIP_OBSERVED"))
+# TERM, fresh observation, KILL, and final observation occupy exact positions.
+check(policy.PHASE_COMMAND_TRACES["OWNERSHIP_OBSERVED"] == (
+    "CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL", "CTR_TASK_LIST"),
+    "TERM-observe-KILL trace drift")
 
 # Cleanup-only pending-intent recovery never forks or releases and durably
 # consumes the exact serial. Pending PREEXEC is always sticky uncertain.
@@ -341,17 +338,23 @@ check(preexec_journal.recorded["uncertain"] and preexec_journal.recorded["releas
       "pending preexec recovery was not honestly sticky uncertain")
 
 class TerminalRecoveryJournal:
-    def __init__(self): self.recorded = False
-    def recovery_command(self):
-        return command, recovery_preexec, outcome(command, uncertain=True)
+    def __init__(self, values): self.recorded, self.values = False, values
+    def recovery_command(self): return self.values
     def record_command_outcome(self, _body):
         self.recorded = True
         raise AssertionError("terminal uncertainty was rewritten")
-terminal_journal = TerminalRecoveryJournal()
+terminal_journal = TerminalRecoveryJournal(
+    (command, recovery_preexec, outcome(command, uncertain=True)))
 with patch.object(process, "_recover_cgroup", return_value=(True, True)):
     terminal_result = process._recover_pending_fixed(terminal_journal)
 check(terminal_result.body["uncertain"] and not terminal_journal.recorded,
       "terminal-uncertain cleanup changed durable uncertainty")
+daemon_journal = TerminalRecoveryJournal((daemon, daemon_preexec, uncertain_daemon))
+with patch.object(process, "_recover_cgroup", return_value=(True, True)) as daemon_recover:
+    daemon_result = process._recover_pending_fixed(daemon_journal)
+check(daemon_result.body is uncertain_daemon and not daemon_journal.recorded
+      and daemon_recover.call_args.args[1] == process._generation_tuple(daemon_preexec["cgroup_generation"]),
+      "daemon residue lost exact cleanup-only continuation")
 check(not process._cleanup_closed((False, False, False, False), 10),
       "owned residue was considered terminally closed")
 

@@ -537,7 +537,7 @@ def fixture_journal(
 
 
 def fixed_v2_intent(context):
-    fixed = process._FIXED_COMMANDS[process.CommandId.CTR_CONTAINER_INFO]
+    fixed = process._FIXED_COMMANDS[process.CommandId.IP_NETNS_ADD]
     environment = [list(row) for row in operation.FIXED_ENV]
     body = {
         "operation_token": context.operation_token, "command_serial": context.command_serial,
@@ -552,7 +552,7 @@ def fixed_v2_intent(context):
         "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
         "inherited_fds": [], "policy_version": operation.command_policy.POLICY_VERSION,
-        "deadline_class": "observer", "duration_ns": fixed.duration_ns,
+        "deadline_class": "network", "duration_ns": fixed.duration_ns,
         "cleanup_reserve_ns": operation.command_policy.CLEANUP_RESERVE_NS,
         "deadline_boottime_ns": process._boottime_ns() + fixed.duration_ns,
         "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
@@ -712,7 +712,6 @@ def production_owner_test():
             # and PREEXEC. Cgroup cleanup has its separate authentic root test.
             lifecycle_prefix = leased_records + (
                 ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
-                ("NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
             )
             for with_preexec in (False, True):
                 fixture_journal(completion, lifecycle_prefix)

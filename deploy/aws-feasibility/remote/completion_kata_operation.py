@@ -78,9 +78,8 @@ MAX_OBSERVED_NAMES = 64
 ACTIONS = frozenset({"create", "metadata", "link", "remove"})
 COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = COMMANDS - {"CONTAINERD_START"}
-_POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
-                command_policy.PHASES, command_policy.MAX_OCCURRENCES,
-                command_policy.MUTATION_ORDERS)
+_POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES, command_policy.PHASES,
+    command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
@@ -614,8 +613,8 @@ def _same_intent(left, right):
 def _same_command(left, right):
     return all(left[name] == right[name] for name in _command(left))
 def _policy_tables():
-    maps = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
-            command_policy.PHASES, command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS)
+    maps = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES, command_policy.PHASES,
+        command_policy.MAX_OCCURRENCES, command_policy.MUTATION_ORDERS, command_policy.PHASE_COMMAND_TRACES, command_policy.LIFECYCLE_REQUIREMENTS)
     _fail(all(value is expected and type(value) is MappingProxyType
               for value, expected in zip(maps, _POLICY_MAPS)))
     implemented, deferred = set(maps[0]), set(command_policy.DEFERRED_COMMANDS)
@@ -628,6 +627,8 @@ def _policy_tables():
     _fail(all(type(name) is str and type(order) is tuple and len(order) == len(set(order))
               for name, order in maps[4].items()))
     _fail(len(flattened) == len(set(flattened)) and set(flattened) <= implemented)
+    trace_ids = {item for trace in maps[5].values() for item in trace}
+    _fail(all(type(phase) is str and type(trace) is tuple for phase, trace in maps[5].items()) and trace_ids <= implemented | deferred and all(value in maps[5] for value in maps[6].values()))
     return maps
 def _v2_policy_digest(intent):
     names = ("command_id", "executable_role", "executable_path", "argv", "stdin_hex",
@@ -663,33 +664,27 @@ def _v2_lineage(genesis, phase, intent, preexec=None, outcome=None):
             _fail(0 <= outcome["status"] <= 255)
         if outcome["outcome"] == "signaled":
             _fail(1 <= outcome["status"] <= 64)
-def _successful_v2(record):
-    body = record.body
-    return (record.record_type == "COMMAND_OUTCOME_V2" and not body["uncertain"]
-            and body["outcome"] == "exited" and body["status"] == 0)
+def _settled_v2(records, intent, index):
+    serial = intent.body["command_serial"]
+    if intent.body["command_id"] == "CONTAINERD_START":
+        return any(item.record_type == "DAEMON_RETAINED_V2" and item.body["command_serial"] == serial for item in records[:index])
+    outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2" and item.body["command_serial"] == serial]
+    return bool(outcomes and not outcomes[-1].body["uncertain"] and outcomes[-1].body["outcome"] == "exited"
+                and outcomes[-1].body["status"] == 0)
+def _phase_trace(records, index, phase, candidate=None, complete=False):
+    _policy_tables(); trace = command_policy.PHASE_COMMAND_TRACES.get(phase, ())
+    intents = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
+    observed = tuple(item.body["command_id"] for item in intents) + (() if candidate is None else (candidate,))
+    _fail(observed == trace if complete else observed == trace[:len(observed)] and len(observed) <= len(trace))
+    _fail(all(_settled_v2(records, item, index) for item in intents))
 def _v2_occurrence(records, index, phase, body):
     _policy_tables(); command_id = body["command_id"]
-    prior = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2"
-             and item.body["command_id"] == command_id]
+    prior_v2 = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2"]
+    _fail(bool(prior_v2) or phase == "BASELINES_CAPTURED")
+    prior = [item for item in prior_v2 if item.body["command_id"] == command_id]
     expected = command_policy.OCCURRENCES[command_id]
     _fail(len(prior) < len(expected) and expected[len(prior)] == phase)
-    order = command_policy.MUTATION_ORDERS.get(phase, ())
-    if command_id in order:
-        seen = [item.body["command_id"] for item in records[:index]
-                if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase
-                and item.body["command_id"] in order]
-        _fail(tuple(seen) == order[:len(seen)] and len(seen) < len(order)
-              and command_id == order[len(seen)])
-        outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
-                    and seen and item.body["command_id"] == seen[-1]]
-        _fail(not seen or outcomes and _successful_v2(outcomes[-1]))
-    if command_id == "CTR_TASK_KILL":
-        term = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
-                and item.body["command_id"] == "CTR_TASK_TERM"]
-        fresh = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
-                 and item.body["command_id"] == "CTR_TASK_LIST"]
-        _fail(term and fresh and _successful_v2(term[-1]) and _successful_v2(fresh[-1])
-              and fresh[-1].sequence > term[-1].sequence)
+    _phase_trace(records, index, phase, command_id)
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
     genesis = records[0].body
@@ -745,7 +740,8 @@ def _legal(records):
             _fail(_same_command_v2(body, daemon_intent.body))
             _fail(body["pid"] == daemon_preexec.body["pid"])
             _fail(body["proc_start_time"] == daemon_preexec.body["proc_start_time"])
-            retained_daemon = None
+            residue = not all(body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
+            if not residue: retained_daemon = None
             if body["uncertain"] or phase != "FIREWALL_ABSENT":
                 phase = "UNCERTAIN"
             continue
@@ -818,6 +814,8 @@ def _legal(records):
         elif kind in LIFECYCLE:
             _fail(rootfs)
             seen = {item.record_type for item in records[:index]}
+            if (requirement := command_policy.LIFECYCLE_REQUIREMENTS.get(kind)) is not None and "COMMAND_INTENT_V2" in seen:
+                _fail(requirement == phase); _phase_trace(records, index, phase, complete=True)
             if kind == "BASELINES_CAPTURED":
                 _fail(phase in {"ROOTFS_LEASED", "FS_SETTLED"})
             elif kind == "NETWORK_READY":
@@ -1373,7 +1371,9 @@ def _make_authority():
                 intent = records[-2] if preexec is not None else records[-1]
             else:
                 terminal = records[-1]
-                _fail(terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"])
+                _fail(terminal.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"}
+                      and terminal.body["uncertain"])
+                if terminal.record_type == "DAEMON_OUTCOME_V2": _fail(not all(terminal.body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
                 serial = terminal.body["command_serial"]
                 intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
                               and item.body["command_serial"] == serial)

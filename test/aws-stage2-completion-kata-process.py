@@ -219,17 +219,44 @@ def authentic_root_cgroup_recovery():
     assert os.waitpid(supervisor, 0)[1] == 77 << 8
     value = json.loads(raw)
     state, errors = {"term": False, "kill": False}, []
+    previous = None
     try:
         assert process._recover_cgroup(
             path, tuple(value["expected"]), process._boottime_ns() + 2_000_000_000,
             state, errors,
         ) == (True, True)
         assert state["kill"] and errors == [] and not os.path.exists(path)
+        # Exact production settlement also reaps a quick adopted descendant.
+        previous = process._set_subreaper(True)
+        owner = process._prepare_cgroup(process.kata_operation.CommandContext(
+            token, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+            process._boot_id(), "5" * 40, "NETWORK_READY", 4243,
+        ))
+        gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+        quick_r, quick_w = os.pipe2(os.O_CLOEXEC)
+        leader = os.fork()
+        if leader == 0:
+            os.close(gate_w); os.close(quick_r)
+            if os.read(gate_r, 1) != b"R": os._exit(90)
+            if os.fork() == 0:
+                os.write(quick_w, b"Z"); os._exit(0)
+            os._exit(0)
+        os.close(gate_r); os.close(quick_w); process._register_cgroup(owner, leader)
+        os.write(gate_w, b"R"); os.close(gate_w)
+        assert os.read(quick_r, 1) == b"Z"; os.close(quick_r); time.sleep(0.05)
+        settle_errors = []
+        settled = process._settle_cgroup(
+            owner, leader, process._boottime_ns() + 2_000_000_000, settle_errors,
+        )
+        process._set_subreaper(previous); previous = None
+        assert all(settled) and settle_errors == []
         return True
     finally:
-        if os.path.exists(path):
-            process._recover_cgroup(path, None, process._boottime_ns() + 2_000_000_000,
-                                    {"term": False, "kill": False}, [])
+        for cleanup_path in (path, f"{process.CGROUP_BASE}/{token}-4243"):
+            if os.path.exists(cleanup_path):
+                process._recover_cgroup(cleanup_path, None, process._boottime_ns() + 2_000_000_000,
+                                        {"term": False, "kill": False}, [])
+        if previous is not None: process._set_subreaper(previous)
         if value["base_created"] and os.path.isdir(process.CGROUP_BASE):
             try: os.rmdir(process.CGROUP_BASE)
             except OSError: pass
