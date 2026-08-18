@@ -1032,9 +1032,10 @@ def _stage_containerd_archive(journal, completion, artifact, control):
             "policy_version": command_policy.RUNTIME_POLICY_VERSION,
             "policy_sha256": command_policy.RUNTIME_POLICY_SHA256, "temporary_name": temporary})
     names = os.listdir(parent)
-    if temporary in names: _purge_owned_tree(parent, temporary)
     _fail(not history["runtime_staged"], "runtime already staged")
-    if "kata-runtime-v1" in names: _purge_owned_tree(parent, "kata-runtime-v1")
+    if temporary in names or "kata-runtime-v1" in names:
+        journal.record_uncertain("identity-mismatch")
+        raise KataRuntimeError("identity-free runtime staging residue")
     os.mkdir(temporary, 0o700, dir_fd=parent); os.fsync(parent)
     try:
         runtime_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -1131,6 +1132,11 @@ def _runtime_owner_routes():
         if active and process_owner is None: process_owner = process._reopen_fixed_daemon(journal)
         _fail(type(completion) is rootfs_fs.HeldNode and type(control) is rootfs_fs.OperationControl and ((stopped or staged_only) and process_owner is None or active and
                    process._verify_fixed_daemon(process_owner, journal) == history["daemon_retained"][-1]))
+        completion_names = set(os.listdir(completion.operation_fd.number))
+        if (staged_only and not history["runtime_staged"]
+                and completion_names & {".kata-runtime-v1.staging", "kata-runtime-v1"}):
+            journal.record_uncertain("identity-mismatch")
+            raise KataRuntimeError("identity-free staged runtime residue")
         observed, _snapshot = rootfs_fs._optional_child(completion, rootfs_fs._name("kata-runtime-v1"), control)
         if observed is None:
             _fail(stopped or staged_only, "active private runtime root absent"); runtime = config = root = daemon_state = None; socket_names = set()

@@ -394,7 +394,13 @@ if native_supported:
         add, prefix = model["add"], model["prefix"]
         make_intent, make_preexec, make_outcome = model["intent"], model["preexec"], model["outcome"]
         rebound, generation = model["rebound"], model["generation"]
-        raw = add(prefix(), "PRODUCTION_ADMISSION_V2", {
+        admitted = operation._boottime_ns()
+        raw = add(prefix(), "LIFECYCLE_DEADLINE_V1", {
+            "operation_token": "a" * 64,
+            "admission_boottime_ns": admitted,
+            "ssh_start_deadline_boottime_ns": admitted + operation.JOURNAL_SETUP_MARGIN_NS,
+            "journal_deadline_boottime_ns": admitted + operation.JOURNAL_TOTAL_NS})
+        raw = add(raw, "PRODUCTION_ADMISSION_V2", {
             "operation_token": "a" * 64,
             "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
             "policy_version": policy.POLICY_VERSION,

@@ -68,8 +68,10 @@ RUNTIME_RESIDUE_PHASES = frozenset({
     "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
     "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
 })
-JOURNAL_SETUP_MARGIN_NS = 300_000_000_000
+JOURNAL_SETUP_MARGIN_NS = 900_000_000_000
 JOURNAL_SETTLEMENT_MARGIN_NS = command_policy.SSH_CLEANUP_RESERVE_NS
+JOURNAL_TOTAL_NS = (JOURNAL_SETUP_MARGIN_NS + command_policy.SSH_TOTAL_NS
+                    + JOURNAL_SETTLEMENT_MARGIN_NS)
 
 def _stage_candidates(names, allowed=()):
     candidates = set(names) - COMPLETION_NAMES - RUNTIME_NAMES - set(allowed)
@@ -219,6 +221,8 @@ class OperationError(Exception):
 def _fail(condition):
     if not condition:
         raise OperationError()
+def _boottime_ns():
+    return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
 def _uint(value, maximum=(1 << 64) - 1, minimum=0):
     _fail(type(value) is int and minimum <= value <= maximum)
     return value
@@ -404,6 +408,17 @@ def _validate_body(kind, body):
         _rootfs_pin(body["rootfs_pin"])
         _fail(body["mount_list_sha256"] == MOUNT_SHA)
         _fail(all(body[name] == value and type(body[name]) is type(value) for name, value in FIXED.items()))
+    elif kind == "LIFECYCLE_DEADLINE_V1":
+        _keys(body, ("operation_token", "admission_boottime_ns",
+                     "ssh_start_deadline_boottime_ns", "journal_deadline_boottime_ns"))
+        _hex(body["operation_token"])
+        for name in ("admission_boottime_ns", "ssh_start_deadline_boottime_ns",
+                     "journal_deadline_boottime_ns"):
+            _uint(body[name], minimum=1)
+        _fail(body["ssh_start_deadline_boottime_ns"]
+              == body["admission_boottime_ns"] + JOURNAL_SETUP_MARGIN_NS)
+        _fail(body["journal_deadline_boottime_ns"]
+              == body["admission_boottime_ns"] + JOURNAL_TOTAL_NS)
     elif kind == "PRODUCTION_ADMISSION_V2":
         _keys(body, ("operation_token", "admission_version", "policy_version",
                      "parser_source_sha256"))
@@ -1059,6 +1074,7 @@ def _legal(records):
     ssh_result = None
     runtime_mount = None
     production_admitted = False
+    lifecycle_deadline = None
     network_state = network_journal.initial()
     rootfs = False
     next_serial = 0
@@ -1088,6 +1104,11 @@ def _legal(records):
             selected = "v1" if kind == "COMMAND_INTENT" else "v2"
             _fail(command_generation in {None, selected})
             command_generation = selected
+        if kind == "LIFECYCLE_DEADLINE_V1":
+            _fail(phase == "ROOTFS_LEASED" and lifecycle_deadline is None
+                  and not production_admitted and command_phase is None)
+            lifecycle_deadline = body
+            continue
         if kind == "PRODUCTION_ADMISSION_V2":
             _fail(phase == "ROOTFS_LEASED" and not production_admitted and command_phase is None)
             production_admitted = True
@@ -1571,11 +1592,8 @@ def _make_authority():
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
         def __init__(self):
             _fail(os.geteuid() == 0)
-            opened_ns = time.monotonic_ns()
-            self.ssh_start_deadline_ns = opened_ns + JOURNAL_SETUP_MARGIN_NS
             self.control = fs.OperationControl(
-                self.ssh_start_deadline_ns + command_policy.SSH_TOTAL_NS
-                + JOURNAL_SETTLEMENT_MARGIN_NS, lambda: False)
+                time.monotonic_ns() + JOURNAL_TOTAL_NS, lambda: False)
             self.chain = None
             self.lock = None
             self.closed = False
@@ -1988,7 +2006,9 @@ def _make_authority():
             )
         def has_recovery_command(self):
             _io, records, status = reload(self); _fail(status == "exact")
-            return records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2"} or (
+            return records[-1].record_type in {
+                "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3",
+            } or (
                 records[-1].record_type == "COMMAND_OUTCOME_V2" and records[-1].body["uncertain"])
 
         def runtime_recovery_history(self):
@@ -2042,8 +2062,18 @@ def _make_authority():
             return intent, preexec
         def record_command_intent(self, body):
             context = self.command_context()
-            if body["command_id"] == "SSH_READY":
-                _fail(time.monotonic_ns() < self.ssh_start_deadline_ns)
+            _io, records, status = reload(self, True)
+            deadlines = [item.body for item in records
+                         if item.record_type == "LIFECYCLE_DEADLINE_V1"]
+            if any(item.record_type == "PRODUCTION_ADMISSION_V2" for item in records):
+                _fail(status == "exact" and len(deadlines) == 1)
+                deadline = deadlines[0]
+                now = _boottime_ns()
+                _fail(now < deadline["journal_deadline_boottime_ns"])
+                _fail(body["deadline_boottime_ns"] + body["cleanup_reserve_ns"]
+                      <= deadline["journal_deadline_boottime_ns"])
+                if body["command_id"] == "SSH_READY":
+                    _fail(now < deadline["ssh_start_deadline_boottime_ns"])
             _fail(body["operation_token"] == context.operation_token)
             _fail(body["journal_key"] == context.journal_key)
             _fail(body["host_boot_id"] == context.host_boot_id)
@@ -2123,11 +2153,24 @@ def _make_authority():
         def admit_production_v2(self):
             context = self.command_context()
             _fail(context.lifecycle_phase == "ROOTFS_LEASED")
-            write_validated(self, "PRODUCTION_ADMISSION_V2", {
-                "operation_token": context.operation_token,
-                "admission_version": PRODUCTION_ADMISSION_VERSION,
-                "policy_version": command_policy.POLICY_VERSION,
-                "parser_source_sha256": SSH_PARSER_SHA256})
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            deadlines = [item.body for item in records
+                         if item.record_type == "LIFECYCLE_DEADLINE_V1"]
+            _fail(len(deadlines) <= 1)
+            if not deadlines:
+                admitted = _boottime_ns()
+                write_validated(self, "LIFECYCLE_DEADLINE_V1", {
+                    "operation_token": context.operation_token,
+                    "admission_boottime_ns": admitted,
+                    "ssh_start_deadline_boottime_ns": admitted + JOURNAL_SETUP_MARGIN_NS,
+                    "journal_deadline_boottime_ns": admitted + JOURNAL_TOTAL_NS})
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            if not any(item.record_type == "PRODUCTION_ADMISSION_V2" for item in records):
+                write_validated(self, "PRODUCTION_ADMISSION_V2", {
+                    "operation_token": context.operation_token,
+                    "admission_version": PRODUCTION_ADMISSION_VERSION,
+                    "policy_version": command_policy.POLICY_VERSION,
+                    "parser_source_sha256": SSH_PARSER_SHA256})
         def record_runtime_mount_v2(self, key, manifest_sha256, mount_generation):
             _fail(key is seal)
             context = self.command_context()
@@ -2471,7 +2514,8 @@ def _make_authority():
         _fail(type(authority) is OperationAuthority and authority in owners and authority not in closed)
         _io, records, status = reload(authority, True)
         admissions = [item for item in records if item.record_type == "PRODUCTION_ADMISSION_V2"]
-        _fail(status == "exact" and len(admissions) == 1)
+        deadlines = [item for item in records if item.record_type == "LIFECYCLE_DEADLINE_V1"]
+        _fail(status == "exact" and len(admissions) == len(deadlines) == 1)
         return authority
     def command_context(authority): return authority.command_context()
     def pending_command(authority): return authority.pending_command()

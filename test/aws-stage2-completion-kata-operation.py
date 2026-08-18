@@ -80,6 +80,16 @@ def names_digest(names):
     return hashlib.sha256(operation._canonical(names)).hexdigest()
 
 
+def lifecycle_deadline(token="a" * 64):
+    admitted = operation._boottime_ns()
+    return ("LIFECYCLE_DEADLINE_V1", {
+        "operation_token": token,
+        "admission_boottime_ns": admitted,
+        "ssh_start_deadline_boottime_ns": admitted + operation.JOURNAL_SETUP_MARGIN_NS,
+        "journal_deadline_boottime_ns": admitted + operation.JOURNAL_TOTAL_NS,
+    })
+
+
 def settled_genesis():
     raw = append(b"", "GENESIS", genesis_body())
     return append(raw, "GENESIS_SETTLED", {
@@ -631,12 +641,13 @@ def native_transaction_crashes(completion):
         return False
     fixed = process._FIXED_COMMANDS[process.CommandId.IP_NETNS_ADD]
     lifecycle = (("ROOTFS_ACQUIRE_INTENT", rootfs_intent), ("ROOTFS_LEASED", leased),
+                 lifecycle_deadline(),
                  ("PRODUCTION_ADMISSION_V2", {"operation_token": "a" * 64,
                     "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                     "policy_version": operation.command_policy.POLICY_VERSION,
                     "parser_source_sha256": operation.SSH_PARSER_SHA256}),
                  ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
-    for cut in ("intent", "create", "fork", "preexec", "release"):
+    for cut in ("intent", "create", "fork", "preexec", "release", "output"):
         fixture_journal(completion, lifecycle, host_boot_id=process._boot_id())
         descriptor = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
         executable_sha256 = process._digest_fd(descriptor, os.fstat(descriptor).st_size)
@@ -666,6 +677,9 @@ def native_transaction_crashes(completion):
                 elif cut == "preexec":
                     real = process.kata_operation._record_command_preexec
                     process.kata_operation._record_command_preexec = lambda *args: (real(*args), os._exit(83))[0]
+                elif cut == "output":
+                    real = process.kata_operation._record_command_output
+                    process.kata_operation._record_command_output = lambda *args: (real(*args), os._exit(83))[0]
                 else:
                     process._drain_transaction = lambda *_args: os._exit(83)
                 process._transact_fixed(authority, fixed, retained)
@@ -1008,10 +1022,12 @@ def native_containerd_metadata_fixture(completion, journal, network_owner, permi
 
 
 INPUT_CRASH_CUTS = (
-    "intent", "cgroup-create", "fork", "preexec", "release", "drain",
+    "intent", "cgroup-create", "fork", "preexec", "release", "drain", "output",
     "effect", "fsync", "settlement", "quarantine", "removal",
 )
-SSH_CRASH_CUTS = ("intent", "cgroup-create", "fork", "preexec", "release", "drain")
+SSH_CRASH_CUTS = (
+    "intent", "cgroup-create", "fork", "preexec", "release", "drain", "output",
+)
 NATIVE_TEST_SHARDS = ("baseline",) + tuple(
     "input-" + cut for cut in INPUT_CRASH_CUTS) + tuple(
     "ssh-" + cut for cut in SSH_CRASH_CUTS)
@@ -1618,9 +1634,21 @@ def production_owner_test():
             admitted = operation._open_fixed_operation()
             operation._admit_production_v2(admitted)
             assert operation._claim_production_operation(admitted) is admitted
+            admitted_records = operation._parse(fixture_journal_path(completion).read_bytes())
+            deadline_rows = [row.body for row in admitted_records
+                             if row.record_type == "LIFECYCLE_DEADLINE_V1"]
+            assert (len(deadline_rows) == 1
+                    and deadline_rows[0]["ssh_start_deadline_boottime_ns"]
+                    == deadline_rows[0]["admission_boottime_ns"]
+                       + operation.JOURNAL_SETUP_MARGIN_NS
+                    and deadline_rows[0]["journal_deadline_boottime_ns"]
+                    == deadline_rows[0]["admission_boottime_ns"]
+                       + operation.JOURNAL_TOTAL_NS)
+            admitted_bytes = fixture_journal_path(completion).read_bytes()
             admitted.close()
             reopened_admitted = operation._open_fixed_operation()
             assert operation._claim_production_operation(reopened_admitted) is reopened_admitted
+            assert fixture_journal_path(completion).read_bytes() == admitted_bytes
             reopened_admitted.close()
             input_root.rmdir()
 
@@ -1651,7 +1679,7 @@ def production_owner_test():
                 "inode_version_min": 0, "inode_version_max": 0xffffffff,
                 "child_generation": None, "child_birth_ns": None,
                 "child_inode_version": None}
-            layout_prefix = leased_records + (("PRODUCTION_ADMISSION_V2", {
+            layout_prefix = leased_records + (lifecycle_deadline(), ("PRODUCTION_ADMISSION_V2", {
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
@@ -1809,7 +1837,9 @@ def production_owner_test():
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
                 transaction_completion = Path(operation.BASE)
                 helper = str(ROOT / "test/aws-stage2-completion-kata-native-recover.py")
-                process_cuts = {"intent", "cgroup-create", "fork", "preexec", "release", "drain"}
+                process_cuts = {
+                    "intent", "cgroup-create", "fork", "preexec", "release", "drain", "output",
+                }
                 def install_process_cut(cut, command_id):
                     if cut == "intent":
                         real = operation._record_command_intent
@@ -1844,6 +1874,13 @@ def production_owner_test():
                             if value == b"R": os._exit(83)
                             return count
                         process.os.write = after_release
+                    elif cut == "output":
+                        real = operation._record_command_output
+                        def after_output(journal, body):
+                            value = real(journal, body)
+                            if body["command_id"] == command_id: os._exit(83)
+                            return value
+                        operation._record_command_output = after_output
                     else: process._drain_transaction = lambda *_args: os._exit(83)
                 for cut in input_crash_cuts:
                     assert not transaction_completion.exists()
@@ -2125,7 +2162,7 @@ def production_owner_test():
             # The fresh SSH recovery entry crosses the real FixedJournal and
             # exact production input-cleanup boundary before any final host
             # attestation data exists.
-            recovery_prefix = leased_records + (("PRODUCTION_ADMISSION_V2", {
+            recovery_prefix = leased_records + (lifecycle_deadline(), ("PRODUCTION_ADMISSION_V2", {
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
@@ -2147,6 +2184,7 @@ def production_owner_test():
             # Actual fsynced _FixedJournal reopen/recovery cuts after v2 INTENT
             # and PREEXEC. Cgroup cleanup has its separate authentic root test.
             lifecycle_prefix = leased_records + (
+                lifecycle_deadline(),
                 ("PRODUCTION_ADMISSION_V2", {"operation_token": "a" * 64,
                     "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                     "policy_version": operation.command_policy.POLICY_VERSION,

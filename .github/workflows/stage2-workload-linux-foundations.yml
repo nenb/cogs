@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 18
+      max-parallel: 20
       matrix:
         shard:
           - baseline
@@ -29,6 +29,7 @@ jobs:
           - input-preexec
           - input-release
           - input-drain
+          - input-output
           - input-effect
           - input-fsync
           - input-settlement
@@ -40,6 +41,7 @@ jobs:
           - ssh-preexec
           - ssh-release
           - ssh-drain
+          - ssh-output
     env:
       COGS_STAGE2_KATA_NATIVE_TEST_SHARD: ${{ matrix.shard }}
     steps:

@@ -33,8 +33,8 @@ test("S0 fixed operation foundation fails closed", async () => {
   const adr0102Hard = 48_000;
   assert.ok(adr0102Preferred < adr0102Hard);
   assert.ok(
-    operationLines + leaseExtension <= 2850,
-    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2850: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 2900,
+    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2900: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,
