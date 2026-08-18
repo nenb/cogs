@@ -634,7 +634,11 @@ def parse_netns_identity(raw, stat, path=NETNS_PATH):
             or identity.mount_options != ("rw",) or identity.optional_fields
             or identity.fs_type != "nsfs" or identity.source != "nsfs"
             or identity.super_options != ("rw",)):
-        raise NetworkError("netns mount/stat identity drift")
+        raise NetworkError(
+            "netns mount/stat identity drift:"
+            f"{identity.device}:{expected_device}:{identity.root}:"
+            f"{identity.mount_options}:{identity.optional_fields}:{identity.fs_type}:"
+            f"{identity.source}:{identity.super_options}")
     return identity
 
 
