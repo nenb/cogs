@@ -1028,7 +1028,7 @@ INPUT_CRASH_CUTS = (
 SSH_CRASH_CUTS = (
     "intent", "cgroup-create", "fork", "preexec", "release", "drain", "output",
 )
-NATIVE_TEST_SHARDS = ("baseline",) + tuple(
+NATIVE_TEST_SHARDS = ("baseline", "network-runtime") + tuple(
     "input-" + cut for cut in INPUT_CRASH_CUTS) + tuple(
     "ssh-" + cut for cut in SSH_CRASH_CUTS)
 
@@ -2335,8 +2335,10 @@ def production_owner_test():
             unknown.mkdir(mode=0o700)
             rejected(operation._open_fixed_operation)
             unknown.rmdir()
-            native_transaction = native_transaction_crashes(completion)
-            native_runtime = native_runtime_daemon_foundations(completion)
+            native_transaction = (False if shard == "network-runtime" else
+                                  native_transaction_crashes(completion))
+            native_runtime = (False if shard == "network-runtime" else
+                              native_runtime_daemon_foundations(completion))
     return True, native_transaction, native_runtime
 
 
