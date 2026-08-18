@@ -1262,7 +1262,7 @@ def _establish_netns(journal):
             planned = _placeholder_identity(os.fstat(temporary))
             _original_placeholder_record(journal, planned)
             descriptor = os.open(
-                name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+                name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
             opened.append(descriptor)
             if _placeholder_identity(os.fstat(descriptor)) != planned:
                 raise NetworkError("linked placeholder descriptor drift")
@@ -1286,7 +1286,8 @@ def _establish_netns(journal):
                     raise NetworkError(
                         f"linked placeholder drift:{planned['nlink']}:{observed_identity['nlink']}")
                 planned = observed_identity; _original_placeholder_record(journal, planned)
-            descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent); opened.append(descriptor)
+            descriptor = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                 dir_fd=parent); opened.append(descriptor)
         # This is the final name lookup. The child receives only this retained fd;
         # replacement after these checks cannot redirect the bind target.
         descriptor_identity = _placeholder_identity(os.fstat(descriptor))
