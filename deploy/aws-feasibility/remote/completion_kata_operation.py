@@ -308,7 +308,9 @@ def _command_intent_v2(body):
                       body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION)
     static_policy = (body["command_id"] in command_policy.POLICY_SHA256 and
                      body["policy_version"] == command_policy.POLICY_VERSION)
-    _fail(runtime_policy or static_policy)
+    b1_policy = (body["command_id"] in command_policy.B1_COMMAND_IDS and
+                 body["policy_version"] == command_policy.POLICY_VERSION)
+    _fail(runtime_policy or static_policy or b1_policy)
     _choice(body["deadline_class"], DEADLINES)
     _uint(body["duration_ns"], command_policy.SSH_TOTAL_NS, 1)
     _uint(body["cleanup_reserve_ns"], body["duration_ns"] - 1, 1)
