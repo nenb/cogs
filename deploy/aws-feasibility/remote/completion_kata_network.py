@@ -8,7 +8,6 @@ opening remains unavailable until the coordinator facet is complete.
 """
 from dataclasses import asdict, dataclass
 from enum import Enum
-import array
 import ctypes
 import errno
 import hashlib
@@ -18,7 +17,6 @@ import math
 import os
 from pathlib import Path
 import re
-import socket
 import completion_kata_actions as actions
 import completion_kata_owner as owner_helpers
 
@@ -39,10 +37,6 @@ MAX_ITEMS = 64
 MAX_DEPTH = 16
 MAX_MOUNTINFO_BYTES = 4_194_304
 MAX_MOUNTINFO_LINES = 4096
-SYS_OPEN_TREE_X86_64 = 428
-SYS_MOVE_MOUNT_X86_64 = 429
-OPEN_TREE_FLAGS = 1 | os.O_CLOEXEC | 0x1000  # CLONE | CLOEXEC | AT_EMPTY_PATH
-MOVE_MOUNT_SOURCE_EMPTY_PATH_FLAG = 0x4
 QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"
 ZERO = "0" * 64
 IP_CONTRACT = "iproute2-json-qualification-candidate-v1"
@@ -1247,35 +1241,8 @@ def _quarantine_stage(journal):
     return None if not rows else rows[-1]
 
 
-def _settle_propagated_netns_duplicate(created, name):
-    """Collapse the exact two-layer stack produced by a shared netns parent."""
-    path = "/run/netns/" + name
-    raw = _read_mountinfo(); selected = []
-    for line in raw.decode("utf-8", "strict").splitlines():
-        fields = line.split(" ")
-        if len(fields) > 4 and _OCTAL.sub(
-                lambda match: chr(int(match.group(1), 8)), fields[4]) == path:
-            selected.append(line)
-    if len(selected) != 2:
-        raise NetworkError(f"netns propagated stack:{len(selected)}")
-    observed = os.stat(path, follow_symlinks=False)
-    identities = tuple(parse_netns_identity(
-        (line + "\n").encode(), NetnsStat(observed.st_dev, observed.st_ino), path)
-        for line in selected)
-    if any(any(getattr(identity, field) != created[field]
-               for field in ("device", "inode_device", "inode"))
-           for identity in identities):
-        raise NetworkError("netns propagated identity drift")
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.umount2(path.encode(), 0) != 0:
-        saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-    return _netns_identity(journal=None, name=name)
-
-
 def _establish_netns(journal):
-    """Create, retain, and journal the inode before parent-relative move_mount."""
-    if os.uname().machine != "x86_64":
-        raise NetworkError("fixed mount API architecture")
+    """Create, retain, and journal the inode before the exact bind mount."""
     name = _bound_names(journal)[0]; parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     opened = [parent]; helper_pid = None; helper_waited = False
     try:
@@ -1318,64 +1285,38 @@ def _establish_netns(journal):
                 planned = observed_identity; _original_placeholder_record(journal, planned)
             descriptor = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW,
                                  dir_fd=parent); opened.append(descriptor)
-        # This is the final name lookup before the operation-unique parent-relative
-        # move_mount; the retained descriptor and post-mount nsfs proof detect drift.
+        # This is the final name lookup before the operation-unique bind mount;
+        # retained source/target descriptors and the post-mount nsfs proof detect drift.
         descriptor_identity = _placeholder_identity(os.fstat(descriptor))
         path_identity = _placeholder_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
         if descriptor_identity != planned or path_identity != planned:
             raise NetworkError("pre-bind placeholder replacement")
         ready_r, ready_w = os.pipe2(os.O_CLOEXEC); release_r, release_w = os.pipe2(os.O_CLOEXEC)
-        mount_parent, mount_child = socket.socketpair(
-            socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC)
-        mount_parent_fd, mount_child_fd = mount_parent.detach(), mount_child.detach()
-        opened.extend((ready_r, ready_w, release_r, release_w, mount_parent_fd, mount_child_fd))
+        opened.extend((ready_r, ready_w, release_r, release_w))
         child = os.fork(); helper_pid = child
         if child == 0:
-            os.close(ready_r); os.close(release_w); os.close(mount_parent_fd)
+            os.close(ready_r); os.close(release_w)
             libc = ctypes.CDLL(None, use_errno=True)
             if libc.unshare(0x40000000) != 0: os._exit(121)
             source_fd = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
             if os.write(ready_w, b"R") != 1 or os.read(release_r, 1) != b"B": os._exit(122)
-            tree_fd = libc.syscall(
-                SYS_OPEN_TREE_X86_64, source_fd, b"", OPEN_TREE_FLAGS)
-            if tree_fd < 0:
-                saved = ctypes.get_errno(); os._exit(130 + saved if saved <= 125 else 255)
-            transfer = socket.socket(fileno=mount_child_fd)
-            rights = array.array("i", (tree_fd,))
-            sent = transfer.sendmsg((b"M",), ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),))
-            os.close(tree_fd)
-            if sent != 1 or os.read(release_r, 1) != b"A": os._exit(124)
+            if os.write(ready_w, b"M") != 1 or os.read(release_r, 1) != b"A": os._exit(124)
             os._exit(0)
         os.close(ready_w); os.close(release_r)
         if os.read(ready_r, 1) != b"R": raise NetworkError("namespace helper readiness")
-        source_fd = os.open(f"/proc/{child}/ns/net", os.O_RDONLY | os.O_CLOEXEC); opened.append(source_fd)
+        source_path = f"/proc/{child}/ns/net"
+        source_fd = os.open(source_path, os.O_RDONLY | os.O_CLOEXEC); opened.append(source_fd)
         created = _created_nsfs_identity(source_fd); _created_nsfs_record(journal, child, created)
         if _created_nsfs_identity(source_fd) != created: raise NetworkError("created nsfs changed before bind")
-        if os.write(release_w, b"B") != 1: raise NetworkError("namespace helper release")
-        os.close(mount_child_fd)
-        transfer = socket.socket(fileno=mount_parent_fd)
-        message, ancillary, _flags, _address = transfer.recvmsg(
-            1, socket.CMSG_SPACE(array.array("i").itemsize))
-        transfer.detach()
-        received = array.array("i")
-        for level, kind, data in ancillary:
-            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                received.frombytes(data[:len(data) - len(data) % received.itemsize])
-        if message != b"M" or len(received) != 1:
-            raise NetworkError("namespace mount descriptor transfer")
-        tree_fd = received[0]
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", parent, name.encode(),
-                            MOVE_MOUNT_SOURCE_EMPTY_PATH_FLAG) != 0:
-                saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-        finally: os.close(tree_fd)
-        try:
-            identity = _netns_identity(journal=None, name=name)
-        except NetworkError as error:
-            if not str(error).startswith("netns mount cardinality:2:"):
-                raise
-            identity = _settle_propagated_netns_duplicate(created, name)
+        if os.write(release_w, b"B") != 1 or os.read(ready_r, 1) != b"M":
+            raise NetworkError("namespace helper release")
+        if _created_nsfs_identity(source_fd) != created:
+            raise NetworkError("created nsfs changed at bind")
+        libc = ctypes.CDLL(None, use_errno=True)
+        target_path = "/run/netns/" + name
+        if libc.mount(source_path.encode(), target_path.encode(), None, 4096, None) != 0:
+            saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+        identity = _netns_identity(journal=None, name=name)
         if identity is None or any(getattr(identity, field) != created[field]
                                    for field in ("device", "inode_device", "inode")):
             raise NetworkError("bound namespace differs from created nsfs")
