@@ -9,6 +9,7 @@ import platform
 import resource
 import subprocess
 import sys
+import tempfile
 import time
 from unittest.mock import patch
 
@@ -445,10 +446,10 @@ def linux_supervisor_tests():
 
     # Collision-safe inherited mapping survives exec only at exact 200/201;
     # source CLOEXEC flags remain unchanged and every extra fd is closed.
-    key_r, key_w = os.pipe2(os.O_CLOEXEC)
-    hosts_r, hosts_w = os.pipe2(os.O_CLOEXEC)
-    os.write(key_w, b"K"); os.write(hosts_w, b"H")
-    os.close(key_w); os.close(hosts_w)
+    key_r, key_path = tempfile.mkstemp(dir=directory)
+    hosts_r, hosts_path = tempfile.mkstemp(dir=directory)
+    os.write(key_r, b"K"); os.write(hosts_r, b"H")
+    os.lseek(key_r, 0, os.SEEK_SET); os.lseek(hosts_r, 0, os.SEEK_SET)
     saved = {}
     try:
         for target in (200, 201):
@@ -470,6 +471,7 @@ def linux_supervisor_tests():
             else:
                 os.dup2(original, target); os.close(original)
         os.close(key_r); os.close(hosts_r)
+        os.unlink(key_path); os.unlink(hosts_path)
 
     # close_range reaches inherited descriptors above a subsequently lowered limit.
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
