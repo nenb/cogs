@@ -1710,12 +1710,12 @@ def production_owner_test():
                 "expected_parent_generation": parent_generation,
                 "names_sha256": baseline_names_sha,
             }
-            production_fixture(layout_prefix + (("FS_INTENT", absence_intent),))
+            production_fixture(leased_records + (("FS_INTENT", absence_intent),))
             absence_owner = operation._open_fixed_operation()
             absence = {**absence_intent, "parent_observation": parent_generation,
                        "observed_names": baseline_names}
-            operation._record_fs_absent(absence_owner, absence)
-            operation._record_fs_settled(absence_owner, absence)
+            absence_owner.record_fs_absent(absence)
+            absence_owner.record_fs_settled(absence)
             assert operation._durable_phase(absence_owner) == "FS_SETTLED"
             absence_owner.close()
             exact_absence = operation._open_fixed_operation()
