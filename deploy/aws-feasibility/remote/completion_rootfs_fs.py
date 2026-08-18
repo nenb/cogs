@@ -423,7 +423,7 @@ def _parse_fdinfo(raw, inode, expected_flags=None):
     elif type(expected_flags) is bytes:
         accepted_flags = (expected_flags,)
     else:
-        _fail(type(expected_flags) is tuple and 1 <= len(expected_flags) <= 2)
+        _fail(type(expected_flags) is tuple and 1 <= len(expected_flags) <= 3)
         _fail(all(type(value) is bytes for value in expected_flags) and len(set(expected_flags)) == len(expected_flags))
         accepted_flags = expected_flags
     _fail(values[1] in accepted_flags)
