@@ -389,12 +389,19 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     result = []
     for row in value:
         try:
-            _keys(row, ("dst", "dev", "protocol"),
-                  ("table", "prefsrc", "src", "type", "scope", "metric", "flags", "pref"))
+            _keys(row, ("dst", "protocol"),
+                  ("dev", "table", "prefsrc", "src", "type", "scope", "metric", "flags", "pref"))
         except NetworkError as error:
             keys = sorted(row) if type(row) is dict and all(type(key) is str for key in row) else []
             raise NetworkError(f"unexpected route JSON keys:{keys!r}:{row!r}") from error
-        if row["dst"] == "default" or row["dev"] not in bound or row["protocol"] != "kernel":
+        source = row.get("prefsrc", row.get("src"))
+        dev = row.get("dev")
+        if dev is None:
+            dev = (host_if if source == "192.0.2.1" else GUEST_IF
+                   if source == "192.0.2.2" else "lo"
+                   if source in {"127.0.0.1", "::1"} or row["dst"].startswith("127.")
+                   or row["dst"] == "::1" else None)
+        if row["dst"] == "default" or dev not in bound or row["protocol"] != "kernel":
             raise NetworkError("default, foreign, or misbound route")
         try:
             network = ipaddress.ip_network(row["dst"], strict=False)
@@ -405,9 +412,9 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
         flags = row.get("flags", [])
         if type(flags) is not list or any(type(item) is not str for item in flags):
             raise NetworkError("route flags")
-        result.append(Route(family, row.get("type", "unicast"), row["dst"], row["dev"],
+        result.append(Route(family, row.get("type", "unicast"), row["dst"], dev,
                             str(row.get("table", "main")), row["protocol"], row.get("scope"),
-                            row.get("prefsrc", row.get("src")), row.get("metric"), tuple(flags), row.get("pref")))
+                            source, row.get("metric"), tuple(flags), row.get("pref")))
     actual = {(item.route_type, item.dst, item.dev, item.table, item.protocol, item.scope,
                item.source, item.metric, item.flags, item.pref) for item in result}
     if bound == {host_if}:

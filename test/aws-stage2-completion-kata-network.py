@@ -139,6 +139,8 @@ host_routes4 = [
 assert len(network.parse_routes(encoded(routes4), 4, parsed_ns)) == 6
 assert len(network.parse_routes(encoded(routes6), 6, parsed_ns)) == 1
 assert len(network.parse_routes(encoded(host_routes4), 4, parsed_host)) == 3
+assert len(network.parse_routes(encoded([{key: value for key, value in row.items() if key != "dev"}
+                                         for row in host_routes4]), 4, parsed_host)) == 3
 assert network.parse_routes(b"[]", 6, parsed_host) == ()
 for hostile, family in (
     (routes4 + [{"type": "blackhole", "dst": "203.0.113.0/24", "dev": "lo", "table": "main", "protocol": "kernel"}], 4),
