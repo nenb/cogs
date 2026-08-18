@@ -1353,8 +1353,9 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
         pipes.remove(release_w)
         for descriptor in (status_r, stdout_r, stderr_r, stdin_w):
             pipes.remove(descriptor)
-        term_at = max(_boottime_ns(), work_cutoff - 1_500_000_000)
-        kill_at = max(term_at, work_cutoff - 250_000_000)
+        work_span = max(1, fixed.duration_ns - _cleanup_reserve_ns(fixed))
+        term_at = work_cutoff - min(1_500_000_000, work_span // 4)
+        kill_at = work_cutoff - min(250_000_000, work_span // 8)
         buffers, overflow, wait_status, pipes_eof, state, drain_errors = _drain_transaction(
             pid, {"status": status_r, "stdout": stdout_r, "stderr": stderr_r,
                   "stdin": stdin_w, "stdout_limit": fixed.stdout_limit,
@@ -1390,8 +1391,9 @@ def _transact_fixed(journal, fixed, executable, inherited=()):
             fixed.command_id.value, identity, body["outcome"], body["status"], body["errno"],
             stdout, stderr, body["stdout_sha256"], body["stderr_sha256"],
             body["stdout_truncated"], body["stderr_truncated"],
-            body["deadline_expired"],
-            state["leader_timed_out"], not pipes_eof,
+            body["deadline_expired"] or state["term"] or state["kill"],
+            state["leader_timed_out"],
+            not state["leader_timed_out"] and (state["term"] or state["kill"] or not pipes_eof),
             body["leader_reaped"], tuple(body["errors"]),
         ), durable
     except BaseException as primary:
