@@ -1313,6 +1313,12 @@ def _establish_netns(journal):
         if _created_nsfs_identity(source_fd) != created:
             raise NetworkError("created nsfs changed at bind")
         libc = ctypes.CDLL(None, use_errno=True)
+        # ip-netns may have made its retained parent a shared self-bind. Make that
+        # exact parent private so this operation-unique mount cannot propagate back
+        # as a second stack layer. A plain non-mountpoint parent reports EINVAL.
+        if libc.mount(None, b"/run/netns", None, 1 << 18, None) != 0:
+            saved = ctypes.get_errno()
+            if saved != errno.EINVAL: raise OSError(saved, os.strerror(saved))
         target_path = "/run/netns/" + name
         if libc.mount(source_path.encode(), target_path.encode(), None, 4096, None) != 0:
             saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
