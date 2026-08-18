@@ -1270,6 +1270,9 @@ def production_owner_test():
                     for path in (setup_mount, Path("/run/netns/c42qaaaaaaaaaa")):
                         if path.exists(): path.unlink()
                     os.rmdir(network.PRESERVED_DIR)
+                    # ip-netns made its test-owned parent a self-bind; restore the
+                    # original plain directory before the final production scenario.
+                    assert libc.umount2(b"/run/netns", 0) == 0
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
                         ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
                         ("FS_SETTLED", baseline_observed)))

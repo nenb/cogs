@@ -162,7 +162,12 @@ for hostile, family in (
 rejected(lambda: network.parse_routes(encoded(routes4), 4, parsed_host))
 rejected(lambda: network.parse_routes(encoded(host_routes4 + [{**host_routes4[0], "dev": "other0"}]), 4, parsed_host))
 
-# Duplicate members, malformed depth/scalars, and byte bounds fail closed.
+# Duplicate members, malformed depth/scalars, and source-specific bounds fail closed.
+large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
+rejected(lambda: network._load(large_nft_array))
+assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1
+rejected(lambda: network._load(encoded(list(range(network.MAX_NFT_ITEMS + 1))),
+                               network.MAX_NFT_ITEMS))
 rejected(lambda: network.parse_links(b'[{"ifindex":1,"ifindex":2}]', False))
 assert network.parse_links(b"[]", False) == ()
 rejected(lambda: network.parse_links(b"[]", True))

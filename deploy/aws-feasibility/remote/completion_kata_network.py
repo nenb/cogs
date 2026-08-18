@@ -34,6 +34,7 @@ TABLE = "cogs_stage2_ssh_v1"
 TABLE_HANDLE = "18446744073709551615"
 MAX_JSON = 262_144
 MAX_ITEMS = 64
+MAX_NFT_ITEMS = 256
 MAX_DEPTH = 16
 MAX_MOUNTINFO_BYTES = 4_194_304
 MAX_MOUNTINFO_LINES = 4096
@@ -141,8 +142,9 @@ class _Pairs(list):
     pass
 
 
-def _load(raw):
-    if type(raw) is not bytes or not raw or len(raw) > MAX_JSON or b"\x00" in raw:
+def _load(raw, item_limit=MAX_ITEMS):
+    if (type(raw) is not bytes or not raw or len(raw) > MAX_JSON or b"\x00" in raw
+            or type(item_limit) is not int or item_limit not in {MAX_ITEMS, MAX_NFT_ITEMS}):
         raise NetworkError("bounded JSON bytes required")
     try:
         value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=_Pairs,
@@ -152,7 +154,7 @@ def _load(raw):
             if depth > MAX_DEPTH:
                 raise NetworkError("JSON depth")
             if type(item) is _Pairs:
-                if len(item) > MAX_ITEMS:
+                if len(item) > item_limit:
                     raise NetworkError("JSON object bound")
                 result = {}
                 for key, child in item:
@@ -161,7 +163,7 @@ def _load(raw):
                     result[key] = convert(child, depth + 1)
                 return result
             if type(item) is list:
-                if len(item) > MAX_ITEMS:
+                if len(item) > item_limit:
                     raise NetworkError("JSON array bound")
                 return [convert(child, depth + 1) for child in item]
             if item is None or type(item) in (str, int, bool):
@@ -1598,7 +1600,7 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     for label, raw in zip(("links", "addresses", "routes4", "routes6", "names", "ruleset"),
                           raws, strict=True):
         try:
-            parsed.append(_load(raw))
+            parsed.append(_load(raw, MAX_NFT_ITEMS if label == "ruleset" else MAX_ITEMS))
         except NetworkError as error:
             raise NetworkError(f"complete baseline {label}: {error}") from error
     links, addresses, routes4, routes6, names, ruleset = parsed
