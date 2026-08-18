@@ -310,6 +310,8 @@ tap_json = {
 parsed_runtime = network.parse_runtime_links(encoded(ns_links_json + [tap_json]))
 tap = parsed_runtime[-1]
 assert tap.kind == "tap" and tap.ifindex == 30
+native_tap_json = {**tap_json, "operstate": "UNKNOWN", "qdisc": "fq_codel"}
+assert network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1].kind == "tap"
 runtime_addresses = ns_addresses + [{"ifindex": 30, "ifname": "tap-dynamic", "addr_info": []}]
 assert len(network.parse_runtime_addresses(encoded(runtime_addresses), parsed_runtime)) == 3
 hostile_tap_addresses = copy.deepcopy(runtime_addresses)
