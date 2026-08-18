@@ -223,6 +223,11 @@ def _fail(condition):
         raise OperationError()
 def _boottime_ns():
     return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+def _current_boot_id():
+    with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as source:
+        value = source.read(64)
+    _fail(len(value) == 37 and value.endswith("\n"))
+    return value[:-1]
 def _uint(value, maximum=(1 << 64) - 1, minimum=0):
     _fail(type(value) is int and minimum <= value <= maximum)
     return value
@@ -1682,13 +1687,18 @@ def _make_authority():
                 if phase not in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ABSENT",
                                  "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw in names)
-                input_required = {"FS_OBSERVED", "FS_ABSENT", "FS_SETTLED", "COMMAND_INTENT",
-                                  "COMMAND_PREEXEC", "COMMAND_OUTCOME", "COMMAND_INTENT_V2",
-                                  "COMMAND_PREEXEC_V2", "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
-                if phase in input_required:
-                    if phase not in {"FIREWALL_ABSENT", "FS_INTENT"}:
-                        _fail(INPUT_NAME.raw in names)
-                if phase in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+                input_required = {"FS_OBSERVED", "COMMAND_INTENT", "COMMAND_PREEXEC",
+                                  "COMMAND_OUTCOME", "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
+                                  "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
+                absent_settlement = (phase == "FS_SETTLED" and len(records) >= 2
+                                     and records[-2].record_type == "FS_ABSENT")
+                if phase == "FS_SETTLED" and not absent_settlement:
+                    input_required.add("FS_SETTLED")
+                if phase in input_required and phase not in {"FIREWALL_ABSENT", "FS_INTENT"}:
+                    _fail(INPUT_NAME.raw in names)
+                if (phase == "FS_ABSENT" or absent_settlement
+                        or phase in set(LIFECYCLE[13:])
+                        | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}):
                     _fail(INPUT_NAME.raw not in names)
                 if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
                     _fail(ROOTFS_NAME.raw not in names)
@@ -2077,6 +2087,7 @@ def _make_authority():
                 _fail(status == "exact" and len(deadlines) == 1)
                 deadline = deadlines[0]
                 now = _boottime_ns()
+                _fail(context.host_boot_id == _current_boot_id())
                 _fail(now < deadline["journal_deadline_boottime_ns"])
                 _fail(body["deadline_boottime_ns"] + body["cleanup_reserve_ns"]
                       <= deadline["journal_deadline_boottime_ns"])

@@ -1645,6 +1645,11 @@ def production_owner_test():
                     == deadline_rows[0]["admission_boottime_ns"]
                        + operation.JOURNAL_TOTAL_NS)
             admitted_bytes = fixture_journal_path(completion).read_bytes()
+            stale_intent = fixed_v2_intent(admitted.command_context())
+            with patch.object(operation, "_current_boot_id",
+                              return_value="22222222-2222-2222-2222-222222222222"):
+                rejected(lambda: admitted.record_command_intent(stale_intent))
+            assert fixture_journal_path(completion).read_bytes() == admitted_bytes
             admitted.close()
             reopened_admitted = operation._open_fixed_operation()
             assert operation._claim_production_operation(reopened_admitted) is reopened_admitted
