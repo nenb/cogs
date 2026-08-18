@@ -47,4 +47,7 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   const workflow = await readFile(foundations, "utf8");
   assert.match(workflow, /COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1/u);
   assert.match(workflow, /aws-stage2-completion-kata-operation\.py[\s\S]*aws-stage2-completion-kata-process\.py/u);
+  assert.match(workflow, /cleanup_native_fixture\(\)[\s\S]*test ! -L[\s\S]*\|\| return 1/u);
+  assert.match(workflow, /trap cleanup_on_exit EXIT/u);
+  assert.doesNotMatch(workflow, /rm -rf|rm --force/u);
 });

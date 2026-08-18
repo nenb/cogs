@@ -37,20 +37,25 @@ jobs:
           set -euo pipefail
           fixture=/tmp/cogs-kata-process-s1-v1
           cleanup_native_fixture() {
-            if sudo -n test -e "$fixture"; then
-              sudo -n test -d "$fixture"
-              sudo -n test "$(sudo -n stat -c '%u:%g:%a' -- "$fixture")" = 0:0:700
-              while IFS= read -r name; do
-                case "$name" in helper|helper.c) ;; *) return 1 ;; esac
-              done < <(sudo -n find "$fixture" -mindepth 1 -maxdepth 1 -printf '%f\n')
+            if sudo -n test -e "$fixture" || sudo -n test -L "$fixture"; then
+              sudo -n test ! -L "$fixture" || return 1
+              sudo -n test -d "$fixture" || return 1
+              sudo -n test "$(sudo -n stat -c '%u:%g:%a' -- "$fixture")" = 0:0:700 || return 1
+              inventory=$(sudo -n find "$fixture" -mindepth 1 -maxdepth 1 -printf '%f\n') || return 1
+              if [[ -n "$inventory" ]]; then
+                while IFS= read -r name; do
+                  case "$name" in helper|helper.c) ;; *) return 1 ;; esac
+                done <<< "$inventory"
+              fi
               for name in helper helper.c; do
-                if sudo -n test -e "$fixture/$name"; then
-                  sudo -n test -f "$fixture/$name"
-                  sudo -n test "$(sudo -n stat -c '%u:%g' -- "$fixture/$name")" = 0:0
-                  sudo -n rm -- "$fixture/$name"
+                if sudo -n test -e "$fixture/$name" || sudo -n test -L "$fixture/$name"; then
+                  sudo -n test ! -L "$fixture/$name" || return 1
+                  sudo -n test -f "$fixture/$name" || return 1
+                  sudo -n test "$(sudo -n stat -c '%u:%g' -- "$fixture/$name")" = 0:0 || return 1
+                  sudo -n rm -- "$fixture/$name" || return 1
                 fi
               done
-              sudo -n rmdir -- "$fixture"
+              sudo -n rmdir -- "$fixture" || return 1
             fi
           }
           cleanup_on_exit() {
@@ -64,6 +69,7 @@ jobs:
           }
           trap cleanup_on_exit EXIT
           sudo -n test ! -e "$fixture"
+          sudo -n test ! -L "$fixture"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
@@ -78,6 +84,7 @@ jobs:
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
           cleanup_native_fixture
           sudo -n test ! -e "$fixture"
+          sudo -n test ! -L "$fixture"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
@@ -94,3 +101,4 @@ jobs:
           sudo -n test ! -e /sys/fs/cgroup/cogs-stage2-completion-v1
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
           sudo -n test ! -e "$fixture"
+          sudo -n test ! -L "$fixture"
