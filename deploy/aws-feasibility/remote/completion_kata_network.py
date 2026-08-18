@@ -216,8 +216,12 @@ _MAC = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 
 
 def _parse_link_row(row, runtime=False):
-    _keys(row, ("ifindex", "ifname", "flags", "operstate", "link_type", "address", "qdisc"),
-          _LINK_OPTIONAL + ("link_index", "addrgenmode", "linkinfo"))
+    try:
+        _keys(row, ("ifindex", "ifname", "flags", "operstate", "link_type", "address", "qdisc"),
+              _LINK_OPTIONAL + ("link_index", "addrgenmode", "linkinfo"))
+    except NetworkError as error:
+        keys = sorted(row) if type(row) is dict and all(type(key) is str for key in row) else []
+        raise NetworkError(f"unexpected link JSON keys:{keys!r}") from error
     name, mac = row["ifname"], row["address"]
     if type(name) is not str or not name or len(name) > 15 or type(mac) is not str or not _MAC.fullmatch(mac):
         raise NetworkError("link name or address")
