@@ -1510,6 +1510,9 @@ def production_owner_test():
                     "proc_start_time": 1, "pidfd_supported": True,
                     "cgroup_path": f"{process.CGROUP_BASE}/{command['operation_token']}-{command['command_serial']}",
                     "cgroup_generation": generation(91 + command["command_serial"]),
+                    "executable_sha256": command["executable_sha256"],
+                    "tool_closure_sha256": command["tool_closure_sha256"],
+                    "executable_generation": command["executable_generation"],
                     "exec_status_pipe": generation(110 + command["command_serial"], "pipe", 0o600), "release_count": 0}
                 network_owner.record_command_preexec(pre); raw_output = baseline_outputs[command["command_id"]]
                 digest = hashlib.sha256(raw_output).hexdigest()
