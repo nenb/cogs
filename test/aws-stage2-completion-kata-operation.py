@@ -1220,6 +1220,7 @@ def production_owner_test():
                     # preserve that journal and use a fresh baseline for later cuts.
                     setup_path.unlink(); production_network.close()
                     os.rmdir(network.PRESERVED_DIR)
+                    assert ctypes.CDLL(None, use_errno=True).umount2(b"/run/netns", 0) == 0
                     production_fixture(network_prefix)
                     production_network = operation._open_fixed_operation()
                     baseline_body = network._capture_fixed_baselines(
