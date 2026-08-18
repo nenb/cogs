@@ -1309,22 +1309,28 @@ def _establish_netns(journal):
             if libc.syscall(SYS_MOVE_MOUNT_X86_64, tree_fd, b"", descriptor, b"",
                             MOVE_MOUNT_EMPTY_PATH_FLAGS) != 0:
                 saved = ctypes.get_errno(); os._exit(180 + saved if saved <= 75 else 255)
-            os.close(tree_fd); os._exit(0)
+            os.close(tree_fd)
+            if os.write(ready_w, b"M") != 1 or os.read(release_r, 1) != b"A": os._exit(124)
+            os._exit(0)
         os.close(ready_w); os.close(release_r)
         if os.read(ready_r, 1) != b"R": raise NetworkError("namespace helper readiness")
         source_fd = os.open(f"/proc/{child}/ns/net", os.O_RDONLY | os.O_CLOEXEC); opened.append(source_fd)
         created = _created_nsfs_identity(source_fd); _created_nsfs_record(journal, child, created)
         if _created_nsfs_identity(source_fd) != created: raise NetworkError("created nsfs changed before bind")
         if os.write(release_w, b"B") != 1: raise NetworkError("namespace helper release")
+        if os.read(ready_r, 1) != b"M": raise NetworkError("namespace mount readiness")
+        identity = _netns_identity(journal=None, name=name)
+        if identity is None or any(getattr(identity, field) != created[field]
+                                   for field in ("device", "inode_device", "inode")):
+            raise NetworkError("bound namespace differs from created nsfs")
+        if os.write(release_w, b"A") != 1: raise NetworkError("namespace mount settlement")
         os.close(ready_r); os.close(release_w)
         _pid, status = os.waitpid(child, 0); helper_waited = True
         helper_status = os.waitstatus_to_exitcode(status)
         if helper_status != 0:
             raise NetworkError(f"fixed namespace bind helper:{helper_status}")
-        identity = _netns_identity(journal=None, name=name)
-        if identity is None or any(getattr(identity, field) != created[field]
-                                   for field in ("device", "inode_device", "inode")):
-            raise NetworkError("bound namespace differs from created nsfs")
+        if _netns_identity(journal=None, name=name) != identity:
+            raise NetworkError("settled namespace mount drift")
         _record_observation(journal, Action.IP_NETNS_ADD.value, b"", None)
     finally:
         for descriptor in reversed(opened):
