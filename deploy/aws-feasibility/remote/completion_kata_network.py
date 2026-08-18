@@ -1253,8 +1253,13 @@ def _establish_netns(journal):
             libc = ctypes.CDLL(None, use_errno=True)
             if libc.linkat(temporary, b"", parent, name.encode(), 0x1000) != 0:
                 saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-            descriptor = temporary; planned = _placeholder_identity(os.fstat(descriptor))
+            planned = _placeholder_identity(os.fstat(temporary))
             _original_placeholder_record(journal, planned)
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+            opened.append(descriptor)
+            if _placeholder_identity(os.fstat(descriptor)) != planned:
+                raise NetworkError("linked placeholder descriptor drift")
         else:
             mounted = None; mount_error = None
             try: mounted = _netns_identity(journal=None, name=name)
