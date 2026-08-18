@@ -1394,6 +1394,7 @@ def _establish_netns(journal):
                 created = _created_nsfs(journal)
                 if created is None or any(getattr(mounted, field) != created[field]
                         for field in ("device", "inode_device", "inode")):
+                    _poison_fixed_network(journal, "foreign-mounted-namespace")
                     raise NetworkError("mounted namespace differs from created nsfs")
                 _record_observation(journal, Action.IP_NETNS_ADD.value, b"", None); return
             observed_identity = _placeholder_identity(observed)
