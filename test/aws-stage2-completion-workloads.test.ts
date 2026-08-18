@@ -133,8 +133,7 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   }
 });
 
-test("removed host qualification surfaces stay absent and only the approved non-AWS CI file changes", () => {
-  assert.throws(() => readFileSync(join(root, "deploy/aws-feasibility/remote/completion_local_full.py")));
+test("retired host qualification v1 stays absent and only the approved non-AWS CI file changes", () => {
   assert.throws(() => readFileSync(join(root, "schemas/stage2-workload-local-qualification-v1.json")));
 
   const protectedDiff = spawnSync(

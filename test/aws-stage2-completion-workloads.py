@@ -679,8 +679,8 @@ for forbidden in ("local-standalone-kata", "workload-local-qualification", "comp
     check(forbidden not in source, "removed authority or capability remains in host source")
 for cloud in ("boto", "AWS_", "requests", "urllib", "Terraform", "OpenTofu"):
     check(cloud not in source, "cloud surface entered host workload")
-check(not (REMOTE / "completion_local_full.py").exists(), "host qualification module remains")
-check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "host qualification schema remains")
+# The ADR 0099 local-result v2 codec is separate from these host-only transactions.
+check(not (ROOT / "schemas/stage2-workload-local-qualification-v1.json").exists(), "retired host qualification schema remains")
 if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
     check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
     check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")

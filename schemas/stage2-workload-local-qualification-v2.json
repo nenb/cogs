@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-workload-local-qualification-v2.json",
+  "title": "ADR 0099 local-only standalone Kata qualification result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "result",
+    "failure_code",
+    "qualified",
+    "authority",
+    "limitations",
+    "bindings",
+    "platform",
+    "lifecycle",
+    "operation",
+    "timings",
+    "timing_summaries",
+    "teardown",
+    "zero_residue"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-workload-local-qualification/v2" },
+    "result": { "enum": ["pass", "failure"] },
+    "failure_code": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/failureCode" }] },
+    "qualified": { "type": "boolean" },
+    "authority": { "const": "local-only-standalone-kata-stopped-before-step5" },
+    "limitations": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "not-aws-evidence" },
+        { "const": "not-production-evidence" },
+        { "const": "not-release-evidence" },
+        { "const": "no-seven-cycle-controller-authority" },
+        { "const": "no-retry-or-promotion-authority" }
+      ],
+      "items": false,
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "bindings": { "$ref": "#/$defs/bindings" },
+    "platform": { "$ref": "#/$defs/platform" },
+    "lifecycle": { "$ref": "#/$defs/lifecycle" },
+    "operation": { "$ref": "#/$defs/operation" },
+    "timings": { "$ref": "#/$defs/timingGroups" },
+    "timing_summaries": { "$ref": "#/$defs/timingSummaries" },
+    "teardown": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "items": { "$ref": "#/$defs/teardownRow" }
+    },
+    "zero_residue": { "$ref": "#/$defs/zeroResidue" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "result": { "const": "pass" },
+        "failure_code": { "type": "null" },
+        "qualified": { "const": true },
+        "platform": { "$ref": "#/$defs/platformPass" },
+        "lifecycle": { "$ref": "#/$defs/lifecyclePass" },
+        "operation": { "type": "object", "properties": { "status": { "const": "retired" } } },
+        "timings": { "$ref": "#/$defs/timingGroupsPass" },
+        "teardown": { "type": "array", "items": { "$ref": "#/$defs/teardownRowPass" } },
+        "zero_residue": { "$ref": "#/$defs/zeroResiduePass" }
+      }
+    },
+    {
+      "properties": {
+        "result": { "const": "failure" },
+        "failure_code": { "$ref": "#/$defs/failureCode" },
+        "qualified": { "const": false }
+      }
+    }
+  ],
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha256": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+    "failureCode": {
+      "enum": [
+        "preflight",
+        "source-binding",
+        "attestation",
+        "kvm",
+        "lifecycle-start",
+        "ssh",
+        "git-sample",
+        "build-sample",
+        "install-sample",
+        "deletion",
+        "cleanup",
+        "residue",
+        "deadline",
+        "interrupted",
+        "uncertain"
+      ]
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "host_attestation_sha256",
+        "runtime_attestation_sha256",
+        "rootfs_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": { "$ref": "#/$defs/sha1" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "host_attestation_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_attestation_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
+        "owner_implementation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kvm_api", "qmp_present", "qmp_enabled"],
+      "properties": {
+        "kvm_api": { "anyOf": [{ "type": "null" }, { "const": 12 }] },
+        "qmp_present": { "type": "boolean" },
+        "qmp_enabled": { "type": "boolean" }
+      }
+    },
+    "platformPass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kvm_api", "qmp_present", "qmp_enabled"],
+      "properties": {
+        "kvm_api": { "const": 12 },
+        "qmp_present": { "const": true },
+        "qmp_enabled": { "const": true }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "outcome", "ssh_attempts", "ssh_outcome"],
+      "properties": {
+        "attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "outcome": { "enum": ["pass", "failure", "not-reached"] },
+        "ssh_attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "ssh_outcome": { "enum": ["pass", "failure", "not-reached"] }
+      }
+    },
+    "lifecyclePass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "outcome", "ssh_attempts", "ssh_outcome"],
+      "properties": {
+        "attempts": { "const": 1 },
+        "outcome": { "const": "pass" },
+        "ssh_attempts": { "const": 1 },
+        "ssh_outcome": { "const": "pass" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_sha256",
+        "journal_sha256",
+        "binding_sha256",
+        "source_head",
+        "source_manifest_sha256",
+        "final_pin_sha256",
+        "status"
+      ],
+      "properties": {
+        "operation_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "journal_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "binding_sha256": { "$ref": "#/$defs/nullableSha256" },
+        "source_head": { "$ref": "#/$defs/sha1" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["not-created", "uncertain", "retired"] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": { "const": "not-created" },
+            "operation_sha256": { "type": "null" },
+            "journal_sha256": { "type": "null" },
+            "binding_sha256": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "enum": ["uncertain", "retired"] },
+            "operation_sha256": { "$ref": "#/$defs/sha256" },
+            "journal_sha256": { "$ref": "#/$defs/sha256" },
+            "binding_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "timingRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "duration_ns", "outcome", "deletion", "binding_sha256"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "duration_ns": { "type": "integer", "minimum": 1, "maximum": 3600000000000 },
+        "outcome": { "enum": ["pass", "failure"] },
+        "deletion": { "enum": ["absent", "not-proved"] },
+        "binding_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "timingRowPass": {
+      "type": "object",
+      "properties": { "outcome": { "const": "pass" }, "deletion": { "const": "absent" } }
+    },
+    "timingGroups": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git", "build", "install"],
+      "properties": {
+        "git": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } },
+        "build": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } },
+        "install": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/timingRow" } }
+      }
+    },
+    "timingGroupsPass": {
+      "type": "object",
+      "properties": {
+        "git": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } },
+        "build": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } },
+        "install": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/timingRowPass" } }
+      }
+    },
+    "timingSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "total_ns", "minimum_ns", "maximum_ns"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "total_ns": { "type": "integer", "minimum": 0, "maximum": 25200000000000 },
+        "minimum_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] },
+        "maximum_ns": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 3600000000000 }] }
+      }
+    },
+    "timingSummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git", "build", "install"],
+      "properties": {
+        "git": { "$ref": "#/$defs/timingSummary" },
+        "build": { "$ref": "#/$defs/timingSummary" },
+        "install": { "$ref": "#/$defs/timingSummary" }
+      }
+    },
+    "teardownRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "outcome", "binding_sha256"],
+      "properties": {
+        "phase": {
+          "enum": [
+            "READINESS_REVOKED",
+            "TASK_STOPPED",
+            "NETWORK_ABSENT",
+            "TASK_ABSENT",
+            "CONTAINER_ABSENT",
+            "RUNTIME_PROCESSES_ABSENT",
+            "SHARE_AND_MOUNTS_ABSENT",
+            "FIREWALL_ABSENT",
+            "CONTAINERD_ABSENT",
+            "INPUTS_ABSENT",
+            "ROOTFS_ABSENT",
+            "FINAL_BASELINES",
+            "RETIRED"
+          ]
+        },
+        "outcome": { "enum": ["pass", "failure", "not-reached"] },
+        "binding_sha256": { "$ref": "#/$defs/nullableSha256" }
+      }
+    },
+    "teardownRowPass": {
+      "type": "object",
+      "properties": { "outcome": { "const": "pass" }, "binding_sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "absence": { "enum": ["absent", "not-proved"] },
+    "zeroResidue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tasks",
+        "containers",
+        "shim_processes",
+        "qemu_processes",
+        "virtiofsd_processes",
+        "containerd_processes",
+        "child_processes",
+        "cgroups",
+        "namespaces",
+        "veth_devices",
+        "tap_devices",
+        "traffic_control",
+        "firewall",
+        "shares",
+        "mounts",
+        "inputs",
+        "operation_state",
+        "runtime_state",
+        "runtime_cache",
+        "rootfs_lease",
+        "rootfs_build",
+        "rootfs_publication",
+        "unexpected_descriptors",
+        "network_state",
+        "network_routes",
+        "network_addresses",
+        "firewall_baseline",
+        "mount_baseline",
+        "source_identity",
+        "input_control",
+        "share_paths",
+        "runtime_staging",
+        "report_staging",
+        "descriptor_baseline",
+        "process_baseline",
+        "cgroup_baseline",
+        "namespace_baseline"
+      ],
+      "properties": {
+        "tasks": { "$ref": "#/$defs/absence" },
+        "containers": { "$ref": "#/$defs/absence" },
+        "shim_processes": { "$ref": "#/$defs/absence" },
+        "qemu_processes": { "$ref": "#/$defs/absence" },
+        "virtiofsd_processes": { "$ref": "#/$defs/absence" },
+        "containerd_processes": { "$ref": "#/$defs/absence" },
+        "child_processes": { "$ref": "#/$defs/absence" },
+        "cgroups": { "$ref": "#/$defs/absence" },
+        "namespaces": { "$ref": "#/$defs/absence" },
+        "veth_devices": { "$ref": "#/$defs/absence" },
+        "tap_devices": { "$ref": "#/$defs/absence" },
+        "traffic_control": { "$ref": "#/$defs/absence" },
+        "firewall": { "$ref": "#/$defs/absence" },
+        "shares": { "$ref": "#/$defs/absence" },
+        "mounts": { "$ref": "#/$defs/absence" },
+        "inputs": { "$ref": "#/$defs/absence" },
+        "operation_state": { "$ref": "#/$defs/absence" },
+        "runtime_state": { "$ref": "#/$defs/absence" },
+        "runtime_cache": { "$ref": "#/$defs/absence" },
+        "rootfs_lease": { "$ref": "#/$defs/absence" },
+        "rootfs_build": { "$ref": "#/$defs/absence" },
+        "rootfs_publication": { "$ref": "#/$defs/absence" },
+        "unexpected_descriptors": { "$ref": "#/$defs/absence" },
+        "network_state": { "$ref": "#/$defs/absence" },
+        "network_routes": { "$ref": "#/$defs/absence" },
+        "network_addresses": { "$ref": "#/$defs/absence" },
+        "firewall_baseline": { "$ref": "#/$defs/absence" },
+        "mount_baseline": { "$ref": "#/$defs/absence" },
+        "source_identity": { "$ref": "#/$defs/absence" },
+        "input_control": { "$ref": "#/$defs/absence" },
+        "share_paths": { "$ref": "#/$defs/absence" },
+        "runtime_staging": { "$ref": "#/$defs/absence" },
+        "report_staging": { "$ref": "#/$defs/absence" },
+        "descriptor_baseline": { "$ref": "#/$defs/absence" },
+        "process_baseline": { "$ref": "#/$defs/absence" },
+        "cgroup_baseline": { "$ref": "#/$defs/absence" },
+        "namespace_baseline": { "$ref": "#/$defs/absence" }
+      }
+    },
+    "zeroResiduePass": {
+      "type": "object",
+      "properties": {
+        "tasks": { "const": "absent" },
+        "containers": { "const": "absent" },
+        "shim_processes": { "const": "absent" },
+        "qemu_processes": { "const": "absent" },
+        "virtiofsd_processes": { "const": "absent" },
+        "containerd_processes": { "const": "absent" },
+        "child_processes": { "const": "absent" },
+        "cgroups": { "const": "absent" },
+        "namespaces": { "const": "absent" },
+        "veth_devices": { "const": "absent" },
+        "tap_devices": { "const": "absent" },
+        "traffic_control": { "const": "absent" },
+        "firewall": { "const": "absent" },
+        "shares": { "const": "absent" },
+        "mounts": { "const": "absent" },
+        "inputs": { "const": "absent" },
+        "operation_state": { "const": "absent" },
+        "runtime_state": { "const": "absent" },
+        "runtime_cache": { "const": "absent" },
+        "rootfs_lease": { "const": "absent" },
+        "rootfs_build": { "const": "absent" },
+        "rootfs_publication": { "const": "absent" },
+        "unexpected_descriptors": { "const": "absent" },
+        "network_state": { "const": "absent" },
+        "network_routes": { "const": "absent" },
+        "network_addresses": { "const": "absent" },
+        "firewall_baseline": { "const": "absent" },
+        "mount_baseline": { "const": "absent" },
+        "source_identity": { "const": "absent" },
+        "input_control": { "const": "absent" },
+        "share_paths": { "const": "absent" },
+        "runtime_staging": { "const": "absent" },
+        "report_staging": { "const": "absent" },
+        "descriptor_baseline": { "const": "absent" },
+        "process_baseline": { "const": "absent" },
+        "cgroup_baseline": { "const": "absent" },
+        "namespace_baseline": { "const": "absent" }
+      }
+    }
+  }
+}
