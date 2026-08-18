@@ -1665,7 +1665,20 @@ def _make_authority():
                 components[-2] = fs.ChainComponent(current.name, fs.HeldNode(
                     current.node.identity_fd, current.node.operation_fd, observed_completion))
                 self.chain = fs.HeldChain(self.chain.anchor, tuple(components))
-            fs._revalidate_chain(self.chain, self.control)
+            fresh = _open_base_chain(self.control)
+            try:
+                expected_base = self.chain.components[:-1]
+                _fail(fresh.anchor.generation == self.chain.anchor.generation
+                      and len(fresh.components) == len(expected_base)
+                      and all(left.name == right.name
+                              and left.node.generation == right.node.generation
+                              for left, right in zip(fresh.components, expected_base)))
+                _fail(fs._observe_child(self.completion, STATE_NAME, self.control)
+                      == self.state.generation)
+                _fail(fs._observe_node(self.state.identity_fd, self.state.operation_fd,
+                                       self.control) == self.state.generation)
+            finally:
+                fs._close_chain(fresh)
         def _reopen_base(self):
             old = self.chain
             self.chain = None
