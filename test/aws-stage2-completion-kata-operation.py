@@ -522,6 +522,8 @@ def fixture_journal(
         "state_parent": recorded_state,
     })
     for kind, body in bodies:
+        if kind == "ROOTFS_RELEASE_AUTHORIZED":
+            body = {**body, "release_ready_sha256": operation._parse(raw)[-1].line_sha256}
         raw = append(raw, kind, body)
     descriptor = os.open(journal_path, os.O_WRONLY | os.O_TRUNC)
     try:
