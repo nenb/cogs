@@ -319,7 +319,8 @@ def parse_addresses(raw, namespace, links, host_if=HOST_IF):
     for link in value:
         try:
             _keys(link, ("ifindex", "ifname", "addr_info"),
-                  _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc"))
+                  _LINK_OPTIONAL + ("flags", "operstate", "link_type", "address", "qdisc",
+                                    "link_index"))
         except NetworkError as error:
             keys = sorted(link) if type(link) is dict and all(type(key) is str for key in link) else []
             raise NetworkError(f"unexpected address-link JSON keys:{keys!r}") from error
