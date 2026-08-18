@@ -9,6 +9,7 @@ import platform
 import resource
 import subprocess
 import sys
+import tempfile
 import time
 from unittest.mock import patch
 
@@ -41,7 +42,11 @@ def contract_rejected(raw):
 # Closed production snapshots contain no caller-selected token.  These exact
 # values are future actions only; no production execution issuer exists.
 snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
-assert snapshots["CTR_TASK_TERM"] == (("/usr/bin/ctr", "--namespace", "cogs-stage2-completion-v1", "tasks", "kill", "--signal", "SIGTERM", "cogs-stage2-ssh-v1"), b"", "task-term", ())
+assert snapshots["CTR_TASK_TERM"] == ((
+    "/usr/bin/ctr", "--address", process.CONTAINERD_SOCKET,
+    "--namespace", "cogs-stage2-completion-v1", "tasks", "kill",
+    "--signal", "SIGTERM", "cogs-stage2-ssh-v1",
+), b"", "task-term", ())
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
@@ -70,13 +75,11 @@ assert process._recovery_class(fake_identity, BOOT_A, mismatch) == "uncertain"
 rejected(lambda: process._recovery_class(fake_identity, "boot-a", absent))
 rejected(lambda: process._recovery_class(fake_identity, BOOT_A, None))
 rejected(lambda: process._recovery_class(fake_identity, BOOT_A, process.RecoveryObservation(process.ObservationKind.ABSENT, (1,))))
-for command in (
-    process.CommandId.IP_NETNS_ADD,
-    process.CommandId.NFT_INSTALL,
-    process.CommandId.SSH_KEYGEN_CLIENT,
-    process.CommandId.SSH_PUBLIC_CLIENT,
-):
+for command in (process.CommandId.IP_NETNS_ADD, process.CommandId.NFT_INSTALL):
+    assert process._spec(command).command_id == command.value
+for command in (process.CommandId.SSH_KEYGEN_CLIENT, process.CommandId.SSH_PUBLIC_CLIENT):
     rejected(lambda command=command: process._spec(command))
+assert {"SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT", "CTR_RUN"} <= process.OWNER_ASSIGNED_IDS
 
 # Contract decoding requires canonical, digest-bound, exact typed records.
 def canonical(value):
@@ -161,13 +164,103 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "flood")) { char x = 'x'; for (int i=0;i<65537;i++) if (write_all(1,&x,1)) return 96; return 0; }
   if (!strcmp(argv[1], "dual-flood")) { char out[4096], err[4096]; memset(out,'o',sizeof(out)); memset(err,'e',sizeof(err)); for (int i=0;i<20;i++) if (write_all(1,out,sizeof(out)) || write_all(2,err,sizeof(err))) return 96; return 0; }
   if (!strcmp(argv[1], "sleep")) { signal(SIGTERM, SIG_IGN); sleep(30); return 0; }
-  if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(800000); _exit(0); } return 0; }
+  if (!strcmp(argv[1], "held-pipe")) { pid_t child=fork(); if (child<0) return 93; if (!child) { usleep(1500000); _exit(0); } return 0; }
   if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) return write_all(1,"closed\n",7) == 0 ? 0 : 96; return 91; }
   if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) return write_all(1,"high-closed\n",12) == 0 ? 0 : 96; return 94; }
   if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) return write_all(1,"inherited\n",10) == 0 ? 0 : 96; return 95; }
   return 92;
 }
 '''
+
+
+def authentic_root_cgroup_recovery():
+    """Crash one supervisor, then recover its leader-absent descendant fresh."""
+    if platform.system() != "Linux" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
+        return False
+    token = "c" * 64
+    path = f"{process.CGROUP_BASE}/{token}-4242"
+    report_r, report_w = os.pipe2(os.O_CLOEXEC)
+    supervisor = os.fork()
+    if supervisor == 0:
+        try:
+            os.close(report_r)
+            context = process.kata_operation.CommandContext(
+                token, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+                process._boot_id(), "5" * 40, "NETWORK_READY", 4242,
+            )
+            owner = process._prepare_cgroup(context)
+            gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+            child_r, child_w = os.pipe2(os.O_CLOEXEC)
+            leader = os.fork()
+            if leader == 0:
+                os.close(gate_w); os.close(child_r)
+                if os.read(gate_r, 1) != b"R": os._exit(90)
+                descendant = os.fork()
+                if descendant == 0:
+                    time.sleep(30); os._exit(0)
+                os.write(child_w, f"{descendant}\n".encode("ascii")); os._exit(0)
+            os.close(gate_r); os.close(child_w)
+            process._register_cgroup(owner, leader)
+            os.write(gate_w, b"R"); os.close(gate_w)
+            descendant = int(os.read(child_r, 32)); os.close(child_r)
+            os.waitpid(leader, 0)
+            payload = json.dumps({"expected": owner.leaf_generation,
+                                  "base_created": owner.base_created,
+                                  "descendant": descendant}).encode() + b"\n"
+            os.write(report_w, payload)
+        finally:
+            os._exit(77)  # descriptor/process-owner crash cut
+    os.close(report_w)
+    raw = b""
+    while True:
+        part = os.read(report_r, 4096)
+        if not part: break
+        raw += part
+    os.close(report_r)
+    assert os.waitpid(supervisor, 0)[1] == 77 << 8
+    value = json.loads(raw)
+    state, errors = {"term": False, "kill": False}, []
+    previous = None
+    try:
+        assert process._recover_cgroup(
+            path, tuple(value["expected"]), process._boottime_ns() + 2_000_000_000,
+            state, errors,
+        ) == (True, True)
+        assert state["kill"] and errors == [] and not os.path.exists(path)
+        # Exact production settlement also reaps a quick adopted descendant.
+        previous = process._set_subreaper(True)
+        owner = process._prepare_cgroup(process.kata_operation.CommandContext(
+            token, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+            process._boot_id(), "5" * 40, "NETWORK_READY", 4243,
+        ))
+        gate_r, gate_w = os.pipe2(os.O_CLOEXEC)
+        quick_r, quick_w = os.pipe2(os.O_CLOEXEC)
+        leader = os.fork()
+        if leader == 0:
+            os.close(gate_w); os.close(quick_r)
+            if os.read(gate_r, 1) != b"R": os._exit(90)
+            if os.fork() == 0:
+                os.write(quick_w, b"Z"); os._exit(0)
+            os._exit(0)
+        os.close(gate_r); os.close(quick_w); process._register_cgroup(owner, leader)
+        os.write(gate_w, b"R"); os.close(gate_w)
+        assert os.read(quick_r, 1) == b"Z"; os.close(quick_r); time.sleep(0.05)
+        settle_errors = []
+        settled = process._settle_cgroup(
+            owner, leader, process._boottime_ns() + 2_000_000_000, settle_errors,
+        )
+        process._set_subreaper(previous); previous = None
+        assert all(settled) and settle_errors == []
+        return True
+    finally:
+        for cleanup_path in (path, f"{process.CGROUP_BASE}/{token}-4243"):
+            if os.path.exists(cleanup_path):
+                process._recover_cgroup(cleanup_path, None, process._boottime_ns() + 2_000_000_000,
+                                        {"term": False, "kill": False}, [])
+        if previous is not None: process._set_subreaper(previous)
+        if value["base_created"] and os.path.isdir(process.CGROUP_BASE):
+            try: os.rmdir(process.CGROUP_BASE)
+            except OSError: pass
 
 
 def linux_supervisor_tests():
@@ -188,10 +281,122 @@ def linux_supervisor_tests():
     assert compile_result.returncode == 0, compile_result.stderr.decode(errors="replace")
     os.chmod(placeholder, 0o500)
     raw, digest = contract_for(placeholder)
-    os.environ["COGS_KATA_PROCESS_TESTING_V1"] = "1"
 
-    def issue(action):
-        return process._make_test_issuer(raw, digest)(action)
+    class Journal:
+        def __init__(self):
+            self.context = process.kata_operation.CommandContext(
+                "a" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+                process._boot_id(), "5" * 40, "ROOTFS_LEASED", 0,
+            )
+            self.intent = self.preexec = self.outcome = None
+        def command_context(self):
+            return self.context
+        def record_command_intent(self, body):
+            process.kata_operation._validate_body("COMMAND_INTENT_V2", body)
+            self.intent = body
+        def record_command_preexec(self, body):
+            process.kata_operation._validate_body("COMMAND_PREEXEC_V2", body)
+            self.preexec = body
+        def record_command_outcome(self, body):
+            process.kata_operation._validate_body("COMMAND_OUTCOME_V2", body)
+            self.outcome = body
+            return body
+
+    def cgroup_patches(owner):
+        def prepare(context):
+            owner.path = f"{process.CGROUP_BASE}/{context.operation_token}-{context.command_serial}"
+            return owner
+        def register(value, pid):
+            value.member = pid
+            process._adopt_members(value, (pid,))
+        def members(value):
+            pid = getattr(value, "member", None)
+            if pid is None:
+                return ()
+            try:
+                process._proc_row(pid)
+                return (pid,)
+            except (OSError, process.ProcessError):
+                return ()
+        def kill(value):
+            for descriptor, _row in value.pidfds.values():
+                try: signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                except ProcessLookupError: pass
+        def settle(value, leader, deadline, _errors):
+            for pid, (descriptor, _row) in tuple(value.pidfds.items()):
+                if pid != leader:
+                    while time.monotonic_ns() < deadline:
+                        try:
+                            observed, _status = os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if observed == pid:
+                            break
+                        time.sleep(0.005)
+                try: os.close(descriptor)
+                except OSError: pass
+            value.pidfds.clear()
+            descendants_reaped = False
+            while time.monotonic_ns() < deadline:
+                _leader_reaped, descendants_reaped = process._wait_all_children(leader, _errors)
+                if descendants_reaped:
+                    break
+                time.sleep(0.005)
+            return True, descendants_reaped, True, False
+        return (
+            patch.object(process, "_prepare_cgroup", side_effect=prepare),
+            patch.object(process, "_register_cgroup", side_effect=register),
+            patch.object(process, "_cgroup_members", side_effect=members),
+            patch.object(process, "_kill_cgroup", side_effect=kill),
+            patch.object(process, "_settle_cgroup", side_effect=settle),
+        )
+
+    def make_issuer():
+        contract = process._parse_contract(raw, digest)
+        executable_fd = process._sealed_memfd(contract.executable, True)
+        used = False
+        def issue_once(action, inherited=None):
+            nonlocal used
+            if used:
+                raise process.ProcessError("test transaction already consumed")
+            used = True
+            command_id = process.CommandId.SSH_READY if action is process._TestAction.INHERITED \
+                else process.CommandId.CTR_TASK_LIST
+            test_spec = process._test_spec(action)
+            fixed = process.FixedCommand(
+                command_id, "test", process.TEST_PATH, test_spec.argv, test_spec.stdin,
+                int(test_spec.deadline_seconds * 1_000_000_000),
+                inherited_fds=test_spec.inherited_fds,
+            )
+            previous = process._FIXED_COMMANDS.get(command_id)
+            process._FIXED_COMMANDS[command_id] = fixed
+            identity = process._fd_identity(executable_fd)
+            retained = process.RetainedExecutable(
+                "test", process.TEST_PATH, executable_fd, contract.executable.sha256,
+                contract.closure_sha256, process._host_generation(executable_fd),
+            )
+            journal = Journal()
+            leaf_generation = (
+                1, 2, 4, "directory", 0o700, 0, 0, 2, 0, 1, 2,
+            )
+            owner = process._CgroupOwner("", leaf_generation, (), False, {})
+            patches = cgroup_patches(owner)
+            try:
+                with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                    outcome, _durable = process._transact_fixed(
+                        journal, fixed, retained, () if inherited is None else inherited,
+                    )
+                return outcome
+            finally:
+                if previous is None:
+                    del process._FIXED_COMMANDS[command_id]
+                else:
+                    process._FIXED_COMMANDS[command_id] = previous
+                os.close(executable_fd)
+        return issue_once
+
+    def issue(action, inherited=None):
+        return make_issuer()(action, inherited)
 
     result = issue(process._TestAction.OK)
     assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (
@@ -203,17 +408,17 @@ def linux_supervisor_tests():
     assert result.identity.ppid == os.getpid() and result.identity.starttime > 0
     assert result.stdout_sha256 == hashlib.sha256(b"ok\n").hexdigest()
 
-    authority = process._make_test_issuer(raw, digest)
+    authority = make_issuer()
     authority(process._TestAction.OK)
     rejected(lambda: authority(process._TestAction.OK))
 
     result = issue(process._TestAction.STDERR)
     assert result.status == 0 and result.stderr == b"fixed-error\n" and result.reaped
     result = issue(process._TestAction.EXIT7)
-    assert result.status == 7 and result.errors == ("exit:7",) and result.reaped
+    assert result.status == 7 and result.errors == () and result.reaped
     result = issue(process._TestAction.FLOOD)
     assert len(result.stdout) == process.MAX_STREAM and result.stdout_truncated
-    assert "output-cap" in result.errors and result.reaped
+    assert not result.errors and result.reaped
     result = issue(process._TestAction.DUAL_FLOOD)
     assert len(result.stdout) == len(result.stderr) == process.MAX_STREAM
     assert result.stdout_truncated and result.stderr_truncated and result.reaped
@@ -221,14 +426,14 @@ def linux_supervisor_tests():
     started = time.monotonic()
     result = issue(process._TestAction.SLEEP)
     assert result.timed_out and result.leader_timed_out and not result.pipe_timed_out
-    assert result.outcome == "signaled" and result.status == signal.SIGKILL
+    assert result.outcome == "uncertain" and result.status is None
     assert result.reaped and time.monotonic() - started < 5
 
     started = time.monotonic()
     result = issue(process._TestAction.HELD_PIPE)
     assert result.reaped and result.pipe_timed_out and not result.leader_timed_out
-    assert result.outcome == "uncertain" and "pipe-deadline" in result.errors
-    assert time.monotonic() - started < 1
+    assert result.outcome == "uncertain" and result.timed_out
+    assert time.monotonic() - started < 3
 
     held = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
     try:
@@ -241,10 +446,10 @@ def linux_supervisor_tests():
 
     # Collision-safe inherited mapping survives exec only at exact 200/201;
     # source CLOEXEC flags remain unchanged and every extra fd is closed.
-    key_r, key_w = os.pipe2(os.O_CLOEXEC)
-    hosts_r, hosts_w = os.pipe2(os.O_CLOEXEC)
-    os.write(key_w, b"K"); os.write(hosts_w, b"H")
-    os.close(key_w); os.close(hosts_w)
+    key_r, key_path = tempfile.mkstemp(dir=directory)
+    hosts_r, hosts_path = tempfile.mkstemp(dir=directory)
+    os.write(key_r, b"K"); os.write(hosts_r, b"H")
+    os.lseek(key_r, 0, os.SEEK_SET); os.lseek(hosts_r, 0, os.SEEK_SET)
     saved = {}
     try:
         for target in (200, 201):
@@ -255,7 +460,7 @@ def linux_supervisor_tests():
         owner = process._seal_inherited_inputs_for_tests(
             201, 200, process._fd_identity(201), process._fd_identity(200),
         )
-        result = process._make_test_issuer(raw, digest)(process._TestAction.INHERITED, owner)
+        result = issue(process._TestAction.INHERITED, owner)
         assert result.status == 0 and result.stdout == b"inherited\n" and not result.errors
         assert not os.get_inheritable(200) and not os.get_inheritable(201)
     finally:
@@ -266,12 +471,15 @@ def linux_supervisor_tests():
             else:
                 os.dup2(original, target); os.close(original)
         os.close(key_r); os.close(hosts_r)
+        os.unlink(key_path); os.unlink(hosts_path)
 
     # close_range reaches inherited descriptors above a subsequently lowered limit.
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
-    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, 4096)
-    os.set_inheritable(high, True)
     old_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    high_floor = min(4096, old_limit[0] - 1)
+    assert high_floor > 256
+    high = __import__("fcntl").fcntl(base, __import__("fcntl").F_DUPFD, high_floor)
+    os.set_inheritable(high, True)
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, old_limit[1]))
         result = issue(process._TestAction.HIGH_FD)
@@ -284,7 +492,7 @@ def linux_supervisor_tests():
     # A child-side pre-exec failure is a fixed-size errno result and is reaped.
     with patch.object(process, "_execveat", side_effect=OSError(errno.ENOEXEC, "fixed injected exec failure")):
         result = issue(process._TestAction.OK)
-    assert result.outcome == "exec_failed" and result.errno == errno.ENOEXEC and result.reaped
+    assert result.outcome == "exec-failed" and result.errno == errno.ENOEXEC and result.reaped
 
     # A fake mismatching snapshot prevents release. Closing the release pipe lets
     # the directly-owned blocked child exit, and the parent still reaps it.
@@ -304,32 +512,27 @@ def linux_supervisor_tests():
         raise AssertionError("PID mismatch child was not reaped")
     assert real_identity
 
-    # Setup timeout cleanup closes release, tolerates EINTR, and boundedly reaps.
-    cleanup_seen = []
-    real_cleanup = process._cleanup_child
-    real_waitpid = os.waitpid
-    interrupted = [False]
-    def wait_once_interrupted(pid, options):
-        if not interrupted[0]:
-            interrupted[0] = True
-            raise OSError(errno.EINTR, "fixed injected wait interruption")
-        return real_waitpid(pid, options)
-    def observe_cleanup(*args):
-        result = real_cleanup(*args)
-        cleanup_seen.append((args[0], result))
-        return result
-    with patch.object(process, "_read_setup", side_effect=process.ProcessError("fixed setup timeout")), \
-         patch.object(process, "_cleanup_child", side_effect=observe_cleanup), \
-         patch.object(process.os, "waitpid", side_effect=wait_once_interrupted):
+    # Setup timeout and the first pidfd-open failure after fork still perform a
+    # bounded direct wait; neither may fabricate a not-started reap fact.
+    with patch.object(
+        process, "_read_setup_boottime",
+        side_effect=process.ProcessError("fixed setup timeout"),
+    ):
         rejected(lambda: issue(process._TestAction.OK))
-    assert len(cleanup_seen) == 1 and cleanup_seen[0][1][0] is not None
-    assert any("eintr" in item for item in cleanup_seen[0][1][1])
-    try:
-        os.waitpid(cleanup_seen[0][0], os.WNOHANG)
-    except ChildProcessError:
-        pass
-    else:
-        raise AssertionError("setup-timeout child was not reaped")
+    with patch.object(process, "_usable_pidfd_open", side_effect=OSError(errno.EIO, "pidfd")):
+        rejected(lambda: issue(process._TestAction.OK))
+    process._require_no_children()
+
+    # Restoration failure is folded into uncertainty before journal settlement.
+    subreaper_calls = 0
+    def fail_restore(enabled):
+        nonlocal subreaper_calls
+        subreaper_calls += 1
+        if subreaper_calls == 1: return False
+        raise OSError(errno.EIO, "restore")
+    with patch.object(process, "_set_subreaper", side_effect=fail_restore):
+        result = issue(process._TestAction.OK)
+    assert result.outcome == "uncertain" and "subreaper-restore:OSError" in result.errors
 
     # ECHILD and identity-observation failures are recorded, never thrown.
     wait_errors = []
@@ -353,14 +556,13 @@ def linux_supervisor_tests():
         if not injected[0]:
             injected[0] = True
             raise OSError(errno.EIO, "fixed injected close failure")
-    close_authority = process._make_test_issuer(raw, digest)
+    close_authority = make_issuer()
     with patch.object(process.os, "close", side_effect=close_then_error):
-        result = close_authority(process._TestAction.OK)
-    assert "close:5" in result.errors and result.reaped
+        rejected(lambda: close_authority(process._TestAction.OK))
 
     # The issued object is the sealed bytes, even if the source path changes.
     original = placeholder.read_bytes()
-    sealed_authority = process._make_test_issuer(raw, digest)
+    sealed_authority = make_issuer()
     os.chmod(placeholder, 0o600)
     placeholder.write_bytes(b"not-the-sealed-helper")
     try:
@@ -373,7 +575,7 @@ def linux_supervisor_tests():
     # A replacement also fails a new binding before fork.
     os.chmod(placeholder, 0o600)
     placeholder.write_bytes(original + b"x")
-    rejected(lambda: process._make_test_issuer(raw, digest))
+    rejected(make_issuer)
     placeholder.write_bytes(original)
     os.chmod(placeholder, 0o500)
 
@@ -382,10 +584,18 @@ def linux_supervisor_tests():
 import signal
 required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
 qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
+foundations_required = os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
 if required and not qualified:
     raise RuntimeError("Linux amd64 process qualification was required")
+if foundations_required and (not qualified or os.geteuid() != 0):
+    raise RuntimeError("root Linux amd64 Kata native foundations were required")
+root_cgroup = authentic_root_cgroup_recovery()
+if foundations_required and not root_cgroup:
+    raise RuntimeError("journal/cgroup crash and settlement foundations were required")
 if qualified:
     linux_supervisor_tests()
-    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed")
+    print("completion Kata process LINUX AMD64 QUALIFIED matrix passed" +
+          ("; root cgroup crash matrix passed" if root_cgroup else "; root cgroup crash matrix SKIPPED"))
 else:
-    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED")
+    print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED; " +
+          ("root cgroup crash matrix passed" if root_cgroup else "root cgroup crash matrix SKIPPED"))

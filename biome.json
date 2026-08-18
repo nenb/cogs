@@ -40,6 +40,7 @@
         "docs/security-evidence/stage5-offline-preparation/*.json",
         "test/fixtures/stage4-static-manifest/valid-request-v1.json",
         "test/fixtures/stage5-privacy/valid-suite-v1.json",
+        "test/fixtures/stage2-completion/local-result-v2-*.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",

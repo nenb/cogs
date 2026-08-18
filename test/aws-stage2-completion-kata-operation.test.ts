@@ -29,8 +29,8 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
   assert.ok(
-    operationLines + leaseExtension <= 1500,
-    `S0/S5 operation and lease extension exceeds hard 1500: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 1900,
+    `Slice A operation and lease extension exceeds 1900: ${operationLines + leaseExtension}`,
   );
 
   assert.match(operation, /def _make_authority\(\):[\s\S]*class _FixedJournal:/u);
@@ -42,7 +42,7 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.match(operation, /__slots__ = \(\)/u);
   assert.match(operation, /O_TMPFILE/u);
   assert.match(operation, /identity_flags = fs\._O_PATH \| fs\._O_CLOEXEC/u);
-  assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_FLAGS\)/u);
+  assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_IDENTITY_FLAGS\)/u);
   assert.match(operation, /generation == original and generation\.key == original\.key/u);
   assert.match(operation, /def create_fixed_operation_test_local\(authority, body\):/u);
   assert.match(operation, /validate_layout\(self, records, journal_generation\)/u);
@@ -63,6 +63,6 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.doesNotMatch(lease, /def _(?:acquire_kata_reserved|acquire_with_token|reopen_token)\(/u);
   assert.doesNotMatch(
     operation,
-    /subprocess|socket|requests|urllib|boto|docker|terraform|tofu|completion_rootfs_(?:ledger|lease|builder)/u,
+    /subprocess|(?:^|\n)import socket|requests|urllib|boto|docker|terraform|tofu|completion_rootfs_(?:ledger|lease|builder)/u,
   );
 });

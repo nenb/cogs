@@ -153,10 +153,12 @@ def pure_tests():
     counter_provider_tests()
     raw = b"pos:\t0\nflags:\t" + module.FDINFO_FLAGS + b"\nmnt_id:\t42\nino:\t9\n"
     nofollow_raw = raw.replace(module.FDINFO_FLAGS, module.FDINFO_NOFOLLOW_FLAGS)
+    path_raw = raw.replace(module.FDINFO_FLAGS, module.FDINFO_PATH_FLAGS)
     assert module.FDINFO_FLAGS == b"012100000"
     assert module.FDINFO_NOFOLLOW_FLAGS == b"012400000"
+    assert module.FDINFO_PATH_FLAGS == b"012000000"
     assert module.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
-    assert module._parse_fdinfo(raw, 9) == module._parse_fdinfo(nofollow_raw, 9) == 42
+    assert module._parse_fdinfo(raw, 9) == module._parse_fdinfo(nofollow_raw, 9) == module._parse_fdinfo(path_raw, 9) == 42
     assert module._parse_fdinfo(raw, 9, module.FDINFO_FLAGS) == 42
     rejected(lambda: module._parse_fdinfo(nofollow_raw, 9, module.FDINFO_FLAGS))
     custom_flags = (b"022440002", b"022300002")

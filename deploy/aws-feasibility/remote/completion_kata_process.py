@@ -1,10 +1,9 @@
-"""Closed process owner for the fixed Stage 2 Kata lifecycle.
+"""Private fixed process-transaction primitive for Stage 2 Kata.
 
-No production command issuer exists in this slice.  In particular, parsing a
-contract does not grant execution authority: the committed amd64 host-tool
-closure and the operation journal's CommandPermit issuer are both absent.
-The only issuer below is an explicitly test-only, fixed harmless executable
-used to qualify the same fork/session/exec-status supervisor.
+This slice implements exact journaled fork/session/exec, settlement, and crash
+recovery. It does not expose a production command issuer or lifecycle owner;
+parsing a contract therefore grants no execution authority. Tests exercise the
+private primitive with a fixed harmless executable descriptor.
 """
 from dataclasses import dataclass
 from enum import Enum
@@ -23,6 +22,9 @@ import struct
 import time
 import completion_kata_actions as actions
 import completion_kata_fdmap as fdmap
+import completion_kata_network as kata_network
+import completion_kata_operation as kata_operation
+import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
 
 CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
@@ -41,6 +43,15 @@ DEADLINE_SECONDS = {
     "task-term": 15, "task-kill": 10, "remove": 20, "listener": 60,
     "ssh": 10, "runtime-absence": 30,
 }
+CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+FIXED_ENV = kata_operation.FIXED_ENV
+CGROUP_ROOT = "/sys/fs/cgroup"
+CGROUP_BASE = CGROUP_ROOT + "/cogs-stage2-completion-v1"
+CGROUP2_MAGIC = 0x63677270
+HOSTILE_ROOT_LIMITATION = (
+    "cgroup-v2 owns ordinary descendants; a hostile host-root process can escape "
+    "without a later namespace/capability boundary"
+)
 
 
 class ProcessError(Exception):
@@ -109,6 +120,38 @@ class _Contract:
 
 
 @dataclass(frozen=True)
+class FixedCommand:
+    command_id: CommandId
+    executable_role: str
+    executable_path: str
+    argv: tuple
+    stdin: bytes
+    duration_ns: int
+    stdout_limit: int = MAX_STREAM
+    stderr_limit: int = MAX_STREAM
+    output_grammar: str = "text"
+    inherited_fds: tuple = ()
+
+
+@dataclass(frozen=True)
+class LongLivedCommand:
+    command_id: CommandId
+    executable_role: str
+    executable_path: str
+    argv: tuple
+
+
+@dataclass(frozen=True)
+class RetainedExecutable:
+    role: str
+    path: str
+    descriptor: int
+    sha256: str
+    closure_sha256: str
+    generation: dict
+
+
+@dataclass(frozen=True)
 class ProcessIdentity:
     pid: int
     ppid: int
@@ -145,6 +188,54 @@ class ProcessOutcome:
     errors: tuple
 
 
+CONTAINERD_SOCKET = kata_operation.BASE + "/kata-runtime-v1/containerd.sock"
+CONTAINERD_ROOT = kata_operation.BASE + "/kata-runtime-v1/containerd-root"
+CONTAINERD_STATE = kata_operation.BASE + "/kata-runtime-v1/containerd-state"
+CONTAINERD_CONFIG = kata_operation.BASE + "/kata-runtime-v1/containerd.toml"
+LONG_LIVED_CONTAINERD = LongLivedCommand(
+    CommandId.CONTAINERD_START, "containerd", "/usr/bin/containerd",
+    ("/usr/bin/containerd", "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
+     "--state", CONTAINERD_STATE, "--config", CONTAINERD_CONFIG),
+)
+
+
+def _compose_fixed_commands():
+    rows = {}
+    paths = {"ip": "/usr/sbin/ip", "tc": "/usr/sbin/tc", "nft": "/usr/sbin/nft"}
+    for command_id in actions.NETWORK_COMMANDS:
+        try:
+            source = kata_network.command(command_id)
+        except kata_network.NetworkError:
+            continue
+        role = "nft" if source.tool_contract.startswith("libnftables") else \
+            "ip" if source.tool_contract.startswith("iproute2") else \
+            source.tool_contract.split("-", 1)[0]
+        path = paths[role]
+        rows[command_id] = FixedCommand(
+            command_id, role, path, (path, *source.argv_tail), source.stdin,
+            10_000_000_000, output_grammar="json" if "json" in source.tool_contract else "text",
+        )
+    for source in kata_runtime.fixed_command_specs_for_tests():
+        argv = ("/usr/bin/ctr", "--address", CONTAINERD_SOCKET, *source.argv[1:])
+        rows[source.command_id] = FixedCommand(
+            source.command_id, "ctr", "/usr/bin/ctr", argv, source.stdin,
+            int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000),
+        )
+    source = kata_ssh.command_spec()
+    rows[CommandId.SSH_READY] = FixedCommand(
+        CommandId.SSH_READY, "ssh", "/usr/bin/ssh", source.argv, source.stdin,
+        10_000_000_000, output_grammar="text", inherited_fds=source.inherited_fds,
+    )
+    return rows
+
+
+_FIXED_COMMANDS = _compose_fixed_commands()
+PROCESS_OWNED_IDS = frozenset(_FIXED_COMMANDS)
+OWNER_ASSIGNED_IDS = actions.COMMAND_IDS - {item.value for item in PROCESS_OWNED_IDS} - {
+    CommandId.CONTAINERD_START.value,
+}
+
+
 NFT_INPUT = b'''add table inet cogs_stage2_ssh_v1
 add chain inet cogs_stage2_ssh_v1 input { type filter hook input priority filter; policy accept; }
 add chain inet cogs_stage2_ssh_v1 output { type filter hook output priority filter; policy accept; }
@@ -159,29 +250,32 @@ add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop
 
 
 def _spec(command_id):
+    """Historical immutable snapshot API; never execution authority."""
     if type(command_id) is not CommandId:
         raise ProcessError("closed command id required")
-    # ip/tc/nft argv[0] cannot be guessed: the plan fixes their argument tails
-    # but the required absolute logical paths await the committed host closure.
-    ctr = "/usr/bin/ctr"
-    fixed = {
-        CommandId.CTR_CONTAINER_INFO: ((ctr, "--namespace", "cogs-stage2-completion-v1", "containers", "info", "cogs-stage2-ssh-v1"), b"", "observer"),
-        CommandId.CTR_CONTAINER_LIST: ((ctr, "--namespace", "cogs-stage2-completion-v1", "containers", "list"), b"", "observer"),
-        CommandId.CTR_TASK_LIST: ((ctr, "--namespace", "cogs-stage2-completion-v1", "tasks", "list"), b"", "observer"),
-        CommandId.CTR_TASK_TERM: ((ctr, "--namespace", "cogs-stage2-completion-v1", "tasks", "kill", "--signal", "SIGTERM", "cogs-stage2-ssh-v1"), b"", "task-term"),
-        CommandId.CTR_TASK_KILL: ((ctr, "--namespace", "cogs-stage2-completion-v1", "tasks", "kill", "--signal", "SIGKILL", "cogs-stage2-ssh-v1"), b"", "task-kill"),
-        CommandId.CTR_TASK_REMOVE: ((ctr, "--namespace", "cogs-stage2-completion-v1", "tasks", "rm", "cogs-stage2-ssh-v1"), b"", "remove"),
-        CommandId.CTR_CONTAINER_REMOVE: ((ctr, "--namespace", "cogs-stage2-completion-v1", "containers", "rm", "cogs-stage2-ssh-v1"), b"", "remove"),
-    }
+    source = _FIXED_COMMANDS.get(command_id)
+    if source is None:
+        raise ProcessError("fixed action belongs to its lifecycle owner")
+    seconds = source.duration_ns / 1_000_000_000
     if command_id is CommandId.SSH_READY:
-        fixed_ssh = kata_ssh.command_spec()
-        return _Spec(command_id.value, fixed_ssh.argv, fixed_ssh.stdin,
-                     fixed_ssh.deadline_class, DEADLINE_SECONDS["ssh"], fixed_ssh.inherited_fds)
-    if command_id not in fixed:
-        raise ProcessError("fixed action awaits its committed closure/spec composition")
-    argv, stdin, deadline = fixed[command_id]
-    return _Spec(command_id.value, argv, stdin, deadline, DEADLINE_SECONDS[deadline])
-
+        deadline_class = "ssh"
+    elif command_id in {
+        CommandId.CTR_CONTAINER_INFO, CommandId.CTR_CONTAINER_LIST,
+        CommandId.CTR_TASK_LIST,
+    }:
+        deadline_class = "observer"
+    elif command_id is CommandId.CTR_TASK_TERM:
+        deadline_class = "task-term"
+    elif command_id is CommandId.CTR_TASK_KILL:
+        deadline_class = "task-kill"
+    elif command_id in {CommandId.CTR_TASK_REMOVE, CommandId.CTR_CONTAINER_REMOVE}:
+        deadline_class = "remove"
+    else:
+        deadline_class = "network"
+    return _Spec(
+        command_id.value, source.argv, source.stdin, deadline_class, seconds,
+        source.inherited_fds,
+    )
 
 def _unissued_network_spec(command_id):
     """Exact action bytes that intentionally contain no guessed argv[0]."""
@@ -419,13 +513,13 @@ def _close_except(allowed):
 
 
 _fd_identity = fdmap.identity
-_seal_inherited_inputs_for_tests = fdmap.make_input_owner_for_tests
+_seal_inherited_inputs_for_tests = fdmap.bind_inputs
 _install_inherited_fds = fdmap.install
 _relocate_child_internals = fdmap.relocate_internals
-
-
 def _claim_inherited_fds(spec, owner):
     try:
+        if spec.inherited_fds == () and owner == ():
+            return ()
         return fdmap.claim(spec.inherited_fds, owner)
     except fdmap.FdMapError as error:
         raise ProcessError("invalid inherited descriptor map") from error
@@ -442,7 +536,10 @@ def _execveat(descriptor, argv):
     libc = ctypes.CDLL(None, use_errno=True)
     encoded = [item.encode("utf-8") for item in argv]
     arguments = (ctypes.c_char_p * (len(encoded) + 1))(*encoded, None)
-    environment = (ctypes.c_char_p * 2)(b"LC_ALL=C", None)
+    encoded_environment = [f"{name}={value}".encode("ascii") for name, value in FIXED_ENV]
+    environment = (ctypes.c_char_p * (len(encoded_environment) + 1))(
+        *encoded_environment, None,
+    )
     result = libc.syscall(322, descriptor, b"", arguments, environment, 0x1000)
     saved = ctypes.get_errno()
     if result != 0:
@@ -463,12 +560,15 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         os.dup2(stdin_r, 0)
         os.dup2(stdout_w, 1)
         os.dup2(stderr_w, 2)
-        allowed = {0, 1, 2, executable_fd, release_r, status_w,
+        os.dup2(status_w, 3, inheritable=False)
+        os.dup2(executable_fd, 198, inheritable=False)
+        status_w = 3
+        executable_fd = 198
+        allowed = {0, 1, 2, 3, 198, release_r,
                    *(row.target_fd for row in spec.inherited_fds)}
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
-        os.set_inheritable(status_w, False)
         _execveat(executable_fd, spec.argv)
     except OSError as error:
         _write_child_error(status_w, error.errno or errno.EIO)
@@ -622,8 +722,18 @@ def _poll_reap(pid, wait_status, seconds, errors, label):
     return None, False
 
 
+def _signal_pidfd_only(pid, sig, identity=None):
+    descriptor = _usable_pidfd_open(pid)
+    try:
+        if identity is not None and _proc_row(pid)[4] != identity.starttime:
+            raise ProcessError("pidfd identity mismatch")
+        signal.pidfd_send_signal(descriptor, sig)
+    finally:
+        os.close(descriptor)
+
+
 def _cleanup_child(pid, identity, wait_status, released):
-    """Nonthrowing bounded cleanup for the one directly-owned child."""
+    """Historical bounded helper; signaling is pidfd-only."""
     errors = []
     try:
         wait_status, done = _poll_reap(pid, wait_status, 0.1, errors, "cleanup-wait")
@@ -631,14 +741,14 @@ def _cleanup_child(pid, identity, wait_status, released):
             return wait_status, errors
         if not released or identity is None:
             try:
-                os.kill(pid, signal.SIGKILL)
+                _signal_pidfd_only(pid, signal.SIGKILL)
             except OSError as error:
                 errors.append(f"direct-kill:{error.errno}")
         else:
             state = _same_identity(identity)
             if state == "exact_live":
                 try:
-                    os.killpg(identity.pgid, signal.SIGTERM)
+                    _signal_pidfd_only(pid, signal.SIGTERM, identity)
                 except OSError as error:
                     errors.append(f"term:{error.errno}")
             else:
@@ -649,7 +759,7 @@ def _cleanup_child(pid, identity, wait_status, released):
             state = _same_identity(identity)
             if state == "exact_live":
                 try:
-                    os.killpg(identity.pgid, signal.SIGKILL)
+                    _signal_pidfd_only(pid, signal.SIGKILL, identity)
                 except OSError as error:
                     errors.append(f"kill:{error.errno}")
             else:
@@ -673,135 +783,796 @@ def _close_owned(descriptor, owned, errors, label="close"):
             owned.remove(descriptor)
 
 
-def _supervise(executable_fd, spec, inherited=None):
-    bindings = _claim_inherited_fds(spec, inherited) if spec.inherited_fds else ()
-    if not spec.inherited_fds and inherited is not None:
-        raise ProcessError("unexpected inherited descriptors")
-    spec = _Spec(spec.command_id, spec.argv, spec.stdin, spec.deadline_class,
-                 spec.deadline_seconds, bindings)
-    pipes = []
-    def owned_pipe():
-        pair = os.pipe2(os.O_CLOEXEC)
-        pipes.extend(pair)
-        return pair
-    pid = None
-    identity = None
-    pidfd = None
+@dataclass
+class _CgroupOwner:
+    path: str
+    leaf_generation: tuple
+    base_generation: tuple
+    base_created: bool
+    pidfds: dict
+    directory_fd: object = None
+    base_fd: object = None
+    leaf_name: str = ""
+
+
+def _boottime_ns():
+    return time.clock_gettime_ns(CLOCK)
+
+
+def _require_no_children():
+    with open(f"/proc/self/task/{os.getpid()}/children", "rb", buffering=0) as source:
+        raw = source.read(65_537)
+    if len(raw) > 65_536 or any(not row.isdigit() for row in raw.split()):
+        raise ProcessError("invalid child baseline")
+    if raw.split():
+        raise ProcessError("process owner has unrelated children")
+
+
+def _host_generation(descriptor, kind=None):
+    identity = fdmap.identity(descriptor)
+    if identity.mount_id is None:
+        raise ProcessError("fdinfo mount identity unavailable")
+    if kind is None:
+        kind = ("file" if stat.S_ISREG(identity.mode) else
+                "pipe" if stat.S_ISFIFO(identity.mode) else
+                "socket" if stat.S_ISSOCK(identity.mode) else "other")
+    return {
+        "mount_id": identity.mount_id, "device": identity.device, "inode": identity.inode,
+        "kind": kind, "mode": identity.mode & 0o7777, "uid": identity.uid,
+        "gid": identity.gid, "nlink": identity.nlink, "size": identity.size,
+        "mtime_ns": identity.mtime_ns, "ctime_ns": identity.ctime_ns,
+    }
+
+
+def _digest_fd(descriptor, size):
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        part = os.pread(descriptor, min(1_048_576, size - offset), offset)
+        if not part:
+            raise ProcessError("short retained executable")
+        digest.update(part)
+        offset += len(part)
+    return digest.hexdigest()
+
+
+def _cleanup_reserve_ns(fixed):
+    return min(kata_operation.command_policy.CLEANUP_RESERVE_NS, fixed.duration_ns // 2)
+
+
+def _intent_body(context, fixed, executable, bindings, deadline):
+    if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
+        raise ProcessError("command is not internally fixed")
+    if (type(executable) is not RetainedExecutable
+            or (executable.role, executable.path) != (fixed.executable_role, fixed.executable_path)):
+        raise ProcessError("retained executable role mismatch")
+    observed = fdmap.identity(executable.descriptor)
+    generation = _host_generation(executable.descriptor)
+    if (generation != executable.generation
+            or _digest_fd(executable.descriptor, observed.size) != executable.sha256
+            or fdmap.identity(executable.descriptor) != observed):
+        raise ProcessError("retained executable changed")
+    environment = [list(row) for row in FIXED_ENV]
+    inherited = []
+    for row in fdmap.revalidate(bindings):
+        inherited.append({
+            "role": row.role, "target_fd": row.target_fd,
+            "generation": _host_generation(row.source_fd),
+            "content_sha256": row.content_sha256, "content_length": row.identity.size,
+        })
+    command_spec = _spec(fixed.command_id)
+    body = {
+        "operation_token": context.operation_token, "command_serial": context.command_serial,
+        "command_id": fixed.command_id.value, "binding_sha256": ZERO,
+        "journal_key": context.journal_key, "host_boot_id": context.host_boot_id,
+        "source_revision": context.source_revision, "lifecycle_phase": context.lifecycle_phase,
+        "executable_role": executable.role, "executable_path": executable.path,
+        "executable_sha256": executable.sha256, "executable_generation": executable.generation,
+        "tool_closure_sha256": executable.closure_sha256, "argv": list(fixed.argv),
+        "argv_sha256": hashlib.sha256(kata_operation._canonical(list(fixed.argv))).hexdigest(),
+        "stdin_hex": fixed.stdin.hex(), "stdin_sha256": hashlib.sha256(fixed.stdin).hexdigest(),
+        "stdin_length": len(fixed.stdin), "environment": environment,
+        "environment_sha256": hashlib.sha256(kata_operation._canonical(environment)).hexdigest(),
+        "inherited_fds": inherited, "policy_version": kata_operation.command_policy.POLICY_VERSION,
+        "deadline_class": command_spec.deadline_class, "duration_ns": fixed.duration_ns,
+        "cleanup_reserve_ns": _cleanup_reserve_ns(fixed),
+        "deadline_boottime_ns": deadline,
+        "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
+        "stderr_limit": fixed.stderr_limit,
+    }
+    binding = {name: body[name] for name in body if name != "binding_sha256"}
+    body["binding_sha256"] = hashlib.sha256(kata_operation._canonical(binding)).hexdigest()
+    kata_operation._validate_body("COMMAND_INTENT_V2", body)
+    return body
+
+
+def _generation_tuple(value):
+    return tuple(value[name] for name in kata_operation.GEN_KEYS)
+
+
+def _cgroup2_mount():
+    with open("/proc/self/mountinfo", "rb", buffering=0) as source:
+        raw = source.read(4_194_305)
+    if len(raw) > 4_194_304 or not raw.endswith(b"\n"):
+        raise ProcessError("bounded mountinfo unavailable")
+    matches = []
+    for line in raw.splitlines():
+        fields = line.split()
+        if b"-" not in fields:
+            raise ProcessError("invalid mountinfo")
+        separator = fields.index(b"-")
+        if fields[4] == b"/sys/fs/cgroup":
+            matches.append(fields[separator + 1])
+    if matches != [b"cgroup2"]:
+        raise ProcessError("exact cgroup v2 mount unavailable")
+
+
+def _directory_identity(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        value = os.fstat(descriptor)
+        if value.st_uid != 0 or value.st_gid != 0 or value.st_mode & 0o022:
+            raise ProcessError("unsafe cgroup directory")
+        generation = _host_generation(descriptor, "directory")
+        return descriptor, generation
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _prepare_cgroup(context):
+    _cgroup2_mount()
+    root_fd, _root_generation = _directory_identity(CGROUP_ROOT)
+    base_created = False
+    leaf_created = False
+    base_fd = leaf_fd = None
+    leaf_name = f"{context.operation_token}-{context.command_serial}"
+    try:
+        try:
+            os.mkdir("cogs-stage2-completion-v1", 0o700, dir_fd=root_fd)
+            base_created = True
+        except FileExistsError:
+            pass
+        base_fd, base_generation = _directory_identity(CGROUP_BASE)
+        with os.scandir(base_fd) as entries:
+            if any(entry.is_dir(follow_symlinks=False) for entry in entries):
+                raise ProcessError("cgroup base has an owned leaf")
+        os.mkdir(leaf_name, 0o700, dir_fd=base_fd)
+        leaf_created = True
+        leaf_fd, leaf_generation = _directory_identity(CGROUP_BASE + "/" + leaf_name)
+    except BaseException as primary:
+        try:
+            if leaf_fd is not None:
+                os.close(leaf_fd)
+            if base_fd is not None:
+                os.close(base_fd)
+            if leaf_created:
+                os.rmdir(CGROUP_BASE + "/" + leaf_name)
+            if base_created:
+                os.rmdir(CGROUP_BASE)
+        except OSError as cleanup:
+            raise ProcessError(f"cgroup setup cleanup: {cleanup.errno}") from primary
+        raise
+    finally:
+        os.close(root_fd)
+    return _CgroupOwner(
+        CGROUP_BASE + "/" + leaf_name, _generation_tuple(leaf_generation),
+        _generation_tuple(base_generation), base_created, {}, leaf_fd, base_fd, leaf_name,
+    )
+
+
+def _cgroup_generation(path):
+    descriptor, generation = _directory_identity(path)
+    os.close(descriptor)
+    return _generation_tuple(generation)
+
+
+def _owned_cgroup_generation(owner):
+    if owner.directory_fd is None:
+        return _cgroup_generation(owner.path)
+    return _generation_tuple(_host_generation(owner.directory_fd, "directory"))
+
+
+def _cgroup_file(owner, name, flags):
+    if _owned_cgroup_generation(owner) != owner.leaf_generation:
+        raise ProcessError("cgroup leaf replaced")
+    if owner.directory_fd is None:
+        return os.open(owner.path + "/" + name, flags | os.O_NOFOLLOW | os.O_CLOEXEC)
+    return os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=owner.directory_fd)
+
+
+def _cgroup_members(owner):
+    before = _owned_cgroup_generation(owner)
+    descriptor = _cgroup_file(owner, "cgroup.procs", os.O_RDONLY)
+    with os.fdopen(descriptor, "rb", buffering=0) as source:
+        raw = source.read(65_537)
+    after = _owned_cgroup_generation(owner)
+    if before != owner.leaf_generation or after != before or len(raw) > 65_536:
+        raise ProcessError("unstable cgroup census")
+    rows = raw.splitlines()
+    if any(not row.isdigit() for row in rows):
+        raise ProcessError("invalid cgroup member")
+    return tuple(sorted({int(row) for row in rows}))
+
+
+def _usable_pidfd_open(pid):
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise ProcessError("usable pidfd signaling unavailable")
+    return os.pidfd_open(pid, 0)
+
+
+def _adopt_members(owner, members):
+    for pid in members:
+        if pid in owner.pidfds:
+            continue
+        row = _proc_row(pid)
+        descriptor = _usable_pidfd_open(pid)
+        if _proc_row(pid) != row:
+            os.close(descriptor)
+            raise ProcessError("member changed during pidfd adoption")
+        owner.pidfds[pid] = (descriptor, row)
+
+
+def _register_cgroup(owner, pid):
+    raw = f"{pid}\n".encode("ascii")
+    descriptor = _cgroup_file(owner, "cgroup.procs", os.O_WRONLY)
+    with os.fdopen(descriptor, "wb", buffering=0) as target:
+        if target.write(raw) != len(raw):
+            raise ProcessError("short cgroup registration")
+    members = _cgroup_members(owner)
+    if pid not in members:
+        raise ProcessError("leader not registered in cgroup")
+    _adopt_members(owner, members)
+
+
+def _signal_cgroup(owner, sig):
+    members = _cgroup_members(owner)
+    _adopt_members(owner, members)
+    for pid in members:
+        descriptor, _row = owner.pidfds[pid]
+        try:
+            signal.pidfd_send_signal(descriptor, sig)
+        except ProcessLookupError:
+            pass
+
+
+def _kill_cgroup(owner):
+    descriptor = _cgroup_file(owner, "cgroup.kill", os.O_WRONLY)
+    with os.fdopen(descriptor, "wb", buffering=0) as target:
+        if target.write(b"1\n") != 2:
+            raise ProcessError("short cgroup.kill")
+
+
+def _set_subreaper(enabled):
+    libc = ctypes.CDLL(None, use_errno=True)
+    observed = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(observed), 0, 0, 0) != 0:
+        saved = ctypes.get_errno()
+        raise OSError(saved, os.strerror(saved))
+    previous = bool(observed.value)
+    if libc.prctl(36, int(enabled), 0, 0, 0) != 0:
+        saved = ctypes.get_errno()
+        raise OSError(saved, os.strerror(saved))
+    readback = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(readback), 0, 0, 0) != 0:
+        saved = ctypes.get_errno()
+        raise OSError(saved, os.strerror(saved))
+    if bool(readback.value) is not bool(enabled):
+        raise ProcessError("subreaper readback mismatch")
+    return previous
+
+
+def _advance_cleanup(owner, pid, wait_status, deadline, term_at, kill_at, state, errors):
+    if wait_status is None:
+        try:
+            observed, status = os.waitpid(pid, os.WNOHANG)
+            if observed == pid:
+                wait_status = status
+        except ChildProcessError:
+            errors.append("leader-reap-authority-lost")
+    members = _cgroup_members(owner)
+    _adopt_members(owner, members)
+    now = _boottime_ns()
+    if now >= term_at and not state["term"] and members:
+        if wait_status is None:
+            state["leader_timed_out"] = True
+        _signal_cgroup(owner, signal.SIGTERM)
+        state["term"] = True
+    if now >= kill_at and not state["kill"] and members:
+        _kill_cgroup(owner)
+        state["kill"] = True
+    return wait_status, members
+
+
+def _read_setup_boottime(descriptor, deadline):
+    raw = b""
+    while len(raw) < SETUP_SIZE:
+        remaining = deadline - _boottime_ns()
+        if remaining <= 0:
+            raise ProcessError("child setup timeout")
+        ready, _, _ = __import__("select").select(
+            [descriptor], [], [], remaining / 1_000_000_000,
+        )
+        if not ready:
+            raise ProcessError("child setup timeout")
+        part = os.read(descriptor, SETUP_SIZE - len(raw))
+        if not part:
+            raise ProcessError("incomplete child setup")
+        raw += part
+    return struct.unpack("!QQQQ", raw)
+
+
+def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at):
+    selector = selectors.DefaultSelector()
+    buffers = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
+    overflow = {"stdout": False, "stderr": False}
+    limits = {"stdout": descriptors.pop("stdout_limit"), "stderr": descriptors.pop("stderr_limit")}
+    state = {"term": False, "kill": False, "leader_timed_out": False}
     errors = []
     wait_status = None
-    released = False
+    stdin_offset = 0
     try:
+        for name, descriptor in descriptors.items():
+            os.set_blocking(descriptor, False)
+            event = selectors.EVENT_WRITE if name == "stdin" else selectors.EVENT_READ
+            selector.register(descriptor, event, name)
+        while selector.get_map() or wait_status is None or _cgroup_members(owner):
+            wait_status, _members = _advance_cleanup(
+                owner, pid, wait_status, deadline, term_at, kill_at, state, errors,
+            )
+            remaining = deadline - _boottime_ns()
+            if remaining <= 0:
+                errors.append("absolute-deadline")
+                break
+            for key, _mask in selector.select(min(remaining / 1_000_000_000, 0.02)):
+                name = key.data
+                if name == "stdin":
+                    try:
+                        count = os.write(key.fd, stdin_bytes[stdin_offset:stdin_offset + 8192])
+                    except BlockingIOError:
+                        continue
+                    stdin_offset += count
+                    if stdin_offset == len(stdin_bytes):
+                        selector.unregister(key.fd)
+                        os.close(key.fd)
+                    continue
+                try:
+                    part = os.read(key.fd, 8192)
+                except BlockingIOError:
+                    continue
+                if not part:
+                    selector.unregister(key.fd)
+                    os.close(key.fd)
+                    continue
+                limit = STATUS_SIZE if name == "status" else limits[name]
+                room = max(0, limit - len(buffers[name]))
+                buffers[name].extend(part[:room])
+                if len(part) > room:
+                    if name == "status":
+                        errors.append("invalid-exec-status")
+                    else:
+                        overflow[name] = True
+        pipes_eof = not selector.get_map()
+    finally:
+        for key in tuple(selector.get_map().values()):
+            try:
+                selector.unregister(key.fd)
+                os.close(key.fd)
+            except OSError as error:
+                errors.append(f"pipe-close:{error.errno}")
+        selector.close()
+    return buffers, overflow, wait_status, pipes_eof, state, errors
+
+
+def _wait_all_children(leader_pid, errors):
+    """Reap every waitable child and prove the subreaper has no child left."""
+    leader_reaped = False
+    while True:
+        try:
+            observed, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return leader_reaped, True
+        except OSError as error:
+            if error.errno == errno.EINTR:
+                continue
+            errors.append(f"wait-census:{error.errno}")
+            return leader_reaped, False
+        if observed == 0:
+            return leader_reaped, False
+        if observed == leader_pid:
+            leader_reaped = True
+
+
+def _settle_cgroup(owner, leader_pid, deadline, errors):
+    stable_empty = descendants_reaped = leader_reaped = False
+    while _boottime_ns() < deadline:
+        members = _cgroup_members(owner)
+        if members:
+            _kill_cgroup(owner)
+        observed_leader, no_children = _wait_all_children(leader_pid, errors)
+        leader_reaped = leader_reaped or observed_leader
+        first_empty = not _cgroup_members(owner)
+        stable_empty = first_empty and not _cgroup_members(owner)
+        descendants_reaped = no_children
+        if stable_empty and descendants_reaped:
+            break
+        time.sleep(0.005)
+    for descriptor, _row in tuple(owner.pidfds.values()):
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            errors.append(f"pidfd-close:{error.errno}")
+    owner.pidfds.clear()
+    removed = False
+    if stable_empty:
+        try:
+            if _owned_cgroup_generation(owner) != owner.leaf_generation:
+                raise ProcessError("cgroup leaf changed before removal")
+            if owner.directory_fd is not None:
+                os.close(owner.directory_fd)
+                owner.directory_fd = None
+            if owner.base_fd is not None:
+                os.rmdir(owner.leaf_name, dir_fd=owner.base_fd)
+            else:
+                os.rmdir(owner.path)
+            removed = True
+            if owner.base_fd is not None:
+                os.close(owner.base_fd)
+                owner.base_fd = None
+            if owner.base_created:
+                os.rmdir(CGROUP_BASE)
+        except (OSError, ProcessError) as error:
+            errors.append(f"cgroup-remove:{getattr(error, 'errno', 'identity')}")
+    for attribute in ("directory_fd", "base_fd"):
+        descriptor = getattr(owner, attribute)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+                setattr(owner, attribute, None)
+            except OSError as error:
+                errors.append(f"cgroup-fd-close:{error.errno}")
+    return stable_empty, descendants_reaped, removed, leader_reaped
+
+
+def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
+                  wait_status, pipes_eof, cleanup, state, errors, release_count):
+    cgroup_empty, descendants_reaped, cgroup_removed, cleanup_reaped = cleanup
+    leader_reaped = wait_status is not None or cleanup_reaped
+    interrupted = state["term"] or state["kill"] or "absolute-deadline" in errors
+    uncertain = (not leader_reaped or not descendants_reaped or not cgroup_empty
+                 or not cgroup_removed or not pipes_eof or bool(errors) or interrupted)
+    if uncertain and outcome != "not-started":
+        outcome, status, exec_errno = "uncertain", None, None
+    body = {
+        "operation_token": intent["operation_token"], "command_serial": intent["command_serial"],
+        "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"],
+        "outcome": outcome, "status": status, "errno": exec_errno,
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(), "stdout_length": len(stdout),
+        "stdout_truncated": overflow["stdout"], "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+        "stderr_length": len(stderr), "stderr_truncated": overflow["stderr"],
+        "leader_reaped": leader_reaped, "descendants_reaped": descendants_reaped,
+        "cgroup_empty": cgroup_empty, "cgroup_removed": cgroup_removed,
+        "pipes_eof": pipes_eof, "release_count": release_count,
+        "term_attempted": state["term"], "kill_attempted": state["kill"],
+        "deadline_expired": "absolute-deadline" in errors, "uncertain": uncertain,
+        "errors": errors[:32],
+    }
+    kata_operation._validate_body("COMMAND_OUTCOME_V2", body)
+    return body
+
+
+def _cleanup_closed(cleanup, pid, wait_status):
+    leader_closed = pid is None or wait_status is not None or cleanup[3]
+    return all(cleanup[:3]) and leader_closed
+
+
+def _within_work_cutoff(work_cutoff):
+    if _boottime_ns() >= work_cutoff:
+        raise ProcessError("work cutoff reached")
+
+
+def _transact_fixed(journal, fixed, executable, inherited=()):
+    """Private T1 transaction; no executable, argv, environment, or deadline selector."""
+    if fixed is not _FIXED_COMMANDS.get(fixed.command_id):
+        raise ProcessError("internally fixed command required")
+    if fixed.command_id is CommandId.CONTAINERD_START:
+        raise ProcessError("long-lived containerd requires the runtime daemon owner")
+    if not hasattr(signal, "pidfd_send_signal") or not hasattr(os, "pidfd_open"):
+        raise ProcessError("usable pidfd signaling is required")
+    context = kata_operation._command_context(journal)
+    deadline = _boottime_ns() + fixed.duration_ns
+    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
+    spec = _Spec(
+        fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
+        fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
+    )
+    bindings = _claim_inherited_fds(spec, inherited)
+    intent = _intent_body(context, fixed, executable, bindings, deadline)
+    kata_operation._record_command_intent(journal, intent)
+    owner = None
+    pid = None
+    pidfd = None
+    pipes = []
+    release_count = 0
+    previous_subreaper = None
+    subreaper_restored = False
+    errors = []
+    wait_status = None
+    preexec_recorded = False
+    try:
+        _require_no_children()
+        previous_subreaper = _set_subreaper(True)
+        _within_work_cutoff(work_cutoff)
+        owner = _prepare_cgroup(context)
+        def owned_pipe():
+            pair = os.pipe2(os.O_CLOEXEC)
+            pipes.extend(pair)
+            return pair
         release_r, release_w = owned_pipe()
         setup_r, setup_w = owned_pipe()
         status_r, status_w = owned_pipe()
         stdout_r, stdout_w = owned_pipe()
         stderr_r, stderr_w = owned_pipe()
         stdin_r, stdin_w = owned_pipe()
+        _within_work_cutoff(work_cutoff)
+        child_spec = _Spec(
+            fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
+            fixed.duration_ns / 1_000_000_000, bindings,
+        )
         pid = os.fork()
         if pid == 0:
-            _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r)
+            _child(executable.descriptor, child_spec, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r)
+        pidfd = _usable_pidfd_open(pid)
         for descriptor in (release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r):
-            _close_owned(descriptor, pipes, errors)
-        if spec.stdin and os.write(stdin_w, spec.stdin) != len(spec.stdin):
-            raise ProcessError("short fixed stdin write")
-        _close_owned(stdin_w, pipes, errors)
-        report = _read_setup(setup_r, time.monotonic() + 5)
-        _close_owned(setup_r, pipes, errors)
-        identity, pidfd = _identity(pid, report)
-        if os.write(release_w, b"R") != 1:
-            raise ProcessError("release failed")
-        released = True
-        _close_owned(release_w, pipes, errors)
-        drain_fds = {"status": status_r, "stdout": stdout_r, "stderr": stderr_r}
-        for descriptor in drain_fds.values():
+            os.close(descriptor)
             pipes.remove(descriptor)
-        drained = _drain(pid, drain_fds, time.monotonic() + spec.deadline_seconds)
-        buffers, truncated, wait_status, leader_timed_out, pipe_timed_out, drain_errors = drained
+        setup = _read_setup_boottime(setup_r, work_cutoff)
+        os.close(setup_r)
+        pipes.remove(setup_r)
+        identity, observed_pidfd = _identity(pid, setup)
+        if observed_pidfd is not None:
+            os.close(observed_pidfd)
+        if not identity.pidfd_supported:
+            raise ProcessError("leader pidfd unavailable")
+        _register_cgroup(owner, pid)
+        preexec = {
+            "operation_token": intent["operation_token"], "command_serial": intent["command_serial"],
+            "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"],
+            "host_boot_id": identity.boot_id, "pid": identity.pid, "ppid": identity.ppid,
+            "pgid": identity.pgid, "sid": identity.sid, "proc_start_time": identity.starttime,
+            "pidfd_supported": True, "cgroup_path": owner.path,
+            "cgroup_generation": dict(zip(kata_operation.GEN_KEYS, owner.leaf_generation)),
+            "exec_status_pipe": _host_generation(status_r), "release_count": 0,
+        }
+        kata_operation._record_command_preexec(journal, preexec)
+        preexec_recorded = True
+        _within_work_cutoff(work_cutoff)
+        if os.write(release_w, b"R") != 1:
+            raise ProcessError("short release")
+        release_count = 1
+        os.close(release_w)
+        pipes.remove(release_w)
+        for descriptor in (status_r, stdout_r, stderr_r, stdin_w):
+            pipes.remove(descriptor)
+        work_span = max(1, fixed.duration_ns - _cleanup_reserve_ns(fixed))
+        term_at = work_cutoff - min(1_500_000_000, work_span // 4)
+        kill_at = work_cutoff - min(250_000_000, work_span // 8)
+        buffers, overflow, wait_status, pipes_eof, state, drain_errors = _drain_transaction(
+            pid, {"status": status_r, "stdout": stdout_r, "stderr": stderr_r,
+                  "stdin": stdin_w, "stdout_limit": fixed.stdout_limit,
+                  "stderr_limit": fixed.stderr_limit},
+            fixed.stdin, owner, work_cutoff, term_at, kill_at,
+        )
         errors.extend(drain_errors)
-        if leader_timed_out or pipe_timed_out:
-            wait_status, cleanup_errors = _cleanup_child(pid, identity, wait_status, released)
-            errors.extend(cleanup_errors)
-        if leader_timed_out:
-            errors.append("leader-deadline")
-        if pipe_timed_out:
-            errors.append("pipe-deadline")
         status_raw = bytes(buffers["status"])
-        if status_raw and len(status_raw) != STATUS_SIZE:
-            errors.append("invalid-exec-status")
         exec_errno = struct.unpack("!I", status_raw)[0] if len(status_raw) == STATUS_SIZE else None
-        stdout = bytes(buffers["stdout"])
-        stderr = bytes(buffers["stderr"])
-        if truncated["stdout"] or truncated["stderr"]:
-            errors.append("output-cap")
-        if pidfd is not None:
-            _close_owned(pidfd, [pidfd], errors, "pidfd-close")
-            pidfd = None
-        if pipe_timed_out or wait_status is None:
-            outcome, status = "uncertain", None
-        elif exec_errno is not None:
-            outcome, status = "exec_failed", None
-        elif os.WIFEXITED(wait_status):
+        stdout, stderr = bytes(buffers["stdout"]), bytes(buffers["stderr"])
+        if exec_errno is not None:
+            outcome, status = "exec-failed", None
+        elif wait_status is not None and os.WIFEXITED(wait_status):
             outcome, status = "exited", os.WEXITSTATUS(wait_status)
-            if status != 0:
-                errors.append(f"exit:{status}")
-        elif os.WIFSIGNALED(wait_status):
+        elif wait_status is not None and os.WIFSIGNALED(wait_status):
             outcome, status = "signaled", os.WTERMSIG(wait_status)
         else:
             outcome, status = "uncertain", None
-            errors.append("unknown-wait-status")
-        timed_out = leader_timed_out or pipe_timed_out
-        return ProcessOutcome(spec.command_id, identity, outcome, status, exec_errno, stdout, stderr,
-                              hashlib.sha256(stdout).hexdigest(), hashlib.sha256(stderr).hexdigest(),
-                              truncated["stdout"], truncated["stderr"], timed_out,
-                              leader_timed_out, pipe_timed_out, wait_status is not None, tuple(errors))
+        cleanup = _settle_cgroup(owner, pid, deadline, errors)
+        try:
+            _set_subreaper(previous_subreaper)
+        except BaseException as error:
+            errors.append(f"subreaper-restore:{type(error).__name__}")
+        subreaper_restored = True
+        if not _cleanup_closed(cleanup, pid, wait_status):
+            raise ProcessError("cleanup continuation required")
+        body = _outcome_body(
+            intent, outcome, status, exec_errno, stdout, stderr, overflow,
+            wait_status, pipes_eof, cleanup, state, errors, release_count,
+        )
+        durable = kata_operation._record_command_outcome(journal, body)
+        return ProcessOutcome(
+            fixed.command_id.value, identity, body["outcome"], body["status"], body["errno"],
+            stdout, stderr, body["stdout_sha256"], body["stderr_sha256"],
+            body["stdout_truncated"], body["stderr_truncated"],
+            body["deadline_expired"] or state["term"] or state["kill"],
+            state["leader_timed_out"],
+            not state["leader_timed_out"] and (state["term"] or state["kill"] or not pipes_eof),
+            body["leader_reaped"], tuple(body["errors"]),
+        ), durable
     except BaseException as primary:
-        errors.append(f"primary:{type(primary).__name__}:{primary}")
+        errors.append(f"primary:{type(primary).__name__}")
         for descriptor in tuple(pipes):
-            _close_owned(descriptor, pipes, errors)
-        if pid:
-            wait_status, cleanup_errors = _cleanup_child(pid, identity, wait_status, released)
-            errors.extend(cleanup_errors)
-        if pidfd is not None:
-            _close_owned(pidfd, [pidfd], errors, "pidfd-close")
-            pidfd = None
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                errors.append(f"close:{error.errno}")
+        if pid is not None and wait_status is None:
+            try:
+                if pidfd is not None:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                while _boottime_ns() < deadline:
+                    observed, status = os.waitpid(pid, os.WNOHANG)
+                    if observed == pid:
+                        wait_status = status
+                        break
+                    time.sleep(0.005)
+                if wait_status is None:
+                    errors.append("leader-cleanup:unreaped")
+            except BaseException as error:
+                errors.append(f"leader-cleanup:{type(error).__name__}")
+        cleanup = (owner is None, owner is None, owner is None, wait_status is not None)
+        killed_cgroup = False
+        if owner is not None:
+            try:
+                _kill_cgroup(owner)
+                killed_cgroup = True
+                cleanup = _settle_cgroup(owner, pid, deadline, errors)
+            except BaseException as error:
+                errors.append(f"cgroup-cleanup:{type(error).__name__}")
+        if previous_subreaper is not None and not subreaper_restored:
+            try:
+                _set_subreaper(previous_subreaper)
+            except BaseException as error:
+                errors.append(f"subreaper-restore:{type(error).__name__}")
+            subreaper_restored = True
+        failure_state = {"term": False, "kill": killed_cgroup}
+        failure_body = _outcome_body(
+            intent, "uncertain" if preexec_recorded else "not-started", None, None,
+            b"", b"", {"stdout": False, "stderr": False}, wait_status,
+            False, cleanup, failure_state, errors,
+            release_count if preexec_recorded else 0,
+        )
+        if _cleanup_closed(cleanup, pid, wait_status):
+            try:
+                kata_operation._record_command_outcome(journal, failure_body)
+            except BaseException as journal_error:
+                errors.append(f"outcome:{type(journal_error).__name__}")
+        else:
+            errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join(errors)) from primary
     finally:
-        for descriptor in tuple(pipes):
-            _close_owned(descriptor, pipes, errors)
         if pidfd is not None:
-            _close_owned(pidfd, [pidfd], errors, "pidfd-close")
+            try:
+                os.close(pidfd)
+            except OSError:
+                pass
+        if previous_subreaper is not None and not subreaper_restored:
+            try:
+                _set_subreaper(previous_subreaper)
+            except BaseException:
+                pass
 
+
+def _recover_cgroup(path, expected_generation, deadline, state, errors):
+    """Open the deterministic leaf, then boundedly kill, poll, and remove it."""
+    base_fd = leaf_fd = owner = None
+    try:
+        base_fd, _base_generation = _directory_identity(CGROUP_BASE)
+        leaf_fd, observed = _directory_identity(path)
+        leaf_generation = _generation_tuple(observed)
+        if expected_generation is not None and leaf_generation != expected_generation:
+            raise ProcessError("recovery cgroup generation mismatch")
+        owner = _CgroupOwner(
+            path, leaf_generation, (), False, {}, leaf_fd, base_fd,
+            path.rsplit("/", 1)[1],
+        )
+        leaf_fd = base_fd = None
+        _kill_cgroup(owner)
+        state["kill"] = True
+        empty = False
+        while _boottime_ns() < deadline:
+            members = _cgroup_members(owner)
+            if members:
+                _kill_cgroup(owner)
+            elif not _cgroup_members(owner):
+                empty = True
+                break
+            time.sleep(0.005)
+        removed = False
+        if empty:
+            os.close(owner.directory_fd)
+            owner.directory_fd = None
+            os.rmdir(owner.leaf_name, dir_fd=owner.base_fd)
+            os.close(owner.base_fd); owner.base_fd = None
+            os.rmdir(CGROUP_BASE)
+            removed = True
+        for attribute in ("directory_fd", "base_fd"):
+            descriptor = getattr(owner, attribute)
+            if descriptor is not None:
+                os.close(descriptor)
+                setattr(owner, attribute, None)
+        return empty, removed
+    except FileNotFoundError:
+        if base_fd is not None:
+            os.close(base_fd); base_fd = None
+            os.rmdir(CGROUP_BASE)
+        return True, True
+    except BaseException as error:
+        errors.append(f"recovery:{type(error).__name__}")
+        return False, False
+    finally:
+        owned = () if owner is None else (owner.directory_fd, owner.base_fd)
+        for descriptor in (leaf_fd, base_fd, *owned):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _recover_daemon_reap(preexec, deadline, errors):
+    """Boundedly reap when parent, otherwise prove the recorded PID absent."""
+    leader_done = descendants_done = False
+    while _boottime_ns() < deadline:
+        try:
+            observed, _status = os.waitpid(preexec["pid"], os.WNOHANG)
+            leader_done = leader_done or observed == preexec["pid"]
+        except ChildProcessError:
+            leader_done = _observe_proc(preexec["pid"]).kind is ObservationKind.ABSENT
+        except OSError as error:
+            if error.errno != errno.EINTR: errors.append(f"daemon-wait:{error.errno}")
+        census_leader, descendants_done = _wait_all_children(preexec["pid"], errors)
+        leader_done = leader_done or census_leader
+        if leader_done and descendants_done: return True, True
+        time.sleep(0.005)
+    return leader_done, descendants_done
+
+
+def _recover_pending_fixed(journal):
+    """Cleanup-only crash continuation; absence never fabricates wait/reap proof."""
+    if hasattr(journal, "recovery_command"):
+        intent, preexec, terminal = kata_operation._recovery_command(journal)
+    else:
+        intent, preexec = kata_operation._pending_command(journal)
+        terminal = None
+    errors = ["crash-continuation"]
+    state = {"term": False, "kill": False}
+    path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
+    expected = None if preexec is None else _generation_tuple(preexec["cgroup_generation"])
+    deadline = _boottime_ns() + (4_000_000_000 if intent["command_id"] == "CONTAINERD_START" else 2_000_000_000)
+    cgroup_deadline = deadline - 2_000_000_000 if intent["command_id"] == "CONTAINERD_START" else deadline
+    cgroup_empty, cgroup_removed = _recover_cgroup(path, expected, cgroup_deadline, state, errors)
+    closure = (cgroup_empty, False, cgroup_removed, False)
+    if intent["command_id"] == "CONTAINERD_START" and preexec is not None:
+        leader_reaped, descendants_reaped = _recover_daemon_reap(preexec, deadline, errors)
+        closure = (cgroup_empty, descendants_reaped, cgroup_removed, leader_reaped)
+    if terminal is not None:
+        return kata_operation.DurableCommandOutcome(
+            terminal["command_serial"], terminal["command_id"],
+            terminal["binding_sha256"], terminal,
+        )
+    body = _outcome_body(
+        intent, "not-started" if preexec is None else "uncertain", None, None,
+        b"", b"", {"stdout": False, "stderr": False}, None, False,
+        closure, state, errors, 0,
+    )
+    return kata_operation._record_command_outcome(journal, body)
 
 def _test_spec(action):
     if type(action) is not _TestAction:
         raise ProcessError("closed test action required")
-    timeout = 0.2 if action in {_TestAction.SLEEP, _TestAction.HELD_PIPE} else 5
+    timeout = 2 if action in {_TestAction.SLEEP, _TestAction.HELD_PIPE} else 5
     inherited = ((kata_ssh.KEY_FD, kata_ssh.KNOWN_HOSTS_FD)
                  if action is _TestAction.INHERITED else ())
     return _Spec("TEST_" + action.name, (TEST_PATH, action.value), b"", "test", timeout, inherited)
-
-
-def _make_test_issuer(contract_raw, expected_sha256):
-    """Test-only closure issuer; it has no production CommandPermit route."""
-    if os.environ.get("COGS_KATA_PROCESS_TESTING_V1") != "1" or platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise ProcessError("test issuer is disabled")
-    contract = _parse_contract(contract_raw, expected_sha256)
-    if contract.command_id != "TEST_HELPER" or contract.executable.logical_path != TEST_PATH or contract.loader is not None or contract.libraries:
-        raise ProcessError("not the fixed static test closure")
-    executable_fd = _sealed_memfd(contract.executable, True)
-    used = False
-
-    def issue(action, inherited=None):
-        nonlocal used
-        if used:
-            raise ProcessError("test authority already consumed")
-        used = True
-        try:
-            return _supervise(executable_fd, _test_spec(action), inherited)
-        finally:
-            os.close(executable_fd)
-
-    return issue
 
 
 def _unissued_spec_snapshots_for_tests():
