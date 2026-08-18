@@ -335,7 +335,13 @@ def linux_supervisor_tests():
                 try: os.close(descriptor)
                 except OSError: pass
             value.pidfds.clear()
-            return True, True, True, False
+            descendants_reaped = False
+            while time.monotonic_ns() < deadline:
+                _leader_reaped, descendants_reaped = process._wait_all_children(leader, _errors)
+                if descendants_reaped:
+                    break
+                time.sleep(0.005)
+            return True, descendants_reaped, True, False
         return (
             patch.object(process, "_prepare_cgroup", side_effect=prepare),
             patch.object(process, "_register_cgroup", side_effect=register),
