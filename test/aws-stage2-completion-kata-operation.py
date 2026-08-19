@@ -2365,6 +2365,8 @@ def production_owner_test():
                 assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
                 expired_release.close()
 
+                expired_teardown = release_rows[:2] + (release_deadline, release_admission,
+                    settle_production_fs) + release_rows[2:5] + release_rows[6:9]
                 production_fixture(expired_teardown)
                 expired_network_owner = operation._open_fixed_operation()
                 with patch.object(operation, "_boottime_ns", return_value=edge):
