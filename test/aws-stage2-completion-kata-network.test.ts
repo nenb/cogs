@@ -8,6 +8,7 @@ const root = process.cwd();
 const productionPath = join(root, "deploy/aws-feasibility/remote/completion_kata_network.py");
 const pythonTestPath = join(root, "test/aws-stage2-completion-kata-network.py");
 const linuxTestPath = join(root, "test/aws-stage2-completion-kata-network-linux.py");
+const stabilizationPath = join(root, "scripts/stabilize-stage2-host-network.py");
 
 test("S3 fixed network/firewall owner is closed and identity-conservative", async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
@@ -31,11 +32,15 @@ test("S3 fixed network/firewall owner is closed and identity-conservative", asyn
 
   const source = await readFile(productionPath, "utf8");
   const linuxFixture = await readFile(linuxTestPath, "utf8");
+  const stabilization = await readFile(stabilizationPath, "utf8");
   const workflow = await readFile(join(root, ".github/workflows/stage2-workload-linux-foundations.yml"), "utf8");
   assert.match(
     workflow,
-    /COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1[\s\S]*aws-stage2-completion-kata-network-linux\.py/u,
+    /COGS_REQUIRE_STAGE2_HOST_NETWORK_STABILITY=1[\s\S]*stabilize-stage2-host-network\.py[\s\S]*COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1[\s\S]*aws-stage2-completion-kata-network-linux\.py/u,
   );
+  assert.match(stabilization, /DEADLINE_SECONDS = 300[\s\S]*STABLE_SAMPLES = 5/u);
+  assert.match(stabilization, /\("\/usr\/sbin\/ip", "-j", "-d", "link", "show"\)/u);
+  assert.doesNotMatch(stabilization, /\b(?:add|delete|set|replace)\b.*\blink\b|shell=True/u);
   assert.match(linuxFixture, /move_to_quarantine\(retained_ns\)[\s\S]*replacement = ns_identity\(netns\)/u);
   assert.doesNotMatch(linuxFixture, /boto|terraform|tofu|aws |provider/u);
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {

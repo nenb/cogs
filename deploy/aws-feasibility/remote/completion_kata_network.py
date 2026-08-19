@@ -1660,6 +1660,31 @@ def _normalize_baseline_links(links):
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _pre_admission_host_links_binding(raw):
+    """Bind every host link, waiting for an announced Hyper-V VF attachment."""
+    links = _load(raw)
+    if (type(links) is not list or not links or any(type(row) is not dict for row in links)
+            or any(type(row.get("ifindex")) is not int or type(row.get("ifname")) is not str
+                   or not row["ifname"] or type(row.get("flags")) is not list
+                   or any(type(flag) is not str for flag in row["flags"]) for row in links)
+            or len({row["ifindex"] for row in links}) != len(links)
+            or len({row["ifname"] for row in links}) != len(links)):
+        raise NetworkError("pre-admission host link inventory")
+    hyperv = [row for row in links if row.get("parentbus") == "vmbus"]
+    for master in hyperv:
+        address = master.get("address")
+        attached = [row for row in links if (
+            row.get("master") == master["ifname"] and row.get("parentbus") == "pci"
+            and row.get("address") == address and "SLAVE" in row["flags"]
+            and type(master.get("tso_max_size")) is int
+            and row.get("tso_max_size") == master["tso_max_size"]
+            and type(row.get("parentdev")) is str
+            and re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", row["parentdev"]))]
+        if type(address) is not str or len(attached) != 1:
+            return None
+    return hashlib.sha256(_normalize_baseline_links(links)).hexdigest()
+
+
 def _exact_unmounted_placeholder(raw, name, expected):
     full = {"device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"}
     if type(expected) is not dict or set(expected) not in ({"device", "inode"}, full):

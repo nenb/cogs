@@ -169,17 +169,31 @@ bridge_b = copy.deepcopy(bridge_a); bridge_b[0]["linkinfo"]["info_data"]["gc_tim
 assert network._normalize_baseline_links(bridge_a) == network._normalize_baseline_links(bridge_b)
 bridge_replaced = copy.deepcopy(bridge_b); bridge_replaced[0]["ifname"] = "foreign0"
 assert network._normalize_baseline_links(bridge_a) != network._normalize_baseline_links(bridge_replaced)
-hyperv_a = [{"ifname": "eth0", "address": "02:00:00:00:00:01", "parentbus": "vmbus",
-             "tso_max_size": 62780}]
-hyperv_slave = {"ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
-                "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci",
+hyperv_a = [{"ifindex": 2, "ifname": "eth0", "flags": ["BROADCAST", "UP"],
+             "address": "02:00:00:00:00:01", "parentbus": "vmbus", "tso_max_size": 62780}]
+hyperv_slave = {"ifindex": 5, "ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
+                "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci", "tso_max_size": 524280,
                 "parentdev": "0001:00:02.0", "vfinfo_list": [], "altnames": ["enP1p0s2"]}
-assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
-    hyperv_a + [hyperv_slave])
+hyperv_terminal = [{**hyperv_a[0], "tso_max_size": 524280}, hyperv_slave]
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(hyperv_terminal)
 assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
     [{**hyperv_a[0], "tso_max_size": 0}])
 assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
     [{**hyperv_a[0], "tso_max_size": 524280}])
+# Pre-admission waits for the VF, then binds every exact row and TSO value.
+assert network._pre_admission_host_links_binding(encoded(hyperv_a)) is None
+terminal_binding = network._pre_admission_host_links_binding(encoded(hyperv_terminal))
+assert type(terminal_binding) is str and len(terminal_binding) == 64
+assert network._pre_admission_host_links_binding(encoded([
+    {**hyperv_terminal[0], "tso_max_size": 62780}, hyperv_slave])) is None
+assert network._pre_admission_host_links_binding(encoded(hyperv_terminal + [
+    {"ifindex": 9, "ifname": "foreign0", "flags": ["UP"]}])) != terminal_binding
+assert network._pre_admission_host_links_binding(encoded([
+    hyperv_terminal[0], {**hyperv_slave, "parentdev": "0002:00:02.0"}])) != terminal_binding
+assert network._pre_admission_host_links_binding(encoded([
+    {"ifindex": 1, "ifname": "lo", "flags": ["LOOPBACK", "UP"]}])) is not None
+rejected(lambda: network._pre_admission_host_links_binding(encoded([
+    hyperv_terminal[0], {**hyperv_slave, "ifindex": 2}])))
 large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
 rejected(lambda: network._load(large_nft_array))
 assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1
