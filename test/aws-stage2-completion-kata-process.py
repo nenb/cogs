@@ -375,8 +375,7 @@ def linux_supervisor_tests():
             if used:
                 raise process.ProcessError("test transaction already consumed")
             used = True
-            command_id = process.CommandId.SSH_READY if action is process._TestAction.INHERITED \
-                else process.CommandId.CTR_TASK_LIST
+            command_id = process.CommandId.CTR_TASK_LIST
             test_spec = process._test_spec(action)
             fixed = process.FixedCommand(
                 command_id, "test", process.TEST_PATH, test_spec.argv, test_spec.stdin,
