@@ -26,9 +26,14 @@ QUARANTINE_RECORDS = frozenset({"NETWORK_QUARANTINE_INTENT_V2", "NETWORK_QUARANT
     "NETWORK_DETACH_INTENT_V2", "NETWORK_DETACHED_V2"})
 ALL_RECORDS = RECORDS | QUARANTINE_RECORDS | {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}
 CLEANUP_INTENTS = MappingProxyType({
-    "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT"),
-    "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT"),
+    # V1 completion records historically settled their intent. V2 keeps the
+    # intent active until a separately appended acknowledgement.
+    "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", None),
+    "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", None),
+    "NETWORK_CLEANUP_INTENT_V2": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
+    "FIREWALL_CLEANUP_INTENT_V2": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", "FIREWALL_CLEANUP_SETTLED_V2"),
 })
+CLEANUP_SETTLED = frozenset(value[2] for value in CLEANUP_INTENTS.values() if value[2] is not None)
 _CLEANUP_RECORDS = frozenset({
     "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "COMMAND_OUTCOME_V2",
     "NETWORK_SNAPSHOT_V2", "UNCERTAIN", *ALL_RECORDS,
@@ -90,30 +95,47 @@ def _fail(value):
 def active_cleanup(records, require=_fail):
     active = None
     for record in records:
-        if record.record_type in CLEANUP_INTENTS:
-            require(active is None); active = record.record_type
-        elif active is not None and record.record_type == CLEANUP_INTENTS[active][1]:
-            active = None
+        kind = record.record_type
+        if kind in CLEANUP_INTENTS:
+            require(active is None); active = kind
+        elif active is not None:
+            _starts, completion, acknowledgement = CLEANUP_INTENTS[active]
+            if kind == acknowledgement or acknowledgement is None and kind == completion:
+                active = None
     return active
 
 def cleanup_step(active, kind, phase, require=_fail):
     if active is not None:
-        require(kind in _CLEANUP_RECORDS or kind == CLEANUP_INTENTS[active][1])
-        return (None if kind == CLEANUP_INTENTS[active][1] else active), False
+        _starts, completion, acknowledgement = CLEANUP_INTENTS[active]
+        require(kind in _CLEANUP_RECORDS or kind in {completion, acknowledgement})
+        if kind == acknowledgement:
+            require(phase == completion); return None, True
+        return (None if acknowledgement is None and kind == completion else active), False
     if kind in CLEANUP_INTENTS:
         require(phase in CLEANUP_INTENTS[kind][0]); return kind, True
+    require(kind not in CLEANUP_SETTLED)
     return None, False
 
+def _cleanup_kind(target):
+    return {"network": "NETWORK_CLEANUP_INTENT_V2",
+            "firewall": "FIREWALL_CLEANUP_INTENT_V2"}.get(target)
+
 def begin_cleanup(authority, target, reload, write, legal, require):
-    kind = {"network": "NETWORK_CLEANUP_INTENT_V1",
-            "firewall": "FIREWALL_CLEANUP_INTENT_V1"}.get(target)
-    require(kind is not None)
+    kind = _cleanup_kind(target); require(kind is not None)
     _io, records, status = reload(authority); require(status == "exact" and records)
     active = active_cleanup(records, require)
     if active is not None:
         require(active == kind); return
     require(legal(records) in CLEANUP_INTENTS[kind][0])
     write(authority, kind, {"operation_token": records[0].body["operation_token"]})
+
+def settle_cleanup(authority, target, reload, write, legal, require):
+    kind = _cleanup_kind(target); require(kind is not None)
+    _io, records, status = reload(authority); require(status == "exact" and records)
+    require(active_cleanup(records, require) == kind)
+    _starts, completion, acknowledgement = CLEANUP_INTENTS[kind]
+    require(legal(records) == completion and acknowledgement is not None)
+    write(authority, acknowledgement, {"operation_token": records[0].body["operation_token"]})
 
 def poison_uncertain(authority, reason, reasons, poisoned, reload, write, legal, require):
     require(type(reason) is str and reason in reasons); poisoned.add(authority)

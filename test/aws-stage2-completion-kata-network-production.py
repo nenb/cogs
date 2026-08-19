@@ -344,6 +344,7 @@ class JournalCut:
     def __init__(self): self.rows = [{"snapshot_kind": "ready", "identity": ready, "baselines": BASELINES}]
     def network_history(self): return ()
     def begin_network_cleanup(self, _target): pass
+    def settle_network_cleanup(self, _target): pass
 cut = JournalCut(); snapshots = []
 def source_rows(*ids):
     return [{"observation_serial": index + 10, "source_id": name,
@@ -418,7 +419,8 @@ for snapshot_kind, existing, expected_removals in (("ready", netns_object, [netw
          patch.object(network, "_fresh_baseline_outputs", return_value=((b"[]",) * 6, b"mount\n", BASELINES)), \
          patch.object(network, "_snapshot", side_effect=teardown_snapshot), \
          patch.object(network, "_sources", return_value=SOURCE), \
-         patch.object(operation, "_settle_network_phase"):
+         patch.object(operation, "_settle_network_phase"), \
+         patch.object(operation, "_durable_phase", return_value="NETWORK_ABSENT"):
         network._remove_fixed_network(teardown, object(), object(), object())
     check(removals == expected_removals, "ready-only/absent teardown issued wrong rm")
 
@@ -457,8 +459,8 @@ class CleanupFaultJournal:
         self.poisoned = poisoned
     def begin_network_cleanup(self, observed_target):
         check(observed_target == self.target, "wrong cleanup intent target")
-        marker = {"network": "NETWORK_CLEANUP_INTENT_V1",
-                  "firewall": "FIREWALL_CLEANUP_INTENT_V1"}[observed_target]
+        marker = {"network": "NETWORK_CLEANUP_INTENT_V2",
+                  "firewall": "FIREWALL_CLEANUP_INTENT_V2"}[observed_target]
         self.durable.append(CleanupRecord(marker))
     def record_uncertain(self, reason):
         check(reason == "incomplete", "wrong cleanup poison")
@@ -472,8 +474,8 @@ class CleanupFaultJournal:
         except ValueError as error: raise operation.OperationError() from error
 
 for target, cleanup, marker in (
-        ("network", network._remove_fixed_network, "NETWORK_CLEANUP_INTENT_V1"),
-        ("firewall", network._remove_fixed_firewall, "FIREWALL_CLEANUP_INTENT_V1")):
+        ("network", network._remove_fixed_network, "NETWORK_CLEANUP_INTENT_V2"),
+        ("firewall", network._remove_fixed_firewall, "FIREWALL_CLEANUP_INTENT_V2")):
     durable = []
     primary = RuntimeError(target + " cleanup failed")
     settlement = OSError(target + " uncertainty append failed")
@@ -493,17 +495,84 @@ for target, cleanup, marker in (
     reject(lambda: reopened.advance("TASK_ABSENT"), "cleanup-only reopen advanced lifecycle")
     reject(lambda: reopened.advance("FINAL_BASELINES"), "cleanup-only reopen advanced retirement")
 
-# An ambiguously reported completion is accepted only after an independent
-# exact durable-phase reload proves that the completion append survived.
-settlement_error = OSError("post-fsync settlement verification")
-with patch.object(operation, "_settle_network_phase", side_effect=settlement_error), \
-     patch.object(operation, "_durable_phase", return_value="NETWORK_ABSENT"):
-    network._settle_or_confirm(object(), "NETWORK_ABSENT")
-with patch.object(operation, "_settle_network_phase", side_effect=settlement_error), \
-     patch.object(operation, "_durable_phase", return_value="TASK_STOPPED"):
-    try: network._settle_or_confirm(object(), "NETWORK_ABSENT")
-    except OSError as error: check(error is settlement_error, "settlement ambiguity replaced")
-    else: raise AssertionError("unconfirmed settlement ambiguity accepted")
+# V1 completion retains its historical settlement meaning. V2 completion does
+# not retire cleanup authority until the explicit, post-confirmation ack.
+legacy = [CleanupRecord("NETWORK_CLEANUP_INTENT_V1"), CleanupRecord("NETWORK_ABSENT")]
+check(journal_model.active_cleanup(legacy) is None, "historical cleanup meaning changed")
+unfinished = [CleanupRecord("NETWORK_CLEANUP_INTENT_V2"), CleanupRecord("NETWORK_ABSENT")]
+check(journal_model.active_cleanup(unfinished) == "NETWORK_CLEANUP_INTENT_V2",
+      "completion retired unacknowledged cleanup")
+reject(lambda: journal_model.cleanup_step(journal_model.active_cleanup(unfinished),
+    "TASK_ABSENT", "NETWORK_ABSENT"), "unacknowledged cleanup advanced after reopen")
+reject(lambda: journal_model.cleanup_step(journal_model.active_cleanup(unfinished),
+    "FINAL_BASELINES", "NETWORK_ABSENT"), "unacknowledged cleanup retired after reopen")
+
+class SettlementJournal:
+    def __init__(self, target):
+        self.target = target
+        self.intent = {"network": "NETWORK_CLEANUP_INTENT_V2",
+                       "firewall": "FIREWALL_CLEANUP_INTENT_V2"}[target]
+        self.phase = {"network": "NETWORK_ABSENT", "firewall": "FIREWALL_ABSENT"}[target]
+        self.ack = {"network": "NETWORK_CLEANUP_SETTLED_V2",
+                    "firewall": "FIREWALL_CLEANUP_SETTLED_V2"}[target]
+        self.durable = [CleanupRecord(self.intent)]
+    def complete(self, error=None):
+        self.durable.append(CleanupRecord(self.phase))
+        if error is not None: raise error
+    def settle_network_cleanup(self, target):
+        check(target == self.target and self.durable[-1].record_type == self.phase,
+              "cleanup ack preceded verified completion")
+        self.durable.append(CleanupRecord(self.ack))
+
+# Normal completion and a durable completion that reports failure both append
+# the ack. A reopened owner then sees no cleanup-only residue.
+for target in ("network", "firewall"):
+    for reported_failure in (False, True):
+        settled = SettlementJournal(target)
+        settlement_error = OSError("post-fsync completion failure")
+        def complete(*_args): settled.complete(settlement_error if reported_failure else None)
+        with patch.object(operation, "_settle_network_phase", side_effect=complete), \
+             patch.object(operation, "_durable_phase", return_value=settled.phase):
+            network._settle_cleanup(settled, target, settled.phase)
+        check([row.record_type for row in settled.durable][-2:] == [settled.phase, settled.ack],
+              "successful cleanup omitted explicit ack")
+        active = journal_model.active_cleanup(settled.durable)
+        check(active is None, "acked cleanup remained active after reopen")
+        next_kind = "TASK_ABSENT" if target == "network" else "INPUT_REMOVED"
+        check(journal_model.cleanup_step(active, next_kind, settled.phase) == (None, False),
+              "acked cleanup blocked normal reopen")
+
+# If completion is durably appended, its reported failure cannot erase intent
+# when confirmation and the subsequent UNCERTAIN append both fail. This is the
+# exact ambiguous-durability reopen cut.
+for target, cleanup, phase, snapshot_kind in (
+        ("network", network._remove_fixed_network, "NETWORK_ABSENT", "network-absent"),
+        ("firewall", network._remove_fixed_firewall, "FIREWALL_ABSENT", "firewall-restored")):
+    durable = []; completion_error = OSError(target + " completion report failed")
+    confirmation_error = OSError(target + " completion confirmation failed")
+    uncertainty_error = OSError(target + " uncertainty append failed")
+    class AmbiguousJournal(CleanupFaultJournal):
+        def __init__(self): super().__init__(durable, target, uncertainty_error)
+    ambiguous = AmbiguousJournal()
+    def complete_then_report_failure(_journal, observed_phase):
+        check(observed_phase == phase, "wrong ambiguous completion phase")
+        durable.append(CleanupRecord(phase)); raise completion_error
+    with patch.object(network, "_baselines", return_value=(BASELINES, [{"snapshot_kind": snapshot_kind}])), \
+         patch.object(network, "_resume_effect"), \
+         patch.object(operation, "_settle_network_phase", side_effect=complete_then_report_failure), \
+         patch.object(operation, "_durable_phase", side_effect=confirmation_error):
+        try: cleanup(ambiguous, object(), object(), object())
+        except network.NetworkCleanupError as error:
+            primary, poison = error.errors
+            check(isinstance(primary, network.NetworkCleanupError) and
+                  primary.errors == (completion_error, confirmation_error) and poison is uncertainty_error,
+                  "ambiguous completion failures were not preserved")
+        else: raise AssertionError("completion/confirmation/uncertainty failure accepted")
+    check(journal_model.active_cleanup(durable) == ambiguous.durable[0].record_type,
+          "ambiguous durable completion erased cleanup intent")
+    reopened = CleanupFaultJournal(durable)
+    reject(lambda: reopened.advance("TASK_ABSENT"), "ambiguous reopen advanced lifecycle")
+    reject(lambda: reopened.advance("FINAL_BASELINES"), "ambiguous reopen retired")
 
 class PlaceholderStat:
     st_dev = 7; st_ino = 9; st_mode = 0o100600; st_uid = 0; st_gid = 0

@@ -2334,14 +2334,20 @@ def _resume_effect(journal, ip, nft, tc):
     _record_effect(journal, "NETWORK_EFFECT_SETTLED_V2", observed)
 
 
-def _settle_or_confirm(journal, phase):
+def _settle_cleanup(journal, target, phase):
     import completion_kata_operation as operation
+    completion_error = None
     try: operation._settle_network_phase(journal, phase)
-    except BaseException as error:
-        try: confirmed = operation._durable_phase(journal) == phase
-        except BaseException as confirmation_error:
-            raise NetworkCleanupError(error, confirmation_error)
-        if not confirmed: raise
+    except BaseException as error: completion_error = error
+    try: confirmed = operation._durable_phase(journal) == phase
+    except BaseException as confirmation_error:
+        if completion_error is not None:
+            raise NetworkCleanupError(completion_error, confirmation_error)
+        raise
+    if not confirmed:
+        if completion_error is not None: raise completion_error
+        raise NetworkError("cleanup completion not durable")
+    journal.settle_network_cleanup(target)
 
 
 def _remove_fixed_network(journal, ip, nft, tc):
@@ -2349,7 +2355,7 @@ def _remove_fixed_network(journal, ip, nft, tc):
         journal.begin_network_cleanup("network")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "network-absent":
-            _settle_or_confirm(journal, "NETWORK_ABSENT"); return rows[-1]
+            _settle_cleanup(journal, "network", "NETWORK_ABSENT"); return rows[-1]
         retained = rows[-1]
         if retained["snapshot_kind"] not in {"ready", "discovered", "runtime"}:
             raise NetworkError("network removal order")
@@ -2399,7 +2405,7 @@ def _remove_fixed_network(journal, ip, nft, tc):
                     f"complete network baseline not restored:{name}:{baselines[name]}:{fresh[name]}{detail}")
         body = _snapshot(journal, "network-absent", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
-        _settle_or_confirm(journal, "NETWORK_ABSENT"); return body
+        _settle_cleanup(journal, "network", "NETWORK_ABSENT"); return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
         except BaseException as settlement_error:
@@ -2412,7 +2418,7 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         journal.begin_network_cleanup("firewall")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "firewall-restored":
-            _settle_or_confirm(journal, "FIREWALL_ABSENT"); return rows[-1]
+            _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT"); return rows[-1]
         retained = rows[-1]
         if retained["snapshot_kind"] != "network-absent":
             raise NetworkError("firewall removal order")
@@ -2436,7 +2442,7 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
             raise NetworkError("final network/firewall/mount baseline not restored")
         body = _snapshot(journal, "firewall-restored", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
-        _settle_or_confirm(journal, "FIREWALL_ABSENT"); return body
+        _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT"); return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
         except BaseException as settlement_error:

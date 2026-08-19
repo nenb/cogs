@@ -771,7 +771,7 @@ def _validate_body(kind, body):
         _hex(body["proof_sha256"])
         _fail(body["marker_sha256"] == hashlib.sha256(FIXED["ssh_marker"].encode("ascii")).hexdigest())
         _fail(type(body["authentication_attempts"]) is int and body["authentication_attempts"] == 1)
-    elif kind == "READINESS_REVOKED" or kind in network_journal.CLEANUP_INTENTS:
+    elif kind == "READINESS_REVOKED" or kind in network_journal.CLEANUP_INTENTS or kind in network_journal.CLEANUP_SETTLED:
         _keys(body, ("operation_token",))
         _hex(body["operation_token"])
     elif kind == "OWNERSHIP_OBSERVED":
@@ -997,7 +997,6 @@ def _b1_phase_trace(records, index, phase, network_state):
                       if item.body["command_serial"] in network_state["replay_serials"]}
     network_journal.successful_trace((item.body["command_id"] for item in intents), phase, replay_indices)
     _fail(all(_settled_v2(records, item, index) for item in intents))
-
 
 def _runtime_trace(records, index, phase, ownership=None, candidate=None, complete=False):
     key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
@@ -1967,8 +1966,9 @@ def _make_authority():
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
         cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
-            "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:]} or cleanup_phase and (
-            kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2", *network_journal.CLEANUP_INTENTS} or kind in network_journal.ALL_RECORDS)
+            "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
+            *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
+            kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
         if (admitted or kind == "PRODUCTION_ADMISSION_V2") and not cleanup_record: _require_live_production_deadline(records)
         line = _encode(kind, body, records)
         fresh, generation = io.write_record(line, records[-1].next_offset, io._loaded_generation)
@@ -2289,6 +2289,7 @@ def _make_authority():
                                              reload, write_validated, _legal, _fail)
         def begin_network_cleanup(self, target):
             network_journal.begin_cleanup(self, target, reload, write_validated, _legal, _fail)
+        def settle_network_cleanup(self, target): network_journal.settle_cleanup(self, target, reload, write_validated, _legal, _fail)
         def network_records(self):
             _io, records, status = reload(self)
             _fail(status == "exact")
