@@ -34,6 +34,10 @@ CLEANUP_INTENTS = MappingProxyType({
     "FIREWALL_CLEANUP_INTENT_V2": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", "FIREWALL_CLEANUP_SETTLED_V2"),
 })
 CLEANUP_SETTLED = frozenset(value[2] for value in CLEANUP_INTENTS.values() if value[2] is not None)
+_CLEANUP_TARGETS = MappingProxyType({
+    "network": ("NETWORK_CLEANUP_INTENT_V1", "NETWORK_CLEANUP_INTENT_V2"),
+    "firewall": ("FIREWALL_CLEANUP_INTENT_V1", "FIREWALL_CLEANUP_INTENT_V2"),
+})
 _CLEANUP_RECORDS = frozenset({
     "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "COMMAND_OUTCOME_V2",
     "NETWORK_SNAPSHOT_V2", "UNCERTAIN", *ALL_RECORDS,
@@ -116,25 +120,28 @@ def cleanup_step(active, kind, phase, require=_fail):
     require(kind not in CLEANUP_SETTLED)
     return None, False
 
-def _cleanup_kind(target):
-    return {"network": "NETWORK_CLEANUP_INTENT_V2",
-            "firewall": "FIREWALL_CLEANUP_INTENT_V2"}.get(target)
-
 def begin_cleanup(authority, target, reload, write, legal, require):
-    kind = _cleanup_kind(target); require(kind is not None)
+    kinds = _CLEANUP_TARGETS.get(target); require(kinds is not None)
     _io, records, status = reload(authority); require(status == "exact" and records)
     active = active_cleanup(records, require)
     if active is not None:
-        require(active == kind); return
+        require(active in kinds); return
+    kind = kinds[-1]
     require(legal(records) in CLEANUP_INTENTS[kind][0])
     write(authority, kind, {"operation_token": records[0].body["operation_token"]})
 
 def settle_cleanup(authority, target, reload, write, legal, require):
-    kind = _cleanup_kind(target); require(kind is not None)
+    kinds = _CLEANUP_TARGETS.get(target); require(kinds is not None)
     _io, records, status = reload(authority); require(status == "exact" and records)
-    require(active_cleanup(records, require) == kind)
-    _starts, completion, acknowledgement = CLEANUP_INTENTS[kind]
-    require(legal(records) == completion and acknowledgement is not None)
+    active = active_cleanup(records, require); phase = legal(records)
+    if active is None:
+        latest = next((row.record_type for row in reversed(records)
+                       if row.record_type in CLEANUP_INTENTS), None)
+        legacy = kinds[0]
+        require(latest == legacy and phase == CLEANUP_INTENTS[legacy][1]); return
+    require(active == kinds[-1])
+    _starts, completion, acknowledgement = CLEANUP_INTENTS[active]
+    require(phase == completion and acknowledgement is not None)
     write(authority, acknowledgement, {"operation_token": records[0].body["operation_token"]})
 
 def poison_uncertain(authority, reason, reasons, poisoned, reload, write, legal, require):

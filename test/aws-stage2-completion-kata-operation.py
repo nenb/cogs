@@ -165,6 +165,51 @@ def release_bodies(authorized=False):
     return tuple(bodies)
 
 
+# Cleanup intent generations are parsed under their immutable meanings: an
+# active V1 resumes without replacement and its completion settles it, while a
+# V2 completion remains active until its explicit acknowledgement.
+_cleanup_proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
+_cleanup_rows = (
+    ("BASELINES_CAPTURED", _cleanup_proof("1")), ("NETWORK_READY", _cleanup_proof("2")),
+    ("RUNTIME_READY", _cleanup_proof("3")),
+    ("READINESS_REVOKED", {"operation_token": "a" * 64}),
+    ("OWNERSHIP_OBSERVED", {**_cleanup_proof("4"), "task": "exact-owned",
+        "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}),
+    ("TASK_STOPPED", _cleanup_proof("5")),
+)
+_cleanup_prefix, _unused_intent, _unused_lease = leased_prefix()
+for _kind, _body in _cleanup_rows:
+    _cleanup_prefix = append(_cleanup_prefix, _kind, _body)
+_cleanup_cases = (("network", _cleanup_prefix, "NETWORK_ABSENT", "TASK_ABSENT"),)
+_firewall_prefix = append(_cleanup_prefix, "NETWORK_ABSENT", _cleanup_proof("6"))
+for _kind, _value in (("TASK_ABSENT", "7"), ("CONTAINER_ABSENT", "8"),
+                      ("RUNTIME_ABSENT", "9"), ("SHARE_ABSENT", "a")):
+    _firewall_prefix = append(_firewall_prefix, _kind, _cleanup_proof(_value))
+_cleanup_cases += (("firewall", _firewall_prefix, "FIREWALL_ABSENT", "INPUT_REMOVED"),)
+for _target, _prefix, _completion, _next in _cleanup_cases:
+    _upper = _target.upper()
+    _legacy_kind, _v2_kind = f"{_upper}_CLEANUP_INTENT_V1", f"{_upper}_CLEANUP_INTENT_V2"
+    _legacy = append(_prefix, _legacy_kind, {"operation_token": "a" * 64})
+    assert operation.network_journal.active_cleanup(operation._parse(_legacy)) == _legacy_kind
+    _legacy_complete = append(_legacy, _completion, _cleanup_proof("b"))
+    assert operation.network_journal.active_cleanup(operation._parse(_legacy_complete)) is None
+    append(_legacy_complete, _next, _cleanup_proof("c"))
+    _v2 = append(_prefix, _v2_kind, {"operation_token": "a" * 64})
+    _v2_complete = append(_v2, _completion, _cleanup_proof("d"))
+    assert operation.network_journal.active_cleanup(operation._parse(_v2_complete)) == _v2_kind
+    rejected(lambda raw=_v2_complete, kind=_next: append(raw, kind, _cleanup_proof("e")))
+    _ack = f"{_upper}_CLEANUP_SETTLED_V2"
+    _settled = append(_v2_complete, _ack, {"operation_token": "a" * 64})
+    assert operation.network_journal.active_cleanup(operation._parse(_settled)) is None
+    append(_settled, _next, _cleanup_proof("e"))
+    _uncertain = append(_v2_complete, "UNCERTAIN", {
+        "operation_token": "a" * 64, "reason": "incomplete"})
+    assert operation.network_journal.active_cleanup(operation._parse(_uncertain)) == _v2_kind
+    rejected(lambda raw=_uncertain, ack=_ack: append(raw, ack, {"operation_token": "a" * 64}))
+    rejected(lambda raw=_uncertain: append(raw, "FINAL_BASELINES", {
+        "operation_token": "a" * 64, "final_baselines_sha256": "f" * 64}))
+
+
 def command_body(serial=0, command_id="IP_HOST_LINKS"):
     return {
         "operation_token": "a" * 64,
@@ -1901,8 +1946,8 @@ def production_owner_test():
             for forbidden in ("admit_production_v2", "record_runtime_staged", "record_runtime_mount_v2",
                               "record_ssh_result", "record_ssh_ready", "retire"):
                 rejected(lambda forbidden=forbidden: getattr(cleanup_only, forbidden))
-            for allowed in ("begin_network_cleanup", "network_records", "network_history",
-                            "record_network", "settle_network_phase", "reserve_rootfs",
+            for allowed in ("begin_network_cleanup", "settle_network_cleanup", "network_records",
+                            "network_history", "record_network", "settle_network_phase", "reserve_rootfs",
                             "reserve_rootfs_release"):
                 assert callable(getattr(cleanup_only, allowed))
             rejected(cleanup_only.reserve_rootfs)
@@ -1922,8 +1967,44 @@ def production_owner_test():
             with patch.object(operation, "_boottime_ns", return_value=edge):
                 expired_network = operation._claim_production_cleanup_operation(expired_network_owner)
                 expired_network.begin_network_cleanup("network")
-            assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V1"
+            assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V2"
             expired_network.close()
+
+            # Exact production reopens preserve active/completed historical V1
+            # cleanup bytes, while a completed V2 receives its required ack
+            # through the real cleanup-only capability.
+            firewall_teardown = expired_teardown + (
+                ("NETWORK_ABSENT", proof("6")), ("TASK_ABSENT", proof("7")),
+                ("CONTAINER_ABSENT", proof("8")), ("RUNTIME_ABSENT", proof("9")),
+                ("SHARE_ABSENT", proof("a")),)
+            for target, prefix, intent_kind, completion_kind in (
+                    ("network", expired_teardown, "NETWORK_CLEANUP_INTENT_V1", "NETWORK_ABSENT"),
+                    ("firewall", firewall_teardown, "FIREWALL_CLEANUP_INTENT_V1", "FIREWALL_ABSENT")):
+                intent_body = {"operation_token": "a" * 64}
+                production_fixture(prefix + ((intent_kind, intent_body),))
+                historical_owner = operation._open_fixed_operation()
+                historical = operation._claim_production_cleanup_operation(historical_owner)
+                retained = fixture_journal_path(completion).read_bytes()
+                historical.begin_network_cleanup(target)
+                assert fixture_journal_path(completion).read_bytes() == retained
+                historical.close()
+                production_fixture(prefix + ((intent_kind, intent_body),
+                                              (completion_kind, proof("b"))))
+                completed_owner = operation._open_fixed_operation()
+                completed = operation._claim_production_cleanup_operation(completed_owner)
+                retained = fixture_journal_path(completion).read_bytes()
+                completed.settle_network_cleanup(target)
+                assert fixture_journal_path(completion).read_bytes() == retained
+                completed.close()
+                v2_kind = intent_kind.replace("V1", "V2")
+                production_fixture(prefix + ((v2_kind, intent_body),
+                                              (completion_kind, proof("c"))))
+                v2_owner = operation._open_fixed_operation()
+                v2 = operation._claim_production_cleanup_operation(v2_owner)
+                v2.settle_network_cleanup(target)
+                assert operation._parse(fixture_journal_path(completion).read_bytes())[-1].record_type == \
+                    intent_kind.replace("INTENT_V1", "SETTLED_V2")
+                v2.close()
 
             production_fixture(leased_records)
             stale_admission = operation._open_fixed_operation()
