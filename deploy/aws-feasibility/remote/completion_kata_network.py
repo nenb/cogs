@@ -2629,7 +2629,7 @@ def _settle_cleanup(journal, target, phase):
     completion_error = None
     try: operation._settle_network_phase(journal, phase)
     except BaseException as error: completion_error = error
-    try: confirmed = operation._durable_phase(journal) == phase
+    try: confirmed = journal.durable_phase() == phase
     except BaseException as confirmation_error:
         if completion_error is not None:
             raise NetworkCleanupError(completion_error, confirmation_error)

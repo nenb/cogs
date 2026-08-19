@@ -474,6 +474,7 @@ class JournalCut:
     def network_history(self): return ()
     def begin_network_cleanup(self, _target): pass
     def settle_network_cleanup(self, _target): pass
+    def durable_phase(self): return "NETWORK_ABSENT"
 cut = JournalCut(); snapshots = []
 def source_rows(*ids):
     return [{"observation_serial": index + 10, "source_id": name,
@@ -648,6 +649,7 @@ class SettlementJournal:
     def complete(self, error=None):
         self.durable.append(CleanupRecord(self.phase))
         if error is not None: raise error
+    def durable_phase(self): return self.durable[-1].record_type
     def settle_network_cleanup(self, target):
         check(target == self.target and self.durable[-1].record_type == self.phase,
               "cleanup ack preceded verified completion")
@@ -682,6 +684,7 @@ for target, cleanup, phase, snapshot_kind in (
     uncertainty_error = OSError(target + " uncertainty append failed")
     class AmbiguousJournal(CleanupFaultJournal):
         def __init__(self): super().__init__(durable, target, uncertainty_error)
+        def durable_phase(self): raise confirmation_error
     ambiguous = AmbiguousJournal()
     def complete_then_report_failure(_journal, observed_phase):
         check(observed_phase == phase, "wrong ambiguous completion phase")
