@@ -477,16 +477,24 @@ for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(f
                  'rootfs_fs._enumerate_stable', 'node.generation == generation'):
     check(required in runtime_source, "exact retained socket cleanup route missing")
 
-# An incomplete daemon terminal remains fail-only on both current UNCERTAIN and
-# previously written cleanup-only routes; no socket/tree mutation is attempted.
+# Incomplete retained and pre-retention daemon terminals remain fail-only; no
+# retry, qualification, socket mutation, or runtime-tree mutation is attempted.
 uncertain_outcome = {"uncertain": True, "leader_reaped": False, "descendants_reaped": False,
                      "cgroup_empty": False, "cgroup_removed": False}
 class UncertainJournal:
     def __init__(self, phase): self.phase, self.resumed = phase, False
     def runtime_recovery_history(self):
-        return {"phase": self.phase, "tip": "DAEMON_OUTCOME_V2", "intents": (),
-                "daemon_retained": ({},), "daemon_outcomes": (uncertain_outcome,)}
+        return {"phase": self.phase, "tip": "DAEMON_OUTCOME_V2", "intents": (), "preexecs": (),
+                "outcomes": (), "daemon_retained": ({},), "daemon_outcomes": (uncertain_outcome,)}
     def resume_runtime_cleanup(self): self.resumed = True; raise AssertionError("uncertainty rewritten")
+command_identity = {"operation_token": "a" * 64, "command_serial": 7,
+                    "command_id": "CONTAINERD_START", "binding_sha256": "b" * 64}
+class PreRetentionJournal:
+    def runtime_recovery_history(self):
+        return {"phase": "UNCERTAIN", "tip": "COMMAND_OUTCOME_V2", "intents": (command_identity,),
+                "preexecs": ({**command_identity, "pid": 41},),
+                "outcomes": ({**command_identity, **uncertain_outcome},),
+                "daemon_retained": (), "daemon_outcomes": ()}
 cleanup_nonlocals = inspect.getclosurevars(runtime._cleanup_fixed_runtime).nonlocals
 shutdown_nonlocals = inspect.getclosurevars(runtime._shutdown_private_containerd).nonlocals
 cleanup_owners, daemon_states = cleanup_nonlocals["owners"], shutdown_nonlocals["daemons"]
@@ -496,14 +504,24 @@ def uncertain_owner(phase):
                              object(), None]
     daemon_states[daemon] = [journal]
     return journal, owner, daemon
+import completion_kata_process as process_module
 with patch.object(runtime.os, "unlink") as unlink, patch.object(runtime.os, "rmdir") as rmdir, \
      patch.object(runtime, "_purge_owned_tree") as purge, \
+     patch.object(process_module, "_recover_pending_fixed") as retry, \
      patch.object(runtime.kata_inputs, "_close_runtime_inputs"):
     for phase in ("UNCERTAIN", "RUNTIME_CLEANUP_ONLY"):
         journal, owner, daemon = uncertain_owner(phase)
         rejected(lambda owner=owner: runtime._cleanup_fixed_runtime(owner))
         check(not journal.resumed and daemon in daemon_states, "uncertain daemon disposition was consumed")
         cleanup_owners.pop(owner, None); daemon_states.pop(daemon, None)
+    journal, daemon = PreRetentionJournal(), object(); daemon_states[daemon] = [journal]
+    try: runtime._shutdown_private_containerd(daemon)
+    except runtime.KataRuntimeError as error:
+        check(str(error) == "uncertain pre-retention daemon closure preserved",
+              "pre-retention command identity did not remain unqualified")
+    else: raise AssertionError("pre-retention containerd closure was consumed")
+    check(daemon in daemon_states and not retry.called, "pre-retention containerd recovery was retried")
+    daemon_states.pop(daemon)
     check(not unlink.called and not rmdir.called and not purge.called,
           "uncertain daemon cleanup mutated socket/runtime state")
 
@@ -529,7 +547,6 @@ classification = runtime.ProcessClassification(runtime.Observation.EXACT, (qemu,
 sockstat = SimpleNamespace(st_mode=__import__("stat").S_IFSOCK | 0o600, st_uid=0, st_gid=0,
                            st_dev=11, st_ino=12, st_ctime_ns=13)
 kvmstat = SimpleNamespace(st_mode=__import__("stat").S_IFCHR | 0o600, st_rdev=14, st_dev=15, st_ino=16)
-import completion_kata_process as process_module
 with patch.object(runtime.socket, "socket", return_value=fake_socket), \
      patch.object(runtime.os, "lstat", return_value=sockstat), \
      patch.object(runtime, "_read_bounded", return_value=(b"Num Ref Protocol Flags Type St Inode Path\n"

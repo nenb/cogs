@@ -1459,6 +1459,9 @@ def _runtime_owner_routes():
         import completion_kata_process as process
         state = daemons[daemon]; history = state[0].runtime_recovery_history()
         def closed(value): return not value["uncertain"] and all(value[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
+        starts = [intent for intent in history["intents"] if intent["command_id"] == "CONTAINERD_START" and any(kata_operation._same_command_v2(preexec, intent) for preexec in history["preexecs"]) and not any(kata_operation._same_command_v2(retained, intent) for retained in history["daemon_retained"])]
+        unclosed = [outcome for intent in starts for outcome in history["outcomes"] if kata_operation._same_command_v2(outcome, intent) and (outcome["uncertain"] or not closed(outcome))]
+        _fail(not unclosed, "uncertain pre-retention daemon closure preserved")
         if history["daemon_outcomes"] and len(history["daemon_outcomes"]) == len(history["daemon_retained"]):
             _fail(closed(history["daemon_outcomes"][-1]), "uncertain daemon closure preserved")
         verify_daemon(daemon)

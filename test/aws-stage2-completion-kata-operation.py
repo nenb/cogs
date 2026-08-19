@@ -964,6 +964,49 @@ def native_runtime_daemon_foundations(completion):
             try: runtime._purge_owned_tree(parent, "kata-runtime-v1")
             finally: os.close(parent)
             uncertain_journal.close(); fs._close_chain(chain); chain = None
+            # Crash after preexec and socket creation but before DAEMON_RETAINED. An exact
+            # uncertain command closure remains unqualified and preserves every residue.
+            reset(); chain, completion_node = boundary(); crashed = os.fork()
+            if crashed == 0:
+                try:
+                    local_journal = operation._open_fixed_operation()
+                    operation._record_daemon_retained = lambda *_args: os._exit(93)
+                    process._start_fixed_daemon(local_journal, retained)
+                finally: os._exit(103)
+            assert os.waitpid(crashed, 0)[1] == 93 << 8
+            pre_retention = operation._open_fixed_operation(); pending = pre_retention.runtime_recovery_history()
+            assert pending["tip"] == "COMMAND_PREEXEC_V2" and not pending["daemon_retained"]
+            preexec = pending["preexecs"][-1]; saved_socket = str(Path(completion) / "pre-retention.sock")
+            os.rename(socket_path, saved_socket)
+            original_cgroup = preexec["cgroup_path"] + ".pre-retention"
+            os.rename(preexec["cgroup_path"], original_cgroup); os.mkdir(preexec["cgroup_path"])
+            pre_daemon = runtime._retain_private_containerd(
+                pre_retention, completion_node, None, control)
+            recovered = pre_retention.runtime_recovery_history(); command_outcome = recovered["outcomes"][-1]
+            assert (recovered["phase"] == "UNCERTAIN" and recovered["tip"] == "COMMAND_OUTCOME_V2"
+                    and len(recovered["outcomes"]) == 1 and command_outcome["uncertain"]
+                    and all(command_outcome[name] == preexec[name] for name in
+                            ("operation_token", "command_serial", "command_id", "binding_sha256"))
+                    and not all(command_outcome[name] for name in
+                                ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+            rejected(lambda: runtime._cleanup_staged_runtime(pre_daemon))
+            assert (pre_retention.runtime_recovery_history()["phase"] == "UNCERTAIN"
+                    and len(pre_retention.runtime_recovery_history()["outcomes"]) == 1
+                    and os.path.exists(f"/proc/{preexec['pid']}") and os.path.isdir(runtime_base)
+                    and os.path.lexists(saved_socket) and os.path.isdir(original_cgroup)
+                    and os.path.isdir(preexec["cgroup_path"]))
+            os.kill(preexec["pid"], signal.SIGKILL); deadline = time.monotonic() + 2
+            while os.path.exists(f"/proc/{preexec['pid']}") and time.monotonic() < deadline: time.sleep(0.01)
+            os.unlink(saved_socket); os.rmdir(preexec["cgroup_path"]); recovery_errors = []
+            assert process._recover_cgroup(original_cgroup, None, process._boottime_ns() + 2_000_000_000,
+                {"term": False, "kill": False}, recovery_errors) == (True, True) and not recovery_errors
+            pre_state = runtime_states.pop(pre_daemon)
+            for index in (5, 6, 7, 4):
+                if pre_state[index] is not None: fs._close_node(pre_state[index])
+            parent = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try: runtime._purge_owned_tree(parent, "kata-runtime-v1")
+            finally: os.close(parent)
+            pre_retention.close(); fs._close_chain(chain); chain = None
             # A crash after a certain daemon outcome consumes the normal exact socket residue without a resume record.
             reset(); chain, completion_node = boundary(); journal = operation._open_fixed_operation(); owner = process._start_fixed_daemon(journal, retained)
             body = process._stop_fixed_daemon(owner, journal); assert body["status"] == signal.SIGKILL and not body["uncertain"] and os.path.lexists(socket_path)
