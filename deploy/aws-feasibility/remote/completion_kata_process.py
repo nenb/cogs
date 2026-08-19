@@ -642,6 +642,8 @@ def _claim_inherited_fds(spec, owner):
     try:
         if spec.inherited_fds == () and owner == ():
             return ()
+        if type(owner) is fdmap._ClaimedProductionInputs:
+            return fdmap._consume_production_inputs(spec.inherited_fds, owner)
         return fdmap.claim(spec.inherited_fds, owner)
     except fdmap.FdMapError as error:
         raise ProcessError("invalid inherited descriptor map") from error

@@ -2056,7 +2056,9 @@ def production_owner_test():
                                 producer = inputs._compose_production_inputs(
                                     authority, parent, child_control, executable_owner)
                                 identity = producer.create()
-                                bindings = producer.claim_ssh_bindings()
+                                binding_owner = producer.claim_ssh_bindings()
+                                bindings = process.fdmap._claim_production_inputs(
+                                    binding_owner, "a" * 64, identity.manifest_sha256)
                                 authority.close()
                                 raw = fixture_journal_path(transaction_completion).read_bytes()
                                 for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
@@ -2141,7 +2143,9 @@ def production_owner_test():
                     production_inputs = inputs._compose_production_inputs(
                         runtime_authority, transaction_parent, transaction_control, executable_owner)
                     identity = production_inputs.create()
-                    bindings = production_inputs.claim_ssh_bindings()
+                    binding_owner = production_inputs.claim_ssh_bindings()
+                    bindings = process.fdmap._claim_production_inputs(
+                        binding_owner, "a" * 64, identity.manifest_sha256)
                     transaction_names = set(fs._enumerate_stable(
                         transaction_parent, transaction_control).raw_names)
                     assert (active_name.encode() not in transaction_names

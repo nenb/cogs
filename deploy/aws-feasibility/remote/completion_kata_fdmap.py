@@ -196,13 +196,20 @@ def _production_binding_routes(historical_claim=claim):
     consumed by the process composition.
     """
     seal = object()
-    states = {}
+    states, claimed_states = {}, {}
 
     class _ProductionInputBinding:
         __slots__ = ()
         def __new__(cls, key=None):
             if key is not seal:
                 raise FdMapError("production binding is package-private")
+            return super().__new__(cls)
+
+    class _ClaimedProductionInputs:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("claimed production inputs are package-private")
             return super().__new__(cls)
 
     def make(client_fd, known_hosts_fd, expected_client, expected_known_hosts,
@@ -225,13 +232,23 @@ def _production_binding_routes(historical_claim=claim):
             raise FdMapError("invalid, stale, or reused production binding")
         rows = revalidate(state[0])
         state[3] = True
+        claimed = _ClaimedProductionInputs(seal)
+        claimed_states[claimed] = [rows, False]
+        return claimed
+
+    def consume(targets, claimed):
+        state = claimed_states.get(claimed)
+        if (type(claimed) is not _ClaimedProductionInputs or state is None or state[1]
+                or type(targets) is not tuple or targets != (200, 201)):
+            raise FdMapError("invalid or reused claimed production inputs")
+        rows = revalidate(state[0]); state[1] = True
         return rows
 
-    return _ProductionInputBinding, make, claim
+    return _ProductionInputBinding, _ClaimedProductionInputs, make, claim, consume
 
 
-(_ProductionInputBinding, _bind_production_inputs,
- _claim_production_inputs) = _production_binding_routes()
+(_ProductionInputBinding, _ClaimedProductionInputs, _bind_production_inputs,
+ _claim_production_inputs, _consume_production_inputs) = _production_binding_routes()
 del _production_binding_routes
 
 

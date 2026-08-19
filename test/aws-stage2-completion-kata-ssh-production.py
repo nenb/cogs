@@ -291,8 +291,10 @@ with tempfile.TemporaryDirectory(prefix="cogs-b3-fd-") as root:
         historical = fdmap.bind_inputs(*descriptors, *identities)
         reject(lambda: fdmap._claim_production_inputs(historical, "a" * 64, "b" * 64))
         owner = fdmap._bind_production_inputs(*descriptors, *identities, "a" * 64, "b" * 64)
-        rows = fdmap._claim_production_inputs(owner, "a" * 64, "b" * 64)
+        claimed = fdmap._claim_production_inputs(owner, "a" * 64, "b" * 64)
+        rows = fdmap._consume_production_inputs((200, 201), claimed)
         check(tuple(row.target_fd for row in rows) == (200, 201), "fd targets")
+        reject(lambda: fdmap._consume_production_inputs((200, 201), claimed))
         reject(lambda: fdmap._claim_production_inputs(owner, "a" * 64, "b" * 64))
     finally:
         for descriptor in descriptors: os.close(descriptor)
