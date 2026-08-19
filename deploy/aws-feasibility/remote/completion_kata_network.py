@@ -61,8 +61,7 @@ add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop
 NFT_OWNED_TRANSACTION = NFT_TRANSACTION.replace(
     b"add table inet cogs_stage2_ssh_v1\n",
     b'add table inet cogs_stage2_ssh_v1 { comment "owner:cogs_stage2_ssh_v1"; }\n', 1)
-NFT_DELETE_TRANSACTION = ("list table inet " + TABLE + "\ndelete table inet " + TABLE +
-                          " handle " + TABLE_HANDLE + "\n").encode()
+NFT_DELETE_TRANSACTION = ("list table inet " + TABLE + "\ndelete table inet " + TABLE + "\n").encode()
 
 
 class NetworkError(Exception):
