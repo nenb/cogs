@@ -87,7 +87,7 @@ for _count in range(1, len(SETUP) + 1):
     _has_nft = _count > SETUP.index("NFT_INSTALL_OWNED")
     _last = _EFFECT_COMMAND_TRACES[SETUP[_count - 1]]
     _verify = _last[1:] if _last and _last[0] == SETUP[_count - 1] else _last
-    _remove = (("IP_ALL_LINKS", "NFT_TABLE", *_EFFECT_COMMAND_TRACES["NFT_REMOVE_ATOMIC"])
+    _remove = (("IP_ALL_LINKS", "NFT_TABLE", "NFT_TABLE", *_EFFECT_COMMAND_TRACES["NFT_REMOVE_ATOMIC"])
                if _has_nft else ("IP_ALL_LINKS",))
     _SETUP_ABORT_TRACES.append((*_prefix, *_verify, *_remove, *_BASELINE_TRACE))
 SETUP_ABORT_TRACES = tuple(_SETUP_ABORT_TRACES)
