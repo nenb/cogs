@@ -1711,9 +1711,10 @@ def _cleanup_owned_entry(journal, resource, source_parent, source, target_parent
         if target_stat is not None and source_stat is None:
             held = _open_owned(target_parent, target, expected, directory, True)
         else:
-            if target_stat is not None or source_stat is None or _placeholder_identity(source_stat) != expected:
+            if (target_stat is not None or source_stat is None or
+                    not _same_file_owner(_placeholder_identity(source_stat), expected)):
                 raise NetworkError("cleanup relocation replacement preserved")
-            held = _open_owned(source_parent, source, expected, directory)
+            held = _open_owned(source_parent, source, expected, directory, True)
             _rename_noreplace(source_parent, source, target_parent, target)
             if not _same_file_owner(_placeholder_identity(os.fstat(held)), expected):
                 os.close(held); raise NetworkError("cleanup retained descriptor changed")
