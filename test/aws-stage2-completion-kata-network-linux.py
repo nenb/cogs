@@ -140,7 +140,9 @@ try:
     if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
     ip("netns", "delete", netns); created["replacement"] = False
     if Path("/sys/class/net/" + host).exists():
-        ip("link", "delete", "dev", host)
+        deleted = run(("/usr/sbin/ip", "link", "delete", "dev", host), allow=True)
+        if deleted.returncode != 0 and Path("/sys/class/net/" + host).exists():
+            raise RuntimeError("exact host veth deletion failed")
     if Path("/sys/class/net/" + host).exists():
         raise AssertionError("host veth survived exact cleanup")
     print("completion Kata Linux network namespace foundation passed")

@@ -1650,7 +1650,8 @@ def _daemon_routes():
         return retained
     def start(journal, executable):
         fixed = _bind_containerd_extension(); context = kata_operation._command_context(journal)
-        deadline = _boottime_ns() + fixed.duration_ns; intent = _intent_body(context, fixed, executable, (), deadline)
+        deadline = _boottime_ns() + fixed.duration_ns
+        intent = _intent_body(context, fixed, executable, (), deadline, True)
         kata_operation._record_command_intent(journal, intent); previous = _set_subreaper(True)
         cgroup = None; descriptors = []; pid = pidfd = None
         try:
