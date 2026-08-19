@@ -2078,6 +2078,9 @@ def production_owner_test():
                                 operation._record_runtime_mount_v2(authority, issuance)
                                 install_process_cut(cut, "SSH_READY")
                                 process._transact_fixed_ssh(authority, ssh_executable, bindings)
+                        except BaseException:
+                            import traceback
+                            traceback.print_exc()
                         finally: os._exit(84)
                     os.close(identity_w)
                     _pid, supervisor_status = os.waitpid(supervisor, 0)

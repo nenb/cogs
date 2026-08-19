@@ -139,7 +139,10 @@ try:
     ip("netns", "delete", quarantine); created["quarantine"] = False
     if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
     ip("netns", "delete", netns); created["replacement"] = False
-    if Path("/sys/class/net/" + host).exists(): raise AssertionError("host veth survived namespace cleanup")
+    if Path("/sys/class/net/" + host).exists():
+        ip("link", "delete", "dev", host)
+    if Path("/sys/class/net/" + host).exists():
+        raise AssertionError("host veth survived exact cleanup")
     print("completion Kata Linux network namespace foundation passed")
 finally:
     if created["tap_fd"] is not None:
