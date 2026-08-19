@@ -2,7 +2,8 @@
 import hashlib
 import re
 from types import MappingProxyType
-POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-3"
+LEGACY_POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-3"
+POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-4-nft-gate"
 BASELINES = (
     "host_links", "host_addresses", "host_routes4", "host_routes6",
     "netns_names", "nft_ruleset", "mountinfo",
@@ -73,11 +74,19 @@ _EFFECT_COMMAND_TRACES = {action: _setup_effect_trace(index, action)
                           for index, action in enumerate(SETUP)}
 _EFFECT_COMMAND_TRACES.update({
     "IP_NETNS_REMOVE": ("IP_ALL_LINKS", "NFT_TABLE"),
-    "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "NFT_RULESET", "IP_ALL_LINKS"),
+    "NFT_REMOVE_ATOMIC": ("NFT_TABLE", "NFT_REMOVE_ATOMIC", "NFT_RULESET", "IP_ALL_LINKS"),
 })
 EFFECT_COMMAND_TRACES = MappingProxyType(_EFFECT_COMMAND_TRACES)
-def effect_command_trace(action, target):
-    trace = EFFECT_COMMAND_TRACES[action]
+LEGACY_EFFECT_COMMAND_TRACES = MappingProxyType({
+    **_EFFECT_COMMAND_TRACES,
+    "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "NFT_RULESET", "IP_ALL_LINKS"),
+})
+def effect_command_trace(action, target, policy_version=POLICY_VERSION):
+    traces = (EFFECT_COMMAND_TRACES if policy_version == POLICY_VERSION
+              else LEGACY_EFFECT_COMMAND_TRACES if policy_version == LEGACY_POLICY_VERSION
+              else None)
+    _fail(traces is not None)
+    trace = traces[action]
     return (("IP_ALL_LINKS",) if action == "IP_NETNS_REMOVE" and target.get("nft") is None
             else trace)
 _SETUP_TRACE = tuple(item for action in SETUP for item in _EFFECT_COMMAND_TRACES[action])
@@ -87,10 +96,20 @@ for _count in range(1, len(SETUP) + 1):
     _has_nft = _count > SETUP.index("NFT_INSTALL_OWNED")
     _last = _EFFECT_COMMAND_TRACES[SETUP[_count - 1]]
     _verify = _last[1:] if _last and _last[0] == SETUP[_count - 1] else _last
-    _remove = (("IP_ALL_LINKS", "NFT_TABLE", "NFT_TABLE", *_EFFECT_COMMAND_TRACES["NFT_REMOVE_ATOMIC"])
+    _remove = (("IP_ALL_LINKS", "NFT_TABLE", *_EFFECT_COMMAND_TRACES["NFT_REMOVE_ATOMIC"])
                if _has_nft else ("IP_ALL_LINKS",))
     _SETUP_ABORT_TRACES.append((*_prefix, *_verify, *_remove, *_BASELINE_TRACE))
 SETUP_ABORT_TRACES = tuple(_SETUP_ABORT_TRACES)
+LEGACY_SETUP_ABORT_TRACES = tuple(
+    (*tuple(item for action in SETUP[:count] for item in LEGACY_EFFECT_COMMAND_TRACES[action]),
+     *(LEGACY_EFFECT_COMMAND_TRACES[SETUP[count - 1]][1:]
+       if LEGACY_EFFECT_COMMAND_TRACES[SETUP[count - 1]][:1] == (SETUP[count - 1],)
+       else LEGACY_EFFECT_COMMAND_TRACES[SETUP[count - 1]]),
+     *(("IP_ALL_LINKS", "NFT_TABLE", "NFT_TABLE",
+        *LEGACY_EFFECT_COMMAND_TRACES["NFT_REMOVE_ATOMIC"])
+       if count > SETUP.index("NFT_INSTALL_OWNED") else ("IP_ALL_LINKS",)),
+     *_BASELINE_TRACE)
+    for count in range(1, len(SETUP) + 1))
 _OWNED = ("IP_HOST_LINKS", "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4",
           "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4",
           "IP_NS_ROUTES6", "NFT_TABLE")
@@ -206,7 +225,7 @@ def validate(kind, body, canonical):
     else:
         _fail(kind in _RECORD_FIELDS); fields = _RECORD_FIELDS[kind]
     proof = kind != "NETWORK_EFFECT_INTENT_V2"; names = common + fields + (("proof_sha256",) if proof else ())
-    _keys(body, names); _hex(body["operation_token"]); _fail(body["policy_version"] == POLICY_VERSION)
+    _keys(body, names); _hex(body["operation_token"]); _fail(body["policy_version"] in {POLICY_VERSION, LEGACY_POLICY_VERSION})
     if proof:
         _hex(body["proof_sha256"])
         _fail(hashlib.sha256(canonical({key: value for key, value in body.items()
@@ -254,6 +273,9 @@ def advance(state, kind, body, phase):
              "effect_commands": list(state["effect_commands"]), "effect_replays": list(state["effect_replays"]),
              "replay_serials": list(state["replay_serials"]), "observations": list(state["observations"]),
              "cleanup_steps": list(state["cleanup_steps"])}
+    if kind in ALL_RECORDS:
+        _fail(state["policy_version"] in {None, body["policy_version"]})
+        state["policy_version"] = body["policy_version"]
     if kind == OUTPUT_RECORD:
         pending = state["output_pending"]
         if body["chunk_index"] == 0:
@@ -422,7 +444,9 @@ def advance(state, kind, body, phase):
     if kind == "NETWORK_EFFECT_OBSERVED_V2":
         _fail(pending_kind == "NETWORK_EFFECT_INTENT_V2")
         commands = tuple(value for index, value in enumerate(state["effect_commands"]) if index not in state["effect_replays"])
-        _fail(commands == effect_command_trace(pending["action"], pending["target"]))
+        _fail(commands == effect_command_trace(
+            pending["action"], pending["target"],
+            pending.get("policy_version", POLICY_VERSION)))
         outputs = _source_outputs(state, body["sources"])
         import completion_kata_network as network
         scope = "ready" if body["action"] == SETUP[-1] else "effect"
@@ -447,6 +471,7 @@ def command_outcome(state, body):
 def initial():
     return {"snapshots": [], "effects": [], "pending": None, "outcomes": [],
             "effect_commands": [], "effect_replays": [], "replay_serials": [], "current": None,
+            "policy_version": None,
             "observations": [], "output_pending": None, "quarantine": None,
             "original_placeholder": None, "created_nsfs": None, "support": None,
             "parent_mount": None, "cleanup_authority": None, "cleanup_steps": []}
@@ -465,14 +490,17 @@ def successful_phase_trace(records, index, phase, state, settled):
                if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
     replay_indices = {position for position, item in enumerate(intents)
                       if item.body["command_serial"] in state["replay_serials"]}
-    successful_trace((item.body["command_id"] for item in intents), phase, replay_indices)
+    successful_trace((item.body["command_id"] for item in intents), phase, replay_indices,
+                     state["policy_version"] or LEGACY_POLICY_VERSION)
     _fail(all(settled(records, item, index) for item in intents))
 
-def successful_trace(command_ids, phase, replay_indices=()):
+def successful_trace(command_ids, phase, replay_indices=(), policy_version=POLICY_VERSION):
     observed = tuple(value for index, value in enumerate(command_ids) if index not in replay_indices)
     variants = SUCCESS_PHASE_TRACE_VARIANTS.get(phase)
+    setup_abort_traces = (SETUP_ABORT_TRACES if policy_version == POLICY_VERSION
+                          else LEGACY_SETUP_ABORT_TRACES)
     valid = (observed in variants if variants is not None else
-             phase == "BASELINES_CAPTURED" and observed in SETUP_ABORT_TRACES or
+             phase == "BASELINES_CAPTURED" and observed in setup_abort_traces or
              phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
     if not valid:
         raise ValueError(f"network journal trace:{phase}:{observed!r}")
@@ -502,7 +530,16 @@ def command_intent(intent, state):
             expected_stdin = expected_stdin.replace(network.TABLE_HANDLE.encode(), str(target["table_handle"]).encode())
         _fail(intent["executable_role"] == role and intent["executable_path"] == path and intent["argv"] == expected_argv
               and stdin == expected_stdin and intent["deadline_class"] == "network" and intent["duration_ns"] == 10_000_000_000 and intent["output_grammar"] == "json"
-              and intent["stdout_limit"] == intent["stderr_limit"] == 65536 and intent["inherited_fds"] == [])
+              and intent["stdout_limit"] == intent["stderr_limit"] == 65536)
+        inherited = intent["inherited_fds"]
+        gated_delete = (command_id == "NFT_REMOVE_ATOMIC" and state["pending"] is not None
+                        and state["pending"][1].get("policy_version") == POLICY_VERSION)
+        if gated_delete:
+            _fail(len(inherited) == 1 and inherited[0]["role"] == "NFT_WRITER_LOCK"
+                  and inherited[0]["target_fd"] == 202 and inherited[0]["content_length"] == 0
+                  and inherited[0]["content_sha256"] == hashlib.sha256(b"").hexdigest())
+        else:
+            _fail(inherited == [])
     if command_id == "IP_NETNS_REMOVE":
         target = state["pending"][1]["target"]["netns"] if state["pending"] else None
         _fail(target is not None and target["name"] == expected_netns and expected_command_netns in intent["argv"])
@@ -511,7 +548,9 @@ def command_intent(intent, state):
     replay = state["output_pending"] is not None
     if replay: state["replay_serials"].append(intent["command_serial"])
     if state["pending"] is not None and state["pending"][0] == "NETWORK_EFFECT_INTENT_V2":
-        action = state["pending"][1]["action"]; canonical = effect_command_trace(action, state["pending"][1]["target"])
+        action = state["pending"][1]["action"]; canonical = effect_command_trace(
+            action, state["pending"][1]["target"],
+            state["pending"][1].get("policy_version", POLICY_VERSION))
         stripped = tuple(value for index, value in enumerate(state["effect_commands"]) if index not in state["effect_replays"])
         if replay:
             _fail(state["effect_commands"] and command_id == state["effect_commands"][-1] and stripped == canonical[:len(stripped)])

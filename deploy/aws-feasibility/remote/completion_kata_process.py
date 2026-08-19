@@ -644,6 +644,8 @@ def _claim_inherited_fds(spec, owner):
             return ()
         if type(owner) is fdmap._ClaimedProductionInputs:
             return fdmap._consume_production_inputs(spec.inherited_fds, owner)
+        if type(owner) is fdmap._ClaimedNftWriterLock:
+            return fdmap._consume_nft_writer_lock(spec.inherited_fds, owner)
         return fdmap.claim(spec.inherited_fds, owner)
     except fdmap.FdMapError as error:
         raise ProcessError("invalid inherited descriptor map") from error
@@ -678,10 +680,10 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         executable_fd, release_r, setup_w, status_w, stdout_w, stderr_w, stdin_r = relocated[:7]
         if network_fd is not None: network_fd = relocated[7]
         os.setsid()
-        report = struct.pack("!QQQQ", os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0))
-        os.write(setup_w, report)
         if spec.inherited_fds:
             _install_inherited_fds(spec.inherited_fds)
+        report = struct.pack("!QQQQ", os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0))
+        os.write(setup_w, report)
         os.dup2(stdin_r, 0)
         os.dup2(stdout_w, 1)
         os.dup2(stderr_w, 2)
@@ -915,7 +917,10 @@ def _internally_fixed(fixed):
     if type(fixed) is not FixedCommand:
         return False
     canonical = _FIXED_COMMANDS.get(fixed.command_id)
-    if canonical is not None and fixed == canonical:
+    compared = (replace(fixed, inherited_fds=())
+                if fixed.command_id is CommandId.NFT_REMOVE_ATOMIC
+                and fixed.inherited_fds == (fdmap.NFT_WRITER_LOCK_FD,) else fixed)
+    if canonical is not None and compared == canonical:
         return True
     netns = next((item for item in fixed.argv if type(item) is str and re.fullmatch(r"c42[qn][0-9a-f]{10}", item)), None)
     table = next((item for item in fixed.argv if type(item) is str and re.fullmatch(r"c42t[0-9a-f]{10}", item)), None)
@@ -930,7 +935,7 @@ def _internally_fixed(fixed):
     if host: stdin = stdin.replace(host.encode(), kata_network.HOST_IF.encode())
     if canonical is not None and canonical == FixedCommand(canonical.command_id, canonical.executable_role,
             canonical.executable_path, argv, stdin, canonical.duration_ns, canonical.stdout_limit,
-            canonical.stderr_limit, canonical.output_grammar, canonical.inherited_fds):
+            canonical.stderr_limit, canonical.output_grammar, compared.inherited_fds):
         return True
     if (fixed.command_id not in {
             CommandId.TC_QDISC, CommandId.TC_INGRESS_FILTER}
@@ -1381,6 +1386,37 @@ def _within_work_cutoff(work_cutoff):
         raise ProcessError("work cutoff reached")
 
 
+def _prove_child_inherited_fds(pid, bindings):
+    """Prove post-install child targets before the one-byte exec release."""
+    for row in fdmap.revalidate(bindings):
+        path = f"/proc/{pid}/fd/{row.target_fd}"
+        observed = os.stat(path)
+        if (observed.st_dev, observed.st_ino, observed.st_mode, observed.st_uid,
+                observed.st_gid, observed.st_nlink, observed.st_size) != (
+                row.identity.device, row.identity.inode, row.identity.mode,
+                row.identity.uid, row.identity.gid, row.identity.nlink, row.identity.size):
+            raise ProcessError("child inherited descriptor identity mismatch")
+        with open(f"/proc/{pid}/fdinfo/{row.target_fd}", "r", encoding="ascii") as source:
+            raw = source.read(4097)
+        if len(raw) > 4096 or not raw.endswith("\n"):
+            raise ProcessError("bounded child fdinfo required")
+        fields = {}
+        for line in raw.splitlines():
+            if ":\t" in line:
+                name, value = line.split(":\t", 1)
+                fields.setdefault(name, []).append(value)
+        try: flags = int(fields["flags"][0], 8)
+        except (KeyError, ValueError, IndexError) as error:
+            raise ProcessError("child inherited descriptor flags unavailable") from error
+        if flags & os.O_CLOEXEC or fields.get("mnt_id") != [str(row.identity.mount_id)]:
+            raise ProcessError("child inherited descriptor is not exec-retained")
+        if row.role == fdmap.NFT_WRITER_LOCK:
+            locks = fields.get("lock", [])
+            if (len(locks) != 1 or "OFDLCK ADVISORY  WRITE -1" not in locks[0]
+                    or not locks[0].endswith(" 0 EOF")):
+                raise ProcessError("child does not retain the NFT OFD lock")
+
+
 def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None, consumption_owner=None, launch_permit=None):
     """Private T1 transaction over one registered fixed table identity."""
     context = kata_operation._command_context(journal)
@@ -1488,6 +1524,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             retained_network = kata_runtime._preexec_launch_network(launch_permit, pid)
             if fixed.command_id is not CommandId.CTR_RUN or retained_network["path"] != "/run/netns/" + retained_network["identity"]["name"]:
                 raise ProcessError("runtime network opener binding")
+        if bindings:
+            _prove_child_inherited_fds(pid, bindings)
         if os.write(release_w, b"R") != 1:
             raise ProcessError("short release")
         release_count = 1

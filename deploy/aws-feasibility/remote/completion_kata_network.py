@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import completion_kata_actions as actions
+import completion_kata_nft_owner as nft_owner
 import completion_kata_owner as owner_helpers
 
 NETNS = "cogs-stage2-ssh"
@@ -1169,14 +1170,16 @@ def _bound_fixed(journal, fixed, target=None):
     command_netns = _quarantine_name(journal) if fixed.command_id is Action.NETNS_REMOVE else netns
     argv = tuple(table if item == TABLE else command_netns if item == NETNS else host if item == HOST_IF else item for item in fixed.argv)
     stdin = fixed.stdin.replace(TABLE.encode(), table.encode()).replace(HOST_IF.encode(), host.encode())
+    inherited_fds = fixed.inherited_fds
     if fixed.command_id is Action.NFT_REMOVE_ATOMIC:
         if target is None or target.get("nft") is None: raise NetworkError("exact nft removal target required")
         handle = target["nft"]["table_handle"]
         if type(handle) is not int or handle <= 0: raise NetworkError("exact nft table handle")
         stdin = stdin.replace(TABLE_HANDLE.encode(), str(handle).encode())
+        inherited_fds = (nft_owner.LOCK_TARGET_FD,)
     return process.FixedCommand(fixed.command_id, fixed.executable_role, fixed.executable_path,
         argv, stdin, fixed.duration_ns, fixed.stdout_limit, fixed.stderr_limit,
-        fixed.output_grammar, fixed.inherited_fds)
+        fixed.output_grammar, inherited_fds)
 
 
 def _perform_fixed(journal, action, ip, nft, tc, target=None, endpoint=None):
@@ -1188,8 +1191,14 @@ def _perform_fixed(journal, action, ip, nft, tc, target=None, endpoint=None):
             ("/usr/sbin/tc", *tc_observer_command(action, endpoint).argv_tail), b"",
             source.duration_ns, source.stdout_limit, source.stderr_limit, "json", ())
     fixed = _bound_fixed(journal, source, target)
+    inherited = ()
+    if action in {Action.NFT_INSTALL, Action.NFT_INSTALL_OWNED, Action.NFT_REMOVE,
+                  Action.NFT_REMOVE_ATOMIC}:
+        nft_owner.require_active(journal)
+    if action is Action.NFT_REMOVE_ATOMIC:
+        inherited = nft_owner.claim_child_binding(journal)
     executable = ip if fixed.executable_role == "ip" else nft if fixed.executable_role == "nft" else tc
-    outcome, durable = process._transact_fixed(journal, fixed, executable)
+    outcome, durable = process._transact_fixed(journal, fixed, executable, inherited)
     operation._durable_command_output(
         journal, durable.command_serial, durable.command_id, durable.binding_sha256,
         outcome.stdout, outcome.stderr,
@@ -2356,6 +2365,10 @@ def _observe_ready_teardown(journal, ip, nft, tc, prior):
 
 
 def _effect(journal, action, ip, nft, tc, prior, final=False):
+    if action is Action.NFT_INSTALL_OWNED:
+        nft_owner.acquire(journal)
+    elif action is Action.NFT_REMOVE_ATOMIC:
+        nft_owner.require_active(journal)
     intent = _effect_body(journal, action, target=prior)
     try:
         _record_effect(journal, "NETWORK_EFFECT_INTENT_V2", intent)
@@ -2363,7 +2376,15 @@ def _effect(journal, action, ip, nft, tc, prior, final=False):
         raise NetworkError(f"network effect intent rejected:{action.value}") from error
     if action is Action.IP_NETNS_ADD: _establish_netns(journal)
     elif action is Action.IP_NETNS_REMOVE: _descriptor_remove_netns(journal, prior)
-    else: _perform_fixed(journal, action, ip, nft, tc, prior)
+    else:
+        if action is Action.NFT_REMOVE_ATOMIC:
+            table_name = prior["nft"]["table_name"]
+            current = parse_nft_snapshot(
+                _perform_fixed(journal, Action.NFT_TABLE, ip, nft, tc),
+                table_name, _bound_host(journal))
+            if _nft_value(current) != prior["nft"]:
+                raise NetworkError("NFT replacement before post-intent deletion")
+        _perform_fixed(journal, action, ip, nft, tc, prior)
     identity = _observed_identity(journal, ip, nft, tc, prior, action, final)
     observed = _effect_body(journal, action, identity,
                             "absent" if action in {Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC} else "exact", prior)
@@ -2732,22 +2753,22 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         rows_value = _load(ruleset); tables = [row["table"] for row in rows_value.get("nftables", [])
                                                if type(row) is dict and "table" in row]
         owned = [row for row in tables if row.get("family") == "inet" and row.get("name") == table_name]
-        if owned:
-            current = parse_nft_snapshot(_perform_fixed(journal, Action.NFT_TABLE, ip, nft, tc), table_name, _bound_host(journal))
-            if len(owned) != 1 or _nft_value(current) != retained["identity"]["nft"]:
-                raise NetworkError("firewall replacement before removal")
-            settled = _settled_effects(journal)
-            absent = (_effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained["identity"])
-                      if not settled or settled[-1]["action"] != Action.NFT_REMOVE_ATOMIC.value
-                      else settled[-1]["identity"])
-        else:
-            absent = _empty_identity()
+        if not owned:
+            raise NetworkError("owned NFT table is unexpectedly absent")
+        if len(owned) != 1:
+            raise NetworkError("firewall replacement before removal")
+        settled = _settled_effects(journal)
+        absent = (_effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained["identity"])
+                  if not settled or settled[-1]["action"] != Action.NFT_REMOVE_ATOMIC.value
+                  else settled[-1]["identity"])
         _raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
         if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
             raise NetworkError("final network/firewall/mount baseline not restored")
         body = _snapshot(journal, "firewall-restored", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
-        _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT"); return body
+        _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT")
+        nft_owner.settle_free(journal, "firewall")
+        return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
         except BaseException as settlement_error:
@@ -2836,11 +2857,6 @@ def _abort_fixed_setup(journal, ip, nft, tc):
             table_name = retained["nft"]["table_name"]
             if not re.fullmatch(r"c42t[0-9a-f]{10}", table_name):
                 raise NetworkError("setup abort nft table binding")
-            raw = _observer_pass(journal, ip, nft, tc, ("NFT_TABLE",),
-                                 operation.network_journal.DETACHED_CLEANUP_STEP)[0]
-            observed_nft = parse_nft_snapshot(raw, table_name, "c42h" + table_name[4:])
-            if _nft_value(observed_nft) != retained["nft"]:
-                raise NetworkError("setup abort nft replacement preserved")
             retained = _effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained)
         elif Action.NFT_REMOVE_ATOMIC.value in suffix:
             retained = settled[-1]["identity"]
@@ -2859,6 +2875,8 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         body = _snapshot(journal, "network-absent", baselines, retained,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         _settle_cleanup(journal, "network", "NETWORK_ABSENT")
+        if setup[-1]["identity"]["nft"] is not None:
+            nft_owner.settle_free(journal, "network")
         return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
