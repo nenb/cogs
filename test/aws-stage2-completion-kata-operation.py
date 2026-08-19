@@ -1050,10 +1050,9 @@ def native_runtime_daemon_foundations(completion):
             assert pending["tip"] == "COMMAND_PREEXEC_V2" and not pending["daemon_retained"]
             preexec = pending["preexecs"][-1]; saved_socket = str(Path(completion) / "pre-retention.sock")
             os.rename(socket_path, saved_socket)
-            original_cgroup = preexec["cgroup_path"] + ".pre-retention"
-            os.rename(preexec["cgroup_path"], original_cgroup); os.mkdir(preexec["cgroup_path"])
-            pre_daemon = runtime._retain_private_containerd(
-                pre_retention, completion_node, None, control)
+            with patch.object(process, "_recover_cgroup", return_value=(False, False)):
+                pre_daemon = runtime._retain_private_containerd(
+                    pre_retention, completion_node, None, control)
             recovered = pre_retention.runtime_recovery_history(); command_outcome = recovered["outcomes"][-1]
             assert (recovered["phase"] == "UNCERTAIN" and recovered["tip"] == "COMMAND_OUTCOME_V2"
                     and len(recovered["outcomes"]) == 1 and command_outcome["uncertain"]
@@ -1064,13 +1063,14 @@ def native_runtime_daemon_foundations(completion):
             rejected(lambda: runtime._cleanup_staged_runtime(pre_daemon))
             assert (pre_retention.runtime_recovery_history()["phase"] == "UNCERTAIN"
                     and len(pre_retention.runtime_recovery_history()["outcomes"]) == 1
-                    and os.path.exists(f"/proc/{preexec['pid']}") and os.path.isdir(runtime_base)
-                    and os.path.lexists(saved_socket) and os.path.isdir(original_cgroup)
+                    and os.path.isdir(runtime_base) and os.path.lexists(saved_socket)
                     and os.path.isdir(preexec["cgroup_path"]))
-            os.kill(preexec["pid"], signal.SIGKILL); deadline = time.monotonic() + 2
+            if os.path.exists(f"/proc/{preexec['pid']}"): os.kill(preexec["pid"], signal.SIGKILL)
+            deadline = time.monotonic() + 2
             while os.path.exists(f"/proc/{preexec['pid']}") and time.monotonic() < deadline: time.sleep(0.01)
-            os.unlink(saved_socket); os.rmdir(preexec["cgroup_path"]); recovery_errors = []
-            assert process._recover_cgroup(original_cgroup, None, process._boottime_ns() + 2_000_000_000,
+            os.unlink(saved_socket); recovery_errors = []
+            assert process._recover_cgroup(preexec["cgroup_path"], process._generation_tuple(
+                preexec["cgroup_generation"]), process._boottime_ns() + 2_000_000_000,
                 {"term": False, "kill": False}, recovery_errors) == (True, True) and not recovery_errors
             pre_state = runtime_states.pop(pre_daemon)
             for index in (5, 6, 7, 4):
