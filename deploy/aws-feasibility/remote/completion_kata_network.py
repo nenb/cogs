@@ -2237,7 +2237,8 @@ def _effect_source_ids(action, prior):
                 "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4",
                 "IP_NS_ROUTES6", "NFT_TABLE", "TC_QDISC", "TC_INGRESS_FILTER",
                 "MOUNTINFO", "NETNS_STAT")
-    suffix = ("MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
+    suffix = (("NFT_RULESET",) if action is Action.NFT_REMOVE_ATOMIC else ()) + (
+        "MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
     if action not in {Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC}: suffix += ("IP_NS_LINKS",)
     if action is Action.NFT_INSTALL_OWNED or prior.get("nft") is not None and action is not Action.NFT_REMOVE_ATOMIC:
         suffix += ("NFT_TABLE",)
