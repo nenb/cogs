@@ -2004,6 +2004,8 @@ def production_owner_test():
                 cleanup = inputs._compose_production_input_cleanup(
                     final_owner, cleanup_chain.components[-1].node, layout_control)
                 cleanup.continue_cleanup()
+                rejected(lambda: operation._durable_phase(final_owner))
+                final_owner.close(); final_owner = operation._open_fixed_operation()
                 assert operation._durable_phase(final_owner) == "UNCERTAIN"
                 assert not active_path.exists() and not quarantine_path.exists()
             finally:
