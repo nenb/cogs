@@ -1660,6 +1660,25 @@ def _normalize_baseline_links(links):
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _normalize_baseline_nft(value):
+    """Preserve complete ruleset objects while excluding traffic-only counters."""
+    normalized = json.loads(json.dumps(value))
+    def walk(item, depth=0):
+        if depth > 32: raise NetworkError("nft normalization depth")
+        if type(item) is list:
+            for child in item: walk(child, depth + 1)
+        elif type(item) is dict:
+            counter = item.get("counter")
+            if type(counter) is dict and {"packets", "bytes"} <= set(counter):
+                if (type(counter["packets"]) is not int or counter["packets"] < 0 or
+                        type(counter["bytes"]) is not int or counter["bytes"] < 0):
+                    raise NetworkError("nft counter metric")
+                counter["packets"] = counter["bytes"] = 0
+            for child in item.values(): walk(child, depth + 1)
+    walk(normalized)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+
+
 def _pre_admission_host_links_binding(raw):
     """Bind every host link, waiting for an announced Hyper-V VF attachment."""
     links = _load(raw)
@@ -1779,7 +1798,7 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     normalized_names = json.dumps([row for row in names if row["name"] not in ignored_names],
                                   sort_keys=True, separators=(",", ":")).encode()
     all_raw = (_normalize_baseline_links(links), *raws[1:4], normalized_names,
-               raws[5], mountinfo)
+               _normalize_baseline_nft(nft), mountinfo)
     return dict(zip(_BASELINE_KEYS, (hashlib.sha256(raw).hexdigest() for raw in all_raw), strict=True))
 
 

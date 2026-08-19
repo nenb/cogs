@@ -282,6 +282,12 @@ dynamic_nft = json.loads(json.dumps(nft).replace("cogs_stage2_ssh_v1", "c42taaaa
 dynamic_nft["nftables"][1]["table"]["comment"] = "owner:c42taaaaaaaaaa"
 network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 assert replaced_nft_snapshot.identity != nft_snapshot.identity
+counter_a = copy.deepcopy(nft); counter_b = copy.deepcopy(nft)
+counter_a["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 1, "bytes": 2}})
+counter_b["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 900, "bytes": 800}})
+assert network._normalize_baseline_nft(counter_a) == network._normalize_baseline_nft(counter_b)
+counter_b["nftables"][5]["rule"]["chain"] = "output"
+assert network._normalize_baseline_nft(counter_a) != network._normalize_baseline_nft(counter_b)
 native_singleton_nft = copy.deepcopy(nft)
 native_singleton_nft["nftables"][5]["rule"]["expr"][4]["match"]["right"] = "established"
 native_set_nft = copy.deepcopy(native_singleton_nft)
