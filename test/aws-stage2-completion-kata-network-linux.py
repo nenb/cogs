@@ -105,10 +105,15 @@ try:
     conditional = run(("/usr/sbin/nft", "-j", "-f", "-"), delete_batch, allow=True)
     if conditional.returncode == 0 and not conditional.stderr:
         if conditional.stdout:
-            raise AssertionError("conditional nft deletion returned unexpected bytes")
-        absent = run(("/usr/sbin/nft", "-j", "list", "table", "inet", table), allow=True)
-        if absent.returncode == 0:
-            raise AssertionError("conditional nft deletion retained the table")
+            observed = network.parse_nft_snapshot(conditional.stdout, table, host)
+            if observed.identity != nft_state.identity:
+                raise AssertionError("conditional nft output identity changed")
+        listed = run(("/usr/sbin/nft", "-j", "list", "table", "inet", table), allow=True)
+        if listed.returncode == 0:
+            retained = network.parse_nft_snapshot(listed.stdout, table, host)
+            if retained.identity != nft_state.identity:
+                raise AssertionError("conditional nft no-op changed replacement")
+            run(("/usr/sbin/nft", "delete", "table", "inet", table))
         created["nft"] = False
     else:
         retained = network.parse_nft_snapshot(run(("/usr/sbin/nft", "-j", "list", "table", "inet", table)).stdout,

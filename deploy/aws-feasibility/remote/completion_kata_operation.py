@@ -1856,17 +1856,14 @@ def _make_authority():
             if error is not None:
                 raise error
             return records
-        def write_record(self, line, expected):
+        def write_record(self, line, expected, expected_generation):
             held = self._file(JOURNAL_NAME)
             descriptor = None
             error = None
-            records = None
+            records = generation = None
             try:
-                raw = fs._read_regular(held, MAX_BYTES, self.control)
-                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control) == held.generation)
-                current = _parse(raw)
-                _fail(_key_value(held.generation.key) == current[0].body["journal_key"])
-                _fail(current[-1].next_offset == expected)
+                _fail(held.generation == expected_generation
+                      and held.generation.size == expected)
                 flags = os.O_WRONLY | os.O_APPEND | fs._O_NOFOLLOW | fs._O_CLOEXEC
                 descriptor = fs.CheckedFd(
                     os.open(JOURNAL_NAME.raw, flags, dir_fd=self.state.operation_fd.number),
@@ -1876,6 +1873,8 @@ def _make_authority():
                 _fail((observed.st_dev, observed.st_ino, observed.st_size) == (
                     held.generation.key.device, held.generation.key.inode, expected,
                 ))
+                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control)
+                      == held.generation)
                 _write_all(descriptor.number, line)
                 os.fsync(descriptor.number)
             except BaseException as caught:
@@ -1888,13 +1887,13 @@ def _make_authority():
                 try:
                     observed = self.read()
                     _fail(observed is not None and len(observed[0]) == expected + len(line))
-                    records = _parse(observed[0])
-                    _fail(_key_value(observed[1].key) == records[0].body["journal_key"])
+                    records = _parse(observed[0]); generation = observed[1]
+                    _fail(_key_value(generation.key) == records[0].body["journal_key"])
                 except BaseException as caught:
                     error = caught
             if error is not None:
                 raise error
-            return records
+            return records, generation
         def unlink(self, key):
             node = self._file(JOURNAL_NAME)
             error = None
@@ -1955,6 +1954,7 @@ def _make_authority():
     def reload(authority, preserve=False):
         state = owner(authority)
         observed = state[0].read()
+        state[0]._loaded_generation = None
         if observed is None:
             state[1:] = [(), "absent"]
             return state
@@ -1969,15 +1969,21 @@ def _make_authority():
             if not preserve:
                 raise
         else:
+            state[0]._loaded_generation = journal_generation
             state[1:] = [records, "exact"]
         return state
     def write_validated(authority, kind, body):
         io, records, status = reload(authority)
-        _fail(status == "exact" and records)
+        _fail(status == "exact" and records and io._loaded_generation is not None)
         line = _encode(kind, body, records)
-        io.write_record(line, records[-1].next_offset)
-        _io, fresh, fresh_status = reload(authority)
-        _fail(fresh_status == "exact" and fresh[-1].record_type == kind)
+        fresh, generation = io.write_record(
+            line, records[-1].next_offset, io._loaded_generation)
+        validate = getattr(io, "validate_layout", None)
+        if validate is not None:
+            validate(fresh, generation)
+        _fail(fresh[:-1] == records and fresh[-1].record_type == kind)
+        io._loaded_generation = generation
+        owner(authority)[1:] = [fresh, "exact"]
     def create_fixed_operation_test_local(authority, body):
         io, records, status = reload(authority)
         _fail(status == "absent" and not records)
