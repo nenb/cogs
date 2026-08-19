@@ -1048,8 +1048,7 @@ def native_runtime_daemon_foundations(completion):
             assert os.waitpid(crashed, 0)[1] == 93 << 8
             pre_retention = operation._open_fixed_operation(); pending = pre_retention.runtime_recovery_history()
             assert pending["tip"] == "COMMAND_PREEXEC_V2" and not pending["daemon_retained"]
-            preexec = pending["preexecs"][-1]; saved_socket = str(Path(completion) / "pre-retention.sock")
-            os.rename(socket_path, saved_socket)
+            preexec = pending["preexecs"][-1]; saved_socket = socket_path
             with patch.object(process, "_recover_cgroup", return_value=(False, False)):
                 pre_daemon = runtime._retain_private_containerd(
                     pre_retention, completion_node, None, control)

@@ -1681,12 +1681,19 @@ def _same_file_owner(observed, expected):
                ("device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns"))
 
 
+def _same_directory_owner(observed, expected):
+    return all(observed[name] == expected[name] for name in
+               ("device", "inode", "mode", "uid", "gid"))
+
+
 def _open_owned(parent, name, expected, directory=False, stable=False):
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
     if directory: flags |= os.O_DIRECTORY
     descriptor = os.open(name, flags, dir_fd=parent)
     observed = _placeholder_identity(os.fstat(descriptor))
-    if (not _same_file_owner(observed, expected) if stable else observed != expected):
+    matched = (_same_directory_owner(observed, expected) if directory else
+               _same_file_owner(observed, expected))
+    if (not matched if stable else observed != expected):
         os.close(descriptor); raise NetworkError("cleanup replacement preserved")
     return descriptor
 
@@ -1711,12 +1718,17 @@ def _cleanup_owned_entry(journal, resource, source_parent, source, target_parent
         if target_stat is not None and source_stat is None:
             held = _open_owned(target_parent, target, expected, directory, True)
         else:
-            if (target_stat is not None or source_stat is None or
-                    not _same_file_owner(_placeholder_identity(source_stat), expected)):
+            observed_source = None if source_stat is None else _placeholder_identity(source_stat)
+            matched_source = (False if observed_source is None else
+                              _same_directory_owner(observed_source, expected) if directory else
+                              _same_file_owner(observed_source, expected))
+            if target_stat is not None or not matched_source:
                 raise NetworkError("cleanup relocation replacement preserved")
             held = _open_owned(source_parent, source, expected, directory, True)
             _rename_noreplace(source_parent, source, target_parent, target)
-            if not _same_file_owner(_placeholder_identity(os.fstat(held)), expected):
+            retained_identity = _placeholder_identity(os.fstat(held))
+            if not (_same_directory_owner(retained_identity, expected) if directory else
+                    _same_file_owner(retained_identity, expected)):
                 os.close(held); raise NetworkError("cleanup retained descriptor changed")
             post = _open_owned(target_parent, target, expected, directory, True); os.close(post)
             try: os.stat(source, dir_fd=source_parent, follow_symlinks=False)
