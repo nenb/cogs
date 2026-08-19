@@ -1783,7 +1783,7 @@ def _cleanup_parent_mount(journal, authority):
                 retained = os.fstat(tree)
                 if (retained.st_dev, retained.st_ino) != (expected["inode_device"], expected["inode"]):
                     raise NetworkError("private parent mount descriptor mismatch")
-                if libc.syscall(429, -100, b"/run/netns", -100, PARENT_STAGE_DIR.encode(), 0) != 0:
+                if libc.mount(b"/run/netns", PARENT_STAGE_DIR.encode(), None, 8192, None) != 0:
                     saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
                 relocated = _mount_identity(PARENT_STAGE_DIR)
                 if (_mount_identity("/run/netns") is not None or
