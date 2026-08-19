@@ -2538,11 +2538,15 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
             table_name = prior["nft"]["table_name"]
             if not re.fullmatch(r"c42t[0-9a-f]{10}", table_name):
                 raise NetworkError("conditional nft table binding")
-            host_name = (prior["host_link"]["ifname"] if prior.get("host_link") is not None
-                         else "c42h" + table_name[4:])
-            listed = parse_nft_snapshot(rows[action][0], table_name, host_name)
-            if _nft_value(listed) != prior["nft"]: raise NetworkError("conditional nft identity drift")
-        suffix = ("MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
+            if rows[action][0] != b"": raise NetworkError("conditional nft removal output")
+            ruleset = _load(rows["NFT_RULESET"][0], MAX_NFT_ITEMS); _keys(ruleset, ("nftables",))
+            if type(ruleset["nftables"]) is not list or any(type(row) is not dict for row in ruleset["nftables"]):
+                raise NetworkError("conditional nft ruleset shape")
+            tables = [row["table"] for row in ruleset["nftables"] if "table" in row]
+            if any(type(table) is not dict for table in tables): raise NetworkError("conditional nft table shape")
+            if any(table.get("family") == "inet" and table.get("name") == table_name for table in tables):
+                raise NetworkError("conditional nft table retained")
+        suffix = (("NFT_RULESET",) if action == "NFT_REMOVE_ATOMIC" else ()) + ("MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
         if action not in {"IP_NETNS_REMOVE", "NFT_REMOVE_ATOMIC"}: suffix += ("IP_NS_LINKS",)
         if action == "NFT_INSTALL_OWNED" or prior and prior.get("nft") is not None and action != "NFT_REMOVE_ATOMIC": suffix += ("NFT_TABLE",)
         if ids != (action, *suffix): raise NetworkError("effect source cardinality")

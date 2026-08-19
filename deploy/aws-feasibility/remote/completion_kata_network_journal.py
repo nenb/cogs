@@ -73,7 +73,7 @@ _EFFECT_COMMAND_TRACES = {action: _setup_effect_trace(index, action)
                           for index, action in enumerate(SETUP)}
 _EFFECT_COMMAND_TRACES.update({
     "IP_NETNS_REMOVE": ("IP_ALL_LINKS", "NFT_TABLE"),
-    "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "IP_ALL_LINKS"),
+    "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "NFT_RULESET", "IP_ALL_LINKS"),
 })
 EFFECT_COMMAND_TRACES = MappingProxyType(_EFFECT_COMMAND_TRACES)
 def effect_command_trace(action, target):
