@@ -465,11 +465,14 @@ check("process_snapshot" not in runtime._observe_fixed_runtime.__code__.co_varna
 check("kill_permitted" not in runtime._cleanup_fixed_runtime.__code__.co_varnames,
       "caller kill flag entered production cleanup")
 runtime_source = MODULE_PATH.read_text()
+check("rootfs_fs._optional_child" not in runtime_source,
+      "removed optional-child API entered runtime owner")
 for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(fresh, "socket") == expected',
                  'os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)',
                  'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '_shutdown_private_containerd',
                  'kata_operation.GEN_KEYS[:7]', 'state[10][name] = inventory(node)', 'remove_tree(node.operation_fd.number)',
-                 'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)'):
+                 'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)',
+                 'rootfs_fs._enumerate_stable', 'node.generation == generation'):
     check(required in runtime_source, "exact retained socket cleanup route missing")
 
 # Execute the direct QMP proof: query-kvm is mandatory and streams/fds close.

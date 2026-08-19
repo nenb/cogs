@@ -1107,6 +1107,17 @@ def _runtime_owner_routes():
     _Daemon = owner_helpers.sealed_type("_Daemon", seal, KataRuntimeError)
     _Owner = owner_helpers.sealed_type("_Owner", seal, KataRuntimeError)
     def stable(left, right): return all(left[field] == right[field] for field in kata_operation.GEN_KEYS[:7])
+    def snapshot_child(snapshot, name):
+        for child_name, generation in snapshot.children:
+            if child_name == name: return generation
+        return None
+    def open_snapshot_child(parent, snapshot, name, kind, control):
+        generation = snapshot_child(snapshot, name)
+        if generation is None: return None
+        node = rootfs_fs._open_path_node(parent, name, kind, control)
+        try: _fail(node.generation == generation, "runtime child pathname replacement")
+        except BaseException as error: rootfs_fs._close_node(node, error)
+        return node
     def inventory(node):
         import completion_kata_process as process
         top = kata_operation._generation_value(node.generation); _fail(top["kind"] == "directory" and top["mode"] == 0o700 and top["uid"] == top["gid"] == 0); rows = []
@@ -1132,20 +1143,23 @@ def _runtime_owner_routes():
         if active and process_owner is None: process_owner = process._reopen_fixed_daemon(journal)
         _fail(type(completion) is rootfs_fs.HeldNode and type(control) is rootfs_fs.OperationControl and ((stopped or staged_only) and process_owner is None or active and
                    process._verify_fixed_daemon(process_owner, journal) == history["daemon_retained"][-1]))
-        completion_names = set(os.listdir(completion.operation_fd.number))
+        completion_snapshot = rootfs_fs._enumerate_stable(completion, control)
+        completion_names = {name.text for name in completion_snapshot.names}
         if (staged_only and not history["runtime_staged"]
                 and completion_names & {".kata-runtime-v1.staging", "kata-runtime-v1"}):
             journal.record_uncertain("identity-mismatch")
             raise KataRuntimeError("identity-free staged runtime residue")
-        observed, _snapshot = rootfs_fs._optional_child(completion, rootfs_fs._name("kata-runtime-v1"), control)
+        runtime_name = rootfs_fs._name("kata-runtime-v1")
+        observed = snapshot_child(completion_snapshot, runtime_name)
         if observed is None:
             _fail(stopped or staged_only, "active private runtime root absent"); runtime = config = root = daemon_state = None; socket_names = set()
         else:
-            runtime = rootfs_fs._open_path_node(completion, rootfs_fs._name("kata-runtime-v1"), "directory", control)
-            names = set(os.listdir(runtime.operation_fd.number)); base_names = {"bin", "containerd.toml", "containerd-root", "containerd-state"}; socket_names = names & {"containerd.sock", ".containerd.sock.removing"}; expected = base_names | socket_names
+            runtime = open_snapshot_child(completion, completion_snapshot, runtime_name, "directory", control)
+            runtime_snapshot = rootfs_fs._enumerate_stable(runtime, control)
+            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "containerd-root", "containerd-state"}; socket_names = names & {"containerd.sock", ".containerd.sock.removing"}; expected = base_names | socket_names
             _fail(names <= expected and len(socket_names) <= 1 and (not active or names == base_names | {"containerd.sock"}), "private runtime names")
-            def optional(name, kind):
-                generation, _seen = rootfs_fs._optional_child(runtime, rootfs_fs._name(name), control); return None if generation is None else rootfs_fs._open_path_node(runtime, rootfs_fs._name(name), kind, control)
+            def optional(name, kind): return open_snapshot_child(
+                runtime, runtime_snapshot, rootfs_fs._name(name), kind, control)
             config = optional("containerd.toml", "file"); root = optional("containerd-root", "directory"); daemon_state = optional("containerd-state", "directory")
             _fail(stopped or staged_only or all(node is not None for node in (config, root, daemon_state)))
             if config is not None: _fail(rootfs_fs._read_regular(config, len(CONTAINERD_CONFIG_BYTES), control) == CONTAINERD_CONFIG_BYTES)
@@ -1173,15 +1187,17 @@ def _runtime_owner_routes():
         state = daemons.get(value); _fail(state is not None and type(allow_unlinked) is bool); history = state[0].runtime_recovery_history(); retained = state[8]
         _fail(len(history["daemon_retained"]) in {len(history["daemon_outcomes"]), len(history["daemon_outcomes"]) + 1} and
               (retained is None and not history["daemon_retained"] or history["daemon_retained"][-1] == retained))
+        runtime_snapshot = (None if state[4] is None else
+                            rootfs_fs._enumerate_stable(state[4], state[3]))
         if state[5] is not None:
             _fail(rootfs_fs._read_regular(state[5], len(CONTAINERD_CONFIG_BYTES), state[3]) == CONTAINERD_CONFIG_BYTES)
-            named, _ = rootfs_fs._optional_child(state[4], rootfs_fs._name("containerd.toml"), state[3]); _fail(named == state[5].generation, "containerd config pathname replacement")
+            named = snapshot_child(runtime_snapshot, rootfs_fs._name("containerd.toml")); _fail(named == state[5].generation, "containerd config pathname replacement")
         for node in state[4:6]:
             if node is not None: _fail(rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]) == node.generation)
         for index, name in ((6, "containerd-root"), (7, "containerd-state")):
             node = state[index]
             if node is not None:
-                observed = rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]); named, _ = rootfs_fs._optional_child(state[4], rootfs_fs._name(name), state[3])
+                observed = rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]); named = snapshot_child(runtime_snapshot, rootfs_fs._name(name))
                 _fail(stable(kata_operation._generation_value(observed), kata_operation._generation_value(node.generation)) and named is not None and stable(kata_operation._generation_value(named), kata_operation._generation_value(node.generation))); state[10][name] = inventory(node)
         import completion_kata_process as process
         if state[9] is not None:
