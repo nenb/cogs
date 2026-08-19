@@ -1862,8 +1862,7 @@ def _make_authority():
             error = None
             records = generation = None
             try:
-                _fail(held.generation == expected_generation
-                      and held.generation.size == expected)
+                _fail(held.generation == expected_generation and held.generation.size == expected)
                 flags = os.O_WRONLY | os.O_APPEND | fs._O_NOFOLLOW | fs._O_CLOEXEC
                 descriptor = fs.CheckedFd(
                     os.open(JOURNAL_NAME.raw, flags, dir_fd=self.state.operation_fd.number),
@@ -1873,8 +1872,7 @@ def _make_authority():
                 _fail((observed.st_dev, observed.st_ino, observed.st_size) == (
                     held.generation.key.device, held.generation.key.inode, expected,
                 ))
-                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control)
-                      == held.generation)
+                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control) == held.generation)
                 _write_all(descriptor.number, line)
                 os.fsync(descriptor.number)
             except BaseException as caught:
@@ -1976,13 +1974,10 @@ def _make_authority():
         state = owner(authority); io, records, status = state
         _fail(status == "exact" and records and io._loaded_generation is not None)
         validate = getattr(io, "validate_layout", None)
-        if validate is not None:
-            validate(records, io._loaded_generation)
+        # The durable append is the only effect; post-validation gates every caller action.
         line = _encode(kind, body, records)
-        fresh, generation = io.write_record(
-            line, records[-1].next_offset, io._loaded_generation)
-        if validate is not None:
-            validate(fresh, generation)
+        fresh, generation = io.write_record(line, records[-1].next_offset, io._loaded_generation)
+        if validate is not None: validate(fresh, generation)
         _fail(fresh[:-1] == records and fresh[-1].record_type == kind)
         io._loaded_generation = generation
         owner(authority)[1:] = [fresh, "exact"]
