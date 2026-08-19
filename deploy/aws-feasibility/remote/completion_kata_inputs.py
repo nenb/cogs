@@ -1821,7 +1821,7 @@ def _owner_routes():
         return value
 
     def make_production_cleanup(journal, completion, control):
-        journal = operation._claim_production_operation(journal)
+        journal = operation._claim_production_cleanup_operation(journal)
         _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
         _fail(operation._durable_phase(journal) in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
               "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})

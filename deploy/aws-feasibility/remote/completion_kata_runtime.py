@@ -1265,9 +1265,8 @@ def _runtime_owner_routes():
         fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact
     def saved_output(state, phase, index, command_id):
-        history = state[0].runtime_recovery_history(); resumed = {row["uncertain_serial"] for row in history.get("runtime_resumes", ())}
-        abandoned = {row["command_serial"] for row in history["intents"] if row["command_serial"] in resumed and row["command_id"] in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"}}
-        intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase and row["command_serial"] not in abandoned]
+        history = state[0].runtime_recovery_history()
+        intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
         if len(intents) <= index: return None
         intent = intents[index]; _fail(intent["command_id"] == command_id.value)
         outcomes = [row for row in history["outcomes"] if row["command_serial"] == intent["command_serial"]]; outputs = [row for row in history["outputs"] if row["command_serial"] == intent["command_serial"]]
@@ -1305,8 +1304,8 @@ def _runtime_owner_routes():
         _fail(set(values.values()) <= {"exact-owned", "absent"})
         state[0].settle_runtime_phase("OWNERSHIP_OBSERVED", _canonical_fact(fact), values); return fact
     def phase_progress(state, phase):
-        history = state[0].runtime_history(); resumed = {row["uncertain_serial"] for row in history.get("runtime_resumes", ())}; abandoned = {row["command_serial"] for row in history["intents"] if row["command_serial"] in resumed and row["command_id"] in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"}}
-        return tuple(row["command_id"] for row in history["intents"] if row["lifecycle_phase"] == phase and row["command_serial"] not in abandoned)
+        history = state[0].runtime_history()
+        return tuple(row["command_id"] for row in history["intents"] if row["lifecycle_phase"] == phase)
     def identity_body(state, shim):
         return {"operation_token": state[0].runtime_recovery_history()["operation_token"], "pid": shim.pid, "starttime": shim.starttime, "executable_device": shim.executable_device, "executable_inode": shim.executable_inode, "namespaces": [list(row) for row in shim.namespaces]}
     def same_identity(shim, body):
@@ -1324,9 +1323,9 @@ def _runtime_owner_routes():
             finally: close(owner)
             return {"runtime": "cleanup-only-absent"}
         if phase in {"UNCERTAIN", "NETWORK_READY"}:
-            run = phase == "UNCERTAIN" and any(row["command_id"] == "CTR_RUN" for row in history["intents"])
+            terminal = history["outcomes"][-1]["command_id"] if phase == "UNCERTAIN" and history["tip"] == "COMMAND_OUTCOME_V2" else None
             daemon_cut = phase == "UNCERTAIN" and history["tip"] == "DAEMON_OUTCOME_V2"
-            if run or daemon_cut:
+            if terminal in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"} or daemon_cut:
                 target = state[0].resume_runtime_cleanup()
                 return ownership(owner) if target in {"RUNTIME_READY", "READINESS_REVOKED"} else cleanup(owner)
             try: shutdown_daemon(state[6])

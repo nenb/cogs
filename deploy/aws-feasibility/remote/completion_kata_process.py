@@ -1945,7 +1945,7 @@ def _recover_pending_fixed(journal):
 
 def _recover_pending_production(journal):
     """Production family adapter: exact admission and sticky uncertain closure."""
-    journal = kata_operation._claim_production_operation(journal)
+    journal = kata_operation._claim_production_cleanup_operation(journal)
     outcome = _recover_pending_fixed(journal)
     if outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
         kata_operation._record_uncertain(journal, "incomplete")

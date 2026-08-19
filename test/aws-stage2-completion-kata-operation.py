@@ -636,6 +636,133 @@ def fixed_v2_intent(context, command_id=process.CommandId.IP_NETNS_ADD):
     return body
 
 
+def runtime_v2_intent(raw, command_id):
+    records = operation._parse(raw); genesis = records[0].body
+    phase = operation._legal(records); serial = sum(row.record_type == "COMMAND_INTENT_V2" for row in records)
+    command = command_id.value; policy = operation.command_policy
+    argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS, "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
+    deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
+    duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+    environment = [list(row) for row in operation.FIXED_ENV]
+    body = {"operation_token": genesis["operation_token"], "command_serial": serial, "command_id": command,
+        "binding_sha256": operation.ZERO, "journal_key": genesis["journal_key"], "host_boot_id": genesis["host_boot_id"],
+        "source_revision": genesis["source_revision"], "lifecycle_phase": phase, "executable_role": "ctr",
+        "executable_path": policy.STAGED_CTR, "executable_sha256": policy.CONTAINERD_EXTRACTION[1][2],
+        "executable_generation": generation(102, "file", 0o500), "tool_closure_sha256": "d" * 64,
+        "argv": argv, "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(), "stdin_hex": "",
+        "stdin_sha256": hashlib.sha256(b"").hexdigest(), "stdin_length": 0, "environment": environment,
+        "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(), "inherited_fds": [],
+        "policy_version": policy.RUNTIME_POLICY_VERSION, "deadline_class": deadline_class, "duration_ns": duration,
+        "cleanup_reserve_ns": min(policy.CLEANUP_RESERVE_NS, duration // 2),
+        "deadline_boottime_ns": duration * 2, "output_grammar": "text",
+        "stdout_limit": 65536, "stderr_limit": 65536}
+    body["binding_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items() if name != "binding_sha256"})).hexdigest()
+    return body
+
+
+def runtime_outcome(intent, uncertain=False):
+    settled = not uncertain
+    return {name: intent[name] for name in ("operation_token", "command_serial", "command_id", "binding_sha256")} | {
+        "outcome": "not-started" if uncertain else "exited", "status": None if uncertain else 0, "errno": None,
+        "stdout_sha256": hashlib.sha256(b"").hexdigest(), "stdout_length": 0, "stdout_truncated": False,
+        "stderr_sha256": hashlib.sha256(b"").hexdigest(), "stderr_length": 0, "stderr_truncated": False,
+        "leader_reaped": settled, "descendants_reaped": settled, "cgroup_empty": settled, "cgroup_removed": settled,
+        "pipes_eof": settled, "release_count": 0 if uncertain else 1, "term_attempted": False,
+        "kill_attempted": False, "deadline_expired": False, "uncertain": uncertain, "errors": []}
+
+
+def staged_runtime_prefix():
+    raw, _intent, _leased = leased_prefix(); token = "a" * 64; policy = operation.command_policy
+    raw = append(raw, "BASELINES_CAPTURED", {"operation_token": token, "proof_sha256": "1" * 64})
+    raw = append(raw, "NETWORK_READY", {"operation_token": token, "proof_sha256": "2" * 64})
+    raw = append(raw, "RUNTIME_STAGE_INTENT_V4", {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
+        "policy_sha256": policy.RUNTIME_POLICY_SHA256, "temporary_name": ".kata-runtime-v1.staging"})
+    stage = {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
+        "policy_sha256": policy.RUNTIME_POLICY_SHA256, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
+        "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction_sha256": policy.CONTAINERD_EXTRACTION_SHA256,
+        "runtime_generation": generation(101), "containerd_generation": generation(103, "file", 0o500),
+        "ctr_generation": generation(102, "file", 0o500), "config_generation": generation(104, "file", 0o600),
+        "root_generation": generation(105), "state_generation": generation(106)}
+    return append(raw, "RUNTIME_STAGED_V3", stage)
+
+
+def append_runtime_command(raw, command_id, uncertain=False):
+    intent = runtime_v2_intent(raw, command_id); raw = append(raw, "COMMAND_INTENT_V2", intent)
+    if not uncertain:
+        serial = intent["command_serial"]
+        preexec = {name: intent[name] for name in ("operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
+        preexec.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial, "sid": 100 + serial,
+            "proc_start_time": 1, "pidfd_supported": True,
+            "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
+            "cgroup_generation": generation(200 + serial), "executable_sha256": intent["executable_sha256"],
+            "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
+            "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
+        raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
+    return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain)), intent
+
+
+# Runtime uncertainty is historical and sticky: observers are never resumable
+# or retryable, while a consumed TERM uncertainty can finish teardown but never retire.
+token = "a" * 64; proof = lambda value: {"operation_token": token, "proof_sha256": value * 64}
+observer_raw = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
+observer_raw, observer_intent = append_runtime_command(observer_raw, process.CommandId.CTR_TASK_LIST, True)
+observer_resume = {"operation_token": token, "target_phase": "READINESS_REVOKED",
+    "uncertain_serial": observer_intent["command_serial"], "binding_sha256": observer_intent["binding_sha256"]}
+rejected(lambda: append(observer_raw, "RUNTIME_RESUME_V4", observer_resume))
+rejected(lambda: append_runtime_command(observer_raw, process.CommandId.CTR_TASK_LIST))
+
+sticky = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
+for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO, process.CommandId.CTR_CONTAINER_LIST):
+    sticky, _unused = append_runtime_command(sticky, command_id)
+ownership = {**proof("3"), "task": "exact-owned", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}
+sticky = append(sticky, "OWNERSHIP_OBSERVED", ownership)
+sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
+sticky, term_intent = append_runtime_command(sticky, process.CommandId.CTR_TASK_TERM, True)
+term_resume = {"operation_token": token, "target_phase": "OWNERSHIP_OBSERVED",
+    "uncertain_serial": term_intent["command_serial"], "binding_sha256": term_intent["binding_sha256"]}
+sticky = append(sticky, "RUNTIME_RESUME_V4", term_resume)
+assert operation._legal(operation._parse(sticky)) == "OWNERSHIP_OBSERVED"
+sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
+sticky = append(sticky, "TASK_STOPPED", proof("4")); sticky = append(sticky, "NETWORK_ABSENT", proof("5"))
+for phase, commands, next_phase in (
+    ("NETWORK_ABSENT", (process.CommandId.CTR_TASK_REMOVE, process.CommandId.CTR_TASK_LIST), "TASK_ABSENT"),
+    ("TASK_ABSENT", (process.CommandId.CTR_CONTAINER_REMOVE, process.CommandId.CTR_CONTAINER_LIST), "CONTAINER_ABSENT"),
+    ("CONTAINER_ABSENT", (process.CommandId.CTR_CONTAINER_LIST,), "RUNTIME_ABSENT")):
+    assert operation._legal(operation._parse(sticky)) == phase
+    for command_id in commands: sticky, _unused = append_runtime_command(sticky, command_id)
+    sticky = append(sticky, next_phase, proof("6"))
+for kind in ("SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED"): sticky = append(sticky, kind, proof("7"))
+leased_body = next(row.body for row in operation._parse(sticky) if row.record_type == "ROOTFS_LEASED")
+ready = {"operation_token": token, "rootfs_token": "b" * 64, "rootfs_ledger_key": leased_body["rootfs_ledger_key"],
+    "leased_sequence": leased_body["leased_sequence"], "leased_offset": leased_body["leased_offset"],
+    "leased_sha256": leased_body["leased_sha256"], "input_removed_sha256": operation._parse(sticky)[-1].body["proof_sha256"]}
+sticky = append(sticky, "ROOTFS_RELEASE_READY", ready); ready_record = operation._parse(sticky)[-1]
+sticky = append(sticky, "ROOTFS_RELEASE_AUTHORIZED", {"operation_token": token, "rootfs_token": "b" * 64,
+    "rootfs_authorized_sequence": 9, "rootfs_authorized_offset": "0000000000002222",
+    "rootfs_authorized_sha256": "8" * 64, "release_ready_sha256": ready_record.line_sha256})
+sticky = append(sticky, "ROOTFS_ABSENT", proof("9"))
+final_body = {"operation_token": token, "final_baselines_sha256": "a" * 64}
+retire_body = {**final_body, "journal_key": key()}
+rejected(lambda: append(sticky, "FINAL_BASELINES", final_body))
+rejected(lambda: append(sticky, "RETIRE_INTENT", retire_body))
+rejected(lambda: append(sticky, "RETIRED", retire_body))
+rejected(lambda: operation._make_fake_lifecycle_for_tests(sticky))
+
+# The durable deadline uses strict admission/claim semantics at its exact edge.
+deadline_raw, _unused, _unused = leased_prefix(); edge = 100 + operation.JOURNAL_TOTAL_NS
+edge_body = {"operation_token": token, "admission_boottime_ns": 100,
+    "ssh_start_deadline_boottime_ns": 100 + operation.JOURNAL_SETUP_MARGIN_NS, "journal_deadline_boottime_ns": edge}
+deadline_raw = append(deadline_raw, "LIFECYCLE_DEADLINE_V1", edge_body)
+deadline_records = operation._parse(deadline_raw)
+with patch.object(operation, "_current_boot_id", return_value=deadline_records[0].body["host_boot_id"]):
+    with patch.object(operation, "_boottime_ns", return_value=edge - 1):
+        assert operation._require_live_production_deadline(deadline_records) == edge_body
+    for now in (edge, edge + 1):
+        with patch.object(operation, "_boottime_ns", return_value=now):
+            rejected(lambda: operation._require_live_production_deadline(deadline_records))
+assert deadline_raw == b"".join(operation._encode(row.record_type, row.body, deadline_records[:row.sequence]) for row in deadline_records)
+
+
 def native_transaction_crashes(completion):
     if not os.access(process.CGROUP_ROOT, os.W_OK):
         return False
@@ -1627,6 +1754,35 @@ def production_owner_test():
 
             # Production admission is a real fsynced FixedJournal record and
             # survives an exact reopen; legacy journals cannot be claimed.
+            retained_deadline = lifecycle_deadline()
+            edge = retained_deadline[1]["journal_deadline_boottime_ns"]
+            for now in (edge, edge + 1):
+                production_fixture(leased_records + (retained_deadline,))
+                expired_admission = operation._open_fixed_operation()
+                unchanged = fixture_journal_path(completion).read_bytes()
+                with patch.object(operation, "_boottime_ns", return_value=now):
+                    rejected(lambda: operation._admit_production_v2(expired_admission))
+                assert fixture_journal_path(completion).read_bytes() == unchanged
+                expired_admission.close()
+            admitted_suffix = (retained_deadline, ("PRODUCTION_ADMISSION_V2", {
+                "operation_token": "a" * 64, "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
+                "policy_version": operation.command_policy.POLICY_VERSION,
+                "parser_source_sha256": operation.SSH_PARSER_SHA256}))
+            production_fixture(leased_records + admitted_suffix)
+            expired_owner = operation._open_fixed_operation(); unchanged = fixture_journal_path(completion).read_bytes()
+            with patch.object(operation, "_boottime_ns", return_value=edge - 1):
+                assert operation._claim_production_operation(expired_owner) is expired_owner
+            with patch.object(operation, "_boottime_ns", return_value=edge):
+                rejected(lambda: operation._claim_production_operation(expired_owner))
+                rejected(lambda: operation._record_input_grant(expired_owner, {}))
+                cleanup_only = operation._claim_production_cleanup_operation(expired_owner)
+            assert fixture_journal_path(completion).read_bytes() == unchanged
+            for forbidden in ("admit_production_v2", "record_runtime_staged", "record_runtime_mount_v2",
+                              "record_ssh_result", "record_ssh_ready", "retire"):
+                rejected(lambda forbidden=forbidden: getattr(cleanup_only, forbidden))
+            rejected(lambda: cleanup_only.settle_runtime_phase("RUNTIME_READY", "0" * 64))
+            rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
+
             production_fixture(leased_records)
             stale_admission = operation._open_fixed_operation()
             stale_bytes = fixture_journal_path(completion).read_bytes()
