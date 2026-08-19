@@ -928,6 +928,9 @@ def _internally_fixed(fixed):
                  kata_network.HOST_IF if item == host else item for item in fixed.argv)
     stdin = fixed.stdin.replace(table.encode(), kata_network.TABLE.encode()) if table else fixed.stdin
     if host: stdin = stdin.replace(host.encode(), kata_network.HOST_IF.encode())
+    if fixed.command_id is CommandId.NFT_REMOVE_ATOMIC:
+        match = re.fullmatch(rb"list table inet cogs_stage2_ssh_v1\ndelete table inet cogs_stage2_ssh_v1 handle ([1-9][0-9]{0,19})\n", stdin)
+        if match is not None and int(match.group(1)) <= (1 << 64) - 1: stdin = canonical.stdin
     if canonical is not None and canonical == FixedCommand(canonical.command_id, canonical.executable_role,
             canonical.executable_path, argv, stdin, canonical.duration_ns, canonical.stdout_limit,
             canonical.stderr_limit, canonical.output_grammar, canonical.inherited_fds):

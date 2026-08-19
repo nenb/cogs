@@ -11,6 +11,7 @@ if sys.flags.optimize:
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility/remote"))
 import completion_kata_network as network
+import completion_kata_process as process
 
 
 def encoded(value):
@@ -574,5 +575,15 @@ assert network.recover_nft(nft_remove, network.NftObservation(nft_snapshot), fir
 # Identical normalized content with replacement handles is preserved, never removed.
 assert network.recover_nft(nft_remove, network.NftObservation(replaced_nft_snapshot), firewall_ready_proof) is network.Recovery.PRESERVE
 rejected(lambda: network.recover_nft(nft_remove, network.NftObservation(("cogs_stage2_ssh_v1",)), firewall_ready_proof))
+
+atomic = process._FIXED_COMMANDS[process.CommandId.NFT_REMOVE_ATOMIC]
+dynamic_atomic = process.FixedCommand(atomic.command_id, atomic.executable_role, atomic.executable_path,
+    atomic.argv, atomic.stdin.replace(b"18446744073709551615", b"7"), atomic.duration_ns,
+    atomic.stdout_limit, atomic.stderr_limit, atomic.output_grammar, atomic.inherited_fds)
+assert process._internally_fixed(dynamic_atomic)
+assert not process._internally_fixed(process.FixedCommand(
+    atomic.command_id, atomic.executable_role, atomic.executable_path, atomic.argv,
+    atomic.stdin.replace(b"18446744073709551615", b"0"), atomic.duration_ns,
+    atomic.stdout_limit, atomic.stderr_limit, atomic.output_grammar, atomic.inherited_fds))
 
 print("completion Kata network owner fixed-snapshot matrix passed")
