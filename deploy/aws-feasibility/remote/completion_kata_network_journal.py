@@ -313,8 +313,10 @@ def advance(state, kind, body, phase):
                     "preserved-directory": state["cleanup_authority"]["support"]["preserved_directory"],
                     "parent-stage-directory": state["cleanup_authority"]["support"]["parent_stage_directory"]}
                     [body["resource"]])
-                _fail(all(body["identity"][name] == expected[name] for name in
-                          ("device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns")))
+                fields = (("device", "inode", "mode", "uid", "gid") if body["resource"] in
+                          {"preserved-directory", "parent-stage-directory"} else
+                          ("device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns"))
+                _fail(all(body["identity"][name] == expected[name] for name in fields))
             state["cleanup_steps"].append(body)
         return state
     if kind in {ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}:

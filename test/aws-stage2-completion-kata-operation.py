@@ -1050,8 +1050,8 @@ def native_runtime_daemon_foundations(completion):
             assert pending["tip"] == "COMMAND_PREEXEC_V2" and not pending["daemon_retained"]
             preexec = pending["preexecs"][-1]; saved_socket = socket_path
             with patch.object(process, "_recover_cgroup", return_value=(False, False)):
-                pre_daemon = runtime._retain_private_containerd(
-                    pre_retention, completion_node, None, control)
+                rejected(lambda: runtime._retain_private_containerd(
+                    pre_retention, completion_node, None, control))
             recovered = pre_retention.runtime_recovery_history(); command_outcome = recovered["outcomes"][-1]
             assert (recovered["phase"] == "UNCERTAIN" and recovered["tip"] == "COMMAND_OUTCOME_V2"
                     and len(recovered["outcomes"]) == 1 and command_outcome["uncertain"]
@@ -1059,7 +1059,6 @@ def native_runtime_daemon_foundations(completion):
                             ("operation_token", "command_serial", "command_id", "binding_sha256"))
                     and not all(command_outcome[name] for name in
                                 ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
-            rejected(lambda: runtime._cleanup_staged_runtime(pre_daemon))
             assert (pre_retention.runtime_recovery_history()["phase"] == "UNCERTAIN"
                     and len(pre_retention.runtime_recovery_history()["outcomes"]) == 1
                     and os.path.isdir(runtime_base) and os.path.lexists(saved_socket)
@@ -1071,9 +1070,6 @@ def native_runtime_daemon_foundations(completion):
             assert process._recover_cgroup(preexec["cgroup_path"], process._generation_tuple(
                 preexec["cgroup_generation"]), process._boottime_ns() + 2_000_000_000,
                 {"term": False, "kill": False}, recovery_errors) == (True, True) and not recovery_errors
-            pre_state = runtime_states.pop(pre_daemon)
-            for index in (5, 6, 7, 4):
-                if pre_state[index] is not None: fs._close_node(pre_state[index])
             parent = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
             try: runtime._purge_owned_tree(parent, "kata-runtime-v1")
             finally: os.close(parent)
