@@ -1463,8 +1463,12 @@ def _runtime_owner_routes():
             _fail(closed(history["daemon_outcomes"][-1]), "uncertain daemon closure preserved")
         verify_daemon(daemon)
         if len(history["daemon_outcomes"]) < len(history["daemon_retained"]): process._stop_fixed_daemon(state[2], state[0])
-        history = state[0].runtime_recovery_history(); _fail(len(history["daemon_outcomes"]) == len(history["daemon_retained"]) and closed(history["daemon_outcomes"][-1]), "exact daemon closure required"); certain = state[8] is not None
-        verify_daemon(daemon, certain); discard_socket(state, certain) if state[8] is not None else None
+        history = state[0].runtime_recovery_history(); certain = state[8] is not None
+        _fail((len(history["daemon_outcomes"]) == len(history["daemon_retained"]) and
+               closed(history["daemon_outcomes"][-1])) if certain else
+              not history["daemon_retained"] and not history["daemon_outcomes"],
+              "exact daemon closure required")
+        verify_daemon(daemon, certain); discard_socket(state, certain) if certain else None
         if state[4] is not None:
             for index, name in ((7, "containerd-state"), (6, "containerd-root")):
                 node = state[index]
