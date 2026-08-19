@@ -2837,7 +2837,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
             if not re.fullmatch(r"c42t[0-9a-f]{10}", table_name):
                 raise NetworkError("setup abort nft table binding")
             raw = _observer_pass(journal, ip, nft, tc, ("NFT_TABLE",),
-                                 "NETWORK_CLEANUP_INTENT_V2")[0]
+                                 operation.network_journal.DETACHED_CLEANUP_STEP)[0]
             observed_nft = parse_nft_snapshot(raw, table_name, "c42h" + table_name[4:])
             if _nft_value(observed_nft) != retained["nft"]:
                 raise NetworkError("setup abort nft replacement preserved")
