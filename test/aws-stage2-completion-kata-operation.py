@@ -794,18 +794,18 @@ def native_runtime_daemon_foundations(completion):
             runtime._shutdown_private_containerd(graceful_daemon); graceful_outcome = graceful_journal.runtime_recovery_history()["daemon_outcomes"][-1]
             assert graceful_outcome["status"] == 0 and not graceful_outcome["uncertain"] and not os.path.lexists(socket_path)
             graceful_journal.close(); assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); fs._close_chain(chain); chain = None
-            # A crash after the daemon outcome reopens cleanup-only with the normal exact socket residue.
+            # A crash after a certain daemon outcome consumes the normal exact socket residue without a resume record.
             reset(); chain, completion_node = boundary(); journal = operation._open_fixed_operation(); owner = process._start_fixed_daemon(journal, retained)
-            body = process._stop_fixed_daemon(owner, journal); assert body["status"] == signal.SIGKILL and os.path.lexists(socket_path)
-            assert journal.resume_runtime_cleanup() == "RUNTIME_CLEANUP_ONLY"
+            body = process._stop_fixed_daemon(owner, journal); assert body["status"] == signal.SIGKILL and not body["uncertain"] and os.path.lexists(socket_path)
             daemon = runtime._retain_private_containerd(journal, completion_node, None, control)
             runtime._shutdown_private_containerd(daemon); journal.close()
             assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); fs._close_chain(chain); chain = None
             # Fresh runtime-owner crashes qualify both durable socket-consumption cuts.
             def crash_cut(code, operation_name):
                 reset(); held, node = boundary(); journal = operation._open_fixed_operation(); daemon_owner = process._start_fixed_daemon(journal, retained)
-                assert process._stop_fixed_daemon(daemon_owner, journal)["status"] == signal.SIGKILL
-                assert journal.resume_runtime_cleanup() == "RUNTIME_CLEANUP_ONLY"; journal.close(); fs._close_chain(held)
+                outcome = process._stop_fixed_daemon(daemon_owner, journal)
+                assert outcome["status"] == signal.SIGKILL and not outcome["uncertain"]
+                journal.close(); fs._close_chain(held)
                 child = os.fork()
                 if child == 0:
                     local_chain = None

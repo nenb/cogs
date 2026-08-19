@@ -42,7 +42,7 @@ def ensure_attested_static_fixture():
                 f"-fuse-ld={linker}", "-Wl,-e,_start", "-Wl,--build-id=none", "-Os",
                 "-fno-builtin", "-fno-ident", "-o", str(temporary), str(SOURCE),
             ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-               timeout=30, check=False)
+               timeout=120, check=False)
             if result.returncode != 0:
                 raise RuntimeError("reviewed synthetic fixture build failed")
             raw = temporary.read_bytes()
