@@ -744,6 +744,8 @@ def native_runtime_daemon_foundations(completion):
         objects = list(operation._RUNTIME_POLICY_OBJECTS); objects[8] = replacement; operation._RUNTIME_POLICY_OBJECTS = tuple(objects)
         retained = process.RetainedExecutable("containerd", policy.STAGED_CONTAINERD, descriptor, digest,
             "d" * 64, executable_generation)
+        input_root = Path(completion) / operation.INPUT_NAME.text
+        input_root.mkdir(mode=0o700)
         def path_generation(path, kind):
             value = os.open(path, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
             try: return process._host_generation(value, kind)
@@ -916,6 +918,7 @@ def native_runtime_daemon_foundations(completion):
                 try: os.rmdir(process.CGROUP_BASE)
                 except OSError: pass
             if chain is not None: fs._close_chain(chain)
+            input_root.rmdir()
             os.close(descriptor); policy.BASE = original["base"]; policy.CONTAINERD_ADDRESS = original["address"]
             policy.STAGED_CONTAINERD = original["containerd"]; policy.CONTAINERD_EXTRACTION = original["extraction"]
             (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
