@@ -217,13 +217,9 @@ def _current_boot_id():
     with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as source: value = source.read(64)
     _fail(len(value) == 37 and value.endswith("\n")); return value[:-1]
 def _require_live_production_deadline(records):
-    rows = [row.body for row in records if row.record_type == "LIFECYCLE_DEADLINE_V1"]
-    _fail(len(rows) == 1 and records[0].body["host_boot_id"] == _current_boot_id()
-          and _boottime_ns() < rows[0]["journal_deadline_boottime_ns"])
-    return rows[0]
+    rows = [row.body for row in records if row.record_type == "LIFECYCLE_DEADLINE_V1"]; _fail(len(rows) == 1 and records[0].body["host_boot_id"] == _current_boot_id() and _boottime_ns() < rows[0]["journal_deadline_boottime_ns"]); return rows[0]
 def _uint(value, maximum=(1 << 64) - 1, minimum=0):
-    _fail(type(value) is int and minimum <= value <= maximum)
-    return value
+    _fail(type(value) is int and minimum <= value <= maximum); return value
 def _text(value, ascii_only=False):
     _fail(type(value) is str and unicodedata.normalize("NFC", value) == value)
     _fail(not any(ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF for char in value))
@@ -1915,13 +1911,11 @@ def _make_authority():
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
             if name in {"record_command_intent", "settle_runtime_phase"}: return object.__getattribute__(self, name)
-            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "close", "status"}); return getattr(cleanup_owners[self], name)
+            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body):
-            _fail(body["lifecycle_phase"] in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and body["command_id"] not in {"CTR_RUN", "CONTAINERD_START", "SSH_READY"})
-            return cleanup_owners[self].record_command_intent(body)
+            _fail(body["lifecycle_phase"] in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and body["command_id"] not in {"CTR_RUN", "CONTAINERD_START", "SSH_READY"}); return cleanup_owners[self].record_command_intent(body)
         def settle_runtime_phase(self, kind, proof, ownership=None):
-            _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"})
-            return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
+            _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
     class RootfsPermit:
         __slots__ = ()
         def __new__(cls, key=None):
