@@ -2031,7 +2031,6 @@ def production_owner_test():
                         terminals = [item.body for item in recovered_records
                                      if item.record_type == "COMMAND_OUTCOME_V2"]
                         assert len(terminals) == 1 and terminals[0]["uncertain"]
-                    import shutil
                     shutil.rmtree(transaction_completion)
                 for cut in ssh_crash_cuts:
                     assert not transaction_completion.exists()
@@ -2201,11 +2200,21 @@ def production_owner_test():
                         ssh_outcome.stdout, canonical_result)
                     operation._record_ssh_ready(reopened_runtime)
                     operation._revoke_readiness(reopened_runtime)
+                    for method, digest in (
+                        (reopened_runtime.ownership_observed, "1" * 64),
+                        (reopened_runtime.task_stopped, "2" * 64),
+                        (reopened_runtime.network_absent, "3" * 64),
+                        (reopened_runtime.task_absent, "4" * 64),
+                        (reopened_runtime.container_absent, "5" * 64),
+                        (reopened_runtime.runtime_absent, "6" * 64),
+                        (reopened_runtime.share_absent, "7" * 64),
+                        (reopened_runtime.firewall_absent, "8" * 64),
+                    ): method(digest)
                     production_inputs.release_ssh_bindings()
                     reopened_runtime.close()
                     fs._close_node(manifest_node); fs._close_node(mounted_input)
                     completed_runtime = operation._open_fixed_operation()
-                    assert operation._durable_phase(completed_runtime) == "READINESS_REVOKED"
+                    assert operation._durable_phase(completed_runtime) == "FIREWALL_ABSENT"
                     cleanup = inputs._compose_production_input_cleanup(
                         completed_runtime, transaction_parent, transaction_control)
                     cleanup.continue_cleanup()
@@ -2220,7 +2229,6 @@ def production_owner_test():
                     fs._close_chain(transaction_chain)
                     transaction_patch.stop()
                     inputs._FIXED_FIXTURE = full_input_fixture
-                    import shutil
                     shutil.rmtree(transaction_completion)
                     for directory in missing[1:]:
                         try: directory.rmdir()
