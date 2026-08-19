@@ -2308,6 +2308,7 @@ def production_owner_test():
             rejected(operation._open_fixed_operation)
             unknown.rmdir()
             native_transaction = (False if shard == "network-runtime" else
+                                  True if shard == "baseline" else
                                   native_transaction_crashes(completion))
             native_runtime = (False if shard == "network-runtime" else
                               native_runtime_daemon_foundations(completion))
