@@ -4,8 +4,10 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 from types import MappingProxyType
 from unittest.mock import patch
 
@@ -115,16 +117,16 @@ for count, trace in enumerate(journal_model.SETUP_ABORT_TRACES, 1):
     check(journal_model.setup_abort_complete(state), "complete reverse setup chain rejected")
     state["pending"] = ("NETWORK_EFFECT_INTENT_V2", {}, 0)
     check(not journal_model.setup_abort_complete(state), "pending reverse effect treated as absent")
-class DetachedJournal: pass
+class DetachedJournal:
+    def network_history(self): return ()
 with patch.object(network, "_quarantine_stage", return_value=("NETWORK_DETACHED_V2", {
         "placeholder": {"device": 7, "inode": 8}})), \
      patch.object(network, "_original_placeholder", return_value={"device": 7, "inode": 9}), \
      patch.object(network, "_bound_names", return_value=("c42naaaaaaaaaa", "c42taaaaaaaaaa")), \
      patch.object(network, "_quarantine_name", return_value="c42qaaaaaaaaaa"), \
-     patch.object(network, "_netns_parent_mount", return_value=None), \
-     patch.object(network.os.path, "lexists", return_value=False), \
-     patch.object(network.os, "unlink", side_effect=AssertionError("absent placeholder retried")):
-    network._cleanup_detached_placeholders(DetachedJournal())
+     patch.object(network.os, "unlink", side_effect=AssertionError("legacy shape cleanup attempted")):
+    reject(lambda: network._cleanup_detached_placeholders(DetachedJournal()),
+           "detached V2 history without durable cleanup ownership was deleted by shape")
 positions = {action: network._SETUP_ACTIONS.index(action) for action in network._SETUP_ACTIONS}
 check(positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_HOST_ADDRESS_ADD] and
       positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_GUEST_ADDRESS_ADD] and
@@ -188,6 +190,102 @@ detached = quarantine_body({"device": 7, "inode": 9},
 qstate = journal_model.advance(qstate, "NETWORK_DETACHED_V2", detached, "TASK_STOPPED")
 reject(lambda: journal_model.advance(qstate, "NETWORK_QUARANTINE_MOVED_V2", quarantine, "TASK_STOPPED"),
        "detached quarantine replayed move")
+# V3 gives every cleanup object a durable exact owner and fixes all ten
+# relocation/removal reopen cuts without changing historical V2 meanings.
+def exact_stat(inode):
+    return {"device": 7, "inode": inode, "mode": 0o600, "uid": 0, "gid": 0,
+            "nlink": 1, "size": 0, "mtime_ns": 1, "ctime_ns": 1}
+def cleanup_envelope(**values):
+    return proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+                  **values, "proof_sha256": operation.ZERO})
+support = {"preserved_directory": exact_stat(30), "parent_stage_directory": exact_stat(31)}
+parent_mount = {"mount_id": 40, "parent_id": 4, "device": "0:7", "root": "/netns",
+    "mount_point": "/run/netns", "mount_options": ["rw"], "optional_fields": [],
+    "fs_type": "tmpfs", "source": "tmpfs", "super_options": ["rw"],
+    "inode_device": 7, "inode": 32}
+cstate = journal_model.initial()
+support_body = cleanup_envelope(support=support)
+journal_model.validate(journal_model.SUPPORT_RECORD, support_body, operation._canonical)
+cstate = journal_model.advance(cstate, journal_model.SUPPORT_RECORD, support_body, "FS_SETTLED")
+cstate["pending"] = ("NETWORK_EFFECT_INTENT_V2", {"action": "IP_NETNS_ADD"}, 0)
+mount_body = cleanup_envelope(parent_mount=parent_mount)
+cstate = journal_model.advance(cstate, journal_model.PARENT_MOUNT_RECORD, mount_body, "BASELINES_CAPTURED")
+cstate["pending"] = None
+cstate["original_placeholder"] = {"placeholder": exact_stat(33)}
+cstate["quarantine"] = ("NETWORK_DETACHED_V2", {"placeholder": exact_stat(34)})
+authority = {"support": support, "parent_mount": parent_mount,
+             "placeholders": {"original": exact_stat(33), "quarantine": exact_stat(34)}}
+intent_v3 = cleanup_envelope(authority=authority)
+cstate = journal_model.advance(cstate, journal_model.DETACHED_CLEANUP_INTENT, intent_v3, "TASK_STOPPED")
+cleanup_order = (("original-placeholder", "relocated"), ("original-placeholder", "removed"),
+    ("quarantine-placeholder", "relocated"), ("quarantine-placeholder", "removed"),
+    ("preserved-directory", "relocated"), ("preserved-directory", "removed"),
+    ("parent-mount", "relocated"), ("parent-mount", "removed"),
+    ("parent-stage-directory", "relocated"), ("parent-stage-directory", "removed"))
+relocated_identities = {}
+for index, (resource, action) in enumerate(cleanup_order):
+    expected_cleanup = {"original-placeholder": authority["placeholders"]["original"],
+        "quarantine-placeholder": authority["placeholders"]["quarantine"],
+        "preserved-directory": support["preserved_directory"],
+        "parent-stage-directory": support["parent_stage_directory"]}
+    identity = (relocated_identities[resource] if action == "removed" else
+                {**parent_mount, "mount_point": network.PARENT_STAGE_DIR} if resource == "parent-mount" else
+                {**expected_cleanup[resource], "ctime_ns": 10 + index})
+    if action == "relocated": relocated_identities[resource] = identity
+    step = cleanup_envelope(resource=resource, action=action, identity=identity)
+    journal_model.validate(journal_model.DETACHED_CLEANUP_STEP, step, operation._canonical)
+    replacement = copy.deepcopy(identity)
+    replacement["mount_id" if resource == "parent-mount" else "inode"] += 1
+    replaced_step = cleanup_envelope(resource=resource, action=action, identity=replacement)
+    reject(lambda replaced_step=replaced_step: journal_model.advance(copy.deepcopy(cstate),
+        journal_model.DETACHED_CLEANUP_STEP, replaced_step, "TASK_STOPPED"),
+        f"detached cleanup replacement accepted at {resource}/{action}")
+    cstate = journal_model.advance(copy.deepcopy(cstate), journal_model.DETACHED_CLEANUP_STEP,
+                                   step, "TASK_STOPPED")
+check(len(cstate["cleanup_steps"]) == 10, "detached cleanup crash/reopen cursor incomplete")
+reject(lambda: journal_model.advance(cstate, journal_model.DETACHED_CLEANUP_STEP,
+    cleanup_envelope(resource="original-placeholder", action="relocated", identity=exact_stat(99)),
+    "TASK_STOPPED"), "detached cleanup step replay accepted")
+
+# A crash after atomic relocation or unlink is recovered from exact retained
+# inode state. A replacement appearing after relocation is left untouched.
+with tempfile.TemporaryDirectory() as temporary:
+    source_dir = os.path.join(temporary, "source"); target_dir = os.path.join(temporary, "target")
+    os.mkdir(source_dir); os.mkdir(target_dir)
+    source_fd = os.open(source_dir, os.O_RDONLY | os.O_DIRECTORY)
+    target_fd = os.open(target_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        Path(source_dir, "owned").write_bytes(b"owned")
+        expected = network._placeholder_identity(os.stat(Path(source_dir, "owned"), follow_symlinks=False))
+        rows = []
+        def append_step(_journal, _kind, **values): rows.append((_kind, values))
+        def real_rename(source_parent, source, target_parent, target):
+            os.rename(source, target, src_dir_fd=source_parent, dst_dir_fd=target_parent)
+        def crash_after_rename(*args): real_rename(*args); raise RuntimeError("crash")
+        with patch.object(network, "_cleanup_rows", side_effect=lambda _journal: rows), \
+             patch.object(network, "_cleanup_record", side_effect=append_step), \
+             patch.object(network, "_rename_noreplace", side_effect=crash_after_rename):
+            reject(lambda: network._cleanup_owned_entry(object(), "original-placeholder",
+                source_fd, "owned", target_fd, "staged", expected))
+        with patch.object(network, "_cleanup_rows", side_effect=lambda _journal: rows), \
+             patch.object(network, "_cleanup_record", side_effect=append_step), \
+             patch.object(network, "_rename_noreplace", side_effect=real_rename):
+            network._cleanup_owned_entry(object(), "original-placeholder", source_fd, "owned",
+                                         target_fd, "staged", expected)
+        check(not os.path.exists(Path(source_dir, "owned")) and not os.path.exists(Path(target_dir, "staged")),
+              "relocation/unlink crash did not reopen")
+        Path(source_dir, "owned").write_bytes(b"owned")
+        expected = network._placeholder_identity(os.stat(Path(source_dir, "owned"), follow_symlinks=False)); rows.clear()
+        def replace_after_rename(*args):
+            real_rename(*args); Path(source_dir, "owned").write_bytes(b"foreign")
+        with patch.object(network, "_cleanup_rows", side_effect=lambda _journal: rows), \
+             patch.object(network, "_cleanup_record", side_effect=append_step), \
+             patch.object(network, "_rename_noreplace", side_effect=replace_after_rename):
+            reject(lambda: network._cleanup_owned_entry(object(), "original-placeholder",
+                source_fd, "owned", target_fd, "staged", expected))
+        check(Path(source_dir, "owned").read_bytes() == b"foreign" and Path(target_dir, "staged").read_bytes() == b"owned",
+              "cleanup replacement was not preserved")
+    finally: os.close(target_fd); os.close(source_fd)
 raw_chunks = b"x" * (journal_model.MAX_CHUNK_BYTES + 3); output_hash = hashlib.sha256(raw_chunks).hexdigest()
 cursor = journal_model.initial(); cursor = journal_model.command_outcome(cursor, {
     "command_serial": 0, "command_id": "IP_ALL_LINKS", "stdout_sha256": output_hash,

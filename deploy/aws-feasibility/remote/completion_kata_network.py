@@ -23,6 +23,9 @@ import completion_kata_owner as owner_helpers
 NETNS = "cogs-stage2-ssh"
 NETNS_PATH = "/run/netns/cogs-stage2-ssh"
 PRESERVED_DIR = "/run/netns/.cogs-stage2-preserved"
+PARENT_STAGE_DIR = "/run/.cogs-stage2-netns-parent"
+PRESERVED_REMOVING = ".cogs-stage2-preserved-removing"
+PARENT_STAGE_REMOVING = ".cogs-stage2-netns-parent-removing"
 HOST_IF = "c42h0"
 TEMP_IF = "c42g0"
 GUEST_IF = "eth0"
@@ -1213,7 +1216,7 @@ def _read_mountinfo():
     return raw
 
 
-def _netns_parent_mount(raw=None):
+def _mount_identity(path, raw=None):
     raw = _read_mountinfo() if raw is None else raw
     try: lines = raw.decode("utf-8", "strict").splitlines()
     except UnicodeError as error: raise NetworkError("parent mountinfo encoding") from error
@@ -1222,29 +1225,61 @@ def _netns_parent_mount(raw=None):
         fields = line.split(" ")
         if fields.count("-") != 1: raise NetworkError("parent mountinfo separator")
         separator = fields.index("-")
-        if separator < 6 or len(fields) != separator + 4:
+        if separator < 6 or len(fields) != separator + 4 or not _DEVICE.fullmatch(fields[2]):
             raise NetworkError("parent mountinfo shape")
         point = _OCTAL.sub(lambda match: chr(int(match.group(1), 8)), fields[4])
-        if point == "/run/netns":
-            found.append((fields[3], fields[separator + 1], fields[separator + 2],
-                          tuple(fields[6:separator])))
+        if point == path:
+            try: mount_id, parent_id = int(fields[0]), int(fields[1])
+            except ValueError as error: raise NetworkError("parent mount identity") from error
+            observed = os.stat(path, follow_symlinks=False)
+            found.append({"mount_id": _uint(mount_id), "parent_id": _uint(parent_id),
+                "device": fields[2], "root": fields[3], "mount_point": point,
+                "mount_options": fields[5].split(","), "optional_fields": fields[6:separator],
+                "fs_type": fields[separator + 1], "source": fields[separator + 2],
+                "super_options": fields[separator + 3].split(","),
+                "inode_device": observed.st_dev, "inode": observed.st_ino})
     if len(found) > 1: raise NetworkError("netns parent mount cardinality")
     return None if not found else found[0]
 
 
-def _prepare_netns_parent():
-    observed = _netns_parent_mount()
+def _netns_parent_mount(raw=None):
+    identity = _mount_identity("/run/netns", raw)
+    return None if identity is None else (identity["root"], identity["fs_type"], identity["source"],
+                                          tuple(identity["optional_fields"]))
+
+
+def _parent_mount_record(journal, identity):
+    import completion_kata_operation as operation
+    body = {"operation_token": operation._command_context(journal).operation_token,
+            "policy_version": operation.network_journal.POLICY_VERSION,
+            "parent_mount": identity, "proof_sha256": ZERO}
+    body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
+        if name != "proof_sha256"})).hexdigest()
+    operation._record_network(journal, operation.network_journal.PARENT_MOUNT_RECORD, body)
+
+
+def _prepare_netns_parent(journal=None):
+    import completion_kata_operation as operation
+    rows = ([] if journal is None else [body["parent_mount"] for kind, body in
+        operation._network_history(journal) if kind == operation.network_journal.PARENT_MOUNT_RECORD])
+    observed = _mount_identity("/run/netns")
     libc = ctypes.CDLL(None, use_errno=True)
     if observed is None:
+        if rows: raise NetworkError("durable private parent mount absent")
         if libc.mount(b"/run/netns", b"/run/netns", None, 4096, None) != 0:
             saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-    elif observed[:3] != ("/netns", "tmpfs", "tmpfs"):
+    elif observed["root"] != "/netns" or observed["fs_type"] != "tmpfs" or observed["source"] != "tmpfs":
         raise NetworkError("foreign netns parent mount")
-    if libc.mount(None, b"/run/netns", None, 1 << 18, None) != 0:
+    if not rows and libc.mount(None, b"/run/netns", None, 1 << 18, None) != 0:
         saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-    settled = _netns_parent_mount()
-    if settled is None or settled[:3] != ("/netns", "tmpfs", "tmpfs") or settled[3]:
+    settled = _mount_identity("/run/netns")
+    if (settled is None or settled["root"] != "/netns" or settled["fs_type"] != "tmpfs"
+            or settled["source"] != "tmpfs" or settled["optional_fields"]):
         raise NetworkError("private netns parent mount absent")
+    if rows:
+        if len(rows) != 1 or settled != rows[0]: raise NetworkError("private parent mount replacement")
+    elif journal is not None: _parent_mount_record(journal, settled)
+    return settled
 
 
 def _netns_identity(journal=None, raw=None, name=None):
@@ -1290,13 +1325,35 @@ def _netns_identity(journal=None, raw=None, name=None):
     return result
 
 
+def _support_ownership(journal=None):
+    import completion_kata_operation as operation
+    rows = ([] if journal is None else [body["support"] for kind, body in operation._network_history(journal)
+        if kind == operation.network_journal.SUPPORT_RECORD])
+    observed = {}
+    for key, path in (("preserved_directory", PRESERVED_DIR),
+                      ("parent_stage_directory", PARENT_STAGE_DIR)):
+        if not rows:
+            try: os.mkdir(path, 0o700)
+            except FileExistsError: pass
+        stat = os.stat(path, follow_symlinks=False)
+        if (not os.path.isdir(path) or stat.st_uid != 0 or stat.st_gid != 0
+                or stat.st_mode & 0o7777 != 0o700):
+            raise NetworkError("cleanup support directory replacement")
+        observed[key] = _placeholder_identity(stat)
+    if rows:
+        if len(rows) != 1 or observed != rows[0]: raise NetworkError("cleanup support ownership replacement")
+    elif journal is not None:
+        body = {"operation_token": operation._command_context(journal).operation_token,
+                "policy_version": operation.network_journal.POLICY_VERSION,
+                "support": observed, "proof_sha256": ZERO}
+        body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
+            if name != "proof_sha256"})).hexdigest()
+        operation._record_network(journal, operation.network_journal.SUPPORT_RECORD, body)
+    return observed
+
+
 def _preserved_directory():
-    try: os.mkdir(PRESERVED_DIR, 0o700)
-    except FileExistsError: pass
-    observed = os.stat(PRESERVED_DIR, follow_symlinks=False)
-    if (not os.path.isdir(PRESERVED_DIR) or observed.st_uid != 0 or
-            observed.st_gid != 0 or observed.st_mode & 0o7777 != 0o700):
-        raise NetworkError("preserved placeholder directory")
+    _support_ownership()
     return os.open(PRESERVED_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
 
 
@@ -1372,7 +1429,7 @@ def _quarantine_stage(journal):
 
 def _establish_netns(journal):
     """Create, retain, and journal the inode before the exact bind mount."""
-    _prepare_netns_parent()
+    _prepare_netns_parent(journal)
     name = _bound_names(journal)[0]; parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     opened = [parent]; helper_pid = None; helper_waited = False
     try:
@@ -1516,7 +1573,7 @@ def _quarantine_netns(journal, retained):
                 if existing_placeholder is None:
                     target_fd = os.open("/run/netns", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600)
                     opened.append(target_fd); planned = os.fstat(target_fd)
-                    placeholder = {"device": planned.st_dev, "inode": planned.st_ino}
+                    placeholder = _placeholder_identity(planned)
                     _quarantine_record(journal, "NETWORK_QUARANTINE_PLACEHOLDER_V2", retained, placeholder)
                     stage = "NETWORK_QUARANTINE_PLACEHOLDER_V2"
                     if libc.linkat(target_fd, b"", parent, quarantine.encode(), 0x1000) != 0:  # AT_EMPTY_PATH
@@ -1602,46 +1659,225 @@ def _descriptor_remove_netns(journal, retained):
             except OSError: pass
 
 
-def _cleanup_detached_placeholders(journal):
-    """Remove only exact regular placeholders after durable nsfs detachment."""
+def _cleanup_rows(journal):
+    import completion_kata_operation as operation
+    return [(kind, body) for kind, body in operation._network_history(journal)
+            if kind in {operation.network_journal.DETACHED_CLEANUP_INTENT,
+                        operation.network_journal.DETACHED_CLEANUP_STEP}]
+
+
+def _cleanup_record(journal, kind, **values):
+    import completion_kata_operation as operation
+    body = {"operation_token": operation._command_context(journal).operation_token,
+            "policy_version": operation.network_journal.POLICY_VERSION, **values,
+            "proof_sha256": ZERO}
+    body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
+        if name != "proof_sha256"})).hexdigest()
+    operation._record_network(journal, kind, body)
+
+
+def _same_file_owner(observed, expected):
+    return all(observed[name] == expected[name] for name in
+               ("device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns"))
+
+
+def _open_owned(parent, name, expected, directory=False, stable=False):
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    if directory: flags |= os.O_DIRECTORY
+    descriptor = os.open(name, flags, dir_fd=parent)
+    observed = _placeholder_identity(os.fstat(descriptor))
+    if (not _same_file_owner(observed, expected) if stable else observed != expected):
+        os.close(descriptor); raise NetworkError("cleanup replacement preserved")
+    return descriptor
+
+
+def _rename_noreplace(source_parent, source, target_parent, target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renameat2(source_parent, source.encode(), target_parent, target.encode(), 1) != 0:
+        saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+
+
+def _cleanup_owned_entry(journal, resource, source_parent, source, target_parent, target,
+                         expected, directory=False):
+    import completion_kata_operation as operation
+    steps = {(body["resource"], body["action"]): body["identity"] for kind, body in _cleanup_rows(journal)
+             if kind == operation.network_journal.DETACHED_CLEANUP_STEP}
+    relocated_identity = steps.get((resource, "relocated")); removed = (resource, "removed") in steps
+    if relocated_identity is None:
+        try: target_stat = os.stat(target, dir_fd=target_parent, follow_symlinks=False)
+        except FileNotFoundError: target_stat = None
+        try: source_stat = os.stat(source, dir_fd=source_parent, follow_symlinks=False)
+        except FileNotFoundError: source_stat = None
+        if target_stat is not None and source_stat is None:
+            held = _open_owned(target_parent, target, expected, directory, True)
+        else:
+            if target_stat is not None or source_stat is None or _placeholder_identity(source_stat) != expected:
+                raise NetworkError("cleanup relocation replacement preserved")
+            held = _open_owned(source_parent, source, expected, directory)
+            _rename_noreplace(source_parent, source, target_parent, target)
+            if not _same_file_owner(_placeholder_identity(os.fstat(held)), expected):
+                os.close(held); raise NetworkError("cleanup retained descriptor changed")
+            post = _open_owned(target_parent, target, expected, directory, True); os.close(post)
+            try: os.stat(source, dir_fd=source_parent, follow_symlinks=False)
+            except FileNotFoundError: pass
+            else: os.close(held); raise NetworkError("cleanup source replacement preserved")
+        relocated_identity = _placeholder_identity(os.fstat(held)); os.close(held)
+        os.fsync(source_parent); os.fsync(target_parent)
+        _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
+                        resource=resource, action="relocated", identity=relocated_identity)
+    if removed: return
+    try: os.stat(source, dir_fd=source_parent, follow_symlinks=False)
+    except FileNotFoundError: pass
+    else: raise NetworkError("cleanup post-relocation replacement preserved")
+    try: held = _open_owned(target_parent, target, relocated_identity, directory)
+    except FileNotFoundError:
+        held = None
+    if held is not None:
+        before = os.fstat(held)
+        (os.rmdir if directory else os.unlink)(target, dir_fd=target_parent)
+        after = os.fstat(held); os.close(held)
+        if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                or after.st_nlink != 0):
+            raise NetworkError("cleanup unlink identity uncertainty")
+        os.fsync(target_parent)
+    _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
+                    resource=resource, action="removed", identity=relocated_identity)
+
+
+def _same_relocated_mount(expected, observed, path):
+    return (observed is not None and observed == {**expected, "mount_point": path})
+
+
+def _cleanup_parent_mount(journal, authority):
+    import completion_kata_operation as operation
+    steps = [(body["resource"], body["action"], body["identity"]) for kind, body in _cleanup_rows(journal)
+             if kind == operation.network_journal.DETACHED_CLEANUP_STEP]
+    expected = authority["parent_mount"]
+    relocated = next((identity for resource, action, identity in steps
+                      if (resource, action) == ("parent-mount", "relocated")), None)
+    if relocated is None:
+        current, moved = _mount_identity("/run/netns"), _mount_identity(PARENT_STAGE_DIR)
+        if _same_relocated_mount(expected, moved, PARENT_STAGE_DIR) and current is None:
+            relocated = moved
+        else:
+            if current != expected or moved is not None: raise NetworkError("private parent mount replacement preserved")
+            stage = os.stat(PARENT_STAGE_DIR, follow_symlinks=False)
+            if _placeholder_identity(stage) != authority["support"]["parent_stage_directory"]:
+                raise NetworkError("parent mount stage replacement preserved")
+            libc = ctypes.CDLL(None, use_errno=True); tree = libc.syscall(428, -100, b"/run/netns", 0x80000)
+            if tree < 0: saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+            try:
+                retained = os.fstat(tree)
+                if (retained.st_dev, retained.st_ino) != (expected["inode_device"], expected["inode"]):
+                    raise NetworkError("private parent mount descriptor mismatch")
+                if libc.syscall(429, tree, b"", -100, PARENT_STAGE_DIR.encode(), 4) != 0:
+                    saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+                relocated = _mount_identity(PARENT_STAGE_DIR)
+                if (_mount_identity("/run/netns") is not None or
+                        not _same_relocated_mount(expected, relocated, PARENT_STAGE_DIR) or
+                        (os.fstat(tree).st_dev, os.fstat(tree).st_ino) != (retained.st_dev, retained.st_ino)):
+                    raise NetworkError("private parent mount relocation uncertainty")
+            finally: os.close(tree)
+        _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
+                        resource="parent-mount", action="relocated", identity=relocated)
+    if any((resource, action) == ("parent-mount", "removed") for resource, action, _identity in steps): return
+    moved = _mount_identity(PARENT_STAGE_DIR)
+    if moved is not None:
+        if moved != relocated or _mount_identity("/run/netns") is not None:
+            raise NetworkError("relocated parent mount replacement preserved")
+        libc = ctypes.CDLL(None, use_errno=True); tree = libc.syscall(428, -100, PARENT_STAGE_DIR.encode(), 0x80000)
+        if tree < 0: saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+        try:
+            retained = os.fstat(tree)
+            if (retained.st_dev, retained.st_ino) != (expected["inode_device"], expected["inode"]):
+                raise NetworkError("relocated parent mount descriptor mismatch")
+            if libc.umount2(PARENT_STAGE_DIR.encode(), 2) != 0:
+                saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+            if (_mount_identity(PARENT_STAGE_DIR) is not None or _mount_identity("/run/netns") is not None
+                    or (os.fstat(tree).st_dev, os.fstat(tree).st_ino) != (retained.st_dev, retained.st_ino)):
+                raise NetworkError("private parent unmount uncertainty")
+        finally: os.close(tree)
+    _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
+                    resource="parent-mount", action="removed", identity=relocated)
+
+
+def _cleanup_authority(journal, original, quarantine, stage):
+    import completion_kata_operation as operation
+    rows = _cleanup_rows(journal)
+    intents = [body["authority"] for kind, body in rows
+               if kind == operation.network_journal.DETACHED_CLEANUP_INTENT]
+    if intents:
+        if len(intents) != 1: raise NetworkError("detached cleanup authority cardinality")
+        return intents[0]
+    support_rows = [body["support"] for kind, body in operation._network_history(journal)
+                    if kind == operation.network_journal.SUPPORT_RECORD]
+    mount_rows = [body["parent_mount"] for kind, body in operation._network_history(journal)
+                  if kind == operation.network_journal.PARENT_MOUNT_RECORD]
+    if len(support_rows) != 1 or len(mount_rows) != 1: raise NetworkError("durable cleanup ownership absent")
+    if _support_ownership(journal) != support_rows[0] or _mount_identity("/run/netns") != mount_rows[0]:
+        raise NetworkError("durable cleanup support replacement preserved")
+    placeholders = {}
+    for key, name, prior in (("original", original, _original_placeholder(journal)),
+                             ("quarantine", quarantine, stage[1]["placeholder"])):
+        if prior is None: raise NetworkError("detached placeholder identity absent")
+        observed = os.stat("/run/netns/" + name, follow_symlinks=False)
+        if (observed.st_dev, observed.st_ino) != (prior["device"], prior["inode"]):
+            raise NetworkError("detached placeholder replacement preserved")
+        placeholders[key] = _placeholder_identity(observed)
+    authority = {"support": support_rows[0], "parent_mount": mount_rows[0],
+                 "placeholders": placeholders}
+    _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_INTENT, authority=authority)
+    return authority
+
+
+def _cleanup_detached_owned(journal):
+    """Relocate exact durable owners into retained private directories before unlink."""
     original, quarantine = _bound_names(journal)[0], _quarantine_name(journal)
     stage = _quarantine_stage(journal)
     if stage is None or stage[0] != "NETWORK_DETACHED_V2":
         raise NetworkError("detached placeholder cleanup authority")
-    expected = {
-        original: _original_placeholder(journal),
-        quarantine: stage[1]["placeholder"],
-    }
-    if any(value is None for value in expected.values()):
-        raise NetworkError("detached placeholder identity absent")
-    if _netns_parent_mount() is None:
-        if any(os.path.lexists("/run/netns/" + name) for name in expected) or os.path.lexists(PRESERVED_DIR):
-            raise NetworkError("detached placeholder residue outside owned mount")
-        return
-    parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    authority = _cleanup_authority(journal, original, quarantine, stage)
+    completed = {(body["resource"], body["action"]) for kind, body in _cleanup_rows(journal)
+                 if kind.endswith("STEP_V3")}
+    if not all((resource, "removed") in completed for resource in
+               ("original-placeholder", "quarantine-placeholder")):
+        parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        preserved = os.open(PRESERVED_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            parent_stat = os.fstat(parent)
+            if (parent_stat.st_dev, parent_stat.st_ino) != (authority["parent_mount"]["inode_device"],
+                                                            authority["parent_mount"]["inode"]):
+                raise NetworkError("private parent descriptor replacement")
+            if _placeholder_identity(os.fstat(preserved)) != authority["support"]["preserved_directory"]:
+                raise NetworkError("preserved directory descriptor replacement")
+            suffix = _bound_names(journal)[0][4:]
+            _cleanup_owned_entry(journal, "original-placeholder", parent, original, preserved,
+                                 "c42p" + suffix + "-original", authority["placeholders"]["original"])
+            _cleanup_owned_entry(journal, "quarantine-placeholder", parent, quarantine, preserved,
+                                 "c42p" + suffix + "-quarantine", authority["placeholders"]["quarantine"])
+        finally: os.close(preserved); os.close(parent)
+    completed = {(body["resource"], body["action"]) for kind, body in _cleanup_rows(journal)
+                 if kind.endswith("STEP_V3")}
+    if ("preserved-directory", "removed") not in completed:
+        parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            _cleanup_owned_entry(journal, "preserved-directory", parent, os.path.basename(PRESERVED_DIR),
+                                 parent, PRESERVED_REMOVING, authority["support"]["preserved_directory"], True)
+        finally: os.close(parent)
+    _cleanup_parent_mount(journal, authority)
+    run = os.open("/run", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        for name, identity in expected.items():
-            try: observed = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            except FileNotFoundError: continue
-            if (observed.st_dev, observed.st_ino) != (identity["device"], identity["inode"]):
-                raise NetworkError("detached placeholder replacement preserved")
-            os.unlink(name, dir_fd=parent); os.fsync(parent)
-        try: preserved = os.stat(PRESERVED_DIR, follow_symlinks=False)
-        except FileNotFoundError: preserved = None
-        if preserved is not None:
-            if (not os.path.isdir(PRESERVED_DIR) or preserved.st_uid != 0 or
-                    preserved.st_gid != 0 or preserved.st_mode & 0o7777 != 0o700):
-                raise NetworkError("preserved directory replacement")
-            os.rmdir(PRESERVED_DIR); os.fsync(parent)
-        parent_mount = _netns_parent_mount()
-        if parent_mount is None or parent_mount[:3] != ("/netns", "tmpfs", "tmpfs"):
-            raise NetworkError("owned netns parent mount changed")
-        libc = ctypes.CDLL(None, use_errno=True)
-        if libc.umount2(b"/run/netns", 2) != 0:
-            saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-        if _netns_parent_mount() is not None:
-            raise NetworkError("owned netns parent mount remains")
-    finally: os.close(parent)
+        _cleanup_owned_entry(journal, "parent-stage-directory", run, os.path.basename(PARENT_STAGE_DIR),
+                             run, PARENT_STAGE_REMOVING,
+                             authority["support"]["parent_stage_directory"], True)
+    finally: os.close(run)
+
+
+def _cleanup_detached_placeholders(journal):
+    try: return _cleanup_detached_owned(journal)
+    except NetworkError:
+        _poison_fixed_network(journal, "replaced")
+        raise
 
 
 def _normalize_baseline_links(links):
@@ -2079,7 +2315,7 @@ def _baselines(journal):
 def _capture_fixed_baselines(journal, ip, nft, tc):
     import completion_kata_operation as operation
     raws = tuple(_perform_fixed(journal, action, ip, nft, tc) for action in _BASELINE_ACTIONS)
-    preserved = _preserved_directory(); os.close(preserved)
+    _support_ownership(journal)
     mountinfo = _read_mountinfo(); baselines = _complete_baseline(raws, mountinfo, journal)
     _netns_identity(journal, mountinfo)
     body = _snapshot(journal, "baseline", baselines, _empty_identity())
@@ -2454,7 +2690,9 @@ def _remove_fixed_network(journal, ip, nft, tc):
             if qstage[0] != "NETWORK_DETACHED_V2":
                 raise NetworkError("quarantine not detached at baseline")
             for path in ("/run/netns/" + _bound_names(journal)[0],
-                         "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR):
+                         "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR,
+                         "/run/netns/" + PRESERVED_REMOVING, PARENT_STAGE_DIR,
+                         "/run/" + PARENT_STAGE_REMOVING):
                 if os.path.lexists(path): raise NetworkError("private netns residue")
         for name in _BASELINE_KEYS[:5]:
             if fresh[name] != baselines[name]:
@@ -2600,7 +2838,9 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         if qstage is None or qstage[0] != "NETWORK_DETACHED_V2":
             raise NetworkError("setup abort namespace not detached")
         for path in ("/run/netns/" + _bound_names(journal)[0],
-                     "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR):
+                     "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR,
+                     "/run/netns/" + PRESERVED_REMOVING, PARENT_STAGE_DIR,
+                     "/run/" + PARENT_STAGE_REMOVING):
             if os.path.lexists(path): raise NetworkError("setup abort placeholder residue")
         body = _snapshot(journal, "network-absent", baselines, retained,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))

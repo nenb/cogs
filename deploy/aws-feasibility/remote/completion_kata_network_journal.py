@@ -32,7 +32,14 @@ CREATED_NSFS_RECORD = "NETWORK_CREATED_NSFS_V2"
 QUARANTINE_RECORDS = frozenset({"NETWORK_QUARANTINE_INTENT_V2", "NETWORK_QUARANTINE_PLACEHOLDER_V2",
     "NETWORK_QUARANTINE_MOVED_V2", "NETWORK_QUARANTINE_SETTLED_V2",
     "NETWORK_DETACH_INTENT_V2", "NETWORK_DETACHED_V2"})
-ALL_RECORDS = RECORDS | QUARANTINE_RECORDS | {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}
+SUPPORT_RECORD = "NETWORK_CLEANUP_SUPPORT_V3"
+PARENT_MOUNT_RECORD = "NETWORK_PRIVATE_PARENT_MOUNT_V3"
+DETACHED_CLEANUP_INTENT = "NETWORK_DETACHED_CLEANUP_INTENT_V3"
+DETACHED_CLEANUP_STEP = "NETWORK_DETACHED_CLEANUP_STEP_V3"
+CLEANUP_OWNERSHIP_RECORDS = frozenset({SUPPORT_RECORD, PARENT_MOUNT_RECORD,
+                                       DETACHED_CLEANUP_INTENT, DETACHED_CLEANUP_STEP})
+ALL_RECORDS = (RECORDS | QUARANTINE_RECORDS | CLEANUP_OWNERSHIP_RECORDS |
+               {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD})
 CLEANUP_INTENTS = MappingProxyType({
     # V1 completion records historically settled their intent. V2 keeps the
     # intent active until a separately appended acknowledgement. A setup abort
@@ -180,6 +187,9 @@ def _keys(value, names):
 _RECORD_FIELDS = MappingProxyType({
     ORIGINAL_PLACEHOLDER_RECORD: ("original_name", "placeholder"),
     CREATED_NSFS_RECORD: ("helper_pid", "identity"),
+    SUPPORT_RECORD: ("support",), PARENT_MOUNT_RECORD: ("parent_mount",),
+    DETACHED_CLEANUP_INTENT: ("authority",),
+    DETACHED_CLEANUP_STEP: ("resource", "action", "identity"),
     OUTPUT_RECORD: ("observation_serial", "source_id", "command_serial", "chunk_index",
                     "chunk_count", "output_sha256", "output_length", "raw_hex"),
     "NETWORK_SNAPSHOT_V2": ("snapshot_kind", "baselines", "sources", "identity"),
@@ -200,6 +210,37 @@ def validate(kind, body, canonical):
         _hex(body["proof_sha256"])
         _fail(hashlib.sha256(canonical({key: value for key, value in body.items()
               if key != "proof_sha256"})).hexdigest() == body["proof_sha256"])
+    stat_fields = {"device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"}
+    def exact_stat(value):
+        _fail(type(value) is dict and set(value) == stat_fields and
+              all(type(child) is int and child >= 0 for child in value.values()) and
+              value["device"] > 0 and value["inode"] > 0)
+    def exact_mount(value):
+        _fail(type(value) is dict and set(value) == {"mount_id", "parent_id", "device", "root",
+              "mount_point", "mount_options", "optional_fields", "fs_type", "source",
+              "super_options", "inode_device", "inode"})
+        _fail(all(type(value[name]) is int and value[name] > 0 for name in
+                  ("mount_id", "parent_id", "inode_device", "inode")) and
+              all(type(value[name]) is str for name in ("device", "root", "mount_point", "fs_type", "source")) and
+              all(type(value[name]) is list and all(type(item) is str for item in value[name])
+                  for name in ("mount_options", "optional_fields", "super_options")))
+    if kind == SUPPORT_RECORD:
+        _keys(body["support"], ("preserved_directory", "parent_stage_directory"))
+        exact_stat(body["support"]["preserved_directory"]); exact_stat(body["support"]["parent_stage_directory"])
+    elif kind == PARENT_MOUNT_RECORD: exact_mount(body["parent_mount"])
+    elif kind == DETACHED_CLEANUP_INTENT:
+        _keys(body["authority"], ("support", "parent_mount", "placeholders"))
+        _keys(body["authority"]["support"], ("preserved_directory", "parent_stage_directory"))
+        for value in body["authority"]["support"].values(): exact_stat(value)
+        exact_mount(body["authority"]["parent_mount"])
+        _keys(body["authority"]["placeholders"], ("original", "quarantine"))
+        for value in body["authority"]["placeholders"].values(): exact_stat(value)
+    elif kind == DETACHED_CLEANUP_STEP:
+        _fail(body["resource"] in {"original-placeholder", "quarantine-placeholder",
+              "preserved-directory", "parent-mount", "parent-stage-directory"}
+              and body["action"] in {"relocated", "removed"})
+        if body["resource"] == "parent-mount": exact_mount(body["identity"])
+        else: exact_stat(body["identity"])
 def _source_outputs(state, sources):
     selected = []
     for source in sources:
@@ -210,7 +251,8 @@ def _source_outputs(state, sources):
 def advance(state, kind, body, phase):
     state = {**state, "snapshots": list(state["snapshots"]), "effects": list(state["effects"]),
              "effect_commands": list(state["effect_commands"]), "effect_replays": list(state["effect_replays"]),
-             "replay_serials": list(state["replay_serials"]), "observations": list(state["observations"])}
+             "replay_serials": list(state["replay_serials"]), "observations": list(state["observations"]),
+             "cleanup_steps": list(state["cleanup_steps"])}
     if kind == OUTPUT_RECORD:
         pending = state["output_pending"]
         if body["chunk_index"] == 0:
@@ -232,6 +274,49 @@ def advance(state, kind, body, phase):
             state["observations"].append({**base, "raw": raw}); state["output_pending"] = None
         return state
     _fail(state["output_pending"] is None)
+    if kind in CLEANUP_OWNERSHIP_RECORDS:
+        if kind == SUPPORT_RECORD:
+            _fail(state["support"] is None and not state["snapshots"])
+            state["support"] = body["support"]
+        elif kind == PARENT_MOUNT_RECORD:
+            _fail(state["support"] is not None and state["parent_mount"] is None and
+                  state["pending"] is not None and state["pending"][1]["action"] == "IP_NETNS_ADD")
+            state["parent_mount"] = body["parent_mount"]
+        elif kind == DETACHED_CLEANUP_INTENT:
+            authority = body["authority"]
+            _fail(state["quarantine"] is not None and state["quarantine"][0] == "NETWORK_DETACHED_V2"
+                  and state["cleanup_authority"] is None and not state["cleanup_steps"]
+                  and authority["support"] == state["support"]
+                  and authority["parent_mount"] == state["parent_mount"]
+                  and state["original_placeholder"] is not None)
+            prior = {"original": state["original_placeholder"]["placeholder"],
+                     "quarantine": state["quarantine"][1]["placeholder"]}
+            _fail(all(authority["placeholders"][name][field] == prior[name][field]
+                      for name in prior for field in ("device", "inode")))
+            state["cleanup_authority"] = authority
+        else:
+            order = (("original-placeholder", "relocated"), ("original-placeholder", "removed"),
+                     ("quarantine-placeholder", "relocated"), ("quarantine-placeholder", "removed"),
+                     ("preserved-directory", "relocated"), ("preserved-directory", "removed"),
+                     ("parent-mount", "relocated"), ("parent-mount", "removed"),
+                     ("parent-stage-directory", "relocated"), ("parent-stage-directory", "removed"))
+            _fail(state["cleanup_authority"] is not None and len(state["cleanup_steps"]) < len(order)
+                  and (body["resource"], body["action"]) == order[len(state["cleanup_steps"])])
+            if body["action"] == "removed":
+                _fail(body["identity"] == state["cleanup_steps"][-1]["identity"])
+            elif body["resource"] == "parent-mount":
+                _fail(body["identity"] == {**state["cleanup_authority"]["parent_mount"],
+                                            "mount_point": "/run/.cogs-stage2-netns-parent"})
+            else:
+                expected = ({"original-placeholder": state["cleanup_authority"]["placeholders"]["original"],
+                    "quarantine-placeholder": state["cleanup_authority"]["placeholders"]["quarantine"],
+                    "preserved-directory": state["cleanup_authority"]["support"]["preserved_directory"],
+                    "parent-stage-directory": state["cleanup_authority"]["support"]["parent_stage_directory"]}
+                    [body["resource"]])
+                _fail(all(body["identity"][name] == expected[name] for name in
+                          ("device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns")))
+            state["cleanup_steps"].append(body)
+        return state
     if kind in {ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}:
         _fail(state["pending"] is not None and state["pending"][1]["action"] == "IP_NETNS_ADD" and
               state["current"]["netns"] is None)
@@ -360,7 +445,8 @@ def initial():
     return {"snapshots": [], "effects": [], "pending": None, "outcomes": [],
             "effect_commands": [], "effect_replays": [], "replay_serials": [], "current": None,
             "observations": [], "output_pending": None, "quarantine": None,
-            "original_placeholder": None, "created_nsfs": None}
+            "original_placeholder": None, "created_nsfs": None, "support": None,
+            "parent_mount": None, "cleanup_authority": None, "cleanup_steps": []}
 def setup_abort_complete(state):
     actions = [row["action"] for row in state["effects"]]
     count = 0

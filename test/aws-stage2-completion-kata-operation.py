@@ -1583,6 +1583,28 @@ def production_owner_test():
                     assert os.waitstatus_to_exitcode(detached_status) == 77
                     production_network.close(); production_network = operation._open_fixed_operation()
                     assert network._quarantine_stage(production_network)[0] == "NETWORK_DETACHED_V2"
+                    cleanup_cuts = ((operation.network_journal.DETACHED_CLEANUP_INTENT, None, None), *(
+                        (operation.network_journal.DETACHED_CLEANUP_STEP, resource, action)
+                        for resource, action in (("original-placeholder", "relocated"),
+                            ("original-placeholder", "removed"), ("quarantine-placeholder", "relocated"),
+                            ("quarantine-placeholder", "removed"), ("preserved-directory", "relocated"),
+                            ("preserved-directory", "removed"), ("parent-mount", "relocated"),
+                            ("parent-mount", "removed"), ("parent-stage-directory", "relocated"),
+                            ("parent-stage-directory", "removed"))))
+                    for cleanup_kind, cleanup_resource, cleanup_action in cleanup_cuts:
+                        cleanup_child = os.fork()
+                        if cleanup_child == 0:
+                            real_cleanup_record = network._cleanup_record
+                            def cleanup_cut(owner, kind, **values):
+                                if (kind == cleanup_kind and values.get("resource") == cleanup_resource
+                                        and values.get("action") == cleanup_action): os._exit(79)
+                                return real_cleanup_record(owner, kind, **values)
+                            with patch.object(network, "_cleanup_record", side_effect=cleanup_cut):
+                                network._abort_fixed_setup(production_network, *retained_tools)
+                            os._exit(80)
+                        _pid, cleanup_status = os.waitpid(cleanup_child, 0)
+                        assert os.waitstatus_to_exitcode(cleanup_status) == 79
+                        production_network.close(); production_network = operation._open_fixed_operation()
                     assert network._abort_fixed_setup(production_network, *retained_tools)["snapshot_kind"] == "network-absent"
                     production_network.close()
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
@@ -1726,6 +1748,7 @@ def production_owner_test():
                     quarantine_placeholder = Path("/run/netns/c42q" + token_suffix)
                     assert not original_placeholder.exists() and not quarantine_placeholder.exists()
                     assert not Path(network.PRESERVED_DIR).exists()
+                    assert not Path(network.PARENT_STAGE_DIR).exists()
                     assert network._netns_parent_mount() is None
                     assert not Path("/sys/class/net/c42h" + token_suffix).exists()
 
@@ -1849,6 +1872,7 @@ def production_owner_test():
                     assert not Path("/run/netns/c42n" + token_suffix).exists()
                     assert not Path("/run/netns/c42q" + token_suffix).exists()
                     assert not Path(network.PRESERVED_DIR).exists()
+                    assert not Path(network.PARENT_STAGE_DIR).exists()
                     assert network._netns_parent_mount() is None
                     assert not Path("/sys/class/net/c42h" + token_suffix).exists()
                 finally:
