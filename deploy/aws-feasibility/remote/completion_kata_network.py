@@ -2575,7 +2575,8 @@ def _abort_fixed_setup(journal, ip, nft, tc):
             retained = settled[-1]["identity"]
         raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
         if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
-            raise NetworkError("setup abort baseline not restored")
+            drift = tuple(name for name in _BASELINE_KEYS if fresh[name] != baselines[name])
+            raise NetworkError(f"setup abort baseline not restored:{drift!r}")
         qstage = _quarantine_stage(journal)
         if qstage is None or qstage[0] != "NETWORK_DETACHED_V2":
             raise NetworkError("setup abort namespace not detached")

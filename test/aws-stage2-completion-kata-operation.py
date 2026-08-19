@@ -2038,25 +2038,6 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256})
-            production_fixture(release_rows[:2] + (release_deadline, settle_production_fs,
-                               release_admission) + release_rows[2:5] + release_rows[6:-1])
-            expired_release_owner = operation._open_fixed_operation()
-            with patch.object(operation, "_boottime_ns", return_value=release_edge):
-                expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
-                release_context = expired_release.prepare_rootfs_release()
-                assert release_context.operation_phase == "ROOTFS_RELEASE_READY"
-                assert operation._parse(fixture_journal_path(completion).read_bytes())[-1].record_type == \
-                    "ROOTFS_RELEASE_READY"
-                reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
-                reference = rootfs_reference()
-                operation._invoke_rootfs_reopen_route(reopen, lambda _context, _control: reference, object())
-                operation._settle_rootfs_reopen(reopen, reference)
-                release = operation._claim_rootfs_release(expired_release.reserve_rootfs_release())
-                authorization = operation._invoke_rootfs_release(release, lambda context:
-                    operation.RootfsAuthorization(context.rootfs_token, 9, 0x2222, "e" * 64))
-                operation._settle_rootfs_release(release, authorization)
-            assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
-            expired_release.close()
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -2397,10 +2378,11 @@ def production_owner_test():
                 # key-command policy has been issued, and advance through the
                 # required production FS_SETTLED phase before network setup.
                 production_fixture(release_rows[:2] + (release_deadline, release_admission,
-                    settle_production_fs) + release_rows[2:5] + release_rows[6:])
+                    settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
                 expired_release_owner = operation._open_fixed_operation()
                 with patch.object(operation, "_boottime_ns", return_value=release_edge):
                     expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
+                    assert expired_release.prepare_rootfs_release().operation_phase == "ROOTFS_RELEASE_READY"
                     reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
                     reference = rootfs_reference()
                     operation._invoke_rootfs_reopen_route(
