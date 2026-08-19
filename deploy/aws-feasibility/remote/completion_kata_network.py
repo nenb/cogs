@@ -1657,12 +1657,14 @@ def _normalize_baseline_links(links):
 
 
 def _exact_unmounted_placeholder(raw, name, expected):
-    if type(expected) is not dict or set(expected) != {"device", "inode"}:
+    full = {"device", "inode", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"}
+    if type(expected) is not dict or set(expected) not in ({"device", "inode"}, full):
         return False
     try: observed = os.stat("/run/netns/" + name, follow_symlinks=False)
     except FileNotFoundError: return False
     except OSError as error: raise NetworkError("placeholder stat uncertainty") from error
-    if (observed.st_dev, observed.st_ino) != (expected["device"], expected["inode"]):
+    if ((observed.st_dev, observed.st_ino) != (expected["device"], expected["inode"])
+            or set(expected) == full and _placeholder_identity(observed) != expected):
         return False
     try: lines = raw.decode("utf-8", "strict").splitlines()
     except UnicodeError as error: raise NetworkError("placeholder mountinfo encoding") from error
@@ -2332,13 +2334,22 @@ def _resume_effect(journal, ip, nft, tc):
     _record_effect(journal, "NETWORK_EFFECT_SETTLED_V2", observed)
 
 
-def _remove_fixed_network(journal, ip, nft, tc):
+def _settle_or_confirm(journal, phase):
     import completion_kata_operation as operation
+    try: operation._settle_network_phase(journal, phase)
+    except BaseException as error:
+        try: confirmed = operation._durable_phase(journal) == phase
+        except BaseException as confirmation_error:
+            raise NetworkCleanupError(error, confirmation_error)
+        if not confirmed: raise
+
+
+def _remove_fixed_network(journal, ip, nft, tc):
     try:
         journal.begin_network_cleanup("network")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "network-absent":
-            operation._settle_network_phase(journal, "NETWORK_ABSENT"); return rows[-1]
+            _settle_or_confirm(journal, "NETWORK_ABSENT"); return rows[-1]
         retained = rows[-1]
         if retained["snapshot_kind"] not in {"ready", "discovered", "runtime"}:
             raise NetworkError("network removal order")
@@ -2388,7 +2399,7 @@ def _remove_fixed_network(journal, ip, nft, tc):
                     f"complete network baseline not restored:{name}:{baselines[name]}:{fresh[name]}{detail}")
         body = _snapshot(journal, "network-absent", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
-        operation._settle_network_phase(journal, "NETWORK_ABSENT"); return body
+        _settle_or_confirm(journal, "NETWORK_ABSENT"); return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
         except BaseException as settlement_error:
@@ -2397,12 +2408,11 @@ def _remove_fixed_network(journal, ip, nft, tc):
 
 
 def _remove_fixed_firewall(journal, ip, nft, tc):
-    import completion_kata_operation as operation
     try:
         journal.begin_network_cleanup("firewall")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "firewall-restored":
-            operation._settle_network_phase(journal, "FIREWALL_ABSENT"); return rows[-1]
+            _settle_or_confirm(journal, "FIREWALL_ABSENT"); return rows[-1]
         retained = rows[-1]
         if retained["snapshot_kind"] != "network-absent":
             raise NetworkError("firewall removal order")
@@ -2426,7 +2436,7 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
             raise NetworkError("final network/firewall/mount baseline not restored")
         body = _snapshot(journal, "firewall-restored", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
-        operation._settle_network_phase(journal, "FIREWALL_ABSENT"); return body
+        _settle_or_confirm(journal, "FIREWALL_ABSENT"); return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
         except BaseException as settlement_error:

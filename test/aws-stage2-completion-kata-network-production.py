@@ -493,6 +493,27 @@ for target, cleanup, marker in (
     reject(lambda: reopened.advance("TASK_ABSENT"), "cleanup-only reopen advanced lifecycle")
     reject(lambda: reopened.advance("FINAL_BASELINES"), "cleanup-only reopen advanced retirement")
 
+# An ambiguously reported completion is accepted only after an independent
+# exact durable-phase reload proves that the completion append survived.
+settlement_error = OSError("post-fsync settlement verification")
+with patch.object(operation, "_settle_network_phase", side_effect=settlement_error), \
+     patch.object(operation, "_durable_phase", return_value="NETWORK_ABSENT"):
+    network._settle_or_confirm(object(), "NETWORK_ABSENT")
+with patch.object(operation, "_settle_network_phase", side_effect=settlement_error), \
+     patch.object(operation, "_durable_phase", return_value="TASK_STOPPED"):
+    try: network._settle_or_confirm(object(), "NETWORK_ABSENT")
+    except OSError as error: check(error is settlement_error, "settlement ambiguity replaced")
+    else: raise AssertionError("unconfirmed settlement ambiguity accepted")
+
+class PlaceholderStat:
+    st_dev = 7; st_ino = 9; st_mode = 0o100600; st_uid = 0; st_gid = 0
+    st_nlink = 1; st_size = 0; st_mtime_ns = 11; st_ctime_ns = 12
+placeholder = PlaceholderStat(); full_placeholder = network._placeholder_identity(placeholder)
+with patch.object(network.os, "stat", return_value=placeholder):
+    check(network._exact_unmounted_placeholder(
+        b"1 0 0:1 / / rw - tmpfs tmpfs rw\n", "c42n0123456789", full_placeholder),
+        "exact durable original placeholder rejected")
+
 source = network.tc_observer_command(network.Action.TC_QDISC, tap)
 check(process._internally_fixed(process.FixedCommand(
     network.Action.TC_QDISC, "tc", "/usr/sbin/tc",
