@@ -15,6 +15,9 @@ import completion_kata_inputs as inputs
 import completion_kata_process as process
 import completion_rootfs_fs as fs
 
+if os.environ.get("COGS_KATA_COMPACT_INPUT_FIXTURE_V1") == "1":
+    inputs._FIXED_FIXTURE = ()
+
 completion = Path(sys.argv[1])
 reported = None if len(sys.argv) == 2 else tuple(int(item) for item in sys.argv[2].split(":"))
 if reported is not None and len(reported) != 2:

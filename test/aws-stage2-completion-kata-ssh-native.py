@@ -20,9 +20,9 @@ if shard is not None:
     if shard != "baseline":
         raise RuntimeError("native SSH/input wrapper only admits the baseline shard")
     environment["COGS_STAGE2_KATA_NATIVE_TEST_SHARD"] = shard
-for probe in ("test/aws-stage2-completion-kata-operation.py",
-              "test/aws-stage2-completion-kata-process.py",
-              "test/aws-stage2-completion-kata-ssh-production.py"):
+# The baseline shard owns operation/process execution; this wrapper independently
+# requires the production SSH/input composition without duplicating that long run.
+for probe in ("test/aws-stage2-completion-kata-ssh-production.py",):
     result = subprocess.run(("/usr/bin/python3", "-I", "-B", probe), cwd=root,
                             env=environment, check=False)
     if result.returncode != 0:

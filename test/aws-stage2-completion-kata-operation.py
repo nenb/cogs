@@ -2053,6 +2053,7 @@ def production_owner_test():
                                 child_chain = linux_chain_factory(transaction_completion, child_control)
                                 parent = child_chain.components[-1].node
                                 authority = operation._open_fixed_operation()
+                                inputs._FIXED_FIXTURE = ()
                                 producer = inputs._compose_production_inputs(
                                     authority, parent, child_control, executable_owner)
                                 identity = producer.create()
@@ -2099,7 +2100,8 @@ def production_owner_test():
                         os.execve(argv[0], argv, {"HOME": "/root", "LC_ALL": "C",
                             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
                             "PYTHONDONTWRITEBYTECODE": "1",
-                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1": "1"})
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1": "1",
+                            "COGS_KATA_COMPACT_INPUT_FIXTURE_V1": "1"})
                     assert os.waitpid(recovery, 0)[1] == 0
                     recovered_records = operation._parse(
                         fixture_journal_path(transaction_completion).read_bytes())
@@ -2132,6 +2134,7 @@ def production_owner_test():
                 transaction_factory = lambda control: linux_chain_factory(transaction_completion, control)
                 transaction_patch = patch.object(operation, "_open_base_chain", side_effect=transaction_factory)
                 transaction_patch.start()
+                full_input_fixture, inputs._FIXED_FIXTURE = inputs._FIXED_FIXTURE, ()
                 transaction_control = fs.OperationControl(
                     time.monotonic_ns() + operation.JOURNAL_TOTAL_NS, lambda: False)
                 transaction_chain = linux_chain_factory(transaction_completion, transaction_control)
@@ -2216,6 +2219,7 @@ def production_owner_test():
                 finally:
                     fs._close_chain(transaction_chain)
                     transaction_patch.stop()
+                    inputs._FIXED_FIXTURE = full_input_fixture
                     import shutil
                     shutil.rmtree(transaction_completion)
                     for directory in missing[1:]:
