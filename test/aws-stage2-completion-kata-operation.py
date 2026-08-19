@@ -1561,7 +1561,7 @@ def production_owner_test():
                         production_network = operation._open_fixed_operation()
                         aborted = network._abort_fixed_setup(production_network, *retained_tools)
                         assert aborted["snapshot_kind"] == "network-absent"
-                        assert operation._durable_phase(production_network) == "NETWORK_ABSENT"
+                        assert production_network.durable_phase() == "NETWORK_ABSENT"
                         assert all(aborted["identity"][name] is None for name in ("netns", "host_link", "peer_link", "nft", "tap", "tc"))
                         production_network.close()
                     # A fresh owner removes durable detached placeholders without setup retry.
