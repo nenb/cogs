@@ -1198,8 +1198,13 @@ def _runtime_owner_routes():
         if state[5] is not None:
             _fail(rootfs_fs._read_regular(state[5], len(CONTAINERD_CONFIG_BYTES), state[3]) == CONTAINERD_CONFIG_BYTES)
             named = snapshot_child(runtime_snapshot, rootfs_fs._name("containerd.toml")); _fail(named == state[5].generation, "containerd config pathname replacement")
-        for node in state[4:6]:
-            if node is not None: _fail(rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]) == node.generation)
+        if state[4] is not None:
+            observed = rootfs_fs._observe_node(state[4].identity_fd, state[4].operation_fd, state[3])
+            _fail(stable(kata_operation._generation_value(observed),
+                         kata_operation._generation_value(state[4].generation)))
+        if state[5] is not None:
+            _fail(rootfs_fs._observe_node(state[5].identity_fd, state[5].operation_fd,
+                                          state[3]) == state[5].generation)
         for index, name in ((6, "containerd-root"), (7, "containerd-state")):
             node = state[index]
             if node is not None:
