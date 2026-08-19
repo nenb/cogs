@@ -2103,8 +2103,13 @@ def production_owner_test():
             rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
 
             proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
-            expired_teardown = leased_records + (admitted_suffix[0], settle_production_fs,
-                admitted_suffix[1], ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
+            cleanup_fs = {**fs_intent, "before_parent": generation(50),
+                "after_parent": generation(50, stamp=40), "before_child": None,
+                "after_child": generation(51)}
+            expired_teardown = leased_records + (admitted_suffix[0],
+                ("FS_INTENT", fs_intent), ("FS_OBSERVED", cleanup_fs),
+                ("FS_SETTLED", cleanup_fs), admitted_suffix[1],
+                ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
                 ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": "a" * 64}),
                 ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned",
                     "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}),
