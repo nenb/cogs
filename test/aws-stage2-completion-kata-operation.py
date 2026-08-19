@@ -2200,18 +2200,23 @@ def production_owner_test():
                         ssh_outcome.stdout, canonical_result)
                     operation._record_ssh_ready(reopened_runtime)
                     operation._revoke_readiness(reopened_runtime)
-                    for method, digest in (
-                        (reopened_runtime.ownership_observed, "1" * 64),
-                        (reopened_runtime.task_stopped, "2" * 64),
-                        (reopened_runtime.network_absent, "3" * 64),
-                        (reopened_runtime.task_absent, "4" * 64),
-                        (reopened_runtime.container_absent, "5" * 64),
-                        (reopened_runtime.runtime_absent, "6" * 64),
-                        (reopened_runtime.share_absent, "7" * 64),
-                        (reopened_runtime.firewall_absent, "8" * 64),
-                    ): method(digest)
                     production_inputs.release_ssh_bindings()
                     reopened_runtime.close()
+                    teardown_raw = fixture_journal_path(transaction_completion).read_bytes()
+                    for index, kind in enumerate(("OWNERSHIP_OBSERVED", "TASK_STOPPED",
+                            "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
+                            "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT"), 1):
+                        body = {"operation_token": "a" * 64, "proof_sha256": str(index) * 64}
+                        if kind == "OWNERSHIP_OBSERVED":
+                            body.update({name: "exact-owned" for name in
+                                         ("task", "container", "runtime", "share")})
+                        teardown_raw += operation._encode(kind, body, operation._parse(teardown_raw))
+                    descriptor = os.open(fixture_journal_path(transaction_completion), os.O_WRONLY | os.O_TRUNC)
+                    try:
+                        offset = 0
+                        while offset < len(teardown_raw): offset += os.write(descriptor, teardown_raw[offset:])
+                        os.fsync(descriptor)
+                    finally: os.close(descriptor)
                     fs._close_node(manifest_node); fs._close_node(mounted_input)
                     completed_runtime = operation._open_fixed_operation()
                     assert operation._durable_phase(completed_runtime) == "FIREWALL_ABSENT"
