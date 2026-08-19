@@ -2,6 +2,8 @@
 """Optimization-safe hostile checks for ADR0099 fixed network composition."""
 import copy
 import hashlib
+import inspect
+import json
 from pathlib import Path
 import sys
 from types import MappingProxyType
@@ -254,6 +256,65 @@ check(operation_netns_path == "/run/netns/" + NETNS["name"] and
       run_spec.argv[5:7] == ("containers", "create") and "run" not in run_spec.argv and
       stored["Spec"]["linux"]["namespaces"][-1] == {"type": "network", "path": "/proc/1234/fd/202"},
       "runtime operation-owned metadata grant diverged")
+
+# Production observation selects the exact durable CTR_RUN preexec after reopen;
+# it never falls back to the historical namespace alias.
+run_intent = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
+              "lifecycle_phase": "NETWORK_READY"}
+run_preexec = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
+               "pid": 1234, "namespace_fd": 202, "namespace_path": "/proc/1234/fd/202"}
+run_outcome = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
+               "outcome": "exited", "status": 0, "uncertain": False}
+container_rows = b"CONTAINER    IMAGE    RUNTIME\ncogs-stage2-ssh-v1    -    io.containerd.kata.v2\n"
+task_rows = b"TASK    PID    STATUS\n"
+info_rows = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode()
+observer_rows = (("CTR_CONTAINER_INFO", info_rows), ("CTR_CONTAINER_LIST", container_rows),
+                 ("CTR_TASK_LIST", task_rows))
+observer_intents = tuple({"command_serial": index, "command_id": command_id,
+                          "binding_sha256": str(index) * 64, "lifecycle_phase": "RUNTIME_READY"}
+                         for index, (command_id, _raw) in enumerate(observer_rows, 2))
+observer_outcomes = tuple({"command_serial": row["command_serial"], "command_id": row["command_id"],
+                           "binding_sha256": row["binding_sha256"], "outcome": "exited", "status": 0,
+                           "uncertain": False, "stdout_sha256": hashlib.sha256(raw).hexdigest()}
+                          for row, (_command_id, raw) in zip(observer_intents, observer_rows, strict=True))
+observer_outputs = tuple({"command_serial": row["command_serial"], "stdout_hex": raw.hex(), "stderr_hex": ""}
+                         for row, (_command_id, raw) in zip(observer_intents, observer_rows, strict=True))
+durable_history = {"operation_token": "a" * 64, "phase": "RUNTIME_READY", "tip": "RUNTIME_READY",
+    "terminal_sha256": "f" * 64, "intents": (run_intent, *observer_intents), "preexecs": (run_preexec,),
+    "outcomes": (run_outcome, *observer_outcomes), "outputs": observer_outputs,
+    "daemon_retained": (), "daemon_outcomes": (), "runtime_resumes": ()}
+class ReopenedObservationJournal:
+    def runtime_recovery_history(self): return copy.deepcopy(durable_history)
+nonlocals = inspect.getclosurevars(runtime._observe_fixed_runtime).nonlocals
+owners = nonlocals["owners"]
+attestations = inspect.getclosurevars(nonlocals["verify_attestation"]).nonlocals["attestations"]
+daemons = inspect.getclosurevars(nonlocals["verify_daemon"]).nonlocals["daemons"]
+retained_grant = object(); attestation = object(); daemon = object(); config = object(); control = object()
+attestations[attestation] = [(), config, control, hashlib.sha256(b"config").hexdigest()]
+def observe_from_reopen():
+    journal = ReopenedObservationJournal(); owner = object()
+    daemons[daemon] = [journal, None, None, control, None, None, None, None, None, None, {}]
+    owners[owner] = [journal, None, None, None, retained_network, attestation, daemon,
+                     control, None, retained_grant, None, None]
+    try: return runtime._observe_fixed_runtime(owner)
+    finally: owners.pop(owner, None); daemons.pop(daemon, None)
+empty_processes = runtime.ProcessClassification(runtime.Observation.ABSENT, (), "absent")
+with patch.object(network, "_verify_runtime_network", return_value=retained_network), \
+     patch.object(runtime.rootfs_fs, "_read_regular", return_value=b"config"), \
+     patch.object(runtime, "_proc_snapshot", return_value=empty_processes), \
+     patch.object(runtime, "_qmp_kvm", return_value={"state": "absent"}), \
+     patch.object(runtime, "_share_fact", return_value={"state": "absent"}):
+    check(observe_from_reopen()["mount"] == runtime.MOUNT_LIST_SHA256,
+          "production observation ignored durable CTR_RUN launch path")
+    historical = copy.deepcopy(stored); historical["Spec"] = runtime.expected_oci_spec()
+    historical_raw = json.dumps(historical, sort_keys=True, separators=(",", ":")).encode()
+    durable_history["outcomes"] = (run_outcome, {**observer_outcomes[0],
+        "stdout_sha256": hashlib.sha256(historical_raw).hexdigest()}, *observer_outcomes[1:])
+    durable_history["outputs"] = ({**observer_outputs[0], "stdout_hex": historical_raw.hex()},
+                                  *observer_outputs[1:])
+    reject(observe_from_reopen, "production observation accepted historical network alias")
+attestations.pop(attestation, None)
+
 check(operation.command_policy.LEGACY_V1_VERSION.endswith("protected-746") and
       "CONTAINERD_START" not in operation.command_policy.LEGACY_COMMANDS,
       "protected historical v1 vocabulary widened")

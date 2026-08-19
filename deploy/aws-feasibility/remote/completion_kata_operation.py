@@ -2033,7 +2033,7 @@ def _make_authority():
             _io, records, status = reload(self); _fail(status == "exact" and records and records[-1].record_type != "RETIRED")
             result = {"operation_token": records[0].body["operation_token"], "phase": _legal(records),
                       "terminal_sha256": records[-1].line_sha256, "tip": records[-1].record_type}
-            for name, kind in (("intents", "COMMAND_INTENT_V2"), ("outcomes", "COMMAND_OUTCOME_V2"),
+            for name, kind in (("intents", "COMMAND_INTENT_V2"), ("preexecs", "COMMAND_PREEXEC_V2"), ("outcomes", "COMMAND_OUTCOME_V2"),
                     ("daemon_retained", "DAEMON_RETAINED_V2"), ("daemon_outcomes", "DAEMON_OUTCOME_V2"),
                     ("runtime_staged", "RUNTIME_STAGED_V3"), ("outputs", "COMMAND_OUTPUT_V3"),
                     ("runtime_identities", "RUNTIME_IDENTITY_V4"), ("runtime_stage_intents", "RUNTIME_STAGE_INTENT_V4"),

@@ -484,6 +484,19 @@ def _timestamp(value):
         "timestamp")
 
 
+def _durable_ctr_launch_path(history):
+    """Select the sole successful durable CTR_RUN preexec fd binding."""
+    runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]
+    _fail(len(runs) == 1); intent = runs[0]; serial = intent["command_serial"]
+    preexecs = [row for row in history["preexecs"] if row["command_serial"] == serial]
+    outcomes = [row for row in history["outcomes"] if row["command_serial"] == serial]
+    _fail(len(preexecs) == len(outcomes) == 1); preexec, outcome = preexecs[0], outcomes[0]
+    _fail(all(row["command_id"] == "CTR_RUN" and row["binding_sha256"] == intent["binding_sha256"] for row in (preexec, outcome))
+          and outcome["outcome"] == "exited" and outcome["status"] == 0 and not outcome["uncertain"]
+          and preexec["namespace_fd"] == CTR_NS_FD and preexec["namespace_path"] == CTR_NS_TEMPLATE.replace("{ctr-child-pid}", str(preexec["pid"])), "durable ctr launch binding")
+    return preexec["namespace_path"]
+
+
 def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
     """Validate stored info against the historical alias or an exact live owner grant."""
     value = _load_json(raw_or_value) if type(raw_or_value) is bytes else raw_or_value
@@ -1290,7 +1303,7 @@ def _runtime_owner_routes():
         values = [step(owner, history["phase"], index, item)[0] for index, item in enumerate(sequence)]
         if history["phase"] == "RUNTIME_READY": info, containers, tasks = values
         else: tasks, info, containers = values
-        mount = validate_stored_info(info); container = classify_container_list(containers); processes = _proc_snapshot(verify_attestation(state[5]), netns)
+        mount = validate_stored_info(info, state[9], _durable_ctr_launch_path(history)); container = classify_container_list(containers); processes = _proc_snapshot(verify_attestation(state[5]), netns)
         shim = next((row for row in processes.records if row.role == "shim"), None); task = classify_task_list(tasks, None if shim is None else shim.pid)
         qmp = _qmp_kvm(processes); share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if shim is None else shim.pid,
                 "processes": processes.disposition.value, "qmp": qmp, "share": share}
@@ -1325,6 +1338,8 @@ def _runtime_owner_routes():
         if phase in {"UNCERTAIN", "NETWORK_READY"}:
             terminal = history["outcomes"][-1]["command_id"] if phase == "UNCERTAIN" and history["tip"] == "COMMAND_OUTCOME_V2" else None
             daemon_cut = phase == "UNCERTAIN" and history["tip"] == "DAEMON_OUTCOME_V2"
+            if daemon_cut and history["daemon_outcomes"][-1]["uncertain"]:
+                raise KataRuntimeError("uncertain daemon closure preserved")
             if terminal in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"} or daemon_cut:
                 target = state[0].resume_runtime_cleanup()
                 return ownership(owner) if target in {"RUNTIME_READY", "READINESS_REVOKED"} else cleanup(owner)
@@ -1442,9 +1457,13 @@ def _runtime_owner_routes():
         os.unlink(quarantine, dir_fd=parent); os.fsync(parent); os.close(descriptor); state[9] = None
     def shutdown_daemon(daemon):
         import completion_kata_process as process
-        state = daemons[daemon]; verify_daemon(daemon); history = state[0].runtime_recovery_history()
+        state = daemons[daemon]; history = state[0].runtime_recovery_history()
+        def closed(value): return not value["uncertain"] and all(value[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
+        if history["daemon_outcomes"] and len(history["daemon_outcomes"]) == len(history["daemon_retained"]):
+            _fail(closed(history["daemon_outcomes"][-1]), "uncertain daemon closure preserved")
+        verify_daemon(daemon)
         if len(history["daemon_outcomes"]) < len(history["daemon_retained"]): process._stop_fixed_daemon(state[2], state[0])
-        history = state[0].runtime_recovery_history(); _fail(len(history["daemon_outcomes"]) == len(history["daemon_retained"])); certain = state[8] is not None and not history["daemon_outcomes"][-1]["uncertain"]
+        history = state[0].runtime_recovery_history(); _fail(len(history["daemon_outcomes"]) == len(history["daemon_retained"]) and closed(history["daemon_outcomes"][-1]), "exact daemon closure required"); certain = state[8] is not None
         verify_daemon(daemon, certain); discard_socket(state, certain) if state[8] is not None else None
         if state[4] is not None:
             for index, name in ((7, "containerd-state"), (6, "containerd-root")):

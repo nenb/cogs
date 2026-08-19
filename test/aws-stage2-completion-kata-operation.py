@@ -6,12 +6,14 @@ import copy
 import ctypes
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 import stat
 from pathlib import Path
 import signal
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -921,6 +923,47 @@ def native_runtime_daemon_foundations(completion):
             runtime._shutdown_private_containerd(graceful_daemon); graceful_outcome = graceful_journal.runtime_recovery_history()["daemon_outcomes"][-1]
             assert graceful_outcome["status"] == 0 and not graceful_outcome["uncertain"] and not os.path.lexists(socket_path)
             graceful_journal.close(); assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); fs._close_chain(chain); chain = None
+            # An incomplete durable terminal is strict-preserve even with a live exact daemon,
+            # and also preserves a replacement at the recorded cgroup pathname.
+            reset(); chain, completion_node = boundary(); uncertain_journal = operation._open_fixed_operation()
+            uncertain_owner = process._start_fixed_daemon(uncertain_journal, retained)
+            uncertain_daemon = runtime._retain_private_containerd(
+                uncertain_journal, completion_node, uncertain_owner, control)
+            retained_body = uncertain_journal.runtime_recovery_history()["daemon_retained"][-1]
+            uncertain_journal.record_daemon_outcome({
+                "operation_token": retained_body["operation_token"], "command_serial": retained_body["command_serial"],
+                "command_id": retained_body["command_id"], "binding_sha256": retained_body["binding_sha256"],
+                "pid": retained_body["pid"], "proc_start_time": retained_body["proc_start_time"], "status": None,
+                "leader_reaped": False, "descendants_reaped": False, "cgroup_empty": False,
+                "cgroup_removed": False, "uncertain": True, "errors": ["native-fixture-incomplete"]})
+            rejected(lambda: runtime._shutdown_private_containerd(uncertain_daemon))
+            assert (os.path.exists(f"/proc/{retained_body['pid']}") and os.path.isdir(retained_body["cgroup_path"])
+                    and os.path.lexists(socket_path) and Path(runtime_base + "/containerd-root").is_dir()
+                    and Path(runtime_base + "/containerd-state").is_dir())
+            saved_socket = runtime_base + "/.uncertain-original.sock"; os.rename(socket_path, saved_socket)
+            replacement_socket = socket.socket(socket.AF_UNIX); replacement_socket.bind(socket_path); os.chmod(socket_path, 0o600)
+            rejected(lambda: runtime._shutdown_private_containerd(uncertain_daemon))
+            assert os.path.lexists(socket_path) and os.path.lexists(saved_socket)
+            replacement_socket.close(); os.unlink(socket_path); os.kill(retained_body["pid"], signal.SIGKILL)
+            os.waitpid(retained_body["pid"], 0); recovery_errors = []
+            assert process._recover_cgroup(retained_body["cgroup_path"], process._generation_tuple(
+                retained_body["cgroup_generation"]), process._boottime_ns() + 2_000_000_000,
+                {"term": False, "kill": False}, recovery_errors) == (True, True) and not recovery_errors
+            os.mkdir(process.CGROUP_BASE); os.mkdir(retained_body["cgroup_path"])
+            rejected(lambda: runtime._shutdown_private_containerd(uncertain_daemon))
+            assert os.path.isdir(retained_body["cgroup_path"])
+            os.rmdir(retained_body["cgroup_path"]); os.rmdir(process.CGROUP_BASE); os.unlink(saved_socket)
+            process_close = inspect.getclosurevars(process._stop_fixed_daemon).nonlocals["close_state"]
+            assert not process_close(uncertain_owner)
+            runtime_states = inspect.getclosurevars(runtime._shutdown_private_containerd).nonlocals["daemons"]
+            uncertain_state = runtime_states.pop(uncertain_daemon)
+            if uncertain_state[9] is not None: os.close(uncertain_state[9][0])
+            for index in (5, 6, 7, 4):
+                if uncertain_state[index] is not None: fs._close_node(uncertain_state[index])
+            parent = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try: runtime._purge_owned_tree(parent, "kata-runtime-v1")
+            finally: os.close(parent)
+            uncertain_journal.close(); fs._close_chain(chain); chain = None
             # A crash after a certain daemon outcome consumes the normal exact socket residue without a resume record.
             reset(); chain, completion_node = boundary(); journal = operation._open_fixed_operation(); owner = process._start_fixed_daemon(journal, retained)
             body = process._stop_fixed_daemon(owner, journal); assert body["status"] == signal.SIGKILL and not body["uncertain"] and os.path.lexists(socket_path)
@@ -971,8 +1014,16 @@ def native_runtime_daemon_foundations(completion):
             assert not os.path.exists(f"/proc/{daemon_pid}") and len(os.listdir("/proc/self/fd")) == before
             assert process._set_subreaper(False) is False and journal.resume_runtime_cleanup() == "RUNTIME_CLEANUP_ONLY"
             daemon = runtime._retain_private_containerd(journal, completion_node, None, control)
-            runtime._shutdown_private_containerd(daemon); journal.close()
-            assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); fs._close_chain(chain); chain = None
+            rejected(lambda: runtime._shutdown_private_containerd(daemon))
+            assert os.path.isdir(runtime_base) and not os.path.exists(process.CGROUP_BASE)
+            uncertain_state = runtime_states.pop(daemon)
+            for index in (5, 6, 7, 4):
+                if uncertain_state[index] is not None: fs._close_node(uncertain_state[index])
+            parent = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try: runtime._purge_owned_tree(parent, "kata-runtime-v1")
+            finally: os.close(parent)
+            journal.close(); assert not os.path.exists(runtime_base)
+            fs._close_chain(chain); chain = None
             # The staged-only runtime cleanup boundary also consumes the operation-owned tree.
             reset(); chain, completion_node = boundary(); staged = operation._open_fixed_operation()
             daemon = runtime._retain_private_containerd(staged, completion_node, None, control)
@@ -1084,8 +1135,9 @@ def native_containerd_metadata_fixture(completion, journal, network_owner, permi
         prefix = (paths["ctr"], "--address", paths["address"], "--namespace", runtime.NAMESPACE)
         info = subprocess.run((*prefix, "containers", "info", runtime.CONTAINER_ID), env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        assert info.stderr == b"" and runtime._validate_stored_launch_info(
-            info.stdout, permit) == runtime.MOUNT_LIST_SHA256
+        assert info.stderr == b"" and runtime.validate_stored_info(
+            info.stdout, runtime._stored_launch_network_grant(permit),
+            runtime._durable_ctr_launch_path(journal.runtime_recovery_history())) == runtime.MOUNT_LIST_SHA256
         removed = subprocess.run((*prefix, "containers", "remove", runtime.CONTAINER_ID), env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         assert removed.stdout == removed.stderr == b""

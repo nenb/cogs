@@ -5,6 +5,7 @@ import copy
 import dataclasses
 import hashlib
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -475,6 +476,36 @@ for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(f
                  'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)',
                  'rootfs_fs._enumerate_stable', 'node.generation == generation'):
     check(required in runtime_source, "exact retained socket cleanup route missing")
+
+# An incomplete daemon terminal remains fail-only on both current UNCERTAIN and
+# previously written cleanup-only routes; no socket/tree mutation is attempted.
+uncertain_outcome = {"uncertain": True, "leader_reaped": False, "descendants_reaped": False,
+                     "cgroup_empty": False, "cgroup_removed": False}
+class UncertainJournal:
+    def __init__(self, phase): self.phase, self.resumed = phase, False
+    def runtime_recovery_history(self):
+        return {"phase": self.phase, "tip": "DAEMON_OUTCOME_V2", "intents": (),
+                "daemon_retained": ({},), "daemon_outcomes": (uncertain_outcome,)}
+    def resume_runtime_cleanup(self): self.resumed = True; raise AssertionError("uncertainty rewritten")
+cleanup_nonlocals = inspect.getclosurevars(runtime._cleanup_fixed_runtime).nonlocals
+shutdown_nonlocals = inspect.getclosurevars(runtime._shutdown_private_containerd).nonlocals
+cleanup_owners, daemon_states = cleanup_nonlocals["owners"], shutdown_nonlocals["daemons"]
+def uncertain_owner(phase):
+    journal = UncertainJournal(phase); owner = object(); daemon = object()
+    cleanup_owners[owner] = [journal, None, None, None, None, None, daemon, None, None, None,
+                             object(), None]
+    daemon_states[daemon] = [journal]
+    return journal, owner, daemon
+with patch.object(runtime.os, "unlink") as unlink, patch.object(runtime.os, "rmdir") as rmdir, \
+     patch.object(runtime, "_purge_owned_tree") as purge, \
+     patch.object(runtime.kata_inputs, "_close_runtime_inputs"):
+    for phase in ("UNCERTAIN", "RUNTIME_CLEANUP_ONLY"):
+        journal, owner, daemon = uncertain_owner(phase)
+        rejected(lambda owner=owner: runtime._cleanup_fixed_runtime(owner))
+        check(not journal.resumed and daemon in daemon_states, "uncertain daemon disposition was consumed")
+        cleanup_owners.pop(owner, None); daemon_states.pop(daemon, None)
+    check(not unlink.called and not rmdir.called and not purge.called,
+          "uncertain daemon cleanup mutated socket/runtime state")
 
 # Execute the direct QMP proof: query-kvm is mandatory and streams/fds close.
 class FakeStream:
