@@ -16,7 +16,7 @@ jobs:
   foundation-shards:
     name: Root lifecycle (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 22
