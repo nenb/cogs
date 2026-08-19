@@ -20,7 +20,8 @@ import completion_kata_network as network
 suffix = secrets.token_hex(5)
 netns, quarantine, host, table = "c42n" + suffix, "c42q" + suffix, "c42h" + suffix, "c42t" + suffix
 tap_name = "tap" + suffix[:8]
-created = {"netns": False, "quarantine": False, "replacement": False, "nft": False, "tap_fd": None}
+created = {"parent_mount": False, "netns": False, "quarantine": False,
+           "replacement": False, "nft": False, "tap_fd": None}
 
 def run(argv, stdin=None, allow=False):
     result = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -51,6 +52,7 @@ def nft_input():
     return network.NFT_OWNED_TRANSACTION.replace(network.TABLE.encode(), table.encode()).replace(network.HOST_IF.encode(), host.encode())
 
 try:
+    network._prepare_netns_parent(); created["parent_mount"] = True
     ip("netns", "add", netns); created["netns"] = True
     retained_ns = ns_identity(netns)
     ip("link", "add", "name", host, "address", network.HOST_MAC, "type", "veth",
@@ -129,3 +131,13 @@ finally:
     run(("/usr/sbin/nft", "delete", "table", "inet", table), allow=True)
     for name in (quarantine, netns):
         if Path("/run/netns/" + name).exists(): raise RuntimeError("network namespace cleanup residue")
+    if created["parent_mount"]:
+        parent = network._netns_parent_mount()
+        if parent is None or parent[:3] != ("/netns", "tmpfs", "tmpfs") or parent[3]:
+            raise RuntimeError("owned private netns parent changed")
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.umount2(b"/run/netns", 2) != 0:
+            saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
+        created["parent_mount"] = False
+        if network._netns_parent_mount() is not None:
+            raise RuntimeError("owned private netns parent remains")
