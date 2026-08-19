@@ -1659,12 +1659,17 @@ def _daemon_routes():
             def pipe():
                 pair = os.pipe2(os.O_CLOEXEC); descriptors.extend(pair); return pair
             release_r, release_w = pipe(); setup_r, setup_w = pipe(); status_r, status_w = pipe()
-            stdin_r, stdin_w = pipe(); devnull = os.open("/dev/null", os.O_WRONLY | os.O_CLOEXEC); descriptors.append(devnull)
+            stdin_r, stdin_w = pipe()
+            stdout_null = os.open("/dev/null", os.O_WRONLY | os.O_CLOEXEC)
+            stderr_null = os.open("/dev/null", os.O_WRONLY | os.O_CLOEXEC)
+            descriptors.extend((stdout_null, stderr_null))
             spec = _Spec(fixed.command_id.value, fixed.argv, b"", "fixed", 60.0, ())
             pid = os.fork()
-            if pid == 0: _child(executable.descriptor, spec, release_r, setup_w, status_w, devnull, devnull, stdin_r)
+            if pid == 0:
+                _child(executable.descriptor, spec, release_r, setup_w, status_w,
+                       stdout_null, stderr_null, stdin_r)
             pidfd = _usable_pidfd_open(pid)
-            for descriptor in (release_r, setup_w, status_w, stdin_r, devnull):
+            for descriptor in (release_r, setup_w, status_w, stdin_r, stdout_null, stderr_null):
                 os.close(descriptor); descriptors.remove(descriptor)
             setup = _read_setup_boottime(setup_r, deadline); os.close(setup_r); descriptors.remove(setup_r)
             identity, observed = _identity(pid, setup)
