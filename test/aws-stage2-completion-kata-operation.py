@@ -1966,8 +1966,8 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256})
-            production_fixture(release_rows[:2] + (release_deadline, release_admission,
-                               settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
+            production_fixture(release_rows[:2] + (release_deadline, settle_production_fs,
+                               release_admission) + release_rows[2:5] + release_rows[6:-1])
             expired_release_owner = operation._open_fixed_operation()
             with patch.object(operation, "_boottime_ns", return_value=release_edge):
                 expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
@@ -2348,7 +2348,7 @@ def production_owner_test():
                     expired_network = operation._claim_production_cleanup_operation(
                         expired_network_owner)
                     expired_network.begin_network_cleanup("network")
-                assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V1"
+                assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V2"
                 expired_network.close()
 
                 transaction_completion = Path(operation.BASE)
