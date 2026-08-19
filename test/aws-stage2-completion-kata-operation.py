@@ -1802,6 +1802,32 @@ def production_owner_test():
                     "ROOTFS_RELEASE_AUTHORIZED" if authorized else "ROOTFS_RELEASE_READY"
                 )
                 release_owner.close()
+
+            # Expired cleanup authority retains the exact rootfs cross-ledger
+            # reservations but cannot use the acquire/leased setup phases.
+            release_rows = release_bodies(False)
+            release_deadline = lifecycle_deadline()
+            release_edge = release_deadline[1]["journal_deadline_boottime_ns"]
+            release_admission = ("PRODUCTION_ADMISSION_V2", {
+                "operation_token": "a" * 64,
+                "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
+                "policy_version": operation.command_policy.POLICY_VERSION,
+                "parser_source_sha256": operation.SSH_PARSER_SHA256})
+            production_fixture(release_rows[:2] + (release_deadline, release_admission)
+                               + release_rows[2:5] + release_rows[6:])
+            expired_release_owner = operation._open_fixed_operation()
+            with patch.object(operation, "_boottime_ns", return_value=release_edge):
+                expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
+                reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
+                reference = rootfs_reference()
+                operation._invoke_rootfs_reopen_route(reopen, lambda _context, _control: reference, object())
+                operation._settle_rootfs_reopen(reopen, reference)
+                release = operation._claim_rootfs_release(expired_release.reserve_rootfs_release())
+                authorization = operation._invoke_rootfs_release(release, lambda context:
+                    operation.RootfsAuthorization(context.rootfs_token, 9, 0x2222, "e" * 64))
+                operation._settle_rootfs_release(release, authorization)
+            assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
+            expired_release.close()
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -1832,8 +1858,29 @@ def production_owner_test():
             for forbidden in ("admit_production_v2", "record_runtime_staged", "record_runtime_mount_v2",
                               "record_ssh_result", "record_ssh_ready", "retire"):
                 rejected(lambda forbidden=forbidden: getattr(cleanup_only, forbidden))
+            for allowed in ("begin_network_cleanup", "network_records", "network_history",
+                            "record_network", "settle_network_phase", "reserve_rootfs",
+                            "reserve_rootfs_release"):
+                assert callable(getattr(cleanup_only, allowed))
+            rejected(cleanup_only.reserve_rootfs)
+            rejected(lambda: cleanup_only.record_command_intent(fixed_v2_intent(cleanup_only.command_context())))
             rejected(lambda: cleanup_only.settle_runtime_phase("RUNTIME_READY", "0" * 64))
             rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
+
+            proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
+            expired_teardown = leased_records + admitted_suffix + (
+                ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
+                ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": "a" * 64}),
+                ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned",
+                    "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}),
+                ("TASK_STOPPED", proof("5")),)
+            production_fixture(expired_teardown)
+            expired_network_owner = operation._open_fixed_operation()
+            with patch.object(operation, "_boottime_ns", return_value=edge):
+                expired_network = operation._claim_production_cleanup_operation(expired_network_owner)
+                expired_network.begin_network_cleanup("network")
+            assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V1"
+            expired_network.close()
 
             production_fixture(leased_records)
             stale_admission = operation._open_fixed_operation()

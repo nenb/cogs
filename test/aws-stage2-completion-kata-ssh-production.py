@@ -10,6 +10,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -233,6 +234,23 @@ caller_executable = process.RetainedExecutable(
 reject(lambda: process._require_attested_executable(caller_executable))
 reject(lambda: ssh._compose_production_ssh(object(), object(), object()))
 reject(lambda: ssh._recover_production_ssh(object(), object()))
+
+# Recovery claims only cleanup authority, so lifecycle expiry cannot reject
+# before pending-process, revocation, and input settlement run.
+class FakeCleanup:
+    def __init__(self): self.called = False
+    def continue_cleanup(self): self.called = True
+recovery_journal, cleanup_journal, recovery_calls = object(), object(), []
+cleanup = FakeCleanup()
+with patch.object(inputs, "_ProductionInputCleanup", FakeCleanup), \
+     patch.object(operation, "_claim_production_operation", side_effect=AssertionError("live claim")), \
+     patch.object(operation, "_claim_production_cleanup_operation", return_value=cleanup_journal), \
+     patch.object(operation, "_has_recovery_command", return_value=False), \
+     patch.object(operation, "_revoke_or_require_terminal", side_effect=lambda value: recovery_calls.append(value)), \
+     patch.object(operation, "_durable_phase", return_value="INPUT_REMOVED"):
+    check(ssh._recover_production_ssh(recovery_journal, cleanup) == "INPUT_REMOVED",
+          "cleanup SSH recovery result")
+check(cleanup.called and recovery_calls == [cleanup_journal], "cleanup SSH recovery ordering")
 
 # Exact guest parser and canonical typed result: marker plus all 21 fixed rows.
 lines = [guest.GUEST_READY_MARKER]

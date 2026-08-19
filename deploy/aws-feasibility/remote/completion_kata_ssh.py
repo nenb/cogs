@@ -296,7 +296,7 @@ def _production_routes():
     def recover(journal, input_cleanup):
         import completion_kata_inputs as inputs
         import completion_kata_process as process
-        journal = operation._claim_production_operation(journal)
+        journal = operation._claim_production_cleanup_operation(journal)
         _fail(type(input_cleanup) is inputs._ProductionInputCleanup)
         errors = []
         if operation._has_recovery_command(journal):

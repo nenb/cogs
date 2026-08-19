@@ -1910,8 +1910,7 @@ def _recover_pending_fixed(journal):
     now = _boottime_ns()
     durable_deadline = (intent["deadline_boottime_ns"] if production_deadline
                         else now + recovery_budget)
-    if lifecycle_deadline is not None:
-        durable_deadline = min(durable_deadline, lifecycle_deadline)
+    if lifecycle_deadline is not None: durable_deadline = min(durable_deadline, lifecycle_deadline)
     current_boot = _boot_id() if production_deadline else intent["host_boot_id"]
     expired = (intent["host_boot_id"] != current_boot or lifecycle_boot != current_boot
                or now >= durable_deadline)
@@ -1919,17 +1918,17 @@ def _recover_pending_fixed(journal):
         errors.append("old-boot" if (intent["host_boot_id"] != current_boot
                                      or lifecycle_boot != current_boot)
                       else "lifecycle-deadline-expired")
-        closure = (False, False, False, False)
-    else:
-        deadline = min(now + recovery_budget, durable_deadline)
-        cgroup_deadline = (deadline - 2_000_000_000
-                           if intent["command_id"] == "CONTAINERD_START" else deadline)
-        cgroup_empty, cgroup_removed = _recover_cgroup(
-            path, expected, max(now, cgroup_deadline), state, errors)
-        closure = (cgroup_empty, False, cgroup_removed, False)
-        if intent["command_id"] == "CONTAINERD_START" and preexec is not None:
-            leader_reaped, descendants_reaped = _recover_daemon_reap(preexec, deadline, errors)
-            closure = (cgroup_empty, descendants_reaped, cgroup_removed, leader_reaped)
+    # Expiry forbids execution/retry, not exact reverse cleanup. Recovery owns a
+    # fresh bounded settlement budget and can only target the retained cgroup.
+    deadline = now + recovery_budget if expired else min(now + recovery_budget, durable_deadline)
+    cgroup_deadline = (deadline - 2_000_000_000
+                       if intent["command_id"] == "CONTAINERD_START" else deadline)
+    cgroup_empty, cgroup_removed = _recover_cgroup(
+        path, expected, max(now, cgroup_deadline), state, errors)
+    closure = (cgroup_empty, False, cgroup_removed, False)
+    if intent["command_id"] == "CONTAINERD_START" and preexec is not None:
+        leader_reaped, descendants_reaped = _recover_daemon_reap(preexec, deadline, errors)
+        closure = (cgroup_empty, descendants_reaped, cgroup_removed, leader_reaped)
     if terminal is not None:
         return kata_operation.DurableCommandOutcome(
             terminal["command_serial"], terminal["command_id"],

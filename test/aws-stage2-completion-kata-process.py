@@ -92,6 +92,38 @@ for command in (process.CommandId.SSH_KEYGEN_CLIENT, process.CommandId.SSH_PUBLI
     assert process._spec(command).deadline_class == "keygen"
 assert process.OWNER_ASSIGNED_IDS == {"CTR_RUN"}
 
+# A durable work/lifecycle expiry suppresses retry but still grants a fresh,
+# bounded exact-cgroup settlement window.
+class ExpiredJournal:
+    def __init__(self, expected):
+        self.expected, self.recorded = expected, None
+    def recovery_command(self):
+        intent = {"operation_token": "d" * 64, "command_serial": 7,
+                  "command_id": "CTR_TASK_LIST", "host_boot_id": BOOT_A,
+                  "deadline_boottime_ns": 80, "cleanup_reserve_ns": 2_000_000_000}
+        preexec = {"cgroup_generation": dict(zip(process.kata_operation.GEN_KEYS, self.expected))}
+        return intent, preexec, None
+    def recovery_lifecycle_deadline(self): return BOOT_A, 90
+    def record_command_outcome(self, body): self.recorded = body; return body
+expired_capture = {}
+def expired_body(_intent, _outcome, _status, _errno, _stdout, _stderr, _overflow,
+                 _wait, _eof, cleanup, state, errors, _release):
+    expired_capture.update({"cleanup": cleanup, "state": dict(state), "errors": tuple(errors)})
+    return {"uncertain": True}
+expected_generation = tuple(range(len(process.kata_operation.GEN_KEYS)))
+expired_journal = ExpiredJournal(expected_generation)
+with patch.object(process, "_boottime_ns", return_value=100), \
+     patch.object(process, "_boot_id", return_value=BOOT_A), \
+     patch.object(process, "_recover_cgroup", return_value=(True, True)) as recover, \
+     patch.object(process, "_outcome_body", side_effect=expired_body):
+    assert process._recover_pending_fixed(expired_journal) == {"uncertain": True}
+recover.assert_called_once_with(
+    process.CGROUP_BASE + "/" + "d" * 64 + "-7", expected_generation,
+    2_000_000_100, {"term": False, "kill": False}, ["crash-continuation", "lifecycle-deadline-expired"])
+assert expired_capture == {"cleanup": (True, False, True, False),
+                           "state": {"term": False, "kill": False},
+                           "errors": ("crash-continuation", "lifecycle-deadline-expired")}
+
 # Contract decoding requires canonical, digest-bound, exact typed records.
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
@@ -230,14 +262,31 @@ def authentic_root_cgroup_recovery():
     os.close(report_r)
     assert os.waitpid(supervisor, 0)[1] == 77 << 8
     value = json.loads(raw)
-    state, errors = {"term": False, "kill": False}, []
     previous = None
     try:
-        assert process._recover_cgroup(
-            path, tuple(value["expected"]), process._boottime_ns() + 2_000_000_000,
-            state, errors,
-        ) == (True, True)
-        assert state["kill"] and errors == [] and not os.path.exists(path)
+        class ExpiredNativeJournal:
+            def recovery_command(self):
+                intent = {"operation_token": token, "command_serial": 4242,
+                          "command_id": "CTR_TASK_LIST", "host_boot_id": process._boot_id(),
+                          "deadline_boottime_ns": process._boottime_ns() - 1,
+                          "cleanup_reserve_ns": 2_000_000_000}
+                preexec = {"cgroup_generation": dict(zip(
+                    process.kata_operation.GEN_KEYS, value["expected"]))}
+                return intent, preexec, None
+            def recovery_lifecycle_deadline(self):
+                return process._boot_id(), process._boottime_ns() - 1
+            def record_command_outcome(self, body): return body
+        captured = {}
+        def native_body(_intent, _outcome, _status, _errno, _stdout, _stderr, _overflow,
+                        _wait, _eof, cleanup, recovery_state, recovery_errors, _release):
+            captured.update({"cleanup": cleanup, "state": dict(recovery_state),
+                             "errors": tuple(recovery_errors)})
+            return {"uncertain": True}
+        with patch.object(process, "_outcome_body", side_effect=native_body):
+            assert process._recover_pending_fixed(ExpiredNativeJournal()) == {"uncertain": True}
+        assert captured["cleanup"] == (True, False, True, False)
+        assert captured["state"]["kill"] and "lifecycle-deadline-expired" in captured["errors"]
+        assert not os.path.exists(path)
         # Exact production settlement also reaps a quick adopted descendant.
         previous = process._set_subreaper(True)
         owner = process._prepare_cgroup(process.kata_operation.CommandContext(

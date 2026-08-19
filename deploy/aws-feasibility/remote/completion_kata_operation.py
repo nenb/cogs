@@ -1910,32 +1910,30 @@ def _make_authority():
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
-            if name in {"record_command_intent", "settle_runtime_phase"}: return object.__getattribute__(self, name)
-            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "close", "status"}); return getattr(cleanup_owners[self], name)
+            if name in {"record_command_intent", "settle_runtime_phase", "reserve_rootfs", "reserve_rootfs_release"}: return object.__getattribute__(self, name)
+            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body):
-            _fail(body["lifecycle_phase"] in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and body["command_id"] not in {"CTR_RUN", "CONTAINERD_START", "SSH_READY"}); return cleanup_owners[self].record_command_intent(body)
+            return issue_command_intent(cleanup_owners[self], body, True)
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
+        def reserve_rootfs(self): return cleanup_rootfs(self, False)
+        def reserve_rootfs_release(self): return cleanup_rootfs(self, True)
+    def cleanup_rootfs(capability, release):
+        authority = cleanup_owners[capability]; _io, records, status = reload(authority)
+        _fail(status == "exact" and _legal(records) in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"})
+        return authority.reserve_rootfs_release() if release else authority.reserve_rootfs()
     class RootfsPermit:
         __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
     class RootfsGrant:
         __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
     class RootfsReleasePermit:
         __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
     class RootfsReleaseGrant:
         __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
     def owner(authority):
         state = owners.get(authority)
         _fail(state is not None and authority not in closed)
@@ -1970,7 +1968,7 @@ def _make_authority():
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
         cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:]} or cleanup_phase and (
-            kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
+            kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2", *network_journal.CLEANUP_INTENTS} or kind in network_journal.ALL_RECORDS)
         if (admitted or kind == "PRODUCTION_ADMISSION_V2") and not cleanup_record: _require_live_production_deadline(records)
         line = _encode(kind, body, records)
         fresh, generation = io.write_record(line, records[-1].next_offset, io._loaded_generation)
@@ -2087,30 +2085,7 @@ def _make_authority():
             _fail(terminal is None)
             return intent, preexec
         def record_command_intent(self, body):
-            context = self.command_context()
-            _io, records, status = reload(self, True)
-            deadlines = [item.body for item in records
-                         if item.record_type == "LIFECYCLE_DEADLINE_V1"]
-            if any(item.record_type == "PRODUCTION_ADMISSION_V2" for item in records):
-                _fail(status == "exact" and len(deadlines) == 1)
-                deadline = deadlines[0]
-                now = _boottime_ns()
-                _fail(context.host_boot_id == _current_boot_id())
-                _fail(now < deadline["journal_deadline_boottime_ns"])
-                _fail(body["deadline_boottime_ns"] + body["cleanup_reserve_ns"]
-                      <= deadline["journal_deadline_boottime_ns"])
-                if body["command_id"] == "SSH_READY":
-                    _fail(now < deadline["ssh_start_deadline_boottime_ns"])
-            _fail(body["operation_token"] == context.operation_token)
-            _fail(body["journal_key"] == context.journal_key)
-            _fail(body["host_boot_id"] == context.host_boot_id)
-            _fail(body["source_revision"] == context.source_revision)
-            _fail(body["lifecycle_phase"] == context.lifecycle_phase)
-            _fail(body["command_serial"] == context.command_serial)
-            write_validated(self, "COMMAND_INTENT_V2", body)
-            return CommandIntentReceipt(
-                body["command_serial"], body["command_id"], body["binding_sha256"],
-            )
+            return issue_command_intent(self, body, False)
         def record_command_preexec(self, body):
             intent, preexec = self.pending_command()
             _fail(preexec is None and _same_command_v2(body, intent))
@@ -2324,6 +2299,7 @@ def _make_authority():
             return tuple((item.record_type, item.body) for item in records
                          if item.record_type == "NETWORK_SNAPSHOT_V2" or
                          item.record_type in network_journal.ALL_RECORDS or
+                         item.record_type in network_journal.CLEANUP_INTENTS or
                          item.record_type == "COMMAND_OUTCOME_V2" and
                          item.body["command_id"] in {value.value for value in actions.NETWORK_COMMANDS})
         def record_network(self, kind, body):
@@ -2375,6 +2351,27 @@ def _make_authority():
         def status(self):
             if self in closed or self in poisoned: return "closed" if self in closed else "poisoned"
             return reload(self, True)[2]
+    def issue_command_intent(authority, body, cleanup):
+        context = authority.command_context(); _io, records, status = reload(authority, True)
+        deadlines = [item.body for item in records if item.record_type == "LIFECYCLE_DEADLINE_V1"]
+        if any(item.record_type == "PRODUCTION_ADMISSION_V2" for item in records):
+            _fail(status == "exact" and len(deadlines) == 1 and context.host_boot_id == _current_boot_id())
+            now, deadline = _boottime_ns(), deadlines[0]
+            if cleanup:
+                network = (network_journal.active_cleanup(records, _fail) is not None
+                           and body["command_id"] in {value.value for value in actions.NETWORK_COMMANDS}
+                           and body["command_id"] not in network_journal.SETUP)
+                runtime = body["command_id"] in {value.value for value in actions.RUNTIME_COMMANDS} - {"CTR_RUN", "CONTAINERD_START"}
+                _fail(context.lifecycle_phase in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and (runtime or network))
+                _fail(now < body["deadline_boottime_ns"] <= now + body["duration_ns"])
+            else:
+                _fail(now < deadline["journal_deadline_boottime_ns"] and body["deadline_boottime_ns"]
+                      + body["cleanup_reserve_ns"] <= deadline["journal_deadline_boottime_ns"])
+                if body["command_id"] == "SSH_READY": _fail(now < deadline["ssh_start_deadline_boottime_ns"])
+        _fail(body["operation_token"] == context.operation_token and body["journal_key"] == context.journal_key)
+        _fail(body["host_boot_id"] == context.host_boot_id and body["source_revision"] == context.source_revision)
+        _fail(body["lifecycle_phase"] == context.lifecycle_phase and body["command_serial"] == context.command_serial)
+        write_validated(authority, "COMMAND_INTENT_V2", body); return CommandIntentReceipt(body["command_serial"], body["command_id"], body["binding_sha256"])
     def claim_rootfs_reopen(permit):
         _fail(type(permit) is RootfsPermit)
         state = permits.get(permit)
