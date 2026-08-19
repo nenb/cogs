@@ -86,3 +86,18 @@ RUNTIME_COMMANDS = frozenset(
     item for item in CommandId
     if item is CommandId.CONTAINERD_START or item.value.startswith("CTR_")
 )
+CLEANUP_NETWORK_COMMANDS = frozenset({
+    CommandId.IP_HOST_LINKS, CommandId.IP_HOST_ADDRESSES, CommandId.IP_HOST_ROUTES4,
+    CommandId.IP_HOST_ROUTES6, CommandId.IP_NS_LINKS, CommandId.IP_NS_ADDRESSES,
+    CommandId.IP_NS_ROUTES4, CommandId.IP_NS_ROUTES6, CommandId.IP_NETNS_LIST,
+    CommandId.IP_ALL_LINKS, CommandId.IP_ALL_ADDRESSES, CommandId.IP_ALL_ROUTES4,
+    CommandId.IP_ALL_ROUTES6, CommandId.TC_QDISC, CommandId.TC_INGRESS_FILTER,
+    CommandId.NFT_TABLE, CommandId.NFT_RULESET, CommandId.IP_NETNS_REMOVE,
+    CommandId.NFT_REMOVE_ATOMIC,
+})
+CLEANUP_RUNTIME_COMMANDS = frozenset({
+    CommandId.CTR_CONTAINER_INFO, CommandId.CTR_CONTAINER_LIST, CommandId.CTR_TASK_LIST,
+    CommandId.CTR_TASK_TERM, CommandId.CTR_TASK_KILL, CommandId.CTR_TASK_REMOVE,
+    CommandId.CTR_CONTAINER_REMOVE,
+})
+CLEANUP_COMMANDS = CLEANUP_NETWORK_COMMANDS | CLEANUP_RUNTIME_COMMANDS

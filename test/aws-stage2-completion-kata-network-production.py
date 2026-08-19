@@ -597,6 +597,16 @@ check(process._internally_fixed(process.FixedCommand(
     ip_source.output_grammar, ip_source.inherited_fds)), "bound netns command rejected")
 
 check("RETRY" not in network.Recovery.__members__, "retry disposition remains")
+check({item.value for item in network._MUTATIONS} == journal_model.MUTATIONS,
+      "journal mutation closure omitted a fixed mutation")
+check({item.value for item in operation.actions.CLEANUP_NETWORK_COMMANDS} & journal_model.MUTATIONS
+      == set(journal_model.REMOVALS), "cleanup network allowlist is not exact removals plus observers")
+check(not ({item.value for item in operation.actions.CLEANUP_NETWORK_COMMANDS} - set(journal_model.REMOVALS))
+      & journal_model.MUTATIONS, "cleanup observer allowlist contains setup")
+check(operation.actions.CLEANUP_COMMANDS == operation.actions.CLEANUP_NETWORK_COMMANDS | operation.actions.CLEANUP_RUNTIME_COMMANDS
+      and not {operation.actions.CommandId.IP_LINK_ADD, operation.actions.CommandId.IP_LINK_MOVE,
+               operation.actions.CommandId.IP_PEER_RENAME, operation.actions.CommandId.NFT_INSTALL}
+      & operation.actions.CLEANUP_COMMANDS, "legacy setup mutation admitted after expiry")
 source_text = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()
 for required in ("runtime_difference(before, after)", "NETWORK_EFFECT_INTENT_V2",
                  "_resume_effect(journal", "fresh != baselines"):

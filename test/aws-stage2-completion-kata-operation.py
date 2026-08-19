@@ -1966,6 +1966,25 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256})
+            production_fixture(release_rows[:2] + (release_deadline, release_admission,
+                               settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
+            expired_release_owner = operation._open_fixed_operation()
+            with patch.object(operation, "_boottime_ns", return_value=release_edge):
+                expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
+                release_context = expired_release.prepare_rootfs_release()
+                assert release_context.operation_phase == "ROOTFS_RELEASE_READY"
+                assert operation._parse(fixture_journal_path(completion).read_bytes())[-1].record_type == \
+                    "ROOTFS_RELEASE_READY"
+                reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
+                reference = rootfs_reference()
+                operation._invoke_rootfs_reopen_route(reopen, lambda _context, _control: reference, object())
+                operation._settle_rootfs_reopen(reopen, reference)
+                release = operation._claim_rootfs_release(expired_release.reserve_rootfs_release())
+                authorization = operation._invoke_rootfs_release(release, lambda context:
+                    operation.RootfsAuthorization(context.rootfs_token, 9, 0x2222, "e" * 64))
+                operation._settle_rootfs_release(release, authorization)
+            assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
+            expired_release.close()
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -1997,7 +2016,8 @@ def production_owner_test():
                               "record_ssh_result", "record_ssh_ready", "retire"):
                 rejected(lambda forbidden=forbidden: getattr(cleanup_only, forbidden))
             for allowed in ("begin_network_cleanup", "settle_network_cleanup", "network_records",
-                            "network_history", "record_network", "settle_network_phase", "reserve_rootfs",
+                            "network_history", "record_network", "settle_network_phase",
+                            "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs",
                             "reserve_rootfs_release"):
                 assert callable(getattr(cleanup_only, allowed))
             rejected(cleanup_only.reserve_rootfs)
@@ -2017,6 +2037,14 @@ def production_owner_test():
             with patch.object(operation, "_boottime_ns", return_value=edge):
                 expired_network = operation._claim_production_cleanup_operation(expired_network_owner)
                 expired_network.begin_network_cleanup("network")
+                for command_id in ({process.CommandId(value) for value in operation.network_journal.MUTATIONS}
+                                   - operation.actions.CLEANUP_NETWORK_COMMANDS):
+                    command = fixed_v2_intent(expired_network.command_context(), command_id)
+                    command["deadline_boottime_ns"] = edge + command["duration_ns"]
+                    command["binding_sha256"] = operation.ZERO
+                    command["binding_sha256"] = hashlib.sha256(operation._canonical(
+                        {name: value for name, value in command.items() if name != "binding_sha256"})).hexdigest()
+                    rejected(lambda command=command: expired_network.record_command_intent(command))
             assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V2"
             expired_network.close()
 

@@ -835,39 +835,21 @@ class Record:
     body: dict
 @dataclass(frozen=True)
 class CommandContext:
-    operation_token: str
-    journal_key: dict
-    host_boot_id: str
-    source_revision: str
-    lifecycle_phase: str
-    command_serial: int
+    operation_token: str; journal_key: dict; host_boot_id: str
+    source_revision: str; lifecycle_phase: str; command_serial: int
 @dataclass(frozen=True)
 class CommandIntentReceipt:
-    command_serial: int
-    command_id: str
-    binding_sha256: str
+    command_serial: int; command_id: str; binding_sha256: str
 @dataclass(frozen=True)
 class DurableCommandOutcome:
-    command_serial: int
-    command_id: str
-    binding_sha256: str
-    body: dict
+    command_serial: int; command_id: str; binding_sha256: str; body: dict
 @dataclass(frozen=True)
 class RootfsReleaseContext:
-    operation_token: str
-    rootfs_token: str
-    rootfs_ledger_key: dict
-    leased_sequence: int
-    leased_offset: int
-    leased_sha256: str
-    kata_ledger_key: dict
-    kata_release_sequence: int
-    kata_release_offset: int
-    kata_release_sha256: str
-    operation_phase: str
-    authorized_sequence: int | None
-    authorized_offset: int | None
-    authorized_sha256: str | None
+    operation_token: str; rootfs_token: str; rootfs_ledger_key: dict
+    leased_sequence: int; leased_offset: int; leased_sha256: str
+    kata_ledger_key: dict; kata_release_sequence: int; kata_release_offset: int
+    kata_release_sha256: str; operation_phase: str
+    authorized_sequence: int | None; authorized_offset: int | None; authorized_sha256: str | None
 @dataclass(frozen=True)
 class RootfsAuthorization:
     rootfs_token: str
@@ -1909,17 +1891,31 @@ def _make_authority():
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
-            if name in {"record_command_intent", "settle_runtime_phase", "reserve_rootfs", "reserve_rootfs_release"}: return object.__getattribute__(self, name)
-            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "settle_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
-        def record_command_intent(self, body):
-            return issue_command_intent(cleanup_owners[self], body, True)
+            direct = {"record_command_intent", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
+            if name in direct: return object.__getattribute__(self, name)
+            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
+        def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
+        def settle_network_cleanup(self, target): return cleanup_owners[self].settle_network_cleanup(target)
+        def prepare_rootfs_release(self): return prepare_cleanup_rootfs(self)
+        def settle_rootfs_absent(self, proof):
+            authority = cleanup_owners[self]; _io, records, status = reload(authority); _hex(proof)
+            _fail(status == "exact" and _legal(records) == "ROOTFS_RELEASE_AUTHORIZED"); write_validated(authority, "ROOTFS_ABSENT", {"operation_token": records[0].body["operation_token"], "proof_sha256": proof})
         def reserve_rootfs(self): return cleanup_rootfs(self, False)
         def reserve_rootfs_release(self): return cleanup_rootfs(self, True)
+    def prepare_cleanup_rootfs(capability):
+        authority = cleanup_owners[capability]; _io, records, status = reload(authority); _fail(status == "exact")
+        if _legal(records) == "INPUT_REMOVED":
+            leased = [row.body for row in records if row.record_type == "ROOTFS_LEASED"]
+            _fail(len(leased) == 1 and records[-1].record_type == "INPUT_REMOVED"); body = leased[0]
+            ready = {"operation_token": records[0].body["operation_token"], "rootfs_token": records[0].body["rootfs_token"],
+                     **{name: body[name] for name in ("rootfs_ledger_key", "leased_sequence", "leased_offset", "leased_sha256")},
+                     "input_removed_sha256": records[-1].body["proof_sha256"]}
+            write_validated(authority, "ROOTFS_RELEASE_READY", ready); _io, records, status = reload(authority)
+        _fail(status == "exact" and _legal(records) in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"}); return release_context(records)
     def cleanup_rootfs(capability, release):
-        authority = cleanup_owners[capability]; _io, records, status = reload(authority)
-        _fail(status == "exact" and _legal(records) in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"})
+        authority = cleanup_owners[capability]; prepare_cleanup_rootfs(capability)
         return authority.reserve_rootfs_release() if release else authority.reserve_rootfs()
     class RootfsPermit:
         __slots__ = ()
@@ -2359,11 +2355,13 @@ def _make_authority():
             _fail(status == "exact" and len(deadlines) == 1 and context.host_boot_id == _current_boot_id())
             now, deadline = _boottime_ns(), deadlines[0]
             if cleanup:
-                network = (network_journal.active_cleanup(records, _fail) is not None
-                           and body["command_id"] in {value.value for value in actions.NETWORK_COMMANDS}
-                           and body["command_id"] not in network_journal.SETUP)
-                runtime = body["command_id"] in {value.value for value in actions.RUNTIME_COMMANDS} - {"CTR_RUN", "CONTAINERD_START"}
-                _fail(context.lifecycle_phase in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and (runtime or network))
+                command_id = body["command_id"]
+                network = (network_journal.active_cleanup(records, _fail) is not None and
+                           command_id in {value.value for value in actions.CLEANUP_NETWORK_COMMANDS})
+                runtime = command_id in {value.value for value in actions.CLEANUP_RUNTIME_COMMANDS}
+                _fail(context.lifecycle_phase in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and
+                      command_id in {value.value for value in actions.CLEANUP_COMMANDS} and
+                      (runtime or network))
                 _fail(now < body["deadline_boottime_ns"] <= now + body["duration_ns"])
             else:
                 _fail(now < deadline["journal_deadline_boottime_ns"] and body["deadline_boottime_ns"]
