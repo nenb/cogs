@@ -54,6 +54,7 @@ def nft_input():
 try:
     network._prepare_netns_parent(); created["parent_mount"] = True
     ip("netns", "add", netns); created["netns"] = True
+    network._prepare_netns_parent()
     retained_ns = ns_identity(netns)
     ip("link", "add", "name", host, "address", network.HOST_MAC, "type", "veth",
        "peer", "name", network.GUEST_IF, "address", network.GUEST_MAC, "netns", netns)
@@ -103,7 +104,12 @@ try:
                     .replace(network.TABLE_HANDLE.encode(), str(nft_state.identity.table_handle).encode()))
     conditional = run(("/usr/sbin/nft", "-j", "-f", "-"), delete_batch, allow=True)
     if conditional.returncode == 0 and not conditional.stderr:
-        network.parse_nft_snapshot(conditional.stdout, table, host); created["nft"] = False
+        if conditional.stdout:
+            raise AssertionError("conditional nft deletion returned unexpected bytes")
+        absent = run(("/usr/sbin/nft", "-j", "list", "table", "inet", table), allow=True)
+        if absent.returncode == 0:
+            raise AssertionError("conditional nft deletion retained the table")
+        created["nft"] = False
     else:
         retained = network.parse_nft_snapshot(run(("/usr/sbin/nft", "-j", "list", "table", "inet", table)).stdout,
                                               table, host)
@@ -115,6 +121,7 @@ try:
     if ns_identity(quarantine) != retained_ns or Path("/run/netns/" + netns).exists():
         raise AssertionError("quarantine crash cut is not recoverable")
     ip("netns", "add", netns); created["replacement"] = True
+    network._prepare_netns_parent()
     replacement = ns_identity(netns)
     if replacement == retained_ns: raise AssertionError("replacement nsfs not distinct")
     ip("netns", "delete", quarantine); created["quarantine"] = False
