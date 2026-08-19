@@ -2,15 +2,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-import copy
-import fcntl
-import gzip
-import hashlib
-import json
-import os
-import re
-import socket
-import stat
+import copy, fcntl, gzip, hashlib, json, os, re, socket, stat, time
 import completion_archive_preflight as archive_preflight
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
@@ -83,52 +75,27 @@ class KataRuntimeError(Exception):
 KataMountContractError = KataRuntimeError
 @dataclass(frozen=True)
 class MountRecord:
-    type: str
-    source: str
-    destination: str
-    options: tuple[str, ...]
+    type: str; source: str; destination: str; options: tuple[str, ...]
 @dataclass(frozen=True)
 class CommandSpec:
-    command_id: actions.CommandId
-    argv: tuple[str, ...]
-    stdin: bytes
-    deadline_class: str
+    command_id: actions.CommandId; argv: tuple[str, ...]; stdin: bytes; deadline_class: str
 class Observation(Enum):
     ABSENT = "absent"
     EXACT = "exact"
     PRESERVE = "preserve"
 @dataclass(frozen=True)
 class ProcessRecord:
-    role: str
-    pid: int
-    ppid: int
-    starttime: int
-    executable: str
-    executable_device: int
-    executable_inode: int
-    cmdline: tuple[str, ...]
-    namespaces: tuple[tuple[str, str], ...]
+    role: str; pid: int; ppid: int; starttime: int; executable: str; executable_device: int
+    executable_inode: int; cmdline: tuple[str, ...]; namespaces: tuple[tuple[str, str], ...]
 @dataclass(frozen=True)
 class ProcessClassification:
-    disposition: Observation
-    records: tuple[ProcessRecord, ...]
-    reason: str
+    disposition: Observation; records: tuple[ProcessRecord, ...]; reason: str
 @dataclass(frozen=True)
 class ShareEntry:
-    path: str
-    kind: str
-    device: int
-    inode: int
-    mount_id: int
-    mode: int
-    uid: int
-    gid: int
+    path: str; kind: str; device: int; inode: int; mount_id: int; mode: int; uid: int; gid: int
 @dataclass(frozen=True)
 class ShareClassification:
-    disposition: Observation
-    entries: tuple[ShareEntry, ...]
-    mountpoints: tuple[str, ...]
-    reason: str
+    disposition: Observation; entries: tuple[ShareEntry, ...]; mountpoints: tuple[str, ...]; reason: str
 @dataclass(frozen=True)
 class RuntimeSnapshot:
     owned: bool
@@ -490,11 +457,13 @@ def _durable_ctr_launch_path(history):
     _fail(len(runs) == 1); intent = runs[0]; serial = intent["command_serial"]
     preexecs = [row for row in history["preexecs"] if row["command_serial"] == serial]
     outcomes = [row for row in history["outcomes"] if row["command_serial"] == serial]
-    _fail(len(preexecs) == len(outcomes) == 1); preexec, outcome = preexecs[0], outcomes[0]
+    _fail(len(outcomes) == 1); outcome = outcomes[0]
+    if not preexecs:
+        _fail(outcome["outcome"] == "not-started" or outcome["outcome"] == "uncertain" and outcome["release_count"] == 0, "durable ctr launch binding"); return None
+    _fail(len(preexecs) == 1); preexec = preexecs[0]
     _fail(all(row["command_id"] == "CTR_RUN" and row["binding_sha256"] == intent["binding_sha256"] for row in (preexec, outcome))
-          and outcome["outcome"] == "exited" and outcome["status"] == 0 and not outcome["uncertain"]
           and preexec["namespace_fd"] == CTR_NS_FD and preexec["namespace_path"] == CTR_NS_TEMPLATE.replace("{ctr-child-pid}", str(preexec["pid"])), "durable ctr launch binding")
-    return preexec["namespace_path"]
+    return preexec["namespace_path"] if outcome["outcome"] == "exited" and outcome["status"] == 0 and not outcome["uncertain"] else None
 
 
 def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
@@ -573,6 +542,22 @@ def classify_task_list(raw, expected_pid=None):
     if len(matches) != 1 or expected_pid is None or matches[0][1] != expected_pid:
         return "preserve"
     return matches[0][2].lower()
+def classify_ctr_observation(info, containers, tasks, expected_pid=None, network_grant=None, launch_path=None):
+    """Classify exact observer envelopes; only a later successful list proves absence."""
+    _fail(all(type(row) is tuple and len(row) == 3 and type(row[0]) is int and 0 <= row[0] <= 255
+              and type(row[1]) is type(row[2]) is bytes and len(row[1]) <= 65_536 and len(row[2]) <= 65_536
+              for row in (info, containers, tasks)), "ctr observer envelope")
+    _fail(containers[0] == tasks[0] == 0 and containers[2] == tasks[2] == b"", "list observer failure")
+    container = classify_container_list(containers[1]); task = classify_task_list(tasks[1], expected_pid); mount = None
+    if container is Observation.EXACT:
+        if info[0] != 0 or info[2] or network_grant is not None and launch_path is None: container = Observation.PRESERVE
+        else: mount = validate_stored_info(info[1], network_grant, launch_path)
+    elif container is Observation.ABSENT and (info[0] == 0 or launch_path is not None):
+        if info[0] == 0:
+            _fail(not info[2])
+            if network_grant is None or launch_path is not None: validate_stored_info(info[1], network_grant, launch_path)
+        container = Observation.PRESERVE
+    return {"container": container, "task": task, "mount": mount}
 def unqualified_stored_info_fixture_for_tests():
     value = {
         "ID": CONTAINER_ID, "Labels": {}, "Image": "", "Runtime": {
@@ -1270,41 +1255,50 @@ def _runtime_owner_routes():
                 state[0], process._bind_ctr_run_extension(root.token), ctr,
                 daemon_owner=daemons[state[6]][2], consumption_owner=owner,
                 launch_permit=permit)
-            _fail((outcome.outcome, outcome.status, outcome.stderr, outcome.errors, outcome.reaped) == ("exited", 0, b"", (), True) and not durable.body["uncertain"], "CTR_RUN outcome")
         else:
             run = runs[0]; matches = [row for row in history["outcomes"] if row["command_serial"] == run["command_serial"]]
-            _fail(len(matches) == 1 and matches[0]["outcome"] == "exited" and matches[0]["status"] == 0 and not matches[0]["uncertain"], "CTR_RUN resume outcome")
+            _fail(len(matches) == 1, "CTR_RUN resume outcome")
             durable = kata_operation.DurableCommandOutcome(run["command_serial"], "CTR_RUN", run["binding_sha256"], matches[0])
+        success = durable.body["outcome"] == "exited" and durable.body["status"] == 0 and not durable.body["uncertain"]
+        if not success:
+            _fail(not durable.body["uncertain"], "uncertain CTR_RUN preserved")
+            state[0].revoke_readiness(); raise KataRuntimeError("certain CTR_RUN failure")
         fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact
     def saved_output(state, phase, index, command_id):
-        history = state[0].runtime_recovery_history()
-        intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
+        history = state[0].runtime_recovery_history(); intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
         if len(intents) <= index: return None
         intent = intents[index]; _fail(intent["command_id"] == command_id.value)
         outcomes = [row for row in history["outcomes"] if row["command_serial"] == intent["command_serial"]]; outputs = [row for row in history["outputs"] if row["command_serial"] == intent["command_serial"]]
-        _fail(len(outcomes) == len(outputs) == 1 and outcomes[0]["outcome"] == "exited" and outcomes[0]["status"] == 0 and not outcomes[0]["uncertain"])
-        stdout, stderr = bytes.fromhex(outputs[0]["stdout_hex"]), bytes.fromhex(outputs[0]["stderr_hex"]); _fail(not stderr and outcomes[0]["stdout_sha256"] == hashlib.sha256(stdout).hexdigest())
-        return stdout, outcomes[0]
-    def command(owner, command_id):
+        _fail(len(outcomes) == len(outputs) == 1 and outcomes[0]["outcome"] == "exited" and not outcomes[0]["uncertain"])
+        stdout, stderr = bytes.fromhex(outputs[0]["stdout_hex"]), bytes.fromhex(outputs[0]["stderr_hex"])
+        _fail(outcomes[0]["stdout_sha256"] == hashlib.sha256(stdout).hexdigest() and outcomes[0]["stderr_sha256"] == hashlib.sha256(stderr).hexdigest()
+              and (outcomes[0]["status"] == 0 and not stderr or command_id is actions.CommandId.CTR_CONTAINER_INFO and outcomes[0]["status"] != 0))
+        return stdout, stderr, outcomes[0]
+    def command(owner, command_id, observer=False):
         import completion_kata_process as process
         state = owners[owner]; recover_pending(state); verify_daemon(state[6]); executables = verify_attestation(state[5]); ctr = executables[1]; fixed = process._bind_ctr_extension(command_id)
         outcome, durable = process._transact_fixed(state[0], fixed, ctr, daemon_owner=daemons[state[6]][2], consumption_owner=owner)
         kata_operation._durable_command_output(state[0], durable.command_serial, durable.command_id, durable.binding_sha256, outcome.stdout, outcome.stderr)
-        _fail((outcome.outcome, outcome.status, outcome.stderr, outcome.errors, outcome.reaped) == ("exited", 0, b"", (), True), "fixed ctr command")
-        return outcome.stdout, durable.body
+        certain = outcome.outcome == "exited" and outcome.errors == () and outcome.reaped and not durable.body["uncertain"]
+        if observer:
+            _fail(certain and (outcome.status == 0 and not outcome.stderr or command_id is actions.CommandId.CTR_CONTAINER_INFO and outcome.status != 0), "fixed ctr observer")
+            return outcome.stdout, outcome.stderr, durable.body
+        _fail(certain and outcome.status == 0 and not outcome.stderr, "fixed ctr command"); return outcome.stdout, durable.body
     def step(owner, phase, index, command_id):
-        saved = saved_output(owners[owner], phase, index, command_id); return command(owner, command_id) if saved is None else saved
+        saved = saved_output(owners[owner], phase, index, command_id); return command(owner, command_id, True) if saved is None else saved
     def observe(owner):
         state = owners[owner]; recover_pending(state); history = state[0].runtime_recovery_history(); netns = state[4]
         _fail(history["phase"] in {"RUNTIME_READY", "READINESS_REVOKED"})
         sequence = ((actions.CommandId.CTR_CONTAINER_INFO, actions.CommandId.CTR_CONTAINER_LIST, actions.CommandId.CTR_TASK_LIST) if history["phase"] == "RUNTIME_READY" else
                     (actions.CommandId.CTR_TASK_LIST, actions.CommandId.CTR_CONTAINER_INFO, actions.CommandId.CTR_CONTAINER_LIST))
-        values = [step(owner, history["phase"], index, item)[0] for index, item in enumerate(sequence)]
+        results = [step(owner, history["phase"], index, item) for index, item in enumerate(sequence)]
+        values = [(row[2]["status"], row[0], row[1]) for row in results]
         if history["phase"] == "RUNTIME_READY": info, containers, tasks = values
         else: tasks, info, containers = values
-        mount = validate_stored_info(info, state[9], _durable_ctr_launch_path(history)); container = classify_container_list(containers); processes = _proc_snapshot(verify_attestation(state[5]), netns)
-        shim = next((row for row in processes.records if row.role == "shim"), None); task = classify_task_list(tasks, None if shim is None else shim.pid)
+        processes = _proc_snapshot(verify_attestation(state[5]), netns); shim = next((row for row in processes.records if row.role == "shim"), None)
+        ctr = classify_ctr_observation(info, containers, tasks, None if shim is None else shim.pid,
+                                       state[9], _durable_ctr_launch_path(history)); container, task, mount = ctr["container"], ctr["task"], ctr["mount"]
         qmp = _qmp_kvm(processes); share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if shim is None else shim.pid,
                 "processes": processes.disposition.value, "qmp": qmp, "share": share}
         return fact
@@ -1390,15 +1384,17 @@ def _runtime_owner_routes():
                 if process._boottime_ns() >= final: break
             raise KataRuntimeError("post-KILL final observation remained running")
         if phase == "NETWORK_ABSENT":
-            progress = phase_progress(state, phase)
-            if "CTR_TASK_REMOVE" not in progress: command(owner, actions.CommandId.CTR_TASK_REMOVE)
-            raw = step(owner, phase, 1, actions.CommandId.CTR_TASK_LIST)[0]
+            progress = phase_progress(state, phase); ownership = history["runtime_ownership"]; _fail(len(ownership) == 1)
+            proven = ownership[0]["task"] == "absent"
+            if not proven and "CTR_TASK_REMOVE" not in progress: command(owner, actions.CommandId.CTR_TASK_REMOVE)
+            raw = step(owner, phase, 0 if proven else 1, actions.CommandId.CTR_TASK_LIST)[0]
             _fail(classify_task_list(raw, None) == "absent"); fact = {"task": "absent"}
-            _fail(fact["task"] == "absent"); state[0].settle_runtime_phase("TASK_ABSENT", _canonical_fact(fact)); return fact
+            state[0].settle_runtime_phase("TASK_ABSENT", _canonical_fact(fact)); return fact
         if phase == "TASK_ABSENT":
-            progress = phase_progress(state, phase)
-            if "CTR_CONTAINER_REMOVE" not in progress: command(owner, actions.CommandId.CTR_CONTAINER_REMOVE)
-            raw = step(owner, phase, 1, actions.CommandId.CTR_CONTAINER_LIST)[0]
+            progress = phase_progress(state, phase); ownership = history["runtime_ownership"]; _fail(len(ownership) == 1)
+            proven = ownership[0]["container"] == "absent"
+            if not proven and "CTR_CONTAINER_REMOVE" not in progress: command(owner, actions.CommandId.CTR_CONTAINER_REMOVE)
+            raw = step(owner, phase, 0 if proven else 1, actions.CommandId.CTR_CONTAINER_LIST)[0]
             _fail(classify_container_list(raw) is Observation.ABSENT)
             fact = {"container": "absent"}; state[0].settle_runtime_phase("CONTAINER_ABSENT", _canonical_fact(fact)); return fact
         if phase == "CONTAINER_ABSENT":

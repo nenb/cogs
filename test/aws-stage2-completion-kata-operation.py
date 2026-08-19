@@ -715,10 +715,10 @@ def runtime_v2_intent(raw, command_id):
     return body
 
 
-def runtime_outcome(intent, uncertain=False):
+def runtime_outcome(intent, uncertain=False, status=0):
     settled = not uncertain
     return {name: intent[name] for name in ("operation_token", "command_serial", "command_id", "binding_sha256")} | {
-        "outcome": "not-started" if uncertain else "exited", "status": None if uncertain else 0, "errno": None,
+        "outcome": "not-started" if uncertain else "exited", "status": None if uncertain else status, "errno": None,
         "stdout_sha256": hashlib.sha256(b"").hexdigest(), "stdout_length": 0, "stdout_truncated": False,
         "stderr_sha256": hashlib.sha256(b"").hexdigest(), "stderr_length": 0, "stderr_truncated": False,
         "leader_reaped": settled, "descendants_reaped": settled, "cgroup_empty": settled, "cgroup_removed": settled,
@@ -741,7 +741,7 @@ def staged_runtime_prefix():
     return append(raw, "RUNTIME_STAGED_V3", stage)
 
 
-def append_runtime_command(raw, command_id, uncertain=False):
+def append_runtime_command(raw, command_id, uncertain=False, status=0):
     intent = runtime_v2_intent(raw, command_id); raw = append(raw, "COMMAND_INTENT_V2", intent)
     if not uncertain:
         serial = intent["command_serial"]
@@ -753,7 +753,7 @@ def append_runtime_command(raw, command_id, uncertain=False):
             "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
             "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
         raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
-    return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain)), intent
+    return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
 
 # Runtime uncertainty is historical and sticky: observers are never resumable
@@ -765,6 +765,23 @@ observer_resume = {"operation_token": token, "target_phase": "READINESS_REVOKED"
     "uncertain_serial": observer_intent["command_serial"], "binding_sha256": observer_intent["binding_sha256"]}
 rejected(lambda: append(observer_raw, "RUNTIME_RESUME_V4", observer_resume))
 rejected(lambda: append_runtime_command(observer_raw, process.CommandId.CTR_TASK_LIST))
+
+# Proven-absent ownership has observation-only cleanup traces: the parser
+# rejects both remove mutations while retaining their original exact-path order.
+proven = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
+for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO,
+                   process.CommandId.CTR_CONTAINER_LIST):
+    proven, _unused = append_runtime_command(
+        proven, command_id, status=1 if command_id is process.CommandId.CTR_CONTAINER_INFO else 0)
+proven_owner = {**proof("2"), "task": "absent", "container": "absent", "runtime": "absent", "share": "absent"}
+proven = append(proven, "OWNERSHIP_OBSERVED", proven_owner); proven = append(proven, "NETWORK_ABSENT", proof("3"))
+rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_TASK_REMOVE))
+proven, _unused = append_runtime_command(proven, process.CommandId.CTR_TASK_LIST)
+proven = append(proven, "TASK_ABSENT", proof("4"))
+rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_CONTAINER_REMOVE))
+proven, _unused = append_runtime_command(proven, process.CommandId.CTR_CONTAINER_LIST)
+proven = append(proven, "CONTAINER_ABSENT", proof("5"))
+assert operation._legal(operation._parse(proven)) == "CONTAINER_ABSENT"
 
 sticky = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
 for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO, process.CommandId.CTR_CONTAINER_LIST):
@@ -1231,12 +1248,32 @@ def native_containerd_metadata_fixture(completion, journal, network_owner, permi
         prefix = (paths["ctr"], "--address", paths["address"], "--namespace", runtime.NAMESPACE)
         info = subprocess.run((*prefix, "containers", "info", runtime.CONTAINER_ID), env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        launch_path = runtime._durable_ctr_launch_path(journal.runtime_recovery_history())
         assert info.stderr == b"" and runtime.validate_stored_info(
-            info.stdout, runtime._stored_launch_network_grant(permit),
-            runtime._durable_ctr_launch_path(journal.runtime_recovery_history())) == runtime.MOUNT_LIST_SHA256
+            info.stdout, runtime._stored_launch_network_grant(permit), launch_path) == runtime.MOUNT_LIST_SHA256
+        listed = subprocess.run((*prefix, "containers", "list"), env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, check=True)
+        tasks = subprocess.run((*prefix, "tasks", "list"), env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, check=True)
+        native_exact = runtime.classify_ctr_observation((0, info.stdout, info.stderr),
+            (0, listed.stdout, listed.stderr), (0, tasks.stdout, tasks.stderr), None,
+            runtime._stored_launch_network_grant(permit), launch_path)
+        assert native_exact["container"] is runtime.Observation.EXACT
+        replacement = listed.stdout.replace(b"io.containerd.kata.v2", b"io.containerd.runc.v2")
+        assert runtime.classify_ctr_observation((1, b"", b"not found"), (0, replacement, b""),
+            (0, tasks.stdout, b""))["container"] is runtime.Observation.PRESERVE
         removed = subprocess.run((*prefix, "containers", "remove", runtime.CONTAINER_ID), env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        assert removed.stdout == removed.stderr == b""
+        absent_info = subprocess.run((*prefix, "containers", "info", runtime.CONTAINER_ID), env=env,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        absent_list = subprocess.run((*prefix, "containers", "list"), env=env, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, check=True)
+        native_absent = runtime.classify_ctr_observation((absent_info.returncode, absent_info.stdout, absent_info.stderr),
+            (0, absent_list.stdout, absent_list.stderr), (0, tasks.stdout, tasks.stderr))
+        assert removed.stdout == removed.stderr == b"" and absent_info.returncode != 0
+        assert native_absent["container"] is runtime.Observation.ABSENT
+        rejected(lambda: runtime.classify_ctr_observation((absent_info.returncode, absent_info.stdout,
+            absent_info.stderr), (1, absent_list.stdout, b"list failed"), (0, tasks.stdout, tasks.stderr)))
         stopped = process._stop_fixed_daemon(daemon_owner, journal); daemon_owner = None
         assert not stopped["uncertain"] and not os.path.exists(process.CGROUP_BASE)
         network._close_runtime_network(network_owner); network_closed = True

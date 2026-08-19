@@ -125,7 +125,7 @@ PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
 del _name, _OCCURRENCES
 
-RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v5-indexed-kill-observe-1"; RUNTIME_POLICY_SHA256 = "0c67cb88a02092ea1605405f86ae05ec0b56aaf5d1da081e9900739290cb583f"
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v6-proven-absence-1"; RUNTIME_POLICY_SHA256 = "be929fc5bdff58d3d1e10392ae2cb711981bc4efa7815480e8c7005a0ec23bc9"
 RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; CONTAINERD_ADDRESS = BASE + "/kata-runtime-v1/containerd.sock"
 STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
@@ -182,6 +182,7 @@ _RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") + ("CTR_TASK_LIST",) * RUNTIME_POST_KILL_OBSERVATIONS,
     "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"), "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"), "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",)}
 RUNTIME_TRACES = MappingProxyType(_RUNTIME_TRACES); _OWNED = _RUNTIME_TRACES["OWNERSHIP_OBSERVED:task-exact"]; RUNTIME_OWNERSHIP_TRACES = (_OWNED[:3],) + tuple(_OWNED[:5 + index] for index in range(RUNTIME_POST_KILL_OBSERVATIONS))
+RUNTIME_PROVEN_ABSENT_TRACES = MappingProxyType({"NETWORK_ABSENT": ("CTR_TASK_LIST",), "TASK_ABSENT": ("CTR_CONTAINER_LIST",)})
 _RUNTIME_OCCURRENCES = {name: tuple(phase.split(":", 1)[0] for phase, trace in _RUNTIME_TRACES.items() for item in trace if item == name) for name in RUNTIME_EXTENSION_COMMANDS}
 RUNTIME_OCCURRENCES = MappingProxyType(_RUNTIME_OCCURRENCES); RUNTIME_PHASES = MappingProxyType({name: tuple(dict.fromkeys(phases)) for name, phases in _RUNTIME_OCCURRENCES.items()})
 RUNTIME_MAX_OCCURRENCES = MappingProxyType({name: len(phases) for name, phases in _RUNTIME_OCCURRENCES.items()}); del _RUNTIME_TRACES, _RUNTIME_OCCURRENCES, _OWNED

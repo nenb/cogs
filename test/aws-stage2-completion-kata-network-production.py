@@ -305,7 +305,8 @@ observer_intents = tuple({"command_serial": index, "command_id": command_id,
                          for index, (command_id, _raw) in enumerate(observer_rows, 2))
 observer_outcomes = tuple({"command_serial": row["command_serial"], "command_id": row["command_id"],
                            "binding_sha256": row["binding_sha256"], "outcome": "exited", "status": 0,
-                           "uncertain": False, "stdout_sha256": hashlib.sha256(raw).hexdigest()}
+                           "uncertain": False, "stdout_sha256": hashlib.sha256(raw).hexdigest(),
+                           "stderr_sha256": hashlib.sha256(b"").hexdigest()}
                           for row, (_command_id, raw) in zip(observer_intents, observer_rows, strict=True))
 observer_outputs = tuple({"command_serial": row["command_serial"], "stdout_hex": raw.hex(), "stderr_hex": ""}
                          for row, (_command_id, raw) in zip(observer_intents, observer_rows, strict=True))

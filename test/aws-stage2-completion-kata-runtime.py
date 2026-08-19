@@ -291,6 +291,23 @@ task_exact = task_absent + b"cogs-stage2-ssh-v1    101    STOPPED\n"
 check(runtime.classify_task_list(task_absent, 101) == "absent", "task absence")
 check(runtime.classify_task_list(task_exact, 101) == "stopped", "task exact")
 check(runtime.classify_task_list(task_exact, 102) == "preserve", "task PID replacement")
+# A later complete list proves failed-launch absence even though ctr info uses
+# its native nonzero not-found shape. Successful malformed info remains strict,
+# and nonzero/hostile lists can never prove absence.
+not_found = (1, b"", b"ctr: container not found\n")
+absent_ctr = runtime.classify_ctr_observation(not_found, (0, container_absent, b""),
+                                               (0, task_absent, b""))
+check(absent_ctr == {"container": runtime.Observation.ABSENT, "task": "absent", "mount": None},
+      "nonzero info blocked proven absence")
+replacement_ctr = runtime.classify_ctr_observation(not_found, (0, container_exact, b""),
+                                                    (0, task_exact, b""), 102)
+check(replacement_ctr["container"] is runtime.Observation.PRESERVE and
+      replacement_ctr["task"] == "preserve", "replacement identity was adopted")
+for hostile in ((1, container_absent, b"failure"), (0, b"truncated", b"")):
+    rejected(lambda hostile=hostile: runtime.classify_ctr_observation(
+        not_found, hostile, (0, task_absent, b"")))
+rejected(lambda: runtime.classify_ctr_observation(
+    (0, b"{}", b""), (0, container_absent, b""), (0, task_absent, b"")))
 
 # Bounded complete fake /proc snapshots bind executable, cmdline, starttime,
 # ancestry, and namespace identity. Early exit and ambiguity preserve.
@@ -423,7 +440,8 @@ policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": poli
     "traces": {name: list(row) for name, row in policy.RUNTIME_TRACES.items()},
     "ownership_traces": [list(row) for row in policy.RUNTIME_OWNERSHIP_TRACES],
     "post_kill_observations": policy.RUNTIME_POST_KILL_OBSERVATIONS,
-    "post_kill_interval_ns": policy.RUNTIME_POST_KILL_INTERVAL_NS}
+    "post_kill_interval_ns": policy.RUNTIME_POST_KILL_INTERVAL_NS,
+    "proven_absent_traces": {name: list(row) for name, row in policy.RUNTIME_PROVEN_ABSENT_TRACES.items()}}
 policy_raw = json.dumps(policy_value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 check(hashlib.sha256(policy_raw).hexdigest() == policy.RUNTIME_POLICY_SHA256,
       "runtime owner policy hash drift")
@@ -437,6 +455,9 @@ check(dict(policy.RUNTIME_TRACES) == {
     "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
     "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",),
 }, "runtime owner trace drift")
+check(dict(policy.RUNTIME_PROVEN_ABSENT_TRACES) == {
+    "NETWORK_ABSENT": ("CTR_TASK_LIST",), "TASK_ABSENT": ("CTR_CONTAINER_LIST",),
+}, "proven-absence trace drift")
 runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CONTAINERD_START")
 rejected(lambda: runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CTR_RUN"))
 # Every post-KILL read is a new durable trace position; each prefix can settle.

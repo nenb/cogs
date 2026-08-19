@@ -168,9 +168,8 @@ _POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
 _RUNTIME_POLICY_OBJECTS = (command_policy.RUNTIME_POLICY_VERSION, command_policy.RUNTIME_POLICY_SHA256,
                            command_policy.RUNTIME_EXTENSION_COMMANDS, command_policy.RUNTIME_TRACES, command_policy.RUNTIME_OCCURRENCES,
                            command_policy.RUNTIME_PHASES, command_policy.RUNTIME_MAX_OCCURRENCES,
-                           command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION,
-                           command_policy.RUNTIME_OWNERSHIP_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS,
-                           command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
+                           command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION, command_policy.RUNTIME_OWNERSHIP_TRACES,
+                           command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 _ATTESTED_COMMANDS = command_policy.ATTESTED_COMMANDS
 _ATTESTED_EXECUTABLES = command_policy.ATTESTED_EXECUTABLES
@@ -896,9 +895,8 @@ def _policy_tables():
 def _runtime_tables():
     values = (command_policy.RUNTIME_POLICY_VERSION, command_policy.RUNTIME_POLICY_SHA256,
               command_policy.RUNTIME_EXTENSION_COMMANDS, command_policy.RUNTIME_TRACES, command_policy.RUNTIME_OCCURRENCES, command_policy.RUNTIME_PHASES,
-              command_policy.RUNTIME_MAX_OCCURRENCES, command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION,
-              command_policy.RUNTIME_OWNERSHIP_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS,
-              command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
+              command_policy.RUNTIME_MAX_OCCURRENCES, command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION, command_policy.RUNTIME_OWNERSHIP_TRACES,
+              command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
     _fail(all(value is expected for value, expected in zip(values, _RUNTIME_POLICY_OBJECTS)) and
           all(type(value) is MappingProxyType for value in values[3:7]))
     _fail(set(values[2]) == set(values[4]) == set(values[5]) == set(values[6]) and
@@ -972,7 +970,8 @@ def _settled_v2(records, intent, index):
     outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
                 and item.body["command_serial"] == serial]
     return bool(outcomes and not outcomes[-1].body["uncertain"]
-                and outcomes[-1].body["outcome"] == "exited" and outcomes[-1].body["status"] == 0)
+                and outcomes[-1].body["outcome"] == "exited" and (outcomes[-1].body["status"] == 0
+                or intent.body["command_id"] == "CTR_CONTAINER_INFO"))
 def _b1_phase_trace(records, index, phase, network_state):
     intents = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
     replay_indices = {position for position, item in enumerate(intents)
@@ -982,7 +981,8 @@ def _b1_phase_trace(records, index, phase, network_state):
 
 def _runtime_trace(records, index, phase, ownership=None, candidate=None, complete=False):
     key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
-    trace = command_policy.RUNTIME_TRACES.get(key, ())
+    proven = (ownership is not None and ((phase == "NETWORK_ABSENT" and ownership["task"] == "absent") or (phase == "TASK_ABSENT" and ownership["container"] == "absent")))
+    trace = command_policy.RUNTIME_PROVEN_ABSENT_TRACES[phase] if proven else command_policy.RUNTIME_TRACES.get(key, ())
     intents = [item for item in records[:index]
                if item.record_type == "COMMAND_INTENT_V2"
                and item.body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION
@@ -2030,7 +2030,7 @@ def _make_authority():
                     ("daemon_retained", "DAEMON_RETAINED_V2"), ("daemon_outcomes", "DAEMON_OUTCOME_V2"),
                     ("runtime_staged", "RUNTIME_STAGED_V3"), ("outputs", "COMMAND_OUTPUT_V3"),
                     ("runtime_identities", "RUNTIME_IDENTITY_V4"), ("runtime_stage_intents", "RUNTIME_STAGE_INTENT_V4"),
-                    ("runtime_resumes", "RUNTIME_RESUME_V4")):
+                    ("runtime_resumes", "RUNTIME_RESUME_V4"), ("runtime_ownership", "OWNERSHIP_OBSERVED")):
                 result[name] = tuple(item.body for item in records if item.record_type == kind)
             return result
         def runtime_history(self):
