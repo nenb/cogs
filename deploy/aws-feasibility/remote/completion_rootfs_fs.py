@@ -552,11 +552,19 @@ def _observe_node(opath_fd, operation_fd, control):
     return identity
 
 
+def _reopen_identity(identity, flags, role, control):
+    _fail(type(identity) is CheckedFd and identity.disposition == "open")
+    _fail(flags in {DIRECTORY_FLAGS, FILE_FLAGS})
+    return _open_fd(
+        f"/proc/self/fd/{identity.number}", flags & ~_O_NOFOLLOW, role, control,
+    )
+
+
 def _open_root_node(control):
     identity = _open_fd(b"/", IDENTITY_FLAGS, "root-identity", control)
     operation = None
     try:
-        operation = _open_fd(b"/", DIRECTORY_FLAGS, "root-directory", control)
+        operation = _reopen_identity(identity, DIRECTORY_FLAGS, "root-directory", control)
         generation = _observe_node(identity, operation, control)
         _fail(generation.key.kind == "directory")
         return HeldNode(identity, operation, generation)
@@ -571,13 +579,14 @@ def _open_path_node(parent, name, expected_kind, control):
     operation = None
     try:
         if expected_kind == "directory":
-            operation = _open_fd(validated.raw, DIRECTORY_FLAGS, "node-directory", control, parent.operation_fd.number)
+            operation = _reopen_identity(identity, DIRECTORY_FLAGS, "node-directory", control)
         elif expected_kind == "file":
-            operation = _open_fd(validated.raw, FILE_FLAGS, "node-file", control, parent.operation_fd.number)
+            operation = _reopen_identity(identity, FILE_FLAGS, "node-file", control)
         else:
             _fail(expected_kind == "symlink")
         generation = _observe_node(identity, operation, control)
         _fail(generation.key.kind == expected_kind)
+        _fail(_observe_child(parent, validated, control) == generation)
         return HeldNode(identity, operation, generation)
     except BaseException as error:
         _close_owned((operation, identity), error)

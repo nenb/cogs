@@ -378,6 +378,11 @@ def pure_tests():
     assert "flags = os.O_TMPFILE | os.O_RDWR | _O_CLOEXEC" in anonymous_open
     assert "flags == 0o22200002" in anonymous_open
     assert "os.open(b\".\", flags, mode, dir_fd=directory.operation_fd.number)" in anonymous_open
+    reopen = source.split("def _reopen_identity(", 1)[1].split("\ndef ", 1)[0]
+    assert 'f"/proc/self/fd/{identity.number}"' in reopen
+    assert "flags & ~_O_NOFOLLOW" in reopen
+    open_path = source.split("def _open_path_node(", 1)[1].split("\ndef ", 1)[0]
+    assert "_observe_child(parent, validated, control) == generation" in open_path
     assert source.count("O_TMPFILE") == 2 and source.count("O_RDWR") == 1
     assert "if __name__" not in source and "argparse" not in source and "subprocess" not in source
     assert "O_CREAT" not in source and "O_TRUNC" not in source and "O_WRONLY" not in source
@@ -472,6 +477,34 @@ def linux_tests():
                 assert verified.digest == approval.manifest_sha256
             finally:
                 module._close_node(source_node)
+
+            # The operation descriptor is reopened from the held O_PATH
+            # identity, never from a pathname that can resolve to a replacement.
+            race = root / "identity-race"
+            detached = root / "identity-race-detached"
+            race.mkdir(mode=0o700)
+            real_open = module.os.open
+            replaced = False
+            reopened = False
+            def replace_after_identity(path, flags, *args, **kwargs):
+                nonlocal replaced, reopened
+                descriptor = real_open(path, flags, *args, **kwargs)
+                if path == b"identity-race" and flags == module.IDENTITY_FLAGS and not replaced:
+                    race.rename(detached)
+                    race.mkdir(mode=0o700)
+                    replaced = True
+                elif replaced and isinstance(path, str) and path.startswith("/proc/self/fd/"):
+                    reopened = True
+                return descriptor
+            module.os.open = replace_after_identity
+            try:
+                rejected(lambda: module._open_path_node(
+                    directory, b"identity-race", "directory", active))
+            finally:
+                module.os.open = real_open
+                race.rmdir()
+                detached.rmdir()
+            assert replaced and reopened
         finally:
             module._close_chain(chain)
     return True

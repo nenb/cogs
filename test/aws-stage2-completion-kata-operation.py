@@ -636,7 +636,11 @@ def fixture_journal(
         "operation_token": "a" * 64, "journal_key": recorded_key,
         "state_parent": recorded_state,
     })
-    for kind, body in bodies:
+    for row in bodies:
+        if callable(row):
+            raw = row(raw)
+            continue
+        kind, body = row
         if kind == "ROOTFS_RELEASE_AUTHORIZED":
             body = {**body, "release_ready_sha256": operation._parse(raw)[-1].line_sha256}
         raw = append(raw, kind, body)
@@ -659,20 +663,24 @@ def fixture_journal(
 def fixed_v2_intent(context, command_id=process.CommandId.IP_NETNS_ADD):
     fixed = process._FIXED_COMMANDS[command_id]
     environment = [list(row) for row in operation.FIXED_ENV]
+    argv = [item.replace("{operation_token}", context.operation_token) for item in fixed.argv]
+    attested = operation.command_policy.ATTESTED_EXECUTABLES.get(fixed.command_id.value)
+    executable_sha256 = "c" * 64 if attested is None else attested["executable_sha256"]
+    tool_closure_sha256 = "d" * 64 if attested is None else attested["tool_closure_sha256"]
     body = {
         "operation_token": context.operation_token, "command_serial": context.command_serial,
         "command_id": fixed.command_id.value, "binding_sha256": operation.ZERO,
         "journal_key": context.journal_key, "host_boot_id": context.host_boot_id,
         "source_revision": context.source_revision, "lifecycle_phase": context.lifecycle_phase,
         "executable_role": fixed.executable_role, "executable_path": fixed.executable_path,
-        "executable_sha256": "c" * 64, "executable_generation": generation(90, "file", 0o755),
-        "tool_closure_sha256": "d" * 64, "argv": list(fixed.argv),
-        "argv_sha256": hashlib.sha256(operation._canonical(list(fixed.argv))).hexdigest(),
+        "executable_sha256": executable_sha256, "executable_generation": generation(90, "file", 0o755),
+        "tool_closure_sha256": tool_closure_sha256, "argv": argv,
+        "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(),
         "stdin_hex": "", "stdin_sha256": hashlib.sha256(b"").hexdigest(), "stdin_length": 0,
         "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(),
         "inherited_fds": [], "policy_version": operation.command_policy.POLICY_VERSION,
-        "deadline_class": "network", "duration_ns": fixed.duration_ns,
+        "deadline_class": process._spec(fixed.command_id).deadline_class, "duration_ns": fixed.duration_ns,
         "cleanup_reserve_ns": operation.command_policy.CLEANUP_RESERVE_NS,
         "deadline_boottime_ns": process._boottime_ns() + fixed.duration_ns,
         "output_grammar": fixed.output_grammar, "stdout_limit": fixed.stdout_limit,
@@ -1893,6 +1901,63 @@ def production_owner_test():
 
             # Expired cleanup authority retains the exact rootfs cross-ledger
             # reservations but cannot use the acquire/leased setup phases.
+            def settle_production_fs(raw):
+                genesis = operation._parse(raw)[0].body
+                parent = generation(60)
+                def grant(path, name, kind, mode, serial, settled=False):
+                    grant_id = hashlib.sha256(f"{path}:{name}:{serial}".encode()).hexdigest()
+                    return {"operation_token": "a" * 64,
+                        "action": "settled" if settled else "intent", "grant_id": grant_id,
+                        "path": path, "name": name, "parent_generation": parent,
+                        "parent_inode_version": 1, "expected_kind": kind,
+                        "expected_mode": mode, "expected_uid": 0, "expected_gid": 0,
+                        "command_serial": serial, "birth_min_ns": 10, "birth_max_ns": 20,
+                        "mount_id": 1, "inode_version_min": 0,
+                        "inode_version_max": 0xffffffff,
+                        "child_generation": generation(70 + serial, kind, mode) if settled else None,
+                        "child_birth_ns": 11 if settled else None,
+                        "child_inode_version": 2 if settled else None}
+                stage_name = "kata-key-stage-v1-" + "a" * 64
+                for settled in (False, True):
+                    raw = append(raw, "INPUT_GRANT", grant(
+                        "@key-stage", stage_name, "directory", 0o700, 0, settled))
+                for serial, command_id in enumerate(operation.command_policy.KEY_COMMAND_ORDER):
+                    names = (("client", 0o600), ("client.pub", 0o644)) if "CLIENT" in command_id else (
+                        ("server", 0o600), ("server.pub", 0o644))
+                    if "KEYGEN" in command_id:
+                        for name, mode in names:
+                            raw = append(raw, "INPUT_GRANT", grant(
+                                "@key-stage/" + name, name, "file", mode, serial))
+                    context = SimpleNamespace(operation_token="a" * 64, command_serial=serial,
+                        journal_key=genesis["journal_key"], host_boot_id=genesis["host_boot_id"],
+                        source_revision=genesis["source_revision"], lifecycle_phase="ROOTFS_LEASED")
+                    command = fixed_v2_intent(context, process.CommandId(command_id))
+                    raw = append(raw, "COMMAND_INTENT_V2", command)
+                    preexec = {name: command[name] for name in (
+                        "operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
+                    preexec.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial,
+                        "sid": 100 + serial, "proc_start_time": 1, "pidfd_supported": True,
+                        "cgroup_path": f"{process.CGROUP_BASE}/{'a' * 64}-{serial}",
+                        "cgroup_generation": generation(90 + serial),
+                        "executable_sha256": command["executable_sha256"],
+                        "tool_closure_sha256": command["tool_closure_sha256"],
+                        "executable_generation": command["executable_generation"],
+                        "exec_status_pipe": generation(100 + serial, "pipe", 0o600), "release_count": 0})
+                    raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
+                    raw = append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(command))
+                    if "KEYGEN" in command_id:
+                        for name, mode in names:
+                            raw = append(raw, "INPUT_GRANT", grant(
+                                "@key-stage/" + name, name, "file", mode, serial, True))
+                expired_fs_observed = {
+                    **fs_intent, "before_parent": generation(50),
+                    "after_parent": generation(50, stamp=40),
+                    "before_child": None, "after_child": generation(51),
+                }
+                raw = append(raw, "FS_INTENT", fs_intent)
+                raw = append(raw, "FS_OBSERVED", expired_fs_observed)
+                return append(raw, "FS_SETTLED", expired_fs_observed)
+
             release_rows = release_bodies(False)
             release_deadline = lifecycle_deadline()
             release_edge = release_deadline[1]["journal_deadline_boottime_ns"]
@@ -1901,21 +1966,6 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256})
-            production_fixture(release_rows[:2] + (release_deadline, release_admission)
-                               + release_rows[2:5] + release_rows[6:])
-            expired_release_owner = operation._open_fixed_operation()
-            with patch.object(operation, "_boottime_ns", return_value=release_edge):
-                expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
-                reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
-                reference = rootfs_reference()
-                operation._invoke_rootfs_reopen_route(reopen, lambda _context, _control: reference, object())
-                operation._settle_rootfs_reopen(reopen, reference)
-                release = operation._claim_rootfs_release(expired_release.reserve_rootfs_release())
-                authorization = operation._invoke_rootfs_release(release, lambda context:
-                    operation.RootfsAuthorization(context.rootfs_token, 9, 0x2222, "e" * 64))
-                operation._settle_rootfs_release(release, authorization)
-            assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
-            expired_release.close()
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -1956,7 +2006,7 @@ def production_owner_test():
             rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
 
             proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
-            expired_teardown = leased_records + admitted_suffix + (
+            expired_teardown = leased_records + admitted_suffix + (settle_production_fs,
                 ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
                 ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": "a" * 64}),
                 ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned",
@@ -2242,6 +2292,37 @@ def production_owner_test():
                     finally: os.close(descriptor)
                 executable_owner = process._open_synthetic_attested_executable_owner_for_tests()
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
+
+                # Build expired cleanup fixtures only after the exact production
+                # key-command policy has been issued, and advance through the
+                # required production FS_SETTLED phase before network setup.
+                production_fixture(release_rows[:2] + (release_deadline, release_admission,
+                    settle_production_fs) + release_rows[2:5] + release_rows[6:])
+                expired_release_owner = operation._open_fixed_operation()
+                with patch.object(operation, "_boottime_ns", return_value=release_edge):
+                    expired_release = operation._claim_production_cleanup_operation(expired_release_owner)
+                    reopen = operation._claim_rootfs_reopen(expired_release.reserve_rootfs())
+                    reference = rootfs_reference()
+                    operation._invoke_rootfs_reopen_route(
+                        reopen, lambda _context, _control: reference, object())
+                    operation._settle_rootfs_reopen(reopen, reference)
+                    release = operation._claim_rootfs_release(
+                        expired_release.reserve_rootfs_release())
+                    authorization = operation._invoke_rootfs_release(release, lambda context:
+                        operation.RootfsAuthorization(context.rootfs_token, 9, 0x2222, "e" * 64))
+                    operation._settle_rootfs_release(release, authorization)
+                assert operation._durable_phase(expired_release) == "ROOTFS_RELEASE_AUTHORIZED"
+                expired_release.close()
+
+                production_fixture(expired_teardown)
+                expired_network_owner = operation._open_fixed_operation()
+                with patch.object(operation, "_boottime_ns", return_value=edge):
+                    expired_network = operation._claim_production_cleanup_operation(
+                        expired_network_owner)
+                    expired_network.begin_network_cleanup("network")
+                assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V1"
+                expired_network.close()
+
                 transaction_completion = Path(operation.BASE)
                 helper = str(ROOT / "test/aws-stage2-completion-kata-native-recover.py")
                 process_cuts = {
