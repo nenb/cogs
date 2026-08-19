@@ -467,7 +467,8 @@ check("kill_permitted" not in runtime._cleanup_fixed_runtime.__code__.co_varname
 runtime_source = MODULE_PATH.read_text()
 check("rootfs_fs._optional_child" not in runtime_source,
       "removed optional-child API entered runtime owner")
-for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(fresh, "socket") == expected',
+for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(fresh, "socket") == seen',
+                 'process._host_generation(fresh, "socket") == renamed', 'socket_identity(renamed, expected, quarantine)',
                  'os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)',
                  'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '_shutdown_private_containerd',
                  'kata_operation.GEN_KEYS[:7]', 'state[10][name] = inventory(node)', 'remove_tree(node.operation_fd.number)',
