@@ -2104,65 +2104,8 @@ def production_owner_test():
             rejected(lambda: cleanup_only.settle_runtime_phase("RUNTIME_READY", "0" * 64))
             rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
 
-            proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
-            expired_teardown = leased_records + admitted_suffix + (settle_production_fs,
-                ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
-                ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": "a" * 64}),
-                ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned",
-                    "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}),
-                ("TASK_STOPPED", proof("5")),)
-            production_fixture(expired_teardown)
-            expired_network_owner = operation._open_fixed_operation()
-            with patch.object(operation, "_boottime_ns", return_value=edge):
-                expired_network = operation._claim_production_cleanup_operation(expired_network_owner)
-                expired_network.begin_network_cleanup("network")
-                for command_id in ({process.CommandId(value) for value in operation.network_journal.MUTATIONS}
-                                   - operation.actions.CLEANUP_NETWORK_COMMANDS):
-                    command = fixed_v2_intent(expired_network.command_context(), command_id)
-                    command["deadline_boottime_ns"] = edge + command["duration_ns"]
-                    command["binding_sha256"] = operation.ZERO
-                    command["binding_sha256"] = hashlib.sha256(operation._canonical(
-                        {name: value for name, value in command.items() if name != "binding_sha256"})).hexdigest()
-                    rejected(lambda command=command: expired_network.record_command_intent(command))
-            assert expired_network.network_history()[-1][0] == "NETWORK_CLEANUP_INTENT_V2"
-            expired_network.close()
-
-            # Exact production reopens preserve active/completed historical V1
-            # cleanup bytes, while a completed V2 receives its required ack
-            # through the real cleanup-only capability.
-            firewall_teardown = expired_teardown + (
-                ("NETWORK_ABSENT", proof("6")), ("TASK_ABSENT", proof("7")),
-                ("CONTAINER_ABSENT", proof("8")), ("RUNTIME_ABSENT", proof("9")),
-                ("SHARE_ABSENT", proof("a")),)
-            for target, prefix, intent_kind, completion_kind in (
-                    ("network", expired_teardown, "NETWORK_CLEANUP_INTENT_V1", "NETWORK_ABSENT"),
-                    ("firewall", firewall_teardown, "FIREWALL_CLEANUP_INTENT_V1", "FIREWALL_ABSENT")):
-                intent_body = {"operation_token": "a" * 64}
-                production_fixture(prefix + ((intent_kind, intent_body),))
-                historical_owner = operation._open_fixed_operation()
-                historical = operation._claim_production_cleanup_operation(historical_owner)
-                retained = fixture_journal_path(completion).read_bytes()
-                historical.begin_network_cleanup(target)
-                assert fixture_journal_path(completion).read_bytes() == retained
-                historical.close()
-                production_fixture(prefix + ((intent_kind, intent_body),
-                                              (completion_kind, proof("b"))))
-                completed_owner = operation._open_fixed_operation()
-                completed = operation._claim_production_cleanup_operation(completed_owner)
-                retained = fixture_journal_path(completion).read_bytes()
-                completed.settle_network_cleanup(target)
-                assert fixture_journal_path(completion).read_bytes() == retained
-                completed.close()
-                v2_kind = intent_kind.replace("V1", "V2")
-                production_fixture(prefix + ((v2_kind, intent_body),
-                                              (completion_kind, proof("c"))))
-                v2_owner = operation._open_fixed_operation()
-                v2 = operation._claim_production_cleanup_operation(v2_owner)
-                v2.settle_network_cleanup(target)
-                assert operation._parse(fixture_journal_path(completion).read_bytes())[-1].record_type == \
-                    intent_kind.replace("INTENT_V1", "SETTLED_V2")
-                v2.close()
-
+            # Historical V1/V2 cleanup semantics and closed command admission
+            # are exercised by the portable operation/network matrices.
             production_fixture(leased_records)
             stale_admission = operation._open_fixed_operation()
             stale_bytes = fixture_journal_path(completion).read_bytes()
