@@ -51,7 +51,13 @@ try:
         phase = operation._durable_phase(authority)
         if phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED", "RUNTIME_READY", "SSH_READY",
                      "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"}:
-            control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+            lifecycle_boot, lifecycle_deadline = operation._recovery_lifecycle_deadline(authority)
+            if lifecycle_boot != process._boot_id():
+                raise RuntimeError("recovery lifecycle boot changed")
+            remaining = lifecycle_deadline - process._boottime_ns()
+            if remaining <= 0:
+                raise RuntimeError("recovery lifecycle deadline expired")
+            control = fs.OperationControl(time.monotonic_ns() + remaining, lambda: False)
             chain = chain_factory(control)
             try:
                 cleanup = inputs._compose_production_input_cleanup(
