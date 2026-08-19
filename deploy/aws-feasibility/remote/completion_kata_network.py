@@ -104,7 +104,7 @@ _MUTATIONS = {
     Action.NFT_INSTALL: (NFT_CONTRACT, ("-f", "-"), NFT_TRANSACTION),
     Action.NFT_INSTALL_OWNED: (NFT_CONTRACT, ("-f", "-"), NFT_OWNED_TRANSACTION),
     Action.NFT_REMOVE: (NFT_CONTRACT, ("delete", "table", "inet", TABLE), b""),
-    Action.NFT_REMOVE_ATOMIC: (NFT_CONTRACT, ("-j", "-f", "-"), NFT_DELETE_TRANSACTION),
+    Action.NFT_REMOVE_ATOMIC: (NFT_CONTRACT, ("delete", "table", "inet", TABLE), b""),
     Action.HOST_LINK_REMOVE: (IP_CONTRACT, ("link", "delete", "dev", HOST_IF), b""),
     Action.NETNS_REMOVE: (IP_CONTRACT, ("netns", "delete", NETNS), b""),
 }

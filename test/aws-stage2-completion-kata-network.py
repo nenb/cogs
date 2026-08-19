@@ -43,7 +43,9 @@ assert commands[network.Action.NFT_REMOVE].argv_tail == (
     "delete", "table", "inet", "cogs_stage2_ssh_v1",
 )
 assert commands[network.Action.NFT_INSTALL_OWNED].stdin == network.NFT_OWNED_TRANSACTION
-assert commands[network.Action.NFT_REMOVE_ATOMIC].stdin == network.NFT_DELETE_TRANSACTION
+assert commands[network.Action.NFT_REMOVE_ATOMIC].argv_tail == (
+    "delete", "table", "inet", network.TABLE,
+) and commands[network.Action.NFT_REMOVE_ATOMIC].stdin == b""
 assert commands[network.Action.HOST_LINK_REMOVE].argv_tail == ("link", "delete", "dev", "c42h0")
 assert commands[network.Action.NETNS_REMOVE].argv_tail == ("netns", "delete", "cogs-stage2-ssh")
 assert commands[network.Action.IP_VETH_ADD_ATOMIC].argv_tail[-4:] == ("address", network.GUEST_MAC, "netns", network.NETNS)
