@@ -665,6 +665,8 @@ def fixed_v2_intent(context, command_id=process.CommandId.IP_NETNS_ADD):
     environment = [list(row) for row in operation.FIXED_ENV]
     argv = [item.replace("{operation_token}", context.operation_token) for item in fixed.argv]
     attested = operation.command_policy.ATTESTED_EXECUTABLES.get(fixed.command_id.value)
+    executable_path = fixed.executable_path if attested is None else attested["executable_path"]
+    argv[0] = executable_path
     executable_sha256 = "c" * 64 if attested is None else attested["executable_sha256"]
     tool_closure_sha256 = "d" * 64 if attested is None else attested["tool_closure_sha256"]
     body = {
@@ -672,7 +674,7 @@ def fixed_v2_intent(context, command_id=process.CommandId.IP_NETNS_ADD):
         "command_id": fixed.command_id.value, "binding_sha256": operation.ZERO,
         "journal_key": context.journal_key, "host_boot_id": context.host_boot_id,
         "source_revision": context.source_revision, "lifecycle_phase": context.lifecycle_phase,
-        "executable_role": fixed.executable_role, "executable_path": fixed.executable_path,
+        "executable_role": fixed.executable_role, "executable_path": executable_path,
         "executable_sha256": executable_sha256, "executable_generation": generation(90, "file", 0o755),
         "tool_closure_sha256": tool_closure_sha256, "argv": argv,
         "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(),
@@ -2103,12 +2105,7 @@ def production_owner_test():
             rejected(lambda: operation._claim_production_operation(cleanup_only)); cleanup_only.close()
 
             proof = lambda value: {"operation_token": "a" * 64, "proof_sha256": value * 64}
-            cleanup_fs = {**fs_intent, "before_parent": generation(50),
-                "after_parent": generation(50, stamp=40), "before_child": None,
-                "after_child": generation(51)}
-            expired_teardown = leased_records + (admitted_suffix[0],
-                ("FS_INTENT", fs_intent), ("FS_OBSERVED", cleanup_fs),
-                ("FS_SETTLED", cleanup_fs), admitted_suffix[1],
+            expired_teardown = leased_records + admitted_suffix + (settle_production_fs,
                 ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
                 ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": "a" * 64}),
                 ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned",
