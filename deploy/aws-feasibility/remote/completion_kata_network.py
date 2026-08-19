@@ -1340,7 +1340,10 @@ def _support_ownership(journal=None):
             raise NetworkError("cleanup support directory replacement")
         observed[key] = _placeholder_identity(stat)
     if rows:
-        if len(rows) != 1 or observed != rows[0]: raise NetworkError("cleanup support ownership replacement")
+        if (len(rows) != 1 or any(not _same_directory_owner(observed[name], rows[0][name])
+                                  for name in observed)):
+            raise NetworkError("cleanup support ownership replacement")
+        return rows[0]
     elif journal is not None:
         body = {"operation_token": operation._command_context(journal).operation_token,
                 "policy_version": operation.network_journal.POLICY_VERSION,
