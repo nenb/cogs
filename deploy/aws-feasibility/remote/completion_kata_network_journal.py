@@ -35,10 +35,11 @@ QUARANTINE_RECORDS = frozenset({"NETWORK_QUARANTINE_INTENT_V2", "NETWORK_QUARANT
 ALL_RECORDS = RECORDS | QUARANTINE_RECORDS | {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}
 CLEANUP_INTENTS = MappingProxyType({
     # V1 completion records historically settled their intent. V2 keeps the
-    # intent active until a separately appended acknowledgement.
+    # intent active until a separately appended acknowledgement. A setup abort
+    # starts from the already-unqualified BASELINES_CAPTURED phase.
     "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", None),
     "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", None),
-    "NETWORK_CLEANUP_INTENT_V2": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
+    "NETWORK_CLEANUP_INTENT_V2": ({"BASELINES_CAPTURED", "TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
     "FIREWALL_CLEANUP_INTENT_V2": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", "FIREWALL_CLEANUP_SETTLED_V2"),
 })
 CLEANUP_SETTLED = frozenset(value[2] for value in CLEANUP_INTENTS.values() if value[2] is not None)
@@ -68,7 +69,20 @@ _EFFECT_COMMAND_TRACES.update({
     "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "IP_ALL_LINKS"),
 })
 EFFECT_COMMAND_TRACES = MappingProxyType(_EFFECT_COMMAND_TRACES)
+def effect_command_trace(action, target):
+    trace = EFFECT_COMMAND_TRACES[action]
+    return (("IP_ALL_LINKS",) if action == "IP_NETNS_REMOVE" and target.get("nft") is None
+            else trace)
 _SETUP_TRACE = tuple(item for action in SETUP for item in _EFFECT_COMMAND_TRACES[action])
+_SETUP_ABORT_TRACES = []
+for _count in range(1, len(SETUP) + 1):
+    _prefix = tuple(item for action in SETUP[:_count] for item in _EFFECT_COMMAND_TRACES[action])
+    _has_nft = _count > SETUP.index("NFT_INSTALL_OWNED")
+    _last = _EFFECT_COMMAND_TRACES[SETUP[_count - 1]]
+    _verify = _last[1:] if _last and _last[0] == SETUP[_count - 1] else _last
+    _remove = ("IP_ALL_LINKS",) + (("NFT_TABLE", "NFT_REMOVE_ATOMIC", "IP_ALL_LINKS") if _has_nft else ())
+    _SETUP_ABORT_TRACES.append((*_prefix, *_verify, *_remove, *_BASELINE_TRACE))
+SETUP_ABORT_TRACES = tuple(_SETUP_ABORT_TRACES)
 _OWNED = ("IP_HOST_LINKS", "IP_HOST_ADDRESSES", "IP_HOST_ROUTES4",
           "IP_HOST_ROUTES6", "IP_NS_LINKS", "IP_NS_ADDRESSES", "IP_NS_ROUTES4",
           "IP_NS_ROUTES6", "NFT_TABLE")
@@ -100,7 +114,7 @@ LIFECYCLE_REQUIREMENTS = MappingProxyType({
     "BASELINES_CAPTURED": "FS_SETTLED", "NETWORK_READY": "BASELINES_CAPTURED",
     "NETWORK_ABSENT": "TASK_STOPPED", "FIREWALL_ABSENT": "SHARE_ABSENT",
 })
-del _BASELINE_TRACE, _PARTIAL, _SETUP_TRACE, _OWNED, _RUNTIME_NET, _READY_NET, _DISCOVERED_NET, _setup_effect_trace, _EFFECT_COMMAND_TRACES
+del _BASELINE_TRACE, _PARTIAL, _SETUP_TRACE, _SETUP_ABORT_TRACES, _prefix, _has_nft, _last, _verify, _remove, _count, _OWNED, _RUNTIME_NET, _READY_NET, _DISCOVERED_NET, _setup_effect_trace, _EFFECT_COMMAND_TRACES
 HEX = frozenset("0123456789abcdef")
 def _fail(value):
     if not value: raise ValueError("network journal")
@@ -265,7 +279,7 @@ def advance(state, kind, body, phase):
         allowed_phase = {"baseline": {"ROOTFS_LEASED", "FS_SETTLED"},
             "ready": {"BASELINES_CAPTURED"}, "discovered": {"NETWORK_READY", "RUNTIME_READY"},
             "runtime": {"NETWORK_READY", "RUNTIME_READY"},
-            "network-absent": {"TASK_STOPPED", "OWNERSHIP_OBSERVED"},
+            "network-absent": {"BASELINES_CAPTURED", "TASK_STOPPED", "OWNERSHIP_OBSERVED"},
             "firewall-restored": {"SHARE_ABSENT"}}
         _fail(phase in allowed_phase[body["snapshot_kind"]])
         expected = {None: "baseline", "baseline": "ready", "ready": "discovered",
@@ -274,7 +288,8 @@ def advance(state, kind, body, phase):
         previous = state["snapshots"][-1]["snapshot_kind"] if state["snapshots"] else None
         # Runtime is optional on failed launch.
         allowed = {expected[previous]}
-        if previous in {"ready", "discovered"}: allowed.add("network-absent")
+        if previous in {"ready", "discovered"} or previous == "baseline" and setup_abort_complete(state):
+            allowed.add("network-absent")
         _fail(body["snapshot_kind"] in allowed)
         if state["snapshots"]: _fail(body["baselines"] == state["snapshots"][0]["baselines"])
         if body["snapshot_kind"] == "ready":
@@ -288,8 +303,14 @@ def advance(state, kind, body, phase):
             for name in ("netns", "host_link", "peer_link", "nft", "tap", "addresses_sha256"):
                 _fail(body["identity"][name] == discovered[name])
         if body["snapshot_kind"] == "network-absent":
-            source = next(row for row in reversed(state["snapshots"]) if row["snapshot_kind"] in {"ready", "discovered", "runtime"})
-            _fail(body["identity"]["nft"] == source["identity"]["nft"])
+            source = next((row for row in reversed(state["snapshots"])
+                           if row["snapshot_kind"] in {"ready", "discovered", "runtime"}), None)
+            _fail((source is not None and body["identity"]["nft"] == source["identity"]["nft"])
+                  or source is None and setup_abort_complete(state) and
+                  all(body["identity"][name] == state["current"][name]
+                      for name in body["identity"] if name != "state_sha256") and
+                  all(body["identity"][name] is None for name in
+                      ("netns", "host_link", "peer_link", "nft", "tap", "tc")))
         state["snapshots"].append(body); state["current"] = body["identity"]; return state
     if kind == "NETWORK_EFFECT_INTENT_V2":
         phases = ({"BASELINES_CAPTURED"} if body["action"] in SETUP else
@@ -313,7 +334,7 @@ def advance(state, kind, body, phase):
     if kind == "NETWORK_EFFECT_OBSERVED_V2":
         _fail(pending_kind == "NETWORK_EFFECT_INTENT_V2")
         commands = tuple(value for index, value in enumerate(state["effect_commands"]) if index not in state["effect_replays"])
-        _fail(commands == EFFECT_COMMAND_TRACES[pending["action"]])
+        _fail(commands == effect_command_trace(pending["action"], pending["target"]))
         outputs = _source_outputs(state, body["sources"])
         import completion_kata_network as network
         scope = "ready" if body["action"] == SETUP[-1] else "effect"
@@ -340,6 +361,16 @@ def initial():
             "effect_commands": [], "effect_replays": [], "replay_serials": [], "current": None,
             "observations": [], "output_pending": None, "quarantine": None,
             "original_placeholder": None, "created_nsfs": None}
+def setup_abort_complete(state):
+    actions = [row["action"] for row in state["effects"]]
+    count = 0
+    while count < len(actions) and count < len(SETUP) and actions[count] == SETUP[count]:
+        count += 1
+    if count == 0: return False
+    expected = [*SETUP[:count], "IP_NETNS_REMOVE"]
+    if count > SETUP.index("NFT_INSTALL_OWNED"): expected.append("NFT_REMOVE_ATOMIC")
+    return actions == expected and state["pending"] is None and state["quarantine"] is not None and state["quarantine"][0] == "NETWORK_DETACHED_V2"
+
 def successful_phase_trace(records, index, phase, state, settled):
     intents = [item for item in records[:index]
                if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
@@ -352,6 +383,7 @@ def successful_trace(command_ids, phase, replay_indices=()):
     observed = tuple(value for index, value in enumerate(command_ids) if index not in replay_indices)
     variants = SUCCESS_PHASE_TRACE_VARIANTS.get(phase)
     valid = (observed in variants if variants is not None else
+             phase == "BASELINES_CAPTURED" and observed in SETUP_ABORT_TRACES or
              phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
     if not valid:
         raise ValueError(f"network journal trace:{phase}:{observed!r}")
@@ -390,7 +422,7 @@ def command_intent(intent, state):
     replay = state["output_pending"] is not None
     if replay: state["replay_serials"].append(intent["command_serial"])
     if state["pending"] is not None and state["pending"][0] == "NETWORK_EFFECT_INTENT_V2":
-        action = state["pending"][1]["action"]; canonical = EFFECT_COMMAND_TRACES[action]
+        action = state["pending"][1]["action"]; canonical = effect_command_trace(action, state["pending"][1]["target"])
         stripped = tuple(value for index, value in enumerate(state["effect_commands"]) if index not in state["effect_replays"])
         if replay:
             _fail(state["effect_commands"] and command_id == state["effect_commands"][-1] and stripped == canonical[:len(stripped)])

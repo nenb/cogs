@@ -1614,6 +1614,10 @@ def _cleanup_detached_placeholders(journal):
     }
     if any(value is None for value in expected.values()):
         raise NetworkError("detached placeholder identity absent")
+    if _netns_parent_mount() is None:
+        if any(os.path.lexists("/run/netns/" + name) for name in expected) or os.path.lexists(PRESERVED_DIR):
+            raise NetworkError("detached placeholder residue outside owned mount")
+        return
     parent = os.open("/run/netns", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for name, identity in expected.items():
@@ -2185,7 +2189,8 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
         if rows["NETNS_STAT"][-1] != b"null": raise NetworkError("terminal netns present")
         complete = _complete_baseline(raw, mountinfo, None, kind == "network-absent")
         if baselines is not None:
-            compared = _BASELINE_KEYS if kind != "network-absent" else (*_BASELINE_KEYS[:5], _BASELINE_KEYS[-1])
+            compared = (_BASELINE_KEYS if kind != "network-absent" or prior.get("nft") is None
+                        else (*_BASELINE_KEYS[:5], _BASELINE_KEYS[-1]))
             if any(complete[name] != baselines[name] for name in compared): raise NetworkError("baseline digest drift")
         if kind == "baseline": return _empty_identity(), complete
         identity = _empty_identity()
@@ -2334,6 +2339,18 @@ def _resume_effect(journal, ip, nft, tc):
     _record_effect(journal, "NETWORK_EFFECT_SETTLED_V2", observed)
 
 
+def _network_cleanup_active(journal):
+    import completion_kata_operation as operation
+    active = None
+    for kind, _body in operation._network_history(journal):
+        if kind in {"NETWORK_CLEANUP_INTENT_V1", "NETWORK_CLEANUP_INTENT_V2"}:
+            active = kind
+        elif kind == "NETWORK_CLEANUP_SETTLED_V2" or (
+                kind == "NETWORK_ABSENT" and active == "NETWORK_CLEANUP_INTENT_V1"):
+            active = None
+    return active is not None
+
+
 def _settle_cleanup(journal, target, phase):
     import completion_kata_operation as operation
     completion_error = None
@@ -2450,24 +2467,105 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         raise
 
 
+def _setup_abort_observed(journal, ip, nft, tc, settled):
+    """Freshly prove the last setup identity without reissuing its mutation."""
+    import completion_kata_operation as operation
+    retained = settled[-1]["identity"]; action = Action(settled[-1]["action"])
+    expected = _effect_source_ids(action, retained)[1:]
+    history = operation._network_history(journal)
+    starts = [index for index, (kind, _body) in enumerate(history)
+              if kind == "NETWORK_CLEANUP_INTENT_V2"]
+    if not starts: raise NetworkError("setup abort intent absent")
+    end = next((index for index in range(starts[-1] + 1, len(history))
+                if history[index][0] == "NETWORK_EFFECT_INTENT_V2" and
+                history[index][1]["action"] in {item.value for item in
+                    (Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC)}), len(history))
+    rows = [body for kind, body in history[starts[-1] + 1:end]
+            if kind == operation.network_journal.OUTPUT_RECORD and
+            body["chunk_index"] + 1 == body["chunk_count"]]
+    if end == len(history):
+        raws = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_CLEANUP_INTENT_V2")
+        rows = _sources(journal, "NETWORK_CLEANUP_INTENT_V2")
+    else:
+        if tuple(row["source_id"] for row in rows) != expected:
+            raise NetworkError("setup abort identity proof incomplete")
+        raws = tuple(_source_raw(journal, row) for row in rows)
+    outputs = [{"source_id": action.value, "raw": b""}, *(
+        {"source_id": name, "raw": raw} for name, raw in zip(expected, raws, strict=True))]
+    scope = "ready" if action is _SETUP_ACTIONS[-1] else "effect"
+    return _derive_journal_identity(scope, action.value, outputs, retained)[0]
+
+
 def _abort_fixed_setup(journal, ip, nft, tc):
-    """Cleanup the exact last settled identities; replacements are preserved."""
-    _resume_effect(journal, ip, nft, tc)
-    settled = _settled_effects(journal)
-    if not settled:
-        return
-    retained = settled[-1]["identity"]
-    quarantined = (_netns_identity(journal, name=_quarantine_name(journal))
-                   if retained["netns"] is not None else None)
-    if quarantined is None:
-        current = _observed_identity(journal, ip, nft, tc, retained, Action(settled[-1]["action"]))
+    """Reverse a settled setup prefix once, then durably enter cleanup-only absence."""
+    import completion_kata_operation as operation
+    try:
+        baselines, rows = _baselines(journal)
+        if rows[-1]["snapshot_kind"] == "network-absent":
+            phase = operation._durable_phase(journal)
+            if phase != "NETWORK_ABSENT":
+                _settle_cleanup(journal, "network", "NETWORK_ABSENT")
+            elif _network_cleanup_active(journal):
+                journal.settle_network_cleanup("network")
+            return rows[-1]
+        if len(rows) != 1 or rows[0]["snapshot_kind"] != "baseline":
+            raise NetworkError("setup abort order")
+        history = operation._network_history(journal)
+        effect_rows = [(kind, body) for kind, body in history
+                       if kind in operation.network_journal.RECORDS]
+        if effect_rows and effect_rows[-1][0] != "NETWORK_EFFECT_SETTLED_V2":
+            if effect_rows[-1][1]["action"] not in {item.value for item in
+                    (Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC)}:
+                raise NetworkError("unsettled setup effect cannot abort")
+            _resume_effect(journal, ip, nft, tc)
+        settled = _settled_effects(journal)
+        setup = []
+        for expected, body in zip(_SETUP_ACTIONS, settled, strict=False):
+            if body["action"] != expected.value: break
+            setup.append(body)
+        if not setup or len(setup) > len(_SETUP_ACTIONS):
+            raise NetworkError("settled setup prefix absent")
+        suffix = [body["action"] for body in settled[len(setup):]]
+        expected_suffix = [Action.IP_NETNS_REMOVE.value]
+        if setup[-1]["identity"]["nft"] is not None:
+            expected_suffix.append(Action.NFT_REMOVE_ATOMIC.value)
+        if suffix != expected_suffix[:len(suffix)]:
+            raise NetworkError("setup abort effect order")
+        journal.begin_network_cleanup("network")
+        current = _setup_abort_observed(journal, ip, nft, tc, setup)
+        retained = setup[-1]["identity"]
         for name in ("netns", "host_link", "peer_link", "nft"):
-            if current[name] != retained[name]: raise NetworkError("failed-setup identity replacement")
-    if retained["netns"] is not None:
-        _quarantine_netns(journal, retained)
-        retained = _effect(journal, Action.IP_NETNS_REMOVE, ip, nft, tc, retained)
-    if retained["nft"] is not None:
-        _effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained)
+            if current[name] != retained[name]:
+                raise NetworkError("failed-setup identity replacement")
+        if Action.IP_NETNS_REMOVE.value not in suffix:
+            _quarantine_netns(journal, retained)
+            retained = _effect(journal, Action.IP_NETNS_REMOVE, ip, nft, tc, retained)
+        else:
+            retained = settled[len(setup)]["identity"]
+        if _quarantine_stage(journal) is not None:
+            _cleanup_detached_placeholders(journal)
+        if retained["nft"] is not None and Action.NFT_REMOVE_ATOMIC.value not in suffix:
+            retained = _effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained)
+        elif Action.NFT_REMOVE_ATOMIC.value in suffix:
+            retained = settled[-1]["identity"]
+        raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
+        if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
+            raise NetworkError("setup abort baseline not restored")
+        qstage = _quarantine_stage(journal)
+        if qstage is None or qstage[0] != "NETWORK_DETACHED_V2":
+            raise NetworkError("setup abort namespace not detached")
+        for path in ("/run/netns/" + _bound_names(journal)[0],
+                     "/run/netns/" + _quarantine_name(journal), PRESERVED_DIR):
+            if os.path.lexists(path): raise NetworkError("setup abort placeholder residue")
+        body = _snapshot(journal, "network-absent", baselines, retained,
+                         _sources(journal, "NETWORK_SNAPSHOT_V2"))
+        _settle_cleanup(journal, "network", "NETWORK_ABSENT")
+        return body
+    except BaseException as error:
+        try: _poison_fixed_network(journal, "incomplete")
+        except BaseException as settlement_error:
+            raise NetworkCleanupError(error, settlement_error)
+        raise
 
 
 def _poison_fixed_network(journal, reason="unknown"):

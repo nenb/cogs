@@ -1151,6 +1151,7 @@ def _legal(records):
         if kind == "NETWORK_SNAPSHOT_V2" or kind in network_journal.ALL_RECORDS:
             _fail(command_generation in {None, "v2"}); command_generation = "v2"
             _fail(rootfs and command_phase is None)
+            _fail(cleanup_mode is None or not (kind == "NETWORK_EFFECT_INTENT_V2" and body["action"] in network_journal.SETUP or kind == "NETWORK_SNAPSHOT_V2" and body["snapshot_kind"] in {"ready", "discovered", "runtime"}))
             try:
                 network_state = network_journal.advance(network_state, kind, body, phase)
             except ValueError as error:
@@ -1347,11 +1348,10 @@ def _legal(records):
             pending = None
         elif kind in LIFECYCLE:
             _fail(rootfs)
-            seen = {item.record_type for item in records[:index]}
+            seen = {item.record_type for item in records[:index]}; setup_abort = bool(network_state["snapshots"] and kind == "NETWORK_ABSENT" and network_journal.setup_abort_complete(network_state))
             if network_state["snapshots"]:
-                requirement = (phase if kind == "NETWORK_ABSENT" and phase == "OWNERSHIP_OBSERVED"
-                               and ownership is not None and ownership["task"] == "absent" else
-                               network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
+                requirement = (phase if setup_abort or kind == "NETWORK_ABSENT" and phase == "OWNERSHIP_OBSERVED" and
+                               ownership is not None and ownership["task"] == "absent" else network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
                 if requirement is not None:
                     _fail(requirement == phase)
                     try: network_journal.successful_phase_trace(records, index, phase, network_state, _settled_v2)
@@ -1391,8 +1391,7 @@ def _legal(records):
                 _fail(phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "exact-owned")
                 if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
             elif kind == "NETWORK_ABSENT":
-                _fail(ownership is not None and (phase == "TASK_STOPPED" or
-                      phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "absent"))
+                _fail(setup_abort or ownership is not None and (phase == "TASK_STOPPED" or phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "absent"))
                 snapshots = network_state["snapshots"]
                 _fail(not snapshots or snapshots[-1]["snapshot_kind"] == "network-absent" and
                       body["proof_sha256"] == snapshots[-1]["proof_sha256"])

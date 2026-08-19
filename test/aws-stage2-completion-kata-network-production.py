@@ -95,6 +95,36 @@ check(network._SETUP_ACTIONS == tuple(network.Action(name) for name in journal_m
       "setup is not atomic-netns veth policy")
 check("RUNTIME_READY" not in journal_model.LIFECYCLE_REQUIREMENTS,
       "B1 improperly requires a deferred runtime-ready transition")
+check(len(journal_model.SETUP_ABORT_TRACES) == len(journal_model.SETUP),
+      "settled setup effects lack abort cuts")
+for count, trace in enumerate(journal_model.SETUP_ABORT_TRACES, 1):
+    prefix = tuple(item for action in journal_model.SETUP[:count]
+                   for item in journal_model.EFFECT_COMMAND_TRACES[action])
+    check(trace[:len(prefix)] == prefix, "setup abort did not retain the exact settled prefix")
+    journal_model.successful_trace(trace, "BASELINES_CAPTURED")
+    tail = trace[len(prefix):]
+    check(not set(journal_model.SETUP) & set(tail) and tail.count("IP_NETNS_REMOVE") == 0,
+          "setup abort replayed setup or retried local removal")
+    state = journal_model.initial()
+    state["effects"] = [{"action": action} for action in journal_model.SETUP[:count]] + [
+        {"action": "IP_NETNS_REMOVE"},
+        *([{"action": "NFT_REMOVE_ATOMIC"}]
+          if count > journal_model.SETUP.index("NFT_INSTALL_OWNED") else []),
+    ]
+    state["quarantine"] = ("NETWORK_DETACHED_V2", {})
+    check(journal_model.setup_abort_complete(state), "complete reverse setup chain rejected")
+    state["pending"] = ("NETWORK_EFFECT_INTENT_V2", {}, 0)
+    check(not journal_model.setup_abort_complete(state), "pending reverse effect treated as absent")
+class DetachedJournal: pass
+with patch.object(network, "_quarantine_stage", return_value=("NETWORK_DETACHED_V2", {
+        "placeholder": {"device": 7, "inode": 8}})), \
+     patch.object(network, "_original_placeholder", return_value={"device": 7, "inode": 9}), \
+     patch.object(network, "_bound_names", return_value=("c42naaaaaaaaaa", "c42taaaaaaaaaa")), \
+     patch.object(network, "_quarantine_name", return_value="c42qaaaaaaaaaa"), \
+     patch.object(network, "_netns_parent_mount", return_value=None), \
+     patch.object(network.os.path, "lexists", return_value=False), \
+     patch.object(network.os, "unlink", side_effect=AssertionError("absent placeholder retried")):
+    network._cleanup_detached_placeholders(DetachedJournal())
 positions = {action: network._SETUP_ACTIONS.index(action) for action in network._SETUP_ACTIONS}
 check(positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_HOST_ADDRESS_ADD] and
       positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_GUEST_ADDRESS_ADD] and

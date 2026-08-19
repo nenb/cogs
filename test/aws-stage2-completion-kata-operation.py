@@ -1511,8 +1511,43 @@ def production_owner_test():
                         if path.exists(): path.unlink()
                     os.rmdir(network.PRESERVED_DIR)
                     # ip-netns made its test-owned parent a self-bind; restore the
-                    # original plain directory before the final production scenario.
+                    # original plain directory before settled-effect crash cuts.
                     assert libc.umount2(b"/run/netns", 0) == 0
+                    setup_prefix = (intent, ("ROOTFS_LEASED", leased), ("FS_INTENT", fs_intent),
+                        ("FS_OBSERVED", baseline_observed), ("FS_SETTLED", baseline_observed))
+                    for count in range(1, len(network._SETUP_ACTIONS) + 1):
+                        production_fixture(setup_prefix)
+                        production_network = operation._open_fixed_operation()
+                        baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
+                        identity = baseline_body["identity"]
+                        for index, action in enumerate(network._SETUP_ACTIONS[:count]):
+                            identity = network._effect(production_network, action, *retained_tools, identity,
+                                count == len(network._SETUP_ACTIONS) and index + 1 == count)
+                        production_network.close()
+                        production_network = operation._open_fixed_operation()
+                        aborted = network._abort_fixed_setup(production_network, *retained_tools)
+                        assert aborted["snapshot_kind"] == "network-absent"
+                        assert operation._durable_phase(production_network) == "NETWORK_ABSENT"
+                        assert all(aborted["identity"][name] is None for name in ("netns", "host_link", "peer_link", "nft", "tap", "tc"))
+                        production_network.close()
+                    # A fresh owner removes durable detached placeholders without setup retry.
+                    production_fixture(setup_prefix)
+                    production_network = operation._open_fixed_operation()
+                    baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
+                    identity = baseline_body["identity"]
+                    for action in network._SETUP_ACTIONS[:3]:
+                        identity = network._effect(production_network, action, *retained_tools, identity)
+                    detached_child = os.fork()
+                    if detached_child == 0:
+                        with patch.object(network, "_cleanup_detached_placeholders", side_effect=lambda _owner: os._exit(77)):
+                            network._abort_fixed_setup(production_network, *retained_tools)
+                        os._exit(78)
+                    _pid, detached_status = os.waitpid(detached_child, 0)
+                    assert os.waitstatus_to_exitcode(detached_status) == 77
+                    production_network.close(); production_network = operation._open_fixed_operation()
+                    assert network._quarantine_stage(production_network)[0] == "NETWORK_DETACHED_V2"
+                    assert network._abort_fixed_setup(production_network, *retained_tools)["snapshot_kind"] == "network-absent"
+                    production_network.close()
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
                         ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
                         ("FS_SETTLED", baseline_observed)))
