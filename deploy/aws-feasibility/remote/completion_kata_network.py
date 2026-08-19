@@ -1757,59 +1757,39 @@ def _cleanup_owned_entry(journal, resource, source_parent, source, target_parent
                     resource=resource, action="removed", identity=relocated_identity)
 
 
-def _same_relocated_mount(expected, observed, path):
-    return (observed is not None and observed == {**expected, "mount_point": path})
-
-
 def _cleanup_parent_mount(journal, authority):
+    """Detach only the exact retained private mount; exact absence settles a crash cut."""
     import completion_kata_operation as operation
     steps = [(body["resource"], body["action"], body["identity"]) for kind, body in _cleanup_rows(journal)
              if kind == operation.network_journal.DETACHED_CLEANUP_STEP]
     expected = authority["parent_mount"]
+    detached = {**expected, "mount_point": ""}
     relocated = next((identity for resource, action, identity in steps
                       if (resource, action) == ("parent-mount", "relocated")), None)
     if relocated is None:
-        current, moved = _mount_identity("/run/netns"), _mount_identity(PARENT_STAGE_DIR)
-        if _same_relocated_mount(expected, moved, PARENT_STAGE_DIR) and current is None:
-            relocated = moved
-        else:
-            if current != expected or moved is not None: raise NetworkError("private parent mount replacement preserved")
-            stage = os.stat(PARENT_STAGE_DIR, follow_symlinks=False)
-            if _placeholder_identity(stage) != authority["support"]["parent_stage_directory"]:
-                raise NetworkError("parent mount stage replacement preserved")
+        current = _mount_identity("/run/netns")
+        if current is not None:
+            if current != expected: raise NetworkError("private parent mount replacement preserved")
             libc = ctypes.CDLL(None, use_errno=True); tree = libc.syscall(428, -100, b"/run/netns", 0x80000)
             if tree < 0: saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
             try:
                 retained = os.fstat(tree)
                 if (retained.st_dev, retained.st_ino) != (expected["inode_device"], expected["inode"]):
                     raise NetworkError("private parent mount descriptor mismatch")
-                if libc.mount(b"/run/netns", PARENT_STAGE_DIR.encode(), None, 8192, None) != 0:
+                if libc.umount2(b"/run/netns", 2) != 0:
                     saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-                relocated = _mount_identity(PARENT_STAGE_DIR)
                 if (_mount_identity("/run/netns") is not None or
-                        not _same_relocated_mount(expected, relocated, PARENT_STAGE_DIR) or
                         (os.fstat(tree).st_dev, os.fstat(tree).st_ino) != (retained.st_dev, retained.st_ino)):
-                    raise NetworkError("private parent mount relocation uncertainty")
+                    raise NetworkError("private parent unmount uncertainty")
             finally: os.close(tree)
+        if _mount_identity(PARENT_STAGE_DIR) is not None:
+            raise NetworkError("foreign parent staging mount preserved")
+        relocated = detached
         _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
                         resource="parent-mount", action="relocated", identity=relocated)
+    if relocated != detached or _mount_identity("/run/netns") is not None or _mount_identity(PARENT_STAGE_DIR) is not None:
+        raise NetworkError("detached parent mount replacement preserved")
     if any((resource, action) == ("parent-mount", "removed") for resource, action, _identity in steps): return
-    moved = _mount_identity(PARENT_STAGE_DIR)
-    if moved is not None:
-        if moved != relocated or _mount_identity("/run/netns") is not None:
-            raise NetworkError("relocated parent mount replacement preserved")
-        libc = ctypes.CDLL(None, use_errno=True); tree = libc.syscall(428, -100, PARENT_STAGE_DIR.encode(), 0x80000)
-        if tree < 0: saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-        try:
-            retained = os.fstat(tree)
-            if (retained.st_dev, retained.st_ino) != (expected["inode_device"], expected["inode"]):
-                raise NetworkError("relocated parent mount descriptor mismatch")
-            if libc.umount2(PARENT_STAGE_DIR.encode(), 2) != 0:
-                saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
-            if (_mount_identity(PARENT_STAGE_DIR) is not None or _mount_identity("/run/netns") is not None
-                    or (os.fstat(tree).st_dev, os.fstat(tree).st_ino) != (retained.st_dev, retained.st_ino)):
-                raise NetworkError("private parent unmount uncertainty")
-        finally: os.close(tree)
     _cleanup_record(journal, operation.network_journal.DETACHED_CLEANUP_STEP,
                     resource="parent-mount", action="removed", identity=relocated)
 

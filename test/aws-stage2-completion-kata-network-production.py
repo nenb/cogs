@@ -229,7 +229,7 @@ for index, (resource, action) in enumerate(cleanup_order):
         "preserved-directory": support["preserved_directory"],
         "parent-stage-directory": support["parent_stage_directory"]}
     identity = (relocated_identities[resource] if action == "removed" else
-                {**parent_mount, "mount_point": network.PARENT_STAGE_DIR} if resource == "parent-mount" else
+                {**parent_mount, "mount_point": ""} if resource == "parent-mount" else
                 {**expected_cleanup[resource], "ctime_ns": 10 + index})
     if action == "relocated": relocated_identities[resource] = identity
     step = cleanup_envelope(resource=resource, action=action, identity=identity)

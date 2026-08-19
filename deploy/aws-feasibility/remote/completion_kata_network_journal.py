@@ -306,7 +306,7 @@ def advance(state, kind, body, phase):
                 _fail(body["identity"] == state["cleanup_steps"][-1]["identity"])
             elif body["resource"] == "parent-mount":
                 _fail(body["identity"] == {**state["cleanup_authority"]["parent_mount"],
-                                            "mount_point": "/run/.cogs-stage2-netns-parent"})
+                                            "mount_point": ""})
             else:
                 expected = ({"original-placeholder": state["cleanup_authority"]["placeholders"]["original"],
                     "quarantine-placeholder": state["cleanup_authority"]["placeholders"]["quarantine"],
