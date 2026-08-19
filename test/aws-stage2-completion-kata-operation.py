@@ -2439,6 +2439,8 @@ def production_owner_test():
                 cleanup = inputs._compose_production_input_cleanup(
                     recovery_authority, recovery_chain.components[-1].node, recovery_control)
                 rejected(lambda: ssh._recover_production_ssh(recovery_authority, cleanup))
+                rejected(lambda: operation._durable_phase(recovery_authority))
+                recovery_authority.close(); recovery_authority = operation._open_fixed_operation()
                 assert operation._durable_phase(recovery_authority) == "UNCERTAIN"
             finally:
                 fs._close_chain(recovery_chain)
