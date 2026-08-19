@@ -68,7 +68,7 @@ RUNTIME_RESIDUE_PHASES = frozenset({
     "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
     "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
 })
-JOURNAL_SETUP_MARGIN_NS = 1_500_000_000_000
+JOURNAL_SETUP_MARGIN_NS = 3_000_000_000_000
 JOURNAL_SETTLEMENT_MARGIN_NS = command_policy.SSH_CLEANUP_RESERVE_NS
 JOURNAL_TOTAL_NS = (JOURNAL_SETUP_MARGIN_NS + command_policy.SSH_TOTAL_NS
                     + JOURNAL_SETTLEMENT_MARGIN_NS)
@@ -1973,12 +1973,14 @@ def _make_authority():
             state[1:] = [records, "exact"]
         return state
     def write_validated(authority, kind, body):
-        io, records, status = reload(authority)
+        state = owner(authority); io, records, status = state
         _fail(status == "exact" and records and io._loaded_generation is not None)
+        validate = getattr(io, "validate_layout", None)
+        if validate is not None:
+            validate(records, io._loaded_generation)
         line = _encode(kind, body, records)
         fresh, generation = io.write_record(
             line, records[-1].next_offset, io._loaded_generation)
-        validate = getattr(io, "validate_layout", None)
         if validate is not None:
             validate(fresh, generation)
         _fail(fresh[:-1] == records and fresh[-1].record_type == kind)

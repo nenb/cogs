@@ -39,6 +39,10 @@ def ns_identity(name):
     path = "/run/netns/" + name; seen = os.stat(path, follow_symlinks=False)
     return network.parse_netns_identity(mountinfo(), network.NetnsStat(seen.st_dev, seen.st_ino), path)
 
+def same_moved_identity(first, second):
+    return all(getattr(first, name) == getattr(second, name) for name in
+               ("mount_id", "parent_id", "device", "inode_device", "inode"))
+
 def move_to_quarantine(expected):
     source, target = "/run/netns/" + netns, "/run/netns/" + quarantine
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600); os.close(fd)
@@ -46,7 +50,8 @@ def move_to_quarantine(expected):
     if libc.mount(source.encode(), target.encode(), None, 8192, None) != 0:
         saved = ctypes.get_errno(); raise OSError(saved, os.strerror(saved))
     os.unlink(source); created["netns"] = False; created["quarantine"] = True
-    if ns_identity(quarantine) != expected: raise AssertionError("quarantined nsfs identity changed")
+    if not same_moved_identity(ns_identity(quarantine), expected):
+        raise AssertionError("quarantined nsfs identity changed")
 
 def nft_input():
     return network.NFT_OWNED_TRANSACTION.replace(network.TABLE.encode(), table.encode()).replace(network.HOST_IF.encode(), host.encode())
@@ -123,12 +128,14 @@ try:
     os.close(tun); created["tap_fd"] = None
     move_to_quarantine(retained_ns)
     # Crash/reopen cut: only the quarantined name survives and retains exact nsfs identity.
-    if ns_identity(quarantine) != retained_ns or Path("/run/netns/" + netns).exists():
+    if (not same_moved_identity(ns_identity(quarantine), retained_ns)
+            or Path("/run/netns/" + netns).exists()):
         raise AssertionError("quarantine crash cut is not recoverable")
     ip("netns", "add", netns); created["replacement"] = True
     network._prepare_netns_parent()
     replacement = ns_identity(netns)
-    if replacement == retained_ns: raise AssertionError("replacement nsfs not distinct")
+    if same_moved_identity(replacement, retained_ns):
+        raise AssertionError("replacement nsfs not distinct")
     ip("netns", "delete", quarantine); created["quarantine"] = False
     if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
     ip("netns", "delete", netns); created["replacement"] = False
