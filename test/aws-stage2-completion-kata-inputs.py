@@ -176,12 +176,13 @@ mountinfo = (
     b"21 20 0:5 / /proc rw,nosuid - proc proc rw\n"
 )
 assert inputs._parse_mountinfo(mountinfo, "/fixed/input") == 2
+assert inputs._parse_mountinfo(
+    mountinfo + b"22 20 0:5 / /proc rw,nosuid - proc proc rw\n", "/fixed/input") == 3
 for hostile in (
     mountinfo + b"22 20 8:1 /x /fixed/input rw - ext4 /dev/root rw\n",
     mountinfo + b"22 20 8:1 /x /fixed/input/fixture rw - ext4 /dev/root rw\n",
     mountinfo + b"22 20 8:1 /fixed/input/key /elsewhere rw - ext4 /dev/root rw\n",
     mountinfo.replace(b"/proc", b"/bad\\777"),
-    mountinfo + mountinfo.splitlines(keepends=True)[0],
     b"x" * (inputs.MAX_MOUNTINFO + 1) + b"\n",
 ):
     rejected(lambda hostile=hostile: inputs._parse_mountinfo(hostile, "/fixed/input"))

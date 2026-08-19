@@ -388,7 +388,6 @@ def _parse_mountinfo(raw, source):
     _fail(source_raw.startswith(b"/") and b"//" not in source_raw)
     lines = raw.splitlines()
     _fail(1 <= len(lines) <= MAX_MOUNTS and all(0 < len(line) <= 16_384 for line in lines))
-    seen = set()
     for line in lines:
         fields = line.split(b" ")
         _fail(len(fields) >= 10 and fields.count(b"-") == 1)
@@ -398,8 +397,7 @@ def _parse_mountinfo(raw, source):
         mount_root = _mount_unescape(fields[3])
         mountpoint = _mount_unescape(fields[4])
         mount_source = _mount_unescape(fields[separator + 2])
-        _fail(mountpoint.startswith(b"/") and mount_root.startswith(b"/") and mountpoint not in seen)
-        seen.add(mountpoint)
+        _fail(mountpoint.startswith(b"/") and mount_root.startswith(b"/"))
         for candidate in (mount_root, mountpoint, mount_source):
             _fail(not (candidate == source_raw or candidate.startswith(source_raw + b"/")))
     return len(lines)
