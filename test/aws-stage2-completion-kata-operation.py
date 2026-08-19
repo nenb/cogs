@@ -851,48 +851,9 @@ def native_runtime_daemon_foundations(completion):
             daemon = runtime._retain_private_containerd(staged, completion_node, None, control)
             assert runtime._cleanup_staged_runtime(daemon) == {"runtime": "staged-absent"}
             staged.close(); assert not os.path.exists(runtime_base); fs._close_chain(chain); chain = None
-            # Durable indexed post-KILL RUNNING then STOPPED observations use one mutation.
+            # The portable runtime matrix owns exact indexed post-KILL trace coverage.
             policy.BASE = original["base"]; policy.CONTAINERD_ADDRESS = original["address"]
             policy.STAGED_CONTAINERD = original["containerd"]
-            lifecycle = (("RUNTIME_READY", {"operation_token": "a" * 64, "proof_sha256": "7" * 64}),
-                ("SSH_READY", {"operation_token": "a" * 64, "proof_sha256": "6" * 64,
-                    "marker_sha256": hashlib.sha256(operation.FIXED["ssh_marker"].encode()).hexdigest(), "authentication_attempts": 1}),
-                ("READINESS_REVOKED", {"operation_token": "a" * 64}),
-                ("OWNERSHIP_OBSERVED", {"operation_token": "a" * 64, "proof_sha256": "5" * 64,
-                    "task": "exact-owned", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}))
-            with patch.object(operation, "_runtime_trace", return_value=None): reset(lifecycle, False)
-            observed = operation._open_fixed_operation(); ctr = process.RetainedExecutable(
-                "ctr", policy.STAGED_CTR, descriptor, digest, "d" * 64, executable_generation)
-            outputs = iter((b"TASK    PID    STATUS\ncogs-stage2-ssh-v1    42    RUNNING\n", b"", b"TASK    PID    STATUS\ncogs-stage2-ssh-v1    42    RUNNING\n",
-                            b"", b"TASK    PID    STATUS\ncogs-stage2-ssh-v1    42    RUNNING\n", b"TASK    PID    STATUS\ncogs-stage2-ssh-v1    42    STOPPED\n"))
-            issued = []
-            for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_TASK_TERM,
-                    process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_TASK_KILL,
-                    process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_TASK_LIST):
-                fixed = process._bind_ctr_extension(command_id); context = observed.command_context()
-                intent = process._intent_body(context, fixed, ctr, (), process._boottime_ns() + fixed.duration_ns)
-                observed.record_command_intent(intent); serial = intent["command_serial"]; issued.append(command_id.value)
-                observed.record_command_preexec({"operation_token": intent["operation_token"], "command_serial": serial,
-                    "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"], "host_boot_id": intent["host_boot_id"],
-                    "pid": 900000 + serial, "ppid": 1, "pgid": 900000 + serial, "sid": 900000 + serial,
-                    "proc_start_time": 1 + serial, "pidfd_supported": True,
-                    "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
-                    "cgroup_generation": generation(200 + serial),
-                    "executable_sha256": intent["executable_sha256"],
-                    "tool_closure_sha256": intent["tool_closure_sha256"],
-                    "executable_generation": intent["executable_generation"],
-                    "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
-                stdout = next(outputs); observed.record_command_output({"operation_token": intent["operation_token"],
-                    "command_serial": serial, "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"],
-                    "stdout_hex": stdout.hex(), "stderr_hex": ""})
-                observed.record_command_outcome({"operation_token": intent["operation_token"], "command_serial": serial,
-                    "command_id": intent["command_id"], "binding_sha256": intent["binding_sha256"], "outcome": "exited", "status": 0,
-                    "errno": None, "stdout_sha256": hashlib.sha256(stdout).hexdigest(), "stdout_length": len(stdout), "stdout_truncated": False,
-                    "stderr_sha256": hashlib.sha256(b"").hexdigest(), "stderr_length": 0, "stderr_truncated": False,
-                    "leader_reaped": True, "descendants_reaped": True, "cgroup_empty": True, "cgroup_removed": True, "pipes_eof": True,
-                    "release_count": 1, "term_attempted": False, "kill_attempted": False, "deadline_expired": False, "uncertain": False, "errors": []})
-            observed.settle_runtime_phase("TASK_STOPPED", "4" * 64); observed.close()
-            assert issued.count("CTR_TASK_KILL") == 1 and issued.count("CTR_TASK_LIST") == 4
             # Staging rollback handles interrupted special-entry residue.
             stage = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
