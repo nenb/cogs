@@ -167,6 +167,13 @@ bridge_a = [{"ifname": "docker0", "linkinfo": {"info_kind": "bridge", "info_data
     "hello_timer": 0.0, "tcn_timer": 0.0, "topology_change_timer": 0.0, "gc_timer": 1.25}}}]
 bridge_b = copy.deepcopy(bridge_a); bridge_b[0]["linkinfo"]["info_data"]["gc_timer"] = 9.5
 assert network._normalize_baseline_links(bridge_a) == network._normalize_baseline_links(bridge_b)
+hyperv_a = [{"ifname": "eth0", "address": "02:00:00:00:00:01", "parentbus": "vmbus",
+             "tso_max_size": 62780}]
+hyperv_b = [{**hyperv_a[0], "tso_max_size": 524280},
+            {"ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
+             "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci",
+             "parentdev": "0001:00:02.0", "vfinfo_list": [], "altnames": ["enP1p0s2"]}]
+assert network._normalize_baseline_links(hyperv_a) == network._normalize_baseline_links(hyperv_b)
 large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
 rejected(lambda: network._load(large_nft_array))
 assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1

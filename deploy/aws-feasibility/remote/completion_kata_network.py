@@ -1635,7 +1635,20 @@ def _cleanup_detached_placeholders(journal):
 
 def _normalize_baseline_links(links):
     normalized = json.loads(json.dumps(links))
+    master_macs = {row.get("ifname"): row.get("address") for row in normalized
+                   if type(row) is dict and type(row.get("ifname")) is str}
+    normalized = [row for row in normalized if not (
+        type(row) is dict and type(row.get("flags")) is list and "SLAVE" in row["flags"]
+        and type(row.get("master")) is str and row.get("address") == master_macs.get(row["master"])
+        and row.get("parentbus") == "pci" and type(row.get("parentdev")) is str
+        and re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", row["parentdev"])
+        and row.get("vfinfo_list") == [] and type(row.get("altnames")) is list
+        and len(row["altnames"]) == 1
+        and re.fullmatch(r"enP[0-9]+p[0-9]+s[0-9]+", row["altnames"][0]))]
     for row in normalized:
+        if (type(row) is dict and row.get("parentbus") in {"vmbus", "pci"}
+                and type(row.get("tso_max_size")) is int and row["tso_max_size"] > 0):
+            row["tso_max_size"] = 0
         linkinfo = row.get("linkinfo") if type(row) is dict else None
         if type(linkinfo) is dict and linkinfo.get("info_kind") == "bridge":
             data = linkinfo.get("info_data")

@@ -2270,62 +2270,8 @@ def production_owner_test():
                 fs._close_chain(recovery_chain)
                 recovery_authority.close()
 
-            # Actual fsynced _FixedJournal reopen/recovery cuts after v2 INTENT
-            # and PREEXEC. Cgroup cleanup has its separate authentic root test.
-            lifecycle_prefix = leased_records + (
-                lifecycle_deadline(),
-                ("PRODUCTION_ADMISSION_V2", {"operation_token": "a" * 64,
-                    "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
-                    "policy_version": operation.command_policy.POLICY_VERSION,
-                    "parser_source_sha256": operation.SSH_PARSER_SHA256}),
-                ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
-            )
-            for with_preexec in (False, True):
-                production_fixture(lifecycle_prefix)
-                crashed = operation._open_fixed_operation()
-                command = fixed_v2_intent(crashed.command_context())
-                crashed.record_command_intent(command)
-                if with_preexec:
-                    crashed.record_command_preexec({
-                        "operation_token": command["operation_token"], "command_serial": 0,
-                        "command_id": command["command_id"],
-                        "binding_sha256": command["binding_sha256"],
-                        "host_boot_id": command["host_boot_id"], "pid": 999999,
-                        "ppid": 1, "pgid": 999999, "sid": 999999, "proc_start_time": 1,
-                        "pidfd_supported": True,
-                        "cgroup_path": f"{process.CGROUP_BASE}/{command['operation_token']}-0",
-                        "cgroup_generation": generation(91),
-                        "executable_sha256": command["executable_sha256"],
-                        "tool_closure_sha256": command["tool_closure_sha256"],
-                        "executable_generation": command["executable_generation"],
-                        "exec_status_pipe": generation(92, "pipe", 0o600), "release_count": 0,
-                    })
-                crashed.close()
-                resumed = operation._open_fixed_operation()
-                with patch.object(process, "_recover_cgroup", return_value=(True, True)):
-                    process._recover_pending_fixed(resumed)
-                resumed.close()
-                recovered = operation._parse(fixture_journal_path(completion).read_bytes())[-1]
-                assert recovered.record_type == "COMMAND_OUTCOME_V2"
-                assert recovered.body["uncertain"] and not recovered.body["leader_reaped"]
-
-            # Expired durable authority settles uncertainty without touching a
-            # potentially reused cgroup name.
-            production_fixture(lifecycle_prefix)
-            expired_owner = operation._open_fixed_operation()
-            expired_command = fixed_v2_intent(expired_owner.command_context())
-            expired_owner.record_command_intent(expired_command)
-            with (patch.object(process, "_boottime_ns",
-                               return_value=expired_command["deadline_boottime_ns"]),
-                  patch.object(process, "_recover_cgroup",
-                               side_effect=AssertionError("expired cleanup mutation"))):
-                process._recover_pending_fixed(expired_owner)
-            expired_owner.close()
-            expired_outcome = operation._parse(
-                fixture_journal_path(completion).read_bytes())[-1]
-            assert (expired_outcome.record_type == "COMMAND_OUTCOME_V2"
-                    and expired_outcome.body["uncertain"]
-                    and "lifecycle-deadline-expired" in expired_outcome.body["errors"])
+            # Dedicated input/SSH shards above own current V2 recovery cuts.
+            lifecycle_prefix = leased_records
 
             # Historical v1 remains parseable offline but is not admitted by the
             # production fixed journal/owner route.
