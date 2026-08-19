@@ -2535,7 +2535,12 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
     # Effect observations are derived from exact post-effect inventory.
     if action is not None:
         if action == "NFT_REMOVE_ATOMIC":
-            listed = parse_nft_snapshot(rows[action][0], prior["nft"]["table_name"], prior["host_link"]["ifname"])
+            table_name = prior["nft"]["table_name"]
+            if not re.fullmatch(r"c42t[0-9a-f]{10}", table_name):
+                raise NetworkError("conditional nft table binding")
+            host_name = (prior["host_link"]["ifname"] if prior.get("host_link") is not None
+                         else "c42h" + table_name[4:])
+            listed = parse_nft_snapshot(rows[action][0], table_name, host_name)
             if _nft_value(listed) != prior["nft"]: raise NetworkError("conditional nft identity drift")
         suffix = ("MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
         if action not in {"IP_NETNS_REMOVE", "NFT_REMOVE_ATOMIC"}: suffix += ("IP_NS_LINKS",)
