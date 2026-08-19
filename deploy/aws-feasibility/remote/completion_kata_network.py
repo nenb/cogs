@@ -66,6 +66,13 @@ class NetworkError(Exception):
     """A command request, snapshot, or ownership transition was not exact."""
 
 
+class NetworkCleanupError(NetworkError):
+    """Retain the cleanup failure and its failed uncertainty settlement."""
+    def __init__(self, primary, settlement):
+        self.errors = (primary, settlement)
+        super().__init__("cleanup failure and uncertainty settlement failure")
+
+
 Action = actions.CommandId
 TcObservation = actions.CommandId
 
@@ -1635,20 +1642,7 @@ def _cleanup_detached_placeholders(journal):
 
 def _normalize_baseline_links(links):
     normalized = json.loads(json.dumps(links))
-    master_macs = {row.get("ifname"): row.get("address") for row in normalized
-                   if type(row) is dict and type(row.get("ifname")) is str}
-    normalized = [row for row in normalized if not (
-        type(row) is dict and type(row.get("flags")) is list and "SLAVE" in row["flags"]
-        and type(row.get("master")) is str and row.get("address") == master_macs.get(row["master"])
-        and row.get("parentbus") == "pci" and type(row.get("parentdev")) is str
-        and re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", row["parentdev"])
-        and row.get("vfinfo_list") == [] and type(row.get("altnames")) is list
-        and len(row["altnames"]) == 1
-        and re.fullmatch(r"enP[0-9]+p[0-9]+s[0-9]+", row["altnames"][0]))]
     for row in normalized:
-        if (type(row) is dict and row.get("parentbus") in {"vmbus", "pci"}
-                and type(row.get("tso_max_size")) is int and row["tso_max_size"] > 0):
-            row["tso_max_size"] = 0
         linkinfo = row.get("linkinfo") if type(row) is dict else None
         if type(linkinfo) is dict and linkinfo.get("info_kind") == "bridge":
             data = linkinfo.get("info_data")
@@ -1660,6 +1654,30 @@ def _normalize_baseline_links(links):
                     raise NetworkError("bridge timer metric")
                 data[name] = 0
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _exact_unmounted_placeholder(raw, name, expected):
+    if type(expected) is not dict or set(expected) != {"device", "inode"}:
+        return False
+    try: observed = os.stat("/run/netns/" + name, follow_symlinks=False)
+    except FileNotFoundError: return False
+    except OSError as error: raise NetworkError("placeholder stat uncertainty") from error
+    if (observed.st_dev, observed.st_ino) != (expected["device"], expected["inode"]):
+        return False
+    try: lines = raw.decode("utf-8", "strict").splitlines()
+    except UnicodeError as error: raise NetworkError("placeholder mountinfo encoding") from error
+    if not lines or len(lines) > MAX_MOUNTINFO_LINES:
+        raise NetworkError("placeholder mountinfo count")
+    path = "/run/netns/" + name
+    for line in lines:
+        fields = line.split(" ")
+        if fields.count("-") != 1: raise NetworkError("placeholder mountinfo separator")
+        separator = fields.index("-")
+        if separator < 6 or len(fields) != separator + 4 or not _DEVICE.fullmatch(fields[2]):
+            raise NetworkError("placeholder mountinfo shape")
+        point = _OCTAL.sub(lambda match: chr(int(match.group(1), 8)), fields[4])
+        if point == path: return False
+    return True
 
 
 def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
@@ -1701,12 +1719,18 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
     if journal is not None:
         try: active_netns = _netns_identity(None, mountinfo, netns_name)
         except NetworkError:
-            placeholder_stat = os.stat("/run/netns/" + netns_name, follow_symlinks=False)
-            if planned is None or (placeholder_stat.st_dev, placeholder_stat.st_ino) != (planned["device"], planned["inode"]): raise
+            if not _exact_unmounted_placeholder(mountinfo, netns_name, planned): raise
             placeholder_present = True
-    if (any(row.get("name") == netns_name and not placeholder_present or journal is None and
-            re.fullmatch(r"c42n[0-9a-f]{10}", row.get("name", "")) for row in names)
-            or active_netns is not None):
+    if active_netns is not None:
+        raise NetworkError("fixed namespace already exists")
+    ignored_names = {netns_name} if placeholder_present else set()
+    quarantine_stage = _quarantine_stage(journal) if journal is not None else None
+    if quarantine_stage is not None and quarantine_stage[1]["placeholder"] is not None:
+        qname = quarantine_stage[1]["quarantine_name"]
+        if _exact_unmounted_placeholder(mountinfo, qname, quarantine_stage[1]["placeholder"]):
+            ignored_names.add(qname)
+    if any(re.fullmatch(r"c42[qn][0-9a-f]{10}", row["name"])
+           and row["name"] not in ignored_names for row in names):
         raise NetworkError("fixed namespace already exists")
     nft = ruleset
     _keys(nft, ("nftables",))
@@ -1721,15 +1745,6 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
         if (not allow_owned_nft and type(table) is dict and table.get("family") == "inet" and
                 (table.get("name") == table_name or journal is None and re.fullmatch(r"c42t[0-9a-f]{10}", table.get("name", "")))):
             raise NetworkError("fixed nft table already exists")
-    ignored_names = {netns_name} if placeholder_present else set()
-    quarantine_stage = _quarantine_stage(journal) if journal is not None else None
-    if quarantine_stage is not None and quarantine_stage[1]["placeholder"] is not None:
-        qname = quarantine_stage[1]["quarantine_name"]; qplanned = quarantine_stage[1]["placeholder"]
-        try: qstat = os.stat("/run/netns/" + qname, follow_symlinks=False)
-        except FileNotFoundError: qstat = None
-        if qstat is not None and (qstat.st_dev, qstat.st_ino) == (qplanned["device"], qplanned["inode"]):
-            try: _netns_identity(None, mountinfo, qname)
-            except NetworkError: ignored_names.add(qname)
     normalized_names = json.dumps([row for row in names if row["name"] not in ignored_names],
                                   sort_keys=True, separators=(",", ":")).encode()
     all_raw = (_normalize_baseline_links(links), *raws[1:4], normalized_names,
@@ -2165,10 +2180,6 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
         if ids[-len(baseline_ids):] != baseline_ids: raise NetworkError("terminal source cardinality")
         raw = tuple(rows[item.value][-1] for item in _BASELINE_ACTIONS)
         mountinfo = rows["MOUNTINFO"][-1]
-        names = _load(raw[4]); mount_text = mountinfo.decode("utf-8", "strict")
-        names = [row for row in names if not (re.fullmatch(r"c42[qn][0-9a-f]{10}", row.get("name", "")) and
-                 (" /run/netns/" + row["name"] + " ") not in mount_text)]
-        raw = (*raw[:4], json.dumps(names, sort_keys=True, separators=(",", ":")).encode(), raw[5])
         if rows["NETNS_STAT"][-1] != b"null": raise NetworkError("terminal netns present")
         complete = _complete_baseline(raw, mountinfo, None, kind == "network-absent")
         if baselines is not None:
@@ -2324,6 +2335,7 @@ def _resume_effect(journal, ip, nft, tc):
 def _remove_fixed_network(journal, ip, nft, tc):
     import completion_kata_operation as operation
     try:
+        journal.begin_network_cleanup("network")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "network-absent":
             operation._settle_network_phase(journal, "NETWORK_ABSENT"); return rows[-1]
@@ -2377,15 +2389,17 @@ def _remove_fixed_network(journal, ip, nft, tc):
         body = _snapshot(journal, "network-absent", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         operation._settle_network_phase(journal, "NETWORK_ABSENT"); return body
-    except BaseException:
+    except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
-        except BaseException: pass
+        except BaseException as settlement_error:
+            raise NetworkCleanupError(error, settlement_error)
         raise
 
 
 def _remove_fixed_firewall(journal, ip, nft, tc):
     import completion_kata_operation as operation
     try:
+        journal.begin_network_cleanup("firewall")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "firewall-restored":
             operation._settle_network_phase(journal, "FIREWALL_ABSENT"); return rows[-1]
@@ -2413,9 +2427,10 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         body = _snapshot(journal, "firewall-restored", baselines, absent,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         operation._settle_network_phase(journal, "FIREWALL_ABSENT"); return body
-    except BaseException:
+    except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")
-        except BaseException: pass
+        except BaseException as settlement_error:
+            raise NetworkCleanupError(error, settlement_error)
         raise
 
 

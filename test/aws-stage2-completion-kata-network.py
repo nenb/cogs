@@ -167,13 +167,19 @@ bridge_a = [{"ifname": "docker0", "linkinfo": {"info_kind": "bridge", "info_data
     "hello_timer": 0.0, "tcn_timer": 0.0, "topology_change_timer": 0.0, "gc_timer": 1.25}}}]
 bridge_b = copy.deepcopy(bridge_a); bridge_b[0]["linkinfo"]["info_data"]["gc_timer"] = 9.5
 assert network._normalize_baseline_links(bridge_a) == network._normalize_baseline_links(bridge_b)
+bridge_replaced = copy.deepcopy(bridge_b); bridge_replaced[0]["ifname"] = "foreign0"
+assert network._normalize_baseline_links(bridge_a) != network._normalize_baseline_links(bridge_replaced)
 hyperv_a = [{"ifname": "eth0", "address": "02:00:00:00:00:01", "parentbus": "vmbus",
              "tso_max_size": 62780}]
-hyperv_b = [{**hyperv_a[0], "tso_max_size": 524280},
-            {"ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
-             "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci",
-             "parentdev": "0001:00:02.0", "vfinfo_list": [], "altnames": ["enP1p0s2"]}]
-assert network._normalize_baseline_links(hyperv_a) == network._normalize_baseline_links(hyperv_b)
+hyperv_slave = {"ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
+                "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci",
+                "parentdev": "0001:00:02.0", "vfinfo_list": [], "altnames": ["enP1p0s2"]}
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
+    hyperv_a + [hyperv_slave])
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
+    [{**hyperv_a[0], "tso_max_size": 0}])
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
+    [{**hyperv_a[0], "tso_max_size": 524280}])
 large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
 rejected(lambda: network._load(large_nft_array))
 assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1
@@ -184,6 +190,17 @@ assert network.parse_links(b"[]", False) == ()
 rejected(lambda: network.parse_links(b"[]", True))
 rejected(lambda: network.parse_links(b"[" * 20 + b"]" * 20, False))
 rejected(lambda: network.parse_links(b"x" * (network.MAX_JSON + 1), False))
+
+# Foreign operation-shaped namespace names are inventory, never name-only omissions.
+baseline_mountinfo = b"1 0 0:1 / / rw - ext4 /dev/root rw\n"
+def baseline_with_names(names):
+    raws = (b"[]", b"[]", b"[]", b"[]", encoded(names), b'{"nftables":[]}')
+    return network._complete_baseline(raws, baseline_mountinfo, None)
+
+baseline_with_names([])
+for foreign_name in ("c42n0123456789", "c42q0123456789"):
+    rejected(lambda foreign_name=foreign_name:
+             baseline_with_names([{"name": foreign_name}]))
 
 # Canonical libnftables set expressions, grouped output order, and retained handles.
 def match(left, right, op="=="):

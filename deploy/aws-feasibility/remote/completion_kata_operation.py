@@ -775,7 +775,7 @@ def _validate_body(kind, body):
         _hex(body["proof_sha256"])
         _fail(body["marker_sha256"] == hashlib.sha256(FIXED["ssh_marker"].encode("ascii")).hexdigest())
         _fail(type(body["authentication_attempts"]) is int and body["authentication_attempts"] == 1)
-    elif kind == "READINESS_REVOKED":
+    elif kind == "READINESS_REVOKED" or kind in network_journal.CLEANUP_INTENTS:
         _keys(body, ("operation_token",))
         _hex(body["operation_token"])
     elif kind == "OWNERSHIP_OBSERVED":
@@ -1001,6 +1001,8 @@ def _b1_phase_trace(records, index, phase, network_state):
                       if item.body["command_serial"] in network_state["replay_serials"]}
     network_journal.successful_trace((item.body["command_id"] for item in intents), phase, replay_indices)
     _fail(all(_settled_v2(records, item, index) for item in intents))
+
+
 def _runtime_trace(records, index, phase, ownership=None, candidate=None, complete=False):
     key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
     trace = command_policy.RUNTIME_TRACES.get(key, ())
@@ -1063,12 +1065,15 @@ def _legal(records):
     lifecycle_deadline = None
     ever_uncertain = False
     network_state = network_journal.initial()
+    cleanup_mode = None
     rootfs = False
     next_serial = 0
     for index, record in enumerate(records[1:], 1):
         kind = record.record_type
         body = record.body
         _fail(body["operation_token"] == token)
+        cleanup_mode, cleanup_intent = network_journal.cleanup_step(cleanup_mode, kind, phase, _fail)
+        if cleanup_intent: continue
         if phase == "UNCERTAIN" and kind == "RUNTIME_RESUME_V4":
             prior = records[index - 1]; serial = body["uncertain_serial"]
             intent = next(item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == serial)
@@ -1372,7 +1377,7 @@ def _legal(records):
                                network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
                 if requirement is not None:
                     _fail(requirement == phase)
-                    try: _b1_phase_trace(records, index, phase, network_state)
+                    try: network_journal.successful_phase_trace(records, index, phase, network_state, _settled_v2)
                     except ValueError as error: raise OperationError() from error
             else:
                 _fail(production_admitted or "COMMAND_INTENT_V2" not in seen
@@ -1571,7 +1576,7 @@ def _open_base_chain(control):
         fs._close_node(anchor, error)
 def _make_authority():
     seal = object()
-    owners, closed, permits, grants, cleanup_owners = {}, set(), {}, {}, {}
+    owners, closed, poisoned, permits, grants, cleanup_owners = {}, set(), set(), {}, {}, {}
     release_permits, release_grants = {}, {}
     class _FixedJournal:
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
@@ -1942,7 +1947,7 @@ def _make_authority():
         _fail(state is not None and authority not in closed)
         return state
     def reload(authority, preserve=False):
-        state = owner(authority)
+        _fail(authority not in poisoned or preserve is None); state = owner(authority)
         observed = state[0].read()
         state[0]._loaded_generation = None
         if observed is None:
@@ -1956,14 +1961,15 @@ def _make_authority():
                 validate(records, journal_generation)
         except OperationError:
             state[1:] = [(), "preserve"]
-            if not preserve:
+            if preserve is False:
                 raise
         else:
             state[0]._loaded_generation = journal_generation
             state[1:] = [records, "exact"]
         return state
     def write_validated(authority, kind, body):
-        state = owner(authority); io, records, status = state
+        state = owner(authority); _fail(authority not in poisoned or kind == "UNCERTAIN")
+        io, records, status = state
         _fail(status == "exact" and records and io._loaded_generation is not None)
         validate = getattr(io, "validate_layout", None)
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
@@ -2310,9 +2316,10 @@ def _make_authority():
             write_validated(self, "INPUT_REMOVED", {"operation_token": context.operation_token,
                                                      "proof_sha256": proof_sha256})
         def record_uncertain(self, reason):
-            context, reason = self.command_context(), _choice(reason, UNCERTAIN_REASONS)
-            write_validated(self, "UNCERTAIN", {"operation_token": context.operation_token,
-                                                 "reason": reason})
+            network_journal.poison_uncertain(self, reason, UNCERTAIN_REASONS, poisoned,
+                                             reload, write_validated, _legal, _fail)
+        def begin_network_cleanup(self, target):
+            network_journal.begin_cleanup(self, target, reload, write_validated, _legal, _fail)
         def network_records(self):
             _io, records, status = reload(self)
             _fail(status == "exact")
@@ -2372,8 +2379,7 @@ def _make_authority():
             state[1:] = [(), "closed"]
             state[0].close()
         def status(self):
-            if self in closed:
-                return "closed"
+            if self in closed or self in poisoned: return "closed" if self in closed else "poisoned"
             return reload(self, True)[2]
     def claim_rootfs_reopen(permit):
         _fail(type(permit) is RootfsPermit)
@@ -2542,7 +2548,7 @@ def _make_authority():
         authority.admit_production_v2()
         return authority
     def claim_production_operation(authority):
-        _fail(type(authority) is OperationAuthority and authority in owners and authority not in closed)
+        _fail(type(authority) is OperationAuthority and authority in owners and authority not in closed and authority not in poisoned)
         _io, records, status = reload(authority, True)
         admissions = [item for item in records if item.record_type == "PRODUCTION_ADMISSION_V2"]
         deadlines = [item for item in records if item.record_type == "LIFECYCLE_DEADLINE_V1"]

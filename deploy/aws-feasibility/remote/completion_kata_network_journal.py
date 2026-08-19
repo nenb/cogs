@@ -25,6 +25,14 @@ QUARANTINE_RECORDS = frozenset({"NETWORK_QUARANTINE_INTENT_V2", "NETWORK_QUARANT
     "NETWORK_QUARANTINE_MOVED_V2", "NETWORK_QUARANTINE_SETTLED_V2",
     "NETWORK_DETACH_INTENT_V2", "NETWORK_DETACHED_V2"})
 ALL_RECORDS = RECORDS | QUARANTINE_RECORDS | {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD}
+CLEANUP_INTENTS = MappingProxyType({
+    "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT"),
+    "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT"),
+})
+_CLEANUP_RECORDS = frozenset({
+    "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "COMMAND_OUTCOME_V2",
+    "NETWORK_SNAPSHOT_V2", "UNCERTAIN", *ALL_RECORDS,
+})
 MAX_CHUNK_BYTES = 1024
 _BASELINE_TRACE = ("IP_ALL_LINKS", "IP_ALL_ADDRESSES", "IP_ALL_ROUTES4",
                    "IP_ALL_ROUTES6", "IP_NETNS_LIST", "NFT_RULESET")
@@ -79,6 +87,41 @@ del _BASELINE_TRACE, _PARTIAL, _SETUP_TRACE, _OWNED, _RUNTIME_NET, _READY_NET, _
 HEX = frozenset("0123456789abcdef")
 def _fail(value):
     if not value: raise ValueError("network journal")
+def active_cleanup(records, require=_fail):
+    active = None
+    for record in records:
+        if record.record_type in CLEANUP_INTENTS:
+            require(active is None); active = record.record_type
+        elif active is not None and record.record_type == CLEANUP_INTENTS[active][1]:
+            active = None
+    return active
+
+def cleanup_step(active, kind, phase, require=_fail):
+    if active is not None:
+        require(kind in _CLEANUP_RECORDS or kind == CLEANUP_INTENTS[active][1])
+        return (None if kind == CLEANUP_INTENTS[active][1] else active), False
+    if kind in CLEANUP_INTENTS:
+        require(phase in CLEANUP_INTENTS[kind][0]); return kind, True
+    return None, False
+
+def begin_cleanup(authority, target, reload, write, legal, require):
+    kind = {"network": "NETWORK_CLEANUP_INTENT_V1",
+            "firewall": "FIREWALL_CLEANUP_INTENT_V1"}.get(target)
+    require(kind is not None)
+    _io, records, status = reload(authority); require(status == "exact" and records)
+    active = active_cleanup(records, require)
+    if active is not None:
+        require(active == kind); return
+    require(legal(records) in CLEANUP_INTENTS[kind][0])
+    write(authority, kind, {"operation_token": records[0].body["operation_token"]})
+
+def poison_uncertain(authority, reason, reasons, poisoned, reload, write, legal, require):
+    require(type(reason) is str and reason in reasons); poisoned.add(authority)
+    _io, records, status = reload(authority, None); require(status == "exact" and records)
+    if legal(records) != "UNCERTAIN":
+        write(authority, "UNCERTAIN", {
+            "operation_token": records[0].body["operation_token"], "reason": reason})
+
 def _hex(value, zero=False):
     _fail(type(value) is str and len(value) == 64 and set(value) <= HEX and (zero or value != "0" * 64))
 def _keys(value, names):
@@ -260,6 +303,14 @@ def initial():
             "effect_commands": [], "effect_replays": [], "replay_serials": [], "current": None,
             "observations": [], "output_pending": None, "quarantine": None,
             "original_placeholder": None, "created_nsfs": None}
+def successful_phase_trace(records, index, phase, state, settled):
+    intents = [item for item in records[:index]
+               if item.record_type == "COMMAND_INTENT_V2" and item.body["lifecycle_phase"] == phase]
+    replay_indices = {position for position, item in enumerate(intents)
+                      if item.body["command_serial"] in state["replay_serials"]}
+    successful_trace((item.body["command_id"] for item in intents), phase, replay_indices)
+    _fail(all(settled(records, item, index) for item in intents))
+
 def successful_trace(command_ids, phase, replay_indices=()):
     observed = tuple(value for index, value in enumerate(command_ids) if index not in replay_indices)
     variants = SUCCESS_PHASE_TRACE_VARIANTS.get(phase)

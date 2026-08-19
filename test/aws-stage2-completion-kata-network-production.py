@@ -343,6 +343,7 @@ ready = bind(ready, SOURCE)
 class JournalCut:
     def __init__(self): self.rows = [{"snapshot_kind": "ready", "identity": ready, "baselines": BASELINES}]
     def network_history(self): return ()
+    def begin_network_cleanup(self, _target): pass
 cut = JournalCut(); snapshots = []
 def source_rows(*ids):
     return [{"observation_serial": index + 10, "source_id": name,
@@ -420,6 +421,77 @@ for snapshot_kind, existing, expected_removals in (("ready", netns_object, [netw
          patch.object(operation, "_settle_network_phase"):
         network._remove_fixed_network(teardown, object(), object(), object())
     check(removals == expected_removals, "ready-only/absent teardown issued wrong rm")
+
+# Cleanup intent is durable before fallible work. If poisoning cannot append
+# UNCERTAIN, both failures survive and neither this owner nor a reopen can progress.
+class CleanupRecord:
+    def __init__(self, kind, body=None):
+        self.record_type = kind
+        self.body = body
+
+# The real poison helper invalidates memory before opening/appending. An append
+# failure cannot restore that authority.
+poison_owner = object(); poison_set = set(); poison_append = OSError("append failed")
+poison_records = [CleanupRecord("GENESIS", {"operation_token": "a" * 64})]
+def poison_reload(authority, preserve):
+    check(authority in poison_set and preserve is None, "uncertainty opened before poison")
+    return object(), poison_records, "exact"
+def poison_write(authority, kind, body):
+    check(authority in poison_set and kind == "UNCERTAIN" and
+          body["operation_token"] == "a" * 64, "uncertainty append was not poison-bound")
+    raise poison_append
+try:
+    journal_model.poison_uncertain(poison_owner, "incomplete", operation.UNCERTAIN_REASONS,
+        poison_set, poison_reload, poison_write, lambda _records: "TASK_STOPPED",
+        lambda value: value or (_ for _ in ()).throw(operation.OperationError()))
+except OSError as error:
+    check(error is poison_append and poison_owner in poison_set, "append failure cleared poison")
+else:
+    raise AssertionError("uncertainty append failure accepted")
+
+class CleanupFaultJournal:
+    def __init__(self, durable, target=None, settlement=None, poisoned=False):
+        self.durable = durable
+        self.target = target
+        self.settlement = settlement
+        self.poisoned = poisoned
+    def begin_network_cleanup(self, observed_target):
+        check(observed_target == self.target, "wrong cleanup intent target")
+        marker = {"network": "NETWORK_CLEANUP_INTENT_V1",
+                  "firewall": "FIREWALL_CLEANUP_INTENT_V1"}[observed_target]
+        self.durable.append(CleanupRecord(marker))
+    def record_uncertain(self, reason):
+        check(reason == "incomplete", "wrong cleanup poison")
+        self.poisoned = True
+        raise self.settlement
+    def advance(self, kind):
+        if self.poisoned:
+            raise operation.OperationError()
+        active = journal_model.active_cleanup(self.durable)
+        try: journal_model.cleanup_step(active, kind, "TASK_STOPPED")
+        except ValueError as error: raise operation.OperationError() from error
+
+for target, cleanup, marker in (
+        ("network", network._remove_fixed_network, "NETWORK_CLEANUP_INTENT_V1"),
+        ("firewall", network._remove_fixed_firewall, "FIREWALL_CLEANUP_INTENT_V1")):
+    durable = []
+    primary = RuntimeError(target + " cleanup failed")
+    settlement = OSError(target + " uncertainty append failed")
+    owner = CleanupFaultJournal(durable, target, settlement)
+    def fail_after_intent(*_args):
+        check(journal_model.active_cleanup(durable) == marker, "cleanup began before durable intent")
+        raise primary
+    with patch.object(network, "_baselines", side_effect=fail_after_intent):
+        try:
+            cleanup(owner, object(), object(), object())
+        except network.NetworkCleanupError as error:
+            check(error.errors == (primary, settlement), "cleanup errors were not preserved")
+        else:
+            raise AssertionError("cleanup/uncertainty double failure accepted")
+    reject(lambda: owner.advance("NETWORK_SNAPSHOT_V2"), "poisoned owner remained usable")
+    reopened = CleanupFaultJournal(durable)
+    reject(lambda: reopened.advance("TASK_ABSENT"), "cleanup-only reopen advanced lifecycle")
+    reject(lambda: reopened.advance("FINAL_BASELINES"), "cleanup-only reopen advanced retirement")
 
 source = network.tc_observer_command(network.Action.TC_QDISC, tap)
 check(process._internally_fixed(process.FixedCommand(
