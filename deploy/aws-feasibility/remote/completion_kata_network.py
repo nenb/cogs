@@ -1840,7 +1840,8 @@ def _cleanup_detached_owned(journal):
             if (parent_stat.st_dev, parent_stat.st_ino) != (authority["parent_mount"]["inode_device"],
                                                             authority["parent_mount"]["inode"]):
                 raise NetworkError("private parent descriptor replacement")
-            if _placeholder_identity(os.fstat(preserved)) != authority["support"]["preserved_directory"]:
+            if not _same_directory_owner(_placeholder_identity(os.fstat(preserved)),
+                                         authority["support"]["preserved_directory"]):
                 raise NetworkError("preserved directory descriptor replacement")
             suffix = _bound_names(journal)[0][4:]
             _cleanup_owned_entry(journal, "original-placeholder", parent, original, preserved,
