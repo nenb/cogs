@@ -56,9 +56,17 @@ identity = {
     "version": "1.0",
     "architecture": "all",
 }
+runtime_closure = {
+    "version": "cogs.stage2-runtime-tool-closure/v1",
+    "manifest_sha256": contract.RUNTIME_CLOSURE_MANIFEST_SHA256,
+    "object_count": contract.RUNTIME_CLOSURE_OBJECT_COUNT,
+    "tools": [dict(row) for row in contract.EXACT_TOOL_OBSERVATIONS],
+}
 final_value = {
     "version": "cogs.stage2-workload-final-pin/v1",
     "candidate_contract_sha256": fixed.sha256,
+    "candidate_result_sha256": "c" * 64,
+    "runtime_closure": runtime_closure,
     "package_identity": identity,
     "reproductions": ["A", "B"],
     "promotion": "manual-reviewed-a-equals-b",
@@ -71,6 +79,7 @@ with tempfile.TemporaryDirectory() as temporary:
     original_candidate = contract.CANDIDATE_PATH
     original_final = contract.FINAL_PATH
     original_digest = contract.REVIEWED_FINAL_PIN_SHA256
+    original_closure = contract.exact_runtime_closure
     exact = original_candidate.read_bytes()
     try:
         target = directory / "target.json"
@@ -104,6 +113,7 @@ with tempfile.TemporaryDirectory() as temporary:
         contract.FINAL_PATH = final_path
         rejected(contract.load_final_pin, contract.FinalPinUnavailable)
         contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(canonical).hexdigest()
+        contract.exact_runtime_closure = lambda: contract._runtime_closure_value(runtime_closure)
         final = contract.load_final_pin()
         check(final.final_pin_sha256 == hashlib.sha256(canonical).hexdigest(), "final raw digest missing")
         check(final.candidate_a == final.candidate_b == final.package_identity, "A=B representation differs")
@@ -120,6 +130,7 @@ with tempfile.TemporaryDirectory() as temporary:
         contract.CANDIDATE_PATH = original_candidate
         contract.FINAL_PATH = original_final
         contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
+        contract.exact_runtime_closure = original_closure
 
 # Authentic descriptor read under repeated rename/ABA yields one complete generation or
 # rejects; the exact candidate loader would additionally reject every non-reviewed digest.
@@ -556,7 +567,11 @@ root.cleanup()
         and versions[1] == [b"Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64)."]
         and versions[2] == [b"Debian 'dpkg' package management program version 1.22.22 (amd64)."]
     )
-    if exact_tools and not candidate.CANDIDATE_ROOT.exists() and not candidate.POST_PIN_ROOT.exists():
+    try:
+        exact_closure_available = contract.exact_runtime_closure() == contract._runtime_closure_value(runtime_closure)
+    except contract.WorkloadContractError:
+        exact_closure_available = False
+    if exact_tools and exact_closure_available and not candidate.CANDIDATE_ROOT.exists() and not candidate.POST_PIN_ROOT.exists():
         linux_exact_tool_transaction_cases_ran = True
         candidate_raw = candidate.run_candidate_transaction()
         candidate_result = json.loads(candidate_raw)
@@ -598,12 +613,9 @@ root.cleanup()
                 contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
 
 # Semantic codecs make A=B structural (one identity) and reject every summary mismatch.
-tools = [
-    {"name": "git", "sha256": "1" * 64, "bytes": 1, "version": "git version 2.47.3"},
-    {"name": "dpkg-deb", "sha256": "2" * 64, "bytes": 2, "version": "dpkg-deb 1.22.22"},
-    {"name": "dpkg", "sha256": "3" * 64, "bytes": 3, "version": "dpkg 1.22.22"},
-]
-binding = contract.execution_binding(tools)
+tools = [dict(row) for row in contract.EXACT_TOOL_OBSERVATIONS]
+runtime_pin = contract._runtime_closure_value(runtime_closure)
+binding = contract.execution_binding(tools, runtime_pin)
 candidate_value = {
     "version": "cogs.stage2-workload-candidate/v1",
     "result": "pass",
@@ -630,7 +642,7 @@ for key, hostile in (
     rejected(lambda changed=changed: contract.validate_candidate_result(changed), contract.WorkloadContractError)
 
 parsed_identity = contract.parse_identity(identity)
-semantic_final = contract.FinalPin(fixed.sha256, "f" * 64, parsed_identity)
+semantic_final = contract.FinalPin(fixed.sha256, "c" * 64, "f" * 64, parsed_identity, runtime_pin)
 post_value = {
     "version": "cogs.stage2-workload-post-pin/v1",
     "result": "pass",

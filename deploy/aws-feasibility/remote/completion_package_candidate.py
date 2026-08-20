@@ -20,6 +20,8 @@ from completion_guest_workloads import (
 )
 from completion_runtime_contract import (
     canonical_json,
+    exact_runtime_closure,
+    exact_tool_observations,
     execution_binding,
     load_candidate_contract,
     load_final_pin,
@@ -93,12 +95,13 @@ def run_candidate_transaction():
         try:
             contract = load_candidate_contract()
             require_linux_amd64_root()
+            runtime_closure = exact_runtime_closure()
             tools = ToolSet()
             root = OwnedRoot(CANDIDATE_ROOT, deadline, "host-candidate")
             root.mkdir("private-home", 0o700)
             root.mkdir("private-tmp", 0o700)
             _check_versions(root, tools, deadline)
-            tool_observations = tools.observations()
+            tool_observations = exact_tool_observations(tools.observations())
             first, _first_build_ms, _first_install_ms = _run_package_sample(root, "candidate-a", tools, deadline)
             _transaction_cut("after-candidate-a")
             _same_tools(tool_observations, tools)
@@ -118,7 +121,7 @@ def run_candidate_transaction():
                 "a_equals_b": True,
                 "lifecycle_deleted": True,
                 "promotion": "external-manual-review-required",
-                "execution_binding": execution_binding(tool_observations),
+                "execution_binding": execution_binding(tool_observations, runtime_closure),
             }
         except BaseException as error:
             failure = error
@@ -143,12 +146,14 @@ def run_post_pin_transaction():
         try:
             final = load_final_pin()
             require_linux_amd64_root()
+            runtime_closure = exact_runtime_closure()
+            _require(runtime_closure == final.runtime_closure)
             tools = ToolSet()
             root = OwnedRoot(POST_PIN_ROOT, deadline, "host-post-pin")
             root.mkdir("private-home", 0o700)
             root.mkdir("private-tmp", 0o700)
             _check_versions(root, tools, deadline)
-            tool_observations = tools.observations()
+            tool_observations = exact_tool_observations(tools.observations())
             first, _first_build_ms, _first_install_ms = _run_package_sample(root, "candidate-a", tools, deadline)
             _transaction_cut("after-post-pin-a")
             _same_tools(tool_observations, tools)
@@ -167,7 +172,7 @@ def run_post_pin_transaction():
                 "reproductions": [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}],
                 "matches_final_pin": True,
                 "lifecycle_deleted": True,
-                "execution_binding": execution_binding(tool_observations),
+                "execution_binding": execution_binding(tool_observations, runtime_closure),
             }
         except BaseException as error:
             failure = error

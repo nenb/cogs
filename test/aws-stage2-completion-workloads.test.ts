@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,21 +35,44 @@ const identity = {
   architecture: "all",
 };
 const contractSha = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3";
+const exactTools = [
+  {
+    name: "git",
+    sha256: "356db14e102d68a1a37d8a1ac577dfd678d45d46e92f468bef8b7154e7bfdc60",
+    bytes: 4082768,
+    version: "git version 2.47.3",
+  },
+  {
+    name: "dpkg-deb",
+    sha256: "5346e5fdfdc81d58bbc9d2a3de20ff3738dc479cdb04cc52b91503cbb13440eb",
+    bytes: 182816,
+    version: "Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64).",
+  },
+  {
+    name: "dpkg",
+    sha256: "0a20f6015fbb7c011571f3ed227a138b12ce282e46b7fdfc239558bc5a7bc9e5",
+    bytes: 326704,
+    version: "Debian 'dpkg' package management program version 1.22.22 (amd64).",
+  },
+];
+const runtimeClosure = {
+  version: "cogs.stage2-runtime-tool-closure/v1",
+  manifest_sha256: "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850",
+  object_count: 35,
+  tools: exactTools,
+};
 const executionBinding = {
   fixture_implementation_sha256: "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
   workload_implementation_sha256: "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850",
   owner_implementation_sha256: "498407f393924ab472d3f014a3c2e54257e0b38f6b0783f24fcf35e820b31796",
-  orchestrator_implementation_sha256: "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
+  orchestrator_implementation_sha256: "8341389e56e16e82bb6c477a9181c57d90af59e97e7e03b0cbd9c9a0e4774ce1",
   candidate_recovery_implementation_sha256: "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5",
   post_pin_recovery_implementation_sha256: "1bae8dbde70ea7c0465dbb808a9d85205d88cdf03302f389128a25884ec2c060",
-  tool_observations: [
-    { name: "git", sha256: "1".repeat(64), bytes: 1, version: "git version 2.47.3" },
-    { name: "dpkg-deb", sha256: "2".repeat(64), bytes: 2, version: "dpkg-deb 1.22.22" },
-    { name: "dpkg", sha256: "3".repeat(64), bytes: 3, version: "dpkg 1.22.22" },
-  ],
+  tool_observations: exactTools,
+  runtime_closure: runtimeClosure,
   contract_validator: "unbound-self-referential-host-validator",
   source_checkout: "unbound-current-checkout",
-  linux_dynamic_tool_closure: "unbound-kernel-libc-loader-libraries-config-helpers",
+  linux_dynamic_tool_closure: "exact-static-elf-closure-runtime-mapping-attestation-required",
   process_containment: "linux-subreaper-pidfd-or-start-time-no-cgroup-v2",
   process_containment_limitation: "no-cgroup-proof-honest-supervisor-crash-only-not-hostile-process-closure",
   operation_parent_isolation: "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
@@ -91,6 +114,20 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
     { ...candidate, a_equals_b: false },
     { ...candidate, reproductions: [...reproductions].reverse() },
     { ...candidate, candidate_b: { ...identity, deb_sha256: "b".repeat(64) } },
+    {
+      ...candidate,
+      execution_binding: {
+        ...executionBinding,
+        tool_observations: [{ ...exactTools[0], sha256: "f".repeat(64) }, ...exactTools.slice(1)],
+      },
+    },
+    {
+      ...candidate,
+      execution_binding: {
+        ...executionBinding,
+        runtime_closure: { ...runtimeClosure, manifest_sha256: "f".repeat(64) },
+      },
+    },
   ]) {
     assert.equal(validateCandidate(hostile), false);
   }
@@ -99,12 +136,16 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   const finalPin = {
     version: "cogs.stage2-workload-final-pin/v1",
     candidate_contract_sha256: contractSha,
+    candidate_result_sha256: "c".repeat(64),
+    runtime_closure: runtimeClosure,
     package_identity: identity,
     reproductions: ["A", "B"],
     promotion: "manual-reviewed-a-equals-b",
   };
   assert.equal(validateFinal(finalPin), true, JSON.stringify(validateFinal.errors));
   assert.equal(validateFinal({ ...finalPin, reproductions: ["B", "A"] }), false);
+  assert.equal(validateFinal({ ...finalPin, candidate_result_sha256: "C".repeat(64) }), false);
+  assert.equal(validateFinal({ ...finalPin, runtime_closure: { ...runtimeClosure, object_count: 34 } }), false);
   assert.equal(validateFinal({ ...finalPin, candidate_b: { ...identity, deb_sha256: "b".repeat(64) } }), false);
 
   const validatePostPin = compile("stage2-workload-post-pin-v1.json");
@@ -150,6 +191,14 @@ test("rejected v1 is absent from protected main and host foundations remain non-
   assert.match(portableSource, /check\(linux_foundation_cases_ran == required_foundations,/u);
 });
 
+test("fixed candidate authenticates exact acquired tool bytes before build A", () => {
+  const source = readFileSync(join(root, "deploy/aws-feasibility/remote/completion_package_candidate.py"), "utf8");
+  const observation = source.indexOf("exact_tool_observations(tools.observations())");
+  const firstBuild = source.indexOf('_run_package_sample(root, "candidate-a"');
+  assert.ok(observation > 0 && firstBuild > observation);
+  assert.match(source, /runtime_closure = exact_runtime_closure\(\)/u);
+});
+
 test("fixed candidate and recovery entries redact every invocation failure", () => {
   for (const entry of [
     "deploy/aws-feasibility/remote/completion_package_candidate.py",
@@ -167,6 +216,15 @@ test("fixed candidate and recovery entries redact every invocation failure", () 
     assert.match(result.stderr, /^completion host (candidate|recovery) failed: invocation\n$/u);
     assert.doesNotMatch(result.stderr, /\/|git|dpkg|Traceback|Kata|qualification|forbidden/u);
   }
+});
+
+test("production final-pin bytes and authority remain absent", () => {
+  assert.equal(existsSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")), false);
+  const contractSource = readFileSync(
+    join(root, "deploy/aws-feasibility/remote/completion_runtime_contract.py"),
+    "utf8",
+  );
+  assert.match(contractSource, /^REVIEWED_FINAL_PIN_SHA256 = None$/mu);
 });
 
 test("Darwin CLI is categorical and cannot create a final pin", { skip: process.platform !== "darwin" }, () => {
