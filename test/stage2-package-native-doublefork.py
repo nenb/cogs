@@ -181,6 +181,53 @@ def portable_tests():
     else:
         raise AssertionError("child error envelope was accepted")
 
+    check(module._classify_supervisor_packet(
+        b"HELPER-ERROR:pid1-wait:OSError_5", -1, 1, True)
+        == ("helper-error", "pid1-wait", "OSError_5"),
+        "helper diagnostic tokens were discarded")
+    check(module._classify_pid1_gate_packet(
+        b"HELPER-NO-PID1-ERROR:namespace-unshare:OSError_1", -1)
+        == ("no-pid1", "namespace-unshare", "OSError_1"),
+        "pre-PID1 helper diagnostic tokens were discarded")
+    for packet in (b"PID1-EXIT:1:-1", b"PID1-EXIT:1:256", b"PID1-EXIT:999:1"):
+        try:
+            module._classify_supervisor_packet(packet, -1, 1, True)
+        except module.NativeCandidateError:
+            pass
+        else:
+            raise AssertionError(f"out-of-domain PID1 status accepted: {packet!r}")
+    check(module._diagnostic_line(
+        module.StageCandidateError("retained-root-prepare", "OSError_22"))
+        == b"native package candidate failed:stage_error:retained-root-prepare:OSError_22\n",
+        "stage diagnostic line changed")
+    check(module._diagnostic_line(
+        module.HelperCandidateError("namespace-unshare", "OSError_1"))
+        == b"native package candidate failed:helper_error:namespace-unshare:OSError_1\n",
+        "helper diagnostic line changed")
+    original_open_tree = module._open_detached_tree
+    cleanup = module.CleanupUncertain(
+        module.NativeCandidateError("work"),
+        (("detached-root-close", OSError(5, "close")),),
+    )
+    try:
+        module._open_detached_tree = lambda _descriptor: (_ for _ in ()).throw(cleanup)
+        try:
+            module._open_retained_tree(99)
+        except module.CleanupUncertain as error:
+            check(error is cleanup, "retained-root site tag replaced cleanup uncertainty")
+        else:
+            raise AssertionError("retained-root cleanup uncertainty was accepted")
+        module._open_detached_tree = lambda _descriptor: (_ for _ in ()).throw(OSError(22, "mount"))
+        try:
+            module._open_retained_tree(99)
+        except module.StageCandidateError as error:
+            check((error.stage, error.reason) == ("retained-root-prepare", "OSError_22"),
+                  "retained-root OSError lost its site tag")
+        else:
+            raise AssertionError("retained-root OSError was accepted")
+    finally:
+        module._open_detached_tree = original_open_tree
+
     oversize = (module.MAX_PROTOCOL_BYTES + 1).to_bytes(4, "big") + b"S"
     try:
         module._parse_frame(oversize)
@@ -297,7 +344,7 @@ def _success_frame(payload):
     return len(payload + b"S").to_bytes(4, "big") + b"S" + payload
 
 
-def _supervisor_protocol_row(raw, *, report=False):
+def _supervisor_protocol_row(raw, *, report=False, report_status=0):
     parent_control, child_control = socket.socketpair(
         socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
     result_read, result_write = os.pipe2(os.O_CLOEXEC)
@@ -307,7 +354,10 @@ def _supervisor_protocol_row(raw, *, report=False):
         try:
             module._write_all(result_write, raw)
             if report:
-                module._control_send(child_control.fileno(), f"PID1-EXIT:{os.CLD_EXITED}:0".encode("ascii"))
+                module._control_send(
+                    child_control.fileno(),
+                    f"PID1-EXIT:{os.CLD_EXITED}:{report_status}".encode("ascii"),
+                )
         finally:
             os.close(result_write); child_control.close()
         os._exit(0)
@@ -345,6 +395,29 @@ def _supervisor_protocol_tests():
 
     child_failure = b"transaction:OSError_5"
     error_frame = len(child_failure + b"E").to_bytes(4, "big") + b"E" + child_failure
+    result, error, cleanup, settled = _supervisor_protocol_row(
+        error_frame, report=True, report_status=1)
+    check(result is None and isinstance(error, module.ChildCandidateError)
+          and (error.stage, error.category) == ("transaction", "OSError_5")
+          and cleanup == [] and settled,
+          f"authenticated child error was masked by terminal status: {error!r}; {cleanup!r}")
+    result, error, cleanup, settled = _supervisor_protocol_row(
+        error_frame, report=True, report_status=2)
+    check(result is None and isinstance(error, module.StageCandidateError)
+          and (error.stage, error.reason) == ("pid1-terminal", "nonzero-status")
+          and cleanup == [] and settled,
+          f"unexpected PID1 error status authenticated a child frame: {error!r}; {cleanup!r}")
+    result, error, cleanup, settled = _supervisor_protocol_row(error_frame, report=True)
+    check(result is None and isinstance(error, module.StageCandidateError)
+          and (error.stage, error.reason) == ("pid1-protocol", "error-frame-zero-status")
+          and cleanup == [] and settled,
+          f"zero-status child error frame was accepted: {error!r}; {cleanup!r}")
+    result, error, cleanup, settled = _supervisor_protocol_row(
+        _success_frame(payload), report=True, report_status=1)
+    check(result == payload and isinstance(error, module.StageCandidateError)
+          and (error.stage, error.reason) == ("pid1-terminal", "nonzero-status")
+          and cleanup == [] and settled,
+          f"nonzero-status success frame was accepted: {error!r}; {cleanup!r}")
     original_poll = module.select.poll
     module.select.poll = lambda: (_ for _ in ()).throw(OSError(5, "poll fault"))
     try:

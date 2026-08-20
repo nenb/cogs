@@ -115,11 +115,35 @@ class NativeCandidateError(Exception):
     """A bounded, fail-closed candidate error."""
 
 
+class StageCandidateError(NativeCandidateError):
+    category = "stage_error"
+
+    def __init__(self, stage, reason):
+        _require_safe_token(stage)
+        _require_safe_token(reason)
+        self.stage = stage
+        self.reason = reason
+        super().__init__(f"{stage}:{reason}")
+
+
 class ChildCandidateError(NativeCandidateError):
     def __init__(self, stage, category):
+        _require_safe_token(stage)
+        _require_safe_token(category)
         self.stage = stage
         self.category = category
         super().__init__(f"{stage}:{category}")
+
+
+class HelperCandidateError(NativeCandidateError):
+    category = "helper_error"
+
+    def __init__(self, stage, reason):
+        _require_safe_token(stage)
+        _require_safe_token(reason)
+        self.stage = stage
+        self.reason = reason
+        super().__init__(f"{stage}:{reason}")
 
 
 class CleanupUncertain(NativeCandidateError):
@@ -151,6 +175,11 @@ class _Outcome:
             raise CleanupUncertain(self.work_error, self.cleanup_errors) from self.work_error
         if self.work_error is not None:
             raise self.work_error
+
+
+def _require_safe_token(value):
+    if not isinstance(value, str) or _SAFE_TOKEN.fullmatch(value) is None:
+        raise NativeCandidateError("unsafe diagnostic token")
 
 
 def _require(condition, message="candidate invariant"):
@@ -272,6 +301,19 @@ def _open_detached_tree(root_descriptor, *, allow_root_mount=False):
             raise CleanupUncertain(primary, (("detached-root-close", cleanup),)) from primary
         raise
     return tree
+
+
+def _open_retained_tree(root_descriptor):
+    try:
+        return _open_detached_tree(root_descriptor)
+    except CleanupUncertain:
+        raise
+    except StageCandidateError:
+        raise
+    except OSError as error:
+        raise StageCandidateError("retained-root-prepare", _category(error)) from error
+    except NativeCandidateError as error:
+        raise StageCandidateError("retained-root-prepare", "invariant") from error
 
 
 def _close_range(first, last):
@@ -528,10 +570,20 @@ def _control_no_fd(raw, passed, expected, message):
         _require(packet == expected and right < 0, message)
     _control_adopt(raw, passed, validate)
 
+def _helper_error_tokens(packet, prefix):
+    try:
+        marker, stage, category = packet.decode("ascii").split(":")
+    except (UnicodeError, ValueError) as error:
+        raise NativeCandidateError("malformed helper error") from error
+    _require(marker == prefix and _SAFE_TOKEN.fullmatch(stage) is not None
+             and _SAFE_TOKEN.fullmatch(category) is not None, "malformed helper error tokens")
+    return stage, category
+
+
 def _classify_pid1_gate_packet(packet, passed, expected_parent=None, available=True):
     if packet.startswith(b"HELPER-NO-PID1-ERROR:"):
         _require(passed < 0, "helper error carried a descriptor")
-        return "no-pid1",
+        return "no-pid1", *_helper_error_tokens(packet, "HELPER-NO-PID1-ERROR")
     _require(packet.startswith(PID1_FD) and packet[len(PID1_FD):].isdigit(),
              "PID1 descriptor report malformed")
     _require(available and passed >= 0, "PID1 pidfd missing or duplicate")
@@ -552,14 +604,21 @@ def _classify_supervisor_packet(packet, passed, expected_parent, pid1_available)
         return "eof",
     if packet.startswith(b"PID1-EXIT:"):
         _require(passed < 0, "PID1 exit report carried a descriptor")
-        _prefix, code, status = packet.decode("ascii").split(":")
-        return "pid1-exit", int(code), int(status)
+        _prefix, code_raw, status_raw = packet.decode("ascii").split(":")
+        _require(code_raw.isdigit() and status_raw.isdigit(), "PID1 exit report malformed")
+        code, status = int(code_raw), int(status_raw)
+        _require(code in {os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED},
+                 "PID1 exit code outside terminal domain")
+        _require((code == os.CLD_EXITED and 0 <= status <= 255)
+                 or (code != os.CLD_EXITED and 0 < status < signal.NSIG),
+                 "PID1 exit status outside terminal domain")
+        return "pid1-exit", code, status
     if packet.startswith(b"HELPER-NO-PID1-ERROR:"):
         _require(passed < 0, "helper error carried a descriptor")
-        return "no-pid1",
+        return "no-pid1", *_helper_error_tokens(packet, "HELPER-NO-PID1-ERROR")
     if packet.startswith(b"HELPER-ERROR:"):
         _require(passed < 0, "helper error carried a descriptor")
-        return "helper-error",
+        return "helper-error", *_helper_error_tokens(packet, "HELPER-ERROR")
     raise NativeCandidateError("unexpected control packet")
 
 def _wait_control(descriptor, guard_pidfd, deadline_ns):
@@ -1019,8 +1078,9 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
                         elif action[0] == "eof": control_eof = True
                         elif action[0] == "pid1-exit": pid1_report = action[1], action[2]
                         elif action[0] == "no-pid1":
-                            no_pid1 = True; work(NativeCandidateError("helper setup failed before PID1"))
-                        elif action[0] == "helper-error": work(NativeCandidateError("helper setup failed"))
+                            no_pid1 = True; work(HelperCandidateError(action[1], action[2]))
+                        elif action[0] == "helper-error":
+                            work(HelperCandidateError(action[1], action[2]))
             if pid1_pidfd in ready: pid1_terminal = True
             if helper_pidfd >= 0 and not helper_reaped:
                 try:
@@ -1078,16 +1138,29 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
             if descriptor >= 0:
                 try: _close_and_prove(descriptor)
                 except BaseException as error: cleanup_errors.append((stage, error))
-    helper_status = ((helper_info.si_code, helper_info.si_status) if hasattr(helper_info, "si_code") else helper_info)
-    if helper_status is not None and helper_status != (os.CLD_EXITED, 0): work(NativeCandidateError("helper failed"))
-    terminal = pid1_report if pid1_report is not None else adopted_pid1
-    if terminal is not None and terminal != (os.CLD_EXITED, 0): work(NativeCandidateError(f"PID1 status {terminal[0]}:{terminal[1]}"))
-    result = None
+    helper_status = ((helper_info.si_code, helper_info.si_status)
+                     if hasattr(helper_info, "si_code") else helper_info)
+    if helper_status is not None and helper_status != (os.CLD_EXITED, 0):
+        work(StageCandidateError("helper-terminal", "nonzero-status"))
+    result = frame_error = None
     if raw and not oversize:
         try: result = _parse_frame(bytes(raw))
-        except BaseException as error:
-            work(error)
-    elif work_error is None: work_error = NativeCandidateError("missing child result")
+        except BaseException as error: frame_error = error
+    terminal = pid1_report if pid1_report is not None else adopted_pid1
+    if terminal is not None and terminal != (os.CLD_EXITED, 0):
+        if (isinstance(frame_error, ChildCandidateError)
+                and terminal == (os.CLD_EXITED, 1)):
+            work(frame_error)
+        else:
+            work(StageCandidateError("pid1-terminal", "nonzero-status"))
+    elif isinstance(frame_error, ChildCandidateError):
+        reason = ("error-frame-zero-status" if terminal == (os.CLD_EXITED, 0)
+                  else "error-frame-missing-status")
+        work(StageCandidateError("pid1-protocol", reason))
+    elif frame_error is not None:
+        work(frame_error)
+    elif not raw and work_error is None:
+        work_error = StageCandidateError("pid1-result", "missing-frame")
     settled = (helper_reaped and pipe_eof and control_eof and descendants_empty
                and (no_pid1 or adopted_pid1 is not None
                     or (pid1_report is not None and (pid1_terminal or pid1_pidfd < 0)) or pid1_terminal))
@@ -1170,7 +1243,7 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
                         raise
                     if action[0] == "no-pid1":
                         known_no_pid1 = True
-                        raise NativeCandidateError("helper failed before PID1")
+                        raise HelperCandidateError(action[1], action[2])
                     _require(pid1_pidfd < 0, "PID1 pidfd duplicate")
                     pid1, pid1_pidfd = action[1], action[2]
                 if helper_pidfd in ready and pid1_pidfd < 0: raise NativeCandidateError("helper exited before PID1 release")
@@ -1493,19 +1566,21 @@ def run():
         rootfs, retained = build._native_package_build_once_retained(
             approval, os.urandom(32).hex(), lifecycle_control)
         build._require_pinned(rootfs, publication._load_pins())
-        _require(len(rootfs.cache) == 16)
+        if len(rootfs.cache) != 16:
+            raise StageCandidateError("post-build-cache", "unexpected-count")
 
         work_deadline_ns = min(
             time.monotonic_ns() + CHILD_SECONDS * NS,
             rootfs_deadline_ns,
         )
-        _require(work_deadline_ns > time.monotonic_ns(), "cleanup reserve exhausted")
+        if work_deadline_ns <= time.monotonic_ns():
+            raise StageCandidateError("post-build-budget", "cleanup-reserve-exhausted")
         settlement_deadline_ns = min(lifecycle_deadline_ns, work_deadline_ns + REAP_SECONDS * NS)
         # This must precede the outer fork: only the trusted parent can clone
         # and harden the retained mount from its current namespace.  From the
         # ownership transfer onward cleanup is prohibited until both pidfds,
         # helper reap, PID1 report, and both channel EOFs prove settlement.
-        tree = _open_detached_tree(retained.owned.root.operation_fd.number)
+        tree = _open_retained_tree(retained.owned.root.operation_fd.number)
         child_settled = False
         result, child_error, child_cleanup, child_settled = _run_candidate_child(
             tree, candidate_contract, closure, package, work_deadline_ns, settlement_deadline_ns)
@@ -1542,8 +1617,26 @@ def run():
     except BaseException as error:
         outcome.cleanup("final-residue-check", error)
     outcome.finish()
-    _require(result is not None)
+    if result is None:
+        raise StageCandidateError("pid1-result", "absent-after-settlement")
     return result
+
+
+def _diagnostic_line(error):
+    category = _category(error)
+    detail = ""
+    if isinstance(error, CleanupUncertain):
+        work = "none" if error.work_error is None else _category(error.work_error)
+        cleanup = ",".join(
+            f"{stage if isinstance(stage, str) and _SAFE_TOKEN.fullmatch(stage) else 'unknown'}-{_category(item)}"
+            for stage, item in error.cleanup_errors)
+        detail = f":work-{work}:cleanup-{cleanup}"[:512]
+    elif isinstance(error, ChildCandidateError):
+        detail = f":{error.stage}"
+    elif isinstance(error, (StageCandidateError, HelperCandidateError)):
+        detail = f":{error.stage}:{error.reason}"
+    raw = f"native package candidate failed:{category}{detail}\n".encode("ascii")
+    return raw if len(raw) <= 640 else b"native package candidate failed:unknown\n"
 
 
 def main():
@@ -1554,16 +1647,8 @@ def main():
         _write_all(sys.stdout.fileno(), raw)
         return 0
     except BaseException as error:
-        category = _category(error)
-        detail = ""
-        if isinstance(error, CleanupUncertain):
-            work = "none" if error.work_error is None else _category(error.work_error)
-            cleanup = ",".join(f"{stage}-{_category(item)}" for stage, item in error.cleanup_errors)
-            detail = f":work-{work}:cleanup-{cleanup}"[:512]
-        elif isinstance(error, ChildCandidateError):
-            detail = f":{error.stage}"
         try:
-            os.write(2, f"native package candidate failed:{category}{detail}\n".encode("ascii"))
+            os.write(2, _diagnostic_line(error))
         except OSError:
             pass
         return 1
