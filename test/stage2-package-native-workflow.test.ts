@@ -68,13 +68,23 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
   for (const required of [
-    "verifier.acquire_completion_artifacts(", "verifier.verify_package_archives(",
-    "load_candidate_contract()", "exact_runtime_closure()", "build._build_once_retained(",
-    "build._require_pinned(", "package.run_candidate_transaction()",
-    "CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET", "helper = os.fork()", "pid = os.fork()",
-    "PID1_FD", "MS_REC | MS_PRIVATE", "os.chroot(root)", "materializer._reload_and_cleanup(",
+    "verifier.acquire_completion_artifacts(",
+    "verifier.verify_package_archives(",
+    "load_candidate_contract()",
+    "exact_runtime_closure()",
+    "build._build_once_retained(",
+    "build._require_pinned(",
+    "package.run_candidate_transaction()",
+    "CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET",
+    "helper = os.fork()",
+    "pid = os.fork()",
+    "PID1_FD",
+    "MS_REC | MS_PRIVATE",
+    "os.chroot(root)",
+    "materializer._reload_and_cleanup(",
     "_cleanup_cache(verifier, cache_authority)",
-  ]) assert.ok(driver.includes(required), `missing ${required}`);
+  ])
+    assert.ok(driver.includes(required), `missing ${required}`);
   assert.equal(driver.match(/build\._build_once_retained\(/gu)?.length, 1);
   assert.equal(driver.match(/package\.run_candidate_transaction\(\)/gu)?.length, 1);
   assert.doesNotMatch(driver, /retry|for attempt|while attempt/u);
@@ -93,13 +103,18 @@ test("native driver performs one exact retained-rootfs package transaction", () 
 
 test("double-fork protocol keeps cleanup uncertainty sticky and has an outer bound", () => {
   const result = spawnSync("python3", ["test/stage2-package-native-doublefork.py"], {
-    encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 30_000,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /stage2 package double-fork tests passed; native=not-requested/u);
   assert.match(workflow, /COGS_REQUIRE_DOUBLEFORK_NATIVE_TEST=1/u);
   assert.match(workflow, /COGS_DOUBLEFORK_NATIVE_TEST=1/u);
-  assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 300s[\s\S]{0,300}stage2-package-native-doublefork\.py/u);
+  assert.match(
+    workflow,
+    /timeout --foreground --signal=TERM --kill-after=10s 300s[\s\S]{0,300}stage2-package-native-doublefork\.py/u,
+  );
 });
 
 test("fixed settlement owner is invoked around ordinary bounded unmount and deletion", () => {
@@ -107,9 +122,9 @@ test("fixed settlement owner is invoked around ordinary bounded unmount and dele
   const validateStart = workflow.indexOf("Validate and atomically publish");
   const cleanup = workflow.slice(cleanupStart, validateStart);
   const outcome = cleanup.indexOf('test "$CANDIDATE_ATTEMPT_OUTCOME" = success');
-  const before = cleanup.indexOf("stage2-native-settlement.py\" scan before-unmount");
-  const unmount = cleanup.indexOf("stage2-native-settlement.py\" unmount");
-  const after = cleanup.indexOf("stage2-native-settlement.py\" scan after-unmount");
+  const before = cleanup.indexOf('stage2-native-settlement.py" scan before-unmount');
+  const unmount = cleanup.indexOf('stage2-native-settlement.py" unmount');
+  const after = cleanup.indexOf('stage2-native-settlement.py" scan after-unmount');
   const deletion = cleanup.indexOf("/var/lib/cogs /run/cogs-stage2-native-preflight-source-v1");
   assert.ok(0 < outcome && outcome < before && before < unmount && unmount < after && after < deletion);
   assert.match(settlement, /unsettled candidate process/u);
@@ -122,7 +137,9 @@ test("fixed settlement owner is invoked around ordinary bounded unmount and dele
 
 test("fixed workflow scripts execute hostile process, race, mount, fd, unmount, and receipt cases", () => {
   const result = spawnSync("python3", ["-B", "test/stage2-package-native-workflow-scripts.py"], {
-    encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 30_000,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /stage2 native workflow script tests passed/u);
@@ -137,8 +154,14 @@ test("partial validation and fsync precede atomic candidate publication", () => 
   const validation = workflow.slice(validate, upload);
   assert.match(validation, /candidate\.partial/u);
   assert.match(validation, /EXPECTED_SOURCE_REVISION: \$\{\{ steps\.fixed_source\.outputs\.revision \}\}/u);
-  assert.match(validation, /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u);
-  assert.match(validation, /validate_native_candidate_result\([\s\S]*EXPECTED_SOURCE_REVISION[\s\S]*EXPECTED_SOURCE_MANIFEST_SHA256/u);
+  assert.match(
+    validation,
+    /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u,
+  );
+  assert.match(
+    validation,
+    /validate_native_candidate_result\([\s\S]*EXPECTED_SOURCE_REVISION[\s\S]*EXPECTED_SOURCE_MANIFEST_SHA256/u,
+  );
   assert.match(validation, /raw != canonical_json\(value\)/u);
   assert.match(validation, /os\.fsync\(source\.fileno\(\)\)[\s\S]*os\.replace\(partial, final\)/u);
   assert.match(validation, /os\.replace\(partial, final\)[\s\S]*os\.fsync\(directory\)/u);
@@ -146,8 +169,14 @@ test("partial validation and fsync precede atomic candidate publication", () => 
 });
 
 test("run-unique uploads use the bounded canonical receipt codec with exact source outputs", () => {
-  assert.match(workflow, /CANDIDATE_STAGING: \/var\/tmp\/cogs-stage2-native-package-candidate-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
-  assert.match(workflow, /CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-\$\{\{ inputs\.reviewed_head \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u);
+  assert.match(
+    workflow,
+    /CANDIDATE_STAGING: \/var\/tmp\/cogs-stage2-native-package-candidate-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-\$\{\{ inputs\.reviewed_head \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u,
+  );
   assert.match(workflow, /RECEIPT_ARTIFACT_NAME: stage2-native-package-candidate-receipt-[^\n]+github\.run_id/u);
   assert.match(workflow, /EXPECTED_SOURCE_REVISION: \$\{\{ steps\.fixed_source\.outputs\.revision \}\}/u);
   assert.match(workflow, /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u);
