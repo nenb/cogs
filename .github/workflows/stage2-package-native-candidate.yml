@@ -78,8 +78,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 300s \
-            /bin/rm -rf --one-file-system -- /var/lib/cogs
+            /bin/rm -rf --one-file-system -- \
+            /var/lib/cogs /var/tmp/cogs-stage2-native-package-root-v1
           test ! -e /var/lib/cogs
+          test ! -e /var/tmp/cogs-stage2-native-package-root-v1
           test ! -e /tmp/cogs-stage2-workload-candidate-v1
           test ! -e /tmp/cogs-stage2-workload-post-pin-v1
           ! /usr/bin/grep -Fq '/var/lib/cogs' /proc/self/mountinfo
@@ -146,4 +148,5 @@ jobs:
           test "$UPLOAD" = success
           test "$OUTPUT_CLEANUP" = success
           test ! -e /var/lib/cogs
+          test ! -e /var/tmp/cogs-stage2-native-package-root-v1
           test ! -e /var/tmp/cogs-stage2-native-package-candidate-v1

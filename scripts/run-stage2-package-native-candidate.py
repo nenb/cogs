@@ -19,6 +19,7 @@ FIXED_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 FIXED_DRIVER = FIXED_SOURCE / "scripts/run-stage2-package-native-candidate.py"
 FIXED_PHASE_A = FIXED_SOURCE / "scripts/run-stage2-phase-a-candidate.py"
 REMOTE = FIXED_SOURCE / "deploy/aws-feasibility/remote"
+ROOT_MOUNT = Path("/var/tmp/cogs-stage2-native-package-root-v1")
 APPROVAL = "download-16-fixed-public-stage2-artifacts"
 MAX_RESULT_BYTES = 4096
 OUTER_SECONDS = 2_700
@@ -74,11 +75,17 @@ def _mount(source, target, filesystem, flags, data=None):
 
 
 def _private_rootfs(root_descriptor, stage):
+    os.mkdir(ROOT_MOUNT, 0o700)
+    observed = os.lstat(ROOT_MOUNT)
+    _require(stat.S_ISDIR(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o700
+             and observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 2)
     stage[0] = "unshare"
     _libc_call("unshare", ctypes.c_int(CLONE_NEWNS))
     stage[0] = "root-private"
     _mount(None, "/", None, MS_REC | MS_PRIVATE)
-    root = f"/proc/self/fd/{root_descriptor}"
+    root = str(ROOT_MOUNT)
+    stage[0] = "root-bind"
+    _mount(f"/proc/self/fd/{root_descriptor}", root, None, MS_BIND | MS_REC)
     stage[0] = "proc-bind"
     _mount("/proc", f"{root}/proc", None, MS_BIND | MS_REC)
     stage[0] = "dev-bind"
@@ -278,6 +285,14 @@ def _cleanup_cache(verifier, authority):
         raise error
 
 
+def _cleanup_root_mount():
+    observed = os.lstat(ROOT_MOUNT)
+    _require(stat.S_ISDIR(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o700
+             and observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 2
+             and not os.listdir(ROOT_MOUNT))
+    os.rmdir(ROOT_MOUNT)
+
+
 def _cleanup_retained(retained, materializer, fs):
     error = None
     try:
@@ -347,6 +362,13 @@ def run():
         result = _wait_candidate(pid, read_descriptor, min(deadline_ns, time.monotonic_ns() + CHILD_SECONDS * NS))
     except BaseException as caught:
         primary = caught
+    try:
+        _cleanup_root_mount()
+    except FileNotFoundError:
+        if result is not None:
+            primary = NativeCandidateError()
+    except BaseException as caught:
+        primary = caught if primary is None else primary
     if retained is not None:
         try:
             _cleanup_retained(retained, materializer, fs)
