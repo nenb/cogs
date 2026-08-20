@@ -12,8 +12,11 @@ import stat
 
 CLIENT_KEY = "CLIENT_KEY"
 KNOWN_HOSTS = "KNOWN_HOSTS"
-ROLE_TARGETS = {CLIENT_KEY: 200, KNOWN_HOSTS: 201}
+NFT_WRITER_LOCK = "NFT_WRITER_LOCK"
+NFT_WRITER_LOCK_FD = 202
+ROLE_TARGETS = {CLIENT_KEY: 200, KNOWN_HOSTS: 201, NFT_WRITER_LOCK: NFT_WRITER_LOCK_FD}
 MAX_INPUT = 65_536
+_HEX = frozenset("0123456789abcdef")
 
 
 class FdMapError(Exception):
@@ -140,8 +143,10 @@ def revalidate(bindings):
         raise FdMapError("invalid inherited bindings")
     if not bindings:
         return bindings
-    if (tuple(row.role for row in bindings) != (CLIENT_KEY, KNOWN_HOSTS)
-            or tuple(row.target_fd for row in bindings) != (200, 201)):
+    roles = tuple(row.role for row in bindings)
+    targets = tuple(row.target_fd for row in bindings)
+    if not ((roles, targets) == ((CLIENT_KEY, KNOWN_HOSTS), (200, 201))
+            or (roles, targets) == ((NFT_WRITER_LOCK,), (NFT_WRITER_LOCK_FD,))):
         raise FdMapError("invalid inherited bindings")
     for row in bindings:
         if (not isinstance(row, InheritedBinding)
@@ -151,7 +156,7 @@ def revalidate(bindings):
     return bindings
 
 
-def relocate_internals(descriptors, reserved=(0, 1, 2, 3, 198, 200, 201)):
+def relocate_internals(descriptors, reserved=(0, 1, 2, 3, 198, 200, 201, NFT_WRITER_LOCK_FD)):
     """Move colliding child-private fds before stdio or inherited mapping."""
     if (type(descriptors) is not tuple or type(reserved) is not tuple
             or any(type(item) is not int or item < 0 for item in descriptors + reserved)
@@ -185,6 +190,110 @@ def relocate_internals(descriptors, reserved=(0, 1, 2, 3, 198, 200, 201)):
                 os.close(descriptor)
             except OSError:
                 pass
+
+
+def _production_binding_routes(historical_claim=claim):
+    """Package-private one-use binding for the trusted T1 SSH composition.
+
+    ``bind_inputs`` remains a pure historical observation API.  Values returned
+    by it cannot be promoted here: only this route can create the distinct owner
+    consumed by the process composition.
+    """
+    seal = object()
+    states, claimed_states = {}, {}
+
+    class _ProductionInputBinding:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("production binding is package-private")
+            return super().__new__(cls)
+
+    class _ClaimedProductionInputs:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("claimed production inputs are package-private")
+            return super().__new__(cls)
+
+    def make(client_fd, known_hosts_fd, expected_client, expected_known_hosts,
+             operation_token, manifest_sha256):
+        if (type(operation_token) is not str or len(operation_token) != 64
+                or set(operation_token) - _HEX or operation_token == "0" * 64
+                or type(manifest_sha256) is not str or len(manifest_sha256) != 64
+                or set(manifest_sha256) - _HEX):
+            raise FdMapError("invalid input lineage")
+        observed_owner = bind_inputs(client_fd, known_hosts_fd, expected_client, expected_known_hosts)
+        rows = historical_claim((200, 201), observed_owner)
+        value = _ProductionInputBinding(seal)
+        states[value] = [rows, operation_token, manifest_sha256, False]
+        return value
+
+    def claim(value, operation_token, manifest_sha256):
+        state = states.get(value)
+        if (type(value) is not _ProductionInputBinding or state is None or state[3]
+                or operation_token != state[1] or manifest_sha256 != state[2]):
+            raise FdMapError("invalid, stale, or reused production binding")
+        rows = revalidate(state[0])
+        state[3] = True
+        claimed = _ClaimedProductionInputs(seal)
+        claimed_states[claimed] = [rows, False]
+        return claimed
+
+    def consume(targets, claimed):
+        state = claimed_states.get(claimed)
+        if (type(claimed) is not _ClaimedProductionInputs or state is None or state[1]
+                or type(targets) is not tuple or targets != (200, 201)):
+            raise FdMapError("invalid or reused claimed production inputs")
+        rows = revalidate(state[0]); state[1] = True
+        return rows
+
+    return _ProductionInputBinding, _ClaimedProductionInputs, make, claim, consume
+
+
+(_ProductionInputBinding, _ClaimedProductionInputs, _bind_production_inputs,
+ _claim_production_inputs, _consume_production_inputs) = _production_binding_routes()
+del _production_binding_routes
+
+
+def _nft_lock_routes():
+    seal, states = object(), {}
+
+    class _ClaimedNftWriterLock:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            if key is not seal:
+                raise FdMapError("NFT writer lock binding is package-private")
+            return super().__new__(cls)
+
+    def claim(descriptor, expected, operation_token):
+        if (type(descriptor) is not int or descriptor < 0 or not isinstance(expected, FdIdentity)
+                or type(operation_token) is not str or len(operation_token) != 64
+                or set(operation_token) - _HEX or operation_token == "0" * 64
+                or identity(descriptor) != expected or not stat.S_ISREG(expected.mode)
+                or expected.uid != 0 or expected.gid != 0 or expected.nlink != 1
+                or expected.size != 0):
+            raise FdMapError("invalid NFT writer lock lineage")
+        row = InheritedBinding(NFT_WRITER_LOCK, descriptor, NFT_WRITER_LOCK_FD,
+                               expected, _digest_regular(descriptor, expected))
+        owner = _ClaimedNftWriterLock(seal)
+        states[owner] = [(row,), operation_token, False]
+        return owner
+
+    def consume(targets, owner):
+        state = states.get(owner)
+        if (type(owner) is not _ClaimedNftWriterLock or state is None or state[2]
+                or targets != (NFT_WRITER_LOCK_FD,)):
+            raise FdMapError("invalid or reused NFT writer lock binding")
+        rows = revalidate(state[0]); state[2] = True
+        return rows
+
+    return _ClaimedNftWriterLock, claim, consume
+
+
+(_ClaimedNftWriterLock, _claim_nft_writer_lock,
+ _consume_nft_writer_lock) = _nft_lock_routes()
+del _nft_lock_routes
 
 
 def install(bindings):

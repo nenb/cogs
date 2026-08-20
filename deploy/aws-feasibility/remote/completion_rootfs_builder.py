@@ -1910,6 +1910,29 @@ def _recover_fixed(control):
     return _fixed_umask(_recover_fixed_unmasked, control)
 
 
+def _kata_authorized_absence(context, control):
+    """Return an exact fixed-state absence proof, or None while this owner remains."""
+    import completion_kata_operation as operation
+    _fail(type(context) is operation.RootfsReleaseContext and type(control) is fs.OperationControl)
+    chain = _open_base_chain(control); state = None
+    try:
+        state = _open_state(chain, control); _fail(state is not None)
+        names = fs._enumerate_stable(state, control).raw_names
+        if names != tuple(sorted((STATE_SENTINEL_NAME.raw, LOCK_NAME.raw))): return None
+        generation = fs._observe_node(state.identity_fd, state.operation_fd, control)
+        body = {"operation_token": context.operation_token, "rootfs_token": context.rootfs_token,
+                "rootfs_ledger_key": context.rootfs_ledger_key,
+                "rootfs_authorized_sequence": context.authorized_sequence,
+                "rootfs_authorized_offset": context.authorized_offset,
+                "rootfs_authorized_sha256": context.authorized_sha256,
+                "state_generation": operation._generation_value(generation),
+                "state_names": [os.fsdecode(name) for name in names], "rootfs_absent": True}
+        return hashlib.sha256(operation._canonical(body)).hexdigest()
+    finally:
+        if state is not None and state.identity_fd.disposition == "open": fs._close_node(state)
+        fs._close_chain(chain)
+
+
 def _run_recovery():
     latch = CancellationLatch()
 

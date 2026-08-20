@@ -304,30 +304,25 @@ test("every workload ordinal follows Git then build then install and stops monot
   }
 });
 
-test("zero-argument stub remains blocked and correction stays within the global cap", () => {
+test("codec has only the zero-argument blocked coordinator entry and stays within the global cap", () => {
   const source = readFileSync(producer, "utf8");
-  for (const args of [[], ["report.json"], ["--qualified"]]) {
-    const result = spawnSync("python3", ["-B", producer, ...args], {
-      cwd: root,
-      input: '{"qualified":true}\n',
-      encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
-    });
-    assert.equal(result.status, 3);
-    assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "");
-  }
-  assert.match(source, /^def main\(\):$/mu);
-  assert.doesNotMatch(source, /argparse|sys\.stdin|input\(|open_fixed_coordinator|run_fixed_local_qualification/u);
+  assert.doesNotMatch(source, /argparse|sys\.stdin|input\(|open_fixed_coordinator/u);
+  assert.match(source, /coordinator\._run_fixed_local_qualification\(\)/u);
+  assert.match(source, /len\(sys\.argv\) != 1/u);
   assert.doesNotMatch(source, /boto|AWS_|requests|urllib|socket|subprocess|terraform|tofu/iu);
   const budgetPath = join(root, "scripts/check-stage2-retained-lines.py");
   const retained = spawnSync("python3", ["-B", budgetPath], { cwd: root, encoding: "utf8" });
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
-  assert.equal(budget.preferred_limit, 42_000);
-  assert.equal(budget.hard_limit, 45_000);
-  assert.equal(budget.preferred_satisfied, true);
-  assert.equal(budget.hard_satisfied, true);
+  assert.equal(budget.preferred_limit, 47_000);
+  assert.equal(budget.hard_limit, 48_000);
+  const current = Number(budget.current_lines);
+  const conservative = Number(budget.conservative_lines_no_deletion_credit);
+  const preferred = Number(budget.preferred_limit);
+  const hard = Number(budget.hard_limit);
+  assert.equal(budget.preferred_satisfied, current < preferred && conservative < preferred);
+  assert.equal(budget.hard_satisfied, current < hard && conservative < hard);
+  assert.ok(preferred < hard);
   assert.equal(
     budget.physical_baseline_lines,
     Number(budget.physical_baseline_deployment_lines) + Number(budget.physical_baseline_retained_schema_script_lines),

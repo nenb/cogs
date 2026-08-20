@@ -32,6 +32,9 @@ assert commands[network.Action.LINK_ADD].argv_tail == (
     "link", "add", "name", "c42h0", "address", "02:00:00:42:00:01", "type", "veth",
     "peer", "name", "c42g0", "address", "02:00:00:42:00:02",
 )
+assert commands[network.Action.HOST_ADDRGEN_NONE].argv_tail == (
+    "link", "set", "dev", "c42h0", "addrgenmode", "none",
+)
 assert commands[network.Action.PEER_ADDRGEN_NONE].argv_tail[-2:] == ("addrgenmode", "none")
 assert commands[network.Action.LOOPBACK_UP].argv_tail[-2:] == ("lo", "up")
 assert commands[network.Action.GUEST_ADDRESS_ADD].argv_tail[-3:] == ("192.0.2.2/30", "dev", "eth0")
@@ -39,8 +42,14 @@ assert commands[network.Action.NFT_INSTALL].stdin == network.NFT_TRANSACTION
 assert commands[network.Action.NFT_REMOVE].argv_tail == (
     "delete", "table", "inet", "cogs_stage2_ssh_v1",
 )
+assert commands[network.Action.NFT_INSTALL_OWNED].stdin == network.NFT_OWNED_TRANSACTION
+assert commands[network.Action.NFT_REMOVE_ATOMIC].argv_tail == (
+    "delete", "table", "inet", network.TABLE,
+) and commands[network.Action.NFT_REMOVE_ATOMIC].stdin == b""
+assert commands[network.Action.HOST_LINK_REMOVE].argv_tail == ("link", "delete", "dev", "c42h0")
 assert commands[network.Action.NETNS_REMOVE].argv_tail == ("netns", "delete", "cogs-stage2-ssh")
-assert len(commands) == 13
+assert commands[network.Action.IP_VETH_ADD_ATOMIC].argv_tail[-4:] == ("address", network.GUEST_MAC, "netns", network.NETNS)
+assert len(commands) == 18
 assert all("qualification-candidate" in item.tool_contract for item in commands.values())
 assert network.QUALIFICATION_CANDIDATE.startswith("UNQUALIFIED_")
 assert network.NFT_TRANSACTION.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
@@ -60,7 +69,8 @@ rejected(lambda: fake.issue(network.Action.NETNS_ADD))
 host_links_json = [{
     "ifindex": 7, "ifname": "c42h0", "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
     "operstate": "UP", "link_type": "ether", "address": "02:00:00:42:00:01",
-    "qdisc": "noqueue", "link_index": 8, "linkinfo": {"info_kind": "veth"},
+    "qdisc": "noqueue", "link_index": 8, "addrgenmode": "none",
+    "linkinfo": {"info_kind": "veth"},
 }]
 ns_links_json = [
     {"ifindex": 1, "ifname": "lo", "flags": ["LOOPBACK", "UP", "LOWER_UP"],
@@ -121,17 +131,28 @@ routes4 = [
     {"type": "local", "dst": "192.0.2.2", "dev": "eth0", "table": "local", "protocol": "kernel", "scope": "host", "prefsrc": "192.0.2.2"},
     {"type": "broadcast", "dst": "192.0.2.3", "dev": "eth0", "table": "local", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.2"},
 ]
-routes6 = [{"type": "local", "dst": "::1", "dev": "lo", "table": "local",
-            "protocol": "kernel", "metric": 0, "flags": [], "pref": "medium"}]
+routes6 = [
+    {"type": "local", "dst": "::1", "dev": "lo", "table": "local",
+     "protocol": "kernel", "metric": 0, "flags": [], "pref": "medium"},
+    {"type": "multicast", "dst": "ff00::/8", "dev": "eth0", "table": "local",
+     "protocol": "kernel", "metric": 256, "flags": [], "pref": "medium"},
+]
 host_routes4 = [
     {"dst": "192.0.2.0/30", "dev": "c42h0", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.1"},
     {"type": "local", "dst": "192.0.2.1", "dev": "c42h0", "table": "local", "protocol": "kernel", "scope": "host", "prefsrc": "192.0.2.1"},
     {"type": "broadcast", "dst": "192.0.2.3", "dev": "c42h0", "table": "local", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.1"},
 ]
+host_routes6 = [{"type": "multicast", "dst": "ff00::/8", "dev": "c42h0",
+                 "table": "local", "protocol": "kernel", "metric": 256,
+                 "flags": [], "pref": "medium"}]
 assert len(network.parse_routes(encoded(routes4), 4, parsed_ns)) == 6
-assert len(network.parse_routes(encoded(routes6), 6, parsed_ns)) == 1
+assert len(network.parse_routes(encoded(routes6), 6, parsed_ns)) == 2
 assert len(network.parse_routes(encoded(host_routes4), 4, parsed_host)) == 3
-assert network.parse_routes(b"[]", 6, parsed_host) == ()
+assert len(network.parse_routes(encoded([{key: value for key, value in row.items() if key != "dev"}
+                                         for row in host_routes4]), 4, parsed_host)) == 3
+assert len(network.parse_routes(encoded(host_routes6), 6, parsed_host)) == 1
+assert len(network.parse_routes(encoded([{key: value for key, value in host_routes6[0].items()
+                                         if key != "dev"}]), 6, parsed_host)) == 1
 for hostile, family in (
     (routes4 + [{"type": "blackhole", "dst": "203.0.113.0/24", "dev": "lo", "table": "main", "protocol": "kernel"}], 4),
     (routes4 + [copy.deepcopy(routes4[0])], 4),
@@ -143,12 +164,59 @@ for hostile, family in (
 rejected(lambda: network.parse_routes(encoded(routes4), 4, parsed_host))
 rejected(lambda: network.parse_routes(encoded(host_routes4 + [{**host_routes4[0], "dev": "other0"}]), 4, parsed_host))
 
-# Duplicate members, malformed depth/scalars, and byte bounds fail closed.
+# Duplicate members, malformed depth/scalars, and source-specific bounds fail closed.
+bridge_a = [{"ifname": "docker0", "linkinfo": {"info_kind": "bridge", "info_data": {
+    "hello_timer": 0.0, "tcn_timer": 0.0, "topology_change_timer": 0.0, "gc_timer": 1.25}}}]
+bridge_b = copy.deepcopy(bridge_a); bridge_b[0]["linkinfo"]["info_data"]["gc_timer"] = 9.5
+assert network._normalize_baseline_links(bridge_a) == network._normalize_baseline_links(bridge_b)
+bridge_replaced = copy.deepcopy(bridge_b); bridge_replaced[0]["ifname"] = "foreign0"
+assert network._normalize_baseline_links(bridge_a) != network._normalize_baseline_links(bridge_replaced)
+hyperv_a = [{"ifindex": 2, "ifname": "eth0", "flags": ["BROADCAST", "UP"],
+             "address": "02:00:00:00:00:01", "parentbus": "vmbus", "tso_max_size": 62780}]
+hyperv_slave = {"ifindex": 5, "ifname": "enP1s1", "address": hyperv_a[0]["address"], "master": "eth0",
+                "flags": ["BROADCAST", "SLAVE", "UP"], "parentbus": "pci", "tso_max_size": 524280,
+                "parentdev": "0001:00:02.0", "vfinfo_list": [], "altnames": ["enP1p0s2"]}
+hyperv_terminal = [{**hyperv_a[0], "tso_max_size": 524280}, hyperv_slave]
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(hyperv_terminal)
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
+    [{**hyperv_a[0], "tso_max_size": 0}])
+assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
+    [{**hyperv_a[0], "tso_max_size": 524280}])
+# Pre-admission waits for the VF, then binds every exact row and TSO value.
+assert network._pre_admission_host_links_binding(encoded(hyperv_a)) is None
+terminal_binding = network._pre_admission_host_links_binding(encoded(hyperv_terminal))
+assert type(terminal_binding) is str and len(terminal_binding) == 64
+assert network._pre_admission_host_links_binding(encoded([
+    {**hyperv_terminal[0], "tso_max_size": 62780}, hyperv_slave])) is None
+assert network._pre_admission_host_links_binding(encoded(hyperv_terminal + [
+    {"ifindex": 9, "ifname": "foreign0", "flags": ["UP"]}])) != terminal_binding
+assert network._pre_admission_host_links_binding(encoded([
+    hyperv_terminal[0], {**hyperv_slave, "parentdev": "0002:00:02.0"}])) != terminal_binding
+assert network._pre_admission_host_links_binding(encoded([
+    {"ifindex": 1, "ifname": "lo", "flags": ["LOOPBACK", "UP"]}])) is not None
+rejected(lambda: network._pre_admission_host_links_binding(encoded([
+    hyperv_terminal[0], {**hyperv_slave, "ifindex": 2}])))
+large_nft_array = encoded(list(range(network.MAX_ITEMS + 1)))
+rejected(lambda: network._load(large_nft_array))
+assert len(network._load(large_nft_array, network.MAX_NFT_ITEMS)) == network.MAX_ITEMS + 1
+rejected(lambda: network._load(encoded(list(range(network.MAX_NFT_ITEMS + 1))),
+                               network.MAX_NFT_ITEMS))
 rejected(lambda: network.parse_links(b'[{"ifindex":1,"ifindex":2}]', False))
 assert network.parse_links(b"[]", False) == ()
 rejected(lambda: network.parse_links(b"[]", True))
 rejected(lambda: network.parse_links(b"[" * 20 + b"]" * 20, False))
 rejected(lambda: network.parse_links(b"x" * (network.MAX_JSON + 1), False))
+
+# Foreign operation-shaped namespace names are inventory, never name-only omissions.
+baseline_mountinfo = b"1 0 0:1 / / rw - ext4 /dev/root rw\n"
+def baseline_with_names(names):
+    raws = (b"[]", b"[]", b"[]", b"[]", encoded(names), b'{"nftables":[]}')
+    return network._complete_baseline(raws, baseline_mountinfo, None)
+
+baseline_with_names([])
+for foreign_name in ("c42n0123456789", "c42q0123456789"):
+    rejected(lambda foreign_name=foreign_name:
+             baseline_with_names([{"name": foreign_name}]))
 
 # Canonical libnftables set expressions, grouped output order, and retained handles.
 def match(left, right, op="=="):
@@ -197,6 +265,7 @@ def nft_fixture(handle_offset=0):
         rows.append({"chain": {"family": "inet", "table": "cogs_stage2_ssh_v1", "name": chain,
                                "type": "filter", "hook": chain, "prio": 0, "policy": "accept",
                                "handle": 8 + chain_index + handle_offset}})
+    for chain in ("input", "output", "forward"):
         for expression in rules[chain]:
             rows.append({"rule": {"family": "inet", "table": "cogs_stage2_ssh_v1", "chain": chain,
                                   "expr": expression, "handle": rule_handle}})
@@ -211,7 +280,22 @@ assert nft_snapshot.identity.chain_handles == (("input", 8), ("output", 9), ("fo
 assert all("handle" not in json.dumps(row) for row in nft_snapshot.content["nftables"])
 replaced_nft_snapshot = network.parse_nft_snapshot(encoded(nft_fixture(100)))
 assert replaced_nft_snapshot.content == nft_snapshot.content
+dynamic_nft = json.loads(json.dumps(nft).replace("cogs_stage2_ssh_v1", "c42taaaaaaaaaa").replace("c42h0", "c42haaaaaaaaaa"))
+dynamic_nft["nftables"][1]["table"]["comment"] = "owner:c42taaaaaaaaaa"
+network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 assert replaced_nft_snapshot.identity != nft_snapshot.identity
+counter_a = copy.deepcopy(nft); counter_b = copy.deepcopy(nft)
+counter_a["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 1, "bytes": 2}})
+counter_b["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 900, "bytes": 800}})
+assert network._normalize_baseline_nft(counter_a) == network._normalize_baseline_nft(counter_b)
+counter_b["nftables"][5]["rule"]["chain"] = "output"
+assert network._normalize_baseline_nft(counter_a) != network._normalize_baseline_nft(counter_b)
+native_singleton_nft = copy.deepcopy(nft)
+native_singleton_nft["nftables"][5]["rule"]["expr"][4]["match"]["right"] = "established"
+native_set_nft = copy.deepcopy(native_singleton_nft)
+native_set_nft["nftables"][7]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
+assert network.parse_nft_snapshot(encoded(native_singleton_nft)).content == nft_snapshot.content
+assert network.parse_nft_snapshot(encoded(native_set_nft)).content == nft_snapshot.content
 for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "handle"):
     hostile = copy.deepcopy(nft)
     if change == "policy":
@@ -221,7 +305,7 @@ for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "hand
     if change == "duplicate":
         hostile["nftables"].append(copy.deepcopy(hostile["nftables"][-1]))
     if change == "bare-set":
-        hostile["nftables"][6]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
+        hostile["nftables"][5]["rule"]["expr"][4]["match"]["right"] = ["established", "invalid"]
     if change == "ordering":
         hostile["nftables"][2], hostile["nftables"][3] = hostile["nftables"][3], hostile["nftables"][2]
     if change == "handle":
@@ -238,6 +322,16 @@ mountinfo = (
 stat = network.NetnsStat(device, inode)
 netns_identity = network.parse_netns_identity(mountinfo, stat)
 assert (netns_identity.mount_id, netns_identity.device, netns_identity.inode) == (41, "0:4", inode)
+shared_netns = network.parse_netns_identity(
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:308 -"), stat)
+assert shared_netns.optional_fields == ("shared:308",)
+master_netns = network.parse_netns_identity(
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw master:309 -"), stat)
+assert master_netns.optional_fields == ("master:309",)
+both_netns = network.parse_netns_identity(
+    mountinfo.replace(
+        b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:308 master:309 -"), stat)
+assert both_netns.optional_fields == ("shared:308", "master:309")
 replacement_mount_netns = network.parse_netns_identity(mountinfo.replace(b"41 30", b"42 30"), stat)
 replacement_inode_netns = network.parse_netns_identity(
     mountinfo.replace(b"4026533000", b"4026533001"), network.NetnsStat(device, inode + 1),
@@ -250,6 +344,10 @@ for hostile in (
     mountinfo.replace(b"- nsfs nsfs rw", b"- tmpfs nsfs rw"),
     mountinfo.replace(b"- nsfs nsfs rw", b"- nsfs other rw"),
     mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh ro -"),
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:0 -"),
+    mountinfo.replace(b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw master:0 -"),
+    mountinfo.replace(
+        b"cogs-stage2-ssh rw -", b"cogs-stage2-ssh rw shared:308 shared:309 -"),
     mountinfo.replace(b"nsfs nsfs rw", b"nsfs nsfs rw,nosuid"),
 ):
     rejected(lambda hostile=hostile: network.parse_netns_identity(hostile, stat))
@@ -260,12 +358,22 @@ rejected(lambda: network.parse_netns_identity(mountinfo, network.NetnsStat(os.ma
 tap_json = {
     "ifindex": 30, "ifname": "tap-dynamic", "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
     "operstate": "UP", "link_type": "ether", "address": "02:00:00:00:00:30", "qdisc": "noqueue",
+    "addrgenmode": "none",
     "linkinfo": {"info_kind": "tun", "info_data": {"type": "tap", "pi": False, "vnet_hdr": True,
                                                           "multi_queue": False, "persist": False}},
 }
 parsed_runtime = network.parse_runtime_links(encoded(ns_links_json + [tap_json]))
 tap = parsed_runtime[-1]
 assert tap.kind == "tap" and tap.ifindex == 30
+native_tap_json = {**tap_json, "operstate": "UNKNOWN", "qdisc": "fq_codel"}
+assert network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1].kind == "tap"
+runtime_addresses = ns_addresses + [{"ifindex": 30, "ifname": "tap-dynamic", "addr_info": []}]
+assert len(network.parse_runtime_addresses(encoded(runtime_addresses), parsed_runtime)) == 3
+hostile_tap_addresses = copy.deepcopy(runtime_addresses)
+hostile_tap_addresses[-1]["addr_info"] = [
+    {"family": "inet6", "local": "fe80::30", "prefixlen": 64, "scope": "link"},
+]
+rejected(lambda: network.parse_runtime_addresses(encoded(hostile_tap_addresses), parsed_runtime))
 specs = network.tc_observer_commands(guest, tap)
 assert [item.action for item in specs] == [
     network.TcObservation.QDISC, network.TcObservation.INGRESS_FILTER,
@@ -297,14 +405,67 @@ def filter_fixture(target, action_index):
 guest_root = network.parse_tc_qdiscs(encoded(qdisc_root), guest)
 guest_qdiscs = network.parse_tc_qdiscs(encoded(qdisc_ingress), guest)
 tap_qdiscs = network.parse_tc_qdiscs(encoded(qdisc_ingress), tap)
+native_tap = network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1]
+native_tap_qdiscs = network.parse_tc_qdiscs(encoded([
+    {"kind": "fq_codel", "handle": "0:", "root": True, "refcnt": 2,
+     "options": network._NATIVE_FQ_CODEL_OPTIONS},
+    {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
+]), native_tap)
+assert native_tap_qdiscs[0].kind == "fq_codel"
 guest_filter = network.parse_tc_filters(encoded(filter_fixture("tap-dynamic", 11)), guest, tap)
 tap_filter = network.parse_tc_filters(encoded(filter_fixture("eth0", 12)), tap, guest)
+native_filter = [
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0},
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0,
+     "options": {"fh": "800:", "ht_divisor": 1}},
+    {"protocol": "all", "pref": 49152, "kind": "u32", "chain": 0, "options": {
+        "fh": "800::800", "order": 2048, "key_ht": "800", "bkt": "0",
+        "not_in_hw": True, "match": {"value": "0", "mask": "0", "offmask": "", "off": 0},
+        "actions": [{"order": 1, "kind": "mirred", "mirred_action": "redirect",
+                     "direction": "egress", "to_dev": "tap-dynamic",
+                     "control_action": {"type": "stolen"}, "index": 1, "ref": 1, "bind": 1}],
+    }},
+]
+assert network.parse_tc_filters(encoded(native_filter), guest, tap)[-1].action.control == "stolen"
 before_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns, guest_root, ())
 after_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns + (tap,),
                                      guest_qdiscs + tap_qdiscs, guest_filter + tap_filter)
 tc_binding = network.runtime_difference(before_runtime, after_runtime)
 assert tc_binding.netns_identity == netns_identity
 assert (tc_binding.host_veth.ifindex, tc_binding.guest_veth.ifindex, tc_binding.tap.ifindex) == (7, 8, 30)
+
+# Durable replay uses the same pure codecs over retained canonical observer bytes.
+def observation(source_id, raw): return {"source_id": source_id, "raw": raw}
+ready_identity = network._identity(netns_identity, parsed_host[0], guest, nft_snapshot,
+                                   tc=network._tc_value((guest_root[0],), ()))
+discovered_outputs = [
+    observation("IP_HOST_LINKS", encoded(host_links_json)),
+    observation("IP_NS_LINKS", encoded(ns_links_json + [tap_json])),
+    observation("IP_HOST_ADDRESSES", encoded(host_addresses)),
+    observation("IP_NS_ADDRESSES", encoded(runtime_addresses)),
+]
+discovered_identity, _ = network._derive_journal_identity("discovered", None,
+                                                           discovered_outputs, ready_identity, {})
+assert discovered_identity["tap"]["ifname"] == "tap-dynamic"
+stat_raw = json.dumps({"device": device, "inode": inode}, sort_keys=True,
+                      separators=(",", ":")).encode()
+runtime_routes6 = routes6 + [{"type": "multicast", "dst": "ff00::/8", "dev": "tap-dynamic",
+                              "table": "local", "protocol": "kernel", "metric": 256,
+                              "flags": [], "pref": "medium"}]
+runtime_outputs = [
+    observation("IP_HOST_ROUTES4", encoded(host_routes4)),
+    observation("IP_HOST_ROUTES6", encoded(host_routes6)),
+    observation("IP_NS_ROUTES4", encoded(routes4)),
+    observation("IP_NS_ROUTES6", encoded(runtime_routes6)),
+    observation("TC_QDISC", encoded(qdisc_ingress)), observation("TC_QDISC:tap-dynamic", encoded(qdisc_ingress)),
+    observation("TC_INGRESS_FILTER:eth0", encoded(filter_fixture("tap-dynamic", 11))),
+    observation("TC_INGRESS_FILTER:tap-dynamic", encoded(filter_fixture("eth0", 12))),
+    observation("MOUNTINFO", mountinfo), observation("NETNS_STAT", stat_raw),
+    observation("NFT_TABLE", encoded(nft)),
+]
+derived_runtime, _ = network._derive_journal_identity("runtime", None, runtime_outputs,
+                                                        discovered_identity, {})
+assert derived_runtime["tc"] == network._tc_value(tc_binding.qdiscs, tc_binding.filters)
 assert network.runtime_restored(before_runtime, copy.deepcopy(before_runtime)) == before_runtime
 for replacement in (replacement_mount_netns, replacement_inode_netns):
     hostile_runtime = network.RuntimeState(replacement, after_runtime.host_links,
@@ -376,7 +537,7 @@ rejected(lambda: network.TeardownProof((
 )))
 
 netns_create = network.NetnsTransition(network.TransitionPhase.CREATE_INTENT, netns_identity)
-assert network.recover_netns(netns_create, network.NetnsObservation(None), empty_proof) is network.Recovery.RETRY
+assert network.recover_netns(netns_create, network.NetnsObservation(None), empty_proof) is network.Recovery.PRESERVE
 # Seeing a same-name object after unobserved create is not adoption, even with full identity.
 assert network.recover_netns(netns_create, network.NetnsObservation(netns_identity), empty_proof) is network.Recovery.PRESERVE
 netns_durable = network.NetnsTransition(network.TransitionPhase.IDENTITY_DURABLE, netns_identity)
@@ -415,5 +576,6 @@ assert network.recover_nft(nft_remove, network.NftObservation(nft_snapshot), fir
 # Identical normalized content with replacement handles is preserved, never removed.
 assert network.recover_nft(nft_remove, network.NftObservation(replaced_nft_snapshot), firewall_ready_proof) is network.Recovery.PRESERVE
 rejected(lambda: network.recover_nft(nft_remove, network.NftObservation(("cogs_stage2_ssh_v1",)), firewall_ready_proof))
+
 
 print("completion Kata network owner fixed-snapshot matrix passed")

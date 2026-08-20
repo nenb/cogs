@@ -178,9 +178,9 @@ for command_id in sorted(operation.LEGACY_COMMANDS):
 # Exact ordered argv is fd-bound, single-attempt, noninteractive, and forwarding-free.
 spec = ssh.command_spec()
 assert spec.argv is ssh.ARGV and spec.inherited_fds == (200, 201)
-assert spec.argv[0:5] == ("/usr/bin/ssh", "-F", "/dev/null", "-n", "-T")
-assert spec.argv[-4:] == ("-i", "/proc/self/fd/200", "root@192.0.2.2",
-                          "printf '%s\\n' COGS_STAGE2_SSH_READY_V1")
+assert spec.argv[0:4] == ("/usr/bin/ssh", "-F", "/dev/null", "-T")
+assert spec.argv[-4:] == ("-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s")
+assert "-n" not in spec.argv and "StdinNull=no" in spec.argv
 assert spec.argv.count("ConnectionAttempts=1") == 1
 assert "UserKnownHostsFile=/proc/self/fd/201" in spec.argv
 assert not any("keyscan" in item or "StrictHostKeyChecking=no" in item for item in spec.argv)

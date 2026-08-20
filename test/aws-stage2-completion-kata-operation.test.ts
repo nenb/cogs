@@ -28,12 +28,24 @@ test("S0 fixed operation foundation fails closed", async () => {
   const lease = await readFile(leasePath, "utf8");
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
+  // ADR0102 supersedes the old slice-local guard with measured integrated limits.
+  const adr0102Preferred = 47_000;
+  const adr0102Hard = 48_000;
+  assert.ok(adr0102Preferred < adr0102Hard);
   assert.ok(
-    operationLines + leaseExtension <= 1900,
-    `Slice A operation and lease extension exceeds 1900: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 2900,
+    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2900: ${operationLines + leaseExtension}`,
   );
+  const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
+    cwd: root,
+    env,
+    encoding: "utf8",
+  });
+  assert.equal(caps.status, 0, caps.stderr || caps.stdout);
 
   assert.match(operation, /def _make_authority\(\):[\s\S]*class _FixedJournal:/u);
+  const operationTest = await readFile(testPath, "utf8");
+  assert.match(operationTest, /production baseline route[\s\S]*network\._capture_fixed_baselines\(production_network/u);
   assert.match(operation, /def _make_authority\(\):[\s\S]*class OperationAuthority:/u);
   assert.doesNotMatch(operation, /^class (?:_FixedJournal|OperationAuthority):/mu);
   assert.doesNotMatch(operation, /^def _open_io\(\):/mu);

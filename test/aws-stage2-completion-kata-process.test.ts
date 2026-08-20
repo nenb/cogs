@@ -33,7 +33,10 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   }
 
   const source = await readFile(productionPath, "utf8");
-  assert.match(source, /def _transact_fixed\(journal, fixed, executable, inherited=\(\)\):/u);
+  assert.match(
+    source,
+    /def _transact_fixed\(journal, fixed, executable, inherited=\(\), daemon_owner=None, consumption_owner=None, launch_permit=None\):/u,
+  );
   assert.match(source, /_record_command_intent[\s\S]*_record_command_preexec[\s\S]*os\.write\(release_w, b"R"\)/u);
   assert.match(source, /selectors\.DefaultSelector/u);
   assert.match(source, /cgroup\.kill/u);
@@ -41,6 +44,9 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   assert.match(source, /_set_subreaper\(True\)/u);
   assert.match(source, /def _recover_pending_fixed/u);
   assert.match(source, /LONG_LIVED_CONTAINERD = LongLivedCommand/u);
+  assert.match(source, /def _daemon_routes\(\):/u);
+  assert.match(source, /def start\(journal, executable\):/u);
+  assert.match(source, /signal\.pidfd_send_signal\(state\[2\], signal\.SIGTERM\)/u);
   assert.doesNotMatch(source, /COGS_KATA_PROCESS_TESTING_V1|def _make_test_issuer\(|def _supervise\(/u);
   assert.doesNotMatch(source, /os\.kill(?:pg)?\(/u);
   assert.doesNotMatch(source, /^def (?:run|execute|spawn|issue_command)\(/mu);
@@ -49,5 +55,45 @@ test("S1 historical process matrix and journal-gated correction", async () => {
   assert.match(workflow, /aws-stage2-completion-kata-operation\.py[\s\S]*aws-stage2-completion-kata-process\.py/u);
   assert.match(workflow, /cleanup_native_fixture\(\)[\s\S]*test ! -L[\s\S]*\|\| return 1/u);
   assert.match(workflow, /trap cleanup_on_exit EXIT/u);
-  assert.doesNotMatch(workflow, /rm -rf|rm --force/u);
+  assert.match(
+    workflow,
+    /COGS_REQUIRE_STAGE2_KATA_NATIVE_SSH_INPUT=1[\s\S]*aws-stage2-completion-kata-ssh-native\.py/u,
+  );
+  assert.match(workflow, /cleanup_ssh_fixture\(\)[\s\S]*cmp --silent[\s\S]*rm -- "\$target"/u);
+  const shardRows = /matrix:\n\s+shard:\n((?:\s+- [a-z-]+\n)+)/u.exec(workflow)?.[1];
+  assert.ok(shardRows);
+  assert.deepEqual(
+    [...shardRows.matchAll(/- ([a-z-]+)/gu)].map((match) => match[1]),
+    [
+      "baseline",
+      "native-wrapper",
+      "network-runtime",
+      "input-intent",
+      "input-cgroup-create",
+      "input-fork",
+      "input-preexec",
+      "input-release",
+      "input-drain",
+      "input-output",
+      "input-effect",
+      "input-fsync",
+      "input-settlement",
+      "input-quarantine",
+      "input-removal",
+      "ssh-intent",
+      "ssh-cgroup-create",
+      "ssh-fork",
+      "ssh-preexec",
+      "ssh-release",
+      "ssh-drain",
+      "ssh-output",
+    ],
+  );
+  assert.match(workflow, /fail-fast: false[\s\S]*max-parallel: 22/u);
+  assert.match(workflow, /COGS_STAGE2_KATA_NATIVE_TEST_SHARD: \$\{\{ matrix\.shard \}\}/u);
+  assert.match(
+    workflow,
+    /foundations:\n\s+name: Root-owned lifecycle and recovery\n\s+needs: foundation-shards\n\s+if: \$\{\{ always\(\) \}\}[\s\S]*test "\$SHARD_RESULT" = success/u,
+  );
+  assert.doesNotMatch(workflow, /continue-on-error|rm -rf|rm --force/u);
 });

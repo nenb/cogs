@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -1807,7 +1808,7 @@ def docker_real_lease_test():
     preserved()
 
     # Compose the real fixed operation owner with the real durable rootfs owner.
-    def operation_journal(include_leased=False, mismatch=False):
+    def operation_journal(include_leased=False, mismatch=False, input_removed=False):
         # Test-only fixed filesystem fixture. Production exposes no generic owner.
         state_path = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1" / operation_module.STATE_NAME.text
         state_path.mkdir(mode=0o700, exist_ok=True)
@@ -1875,6 +1876,23 @@ def docker_real_lease_test():
                 "root_generation": operation_module._generation_value(reference.root_generation),
                 "rootfs_pin": operation_module.ROOTFS_PIN,
             }))
+        if input_removed:
+            token = "8" * 64; proof = lambda value: {"operation_token": token, "proof_sha256": value * 64}
+            bodies.extend((("LIFECYCLE_DEADLINE_V1", {"operation_token": token, "admission_boottime_ns": 1,
+                "ssh_start_deadline_boottime_ns": 1 + operation_module.JOURNAL_SETUP_MARGIN_NS,
+                "journal_deadline_boottime_ns": 1 + operation_module.JOURNAL_TOTAL_NS}),
+                ("PRODUCTION_ADMISSION_V2", {"operation_token": token,
+                 "admission_version": operation_module.PRODUCTION_ADMISSION_VERSION,
+                 "policy_version": operation_module.command_policy.POLICY_VERSION,
+                 "parser_source_sha256": operation_module.SSH_PARSER_SHA256}),
+                ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
+                ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": token}),
+                ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned", "container": "exact-owned",
+                 "runtime": "exact-owned", "share": "exact-owned"}), ("TASK_STOPPED", proof("5")),
+                ("NETWORK_ABSENT", proof("6")), ("TASK_ABSENT", proof("7")),
+                ("CONTAINER_ABSENT", proof("8")), ("RUNTIME_ABSENT", proof("9")),
+                ("SHARE_ABSENT", proof("a")), ("FIREWALL_ABSENT", proof("b")),
+                ("INPUT_REMOVED", proof("c"))))
         for kind, value in bodies:
             line = operation_module._encode(kind, value, records)
             raw += line
@@ -1920,50 +1938,20 @@ def docker_real_lease_test():
     ))
     preserved()
 
-    body = {
-        "token": reference.token,
-        "operation_name": reference.operation_name,
-        "lease_sequence": reference.leased_settled.sequence,
-        "lease_offset": reference.leased_settled.offset,
-        "lease_sha256": reference.leased_settled.line_sha256,
-        "kata_operation_token": "8" * 64,
-        "kata_ledger_key": {
-            "mount_id": reference.ledger_key.mount_id,
-            "device": reference.ledger_key.device,
-            "inode": reference.ledger_key.inode,
-            "kind": "file",
-        },
-        "kata_release_sequence": 1,
-        "kata_release_offset": 1,
-        "kata_release_sha256": "7" * 64,
-    }
-    proposal = ledger_module.LedgerProposal.create("release-authorized", body)
-    raw = ledger_module._encode_proposal(proposal, reference.leased_settled)
-    # Test-only exact reopen after owner death. Production intentionally has no
-    # No generic authorization appender or pathname-adoption API; the narrow typed appender is expected.
-    flags = os.O_RDWR | fs_module._O_NOFOLLOW | fs_module._O_CLOEXEC
-    directory_descriptor = os.open(ledger_path.parent, os.O_RDONLY | os.O_DIRECTORY | fs_module._O_CLOEXEC)
-    descriptor = None
-    try:
-        descriptor = os.open(ledger_path.name, flags, dir_fd=directory_descriptor)
-        observed = os.fstat(descriptor)
-        assert (observed.st_dev, observed.st_ino) == (reference.ledger_key.device, reference.ledger_key.inode)
-        assert observed.st_size == reference.leased_settled.offset == len(initial_ledger)
-        assert os.lseek(descriptor, reference.leased_settled.offset, os.SEEK_SET) == reference.leased_settled.offset
-        offset = 0
-        while offset < len(raw):
-            written = os.write(descriptor, raw[offset:])
-            assert 0 < written <= len(raw) - offset
-            offset += written
-        os.fsync(descriptor)
-        records = ledger_module._parse_ledger(os.pread(descriptor, reference.leased_settled.offset + len(raw), 0))
-        assert records[-1].record_type == "release-authorized"
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(directory_descriptor)
-
-    builder_module._recover_fixed(fs_module.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False))
+    operation_journal(True, input_removed=True)
+    authority = operation_module._open_fixed_operation()
+    cleanup = operation_module._claim_production_cleanup_operation(authority)
+    with patch.object(type(cleanup), "settle_rootfs_absent", side_effect=RuntimeError("crash cut")):
+        rejected(lambda: lease_module._recover_kata_release(cleanup, control))
+    assert operation_module._durable_phase(cleanup) == "ROOTFS_RELEASE_AUTHORIZED"
+    assert not root_path.exists()
+    authority.close()
+    authority = operation_module._open_fixed_operation()
+    cleanup = operation_module._claim_production_cleanup_operation(authority)
+    released, authorization = lease_module._recover_kata_release(cleanup, control)
+    assert released is authorization is None
+    assert operation_module._durable_phase(cleanup) == "ROOTFS_ABSENT"
+    authority.close()
     state_root = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
     assert sorted(path.name for path in state_root.iterdir()) == sorted((builder_module.STATE_SENTINEL_NAME.text, builder_module.LOCK_NAME.text))
     cache = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"

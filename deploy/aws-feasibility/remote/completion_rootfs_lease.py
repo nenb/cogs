@@ -112,7 +112,6 @@ def _topology(retained, reference=None):
 def _merge(error, addition):
     return addition if error is None else fs.RootfsFsError(error, addition)
 
-
 def _close_preserving(retained, primary=None):
     error = primary
     owned = retained.owned
@@ -129,7 +128,6 @@ def _close_preserving(retained, primary=None):
     retained.disposition = "uncertain"
     if error is not None:
         raise error
-
 
 def _abandon_active(retained, primary):
     error = primary
@@ -557,19 +555,25 @@ def _authorize_kata_release(permit, held, control):
     kata_operation._settle_rootfs_release(grant, authorization)
     return authorization
 
-
 def _recover_kata_release(authority, control):
-    """Fresh-owner replay from exact operation/rootfs cross-pointers."""
-    _fail(type(control) is fs.OperationControl)
-    held = _reopen_kata_reserved(authority.reserve_rootfs(), control)
+    """Compose release-ready, authorization, exact owner removal, and operation absence."""
+    _fail(type(control) is fs.OperationControl); context = authority.prepare_rootfs_release()
+    proof = builder._kata_authorized_absence(context, control) if context.operation_phase == "ROOTFS_RELEASE_AUTHORIZED" else None
+    if proof is not None: authority.settle_rootfs_absent(proof); return None, None
+    held = None
     try:
-        authorization = _authorize_kata_release(authority.reserve_rootfs_release(), held, control)
+        if context.operation_phase == "ROOTFS_RELEASE_READY":
+            held = _reopen_kata_reserved(authority.reserve_rootfs(), control)
+            authorization = _authorize_kata_release(authority.reserve_rootfs_release(), held, control)
+            _close_preserving(held.retained); context = authority.prepare_rootfs_release()
+        else: authorization = kata_operation.RootfsAuthorization(context.rootfs_token, context.authorized_sequence, context.authorized_offset, context.authorized_sha256)
+        builder._recover_fixed(control); proof = builder._kata_authorized_absence(context, control)
+        _fail(proof is not None); authority.settle_rootfs_absent(proof)
+        if held is not None: held.disposition = "retired"; held.retained.disposition = "retired"
         return held, authorization
     except BaseException as error:
-        if held.disposition == "held":
-            _close_preserving(held.retained, error)
+        if held is not None and held.disposition == "held" and held.retained.disposition == "transferred": _close_preserving(held.retained, error)
         raise
-
 
 def _verify(lease, control):
     terminal = builder._terminal_record(lease.retained.owned.active).record_type

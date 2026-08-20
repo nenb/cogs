@@ -1,11 +1,13 @@
-"""Closed authenticated-SSH readiness boundary for Stage 2 Kata.
+"""Strict one-session authenticated SSH facet for the fixed Kata guest.
 
-Only the immutable command and an offline typed fake are available.  Loading a
-host SSH tool closure remains deliberately absent, so this module cannot open a
-production command issuer or make a connection.
+Public opening remains blocked.  Trusted T1 can compose the package-private
+route with the exact attested process transaction and guest-program source.
 """
 from dataclasses import dataclass
 import hashlib
+import completion_guest_workloads_v2 as guest
+import completion_kata_fdmap as fdmap
+import completion_kata_operation as operation
 
 MARKER = b"COGS_STAGE2_SSH_READY_V1\n"
 MARKER_SHA256 = hashlib.sha256(MARKER).hexdigest()
@@ -13,24 +15,31 @@ KEY_FD = 200
 KNOWN_HOSTS_FD = 201
 QUALIFICATION = "UNQUALIFIED_OFFLINE_FAKE_SSH_S5_V1"
 ARGV = (
-    "/usr/bin/ssh", "-F", "/dev/null", "-n", "-T",
-    "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
-    "-o", "PreferredAuthentications=publickey", "-o", "PubkeyAuthentication=yes",
+    "/usr/bin/ssh", "-F", "/dev/null", "-T",
+    "-o", "BatchMode=yes", "-o", "StdinNull=no",
+    "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+    "-o", "AddKeysToAgent=no", "-o", "PreferredAuthentications=publickey",
+    "-o", "PubkeyAuthentication=yes", "-o", "PubkeyAcceptedAlgorithms=ssh-ed25519",
+    "-o", "HostbasedAuthentication=no", "-o", "GSSAPIAuthentication=no",
     "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
-    "-o", "StrictHostKeyChecking=yes",
-    "-o", "UserKnownHostsFile=/proc/self/fd/201",
-    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "NumberOfPasswordPrompts=0", "-o", "StrictHostKeyChecking=yes",
+    "-o", "UserKnownHostsFile=/proc/self/fd/201", "-o", "UpdateHostKeys=no",
+    "-o", "GlobalKnownHostsFile=/dev/null", "-o", "VerifyHostKeyDNS=no",
+    "-o", "HostKeyAlgorithms=ssh-ed25519",
     "-o", "HostKeyAlias=cogs-stage2-ssh-v1", "-o", "CheckHostIP=no",
-    "-o", "ConnectionAttempts=1", "-o", "ConnectTimeout=5",
-    "-o", "ControlMaster=no", "-o", "ControlPath=none",
-    "-o", "ProxyCommand=none", "-o", "ProxyJump=none",
-    "-o", "PermitLocalCommand=no", "-o", "CanonicalizeHostname=no",
-    "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
-    "-o", "ForwardX11=no", "-o", "ForwardX11Trusted=no", "-o", "Tunnel=no",
+    "-o", "AddressFamily=inet", "-o", "ConnectionAttempts=1",
+    "-o", "ConnectTimeout=5",
+    "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no",
+    "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "ProxyUseFdpass=no",
+    "-o", "PermitLocalCommand=no", "-o", "LocalCommand=none",
+    "-o", "CanonicalizeHostname=no", "-o", "ClearAllForwardings=yes",
+    "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
+    "-o", "ForwardX11Trusted=no", "-o", "Tunnel=no", "-o", "GatewayPorts=no",
     "-o", "RequestTTY=no", "-o", "EscapeChar=none", "-o", "LogLevel=ERROR",
-    "-p", "22", "-i", "/proc/self/fd/200", "root@192.0.2.2",
-    "printf '%s\\n' COGS_STAGE2_SSH_READY_V1",
+    "-p", "22", "-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s",
 )
+OUTPUT_LIMIT = 4096
+RESULT_LINES = 21
 
 
 class SshError(Exception):
@@ -46,14 +55,15 @@ def _fail(condition, message="SSH contract"):
 class SshCommand:
     command_id: str = "SSH_READY"
     argv: tuple = ARGV
-    stdin: bytes = b""
+    stdin: bytes = guest.guest_program_bytes()
     deadline_class: str = "ssh"
     inherited_fds: tuple = (KEY_FD, KNOWN_HOSTS_FD)
 
     def __post_init__(self):
         _fail(type(self.command_id) is str and self.command_id == "SSH_READY")
         _fail(type(self.argv) is tuple and self.argv == ARGV)
-        _fail(type(self.stdin) is bytes and self.stdin == b"")
+        _fail(type(self.stdin) is bytes and self.stdin == guest.guest_program_bytes())
+        _fail(hashlib.sha256(self.stdin).hexdigest() == guest.GUEST_PROGRAM_SHA256)
         _fail(type(self.deadline_class) is str and self.deadline_class == "ssh")
         _fail(type(self.inherited_fds) is tuple and self.inherited_fds == (200, 201))
 
@@ -182,6 +192,146 @@ make_test_local_fake, authenticate_test_local, revoke_test_local, fake_state_for
 del _fake_routes
 
 
+PARSER_ID = "completion_guest_workloads.parse_guest_workload_output/v1"
+PARSER_SHA256 = hashlib.sha256(PARSER_ID.encode("ascii")).hexdigest()
+
+
+@dataclass(frozen=True)
+class AuthenticatedSession:
+    command_serial: int
+    binding_sha256: str
+    stdin_sha256: str
+    stdout_sha256: str
+    result_sha256: str
+    parsed_result: guest.GuestWorkloadResult
+
+
+def _canonical_result(result):
+    _fail(type(result) is guest.GuestWorkloadResult and len(result.samples) == RESULT_LINES)
+    return guest.canonical_guest_workload_result(result)
+
+
+def _production_routes():
+    """Compose only fixed module identities; no behavior/data callback enters."""
+    seal, states = object(), {}
+
+    class _ProductionSsh:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal, "production SSH is package-private")
+            return super().__new__(cls)
+        def authenticate(self):
+            state = states[self]
+            _fail(not state["issued"] and not state["revoked"], "SSH retry or revoked")
+            context = operation._command_context(state["journal"])
+            _fail(context.lifecycle_phase == "RUNTIME_READY", "SSH phase revoked")
+            claimed, primary, session = False, None, None
+            import completion_kata_process as process
+            try:
+                identity = state["inputs"].prepare_launch()
+                owner = state["inputs"].claim_ssh_bindings(); claimed = True
+                bindings = fdmap._claim_production_inputs(
+                    owner, context.operation_token, identity.manifest_sha256)
+                _fail(operation._command_context(state["journal"]) == context,
+                      "SSH journal changed before issuance")
+                state["issued"] = True
+                outcome, receipt = process._transact_fixed_ssh(
+                    state["journal"], state["executable"], bindings)
+                _fail(type(outcome) is process.ProcessOutcome
+                      and type(receipt) is operation.DurableCommandOutcome)
+                _fail(receipt.command_id == outcome.command_id == "SSH_READY"
+                      and receipt.command_serial == context.command_serial)
+                durable = operation._durable_command_output(
+                    state["journal"], context.command_serial, "SSH_READY",
+                    receipt.binding_sha256, outcome.stdout, outcome.stderr)
+                _fail(durable.body == receipt.body and outcome.stderr == b"")
+                body = durable.body
+                _fail(body["outcome"] == "exited" and body["status"] == 0
+                      and body["errno"] is None and not body["uncertain"])
+                _fail(not body["stdout_truncated"] and not body["stderr_truncated"]
+                      and body["leader_reaped"] and body["descendants_reaped"])
+                _fail(body["cgroup_empty"] and body["cgroup_removed"]
+                      and body["pipes_eof"] and body["errors"] == [])
+                parsed = guest.parse_guest_workload_output(outcome.stdout)
+                canonical = _canonical_result(parsed)
+                result_sha256 = hashlib.sha256(canonical).hexdigest()
+                operation._record_ssh_result(
+                    state["journal"], context.command_serial, receipt.binding_sha256,
+                    identity.manifest_sha256, outcome.stdout, canonical)
+                operation._record_ssh_ready(state["journal"])
+                session = AuthenticatedSession(
+                    context.command_serial, receipt.binding_sha256,
+                    guest.GUEST_PROGRAM_SHA256, body["stdout_sha256"],
+                    result_sha256, parsed)
+            except BaseException as error:
+                primary = error
+            state["revoked"] = True
+            settlement_errors = []
+            if primary is not None and state["issued"]:
+                try: process._recover_pending_production(state["journal"])
+                except BaseException as error: settlement_errors.append(error)
+            try: operation._revoke_or_require_terminal(state["journal"])
+            except BaseException as error: settlement_errors.append(error)
+            if claimed:
+                try: state["inputs"].release_ssh_bindings()
+                except BaseException as error: settlement_errors.append(error)
+            if not state["executable_released"]:
+                try:
+                    process._release_attested_executable(state["executable"])
+                    state["executable_released"] = True
+                except BaseException as error: settlement_errors.append(error)
+            if primary is not None or settlement_errors:
+                errors = ([primary] if primary is not None else []) + settlement_errors
+                raise BaseExceptionGroup("SSH failure/revocation/descriptor settlement", errors)
+            return session
+        def revoke(self):
+            import completion_kata_process as process
+            state = states[self]
+            operation._revoke_or_require_terminal(state["journal"])
+            state["revoked"] = True
+            if not state["executable_released"]:
+                process._release_attested_executable(state["executable"])
+                state["executable_released"] = True
+
+    def recover(journal, input_cleanup):
+        import completion_kata_inputs as inputs
+        import completion_kata_process as process
+        journal = operation._claim_production_cleanup_operation(journal)
+        _fail(type(input_cleanup) is inputs._ProductionInputCleanup)
+        errors = []
+        if operation._has_recovery_command(journal):
+            try: process._recover_pending_production(journal)
+            except BaseException as error: errors.append(error)
+        try: operation._revoke_or_require_terminal(journal)
+        except BaseException as error: errors.append(error)
+        try: input_cleanup.continue_cleanup()
+        except BaseException as error: errors.append(error)
+        if errors: raise BaseExceptionGroup("fresh SSH recovery settlement", errors)
+        return operation._durable_phase(journal)
+
+    def compose(journal, input_owner, executable_owner):
+        import completion_kata_inputs as inputs
+        import completion_kata_process as process
+        journal = operation._claim_production_operation(journal)
+        _fail(type(input_owner) is inputs._ProductionInputs)
+        ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
+        _fail((ssh_executable.role, ssh_executable.path) == ("ssh", "/usr/bin/ssh"))
+        _fail(guest.guest_program_bytes() == command_spec().stdin)
+        _fail(operation._command_context(journal).lifecycle_phase in {"ROOTFS_LEASED", "FS_SETTLED"})
+        value = _ProductionSsh(seal)
+        states[value] = {"journal": journal, "inputs": input_owner,
+                         "executable": ssh_executable, "executable_released": False,
+                         "issued": False, "revoked": False}
+        return value
+
+    return _ProductionSsh, compose, recover
+
+
+(_ProductionSsh, _compose_production_ssh,
+ _recover_production_ssh) = _production_routes()
+del _production_routes
+
+
 def open_fixed_ssh_owner():
-    """Fail closed until the exact host-tool contract loader is committed."""
-    raise SshError("production SSH unavailable: host-tool contract loader is absent")
+    """Fail closed until exact attestation and the fixed coordinator compose T1."""
+    raise SshError("production SSH requires exact attestation/coordinator")

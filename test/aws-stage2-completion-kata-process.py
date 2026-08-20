@@ -39,25 +39,51 @@ def contract_rejected(raw):
     raise AssertionError("hostile contract accepted")
 
 
-# Closed production snapshots contain no caller-selected token.  These exact
-# values are future actions only; no production execution issuer exists.
+# Historical process-only snapshots remain byte stable; V3 is separate.
 snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
 assert snapshots["CTR_TASK_TERM"] == ((
     "/usr/bin/ctr", "--address", process.CONTAINERD_SOCKET,
     "--namespace", "cogs-stage2-completion-v1", "tasks", "kill",
     "--signal", "SIGTERM", "cogs-stage2-ssh-v1",
 ), b"", "task-term", ())
+v3_snapshots = {name: argv for name, argv, _stdin, _deadline, _fds in process._fixed_spec_snapshots_v3_for_tests()}
+assert v3_snapshots["CTR_TASK_TERM"][:3] == (process.STAGED_CTR, "--address", process.CONTAINERD_SOCKET)
+poll_r, poll_w = __import__("os").pipe()
+try:
+    poller = process.select.poll(); poller.register(poll_r, process.select.POLLIN)
+    __import__("os").write(poll_w, b"x"); assert poller.poll(1000)
+finally:
+    __import__("os").close(poll_r); __import__("os").close(poll_w)
+# A retained pidfd/descriptor is proven EBADF before a successful outcome can
+# become durable; close doubt is an outcome error, never silent completion.
+proof_r, proof_w = os.pipe()
+proof_errors = []
+assert process._close_and_prove_absent(proof_r, "portable-fd", proof_errors)
+assert proof_errors == []
+rejected(lambda: os.fstat(proof_r))
+real_close = os.close
+with patch.object(process.os, "close", side_effect=OSError(errno.EINTR, "uncertain")):
+    assert not process._close_and_prove_absent(proof_w, "portable-fd", proof_errors)
+real_close(proof_w)
+assert proof_errors == [f"portable-fd-close:{errno.EINTR}"]
+process_source = (REMOTE / "completion_kata_process.py").read_text()
+assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
+       process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
+rejected(lambda: process._start_fixed_daemon(object(), object()))
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
 assert unissued["IP_NETNS_ADD"].argv_tail == ("netns", "add", "cogs-stage2-ssh")
+assert unissued["IP_HOST_ADDRGEN_NONE"].argv_tail == (
+    "link", "set", "dev", "c42h0", "addrgenmode", "none",
+)
 assert unissued["IP_PEER_ADDRGEN_NONE"].argv_tail[-2:] == ("addrgenmode", "none")
 assert unissued["NFT_INSTALL"].tool_contract == "nft"
 assert unissued["NFT_INSTALL"].argv_tail == ("-f", "-")
 assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
-assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "printf '%s\\n' COGS_STAGE2_SSH_READY_V1")
+assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "/bin/sh -s")
 assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
-assert len(snapshots) == 8
+assert len(snapshots) == 12
 rejected(lambda: process._spec("IP_NETNS_ADD"))
 rejected(lambda: process._test_spec("ok"))
 BOOT_A = "12345678-1234-1234-1234-123456789abc"
@@ -78,8 +104,40 @@ rejected(lambda: process._recovery_class(fake_identity, BOOT_A, process.Recovery
 for command in (process.CommandId.IP_NETNS_ADD, process.CommandId.NFT_INSTALL):
     assert process._spec(command).command_id == command.value
 for command in (process.CommandId.SSH_KEYGEN_CLIENT, process.CommandId.SSH_PUBLIC_CLIENT):
-    rejected(lambda command=command: process._spec(command))
-assert {"SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT", "CTR_RUN"} <= process.OWNER_ASSIGNED_IDS
+    assert process._spec(command).deadline_class == "keygen"
+assert process.OWNER_ASSIGNED_IDS == {"CTR_RUN"}
+
+# A durable work/lifecycle expiry suppresses retry but still grants a fresh,
+# bounded exact-cgroup settlement window.
+class ExpiredJournal:
+    def __init__(self, expected):
+        self.expected, self.recorded = expected, None
+    def recovery_command(self):
+        intent = {"operation_token": "d" * 64, "command_serial": 7,
+                  "command_id": "CTR_TASK_LIST", "host_boot_id": BOOT_A,
+                  "deadline_boottime_ns": 80, "cleanup_reserve_ns": 2_000_000_000}
+        preexec = {"cgroup_generation": dict(zip(process.kata_operation.GEN_KEYS, self.expected))}
+        return intent, preexec, None
+    def recovery_lifecycle_deadline(self): return BOOT_A, 90
+    def record_command_outcome(self, body): self.recorded = body; return body
+expired_capture = {}
+def expired_body(_intent, _outcome, _status, _errno, _stdout, _stderr, _overflow,
+                 _wait, _eof, cleanup, state, errors, _release):
+    expired_capture.update({"cleanup": cleanup, "state": dict(state), "errors": tuple(errors)})
+    return {"uncertain": True}
+expected_generation = tuple(range(len(process.kata_operation.GEN_KEYS)))
+expired_journal = ExpiredJournal(expected_generation)
+with patch.object(process, "_boottime_ns", return_value=100), \
+     patch.object(process, "_boot_id", return_value=BOOT_A), \
+     patch.object(process, "_recover_cgroup", return_value=(True, True)) as recover, \
+     patch.object(process, "_outcome_body", side_effect=expired_body):
+    assert process._recover_pending_fixed(expired_journal) == {"uncertain": True}
+recover.assert_called_once_with(
+    process.CGROUP_BASE + "/" + "d" * 64 + "-7", expected_generation,
+    2_000_000_100, {"term": False, "kill": False}, ["crash-continuation", "lifecycle-deadline-expired"])
+assert expired_capture == {"cleanup": (True, False, True, False),
+                           "state": {"term": False, "kill": False},
+                           "errors": ("crash-continuation", "lifecycle-deadline-expired")}
 
 # Contract decoding requires canonical, digest-bound, exact typed records.
 def canonical(value):
@@ -219,14 +277,31 @@ def authentic_root_cgroup_recovery():
     os.close(report_r)
     assert os.waitpid(supervisor, 0)[1] == 77 << 8
     value = json.loads(raw)
-    state, errors = {"term": False, "kill": False}, []
     previous = None
     try:
-        assert process._recover_cgroup(
-            path, tuple(value["expected"]), process._boottime_ns() + 2_000_000_000,
-            state, errors,
-        ) == (True, True)
-        assert state["kill"] and errors == [] and not os.path.exists(path)
+        class ExpiredNativeJournal:
+            def recovery_command(self):
+                intent = {"operation_token": token, "command_serial": 4242,
+                          "command_id": "CTR_TASK_LIST", "host_boot_id": process._boot_id(),
+                          "deadline_boottime_ns": process._boottime_ns() - 1,
+                          "cleanup_reserve_ns": 2_000_000_000}
+                preexec = {"cgroup_generation": dict(zip(
+                    process.kata_operation.GEN_KEYS, value["expected"]))}
+                return intent, preexec, None
+            def recovery_lifecycle_deadline(self):
+                return process._boot_id(), process._boottime_ns() - 1
+            def record_command_outcome(self, body): return body
+        captured = {}
+        def native_body(_intent, _outcome, _status, _errno, _stdout, _stderr, _overflow,
+                        _wait, _eof, cleanup, recovery_state, recovery_errors, _release):
+            captured.update({"cleanup": cleanup, "state": dict(recovery_state),
+                             "errors": tuple(recovery_errors)})
+            return {"uncertain": True}
+        with patch.object(process, "_outcome_body", side_effect=native_body):
+            assert process._recover_pending_fixed(ExpiredNativeJournal()) == {"uncertain": True}
+        assert captured["cleanup"] == (True, False, True, False)
+        assert captured["state"]["kill"] and "lifecycle-deadline-expired" in captured["errors"]
+        assert not os.path.exists(path)
         # Exact production settlement also reaps a quick adopted descendant.
         previous = process._set_subreaper(True)
         owner = process._prepare_cgroup(process.kata_operation.CommandContext(
@@ -288,7 +363,7 @@ def linux_supervisor_tests():
                 "a" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
                 process._boot_id(), "5" * 40, "ROOTFS_LEASED", 0,
             )
-            self.intent = self.preexec = self.outcome = None
+            self.intent = self.preexec = self.output = self.outcome = None
         def command_context(self):
             return self.context
         def record_command_intent(self, body):
@@ -297,6 +372,10 @@ def linux_supervisor_tests():
         def record_command_preexec(self, body):
             process.kata_operation._validate_body("COMMAND_PREEXEC_V2", body)
             self.preexec = body
+        def record_command_output(self, body):
+            process.kata_operation._validate_body("COMMAND_OUTPUT_V3", body)
+            self.output = body
+            return body
         def record_command_outcome(self, body):
             process.kata_operation._validate_body("COMMAND_OUTCOME_V2", body)
             self.outcome = body
@@ -360,8 +439,7 @@ def linux_supervisor_tests():
             if used:
                 raise process.ProcessError("test transaction already consumed")
             used = True
-            command_id = process.CommandId.SSH_READY if action is process._TestAction.INHERITED \
-                else process.CommandId.CTR_TASK_LIST
+            command_id = process.CommandId.CTR_TASK_LIST
             test_spec = process._test_spec(action)
             fixed = process.FixedCommand(
                 command_id, "test", process.TEST_PATH, test_spec.argv, test_spec.stdin,
