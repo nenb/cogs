@@ -116,10 +116,13 @@ def _read_regular(path, maximum, after_read=None, frozen=False):
         raw = os.read(descriptor, maximum + 1)
         if after_read is not None:
             after_read()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        repeated = os.read(descriptor, maximum + 1)
         after = os.fstat(descriptor)
         named = os.stat(path, follow_symlinks=False)
-        if _generation(after) != _generation(before) or _generation(named) != _generation(after):
-            raise ReceiptError("input generation changed")
+        if (repeated != raw or _generation(after) != _generation(before)
+                or _generation(named) != _generation(after)):
+            raise ReceiptError("input generation or bytes changed")
     finally:
         os.close(descriptor)
     if not 0 < len(raw) <= maximum:

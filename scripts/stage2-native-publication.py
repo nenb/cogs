@@ -44,9 +44,11 @@ def _read_bounded(descriptor, maximum, after_read=None):
     raw = os.read(descriptor, maximum + 1)
     if after_read is not None:
         after_read()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    repeated = os.read(descriptor, maximum + 1)
     after = os.fstat(descriptor)
-    if _generation(after) != _generation(before):
-        raise PublicationError("candidate generation changed while reading")
+    if _generation(after) != _generation(before) or repeated != raw:
+        raise PublicationError("candidate generation or bytes changed while reading")
     if not 0 < len(raw) <= maximum:
         raise PublicationError("candidate byte bound failed")
     return raw, after
