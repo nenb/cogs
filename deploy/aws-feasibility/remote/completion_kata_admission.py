@@ -154,12 +154,15 @@ def _read_held_raw(descriptor, before, maximum):
 def _derived_elf(raw):
     _require(type(raw) is bytes and len(raw) >= 64)
     try:
-        header = struct.unpack_from('<16sHHIQQQIHHHHHH', raw); (ident, kind, machine, version) = header[:4]; (phoff, phsize, phnum) = (header[5], header[9], header[10]); _require(ident[:7] == b'\x7fELF\x02\x01\x01' and kind in {2, 3} and (machine == 62) and (version == 1) and (phsize == 56) and (0 < phnum <= 256) and (phoff + phsize * phnum <= len(raw)), 'retained object is not exact ELF64'); dynamic = sum((struct.unpack_from('<I', raw, phoff + index * phsize)[0] == 2 for index in range(phnum)))
+        header = struct.unpack_from('<16sHHIQQQIHHHHHH', raw); (ident, kind, machine, version) = header[:4]; (phoff, phsize, phnum) = (header[5], header[9], header[10]); _require(ident[:7] == b'\x7fELF\x02\x01\x01' and kind in {2, 3} and (machine == 62) and (version == 1) and (phsize == 56) and (0 < phnum <= 256) and (phoff + phsize * phnum <= len(raw)), 'retained object is not exact ELF64'); headers = [struct.unpack_from('<IIQQQQQQ', raw, phoff + index * phsize) for index in range(phnum)]; dynamic = sum(item[0] == 2 for item in headers); interp_headers = [item for item in headers if item[0] == 3]; _require(len(interp_headers) <= 1); static_interpreter = None
+        if interp_headers:
+            offset, size = interp_headers[0][2], interp_headers[0][5]; _require(1 < size <= 256 and offset + size <= len(raw)); encoded = raw[offset:offset + size]; _require(encoded.endswith(b'\0') and b'\0' not in encoded[:-1] and all(32 <= byte <= 126 for byte in encoded[:-1])); static_interpreter = encoded[:-1].decode('ascii'); _require(static_interpreter.startswith('/') and os.path.normpath(static_interpreter) == static_interpreter)
         if dynamic == 0:
-            return (None, None, ())
+            return (static_interpreter, None, ())
         _require(dynamic == 1)
         from completion_runtime_closure import _elf
-        return _elf(raw)
+        derived = _elf(raw); _require(derived[0] == static_interpreter)
+        return derived
     except AdmissionError:
         raise
     except Exception as error:
