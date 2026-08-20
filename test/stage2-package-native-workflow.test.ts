@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
@@ -18,7 +19,7 @@ test("native package workflow is manual, same-head, non-rerun, and read-only", (
   assert.match(workflow, /test "\$\{GITHUB_RUN_ATTEMPT\}" = 1/u);
   assert.match(workflow, /test "\$EXACT_REVIEWED_HEAD" = "\$DISPATCH_HEAD"/u);
   assert.doesNotMatch(workflow, /--retry|strategy:|matrix:/u);
-  assert.doesNotMatch(workflow, /amazon|aws-actions|open(tofu)?|terraform|kvm|docker/u);
+  assert.doesNotMatch(workflow, /amazon|aws-actions|opentofu|terraform|kvm|docker/u);
 });
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
@@ -30,7 +31,10 @@ test("native driver performs one exact retained-rootfs package transaction", () 
     "build._build_once_retained(",
     "build._require_pinned(",
     "package.run_candidate_transaction()",
-    '_libc_call("unshare"',
+    "CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET",
+    "helper = os.fork()",
+    "pid = os.fork()",
+    "PID1_FD",
     "MS_REC | MS_PRIVATE",
     "os.chroot(root)",
     "materializer._reload_and_cleanup(",
@@ -43,6 +47,27 @@ test("native driver performs one exact retained-rootfs package transaction", () 
   assert.doesNotMatch(driver, /retry|for attempt|while attempt/u);
   assert.match(driver, /MAX_RESULT_BYTES = 4096/u);
   assert.match(driver, /CHILD_SECONDS = 1_300/u);
+  assert.match(driver, /_open_detached_tree[\s\S]*_run_candidate_child/u);
+  assert.match(driver, /MOUNT_ATTR_RDONLY[\s\S]*recursive=True/u);
+  assert.match(driver, /signal\.pidfd_send_signal\(pidfd, signal\.SIGKILL\)/u);
+  assert.match(driver, /os\.waitid\(os\.P_PIDFD, pidfd, os\.WEXITED\)/u);
+  assert.match(driver, /set\(os\.listdir\(f"\{root\}\/dev"\)\) == \{"null", "urandom"\}/u);
+  assert.doesNotMatch(
+    driver,
+    /clone3|PyOS_|ctypes\.pythonapi|os\.kill\(|waitpid\([^,]+,\s*0\)|\/proc", f"\{root\}\/proc"[\s\S]{0,30}MS_BIND/u,
+  );
+});
+
+test("double-fork protocol keeps cleanup uncertainty sticky", () => {
+  const result = spawnSync("python3", ["test/stage2-package-native-doublefork.py"], {
+    encoding: "utf8",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /stage2 package double-fork tests passed; native=not-requested/u);
+  assert.match(workflow, /COGS_REQUIRE_DOUBLEFORK_NATIVE_TEST=1/u);
+  assert.match(workflow, /COGS_DOUBLEFORK_NATIVE_TEST=1/u);
 });
 
 test("cleanup and canonical validation gate the only uploaded file", () => {
@@ -52,6 +77,9 @@ test("cleanup and canonical validation gate the only uploaded file", () => {
   const upload = workflow.indexOf("Upload candidate JSON for manual final-pin review only");
   assert.ok(0 < attempt && attempt < cleanup && cleanup < validate && validate < upload);
   assert.match(workflow, /raw != canonical_json\(value\)/u);
+  assert.match(workflow, /candidate\.partial/u);
+  assert.match(workflow, /os\.replace\(partial, final\)/u);
+  assert.match(workflow, /validate_native_candidate_result\(value\)/u);
   assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-native-package-candidate-v1\/candidate\.json/u);
   assert.doesNotMatch(workflow, /git (commit|push)|stage2-completion-runtime-v1\.json/u);
   assert.match(workflow, /test ! -e \/var\/lib\/cogs/u);

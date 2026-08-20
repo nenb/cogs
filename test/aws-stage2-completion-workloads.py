@@ -630,6 +630,19 @@ candidate_value = {
     "execution_binding": binding,
 }
 contract.validate_candidate_result(candidate_value)
+native_binding = contract.native_execution_binding(tools, runtime_pin, "d" * 64)
+native_value = {
+    **candidate_value,
+    "version": "cogs.stage2-workload-candidate/v2",
+    "authority": "non-authoritative-retained-rootfs-candidate-only",
+    "execution_binding": native_binding,
+}
+contract.validate_native_candidate_result(native_value)
+rejected(lambda: contract.validate_candidate_result(native_value), contract.WorkloadContractError)
+rejected(lambda: contract.validate_native_candidate_result(candidate_value), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+changed_native["execution_binding"]["rootfs_execution"] = "not-used-by-host-candidate-or-reproduction"
+rejected(lambda: contract.validate_native_candidate_result(changed_native), contract.WorkloadContractError)
 for key, hostile in (
     ("authority", "authoritative"),
     ("final_pin_sha256", "f" * 64),

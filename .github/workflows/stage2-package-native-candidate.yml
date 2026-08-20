@@ -42,6 +42,15 @@ jobs:
           test "${GITHUB_RUN_ATTEMPT}" = 1
           test -z "$(/usr/bin/git status --porcelain)"
 
+      - name: Run the required privileged double-fork integration
+        run: |
+          set -euo pipefail
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            COGS_REQUIRE_DOUBLEFORK_NATIVE_TEST=1 \
+            COGS_DOUBLEFORK_NATIVE_TEST=1 \
+            /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/test/stage2-package-native-doublefork.py"
+
       - name: Materialize the exact fixed source
         run: |
           set -euo pipefail
@@ -63,13 +72,27 @@ jobs:
           staging=/var/tmp/cogs-stage2-native-package-candidate-v1
           /bin/rm -rf -- "$staging"
           /bin/mkdir -m 700 -- "$staging"
+          umask 077
+          partial="$staging/candidate.partial"
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=10s 3000s \
             env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             COGS_PACKAGE_REVIEWED_HEAD="$EXACT_REVIEWED_HEAD" \
             COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
             /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-package-native-candidate.py \
-            | /bin/cat >"$staging/candidate.json"
+            >"$partial"
+          /usr/bin/python3 -I - "$partial" "$staging/candidate.json" <<'PY'
+          import os, pathlib, sys
+          partial, final = map(pathlib.Path, sys.argv[1:])
+          with partial.open("rb") as source:
+              os.fsync(source.fileno())
+          os.replace(partial, final)
+          directory = os.open(final.parent, os.O_RDONLY | os.O_DIRECTORY)
+          try:
+              os.fsync(directory)
+          finally:
+              os.close(directory)
+          PY
 
       - name: Remove all native candidate source and runtime residue
         id: cleanup
@@ -77,14 +100,19 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          for path in /run/cogs-stage2-native-preflight-source-v1 /run/cogs-stage2-native-private-v1; do
+            if /usr/bin/mountpoint -q "$path"; then sudo -n /bin/umount -l -- "$path"; fi
+          done
           sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 300s \
             /bin/rm -rf --one-file-system -- \
-            /var/lib/cogs /var/tmp/cogs-stage2-native-package-root-v1
+            /var/lib/cogs /run/cogs-stage2-native-preflight-source-v1 \
+            /run/cogs-stage2-native-private-v1
           test ! -e /var/lib/cogs
-          test ! -e /var/tmp/cogs-stage2-native-package-root-v1
-          test ! -e /tmp/cogs-stage2-workload-candidate-v1
+          test ! -e /run/cogs-stage2-native-preflight-source-v1
+          test ! -e /run/cogs-stage2-native-private-v1
+          test ! -e /tmp/cogs-stage2-workload-candidate-v2
           test ! -e /tmp/cogs-stage2-workload-post-pin-v1
-          ! /usr/bin/grep -Fq '/var/lib/cogs' /proc/self/mountinfo
+          ! /usr/bin/grep -Eq '/var/lib/cogs|/run/cogs-stage2-native-(preflight-source|private)-v1' /proc/self/mountinfo
 
       - name: Validate the sole canonical non-authoritative output
         id: validate
@@ -97,13 +125,17 @@ jobs:
           /usr/bin/python3 -I - "$staging/candidate.json" "$GITHUB_WORKSPACE/deploy/aws-feasibility/remote" <<'PY'
           import json, pathlib, sys
           sys.path.insert(0, sys.argv[2])
-          from completion_runtime_contract import canonical_json, validate_candidate_result
+          from completion_runtime_contract import canonical_json, validate_native_candidate_result
           path = pathlib.Path(sys.argv[1])
           raw = path.read_bytes()
           if not 0 < len(raw) <= 4096:
               raise SystemExit(2)
           value = json.loads(raw)
-          validate_candidate_result(value)
+          validate_native_candidate_result(value)
+          launcher = pathlib.Path("scripts/run-stage2-package-native-candidate.py").read_bytes()
+          import hashlib
+          if value["execution_binding"]["launcher_implementation_sha256"] != hashlib.sha256(launcher).hexdigest():
+              raise SystemExit(2)
           if raw != canonical_json(value):
               raise SystemExit(2)
           identity = value["package_identity"]
@@ -148,5 +180,6 @@ jobs:
           test "$UPLOAD" = success
           test "$OUTPUT_CLEANUP" = success
           test ! -e /var/lib/cogs
-          test ! -e /var/tmp/cogs-stage2-native-package-root-v1
+          test ! -e /run/cogs-stage2-native-preflight-source-v1
+          test ! -e /run/cogs-stage2-native-private-v1
           test ! -e /var/tmp/cogs-stage2-native-package-candidate-v1

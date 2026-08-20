@@ -370,6 +370,25 @@ def execution_binding(tool_observations, runtime_closure):
     }
 
 
+def native_execution_binding(tool_observations, runtime_closure, launcher_sha256):
+    """Bind V2 only to the retained-rootfs double-fork execution route."""
+    _require(type(runtime_closure) is RuntimeClosurePin)
+    _require(type(launcher_sha256) is str and len(launcher_sha256) == 64 and set(launcher_sha256) <= _HEX)
+    return {
+        **REVIEWED_SOURCE_DIGESTS,
+        "launcher_implementation_sha256": launcher_sha256,
+        "tool_observations": tool_observations,
+        "runtime_closure": runtime_closure.value(),
+        "contract_validator": "fixed-source-manifest-verified-native-v2-validator",
+        "source_checkout": "fixed-reviewed-source-loaded-before-chroot",
+        "linux_dynamic_tool_closure": "exact-static-elf-closure-executed-from-retained-rootfs",
+        "process_containment": "gated-os-fork-helper-newns-newpid-newnet-os-fork-pid1-pidfd-v1",
+        "process_containment_limitation": "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
+        "operation_parent_isolation": "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
+        "rootfs_execution": "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
+    }
+
+
 def load_candidate_contract():
     """Load only the exact reviewed input bytes; semantic reformatting is rejected."""
     artifacts_raw = _read_regular(ARTIFACTS_PATH)
@@ -490,6 +509,47 @@ def validate_candidate_result(value):
     _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
     _require(value["a_equals_b"] is True and value["lifecycle_deleted"] is True and value["promotion"] == "external-manual-review-required")
     _validate_execution(value["execution_binding"])
+    return value
+
+
+def _validate_native_execution(value):
+    keys = (
+        *REVIEWED_SOURCE_DIGESTS, "launcher_implementation_sha256", "tool_observations",
+        "runtime_closure", "contract_validator", "source_checkout", "linux_dynamic_tool_closure",
+        "process_containment", "process_containment_limitation", "operation_parent_isolation",
+        "rootfs_execution",
+    )
+    _exact_keys(value, keys)
+    for name, digest in REVIEWED_SOURCE_DIGESTS.items():
+        _require(value[name] == digest)
+    _require(type(value["launcher_implementation_sha256"]) is str
+             and len(value["launcher_implementation_sha256"]) == 64
+             and set(value["launcher_implementation_sha256"]) <= _HEX)
+    exact_tool_observations(value["tool_observations"])
+    _runtime_closure_value(value["runtime_closure"])
+    _require(value["contract_validator"] == "fixed-source-manifest-verified-native-v2-validator")
+    _require(value["source_checkout"] == "fixed-reviewed-source-loaded-before-chroot")
+    _require(value["linux_dynamic_tool_closure"] == "exact-static-elf-closure-executed-from-retained-rootfs")
+    _require(value["process_containment"] == "gated-os-fork-helper-newns-newpid-newnet-os-fork-pid1-pidfd-v1")
+    _require(value["process_containment_limitation"] == "trusted-initial-user-namespace-root-no-hostile-root-security-boundary")
+    _require(value["operation_parent_isolation"] == "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp")
+    _require(value["rootfs_execution"] == "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp")
+
+
+def validate_native_candidate_result(value):
+    """Validate V2 without changing the historical V1 candidate contract."""
+    keys = ("version", "result", "authority", "candidate_contract_sha256", "final_pin_sha256", "package_identity", "reproductions", "a_equals_b", "lifecycle_deleted", "promotion", "execution_binding")
+    _exact_keys(value, keys)
+    _require(value["version"] == "cogs.stage2-workload-candidate/v2")
+    _require(value["result"] == "pass"
+             and value["authority"] == "non-authoritative-retained-rootfs-candidate-only")
+    _require(value["candidate_contract_sha256"] == REVIEWED_CANDIDATE_SHA256
+             and value["final_pin_sha256"] is None)
+    parse_identity(value["package_identity"])
+    _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
+    _require(value["a_equals_b"] is True and value["lifecycle_deleted"] is True
+             and value["promotion"] == "external-manual-review-required")
+    _validate_native_execution(value["execution_binding"])
     return value
 
 

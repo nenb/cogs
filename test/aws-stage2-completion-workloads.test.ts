@@ -174,6 +174,39 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   }
 });
 
+test("retained-rootfs V2 is truthful without reinterpreting historical V1", () => {
+  const validateV1 = compile("stage2-workload-candidate-v1.json");
+  const validateV2 = compile("stage2-workload-candidate-v2.json");
+  const nativeBinding = {
+    ...executionBinding,
+    launcher_implementation_sha256: "d".repeat(64),
+    contract_validator: "fixed-source-manifest-verified-native-v2-validator",
+    source_checkout: "fixed-reviewed-source-loaded-before-chroot",
+    linux_dynamic_tool_closure: "exact-static-elf-closure-executed-from-retained-rootfs",
+    process_containment: "gated-os-fork-helper-newns-newpid-newnet-os-fork-pid1-pidfd-v1",
+    process_containment_limitation: "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
+    rootfs_execution: "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
+  };
+  const native = {
+    version: "cogs.stage2-workload-candidate/v2",
+    result: "pass",
+    authority: "non-authoritative-retained-rootfs-candidate-only",
+    candidate_contract_sha256: contractSha,
+    final_pin_sha256: null,
+    package_identity: identity,
+    reproductions,
+    a_equals_b: true,
+    lifecycle_deleted: true,
+    promotion: "external-manual-review-required",
+    execution_binding: nativeBinding,
+  };
+  assert.equal(validateV2(native), true, JSON.stringify(validateV2.errors));
+  assert.equal(validateV1(native), false);
+  assert.equal(validateV2({ ...native, version: "cogs.stage2-workload-candidate/v1" }), false);
+  assert.equal(validateV2({ ...native, execution_binding: executionBinding }), false);
+  assert.equal(executionBinding.rootfs_execution, "not-used-by-host-candidate-or-reproduction");
+});
+
 test("rejected v1 is absent from protected main and host foundations remain non-authoritative", () => {
   const rejectedV1 = spawnSync(
     "git",
