@@ -476,7 +476,8 @@ def _write_frame(descriptor, kind, payload):
 
 
 def _child_error(descriptor, stage, error):
-    stage_token = stage if _SAFE_TOKEN.fullmatch(stage) else "unknown"
+    reported = getattr(error, "stage", stage)
+    stage_token = reported if isinstance(reported, str) and _SAFE_TOKEN.fullmatch(reported) else "unknown"
     payload = f"{stage_token}:{_category(error)}".encode("ascii")
     try:
         _write_frame(descriptor, b"E", payload)

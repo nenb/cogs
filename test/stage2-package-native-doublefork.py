@@ -173,6 +173,22 @@ def portable_tests():
     check(module._parse_frame(frame) == success, "success frame did not round trip")
     failure = b"transaction:OSError_5"
     frame = len(failure + b"E").to_bytes(4, "big") + b"E" + failure
+    staged_read, staged_write = os.pipe()
+    staged_error = module.NativeCandidateError("fixture")
+    staged_error.stage = "tool-version"
+    try:
+        module._child_error(staged_write, "transaction", staged_error)
+    finally:
+        os.close(staged_write)
+    staged_frame = os.read(staged_read, module.MAX_PROTOCOL_BYTES + 4)
+    os.close(staged_read)
+    try:
+        module._parse_frame(staged_frame)
+    except module.ChildCandidateError as error:
+        check((error.stage, error.category) == ("tool-version", "NativeCandidateError"),
+              "nested transaction stage was discarded")
+    else:
+        raise AssertionError("nested transaction error was accepted")
     try:
         module._parse_frame(frame)
     except module.ChildCandidateError as error:

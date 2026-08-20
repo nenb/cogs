@@ -29,6 +29,42 @@ SOURCE_REVISION = json.loads(SOURCE_MANIFEST_BYTES)["revision"]
 NATIVE_IMPLEMENTATION_DIGESTS = native_implementation_digests()
 class NativeCandidateTransactionError(WorkloadError):
     category = "native-candidate-mismatch"
+
+
+class NativeCandidateStageError(WorkloadError):
+    def __init__(self, stage, cause):
+        self.stage = stage
+        if isinstance(cause, (KeyboardInterrupt, SystemExit)):
+            category = "interrupted"
+        elif isinstance(cause, OSError) and cause.errno is not None:
+            category = f"OSError_{cause.errno}"
+        else:
+            category = getattr(cause, "category", type(cause).__name__)
+        safe = (isinstance(category, str) and 1 <= len(category) <= 64
+                and all(value.isascii() and (value.isalnum() or value in "_-")
+                        for value in category))
+        self.category = category if safe else "native-candidate-mismatch"
+        super().__init__(stage)
+
+
+def _stage_failure(stage, cause):
+    return cause if isinstance(cause, NativeCandidateStageError) else NativeCandidateStageError(stage, cause)
+
+
+class _StagedSignalScope:
+    def __init__(self):
+        self.scope = SignalScope()
+
+    def __enter__(self):
+        return self.scope.__enter__()
+
+    def __exit__(self, *arguments):
+        try:
+            return self.scope.__exit__(*arguments)
+        except BaseException as error:
+            raise _stage_failure("signal-scope-close", error) from error
+
+
 def _require(condition):
     if not condition:
         raise NativeCandidateTransactionError("native candidate invariant failed")
@@ -53,52 +89,83 @@ def run_candidate_transaction():
     """Build A and B once using authentic retained-rootfs Git/dpkg tools."""
     deadline = Deadline.start()
     root = tools = failure = result = None
-    _require(0 < len(NATIVE_LAUNCHER_BYTES) <= 256 * 1024)
-    _require(0 < len(SOURCE_MANIFEST_BYTES) <= 16 * 1024 * 1024)
-    _require(SOURCE_REVISION == os.environ.get("COGS_PACKAGE_REVIEWED_HEAD"))
-    launcher_sha256 = NATIVE_LAUNCHER_SHA256
-    with SignalScope():
-        try:
-            contract = load_candidate_contract()
-            require_linux_amd64_root()
-            runtime_closure = exact_runtime_closure()
-            tools = ToolSet()
-            root = OwnedRoot(CANDIDATE_ROOT, deadline, "host-candidate")
-            root.mkdir("private-home", 0o700)
-            root.mkdir("private-tmp", 0o700)
-            _check_versions(root, tools, deadline)
-            tool_observations = exact_tool_observations(tools.observations())
-            first, _build_a_ms, _install_a_ms = _run_package_sample(root, "candidate-a", tools, deadline)
-            _require(exact_tool_observations(tools.observations()) == tool_observations)
-            _require(load_candidate_contract() == contract)
-            second, _build_b_ms, _install_b_ms = _run_package_sample(root, "candidate-b", tools, deadline)
-            _require(first == second)
-            _require(exact_tool_observations(tools.observations()) == tool_observations)
-            _require(load_candidate_contract() == contract)
-            result = {
-                "version": "cogs.stage2-workload-candidate/v2",
-                "result": "pass",
-                "authority": "non-authoritative-retained-rootfs-candidate-only",
-                "candidate_contract_sha256": contract.sha256,
-                "final_pin_sha256": None,
-                "package_identity": first.value(),
-                "reproductions": [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}],
-                "a_equals_b": True,
-                "lifecycle_deleted": True,
-                "promotion": "external-manual-review-required",
-                "execution_binding": native_execution_binding(
-                    tool_observations, runtime_closure, launcher_sha256,
-                    SOURCE_REVISION, SOURCE_MANIFEST_SHA256),
-            }
-        except BaseException as error:
-            failure = error
-        finally:
-            failure = _finish_root(root, failure)
-            if tools is not None:
-                tools.close()
-    _raise_failure(failure)
-    _require(result is not None)
-    validate_native_candidate_result(result, SOURCE_REVISION, SOURCE_MANIFEST_SHA256)
-    raw = canonical_json(result)
-    _require(len(raw) <= MAX_OUTPUT_BYTES)
-    return raw
+    stage = "transaction-inputs"
+    try:
+        _require(0 < len(NATIVE_LAUNCHER_BYTES) <= 256 * 1024)
+        _require(0 < len(SOURCE_MANIFEST_BYTES) <= 16 * 1024 * 1024)
+        _require(SOURCE_REVISION == os.environ.get("COGS_PACKAGE_REVIEWED_HEAD"))
+        launcher_sha256 = NATIVE_LAUNCHER_SHA256
+        with _StagedSignalScope():
+            try:
+                stage = "contract-load"
+                contract = load_candidate_contract()
+                stage = "platform-check"
+                require_linux_amd64_root()
+                stage = "runtime-closure"
+                runtime_closure = exact_runtime_closure()
+                stage = "tool-open"
+                tools = ToolSet()
+                stage = "owned-root"
+                root = OwnedRoot(CANDIDATE_ROOT, deadline, "host-candidate")
+                root.mkdir("private-home", 0o700)
+                root.mkdir("private-tmp", 0o700)
+                stage = "tool-version"
+                _check_versions(root, tools, deadline)
+                stage = "tool-observations"
+                tool_observations = exact_tool_observations(tools.observations())
+                stage = "build-a"
+                first, _build_a_ms, _install_a_ms = _run_package_sample(
+                    root, "candidate-a", tools, deadline)
+                stage = "post-a-tools"
+                _require(exact_tool_observations(tools.observations()) == tool_observations)
+                stage = "post-a-contract"
+                _require(load_candidate_contract() == contract)
+                stage = "build-b"
+                second, _build_b_ms, _install_b_ms = _run_package_sample(
+                    root, "candidate-b", tools, deadline)
+                stage = "compare-a-b"
+                _require(first == second)
+                stage = "post-b-tools"
+                _require(exact_tool_observations(tools.observations()) == tool_observations)
+                stage = "post-b-contract"
+                _require(load_candidate_contract() == contract)
+                stage = "result-binding"
+                result = {
+                    "version": "cogs.stage2-workload-candidate/v2",
+                    "result": "pass",
+                    "authority": "non-authoritative-retained-rootfs-candidate-only",
+                    "candidate_contract_sha256": contract.sha256,
+                    "final_pin_sha256": None,
+                    "package_identity": first.value(),
+                    "reproductions": [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}],
+                    "a_equals_b": True,
+                    "lifecycle_deleted": True,
+                    "promotion": "external-manual-review-required",
+                    "execution_binding": native_execution_binding(
+                        tool_observations, runtime_closure, launcher_sha256,
+                        SOURCE_REVISION, SOURCE_MANIFEST_SHA256),
+                }
+            except BaseException as error:
+                failure = _stage_failure(stage, error)
+            finally:
+                cleaned = _finish_root(root, failure)
+                if cleaned is not failure:
+                    failure = _stage_failure("transaction-cleanup", cleaned)
+                if tools is not None:
+                    try:
+                        tools.close()
+                    except BaseException as error:
+                        failure = _stage_failure("tool-close", error)
+        _raise_failure(failure)
+        stage = "result-presence"
+        _require(result is not None)
+        stage = "result-validation"
+        validate_native_candidate_result(result, SOURCE_REVISION, SOURCE_MANIFEST_SHA256)
+        stage = "result-encoding"
+        raw = canonical_json(result)
+        _require(len(raw) <= MAX_OUTPUT_BYTES)
+        return raw
+    except NativeCandidateStageError:
+        raise
+    except BaseException as error:
+        raise _stage_failure(stage, error) from error

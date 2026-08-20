@@ -3,6 +3,7 @@
 
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -612,6 +613,101 @@ root.cleanup()
                 contract.FINAL_PATH = original_final
                 contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
 
+# The V2 producer is normally imported only from the verified fixed source. Load it with
+# bounded synthetic top-level bytes to execute its diagnostic state machine portably.
+def load_native_probe():
+    driver = Path("/var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-package-native-candidate.py")
+    manifest = Path("/var/lib/cogs/stage2-completion-v1/source/.cogs-stage2-source-manifest-v1.json")
+    original = Path.read_bytes
+    def read_bytes(path):
+        if path == driver:
+            return b"reviewed-launcher"
+        if path == manifest:
+            return b'{"revision":"1111111111111111111111111111111111111111"}\n'
+        return original(path)
+    Path.read_bytes = read_bytes
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "completion_package_native_candidate_probe",
+            REMOTE / "completion_package_native_candidate.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        Path.read_bytes = original
+
+
+native_probe = load_native_probe()
+original_environment = os.environ.get("COGS_PACKAGE_REVIEWED_HEAD")
+os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = native_probe.SOURCE_REVISION
+class ProbeSignalScope:
+    close_error = None
+    def __enter__(self): return self
+    def __exit__(self, *_args):
+        if self.close_error is not None: raise self.close_error
+        return False
+class ProbeRoot:
+    def __init__(self, cleanup_error): self.cleanup_error = cleanup_error
+    def mkdir(self, *_args, **_kwargs): pass
+    def cleanup(self):
+        if self.cleanup_error is not None: raise self.cleanup_error
+class ProbeTools:
+    def __init__(self, close_error): self.close_error = close_error
+    def close(self):
+        if self.close_error is not None: raise self.close_error
+
+def staged_transaction_failure(primary, cleanup_error=None, close_error=None,
+                               signal_close_error=None):
+    root = ProbeRoot(cleanup_error)
+    tools_probe = ProbeTools(close_error)
+    replacements = {
+        "Deadline": type("ProbeDeadline", (), {"start": staticmethod(lambda: object())}),
+        "SignalScope": ProbeSignalScope,
+        "load_candidate_contract": lambda: object(),
+        "require_linux_amd64_root": lambda: None,
+        "exact_runtime_closure": lambda: object(),
+        "ToolSet": lambda: tools_probe,
+        "OwnedRoot": lambda *_args: root,
+        "_check_versions": lambda *_args: (_ for _ in ()).throw(primary),
+    }
+    previous = {name: getattr(native_probe, name) for name in replacements}
+    try:
+        ProbeSignalScope.close_error = signal_close_error
+        for name, value in replacements.items(): setattr(native_probe, name, value)
+        native_probe.run_candidate_transaction()
+    except native_probe.NativeCandidateStageError as error:
+        return error
+    finally:
+        ProbeSignalScope.close_error = None
+        for name, value in previous.items(): setattr(native_probe, name, value)
+    raise AssertionError("staged native transaction failure was accepted")
+
+try:
+    staged = staged_transaction_failure(owner.WorkloadError("primary"))
+    check((staged.stage, staged.category) == ("tool-version", "invariant"),
+          "primary native transaction stage/category changed")
+    staged = staged_transaction_failure(
+        owner.WorkloadError("primary"), owner.CleanupUncertain("cleanup"))
+    check((staged.stage, staged.category) == ("transaction-cleanup", "cleanup-uncertain"),
+          "native transaction cleanup did not override the primary stage")
+    staged = staged_transaction_failure(owner.WorkloadError("primary"), close_error=OSError(5, "close"))
+    check((staged.stage, staged.category) == ("tool-close", "OSError_5"),
+          "native tool-close category changed")
+    staged = staged_transaction_failure(KeyboardInterrupt())
+    check((staged.stage, staged.category) == ("tool-version", "interrupted"),
+          "native transaction interruption category changed")
+    staged = staged_transaction_failure(
+        owner.WorkloadError("primary"), signal_close_error=OSError(5, "signal close"))
+    check((staged.stage, staged.category) == ("signal-scope-close", "OSError_5"),
+          "native signal-scope teardown stage changed")
+finally:
+    if original_environment is None:
+        os.environ.pop("COGS_PACKAGE_REVIEWED_HEAD", None)
+    else:
+        os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = original_environment
+
 # Semantic codecs make A=B structural (one identity) and reject every summary mismatch.
 tools = [dict(row) for row in contract.EXACT_TOOL_OBSERVATIONS]
 runtime_pin = contract._runtime_closure_value(runtime_closure)
@@ -724,6 +820,18 @@ if sys.platform == "darwin":
     rejected(candidate.run_candidate_transaction)
     check(not os.path.lexists(candidate.CANDIDATE_ROOT), "Darwin created a candidate root")
     check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
+
+native_source = (REMOTE / "completion_package_native_candidate.py").read_text()
+check("class NativeCandidateStageError" in native_source and "_stage_failure(stage, error)" in native_source,
+      "native transaction stage errors are not retained")
+for required_stage in (
+    "transaction-inputs", "contract-load", "platform-check", "runtime-closure",
+    "tool-open", "owned-root", "tool-version", "tool-observations", "build-a",
+    "post-a-tools", "post-a-contract", "build-b", "compare-a-b", "post-b-tools",
+    "post-b-contract", "result-binding", "transaction-cleanup", "tool-close",
+    "signal-scope-close", "result-presence", "result-validation", "result-encoding",
+):
+    check(f'"{required_stage}"' in native_source, f"missing native transaction stage {required_stage}")
 
 source = "\n".join((REMOTE / name).read_text() for name in (
     "completion_runtime_contract.py",
