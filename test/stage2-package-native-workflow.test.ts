@@ -8,11 +8,15 @@ const driverPath = "scripts/run-stage2-package-native-candidate.py";
 const settlementPath = "scripts/stage2-native-settlement.py";
 const publicationPath = "scripts/stage2-native-publication.py";
 const receiptPath = "scripts/stage2-native-upload-receipt.py";
+const buildPath = "deploy/aws-feasibility/remote/completion_rootfs_build.py";
+const materializerPath = "deploy/aws-feasibility/remote/completion_rootfs_materializer.py";
 const workflow = readFileSync(workflowPath, "utf8");
 const driver = readFileSync(driverPath, "utf8");
 const settlement = readFileSync(settlementPath, "utf8");
 const publication = readFileSync(publicationPath, "utf8");
 const receipt = readFileSync(receiptPath, "utf8");
+const build = readFileSync(buildPath, "utf8");
+const materializer = readFileSync(materializerPath, "utf8");
 
 function stepTimeout(name: string): number {
   const start = workflow.indexOf(`      - name: ${name}`);
@@ -84,7 +88,7 @@ test("native driver performs one exact retained-rootfs package transaction", () 
     "verifier.verify_package_archives(",
     "load_candidate_contract()",
     "exact_runtime_closure()",
-    "build._build_once_retained(",
+    "build._native_package_build_once_retained(",
     "build._require_pinned(",
     "package.run_candidate_transaction()",
     "CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET",
@@ -94,14 +98,51 @@ test("native driver performs one exact retained-rootfs package transaction", () 
     "MS_REC | MS_PRIVATE",
     "os.chroot(root)",
     "materializer._reload_and_cleanup(",
-    "_cleanup_cache(verifier, cache_authority)",
+    "_cleanup_cache(verifier, cache_authority, lifecycle_deadline_ns)",
   ])
     assert.ok(driver.includes(required), `missing ${required}`);
-  assert.equal(driver.match(/build\._build_once_retained\(/gu)?.length, 1);
+  assert.equal(driver.match(/build\._native_package_build_once_retained\(/gu)?.length, 1);
   assert.equal(driver.match(/package\.run_candidate_transaction\(\)/gu)?.length, 1);
+  assert.match(driver, /rootfs_deadline_ns = lifecycle_deadline_ns - CLEANUP_RESERVE_SECONDS \* NS/u);
+  assert.match(build, /BUILD_SECONDS = 900/u);
+  assert.match(build, /NATIVE_PACKAGE_BUILD_SECONDS = 1_200/u);
+  assert.match(build, /NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS = 600/u);
+  assert.match(build, /work_boundary = outer\.deadline_ns - NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS/u);
+  assert.match(materializer, /MATERIALIZE_SECONDS = 900/u);
+  assert.match(materializer, /NATIVE_PACKAGE_MATERIALIZE_SECONDS = 1_200/u);
+  assert.doesNotMatch(driver, /BUILD_SECONDS\s*=|MATERIALIZE_SECONDS\s*=/u);
   assert.doesNotMatch(driver, /retry|for attempt|while attempt/u);
+  const constant = (name: string): number => {
+    const match = driver.match(new RegExp(`^${name} = ([0-9_]+)$`, "mu"));
+    assert.ok(match?.[1]);
+    return Number(match[1].replaceAll("_", ""));
+  };
   assert.match(driver, /MAX_RESULT_BYTES = 4096/u);
-  assert.match(driver, /CHILD_SECONDS = 1_300/u);
+  assert.equal(constant("OUTER_SECONDS"), 2_700);
+  assert.equal(constant("CHILD_SECONDS"), 1_300);
+  const launcherReserve = constant("CLEANUP_RESERVE_SECONDS");
+  const buildReserve = Number(
+    build.match(/^NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS = ([0-9_]+)$/mu)?.[1]?.replaceAll("_", ""),
+  );
+  const commandGuard = workflow.match(
+    /timeout --foreground --signal=TERM --kill-after=([0-9]+)s ([0-9]+)s[\s\S]{0,500}run-stage2-package-native-candidate\.py/u,
+  );
+  assert.ok(commandGuard?.[1] && commandGuard[2]);
+  const killGrace = Number(commandGuard[1]);
+  const commandSeconds = Number(commandGuard[2]);
+  assert.equal(launcherReserve, 600);
+  assert.equal(buildReserve, launcherReserve);
+  assert.equal(constant("REAP_SECONDS"), 15);
+  assert.equal(constant("POST_KILL_REAP_SECONDS"), 5);
+  assert.equal(2_700 - launcherReserve, 2_100);
+  assert.ok(2_100 + 15 < 2_700);
+  assert.equal(commandSeconds, 3_000);
+  assert.equal(killGrace, 10);
+  assert.ok(
+    2_700 < commandSeconds &&
+      commandSeconds + killGrace <=
+        stepTimeout("Execute the single native package candidate attempt in this workflow run") * 60,
+  );
   assert.match(driver, /_open_detached_tree[\s\S]*_run_candidate_child/u);
   assert.match(driver, /MOUNT_ATTR_RDONLY[\s\S]*recursive=True/u);
   assert.match(driver, /signal\.pidfd_send_signal\(pidfd, signal\.SIGKILL\)/u);

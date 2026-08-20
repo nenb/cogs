@@ -1377,22 +1377,33 @@ def _hold_cache(verifier, contract):
         raise
 
 
-def _cleanup_cache(verifier, authority):
+def _cleanup_cache(verifier, authority, deadline_ns):
     root, root_identity, cache, cache_identity, held, sentinel, sentinel_identity = authority
     errors = []
+
+    def before_effect():
+        _require(time.monotonic_ns() < deadline_ns, "cache cleanup deadline")
     try:
+        before_effect()
         _require(_identity(os.fstat(root)) == root_identity and _identity(os.fstat(cache)) == cache_identity)
         _require(set(os.listdir(cache)) == {row["cache_name"] for row, _fd, _identity_value in held})
         for row, descriptor, held_identity in held:
+            before_effect()
             current = os.stat(row["cache_name"], dir_fd=cache, follow_symlinks=False)
             _require(_identity(os.fstat(descriptor)) == held_identity == _identity(current))
             _require(hashlib.sha256(_read_fd(descriptor, row["size"])).hexdigest() == row["sha256"])
+            before_effect()
             os.unlink(row["cache_name"], dir_fd=cache)
+            before_effect()
             os.fsync(cache)
+        before_effect()
         _require(_identity(os.fstat(sentinel)) == sentinel_identity)
         _require(_read_fd(sentinel, len(verifier.SENTINEL_BYTES)) == verifier.SENTINEL_BYTES)
+        before_effect()
         os.rmdir("cache", dir_fd=root)
+        before_effect()
         os.unlink(verifier.SENTINEL, dir_fd=root)
+        before_effect()
         os.fsync(root)
     except BaseException as error:
         errors.append(error)
@@ -1403,7 +1414,9 @@ def _cleanup_cache(verifier, authority):
             errors.append(error)
     if not errors:
         try:
+            before_effect()
             os.rmdir(verifier.ARTIFACT_ROOT)
+            before_effect()
         except BaseException as error:
             errors.append(error)
     if errors:
@@ -1472,15 +1485,19 @@ def run():
         candidate_contract = load_candidate_contract()
         closure = exact_runtime_closure()
         approval = fs.SourceApproval(revision, manifest_sha256)
-        control = fs.OperationControl(lifecycle_deadline_ns, lambda: False)
-        phase_a._bootstrap_rootfs(builder, fs, approval, control)
-        rootfs, retained = build._build_once_retained(approval, os.urandom(32).hex(), control)
+        rootfs_deadline_ns = lifecycle_deadline_ns - CLEANUP_RESERVE_SECONDS * NS
+        _require(rootfs_deadline_ns > time.monotonic_ns(), "cleanup reserve exhausted")
+        rootfs_control = fs.OperationControl(rootfs_deadline_ns, lambda: False)
+        lifecycle_control = fs.OperationControl(lifecycle_deadline_ns, lambda: False)
+        phase_a._bootstrap_rootfs(builder, fs, approval, rootfs_control)
+        rootfs, retained = build._native_package_build_once_retained(
+            approval, os.urandom(32).hex(), lifecycle_control)
         build._require_pinned(rootfs, publication._load_pins())
         _require(len(rootfs.cache) == 16)
 
         work_deadline_ns = min(
             time.monotonic_ns() + CHILD_SECONDS * NS,
-            lifecycle_deadline_ns - CLEANUP_RESERVE_SECONDS * NS,
+            rootfs_deadline_ns,
         )
         _require(work_deadline_ns > time.monotonic_ns(), "cleanup reserve exhausted")
         settlement_deadline_ns = min(lifecycle_deadline_ns, work_deadline_ns + REAP_SECONDS * NS)
@@ -1510,7 +1527,7 @@ def run():
                 outcome.cleanup("retained-root-cleanup", error)
         if cache_authority is not None:
             try:
-                _cleanup_cache(verifier, cache_authority)
+                _cleanup_cache(verifier, cache_authority, lifecycle_deadline_ns)
                 cache_authority = None
             except BaseException as error:
                 outcome.cleanup("cache-cleanup", error)

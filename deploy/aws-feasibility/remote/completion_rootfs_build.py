@@ -16,6 +16,8 @@ import completion_rootfs_plan as plan
 import completion_rootfs_publish as publication
 
 BUILD_SECONDS = 900
+NATIVE_PACKAGE_BUILD_SECONDS = 1_200
+NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS = 600
 OUTER_SECONDS = 2400
 MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
 _start_phase_structural_counters, _read_phase_structural_counters = fs._phase_structural_counter_provider((
@@ -68,19 +70,39 @@ class RetainedBuild:
     disposition: str = field(default="owned", init=False)
 
 
-def _build_control(outer):
+def _fixed_build_control(outer, seconds):
+    _fail(type(outer) is fs.OperationControl and type(seconds) is int and seconds > 0)
     now_ns = time.monotonic_ns()
-    deadline_ns = min(outer.deadline_ns, now_ns + BUILD_SECONDS * 1_000_000_000)
+    deadline_ns = min(outer.deadline_ns, now_ns + seconds * 1_000_000_000)
     return fs.OperationControl(deadline_ns, outer.cancelled)
+
+
+def _build_control(outer):
+    return _fixed_build_control(outer, BUILD_SECONDS)
+
+
+def _native_package_build_control(outer):
+    return _fixed_build_control(outer, NATIVE_PACKAGE_BUILD_SECONDS)
+
+
+def _native_package_controls(outer):
+    _fail(type(outer) is fs.OperationControl)
+    work_boundary = outer.deadline_ns - NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS * 1_000_000_000
+    _fail(work_boundary > time.monotonic_ns())
+    bounded = fs.OperationControl(work_boundary, outer.cancelled)
+    return materializer.NativePackageControls(
+        _native_package_build_control(bounded), outer.deadline_ns)
 
 
 def _cache_values(authority):
     return tuple((item.name, item.identity, item.sha256) for item in authority.cache)
 
 
-def _build_once_unmasked(approval, token, outer_control, retain=False):
+def _build_once_controlled(approval, token, retain, control, materialize, materialize_control,
+                           cleanup_deadline_ns=None):
     _fail(type(approval) is fs.SourceApproval and type(retain) is bool)
-    control = _build_control(outer_control)
+    _fail(type(control) is fs.OperationControl and callable(materialize))
+    _fail(cleanup_deadline_ns is None or type(cleanup_deadline_ns) is int)
     authority = plan.load_verified_build_inputs()
     cache_before = _cache_values(authority)
     chain = builder._open_base_chain(control)
@@ -90,7 +112,7 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
     try:
         owned = builder._begin_operation(chain, approval, token, control)
         try:
-            result = materializer._materialize(authority, owned, control)
+            result = materialize(authority, owned, materialize_control)
             work_outcome = "success"
         except materializer.MaterializerWorkError as error:
             work_outcome = error.work_outcome
@@ -133,7 +155,11 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
     except BaseException as error:
         if owned is not None:
             try:
-                materializer._reload_and_cleanup(owned, materializer._fresh_cleanup_control())
+                cleanup = (materializer._fresh_cleanup_control()
+                           if cleanup_deadline_ns is None else
+                           materializer._native_package_cleanup_control(
+                               control, cleanup_deadline_ns))
+                materializer._reload_and_cleanup(owned, cleanup)
                 owned = None
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
@@ -144,14 +170,28 @@ def _build_once_unmasked(approval, token, outer_control, retain=False):
         raise BuildAttemptError(work_outcome) from error
 
 
+def _build_once_unmasked(approval, token, outer_control, retain=False):
+    _fail(type(outer_control) is fs.OperationControl)
+    control = _build_control(outer_control)
+    return _build_once_controlled(
+        approval, token, retain, control, materializer._materialize, control)
+
+
+def _native_package_build_once_unmasked(approval, token, outer_control):
+    controls = _native_package_controls(outer_control)
+    return _build_once_controlled(
+        approval, token, True, controls.work, materializer._native_package_materialize,
+        controls, controls.cleanup_deadline_ns)
+
+
 def _build_once(approval, token, outer_control):
     return builder._fixed_umask(_build_once_unmasked, approval, token, outer_control, False)
 
 
-def _build_once_retained(approval, token, outer_control):
+def _retained_once(unmasked, approval, token, outer_control, cleanup_deadline_ns=None):
     result = None
     try:
-        result = builder._fixed_umask(_build_once_unmasked, approval, token, outer_control, True)
+        result = builder._fixed_umask(unmasked, approval, token, outer_control)
         _fail(type(result) is tuple and len(result) == 2 and type(result[0]) is BuildCandidate)
         _fail(type(result[1]) is RetainedBuild and result[1].disposition == "owned")
         return result
@@ -159,7 +199,11 @@ def _build_once_retained(approval, token, outer_control):
         if type(result) is tuple and len(result) == 2 and type(result[1]) is RetainedBuild:
             retained = result[1]
             try:
-                materializer._reload_and_cleanup(retained.owned, materializer._fresh_cleanup_control())
+                cleanup = (materializer._fresh_cleanup_control()
+                           if cleanup_deadline_ns is None else
+                           materializer._native_package_cleanup_control(
+                               outer_control, cleanup_deadline_ns))
+                materializer._reload_and_cleanup(retained.owned, cleanup)
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
             try:
@@ -167,6 +211,22 @@ def _build_once_retained(approval, token, outer_control):
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
         raise error
+
+
+def _build_once_retained_unmasked(approval, token, outer_control):
+    return _build_once_unmasked(approval, token, outer_control, True)
+
+
+def _build_once_retained(approval, token, outer_control):
+    return _retained_once(
+        _build_once_retained_unmasked, approval, token, outer_control)
+
+
+def _native_package_build_once_retained(approval, token, outer_control):
+    _fail(type(outer_control) is fs.OperationControl)
+    return _retained_once(
+        _native_package_build_once_unmasked, approval, token, outer_control,
+        outer_control.deadline_ns)
 
 
 def _require_equal_builds(first, second):

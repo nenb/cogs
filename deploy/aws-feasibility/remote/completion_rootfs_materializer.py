@@ -15,6 +15,7 @@ import completion_rootfs_ledger as ledger
 import completion_rootfs_plan as plan
 
 MATERIALIZE_SECONDS = 900
+NATIVE_PACKAGE_MATERIALIZE_SECONDS = 1_200
 CLEANUP_SECONDS = 600
 
 
@@ -39,6 +40,12 @@ class MaterializedRoot:
     owned: builder.OwnedOperation
     active: builder.ActiveLedger
     entry_count: int
+
+
+@dataclass(frozen=True)
+class NativePackageControls:
+    work: fs.OperationControl
+    cleanup_deadline_ns: int
 
 
 def _check(control):
@@ -636,10 +643,19 @@ def _fresh_cleanup_control():
     return fs.OperationControl(time.monotonic_ns() + CLEANUP_SECONDS * 1_000_000_000, lambda: False)
 
 
-def _materialize_control(outer):
+def _fixed_materialize_control(outer, seconds):
+    _fail(type(outer) is fs.OperationControl and type(seconds) is int and seconds > 0)
     now_ns = time.monotonic_ns()
-    deadline_ns = min(outer.deadline_ns, now_ns + MATERIALIZE_SECONDS * 1_000_000_000)
+    deadline_ns = min(outer.deadline_ns, now_ns + seconds * 1_000_000_000)
     return fs.OperationControl(deadline_ns, outer.cancelled)
+
+
+def _materialize_control(outer):
+    return _fixed_materialize_control(outer, MATERIALIZE_SECONDS)
+
+
+def _native_package_materialize_control(outer):
+    return _fixed_materialize_control(outer, NATIVE_PACKAGE_MATERIALIZE_SECONDS)
 
 
 def _work_failure(control):
@@ -655,9 +671,16 @@ def _work_failure(control):
     return "deadline" if now_ns >= control.deadline_ns else "failed"
 
 
-def _raise_work_failure(owned, control, primary):
+def _native_package_cleanup_control(control, deadline_ns):
+    _fail(type(control) is fs.OperationControl and type(deadline_ns) is int)
+    deadline = min(deadline_ns, time.monotonic_ns() + CLEANUP_SECONDS * 1_000_000_000)
+    return fs.OperationControl(deadline, control.cancelled)
+
+
+def _raise_work_failure(owned, control, primary, cleanup_deadline_ns=None):
     work_outcome = _work_failure(control)
-    cleanup_control = _fresh_cleanup_control()
+    cleanup_control = (_fresh_cleanup_control() if cleanup_deadline_ns is None
+                       else _native_package_cleanup_control(control, cleanup_deadline_ns))
     try:
         _reload_and_cleanup(owned, cleanup_control)
     except BaseException as cleanup_error:
@@ -685,9 +708,9 @@ def _reload_and_cleanup(owned, control):
         builder._cleanup_owned(refreshed, active, control)
 
 
-def _materialize_unmasked(authority, owned, outer_control):
-    _fail(type(owned) is builder.OwnedOperation and type(outer_control) is fs.OperationControl)
-    control = _materialize_control(outer_control)
+def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None):
+    _fail(type(owned) is builder.OwnedOperation and type(control) is fs.OperationControl)
+    _fail(cleanup_deadline_ns is None or type(cleanup_deadline_ns) is int)
     active = owned.active
     root = owned.root
     try:
@@ -720,8 +743,25 @@ def _materialize_unmasked(authority, owned, outer_control):
         count = _postwalk(refreshed, root, fresh, control)
         return MaterializedRoot(refreshed, active, count)
     except BaseException as error:
-        _raise_work_failure(owned, control, error)
+        _raise_work_failure(owned, control, error, cleanup_deadline_ns)
+
+
+def _materialize_unmasked(authority, owned, outer_control):
+    _fail(type(outer_control) is fs.OperationControl)
+    return _materialize_controlled(authority, owned, _materialize_control(outer_control))
+
+
+def _native_package_materialize_unmasked(authority, owned, controls):
+    _fail(type(controls) is NativePackageControls)
+    return _materialize_controlled(
+        authority, owned, _native_package_materialize_control(controls.work),
+        controls.cleanup_deadline_ns)
 
 
 def _materialize(authority, owned, control):
     return builder._fixed_umask(_materialize_unmasked, authority, owned, control)
+
+
+def _native_package_materialize(authority, owned, controls):
+    return builder._fixed_umask(
+        _native_package_materialize_unmasked, authority, owned, controls)

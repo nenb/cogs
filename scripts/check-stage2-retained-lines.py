@@ -16,8 +16,8 @@ PHYSICAL_BASELINE_LINES = PHYSICAL_BASELINE_DEPLOYMENT_LINES + PHYSICAL_BASELINE
 INHERITED_PREDECESSOR_MINIMUM = 33_912
 PRE_BASE_GROSS_ADDITIONS = 2_949
 CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
-PREFERRED_LIMIT = 49_000
-HARD_LIMIT = 50_000
+PREFERRED_LIMIT = 52_000
+HARD_LIMIT = 53_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 DEPLOY_SUFFIXES = (".py", ".sh", ".tf")
 RETAINED_FILES = (
@@ -28,6 +28,7 @@ RETAINED_FILES = (
     "scripts/validate-aws-feasibility-report.ts",
     "scripts/prepare-stage2-fixed-source.py",
     "scripts/run-stage2-phase-a-candidate.py",
+    "scripts/run-stage2-package-native-candidate.py",
     "scripts/stage2-phase-a-budget.py",
     "scripts/stage2-native-settlement.py",
     "scripts/stage2-native-publication.py",

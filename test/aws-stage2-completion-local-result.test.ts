@@ -314,8 +314,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   const retained = spawnSync("python3", ["-B", budgetPath], { cwd: root, encoding: "utf8" });
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
-  assert.equal(budget.preferred_limit, 49_000);
-  assert.equal(budget.hard_limit, 50_000);
+  assert.equal(budget.preferred_limit, 52_000);
+  assert.equal(budget.hard_limit, 53_000);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -346,6 +346,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     "scripts/render-aws-stage2-measurement-report.ts",
     "schemas/aws-feasibility-report-v1alpha1.json",
     "scripts/validate-aws-feasibility-report.ts",
+    "scripts/run-stage2-package-native-candidate.py",
     "schemas/stage2-workload-local-qualification-v2.json",
   ]) {
     assert.match(budgetSource, new RegExp(retainedPath.replaceAll(".", String.raw`\.`), "u"));

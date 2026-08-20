@@ -42,6 +42,91 @@ def portable():
     load("completion_rootfs_ledger", REMOTE / "completion_rootfs_ledger.py")
     builder = load("completion_rootfs_builder", REMOTE / "completion_rootfs_builder.py")
     materializer = load("completion_rootfs_materializer_probe", REMOTE / "completion_rootfs_materializer.py")
+    build = load("completion_rootfs_build_probe", REMOTE / "completion_rootfs_build.py")
+    assert (build.BUILD_SECONDS, materializer.MATERIALIZE_SECONDS) == (900, 900)
+    assert (build.NATIVE_PACKAGE_BUILD_SECONDS,
+            materializer.NATIVE_PACKAGE_MATERIALIZE_SECONDS) == (1_200, 1_200)
+    real_monotonic_ns = time.monotonic_ns
+    now = [100 * 1_000_000_000]
+    try:
+        time.monotonic_ns = lambda: now[0]
+        outer = fs.OperationControl(10_000 * 1_000_000_000, lambda: False)
+        assert build._build_control(outer).deadline_ns == 1_000 * 1_000_000_000
+        assert materializer._materialize_control(outer).deadline_ns == 1_000 * 1_000_000_000
+        assert build._native_package_build_control(outer).deadline_ns == 1_300 * 1_000_000_000
+        assert (materializer._native_package_materialize_control(outer).deadline_ns
+                == 1_300 * 1_000_000_000)
+        controls = build._native_package_controls(outer)
+        assert controls.work.deadline_ns == 1_300 * 1_000_000_000
+        assert controls.cleanup_deadline_ns == outer.deadline_ns
+        assert (materializer._native_package_materialize_control(controls.work).deadline_ns
+                == controls.work.deadline_ns)
+        shorter = fs.OperationControl(777 * 1_000_000_000, lambda: False)
+        assert build._native_package_build_control(shorter).deadline_ns == shorter.deadline_ns
+        assert (materializer._native_package_materialize_control(shorter).deadline_ns
+                == shorter.deadline_ns)
+        short_controls = build._native_package_controls(shorter)
+        assert short_controls.work.deadline_ns == 177 * 1_000_000_000
+        assert short_controls.cleanup_deadline_ns == shorter.deadline_ns
+        captured = []
+        real_controlled = build._build_once_controlled
+        build._build_once_controlled = lambda *args: captured.append(args) or "native-build"
+        try:
+            assert build._native_package_build_once_unmasked(
+                object(), "fixed-token", outer) == "native-build"
+        finally:
+            build._build_once_controlled = real_controlled
+        selected = captured[0]
+        assert selected[2] is True and selected[3].deadline_ns == 1_300 * 1_000_000_000
+        assert selected[4].__name__ == "_native_package_materialize"
+        assert selected[5].work is selected[3]
+        assert selected[5].cleanup_deadline_ns == outer.deadline_ns
+        assert selected[6] == outer.deadline_ns
+        retained_calls = []
+        real_retained = build._retained_once
+        build._retained_once = lambda *args: retained_calls.append(args) or "retained"
+        try:
+            assert build._native_package_build_once_retained(
+                object(), "fixed-token", outer) == "retained"
+        finally:
+            build._retained_once = real_retained
+        assert len(retained_calls) == 1 and len(retained_calls[0]) == 5
+        assert retained_calls[0][0] is build._native_package_build_once_unmasked
+        assert retained_calls[0][2] == "fixed-token"
+        assert retained_calls[0][3] is outer and retained_calls[0][4] == outer.deadline_ns
+        observed_cleanup = []
+        real_reload = materializer._reload_and_cleanup
+        materializer._reload_and_cleanup = lambda _owned, selected: observed_cleanup.append(
+            selected.deadline_ns)
+        try:
+            try:
+                materializer._raise_work_failure(
+                    object(), controls.work, RuntimeError(), controls.cleanup_deadline_ns)
+            except materializer.MaterializerWorkError as error:
+                assert error.work_outcome == "failed"
+            else:
+                raise AssertionError("native materializer failure accepted")
+        finally:
+            materializer._reload_and_cleanup = real_reload
+        assert observed_cleanup == [700 * 1_000_000_000]
+        now[0] = 300 * 1_000_000_000
+        observed_cleanup.clear()
+        materializer._reload_and_cleanup = lambda _owned, selected: observed_cleanup.append(
+            selected.deadline_ns)
+        try:
+            try:
+                materializer._raise_work_failure(
+                    object(), short_controls.work, RuntimeError(),
+                    short_controls.cleanup_deadline_ns)
+            except materializer.MaterializerWorkError as error:
+                assert error.work_outcome == "deadline"
+            else:
+                raise AssertionError("outer-clamped materializer failure accepted")
+        finally:
+            materializer._reload_and_cleanup = real_reload
+        assert observed_cleanup == [shorter.deadline_ns]
+    finally:
+        time.monotonic_ns = real_monotonic_ns
     fake_fd = fs.CheckedFd(999, "detached-probe")
 
     def generation(inode, kind, mode):

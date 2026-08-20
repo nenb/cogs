@@ -2,6 +2,7 @@
 """Portable checks plus the required privileged double-fork native probe."""
 
 import ctypes
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -54,7 +55,106 @@ def _check_native_baseline(baseline, label):
     check(observed == baseline, f"{label} changed fd/child/subreaper baseline: {baseline!r} -> {observed!r}")
 
 
+def _cache_cleanup_deadline_tests():
+    def fixture(label, names=("blob",)):
+        artifact = Path(tempfile.mkdtemp(prefix=f"stage2-cache-{label}-")) / "artifacts"
+        cache = artifact / "cache"
+        cache.mkdir(parents=True)
+        held = []
+        for name in names:
+            raw = f"fixed-cache-{name}".encode("ascii")
+            (cache / name).write_bytes(raw)
+        sentinel_bytes = b"sentinel\n"
+        (artifact / "sentinel").write_bytes(sentinel_bytes)
+        root_fd = os.open(artifact, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        cache_fd = os.open(cache, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        for name in names:
+            raw = (cache / name).read_bytes()
+            descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=cache_fd)
+            row = {"cache_name": name, "size": len(raw),
+                   "sha256": hashlib.sha256(raw).hexdigest()}
+            held.append((row, descriptor, module._identity(os.fstat(descriptor))))
+        sentinel_fd = os.open("sentinel", os.O_RDONLY | os.O_CLOEXEC, dir_fd=root_fd)
+        verifier = type("Verifier", (), {
+            "ARTIFACT_ROOT": artifact, "SENTINEL": "sentinel",
+            "SENTINEL_BYTES": sentinel_bytes,
+        })
+        authority = (
+            root_fd, module._identity(os.fstat(root_fd)),
+            cache_fd, module._identity(os.fstat(cache_fd)), tuple(held),
+            sentinel_fd, module._identity(os.fstat(sentinel_fd)),
+        )
+        return artifact, verifier, authority
+
+    artifact, verifier, authority = fixture("success")
+    module._cleanup_cache(
+        verifier, authority, module.time.monotonic_ns() + module.NS)
+    check(not artifact.exists(), "bounded cache cleanup did not retire its root")
+    artifact.parent.rmdir()
+
+    artifact, verifier, authority = fixture("expired")
+    try:
+        module._cleanup_cache(verifier, authority, module.time.monotonic_ns() - 1)
+    except module.CleanupUncertain:
+        check((artifact / "cache" / "blob").is_file(),
+              "expired cache cleanup mutated its first member")
+    else:
+        raise AssertionError("expired cache cleanup was accepted")
+    shutil.rmtree(artifact.parent)
+
+    artifact, verifier, authority = fixture("between", ("first", "second"))
+    original_unlink = module.os.unlink
+    original_monotonic = module.time.monotonic_ns
+    now = [100 * module.NS]
+    try:
+        module.time.monotonic_ns = lambda: now[0]
+        def late_unlink(path, *args, **kwargs):
+            result = original_unlink(path, *args, **kwargs)
+            if path == "first":
+                now[0] = 102 * module.NS
+            return result
+        module.os.unlink = late_unlink
+        try:
+            module._cleanup_cache(verifier, authority, 101 * module.NS)
+        except module.CleanupUncertain:
+            check(not (artifact / "cache" / "first").exists(),
+                  "first cache member was not removed")
+            check((artifact / "cache" / "second").is_file(),
+                  "cache cleanup mutated a member after expiry")
+        else:
+            raise AssertionError("between-member cache expiry was accepted")
+    finally:
+        module.os.unlink = original_unlink
+        module.time.monotonic_ns = original_monotonic
+        shutil.rmtree(artifact.parent)
+
+    artifact, verifier, authority = fixture("late-final")
+    original_rmdir = module.os.rmdir
+    original_monotonic = module.time.monotonic_ns
+    now = [100 * module.NS]
+    try:
+        module.time.monotonic_ns = lambda: now[0]
+        def late_rmdir(path, *args, **kwargs):
+            result = original_rmdir(path, *args, **kwargs)
+            if path == artifact:
+                now[0] = 102 * module.NS
+            return result
+        module.os.rmdir = late_rmdir
+        try:
+            module._cleanup_cache(verifier, authority, 101 * module.NS)
+        except module.CleanupUncertain:
+            check(not artifact.exists(), "late final removal did not complete")
+        else:
+            raise AssertionError("post-deadline final cache removal was accepted")
+    finally:
+        module.os.rmdir = original_rmdir
+        module.time.monotonic_ns = original_monotonic
+        if artifact.parent.exists():
+            shutil.rmtree(artifact.parent)
+
+
 def portable_tests():
+    _cache_cleanup_deadline_tests()
     original = module.NativeCandidateError("work")
     late = module.NativeCandidateError("late")
     outcome = module._Outcome()
