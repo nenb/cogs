@@ -2351,7 +2351,12 @@ def _owned_links(raw, names):
 def _observed_identity(journal, ip, nft, tc, prior, action, ready=False):
     """Use the replay derivation for live effects as the single state authority."""
     expected = _effect_source_ids(action, prior)
-    raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_EFFECT_INTENT_V2", action)
+    observer_expected = (("NFT_TABLE", *expected)
+                         if action is Action.NFT_REMOVE_ATOMIC else expected)
+    raw = _observer_pass(
+        journal, ip, nft, tc, observer_expected, "NETWORK_EFFECT_INTENT_V2", action)
+    if action is Action.NFT_REMOVE_ATOMIC:
+        raw = raw[1:]
     outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
     scope = "ready" if ready else "effect"
     return _derive_journal_identity(scope, action.value, outputs, prior)[0]
