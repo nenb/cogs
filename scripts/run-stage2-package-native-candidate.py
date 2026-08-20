@@ -224,7 +224,9 @@ def _mount_setattr(path, set_flags, *, clear_flags=0, recursive=False):
 
 
 def _mount_setattr_fd(descriptor, set_flags, *, clear_flags=0, recursive=False):
-    attributes = _MountAttr(set_flags, clear_flags, 0, 0)
+    # Detached clones retain a shared source mount's peer-group membership.
+    # Privatize the detached object itself before any later move_mount attachment.
+    attributes = _MountAttr(set_flags, clear_flags, MS_PRIVATE, 0)
     flags = AT_EMPTY_PATH | (AT_RECURSIVE if recursive else 0)
     _syscall(
         SYS_MOUNT_SETATTR, ctypes.c_int(descriptor), ctypes.c_char_p(b""),

@@ -1333,8 +1333,34 @@ def _post_go_lifecycle_case(descriptor, cut):
     _check_native_baseline(baseline, f"post-GO {cut}")
 
 
+def _shared_source_preflight_test():
+    """Detached trees must not propagate mounts back through a shared source."""
+    pid = os.fork()
+    if pid == 0:
+        try:
+            module._libc_call("unshare", module.ctypes.c_int(module.CLONE_NEWNS))
+            module._mount(None, "/", None, module.MS_REC | (1 << 20))  # MS_SHARED
+            module._lifecycle_preflight()
+            mountinfo = Path("/proc/self/mountinfo").read_bytes()
+            check(os.fsencode(module.PREFLIGHT_SOURCE) not in mountinfo,
+                  "preflight mounts propagated to their shared source")
+            check(os.fsencode(module.PRIVATE_STAGING) not in mountinfo,
+                  "private staging escaped its helper namespace")
+            os._exit(0)
+        except BaseException:
+            os._exit(2)
+    pidfd = os.pidfd_open(pid, 0)
+    try:
+        info = module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + 20 * module.NS)
+        check(info.si_code == os.CLD_EXITED and info.si_status == 0,
+              f"shared-source preflight failed: {info.si_code}:{info.si_status}")
+    finally:
+        os.close(pidfd)
+
+
 def native_test():
     module._platform_gate()
+    _shared_source_preflight_test()
     module._lifecycle_preflight()
     root = Path(tempfile.mkdtemp(prefix="stage2-doublefork-native-"))
     source = root / "source"

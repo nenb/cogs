@@ -61,16 +61,21 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
   ];
   const jobMinutes = Number(workflow.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
   const boundedMinutes = names.reduce((total, name) => total + stepTimeout(name), 0);
+  const timeoutAt = (index: number): number => {
+    const name = names[index];
+    assert.ok(name);
+    return stepTimeout(name);
+  };
   assert.equal(jobMinutes, 90);
   assert.equal(boundedMinutes, 87);
   assert.equal(jobMinutes * 60 - boundedMinutes * 60, 180);
-  assert.ok(300 + 10 <= stepTimeout(names[2]!) * 60);
-  assert.ok(300 + 5 <= stepTimeout(names[3]!) * 60);
-  assert.ok(3000 + 10 <= stepTimeout(names[4]!) * 60);
-  assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= stepTimeout(names[5]!) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[9]!) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[10]!) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[13]!) * 60);
+  assert.ok(300 + 10 <= timeoutAt(2) * 60);
+  assert.ok(300 + 5 <= timeoutAt(3) * 60);
+  assert.ok(3000 + 10 <= timeoutAt(4) * 60);
+  assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= timeoutAt(5) * 60);
+  assert.ok(45 + 5 <= timeoutAt(9) * 60);
+  assert.ok(45 + 5 <= timeoutAt(10) * 60);
+  assert.ok(45 + 5 <= timeoutAt(13) * 60);
 });
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
