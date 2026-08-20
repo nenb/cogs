@@ -1,0 +1,189 @@
+name: Stage 2 native package candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_head:
+        description: Exact same-repository head approved for its sole candidate attempt
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: stage2-native-package-${{ inputs.reviewed_head }}
+      cancel-in-progress: false
+    env:
+      EXACT_REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+    steps:
+      - name: Check out the dispatched repository head only
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Gate exact reviewed head and first run attempt
+        env:
+          CONFIGURED_REVIEWED_HEAD: ${{ vars.STAGE2_PACKAGE_REVIEWED_HEAD }}
+          DISPATCH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXACT_REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXACT_REVIEWED_HEAD" = "$CONFIGURED_REVIEWED_HEAD"
+          test "$EXACT_REVIEWED_HEAD" = "$DISPATCH_HEAD"
+          test "$EXACT_REVIEWED_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          /usr/bin/git merge-base --is-ancestor b95d9c0375ae50a8119a035cb34c9e61d9e89669 HEAD
+          test -z "$(/usr/bin/git status --porcelain)"
+
+      - name: Refuse an earlier dispatch for this reviewed head
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/native-package-runs.json"
+          /usr/bin/curl --fail --silent --show-error --max-time 30 --max-filesize 1048576 \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_READ_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            --get \
+            --data-urlencode event=workflow_dispatch \
+            --data-urlencode "head_sha=$EXACT_REVIEWED_HEAD" \
+            --data-urlencode per_page=100 \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/stage2-package-native-candidate.yml/runs" \
+            -o "$response"
+          /usr/bin/python3 -I - "$response" "$CURRENT_RUN_ID" "$EXACT_REVIEWED_HEAD" <<'PY'
+          import json, pathlib, sys
+          path, current_raw, head = sys.argv[1:]
+          raw = pathlib.Path(path).read_bytes()
+          if not 0 < len(raw) <= 1_048_576:
+              raise SystemExit(2)
+          value = json.loads(raw)
+          runs = value.get("workflow_runs") if type(value) is dict else None
+          total = value.get("total_count") if type(value) is dict else None
+          current = int(current_raw)
+          if type(total) is not int or not 1 <= total <= 100 or type(runs) is not list:
+              raise SystemExit(2)
+          ids = []
+          for run in runs:
+              if type(run) is not dict or run.get("head_sha") != head or type(run.get("id")) is not int:
+                  raise SystemExit(2)
+              ids.append(run["id"])
+          if current not in ids or any(run_id < current for run_id in ids):
+              raise SystemExit(2)
+          PY
+          /bin/rm -f -- "$response"
+
+      - name: Materialize the exact fixed source
+        run: |
+          set -euo pipefail
+          result=$(sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 300s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I \
+            "$GITHUB_WORKSPACE/scripts/prepare-stage2-fixed-source.py")
+          /usr/bin/python3 -I -c 'import json,sys
+          value=json.loads(sys.stdin.buffer.read())
+          if (set(value)!={"version","revision","manifest_sha256","entries","authority"}
+                  or value["revision"]!=sys.argv[1]
+                  or value["authority"]!="qualification-only-fixed-source"):
+              raise SystemExit(2)' "$EXACT_REVIEWED_HEAD" <<<"$result"
+
+      - name: Execute the sole native package candidate attempt
+        id: candidate_attempt
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          staging=/var/tmp/cogs-stage2-native-package-candidate-v1
+          /bin/rm -rf -- "$staging"
+          /bin/mkdir -m 700 -- "$staging"
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=10s 3000s \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            COGS_PACKAGE_REVIEWED_HEAD="$EXACT_REVIEWED_HEAD" \
+            COGS_STAGE2_ARTIFACT_ACQUISITION_APPROVED=download-16-fixed-public-stage2-artifacts \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-package-native-candidate.py \
+            | /bin/cat >"$staging/candidate.json"
+
+      - name: Remove all native candidate source and runtime residue
+        id: cleanup
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --signal=TERM --kill-after=5s 300s \
+            /bin/rm -rf --one-file-system -- /var/lib/cogs
+          test ! -e /var/lib/cogs
+          test ! -e /tmp/cogs-stage2-workload-candidate-v1
+          test ! -e /tmp/cogs-stage2-workload-post-pin-v1
+          ! /usr/bin/grep -Fq '/var/lib/cogs' /proc/self/mountinfo
+
+      - name: Validate the sole canonical non-authoritative output
+        id: validate
+        if: always() && steps.candidate_attempt.outcome == 'success' && steps.cleanup.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          staging=/var/tmp/cogs-stage2-native-package-candidate-v1
+          test "$(/usr/bin/find "$staging" -mindepth 1 -maxdepth 1 -type f -printf '%f\n')" = candidate.json
+          /usr/bin/python3 -I - "$staging/candidate.json" "$GITHUB_WORKSPACE/deploy/aws-feasibility/remote" <<'PY'
+          import json, pathlib, sys
+          sys.path.insert(0, sys.argv[2])
+          from completion_runtime_contract import canonical_json, validate_candidate_result
+          path = pathlib.Path(sys.argv[1])
+          raw = path.read_bytes()
+          if not 0 < len(raw) <= 4096:
+              raise SystemExit(2)
+          value = json.loads(raw)
+          validate_candidate_result(value)
+          if raw != canonical_json(value):
+              raise SystemExit(2)
+          identity = value["package_identity"]
+          if set(identity) != {"deb_sha256", "deb_bytes", "installed_tree_sha256", "installed_entries", "installed_bytes", "package", "version", "architecture"}:
+              raise SystemExit(2)
+          PY
+
+      - name: Upload candidate JSON for manual final-pin review only
+        id: upload
+        if: always() && steps.validate.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stage2-native-package-candidate-${{ inputs.reviewed_head }}
+          path: /var/tmp/cogs-stage2-native-package-candidate-v1/candidate.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove uploaded staging bytes
+        id: output_cleanup
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          /bin/rm -rf -- /var/tmp/cogs-stage2-native-package-candidate-v1
+          test ! -e /var/tmp/cogs-stage2-native-package-candidate-v1
+
+      - name: Enforce attempt, cleanup, validation, upload, and final zero residue
+        if: always()
+        env:
+          ATTEMPT: ${{ steps.candidate_attempt.outcome }}
+          CLEANUP: ${{ steps.cleanup.outcome }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          test "$ATTEMPT" = success
+          test "$CLEANUP" = success
+          test "$VALIDATE" = success
+          test "$UPLOAD" = success
+          test "$OUTPUT_CLEANUP" = success
+          test ! -e /var/lib/cogs
+          test ! -e /var/tmp/cogs-stage2-native-package-candidate-v1
