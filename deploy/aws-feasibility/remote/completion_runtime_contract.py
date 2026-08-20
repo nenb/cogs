@@ -60,7 +60,7 @@ REVIEWED_SOURCE_DIGESTS = {
 # V2 authenticates the code that actually produces and validates V2.  Its
 # schema is the separate reviewed byte object that can pin this module's exact
 # digest without creating an impossible self-referential source constant.
-NATIVE_LAUNCHER_SHA256 = "986b744a17e89104e7afe5a10131aa2f3ad4e5795d56de226279124798a1f192"
+NATIVE_LAUNCHER_SHA256 = "ac97184de528c0f6f98ad245e7dce788eccc8ee59011baf48ed47c3c3f51584d"
 _NATIVE_IMPLEMENTATION_DIGESTS = None
 
 
