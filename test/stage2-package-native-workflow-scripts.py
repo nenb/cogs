@@ -24,6 +24,7 @@ def load(name, relative):
 
 
 settlement = load("stage2_native_settlement", "scripts/stage2-native-settlement.py")
+publication = load("stage2_native_publication", "scripts/stage2-native-publication.py")
 receipt = load("stage2_native_upload_receipt", "scripts/stage2-native-upload-receipt.py")
 contract = sys.modules["completion_runtime_contract"]
 
@@ -50,7 +51,8 @@ def live_process_tests():
                                "run-stage2-package-native-candidate.py"])
     try:
         time.sleep(0.05)
-        rejected(lambda: settlement.scan("before-unmount"), settlement.SettlementError)
+        rejected(lambda: settlement.scan("before-unmount", targets=settlement.FIXED_TARGETS),
+                 settlement.SettlementError)
     finally:
         terminate(marker)
 
@@ -76,6 +78,10 @@ def live_process_tests():
             terminate(fd_process)
 
 
+def process_stat(pid, starttime):
+    return f"{pid} (synthetic process) S " + " ".join(["0"] * 18 + [str(starttime)]) + "\n"
+
+
 def synthetic_proc(mount_target):
     temporary = tempfile.TemporaryDirectory()
     proc = Path(temporary.name)
@@ -84,6 +90,7 @@ def synthetic_proc(mount_target):
     pid = proc / "41"
     (pid / "ns").mkdir(parents=True)
     (pid / "fd").mkdir()
+    (pid / "stat").write_text(process_stat(41, 100))
     (pid / "ns/mnt").write_bytes(b"foreign")
     (pid / "cmdline").write_bytes(b"harmless\0")
     (pid / "mountinfo").write_bytes(
@@ -96,19 +103,65 @@ def synthetic_proc(mount_target):
 def scanner_race_and_mount_tests():
     temporary, proc, _pid = synthetic_proc("/run/cogs-stage2-native-private-v1")
     try:
-        rejected(lambda: settlement.scan("before-unmount", proc_root=proc),
+        rejected(lambda: settlement.scan("before-unmount", proc_root=proc,
+                                          targets=settlement.FIXED_TARGETS),
                  settlement.SettlementError)
     finally:
         temporary.cleanup()
 
+    # A vanished per-process file is not accepted while the same starttime identity lives.
     temporary, proc, pid = synthetic_proc("/unrelated")
     original = settlement._bytes
     try:
         settlement._bytes = lambda path: None if Path(path) == pid / "mountinfo" else original(path)
-        settlement.scan("before-unmount", proc_root=proc)
+        rejected(lambda: settlement.scan("before-unmount", proc_root=proc, targets=("/target",)),
+                 settlement.SettlementError)
     finally:
         settlement._bytes = original
         temporary.cleanup()
+
+    # Reuse/change of a listed PID is retried as a new process generation, not skipped.
+    temporary, proc, pid = synthetic_proc("/unrelated")
+    original = settlement._bytes
+    changed = False
+    target = Path(temporary.name) / "target"
+    target.mkdir()
+    try:
+        def reuse(path):
+            nonlocal changed
+            if not changed and Path(path) == pid / "mountinfo":
+                changed = True
+                (pid / "stat").write_text(process_stat(41, 200))
+                (pid / "cwd").unlink()
+                (pid / "cwd").symlink_to(target)
+            return original(path)
+        settlement._bytes = reuse
+        rejected(lambda: settlement.scan("before-unmount", proc_root=proc,
+                                          targets=(str(target),)), settlement.SettlementError)
+    finally:
+        settlement._bytes = original
+        temporary.cleanup()
+
+    # A real process born after the first inventory is found by the repeated generation scan.
+    with tempfile.TemporaryDirectory() as target:
+        child = None
+        original_inspect = settlement._inspect_generation
+        try:
+            def spawn_during(*args, **kwargs):
+                nonlocal child
+                if child is None:
+                    child = subprocess.Popen(
+                        [sys.executable, "-c", "import time;time.sleep(30)"], cwd=target)
+                return original_inspect(*args, **kwargs)
+            settlement._inspect_generation = spawn_during
+            rejected(lambda: settlement.scan("before-unmount", targets=(target,)),
+                     settlement.SettlementError)
+            if Path("/proc/self/ns/mnt").exists():
+                assert child is not None and child.poll() is None
+        finally:
+            settlement._inspect_generation = original_inspect
+            if child is not None:
+                terminate(child)
 
 
 def unmount_tests():
@@ -167,6 +220,100 @@ def context(candidate_raw, revision, manifest):
     )
 
 
+def publication_tests():
+    revision, manifest = "1" * 40, "2" * 64
+    candidate_raw = candidate(revision, manifest)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        staging, proc = root / "staging", root / "proc"
+        staging.mkdir()
+        proc.mkdir()
+        (staging / "candidate.partial").write_bytes(candidate_raw)
+        digest, size = publication.publish(staging, revision, manifest, proc_root=proc)
+        final = staging / "candidate.json"
+        assert digest == hashlib.sha256(candidate_raw).hexdigest() and size == len(candidate_raw)
+        assert final.read_bytes() == candidate_raw and final.stat().st_mode & 0o777 == 0o400
+        assert set(path.name for path in staging.iterdir()) == {"candidate.json"}
+
+    # A same-size write between the complete before/after fstats is rejected.
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(candidate_raw)
+        source.flush()
+        descriptor = os.open(source.name, os.O_RDWR)
+        try:
+            replacement = b"X" + candidate_raw[1:]
+            rejected(lambda: publication._read_bounded(
+                descriptor, publication.MAX_CANDIDATE_BYTES,
+                after_read=lambda: (os.pwrite(descriptor, replacement, 0), os.fsync(descriptor))),
+                publication.PublicationError)
+        finally:
+            os.close(descriptor)
+
+    # Receipt input generation checks also reject a concurrent same-size rewrite.
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(candidate_raw)
+        source.flush()
+        writer = os.open(source.name, os.O_RDWR)
+        try:
+            replacement = b"Y" + candidate_raw[1:]
+            rejected(lambda: receipt._read_regular(
+                source.name, receipt.MAX_CANDIDATE_BYTES,
+                after_read=lambda: (os.pwrite(writer, replacement, 0), os.fsync(writer))),
+                receipt.ReceiptError)
+        finally:
+            os.close(writer)
+
+    # A process-generation-owned writable fd alias fails the readonly proof.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        candidate_path, proc = root / "candidate", root / "proc"
+        candidate_path.write_bytes(candidate_raw)
+        descriptor = os.open(candidate_path, os.O_RDONLY)
+        pid = proc / "51"
+        (pid / "fd").mkdir(parents=True)
+        (pid / "fdinfo").mkdir()
+        (pid / "stat").write_text(process_stat(51, 300))
+        (pid / "status").write_text(
+            f"Name:\tsynthetic\nUid:\t{os.geteuid()}\t{os.geteuid()}\t{os.geteuid()}\t{os.geteuid()}\n")
+        (pid / "fd" / "7").symlink_to(candidate_path)
+        (pid / "fdinfo" / "7").write_text("flags:\t0100002\n")
+        try:
+            rejected(lambda: publication.prove_no_writable_aliases(descriptor, proc),
+                     publication.PublicationError)
+        finally:
+            os.close(descriptor)
+
+
+def uploaded_member_substitution_test():
+    revision, manifest = "1" * 40, "2" * 64
+    candidate_raw = candidate(revision, manifest)
+    expected = context(candidate_raw, revision, manifest)
+    run_id = str(80_000_000 + os.getpid())
+    expected = replace(expected, run_id=int(run_id),
+                       candidate_name=f"stage2-native-package-candidate-{revision}-{run_id}-1",
+                       receipt_name=f"stage2-native-package-candidate-receipt-{revision}-{run_id}-1")
+    staging = Path(f"/var/tmp/cogs-stage2-native-package-candidate-{run_id}-1")
+    readback = Path(f"/var/tmp/cogs-stage2-native-package-upload-{run_id}-1")
+    staging.mkdir(mode=0o700)
+    readback.mkdir(mode=0o700)
+    try:
+        (staging / "candidate.json").write_bytes(candidate_raw)
+        changed = json.loads(candidate_raw)
+        changed["package_identity"]["deb_sha256"] = "5" * 64
+        changed_raw = contract.canonical_json(changed)
+        assert len(changed_raw) == len(candidate_raw)
+        (readback / "candidate.json").write_bytes(changed_raw)
+        environ = {"CANDIDATE_STAGING": str(staging),
+                   "UPLOAD_READBACK_STAGING": str(readback)}
+        rejected(lambda: receipt.validate_readback(expected, environ), receipt.ReceiptError)
+    finally:
+        for path in (readback, staging):
+            if path.exists():
+                for member in path.iterdir():
+                    member.unlink()
+                path.rmdir()
+
+
 def receipt_tests():
     revision, manifest = "1" * 40, "2" * 64
     candidate_raw = candidate(revision, manifest)
@@ -212,5 +359,7 @@ def receipt_tests():
 live_process_tests()
 scanner_race_and_mount_tests()
 unmount_tests()
+publication_tests()
+uploaded_member_substitution_test()
 receipt_tests()
 print("stage2 native workflow script tests passed")

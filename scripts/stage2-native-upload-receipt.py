@@ -98,16 +98,28 @@ def _decode(raw, maximum):
         raise ReceiptError("invalid JSON") from error
 
 
-def _read_regular(path, maximum):
+def _generation(value):
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+            value.st_uid, value.st_gid, value.st_rdev, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _read_regular(path, maximum, after_read=None):
     path = Path(path)
-    with path.open("rb") as source:
-        before = os.fstat(source.fileno())
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise ReceiptError("input is not one regular link")
-        raw = source.read(maximum + 1)
-        after = os.stat(path, follow_symlinks=False)
-        if (after.st_dev, after.st_ino, after.st_size) != (before.st_dev, before.st_ino, before.st_size):
-            raise ReceiptError("input identity changed")
+        raw = os.read(descriptor, maximum + 1)
+        if after_read is not None:
+            after_read()
+        after = os.fstat(descriptor)
+        named = os.stat(path, follow_symlinks=False)
+        if _generation(after) != _generation(before) or _generation(named) != _generation(after):
+            raise ReceiptError("input generation changed")
+    finally:
+        os.close(descriptor)
     if not 0 < len(raw) <= maximum:
         raise ReceiptError("input byte bound failed")
     return raw
@@ -136,8 +148,8 @@ def value(expected, candidate_raw):
         "candidate": {"bytes": expected.candidate_bytes, "sha256": expected.candidate_sha256},
         "outcomes": {
             "candidate_attempt": "success", "candidate_upload": "success",
-            "candidate_validation": "success", "post_upload_local_identity": "success",
-            "runtime_cleanup": "success",
+            "candidate_upload_readback": "success", "candidate_validation": "success",
+            "post_upload_local_identity": "success", "runtime_cleanup": "success",
         },
         "promotion_authorized": False,
         "repeat_dispatch_policy": "each-dispatch-is-a-distinct-observation-and-must-not-be-merged",
@@ -176,6 +188,32 @@ def _paths(expected, environ=os.environ):
     return staging, staging / "candidate.json", staging / "receipt.json"
 
 
+def _readback_path(expected, environ=os.environ):
+    staging = Path(_required(environ, "UPLOAD_READBACK_STAGING"))
+    required = Path(f"/var/tmp/cogs-stage2-native-package-upload-{expected.run_id}-{expected.run_attempt}")
+    if staging != required:
+        raise ReceiptError("upload readback staging is not run-unique")
+    try:
+        entries = os.listdir(staging)
+    except OSError as error:
+        raise ReceiptError("upload readback inventory failed") from error
+    if entries != ["candidate.json"]:
+        raise ReceiptError("upload readback does not contain the sole candidate")
+    return staging / "candidate.json"
+
+
+def validate_readback(expected, environ=os.environ):
+    _staging, local_path, _receipt_path = _paths(expected, environ)
+    uploaded_path = _readback_path(expected, environ)
+    local_raw = _read_regular(local_path, MAX_CANDIDATE_BYTES)
+    uploaded_raw = _read_regular(uploaded_path, MAX_CANDIDATE_BYTES)
+    candidate_value(local_raw, expected)
+    candidate_value(uploaded_raw, expected)
+    if uploaded_raw != local_raw:
+        raise ReceiptError("uploaded candidate member differs from published candidate")
+    return uploaded_raw
+
+
 def _write_atomic(staging, final, raw):
     partial = staging / "receipt.partial"
     descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -198,11 +236,16 @@ def _write_atomic(staging, final, raw):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in {"create", "validate"}:
-        raise ReceiptError("usage: stage2-native-upload-receipt.py create|validate")
+    if len(sys.argv) != 2 or sys.argv[1] not in {"readback", "create", "validate"}:
+        raise ReceiptError("usage: stage2-native-upload-receipt.py readback|create|validate")
     expected = context()
-    staging, candidate_path, receipt_path = _paths(expected)
-    candidate_raw = _read_regular(candidate_path, MAX_CANDIDATE_BYTES)
+    if sys.argv[1] == "readback":
+        validate_readback(expected)
+        return
+    if _required(os.environ, "UPLOAD_READBACK_OUTCOME") != "success":
+        raise ReceiptError("upload readback success is required")
+    staging, _candidate_path, receipt_path = _paths(expected)
+    candidate_raw = validate_readback(expected)
     if sys.argv[1] == "create":
         if receipt_path.exists():
             raise ReceiptError("receipt already exists")

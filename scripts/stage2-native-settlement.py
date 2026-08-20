@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Fixed fail-closed process/mount settlement checks for the native workflow."""
+"""Fixed fail-closed, stable process/mount settlement checks for the native workflow."""
 import errno
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
-TARGETS = (
+FIXED_TARGETS = (
     "/var/lib/cogs",
     "/run/cogs-stage2-native-preflight-source-v1",
     "/run/cogs-stage2-native-private-v1",
 )
-MOUNT_TARGETS = TARGETS[1:]
+MOUNT_TARGETS = FIXED_TARGETS[1:]
 MARKER = b"run-stage2-package-native-candidate.py"
 PHASES = frozenset(("before-unmount", "after-unmount"))
 COMMAND_SECONDS = 60
+MAX_SCAN_PASSES = 12
+REQUIRED_STABLE_PASSES = 3
 VANISHED = frozenset((errno.ENOENT, errno.ESRCH))
+POSITIVE = re.compile(r"[1-9][0-9]*")
 
 
 class SettlementError(Exception):
@@ -65,6 +69,33 @@ def _names(path):
         raise SettlementError("process inventory failed") from error
 
 
+def _starttime(base):
+    raw = _bytes(base / "stat")
+    if raw is None:
+        return None
+    close = raw.rfind(b")")
+    fields = raw[close + 2:].split() if close >= 0 else ()
+    if len(fields) < 20 or not fields[19].isdigit():
+        raise SettlementError("invalid process generation")
+    return int(fields[19])
+
+
+def _inventory(proc_root):
+    names = _names(proc_root)
+    if names is None:
+        raise SettlementError("process inventory unavailable")
+    result = {}
+    complete = True
+    for name in names:
+        if name.isdecimal():
+            identity = _starttime(proc_root / name)
+            if identity is None:
+                complete = False
+            else:
+                result[name] = identity
+    return result, complete
+
+
 def _refers(value, targets):
     if value is None:
         return False
@@ -79,38 +110,91 @@ def _mount_fields(raw):
         "utf-8", "surrogateescape").split()
 
 
-def scan(phase, proc_root=Path("/proc"), targets=TARGETS, marker=MARKER):
-    """Reject every live marker, foreign/remaining mount, path, or descriptor reference."""
+def _inspect_generation(phase, proc_root, name, starttime, own_namespace, targets, marker):
+    base = proc_root / name
+    if _starttime(base) != starttime:
+        return False
+    command = _bytes(base / "cmdline")
+    mounts = _bytes(base / "mountinfo")
+    if command is None or mounts is None:
+        if _starttime(base) == starttime:
+            raise SettlementError(f"stable process inspection unavailable: {name}")
+        return False
+    if marker in command:
+        raise SettlementError(f"unsettled candidate process: {name}")
+    if any(_refers(field, targets) for field in _mount_fields(mounts)):
+        namespace = _identity(base / "ns/mnt")
+        if namespace is None:
+            if _starttime(base) == starttime:
+                raise SettlementError(f"stable namespace inspection unavailable: {name}")
+            return False
+        if phase == "after-unmount" or namespace != own_namespace:
+            raise SettlementError(f"unsettled target mount namespace: {name}")
+    for entry in ("root", "cwd", "exe"):
+        value = _link(base / entry)
+        if value is None and entry != "exe" and _starttime(base) == starttime:
+            raise SettlementError(f"stable process link inspection unavailable: {name}/{entry}")
+        if _refers(value, targets):
+            raise SettlementError(f"unsettled process path: {name}/{entry}")
+    descriptors = _names(base / "fd")
+    if descriptors is None:
+        if _starttime(base) == starttime:
+            raise SettlementError(f"stable descriptor inventory unavailable: {name}")
+        return False
+    stable = True
+    for descriptor in descriptors:
+        value = _link(base / "fd" / descriptor)
+        if value is None:
+            stable = False
+        elif _refers(value, targets):
+            raise SettlementError(f"unsettled process descriptor: {name}/{descriptor}")
+    return stable and _starttime(base) == starttime
+
+
+def _candidate_target(environ):
+    run_id = environ.get("GITHUB_RUN_ID", "")
+    attempt = environ.get("GITHUB_RUN_ATTEMPT", "")
+    staging = environ.get("CANDIDATE_STAGING", "")
+    if POSITIVE.fullmatch(run_id) is None or POSITIVE.fullmatch(attempt) is None:
+        raise SettlementError("invalid run identity")
+    required = f"/var/tmp/cogs-stage2-native-package-candidate-{run_id}-{attempt}"
+    if staging != required:
+        raise SettlementError("staging identity is not run-unique")
+    return staging
+
+
+def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os.environ):
+    """Reject references over repeated stable, starttime-owned process generations."""
+    if targets is None:
+        targets = FIXED_TARGETS + (_candidate_target(environ),)
     if phase not in PHASES or not targets or not marker:
         raise SettlementError("invalid settlement request")
     proc_root = Path(proc_root)
     own_namespace = _identity(proc_root / "self/ns/mnt")
-    names = _names(proc_root)
-    if own_namespace is None or names is None:
-        raise SettlementError("process inventory unavailable")
-    for name in sorted(item for item in names if item.isdecimal()):
-        base = proc_root / name
-        command = _bytes(base / "cmdline")
-        if command is not None and marker in command:
-            raise SettlementError(f"unsettled candidate process: {name}")
-        mounts = _bytes(base / "mountinfo")
-        if mounts is None:  # The listed process vanished.
-            continue
-        if any(_refers(field, targets) for field in _mount_fields(mounts)):
-            namespace = _identity(base / "ns/mnt")
-            if namespace is None:  # A process that vanished cannot retain the mount.
-                continue
-            if phase == "after-unmount" or namespace != own_namespace:
-                raise SettlementError(f"unsettled target mount namespace: {name}")
-        for entry in ("root", "cwd", "exe"):
-            if _refers(_link(base / entry), targets):
-                raise SettlementError(f"unsettled process path: {name}/{entry}")
-        descriptors = _names(base / "fd")
-        if descriptors is None:
-            continue
-        for descriptor in descriptors:
-            if _refers(_link(base / "fd" / descriptor), targets):
-                raise SettlementError(f"unsettled process descriptor: {name}/{descriptor}")
+    if own_namespace is None:
+        raise SettlementError("mount namespace unavailable")
+    signature = None
+    consecutive = 0
+    for _ in range(MAX_SCAN_PASSES):
+        before, complete = _inventory(proc_root)
+        stable = complete
+        for name, starttime in sorted(before.items()):
+            if not _inspect_generation(phase, proc_root, name, starttime,
+                                       own_namespace, targets, marker):
+                stable = False
+        after, final_complete = _inventory(proc_root)
+        stable = stable and final_complete and before == after
+        current = tuple(sorted(after.items())) if stable else None
+        if stable and current == signature:
+            consecutive += 1
+        elif stable:
+            signature, consecutive = current, 1
+        else:
+            signature, consecutive = None, 0
+        if consecutive >= REQUIRED_STABLE_PASSES:
+            return
+        time.sleep(0.01)
+    raise SettlementError("process generations did not reach stable settlement")
 
 
 def unmount(run=subprocess.run):

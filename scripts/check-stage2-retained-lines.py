@@ -30,6 +30,7 @@ RETAINED_FILES = (
     "scripts/run-stage2-phase-a-candidate.py",
     "scripts/stage2-phase-a-budget.py",
     "scripts/stage2-native-settlement.py",
+    "scripts/stage2-native-publication.py",
     "scripts/stage2-native-upload-receipt.py",
     "schemas/stage2-phase-a-candidate-v1.json",
     "schemas/stage2-phase-a-candidate-v2.json",

@@ -15,7 +15,7 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    # The 84-minute sum of step bounds leaves a six-minute job-lifecycle reserve.
+    # The 86-minute sum of step bounds leaves a four-minute job-lifecycle reserve.
     timeout-minutes: 90
     concurrency:
       group: stage2-native-package-${{ inputs.reviewed_head }}
@@ -25,6 +25,7 @@ jobs:
       CANDIDATE_STAGING: /var/tmp/cogs-stage2-native-package-candidate-${{ github.run_id }}-${{ github.run_attempt }}
       CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-${{ inputs.reviewed_head }}-${{ github.run_id }}-${{ github.run_attempt }}
       RECEIPT_ARTIFACT_NAME: stage2-native-package-candidate-receipt-${{ inputs.reviewed_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+      UPLOAD_READBACK_STAGING: /var/tmp/cogs-stage2-native-package-upload-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out the dispatched repository head only
         timeout-minutes: 2
@@ -110,14 +111,16 @@ jobs:
           test "$CANDIDATE_ATTEMPT_OUTCOME" = success
 
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
-            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-            "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan before-unmount
+            env -i PATH=/usr/bin:/bin CANDIDATE_STAGING="$CANDIDATE_STAGING" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan before-unmount
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 130s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" unmount
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
-            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-            "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan after-unmount
+            env -i PATH=/usr/bin:/bin CANDIDATE_STAGING="$CANDIDATE_STAGING" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan after-unmount
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 300s \
             /bin/rm -rf --one-file-system -- \
             /var/lib/cogs /run/cogs-stage2-native-preflight-source-v1 \
@@ -139,53 +142,9 @@ jobs:
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
         run: |
           set -euo pipefail
-          test "$(/usr/bin/find "$CANDIDATE_STAGING" -mindepth 1 -maxdepth 1 -type f -printf '%f\n')" = candidate.partial
-          identity=$(/usr/bin/python3 -I - "$CANDIDATE_STAGING/candidate.partial" \
-            "$CANDIDATE_STAGING/candidate.json" "$GITHUB_WORKSPACE/deploy/aws-feasibility/remote" <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import stat
-          import sys
-
-          partial, final, contracts = map(pathlib.Path, sys.argv[1:])
-          sys.path.insert(0, str(contracts))
-          from completion_runtime_contract import canonical_json, validate_native_candidate_result
-
-          with partial.open("rb") as source:
-              before = os.fstat(source.fileno())
-              if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-                  raise SystemExit(2)
-              raw = source.read(4097)
-              if not 0 < len(raw) <= 4096 or source.read(1):
-                  raise SystemExit(2)
-              observed = os.stat(partial, follow_symlinks=False)
-              if (observed.st_dev, observed.st_ino) != (before.st_dev, before.st_ino):
-                  raise SystemExit(2)
-              value = json.loads(raw)
-              validate_native_candidate_result(
-                  value, os.environ["EXPECTED_SOURCE_REVISION"],
-                  os.environ["EXPECTED_SOURCE_MANIFEST_SHA256"])
-              launcher = pathlib.Path("scripts/run-stage2-package-native-candidate.py").read_bytes()
-              if value["execution_binding"]["launcher_implementation_sha256"] != hashlib.sha256(launcher).hexdigest():
-                  raise SystemExit(2)
-              if raw != canonical_json(value):
-                  raise SystemExit(2)
-              identity = value["package_identity"]
-              if set(identity) != {"deb_sha256", "deb_bytes", "installed_tree_sha256", "installed_entries", "installed_bytes", "package", "version", "architecture"}:
-                  raise SystemExit(2)
-              os.fsync(source.fileno())
-          os.replace(partial, final)
-          directory = os.open(final.parent, os.O_RDONLY | os.O_DIRECTORY)
-          try:
-              os.fsync(directory)
-          finally:
-              os.close(directory)
-          print("candidate_sha256=" + hashlib.sha256(raw).hexdigest())
-          print("candidate_bytes=" + str(len(raw)))
-          PY
-          )
+          test ! -e "$UPLOAD_READBACK_STAGING"
+          identity=$(/usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-publication.py" publish)
           printf '%s\n' "$identity" >>"$GITHUB_OUTPUT"
 
       - name: Upload this run's candidate JSON for manual final-pin review only
@@ -200,9 +159,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Check post-upload local identity and write a non-authoritative binding receipt
-        id: bind_upload
+      - name: Download the exact uploaded candidate artifact into this run's readback staging
+        id: download_upload
         if: always() && steps.upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.upload.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ env.UPLOAD_READBACK_STAGING }}
+          digest-mismatch: error
+
+      - name: Validate the sole uploaded candidate member against frozen source-bound bytes
+        id: validate_upload_readback
+        if: always() && steps.download_upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
+          CANDIDATE_SHA256: ${{ steps.validate.outputs.candidate_sha256 }}
+          CANDIDATE_BYTES: ${{ steps.validate.outputs.candidate_bytes }}
+          CANDIDATE_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" readback
+
+      - name: Check post-upload readback identity and write a non-authoritative binding receipt
+        id: bind_upload
+        if: always() && steps.validate_upload_readback.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         env:
@@ -212,6 +200,7 @@ jobs:
           CANDIDATE_BYTES: ${{ steps.validate.outputs.candidate_bytes }}
           CANDIDATE_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          UPLOAD_READBACK_OUTCOME: ${{ steps.validate_upload_readback.outcome }}
         run: |
           set -euo pipefail
           /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
@@ -238,8 +227,10 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          /bin/rm -rf -- "$CANDIDATE_STAGING"
+          test "$UPLOAD_READBACK_STAGING" = "/var/tmp/cogs-stage2-native-package-upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          /bin/rm -rf -- "$CANDIDATE_STAGING" "$UPLOAD_READBACK_STAGING"
           test ! -e "$CANDIDATE_STAGING"
+          test ! -e "$UPLOAD_READBACK_STAGING"
 
       - name: Enforce this run's attempt, cleanup, validation, uploads, and zero residue
         if: always()
@@ -249,6 +240,8 @@ jobs:
           CLEANUP: ${{ steps.cleanup.outcome }}
           VALIDATE: ${{ steps.validate.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
+          DOWNLOAD_UPLOAD: ${{ steps.download_upload.outcome }}
+          VALIDATE_UPLOAD_READBACK: ${{ steps.validate_upload_readback.outcome }}
           BIND_UPLOAD: ${{ steps.bind_upload.outcome }}
           RECEIPT_UPLOAD: ${{ steps.receipt_upload.outcome }}
           OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
@@ -258,6 +251,8 @@ jobs:
           test "$CLEANUP" = success
           test "$VALIDATE" = success
           test "$UPLOAD" = success
+          test "$DOWNLOAD_UPLOAD" = success
+          test "$VALIDATE_UPLOAD_READBACK" = success
           test "$BIND_UPLOAD" = success
           test "$RECEIPT_UPLOAD" = success
           test "$OUTPUT_CLEANUP" = success
@@ -265,3 +260,4 @@ jobs:
           test ! -e /run/cogs-stage2-native-preflight-source-v1
           test ! -e /run/cogs-stage2-native-private-v1
           test ! -e "$CANDIDATE_STAGING"
+          test ! -e "$UPLOAD_READBACK_STAGING"

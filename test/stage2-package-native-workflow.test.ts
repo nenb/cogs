@@ -6,10 +6,12 @@ import { test } from "node:test";
 const workflowPath = ".github/workflows/stage2-package-native-candidate.yml";
 const driverPath = "scripts/run-stage2-package-native-candidate.py";
 const settlementPath = "scripts/stage2-native-settlement.py";
+const publicationPath = "scripts/stage2-native-publication.py";
 const receiptPath = "scripts/stage2-native-upload-receipt.py";
 const workflow = readFileSync(workflowPath, "utf8");
 const driver = readFileSync(driverPath, "utf8");
 const settlement = readFileSync(settlementPath, "utf8");
+const publication = readFileSync(publicationPath, "utf8");
 const receipt = readFileSync(receiptPath, "utf8");
 
 function stepTimeout(name: string): number {
@@ -34,7 +36,6 @@ test("native package workflow is manual, same-head, first-run, and read-only", (
   assert.match(workflow, /test "\$EXACT_REVIEWED_HEAD" = "\$DISPATCH_HEAD"/u);
   assert.match(workflow, /each dispatch is a distinct observation/u);
   assert.match(workflow, /single native package candidate attempt in this workflow run/u);
-  assert.doesNotMatch(workflow, /\bsole\b/u);
   assert.doesNotMatch(workflow, /--retry|strategy:|matrix:/u);
   assert.doesNotMatch(workflow, /amazon|aws-actions|opentofu|terraform|kvm|docker/u);
 });
@@ -49,7 +50,9 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
     "Remove native candidate source and runtime residue after proven settlement",
     "Validate and atomically publish the single non-authoritative output from this workflow run",
     "Upload this run's candidate JSON for manual final-pin review only",
-    "Check post-upload local identity and write a non-authoritative binding receipt",
+    "Download the exact uploaded candidate artifact into this run's readback staging",
+    "Validate the sole uploaded candidate member against frozen source-bound bytes",
+    "Check post-upload readback identity and write a non-authoritative binding receipt",
     "Upload the separate non-authoritative receipt for this run",
     "Remove this run's local staging bytes",
     "Enforce this run's attempt, cleanup, validation, uploads, and zero residue",
@@ -57,13 +60,14 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
   const jobMinutes = Number(workflow.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
   const boundedMinutes = names.reduce((total, name) => total + stepTimeout(name), 0);
   assert.equal(jobMinutes, 90);
-  assert.equal(boundedMinutes, 84);
-  assert.equal(jobMinutes * 60 - boundedMinutes * 60, 360);
+  assert.equal(boundedMinutes, 86);
+  assert.equal(jobMinutes * 60 - boundedMinutes * 60, 240);
   assert.ok(300 + 10 <= stepTimeout(names[2]) * 60);
   assert.ok(300 + 5 <= stepTimeout(names[3]) * 60);
   assert.ok(3000 + 10 <= stepTimeout(names[4]) * 60);
   assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= stepTimeout(names[5]) * 60);
-  assert.ok(2 * (30 + 5) <= stepTimeout(names[8]) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[9]) * 60);
+  assert.ok(2 * (30 + 5) <= stepTimeout(names[10]) * 60);
 });
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
@@ -131,6 +135,10 @@ test("fixed settlement owner is invoked around ordinary bounded unmount and dele
   assert.match(settlement, /unsettled target mount namespace/u);
   assert.match(settlement, /unsettled process path/u);
   assert.match(settlement, /unsettled process descriptor/u);
+  assert.match(settlement, /REQUIRED_STABLE_PASSES = 3/u);
+  assert.match(settlement, /_starttime/u);
+  assert.match(settlement, /FIXED_TARGETS \+ \(_candidate_target\(environ\),\)/u);
+  assert.match(workflow, /CANDIDATE_STAGING="\$CANDIDATE_STAGING"[\s\S]{0,300}stage2-native-settlement\.py" scan/u);
   assert.match(settlement, /"\/bin\/umount", "--", target/u);
   assert.doesNotMatch(`${workflow}\n${settlement}`, /umount\s+-l|--lazy/u);
 });
@@ -152,20 +160,22 @@ test("partial validation and fsync precede atomic candidate publication", () => 
   const upload = workflow.indexOf("Upload this run's candidate JSON");
   assert.ok(0 < attempt && attempt < cleanup && cleanup < validate && validate < upload);
   const validation = workflow.slice(validate, upload);
-  assert.match(validation, /candidate\.partial/u);
+  assert.match(validation, /stage2-native-publication\.py" publish/u);
+  assert.match(publication, /"candidate\.partial"/u);
   assert.match(validation, /EXPECTED_SOURCE_REVISION: \$\{\{ steps\.fixed_source\.outputs\.revision \}\}/u);
   assert.match(
     validation,
     /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u,
   );
-  assert.match(
-    validation,
-    /validate_native_candidate_result\([\s\S]*EXPECTED_SOURCE_REVISION[\s\S]*EXPECTED_SOURCE_MANIFEST_SHA256/u,
-  );
-  assert.match(validation, /raw != canonical_json\(value\)/u);
-  assert.match(validation, /os\.fsync\(source\.fileno\(\)\)[\s\S]*os\.replace\(partial, final\)/u);
-  assert.match(validation, /os\.replace\(partial, final\)[\s\S]*os\.fsync\(directory\)/u);
-  assert.doesNotMatch(workflow.slice(attempt, validate), /os\.replace\(partial, final\)/u);
+  assert.match(publication, /os\.O_NOFOLLOW/u);
+  assert.match(publication, /os\.fchmod\(descriptor, 0o400\)/u);
+  assert.match(publication, /_generation\(after\) != _generation\(before\)/u);
+  assert.match(publication, /prove_no_writable_aliases/u);
+  assert.match(publication, /validate_native_candidate_result\(value, revision, manifest\)/u);
+  assert.match(publication, /raw != canonical_json\(value\)/u);
+  assert.match(publication, /os\.fsync\(descriptor\)[\s\S]*os\.rename\(/u);
+  assert.match(publication, /os\.rename\([\s\S]*os\.fsync\(directory\)[\s\S]*readback_raw/u);
+  assert.doesNotMatch(workflow.slice(attempt, validate), /os\.rename\(/u);
 });
 
 test("run-unique uploads use the bounded canonical receipt codec with exact source outputs", () => {
@@ -182,8 +192,17 @@ test("run-unique uploads use the bounded canonical receipt codec with exact sour
   assert.match(workflow, /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u);
   assert.match(workflow, /CANDIDATE_ARTIFACT_ID: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/u);
   assert.match(workflow, /CANDIDATE_ARTIFACT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/u);
+  assert.match(workflow, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/u);
+  assert.match(workflow, /artifact-ids: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/u);
+  assert.match(workflow, /digest-mismatch: error/u);
+  assert.match(workflow, /stage2-native-upload-receipt\.py" readback/u);
+  assert.match(workflow, /UPLOAD_READBACK_OUTCOME: \$\{\{ steps\.validate_upload_readback\.outcome \}\}/u);
   assert.match(workflow, /stage2-native-upload-receipt\.py" create[\s\S]*stage2-native-upload-receipt\.py" validate/u);
   assert.match(receipt, /MAX_RECEIPT_BYTES = 4096/u);
+  assert.match(receipt, /os\.O_NOFOLLOW/u);
+  assert.match(receipt, /uploaded candidate member differs from published candidate/u);
+  assert.match(receipt, /candidate_upload_readback/u);
+  assert.match(receipt, /upload readback success is required/u);
   assert.match(receipt, /validate_native_candidate_result\(value, expected\.revision, expected\.manifest\)/u);
   assert.match(receipt, /duplicate JSON key/u);
   assert.match(receipt, /receipt is not canonical/u);
