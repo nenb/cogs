@@ -18,7 +18,7 @@ import struct
 import subprocess
 import sys
 import tempfile
-import traceback
+import traceback as traceback_module
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1754,7 +1754,7 @@ def production_owner_test():
                                      patch.object(operation, "_record_command_outcome", side_effect=nft_outcome_exit):
                                     network._remove_fixed_firewall(production_network, *retained_tools)
                             except BaseException:
-                                traceback.print_exc()
+                                traceback_module.print_exc()
                                 os._exit(42)
                             os._exit(95)
                         _pid, child_status = os.waitpid(child, 0); child_code = os.waitstatus_to_exitcode(child_status)

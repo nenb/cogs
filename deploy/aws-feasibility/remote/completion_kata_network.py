@@ -2781,7 +2781,7 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
             absent = settled[-1]["identity"]
         else:
             ruleset = _perform_fixed(journal, Action.NFT_RULESET, ip, nft, tc)
-            rows_value = _load(ruleset)
+            rows_value = _load(ruleset, MAX_NFT_ITEMS)
             tables = [row["table"] for row in rows_value.get("nftables", [])
                       if type(row) is dict and "table" in row]
             owned = [row for row in tables
