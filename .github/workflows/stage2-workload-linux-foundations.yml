@@ -245,7 +245,7 @@ jobs:
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             /usr/bin/python3 -I -B \
-            "$source_root/deploy/aws-feasibility/remote/completion_kata_nft_owner.py"
+            "$source_root/scripts/provision-stage2-nft-owner.py"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
