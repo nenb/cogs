@@ -381,7 +381,7 @@ journal_model.successful_trace(absent_teardown, "TASK_STOPPED")
 for trace in journal_model.SUCCESS_PHASE_TRACE_VARIANTS["OWNERSHIP_OBSERVED"]:
     journal_model.successful_trace(trace, "OWNERSHIP_OBSERVED")
 check("IP_NETNS_REMOVE" not in absent_teardown and
-      "NFT_REMOVE_ATOMIC" not in journal_model.SUCCESS_PHASE_TRACE_VARIANTS["SHARE_ABSENT"][1],
+      "NFT_REMOVE_ATOMIC" not in journal_model.SUCCESS_PHASE_TRACE_VARIANTS["SHARE_ABSENT"][-1],
       "absent resource trace executes rm")
 operation_netns_path = runtime.operation_netns_path("a" * 64)
 retained_network = {"operation_token": "a" * 64, "identity": NETNS, "path": operation_netns_path}
