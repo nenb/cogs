@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-execution-envelope-v1.json",
+  "title": "Non-authoritative exact-input description for one local Kata attempt",
+  "$comment": "Public bytes never grant authority. Admission alone retains reviewed sources, exact final pin/package identity, complete runtime objects, and execution mappings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "source", "package", "runtime", "executables", "result_bindings", "receipt"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-local-execution-envelope/v1"
+    },
+    "authority": {
+      "const": "non-authoritative-execution-input-description"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_contract_sha256",
+        "candidate_result_sha256",
+        "final_pin_sha256",
+        "package_identity",
+        "artifact"
+      ],
+      "properties": {
+        "candidate_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidate_result_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "final_pin_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "package_identity": {
+          "$ref": "#/$defs/packageIdentity"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "bytes"],
+          "properties": {
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4194304
+            }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_sha256", "rootfs_sha256", "static_closure_sha256", "execution_mapping_sha256"],
+      "properties": {
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "static_closure_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_mapping_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "executables": {
+      "$ref": "#/$defs/allExecutables"
+    },
+    "result_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "host_attestation_sha256",
+        "runtime_attestation_sha256",
+        "rootfs_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "source_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "host_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtime_attestation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidate_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "final_pin_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "guest_program_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "owner_implementation_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "receipt": {
+      "const": {
+        "version": "cogs.stage2-local-private-receipt/v1",
+        "domain": "cogs.stage2-local-private-receipt/v1\u0000"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._/-]+$"
+    },
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "head", "manifest_sha256", "files"],
+      "properties": {
+        "root": {
+          "const": "/var/lib/cogs/stage2-completion-v1/source"
+        },
+        "head": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/sourceFile"
+          }
+        }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "source_class",
+        "path",
+        "contract_path",
+        "contract_sha256",
+        "executable_sha256",
+        "tool_closure_sha256"
+      ],
+      "properties": {
+        "role": {
+          "enum": ["ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"]
+        },
+        "source_class": {
+          "enum": ["host-path", "staged-runtime", "kata-runtime"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^/[^\\u0000]+$"
+        },
+        "contract_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tool_closure_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "allExecutables": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "ip"
+            },
+            "source_class": {
+              "const": "host-path"
+            },
+            "path": {
+              "const": "/usr/sbin/ip"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "tc"
+            },
+            "source_class": {
+              "const": "host-path"
+            },
+            "path": {
+              "const": "/usr/sbin/tc"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "nft"
+            },
+            "source_class": {
+              "const": "host-path"
+            },
+            "path": {
+              "const": "/usr/sbin/nft"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "ssh"
+            },
+            "source_class": {
+              "const": "host-path"
+            },
+            "path": {
+              "const": "/usr/bin/ssh"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "ssh-keygen"
+            },
+            "source_class": {
+              "const": "host-path"
+            },
+            "path": {
+              "const": "/usr/bin/ssh-keygen"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "containerd"
+            },
+            "source_class": {
+              "const": "staged-runtime"
+            },
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "ctr"
+            },
+            "source_class": {
+              "const": "staged-runtime"
+            },
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "shim"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/bin/containerd-shim-kata-v2"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "qemu"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/bin/qemu-system-x86_64"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "virtiofsd"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/libexec/virtiofsd"
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "packageIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "deb_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "installed_tree_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "installed_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "installed_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1099511627776
+        },
+        "package": {
+          "const": "cogs-stage2-fixture"
+        },
+        "version": {
+          "const": "1.0"
+        },
+        "architecture": {
+          "const": "all"
+        }
+      }
+    }
+  }
+}

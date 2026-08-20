@@ -7,12 +7,16 @@ the only currently reachable operation is a read-only, pre-mutation refusal.
 """
 from dataclasses import dataclass, field
 
+import completion_kata_admission as admission
 import completion_kata_network as network
 import completion_kata_process as process
 import completion_kata_qualification as qualification
 import completion_kata_runtime as runtime
 import completion_kata_ssh as ssh
-import completion_runtime_contract as workload_contract
+import completion_local_receipt as local_receipt
+
+_claim_execution_custody = admission._take_execution_custody_issuer()
+_issue_owner_receipt = local_receipt._take_local_receipt_issuer()
 
 TEARDOWN_ORDER = (
     "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
@@ -21,7 +25,8 @@ TEARDOWN_ORDER = (
     "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED",
 )
 BLOCKED_REASON = (
-    "secure exact host/Kata rootfs-chroot attestation and reviewed final package pin required"
+    "secure exact host/Kata rootfs-chroot attestation, reviewed final package pin, "
+    "and reviewed runtime envelope required"
 )
 
 
@@ -51,55 +56,42 @@ def preflight_report():
 
 
 def _claim_complete_prerequisites():
-    """Claim every immutable prerequisite before opening mutable owner state."""
+    """Let admission atomically claim the final pin, custody, and qualification."""
     try:
-        gate = qualification._claim_committed_gate()
-        final_pin = workload_contract.load_final_pin()
-    except (qualification.QualificationError,
-            workload_contract.FinalPinUnavailable,
-            workload_contract.WorkloadContractError) as error:
+        return _claim_execution_custody()
+    except admission.AdmissionError as error:
         raise CoordinatorBlocked(BLOCKED_REASON) from error
-
-    # A qualified report alone is not an attestation capability.  The current
-    # owner stack intentionally has no secure issuer for the exact host tools,
-    # Kata runtime closure, and rootfs/chroot execution binding.  Do not replace
-    # that missing capability with fixture contracts, a boolean, or report data.
-    del gate, final_pin
-    raise CoordinatorBlocked(BLOCKED_REASON)
 
 
 def _coordinator_routes():
     """Keep result custody private; report bytes can never manufacture a receipt."""
-    seal, receipts = object(), {}
-
-    class _LocalReceipt:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            if key is not seal:
-                raise CoordinatorError("sealed local result receipt")
-            return super().__new__(cls)
-
-    def finish(value):
-        # Lexical-only issuance point for the future exact successful branch.
-        receipt = _LocalReceipt(seal)
-        receipts[receipt] = value
-        return receipt
+    def finish(custody, evidence):
+        # The future exact owner branch may supply only its sealed evidence.
+        return _issue_owner_receipt(custody, evidence)
 
     def run():
         """One fixed entry; blocked before journal/rootfs/network/runtime mutation."""
-        _claim_complete_prerequisites()
-        raise CoordinatorError("unreachable prerequisite return")
-        return finish(None)
+        custody, gate = _claim_complete_prerequisites()
+        # Custody-derived qualification exists before any mutable owner.  The
+        # reviewed owner-evidence producer is deliberately absent, so even
+        # filling reviewed constants cannot open mutation or mint a receipt.
+        del gate
+        admission._abort_execution_custody(custody)
+        raise CoordinatorBlocked(BLOCKED_REASON)
+        return finish(custody, None)
 
     def recover():
-        """Crash entry is cleanup-only; absent attestation forbids journal opening."""
-        _claim_complete_prerequisites()
-        raise CoordinatorError("unreachable prerequisite return")
+        """Crash entry is cleanup-only; absent owner evidence forbids journal opening."""
+        custody, gate = _claim_complete_prerequisites()
+        del gate
+        admission._abort_execution_custody(custody)
+        raise CoordinatorBlocked(BLOCKED_REASON)
 
     def consume(receipt):
-        if type(receipt) is not _LocalReceipt or receipt not in receipts:
-            raise CoordinatorError("exact private local result receipt required")
-        return receipts.pop(receipt)
+        try:
+            return local_receipt._consume_local_receipt(receipt)
+        except local_receipt.LocalReceiptError as error:
+            raise CoordinatorError("exact private local result receipt required") from error
 
     # `finish` is retained only in `run`'s closure; it is never exported as a
     # report-to-receipt API.

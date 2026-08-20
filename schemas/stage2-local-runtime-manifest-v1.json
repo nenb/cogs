@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-runtime-manifest-v1.json",
+  "title": "Complete static closure and separate execution-time mapping description",
+  "$comment": "Public data only. The complete 35-object closure is not replaceable by a digest, and every execution mapping is re-opened and identity-checked by admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "architecture", "rootfs_sha256", "static_closure", "execution_mapping", "executables"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-local-runtime-manifest/v1"
+    },
+    "architecture": {
+      "const": "x86_64"
+    },
+    "rootfs_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "static_closure": {
+      "$ref": "#/$defs/staticClosure"
+    },
+    "execution_mapping": {
+      "$ref": "#/$defs/executionMapping"
+    },
+    "executables": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "containerd"
+            },
+            "source_class": {
+              "const": "staged-runtime"
+            },
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "ctr"
+            },
+            "source_class": {
+              "const": "staged-runtime"
+            },
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "shim"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/bin/containerd-shim-kata-v2"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "qemu"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/bin/qemu-system-x86_64"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/executable",
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "virtiofsd"
+            },
+            "source_class": {
+              "const": "kata-runtime"
+            },
+            "path": {
+              "const": "/opt/kata/libexec/virtiofsd"
+            }
+          }
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 512,
+      "pattern": "^/(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "nullableText": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stringList": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "bytes", "version"],
+      "properties": {
+        "name": {
+          "enum": ["git", "dpkg-deb", "dpkg"]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      }
+    },
+    "staticObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "path",
+        "source",
+        "mode",
+        "size",
+        "content_sha256",
+        "interpreter",
+        "soname",
+        "needed",
+        "resolved"
+      ],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-completion-runtime-object/v1"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "interpreter": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "soname": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "needed": {
+          "$ref": "#/$defs/stringList"
+        },
+        "resolved": {
+          "$ref": "#/$defs/stringList"
+        }
+      }
+    },
+    "staticClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "object_count", "tools", "objects"],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-runtime-tool-closure/v1"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "object_count": {
+          "const": 35
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/tool",
+              "properties": {
+                "name": {
+                  "const": "git"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/tool",
+              "properties": {
+                "name": {
+                  "const": "dpkg-deb"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/tool",
+              "properties": {
+                "name": {
+                  "const": "dpkg"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "items": false
+        },
+        "objects": {
+          "type": "array",
+          "minItems": 35,
+          "maxItems": 35,
+          "items": {
+            "$ref": "#/$defs/staticObject"
+          }
+        }
+      }
+    },
+    "mappedObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "execution_path", "device", "inode", "mode", "uid", "gid", "nlink", "size", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "execution_path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nlink": {
+          "const": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "executionMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "rootfs_sha256", "static_manifest_sha256", "objects"],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-local-execution-mapping/v1"
+        },
+        "rootfs_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "static_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "objects": {
+          "type": "array",
+          "minItems": 35,
+          "maxItems": 35,
+          "items": {
+            "$ref": "#/$defs/mappedObject"
+          }
+        }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "source_class",
+        "path",
+        "contract_path",
+        "contract_sha256",
+        "executable_sha256",
+        "tool_closure_sha256"
+      ],
+      "properties": {
+        "role": {
+          "enum": ["containerd", "ctr", "shim", "qemu", "virtiofsd"]
+        },
+        "source_class": {
+          "enum": ["staged-runtime", "kata-runtime"]
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "contract_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tool_closure_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

@@ -10,8 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_coordinator as coordinator
-import completion_kata_qualification as qualification
-import completion_runtime_contract as contract
 
 
 def rejected(call, kind=coordinator.CoordinatorBlocked):
@@ -26,39 +24,27 @@ def mutation(*_args, **_kwargs):
     raise AssertionError("a mutable owner was opened")
 
 
-# Every prerequisite cut is read-only and stops before all integrated owners.
+# Admission is the only immutable prerequisite/final-pin authority and stops
+# before all integrated mutable owners.
 events = []
-with (patch.object(qualification, "_claim_committed_gate",
-                   side_effect=lambda: events.append("preflight") or (_ for _ in ()).throw(
-                       qualification.QualificationError())),
-      patch.object(contract, "load_final_pin",
-                   side_effect=lambda: events.append("pin")),
+with (patch.object(coordinator, "_claim_execution_custody",
+                   side_effect=lambda: events.append("custody") or (_ for _ in ()).throw(
+                       coordinator.admission.AdmissionUnavailable())),
       patch.object(coordinator.process, "_open_attested_executable_owner", mutation),
       patch.object(coordinator.runtime, "_open_production_owner", mutation)):
     rejected(coordinator._run_fixed_local_qualification)
-assert events == ["preflight"]
+assert events == ["custody"]
 
 events.clear()
-with (patch.object(qualification, "_claim_committed_gate",
-                   side_effect=lambda: events.append("preflight") or object()),
-      patch.object(contract, "load_final_pin",
-                   side_effect=lambda: events.append("pin") or (_ for _ in ()).throw(
-                       contract.FinalPinUnavailable())),
-      patch.object(coordinator.process, "_open_attested_executable_owner", mutation),
-      patch.object(coordinator.runtime, "_open_production_owner", mutation)):
-    rejected(coordinator._run_fixed_local_qualification)
-assert events == ["preflight", "pin"]
-
-events.clear()
-with (patch.object(qualification, "_claim_committed_gate",
-                   side_effect=lambda: events.append("preflight") or object()),
-      patch.object(contract, "load_final_pin",
-                   side_effect=lambda: events.append("pin") or object()),
+with (patch.object(coordinator, "_claim_execution_custody",
+                   side_effect=lambda: events.append("custody") or (object(), object())),
+      patch.object(coordinator.admission, "_abort_execution_custody",
+                   side_effect=lambda _value: events.append("abort")),
       patch.object(coordinator.process, "_open_attested_executable_owner", mutation),
       patch.object(coordinator.runtime, "_open_production_owner", mutation)):
     rejected(coordinator._run_fixed_local_qualification)
     rejected(coordinator._recover_fixed_local_qualification)
-assert events == ["preflight", "pin", "preflight", "pin"]
+assert events == ["custody", "abort", "custody", "abort"]
 rejected(lambda: coordinator._consume_local_receipt(object()), coordinator.CoordinatorError)
 
 # Production entry/recovery contain no fixture issuer, callback, argv, path, or
