@@ -604,7 +604,7 @@ class OwnedRoot:
     def __init__(self, path, deadline, kind="host-candidate"):
         self.path = Path(path)
         _require(self.path.is_absolute() and self.path.name not in {"", ".", ".."})
-        _require(kind in {"host-candidate", "host-post-pin"})
+        _require(kind in {"host-candidate", "host-post-pin", "retained-rootfs-candidate"})
         self.kind = kind
         self.deadline = deadline
         self.outer_fd = _open_absolute_directory(self.path.parent)

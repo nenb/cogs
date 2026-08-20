@@ -5,10 +5,10 @@ import ctypes
 import importlib.util
 import os
 from pathlib import Path
+import array
 import shutil
 import signal
 import socket
-import subprocess
 import sys
 import tempfile
 
@@ -60,6 +60,129 @@ def portable_tests():
     else:
         raise AssertionError("oversize frame was accepted")
 
+    # recvmsg installs rights before protocol validation; every rejected right
+    # must be retired exactly once, including truncation/multiple-rights cuts.
+    portable_cmsg_flag = not hasattr(socket, "MSG_CMSG_CLOEXEC")
+    if portable_cmsg_flag: socket.MSG_CMSG_CLOEXEC = 0
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    sources = [os.open("/dev/null", os.O_RDONLY) for _ in range(2)]
+    before = set(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").exists() else None
+    try:
+        rights = array.array("i", sources)
+        left.sendmsg([b"BAD"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
+        try:
+            module._control_receive(right.fileno())
+        except module.NativeCandidateError:
+            pass
+        else:
+            raise AssertionError("multiple SCM_RIGHTS were accepted")
+        if before is not None:
+            check(set(os.listdir("/proc/self/fd")) == before, "rejected SCM_RIGHTS leaked")
+    finally:
+        left.close(); right.close()
+        for descriptor in sources: os.close(descriptor)
+
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    source = os.open("/dev/null", os.O_RDONLY)
+    before = set(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").exists() else None
+    try:
+        module._control_send(left.fileno(), b"WRONG", source)
+        raw, passed = module._control_receive(right.fileno())
+        try:
+            module._control_no_fd(raw, passed, module.HELPER_GO, "bad gate")
+        except module.NativeCandidateError:
+            pass
+        else:
+            raise AssertionError("malformed gate with a right was accepted")
+        if before is not None:
+            check(set(os.listdir("/proc/self/fd")) == before, "malformed packet right leaked")
+    finally:
+        left.close(); right.close(); os.close(source)
+        if portable_cmsg_flag: del socket.MSG_CMSG_CLOEXEC
+
+    reads = []
+    read_end, write_end = os.pipe()
+    guard_end, guard_write = os.pipe()
+    original_read = module.os.read
+    module.os.read = lambda descriptor, count: reads.append(count) or original_read(descriptor, count)
+    try:
+        try: module._wait_pipe_token(read_end, b"", guard_end, module.time.monotonic_ns() + module.NS)
+        except module.NativeCandidateError: pass
+        else: raise AssertionError("empty pipe token was accepted")
+        check(reads == [], "pipe gate issued read(0)")
+    finally:
+        module.os.read = original_read
+        for descriptor in (read_end, write_end, guard_end, guard_write): os.close(descriptor)
+
+    # Even invalid ownership inputs and expired budgets are returned as sticky
+    # diagnostics rather than escaping the supervision boundary.
+    result, work_error, cleanup, settled = module._supervise_candidate(
+        -1, -1, -1, -1, module.time.monotonic_ns(), module.time.monotonic_ns(), original, True)
+    check(result is None and work_error is original and cleanup and not settled,
+          "supervision exception boundary did not return uncertainty")
+
+    calls = []
+    original_close = module._close_and_prove
+    module._close_and_prove = lambda descriptor: calls.append(descriptor) or (_ for _ in ()).throw(OSError(5, "close uncertain"))
+    try:
+        try: module._control_no_fd(b"BAD", 12345, module.HELPER_GO, "bad gate")
+        except module.CleanupUncertain: pass
+        else: raise AssertionError("uncertain rejected-right close was not sticky")
+        check(calls == [12345], "uncertain close was retried")
+    finally:
+        module._close_and_prove = original_close
+
+    if sys.platform.startswith("linux") and hasattr(os, "pidfd_open"):
+        _supervisor_protocol_tests()
+
+
+def _supervisor_protocol_row(raw, *, report=False):
+    parent_control, child_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    result_read, result_write = os.pipe2(os.O_CLOEXEC)
+    child = os.fork()
+    if child == 0:
+        parent_control.close(); os.close(result_read)
+        try:
+            module._write_all(result_write, raw)
+            if report:
+                module._control_send(child_control.fileno(), f"PID1-EXIT:{os.CLD_EXITED}:0".encode("ascii"))
+        finally:
+            os.close(result_write); child_control.close()
+        os._exit(0)
+    child_control.close(); os.close(result_write)
+    helper_pidfd = os.pidfd_open(child, 0)
+    deadline = module.time.monotonic_ns() + 2 * module.NS
+    return module._supervise_candidate(
+        helper_pidfd, -1, parent_control.detach(), result_read,
+        deadline - module.NS, deadline, initial_no_pid1=not report, helper_pid=child)
+
+
+def _supervisor_protocol_tests():
+    payload = b'{}'
+    frame = len(payload + b"S").to_bytes(4, "big") + b"S" + payload
+    result, error, cleanup, settled = _supervisor_protocol_row(frame)
+    check((result, error, cleanup, settled) == (payload, None, [], True), "exact frame supervision failed")
+    result, error, cleanup, settled = _supervisor_protocol_row(
+        b"x" * (module.MAX_PROTOCOL_BYTES + 5))
+    check(result is None and isinstance(error, module.NativeCandidateError) and cleanup == [] and settled,
+          "actual oversized writer was not settled")
+    result, error, cleanup, settled = _supervisor_protocol_row(b"\0\0\0\x05Sx")
+    check(result is None and isinstance(error, module.NativeCandidateError) and cleanup == [] and settled,
+          "partial-frame EOF was not diagnosed and settled")
+    result, error, cleanup, settled = _supervisor_protocol_row(frame, report=True)
+    check(result == payload and error is None and cleanup == [] and settled,
+          "queued PID1 report was lost to helper readiness/EOF race")
+
+    original_poll = module.select.poll
+    module.select.poll = lambda: (_ for _ in ()).throw(OSError(5, "poll fault"))
+    try:
+        result, error, cleanup, settled = _supervisor_protocol_row(frame)
+    finally:
+        module.select.poll = original_poll
+    check(isinstance(error, OSError) and settled,
+          f"supervisor poll exception escaped or abandoned ownership: {error!r}; {cleanup!r}")
+
 
 class _ProbeError(Exception):
     def __init__(self, category):
@@ -81,6 +204,7 @@ class _ProbePackage:
         probe(len(nspid) == 1 and nspid[0].split()[-1] == b"1", "proc-nspid")
         probe({name for name in os.listdir("/proc") if name.isdigit()} == {"1"}, "proc-private")
         probe(set(os.listdir("/dev")) == {"null", "urandom"}, "dev-allowlist")
+        probe(Path("/marker").read_bytes() == b"detached-before-outer-fork", "operation-descriptor")
         with open("/dev/urandom", "rb", buffering=0) as source:
             probe(len(source.read(16)) == 16, "urandom-bind")
         with open("/dev/null", "wb", buffering=0) as sink:
@@ -90,6 +214,15 @@ class _ProbePackage:
         network = Path("/proc/net/dev").read_bytes().splitlines()[2:]
         probe([row.split(b":", 1)[0].strip() for row in network] == [b"lo"], "network-private")
         return b'{"native":true}'
+
+
+class _DescendantProbePackage:
+    @staticmethod
+    def run_candidate_transaction():
+        _ProbePackage.run_candidate_transaction()
+        if os.fork() == 0:
+            while True: signal.pause()
+        return b'{"descendant":true}'
 
 
 def _set_subreaper(enabled):
@@ -175,6 +308,18 @@ def _parent_death_gate_test(tree):
         _set_subreaper(bool(previous))
 
 
+def _native_case(descriptor, *, helper_exit=None, fail_pidfd=False, package=_ProbePackage):
+    module._NATIVE_TEST_HELPER_EXIT_STAGE = helper_exit
+    module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = fail_pidfd
+    try:
+        tree = module._open_detached_tree(descriptor)
+        deadline = module.time.monotonic_ns() + 10 * module.NS
+        return module._run_candidate_child(tree, {}, {}, package, deadline, deadline + 5 * module.NS)
+    finally:
+        module._NATIVE_TEST_HELPER_EXIT_STAGE = None
+        module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = False
+
+
 def native_test():
     module._platform_gate()
     module._lifecycle_preflight()
@@ -184,29 +329,34 @@ def native_test():
     for name in ("proc", "dev", "tmp"):
         (source / name).mkdir(mode=0o755)
     (source / "marker").write_bytes(b"detached-before-outer-fork")
-    mounted = False
     descriptor = -1
     try:
-        subprocess.run(["mount", "--bind", source, source], check=True)
-        mounted = True
         descriptor = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        tree = module._open_detached_tree(descriptor, allow_root_mount=True)
-        deadline = module.time.monotonic_ns() + 15 * module.NS
-        result, work_error, cleanup_errors, settled = module._run_candidate_child(
-            tree, {}, {}, _ProbePackage, deadline, deadline + 5 * module.NS)
+        result, work_error, cleanup_errors, settled = _native_case(descriptor)
         check(work_error is None,
               f"native child failed: {work_error!r}; result={result!r}; cleanup={cleanup_errors!r}")
         check(cleanup_errors == [], f"native cleanup uncertain: {cleanup_errors!r}")
         check(result == b'{"native":true}', f"unexpected native result: {result!r}")
         check(settled, "double-fork tree did not settle")
         check(not module.PRIVATE_STAGING.exists(), "private staging escaped helper mount namespace")
-        death_tree = module._open_detached_tree(descriptor, allow_root_mount=True)
+
+        result, error, cleanup, settled = _native_case(descriptor, package=_DescendantProbePackage)
+        check(result == b'{"descendant":true}' and error is None and cleanup == [] and settled,
+              f"adopted namespace descendant did not settle: {error!r}; {cleanup!r}")
+
+        for stage, fail_pidfd in (("before-pidfd-transfer", False), ("after-pidfd-transfer", False),
+                                  (None, True)):
+            result, error, cleanup, settled = _native_case(
+                descriptor, helper_exit=stage, fail_pidfd=fail_pidfd)
+            check(result is None and error is not None, f"fault cut unexpectedly succeeded: {stage}")
+            check(cleanup == [] and settled,
+                  f"fault cut did not settle: stage={stage}; error={error!r}; cleanup={cleanup!r}")
+
+        death_tree = module._open_detached_tree(descriptor)
         _parent_death_gate_test(death_tree)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if mounted:
-            subprocess.run(["umount", source], check=True)
         shutil.rmtree(root)
 
 
