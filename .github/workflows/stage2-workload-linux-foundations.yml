@@ -239,6 +239,11 @@ jobs:
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
+            /usr/bin/python3 -I -B \
+            deploy/aws-feasibility/remote/completion_kata_nft_owner.py
+          sudo -n env -i \
+            HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS=1 \
             COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
             COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
