@@ -26,6 +26,12 @@ OUTER_SECONDS = 2_700
 CHILD_SECONDS = 1_300
 NS = 1_000_000_000
 CLONE_NEWNS = 0x00020000
+SYS_OPEN_TREE = 428
+SYS_MOVE_MOUNT = 429
+AT_FDCWD = -100
+OPEN_TREE_CLONE = 1
+OPEN_TREE_CLOEXEC = 0o2000000
+MOVE_MOUNT_F_EMPTY_PATH = 0x00000004
 MS_RDONLY = 1
 MS_NOSUID = 2
 MS_NODEV = 4
@@ -62,6 +68,16 @@ def _libc_call(name, *arguments):
         raise OSError(ctypes.get_errno(), name)
 
 
+def _syscall(number, *arguments):
+    libc = ctypes.CDLL(None, use_errno=True)
+    call = libc.syscall
+    call.restype = ctypes.c_long
+    result = call(ctypes.c_long(number), *arguments)
+    if result < 0:
+        raise OSError(ctypes.get_errno(), f"syscall-{number}")
+    return result
+
+
 def _mount(source, target, filesystem, flags, data=None):
     encoded = lambda value: None if value is None else os.fsencode(value)
     _libc_call(
@@ -84,8 +100,25 @@ def _private_rootfs(root_descriptor, stage):
     stage[0] = "root-private"
     _mount(None, "/", None, MS_REC | MS_PRIVATE)
     root = str(ROOT_MOUNT)
-    stage[0] = "root-bind"
-    _mount(f"/proc/self/fd/{root_descriptor}", root, None, MS_BIND | MS_REC)
+    stage[0] = "root-open-tree"
+    tree = _syscall(
+        SYS_OPEN_TREE,
+        ctypes.c_int(root_descriptor),
+        ctypes.c_char_p(b"."),
+        ctypes.c_uint(OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC),
+    )
+    try:
+        stage[0] = "root-move-mount"
+        _syscall(
+            SYS_MOVE_MOUNT,
+            ctypes.c_int(tree),
+            ctypes.c_char_p(b""),
+            ctypes.c_int(AT_FDCWD),
+            ctypes.c_char_p(os.fsencode(root)),
+            ctypes.c_uint(MOVE_MOUNT_F_EMPTY_PATH),
+        )
+    finally:
+        os.close(tree)
     stage[0] = "proc-bind"
     _mount("/proc", f"{root}/proc", None, MS_BIND | MS_REC)
     stage[0] = "dev-bind"
