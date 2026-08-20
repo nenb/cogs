@@ -2777,15 +2777,15 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         removal_settled = bool(
             settled and settled[-1]["action"] == Action.NFT_REMOVE_ATOMIC.value)
         table_name = _bound_names(journal)[1]
-        ruleset = _perform_fixed(journal, Action.NFT_RULESET, ip, nft, tc)
-        rows_value = _load(ruleset); tables = [row["table"] for row in rows_value.get("nftables", [])
-                                               if type(row) is dict and "table" in row]
-        owned = [row for row in tables if row.get("family") == "inet" and row.get("name") == table_name]
         if removal_settled:
-            if owned:
-                raise NetworkError("foreign NFT table appeared after removal")
             absent = settled[-1]["identity"]
         else:
+            ruleset = _perform_fixed(journal, Action.NFT_RULESET, ip, nft, tc)
+            rows_value = _load(ruleset)
+            tables = [row["table"] for row in rows_value.get("nftables", [])
+                      if type(row) is dict and "table" in row]
+            owned = [row for row in tables
+                     if row.get("family") == "inet" and row.get("name") == table_name]
             if len(owned) != 1:
                 raise NetworkError("owned NFT table replacement before removal")
             absent = _effect(
