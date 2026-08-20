@@ -15,7 +15,7 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    # The 86-minute sum of step bounds leaves a four-minute job-lifecycle reserve.
+    # The 87-minute sum of step bounds leaves a three-minute job-lifecycle reserve.
     timeout-minutes: 90
     concurrency:
       group: stage2-native-package-${{ inputs.reviewed_head }}
@@ -26,6 +26,7 @@ jobs:
       CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-${{ inputs.reviewed_head }}-${{ github.run_id }}-${{ github.run_attempt }}
       RECEIPT_ARTIFACT_NAME: stage2-native-package-candidate-receipt-${{ inputs.reviewed_head }}-${{ github.run_id }}-${{ github.run_attempt }}
       UPLOAD_READBACK_STAGING: /var/tmp/cogs-stage2-native-package-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-native-package-receipt-upload-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out the dispatched repository head only
         timeout-minutes: 2
@@ -87,6 +88,8 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e "$CANDIDATE_STAGING"
+          test ! -e "$UPLOAD_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
           /bin/mkdir -m 700 -- "$CANDIDATE_STAGING"
           umask 077
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 3000s \
@@ -143,7 +146,13 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e "$UPLOAD_READBACK_STAGING"
-          identity=$(/usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+          test ! -e "$RECEIPT_READBACK_STAGING"
+          identity=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            env -i PATH=/usr/bin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" CANDIDATE_STAGING="$CANDIDATE_STAGING" \
+            TRUSTED_RUNNER_UID="$(/usr/bin/id -u)" \
+            EXPECTED_SOURCE_REVISION="$EXPECTED_SOURCE_REVISION" \
+            EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-publication.py" publish)
           printf '%s\n' "$identity" >>"$GITHUB_OUTPUT"
 
@@ -192,7 +201,7 @@ jobs:
         id: bind_upload
         if: always() && steps.validate_upload_readback.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 2
+        timeout-minutes: 1
         env:
           EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
@@ -203,10 +212,18 @@ jobs:
           UPLOAD_READBACK_OUTCOME: ${{ steps.validate_upload_readback.outcome }}
         run: |
           set -euo pipefail
-          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            env -i PATH=/usr/bin:/bin EXACT_REVIEWED_HEAD="$EXACT_REVIEWED_HEAD" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            CANDIDATE_STAGING="$CANDIDATE_STAGING" UPLOAD_READBACK_STAGING="$UPLOAD_READBACK_STAGING" \
+            CANDIDATE_ARTIFACT_NAME="$CANDIDATE_ARTIFACT_NAME" RECEIPT_ARTIFACT_NAME="$RECEIPT_ARTIFACT_NAME" \
+            EXPECTED_SOURCE_REVISION="$EXPECTED_SOURCE_REVISION" \
+            EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" \
+            CANDIDATE_SHA256="$CANDIDATE_SHA256" CANDIDATE_BYTES="$CANDIDATE_BYTES" \
+            CANDIDATE_ARTIFACT_ID="$CANDIDATE_ARTIFACT_ID" \
+            CANDIDATE_ARTIFACT_DIGEST="$CANDIDATE_ARTIFACT_DIGEST" \
+            UPLOAD_READBACK_OUTCOME="$UPLOAD_READBACK_OUTCOME" TRUSTED_RUNNER_UID="$(/usr/bin/id -u)" \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" create
-          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
-            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" validate
 
       - name: Upload the separate non-authoritative receipt for this run
         id: receipt_upload
@@ -220,6 +237,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Download the exact uploaded receipt artifact into run-unique readback staging
+        id: receipt_download
+        if: always() && steps.receipt_upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.receipt_upload.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ env.RECEIPT_READBACK_STAGING }}
+          digest-mismatch: error
+
+      - name: Validate the sole receipt readback against candidate source and artifact identity
+        id: validate_receipt_readback
+        if: always() && steps.receipt_download.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
+          CANDIDATE_SHA256: ${{ steps.validate.outputs.candidate_sha256 }}
+          CANDIDATE_BYTES: ${{ steps.validate.outputs.candidate_bytes }}
+          CANDIDATE_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          RECEIPT_ARTIFACT_ID: ${{ steps.receipt_upload.outputs.artifact-id }}
+          RECEIPT_ARTIFACT_DIGEST: ${{ steps.receipt_upload.outputs.artifact-digest }}
+          RECEIPT_UPLOAD_OUTCOME: ${{ steps.receipt_upload.outcome }}
+        run: |
+          set -euo pipefail
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" receipt-readback
+
       - name: Remove this run's local staging bytes
         id: output_cleanup
         if: always()
@@ -228,9 +277,12 @@ jobs:
         run: |
           set -euo pipefail
           test "$UPLOAD_READBACK_STAGING" = "/var/tmp/cogs-stage2-native-package-upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          /bin/rm -rf -- "$CANDIDATE_STAGING" "$UPLOAD_READBACK_STAGING"
+          test "$RECEIPT_READBACK_STAGING" = "/var/tmp/cogs-stage2-native-package-receipt-upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /bin/rm -rf -- "$CANDIDATE_STAGING" "$UPLOAD_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"
           test ! -e "$CANDIDATE_STAGING"
           test ! -e "$UPLOAD_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
 
       - name: Enforce this run's attempt, cleanup, validation, uploads, and zero residue
         if: always()
@@ -244,6 +296,8 @@ jobs:
           VALIDATE_UPLOAD_READBACK: ${{ steps.validate_upload_readback.outcome }}
           BIND_UPLOAD: ${{ steps.bind_upload.outcome }}
           RECEIPT_UPLOAD: ${{ steps.receipt_upload.outcome }}
+          RECEIPT_DOWNLOAD: ${{ steps.receipt_download.outcome }}
+          VALIDATE_RECEIPT_READBACK: ${{ steps.validate_receipt_readback.outcome }}
           OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
         run: |
           set -euo pipefail
@@ -255,9 +309,12 @@ jobs:
           test "$VALIDATE_UPLOAD_READBACK" = success
           test "$BIND_UPLOAD" = success
           test "$RECEIPT_UPLOAD" = success
+          test "$RECEIPT_DOWNLOAD" = success
+          test "$VALIDATE_RECEIPT_READBACK" = success
           test "$OUTPUT_CLEANUP" = success
           test ! -e /var/lib/cogs
           test ! -e /run/cogs-stage2-native-preflight-source-v1
           test ! -e /run/cogs-stage2-native-private-v1
           test ! -e "$CANDIDATE_STAGING"
           test ! -e "$UPLOAD_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"

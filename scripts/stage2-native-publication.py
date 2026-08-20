@@ -79,14 +79,13 @@ def _process_uid(proc_root, name):
     return int(values[0][2])
 
 
-def _inventory(proc_root):
+def _inventory(proc_root, owner_uid):
     try:
         names = os.listdir(proc_root)
     except OSError as error:
         raise PublicationError("process inventory failed") from error
     result = {}
     complete = True
-    effective_uid = os.geteuid()
     for name in names:
         if not name.isdecimal():
             continue
@@ -94,9 +93,9 @@ def _inventory(proc_root):
         if uid is None:
             complete = False
             continue
-        # The 0700 staging directory and 0400 candidate exclude other unprivileged
-        # UIDs. Privileged host processes are trusted by this workflow's host model.
-        if uid != effective_uid:
+        # Root/other host services are trusted; the untrusted publication adversary
+        # is every surviving process in the runner UID's generation inventory.
+        if uid != owner_uid:
             continue
         identity = _starttime(proc_root, name)
         if identity is None:
@@ -117,11 +116,32 @@ def _fd_names(path):
 
 def _writable_alias_sweep(proc_root, expected, inventory):
     stable = True
+    device = os.major(expected[0]), os.minor(expected[0])
     for name, starttime in inventory.items():
         if _starttime(proc_root, name) != starttime:
             stable = False
             continue
         base = proc_root / name
+        try:
+            mappings = (base / "maps").read_bytes().splitlines()
+        except OSError as error:
+            if error.errno in VANISHED:
+                stable = False
+                continue
+            raise PublicationError("mapping inventory failed") from error
+        for row in mappings:
+            fields = row.split(None, 5)
+            try:
+                mapped_device = tuple(int(item, 16) for item in fields[3].split(b":"))
+                mapped_inode = int(fields[4])
+                permissions = fields[1]
+                if len(mapped_device) != 2 or len(permissions) != 4:
+                    raise ValueError
+            except (IndexError, ValueError) as error:
+                raise PublicationError("mapping identity is invalid") from error
+            if (mapped_device == device and mapped_inode == expected[1]
+                    and permissions[3:4] == b"s"):
+                raise PublicationError(f"candidate has writable shared mapping: {name}")
         descriptors = _fd_names(base / "fd")
         if descriptors is None:
             stable = False
@@ -159,15 +179,15 @@ def _writable_alias_sweep(proc_root, expected, inventory):
     return stable
 
 
-def prove_no_writable_aliases(descriptor, proc_root=Path("/proc")):
+def prove_no_writable_aliases(descriptor, owner_uid, proc_root=Path("/proc")):
     expected = os.fstat(descriptor)
     identity = expected.st_dev, expected.st_ino
     signature = None
     consecutive = 0
     for _ in range(MAX_ALIAS_PASSES):
-        before, complete = _inventory(proc_root)
+        before, complete = _inventory(proc_root, owner_uid)
         stable = complete and _writable_alias_sweep(proc_root, identity, before)
-        after, final_complete = _inventory(proc_root)
+        after, final_complete = _inventory(proc_root, owner_uid)
         stable = stable and final_complete and before == after
         current = tuple(sorted(after.items())) if stable else None
         if stable and current == signature:
@@ -202,7 +222,8 @@ def _validate(raw, revision, manifest):
         raise PublicationError("candidate package identity differs")
 
 
-def publish(staging, revision, manifest, proc_root=Path("/proc")):
+def publish(staging, revision, manifest, runner_uid, proc_root=Path("/proc"),
+            frozen_uid=0, frozen_gid=0):
     staging = Path(staging)
     directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     descriptor = None
@@ -212,20 +233,33 @@ def publish(staging, revision, manifest, proc_root=Path("/proc")):
             raise PublicationError("staging does not contain exactly candidate.partial")
         descriptor = os.open("candidate.partial", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                              dir_fd=directory)
-        os.fchmod(descriptor, 0o400)
-        frozen = os.fstat(descriptor)
-        if (not stat.S_ISREG(frozen.st_mode) or stat.S_IMODE(frozen.st_mode) != 0o400
-                or frozen.st_nlink != 1):
-            raise PublicationError("candidate is not one readonly regular link")
-        prove_no_writable_aliases(descriptor, proc_root)
+        initial, initial_directory = os.fstat(descriptor), os.fstat(directory)
+        if (not stat.S_ISREG(initial.st_mode) or initial.st_nlink != 1
+                or initial.st_uid != runner_uid or not stat.S_ISDIR(initial_directory.st_mode)
+                or initial_directory.st_uid != runner_uid):
+            raise PublicationError("candidate staging ownership differs")
         raw, generation = _read_bounded(descriptor, MAX_CANDIDATE_BYTES)
         _validate(raw, revision, manifest)
-        prove_no_writable_aliases(descriptor, proc_root)
         if _generation(os.fstat(descriptor)) != _generation(generation):
             raise PublicationError("candidate changed after validation")
+        os.fchown(descriptor, frozen_uid, frozen_gid)
+        os.fchmod(descriptor, 0o444)
+        os.fchown(directory, frozen_uid, frozen_gid)
+        os.fchmod(directory, 0o700)
+        frozen, frozen_directory = os.fstat(descriptor), os.fstat(directory)
+        named_directory = os.stat(staging, follow_symlinks=False)
         named = os.stat("candidate.partial", dir_fd=directory, follow_symlinks=False)
-        if _generation(named) != _generation(generation):
-            raise PublicationError("candidate name differs from validated generation")
+        if (frozen.st_uid != frozen_uid or frozen.st_gid != frozen_gid
+                or stat.S_IMODE(frozen.st_mode) != 0o444 or frozen.st_nlink != 1
+                or frozen_directory.st_uid != frozen_uid or frozen_directory.st_gid != frozen_gid
+                or stat.S_IMODE(frozen_directory.st_mode) != 0o700
+                or _generation(named_directory) != _generation(frozen_directory)
+                or _generation(named) != _generation(frozen)):
+            raise PublicationError("candidate did not freeze outside runner ownership")
+        prove_no_writable_aliases(descriptor, runner_uid, proc_root)
+        frozen_raw, generation = _read_bounded(descriptor, MAX_CANDIDATE_BYTES)
+        if frozen_raw != raw:
+            raise PublicationError("candidate changed across ownership freeze")
         try:
             os.stat("candidate.json", dir_fd=directory, follow_symlinks=False)
         except FileNotFoundError:
@@ -234,16 +268,21 @@ def publish(staging, revision, manifest, proc_root=Path("/proc")):
             raise PublicationError("published candidate already exists")
         os.fsync(descriptor)
         os.rename("candidate.partial", "candidate.json", src_dir_fd=directory, dst_dir_fd=directory)
+        os.fchmod(directory, 0o555)
         renamed = os.fstat(descriptor)
         if not _rename_generation(generation, renamed):
             raise PublicationError("candidate generation changed unexpectedly across rename")
+        final_directory = os.fstat(directory)
+        if (stat.S_IMODE(final_directory.st_mode) != 0o555
+                or _generation(os.stat(staging, follow_symlinks=False)) != _generation(final_directory)):
+            raise PublicationError("published staging is not root-owned readonly and traversable")
         os.fsync(directory)
         readback = os.open("candidate.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                            dir_fd=directory)
         readback_raw, readback_generation = _read_bounded(readback, MAX_CANDIDATE_BYTES)
         if readback_raw != raw or _generation(readback_generation) != _generation(renamed):
             raise PublicationError("published candidate readback differs")
-        prove_no_writable_aliases(readback, proc_root)
+        prove_no_writable_aliases(readback, runner_uid, proc_root)
         return hashlib.sha256(raw).hexdigest(), len(raw)
     finally:
         if readback is not None:
@@ -270,8 +309,11 @@ def main():
     staging = _required("CANDIDATE_STAGING")
     if staging != f"/var/tmp/cogs-stage2-native-package-candidate-{run_id}-{attempt}":
         raise PublicationError("staging identity is not run-unique")
+    runner_uid = _required("TRUSTED_RUNNER_UID")
+    if not runner_uid.isdecimal() or int(runner_uid) == 0 or os.geteuid() != 0:
+        raise PublicationError("root publication for a non-root runner is required")
     digest, size = publish(staging, _required("EXPECTED_SOURCE_REVISION"),
-                           _required("EXPECTED_SOURCE_MANIFEST_SHA256"))
+                           _required("EXPECTED_SOURCE_MANIFEST_SHA256"), int(runner_uid))
     print(f"candidate_sha256={digest}")
     print(f"candidate_bytes={size}")
 

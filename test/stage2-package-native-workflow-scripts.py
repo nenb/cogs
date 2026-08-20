@@ -5,8 +5,10 @@ from dataclasses import replace
 import hashlib
 import importlib.util
 import json
+import mmap
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -229,10 +231,13 @@ def publication_tests():
         staging.mkdir()
         proc.mkdir()
         (staging / "candidate.partial").write_bytes(candidate_raw)
-        digest, size = publication.publish(staging, revision, manifest, proc_root=proc)
+        digest, size = publication.publish(
+            staging, revision, manifest, os.geteuid(), proc_root=proc,
+            frozen_uid=os.geteuid(), frozen_gid=os.getegid())
         final = staging / "candidate.json"
         assert digest == hashlib.sha256(candidate_raw).hexdigest() and size == len(candidate_raw)
-        assert final.read_bytes() == candidate_raw and final.stat().st_mode & 0o777 == 0o400
+        assert final.read_bytes() == candidate_raw and final.stat().st_mode & 0o777 == 0o444
+        assert staging.stat().st_mode & 0o777 == 0o555
         assert set(path.name for path in staging.iterdir()) == {"candidate.json"}
 
     # A same-size write between the complete before/after fstats is rejected.
@@ -272,16 +277,74 @@ def publication_tests():
         pid = proc / "51"
         (pid / "fd").mkdir(parents=True)
         (pid / "fdinfo").mkdir()
+        (pid / "maps").write_bytes(b"")
         (pid / "stat").write_text(process_stat(51, 300))
         (pid / "status").write_text(
             f"Name:\tsynthetic\nUid:\t{os.geteuid()}\t{os.geteuid()}\t{os.geteuid()}\t{os.geteuid()}\n")
         (pid / "fd" / "7").symlink_to(candidate_path)
         (pid / "fdinfo" / "7").write_text("flags:\t0100002\n")
         try:
-            rejected(lambda: publication.prove_no_writable_aliases(descriptor, proc),
-                     publication.PublicationError)
+            rejected(lambda: publication.prove_no_writable_aliases(
+                descriptor, os.geteuid(), proc), publication.PublicationError)
         finally:
             os.close(descriptor)
+
+    # A closed-fd MAP_SHARED alias remains writable after chmod and is inventoried.
+    if Path("/proc/self/maps").exists():
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mapped"
+            path.write_bytes(candidate_raw)
+            writer = os.open(path, os.O_RDWR)
+            mapping = mmap.mmap(writer, 0, flags=mmap.MAP_SHARED,
+                                prot=mmap.PROT_READ | mmap.PROT_WRITE)
+            os.close(writer)
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.chmod(path, 0o444)
+                mapping[0:1] = b"Z"
+                mapping.flush()
+                rejected(lambda: publication.prove_no_writable_aliases(
+                    descriptor, os.geteuid()), publication.PublicationError)
+                assert os.pread(descriptor, 1, 0) == b"Z"
+            finally:
+                mapping.close()
+                os.close(descriptor)
+
+
+def frozen_owner_chmod_reopen_test():
+    # Run the real hostile runner-UID permission test when passwordless sudo is available.
+    if os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if (sudo is None or subprocess.run([sudo, "-n", "true"], stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL).returncode != 0):
+            return
+        result = subprocess.run([sudo, "-n", sys.executable, "-B", str(Path(__file__).resolve()),
+                                 "--frozen-owner-case"])
+        assert result.returncode == 0
+        return
+    revision, manifest, runner_uid = "1" * 40, "2" * 64, 65534
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        root.chmod(0o755)
+        staging, proc = root / "staging", root / "proc"
+        staging.mkdir(mode=0o700)
+        proc.mkdir()
+        path = staging / "candidate.partial"
+        path.write_bytes(candidate(revision, manifest))
+        os.chown(staging, runner_uid, runner_uid)
+        os.chown(path, runner_uid, runner_uid)
+        publication.publish(staging, revision, manifest, runner_uid, proc_root=proc)
+        final = staging / "candidate.json"
+        attack = """import os,sys
+p=sys.argv[1]
+assert open(p,'rb').read()
+for action in (lambda:os.chmod(p,0o600),lambda:os.open(p,os.O_WRONLY),lambda:os.rename(p,p+'.swap')):
+ try: action(); raise SystemExit(3)
+ except PermissionError: pass
+"""
+        result = subprocess.run([sys.executable, "-c", attack, str(final)],
+                                preexec_fn=lambda: (os.setgid(runner_uid), os.setuid(runner_uid)))
+        assert result.returncode == 0
 
 
 def uploaded_member_substitution_test():
@@ -312,6 +375,43 @@ def uploaded_member_substitution_test():
                 for member in path.iterdir():
                     member.unlink()
                 path.rmdir()
+
+
+def receipt_readback_substitution_test():
+    revision, manifest = "1" * 40, "2" * 64
+    candidate_raw = candidate(revision, manifest)
+    run_id = str(90_000_000 + os.getpid())
+    expected = replace(context(candidate_raw, revision, manifest), run_id=int(run_id),
+                       candidate_name=f"stage2-native-package-candidate-{revision}-{run_id}-1",
+                       receipt_name=f"stage2-native-package-candidate-receipt-{revision}-{run_id}-1")
+    staging = Path(f"/var/tmp/cogs-stage2-native-package-candidate-{run_id}-1")
+    candidate_readback = Path(f"/var/tmp/cogs-stage2-native-package-upload-{run_id}-1")
+    receipt_readback = Path(f"/var/tmp/cogs-stage2-native-package-receipt-upload-{run_id}-1")
+    for path in (staging, candidate_readback, receipt_readback):
+        path.mkdir(mode=0o700)
+    try:
+        (staging / "candidate.json").write_bytes(candidate_raw)
+        (candidate_readback / "candidate.json").write_bytes(candidate_raw)
+        local = receipt.encode(expected, candidate_raw)
+        (staging / "receipt.json").write_bytes(local)
+        downloaded = receipt_readback / "receipt.json"
+        downloaded.write_bytes(local)
+        environ = {"CANDIDATE_STAGING": str(staging),
+                   "UPLOAD_READBACK_STAGING": str(candidate_readback),
+                   "RECEIPT_READBACK_STAGING": str(receipt_readback)}
+        receipt.validate_receipt_readback(expected, environ, frozen=False)
+        downloaded.write_bytes(receipt.encode(replace(expected, artifact_id=92), candidate_raw))
+        rejected(lambda: receipt.validate_receipt_readback(expected, environ, frozen=False),
+                 receipt.ReceiptError)
+        downloaded.write_bytes(local)
+        (receipt_readback / "substitute.json").write_bytes(local)
+        rejected(lambda: receipt.validate_receipt_readback(expected, environ, frozen=False),
+                 receipt.ReceiptError)
+    finally:
+        for path in (receipt_readback, candidate_readback, staging):
+            for member in path.iterdir():
+                member.unlink()
+            path.rmdir()
 
 
 def receipt_tests():
@@ -356,10 +456,15 @@ def receipt_tests():
                  receipt.ReceiptError)
 
 
-live_process_tests()
-scanner_race_and_mount_tests()
-unmount_tests()
-publication_tests()
-uploaded_member_substitution_test()
-receipt_tests()
-print("stage2 native workflow script tests passed")
+if sys.argv[1:] == ["--frozen-owner-case"]:
+    frozen_owner_chmod_reopen_test()
+else:
+    live_process_tests()
+    scanner_race_and_mount_tests()
+    unmount_tests()
+    publication_tests()
+    frozen_owner_chmod_reopen_test()
+    uploaded_member_substitution_test()
+    receipt_readback_substitution_test()
+    receipt_tests()
+    print("stage2 native workflow script tests passed")

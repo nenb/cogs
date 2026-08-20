@@ -104,13 +104,15 @@ def _generation(value):
             value.st_mtime_ns, value.st_ctime_ns)
 
 
-def _read_regular(path, maximum, after_read=None):
+def _read_regular(path, maximum, after_read=None, frozen=False):
     path = Path(path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ReceiptError("input is not one regular link")
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or frozen and (before.st_uid != 0 or before.st_gid != 0
+                               or stat.S_IMODE(before.st_mode) != 0o444)):
+            raise ReceiptError("input is not one frozen regular link")
         raw = os.read(descriptor, maximum + 1)
         if after_read is not None:
             after_read()
@@ -180,11 +182,15 @@ def validate(raw, expected, candidate_raw):
     return observed
 
 
-def _paths(expected, environ=os.environ):
+def _paths(expected, environ=os.environ, frozen=False):
     staging = Path(_required(environ, "CANDIDATE_STAGING"))
     required = Path(f"/var/tmp/cogs-stage2-native-package-candidate-{expected.run_id}-{expected.run_attempt}")
     if staging != required:
         raise ReceiptError("staging identity is not run-unique")
+    observed = staging.stat()
+    if (frozen and (observed.st_uid != 0 or observed.st_gid != 0
+                    or stat.S_IMODE(observed.st_mode) != 0o555)):
+        raise ReceiptError("staging is not root-owned and non-writable")
     return staging, staging / "candidate.json", staging / "receipt.json"
 
 
@@ -202,10 +208,10 @@ def _readback_path(expected, environ=os.environ):
     return staging / "candidate.json"
 
 
-def validate_readback(expected, environ=os.environ):
-    _staging, local_path, _receipt_path = _paths(expected, environ)
+def validate_readback(expected, environ=os.environ, frozen=False):
+    _staging, local_path, _receipt_path = _paths(expected, environ, frozen)
     uploaded_path = _readback_path(expected, environ)
-    local_raw = _read_regular(local_path, MAX_CANDIDATE_BYTES)
+    local_raw = _read_regular(local_path, MAX_CANDIDATE_BYTES, frozen=frozen)
     uploaded_raw = _read_regular(uploaded_path, MAX_CANDIDATE_BYTES)
     candidate_value(local_raw, expected)
     candidate_value(uploaded_raw, expected)
@@ -215,42 +221,82 @@ def validate_readback(expected, environ=os.environ):
 
 
 def _write_atomic(staging, final, raw):
-    partial = staging / "receipt.partial"
-    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
     try:
+        if set(os.listdir(directory)) != {"candidate.json"}:
+            raise ReceiptError("frozen staging inventory differs before receipt")
+        descriptor = os.open("receipt.partial", os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
         view = memoryview(raw)
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
                 raise ReceiptError("receipt write did not progress")
             view = view[written:]
+        os.fchown(descriptor, 0, 0)
+        os.fchmod(descriptor, 0o444)
         os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.replace(partial, final)
-    directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
-    try:
+        frozen = os.fstat(descriptor)
+        if (frozen.st_uid != 0 or frozen.st_gid != 0 or frozen.st_nlink != 1
+                or stat.S_IMODE(frozen.st_mode) != 0o444):
+            raise ReceiptError("receipt did not freeze outside runner ownership")
+        os.rename("receipt.partial", final.name, src_dir_fd=directory, dst_dir_fd=directory)
         os.fsync(directory)
     finally:
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(directory)
 
 
+def _receipt_readback(expected, environ=os.environ):
+    staging = Path(_required(environ, "RECEIPT_READBACK_STAGING"))
+    required = Path(f"/var/tmp/cogs-stage2-native-package-receipt-upload-{expected.run_id}-{expected.run_attempt}")
+    if staging != required or os.listdir(staging) != ["receipt.json"]:
+        raise ReceiptError("receipt readback does not contain the sole receipt")
+    return staging / "receipt.json"
+
+
+def validate_receipt_readback(expected, environ=os.environ, frozen=True):
+    candidate_raw = validate_readback(expected, environ, frozen=frozen)
+    _staging, _candidate, local = _paths(expected, environ, frozen=frozen)
+    local_raw = _read_regular(local, MAX_RECEIPT_BYTES, frozen=frozen)
+    uploaded_raw = _read_regular(_receipt_readback(expected, environ), MAX_RECEIPT_BYTES)
+    validate(local_raw, expected, candidate_raw)
+    validate(uploaded_raw, expected, candidate_raw)
+    if uploaded_raw != local_raw:
+        raise ReceiptError("uploaded receipt member differs from frozen receipt")
+
+
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in {"readback", "create", "validate"}:
-        raise ReceiptError("usage: stage2-native-upload-receipt.py readback|create|validate")
+    commands = {"readback", "create", "validate", "receipt-readback"}
+    if len(sys.argv) != 2 or sys.argv[1] not in commands:
+        raise ReceiptError("invalid receipt codec command")
     expected = context()
-    if sys.argv[1] == "readback":
-        validate_readback(expected)
+    command = sys.argv[1]
+    if command == "readback":
+        validate_readback(expected, frozen=True)
+        return
+    if command == "receipt-readback":
+        _positive(_required(os.environ, "RECEIPT_ARTIFACT_ID"), "receipt artifact id")
+        if SHA256.fullmatch(_required(os.environ, "RECEIPT_ARTIFACT_DIGEST")) is None:
+            raise ReceiptError("receipt artifact digest is invalid")
+        if _required(os.environ, "RECEIPT_UPLOAD_OUTCOME") != "success":
+            raise ReceiptError("receipt upload success is required")
+        validate_receipt_readback(expected)
         return
     if _required(os.environ, "UPLOAD_READBACK_OUTCOME") != "success":
         raise ReceiptError("upload readback success is required")
-    staging, _candidate_path, receipt_path = _paths(expected)
-    candidate_raw = validate_readback(expected)
-    if sys.argv[1] == "create":
+    runner_uid = _positive(_required(os.environ, "TRUSTED_RUNNER_UID"), "runner uid")
+    if runner_uid == 0 or os.geteuid() != 0:
+        raise ReceiptError("root receipt publication for a non-root runner is required")
+    staging, _candidate_path, receipt_path = _paths(expected, frozen=True)
+    candidate_raw = validate_readback(expected, frozen=True)
+    if command == "create":
         if receipt_path.exists():
             raise ReceiptError("receipt already exists")
         _write_atomic(staging, receipt_path, encode(expected, candidate_raw))
-    validate(_read_regular(receipt_path, MAX_RECEIPT_BYTES), expected, candidate_raw)
+    validate(_read_regular(receipt_path, MAX_RECEIPT_BYTES, frozen=True), expected, candidate_raw)
 
 
 if __name__ == "__main__":

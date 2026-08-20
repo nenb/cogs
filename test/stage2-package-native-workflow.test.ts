@@ -54,20 +54,23 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
     "Validate the sole uploaded candidate member against frozen source-bound bytes",
     "Check post-upload readback identity and write a non-authoritative binding receipt",
     "Upload the separate non-authoritative receipt for this run",
+    "Download the exact uploaded receipt artifact into run-unique readback staging",
+    "Validate the sole receipt readback against candidate source and artifact identity",
     "Remove this run's local staging bytes",
     "Enforce this run's attempt, cleanup, validation, uploads, and zero residue",
   ];
   const jobMinutes = Number(workflow.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
   const boundedMinutes = names.reduce((total, name) => total + stepTimeout(name), 0);
   assert.equal(jobMinutes, 90);
-  assert.equal(boundedMinutes, 86);
-  assert.equal(jobMinutes * 60 - boundedMinutes * 60, 240);
+  assert.equal(boundedMinutes, 87);
+  assert.equal(jobMinutes * 60 - boundedMinutes * 60, 180);
   assert.ok(300 + 10 <= stepTimeout(names[2]) * 60);
   assert.ok(300 + 5 <= stepTimeout(names[3]) * 60);
   assert.ok(3000 + 10 <= stepTimeout(names[4]) * 60);
   assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= stepTimeout(names[5]) * 60);
   assert.ok(45 + 5 <= stepTimeout(names[9]) * 60);
-  assert.ok(2 * (30 + 5) <= stepTimeout(names[10]) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[10]) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[13]) * 60);
 });
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
@@ -168,7 +171,11 @@ test("partial validation and fsync precede atomic candidate publication", () => 
     /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u,
   );
   assert.match(publication, /os\.O_NOFOLLOW/u);
-  assert.match(publication, /os\.fchmod\(descriptor, 0o400\)/u);
+  assert.match(workflow.slice(validate, upload), /sudo -n[\s\S]*stage2-native-publication\.py" publish/u);
+  assert.match(publication, /os\.fchown\(descriptor, frozen_uid, frozen_gid\)/u);
+  assert.match(publication, /os\.fchmod\(descriptor, 0o444\)/u);
+  assert.match(publication, /os\.fchmod\(directory, 0o555\)/u);
+  assert.match(publication, /writable shared mapping/u);
   assert.match(publication, /_generation\(after\) != _generation\(before\)/u);
   assert.match(publication, /prove_no_writable_aliases/u);
   assert.match(publication, /validate_native_candidate_result\(value, revision, manifest\)/u);
@@ -197,7 +204,10 @@ test("run-unique uploads use the bounded canonical receipt codec with exact sour
   assert.match(workflow, /digest-mismatch: error/u);
   assert.match(workflow, /stage2-native-upload-receipt\.py" readback/u);
   assert.match(workflow, /UPLOAD_READBACK_OUTCOME: \$\{\{ steps\.validate_upload_readback\.outcome \}\}/u);
-  assert.match(workflow, /stage2-native-upload-receipt\.py" create[\s\S]*stage2-native-upload-receipt\.py" validate/u);
+  assert.match(workflow, /sudo -n[\s\S]*stage2-native-upload-receipt\.py" create/u);
+  assert.match(workflow, /artifact-ids: \$\{\{ steps\.receipt_upload\.outputs\.artifact-id \}\}/u);
+  assert.match(workflow, /RECEIPT_ARTIFACT_DIGEST: \$\{\{ steps\.receipt_upload\.outputs\.artifact-digest \}\}/u);
+  assert.match(workflow, /stage2-native-upload-receipt\.py" receipt-readback/u);
   assert.match(receipt, /MAX_RECEIPT_BYTES = 4096/u);
   assert.match(receipt, /os\.O_NOFOLLOW/u);
   assert.match(receipt, /uploaded candidate member differs from published candidate/u);
@@ -206,6 +216,9 @@ test("run-unique uploads use the bounded canonical receipt codec with exact sour
   assert.match(receipt, /validate_native_candidate_result\(value, expected\.revision, expected\.manifest\)/u);
   assert.match(receipt, /duplicate JSON key/u);
   assert.match(receipt, /receipt is not canonical/u);
+  assert.match(receipt, /uploaded receipt member differs from frozen receipt/u);
+  assert.match(receipt, /staging is not root-owned and non-writable/u);
+  assert.match(workflow, /sudo -n[\s\S]*\/bin\/rm -rf -- "\$CANDIDATE_STAGING"/u);
   assert.match(receipt, /each-dispatch-is-a-distinct-observation-and-must-not-be-merged/u);
   assert.doesNotMatch(workflow, /git (commit|push)|stage2-completion-runtime-v1\.json/u);
 });
