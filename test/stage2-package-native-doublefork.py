@@ -8,6 +8,7 @@ from pathlib import Path
 import array
 import shutil
 import signal
+import select
 import socket
 import sys
 import tempfile
@@ -23,6 +24,34 @@ spec.loader.exec_module(module)
 def check(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def _fd_baseline():
+    return frozenset(os.listdir("/proc/self/fd"))
+
+
+def _direct_child_pids():
+    children = set()
+    for name in os.listdir("/proc"):
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            rows = Path(f"/proc/{name}/status").read_bytes().splitlines()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        parent = [row for row in rows if row.startswith(b"PPid:\t")]
+        if len(parent) == 1 and int(parent[0].split()[1]) == os.getpid():
+            children.add(int(name))
+    return frozenset(children)
+
+
+def _native_baseline():
+    return _fd_baseline(), _direct_child_pids(), module._subreaper_state()
+
+
+def _check_native_baseline(baseline, label):
+    observed = _native_baseline()
+    check(observed == baseline, f"{label} changed fd/child/subreaper baseline: {baseline!r} -> {observed!r}")
 
 
 def portable_tests():
@@ -164,6 +193,10 @@ def portable_tests():
         _supervisor_protocol_tests()
 
 
+def _success_frame(payload):
+    return len(payload + b"S").to_bytes(4, "big") + b"S" + payload
+
+
 def _supervisor_protocol_row(raw, *, report=False):
     parent_control, child_control = socket.socketpair(
         socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
@@ -188,9 +221,17 @@ def _supervisor_protocol_row(raw, *, report=False):
 
 def _supervisor_protocol_tests():
     payload = b'{}'
-    frame = len(payload + b"S").to_bytes(4, "big") + b"S" + payload
+    frame = _success_frame(payload)
     result, error, cleanup, settled = _supervisor_protocol_row(frame)
     check((result, error, cleanup, settled) == (payload, None, [], True), "exact frame supervision failed")
+    maximum = b"m" * module.MAX_RESULT_BYTES
+    result, error, cleanup, settled = _supervisor_protocol_row(_success_frame(maximum))
+    check(result == maximum and error is None and cleanup == [] and settled,
+          "exact maximum streamed success was rejected")
+    result, error, cleanup, settled = _supervisor_protocol_row(
+        _success_frame(b"m" * (module.MAX_RESULT_BYTES + 1)))
+    check(result is None and isinstance(error, module.NativeCandidateError) and cleanup == [] and settled,
+          "one-byte-over-success streamed frame was not rejected and settled")
     result, error, cleanup, settled = _supervisor_protocol_row(
         b"x" * (module.MAX_PROTOCOL_BYTES + 5))
     check(result is None and isinstance(error, module.NativeCandidateError) and cleanup == [] and settled,
@@ -213,11 +254,122 @@ def _supervisor_protocol_tests():
     check(isinstance(error, OSError) and not isinstance(error, module.ChildCandidateError) and settled,
           f"child E frame replaced poll fault or ownership was abandoned: {error!r}; {cleanup!r}")
 
+    _withheld_result_eof_test()
+    _waitid_fault_tests()
     _helper_signal_retry_test()
+
+
+def _withheld_result_eof_test():
+    """A complete writer that withholds EOF is killed only after the work deadline."""
+    baseline_fds, baseline_children = _fd_baseline(), _direct_child_pids()
+    parent_control, child_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    result_read, result_write = os.pipe2(os.O_CLOEXEC)
+    child = os.fork()
+    if child == 0:
+        parent_control.close(); os.close(result_read)
+        module._write_all(result_write, _success_frame(b'{"withheld":true}'))
+        while True:
+            signal.pause()
+    child_control.close(); os.close(result_write)
+    helper_pidfd = os.pidfd_open(child, 0)
+    oracle_pidfd = os.dup(helper_pidfd)
+    work_deadline = module.time.monotonic_ns() + module.NS // 2
+    try:
+        result, error, cleanup, settled = module._supervise_candidate(
+            helper_pidfd, -1, parent_control.detach(), result_read,
+            work_deadline, work_deadline + 2 * module.NS, initial_no_pid1=True, helper_pid=child)
+        check(module.time.monotonic_ns() >= work_deadline, "withheld EOF did not reach the work deadline")
+        check(result == b'{"withheld":true}' and isinstance(error, module.NativeCandidateError),
+              f"withheld EOF lost its complete frame/deadline error: {result!r}; {error!r}")
+        check(cleanup == [] and settled, f"withheld EOF did not settle: {cleanup!r}")
+        poller = select.poll()
+        poller.register(oracle_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        check(bool(poller.poll(0)) and not Path(f"/proc/{child}").exists(),
+              "independent oracle still sees withheld writer")
+        try:
+            os.waitid(os.P_PIDFD, oracle_pidfd, os.WEXITED | os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("withheld writer was not exactly reaped by supervisor")
+    finally:
+        try:
+            module._libc_call("kill", ctypes.c_int(child), ctypes.c_int(signal.SIGKILL))
+        except OSError:
+            pass
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass
+        os.close(oracle_pidfd)
+    check(_fd_baseline() == baseline_fds and _direct_child_pids() == baseline_children,
+          "withheld EOF case changed fd/child baseline")
+
+
+def _waitid_fault_tests():
+    for permanent in (False, True):
+        baseline_fds, baseline_children = _fd_baseline(), _direct_child_pids()
+        parent_control, child_control = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        result_read, result_write = os.pipe2(os.O_CLOEXEC)
+        child = os.fork()
+        if child == 0:
+            parent_control.close(); os.close(result_read)
+            module._write_all(result_write, _success_frame(b'{}'))
+            os.close(result_write); child_control.close()
+            os._exit(0)
+        child_control.close(); os.close(result_write)
+        helper_pidfd = os.pidfd_open(child, 0)
+        oracle_pidfd = os.dup(helper_pidfd)
+        original_waitid = module.os.waitid
+        failures = []
+        def faulty_waitid(idtype, identifier, options):
+            if idtype == os.P_PIDFD and identifier == helper_pidfd and (permanent or not failures):
+                failures.append(identifier)
+                raise OSError(5, "injected helper waitid fault")
+            return original_waitid(idtype, identifier, options)
+        module.os.waitid = faulty_waitid
+        try:
+            deadline = module.time.monotonic_ns() + module.NS
+            result, error, cleanup, settled = module._supervise_candidate(
+                helper_pidfd, -1, parent_control.detach(), result_read,
+                deadline - module.NS // 2, deadline, initial_no_pid1=True, helper_pid=child)
+        finally:
+            module.os.waitid = original_waitid
+        try:
+            check(failures, "helper waitid fault was not reached")
+            if permanent:
+                check(not settled and any(stage == "helper-reap-timeout" for stage, _error in cleanup),
+                      f"final helper waitid fault did not retain uncertainty: {cleanup!r}")
+                info = original_waitid(os.P_PIDFD, oracle_pidfd, os.WEXITED)
+                check(info is not None, "oracle could not exactly reap final-waitid helper")
+            else:
+                check(settled and isinstance(error, OSError),
+                      f"transient helper waitid fault did not settle/stay primary: {error!r}; {cleanup!r}")
+                try:
+                    original_waitid(os.P_PIDFD, oracle_pidfd, os.WEXITED | os.WNOHANG)
+                except ChildProcessError:
+                    pass
+                else:
+                    raise AssertionError("transient-waitid helper was not exactly reaped by supervisor")
+        finally:
+            try:
+                module._libc_call("kill", ctypes.c_int(child), ctypes.c_int(signal.SIGKILL))
+            except OSError:
+                pass
+            try:
+                os.waitpid(child, 0)
+            except ChildProcessError:
+                pass
+            os.close(oracle_pidfd)
+        check(_fd_baseline() == baseline_fds and _direct_child_pids() == baseline_children,
+              f"helper waitid case permanent={permanent} changed fd/child baseline")
 
 
 def _helper_signal_retry_test():
     """The reserve retries helper SIGKILL and reaps after the successful retry."""
+    baseline_fds, baseline_children = _fd_baseline(), _direct_child_pids()
     parent_control, child_control = socket.socketpair(
         socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
     result_read, result_write = os.pipe2(os.O_CLOEXEC)
@@ -228,6 +380,7 @@ def _helper_signal_retry_test():
             signal.pause()
     child_control.close(); os.close(result_write)
     helper_pidfd = os.pidfd_open(child, 0)
+    oracle_pidfd = os.dup(helper_pidfd)
     original_signal = module.signal.pidfd_send_signal
     attempts = []
     primary = OSError(5, "supervisor work fault")
@@ -243,30 +396,34 @@ def _helper_signal_retry_test():
         result, error, cleanup, settled = module._supervise_candidate(
             helper_pidfd, -1, parent_control.detach(), result_read,
             deadline - module.NS, deadline, primary, True, child)
+        check(result is None and error is primary and settled,
+              f"helper signal retry did not preserve work and settlement: {error!r}; {cleanup!r}")
+        check(len(attempts) >= 2, "helper SIGKILL was not retried during the reap reserve")
+        check(any(stage == "helper-final-signal" for stage, _error in cleanup),
+              "first helper signal failure was not retained")
+        poller = select.poll()
+        poller.register(oracle_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        check(bool(poller.poll(0)) and not Path(f"/proc/{child}").exists(),
+              "independent oracle still sees helper after supervisor return")
+        try:
+            os.waitid(os.P_PIDFD, oracle_pidfd, os.WEXITED | os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("helper was not exactly reaped by supervisor")
     finally:
         module.signal.pidfd_send_signal = original_signal
         try:
-            original_signal(helper_pidfd, signal.SIGKILL)
+            module._libc_call("kill", ctypes.c_int(child), ctypes.c_int(signal.SIGKILL))
         except OSError:
-            try:
-                module._libc_call("kill", ctypes.c_int(child), ctypes.c_int(signal.SIGKILL))
-            except OSError:
-                pass
+            pass
         try:
             os.waitpid(child, 0)
         except ChildProcessError:
             pass
-    check(result is None and error is primary and settled,
-          f"helper signal retry did not preserve work and settlement: {error!r}; {cleanup!r}")
-    check(len(attempts) >= 2, "helper SIGKILL was not retried during the reap reserve")
-    check(any(stage == "helper-final-signal" for stage, _error in cleanup),
-          "first helper signal failure was not retained")
-    try:
-        os.waitpid(child, os.WNOHANG)
-    except ChildProcessError:
-        pass
-    else:
-        raise AssertionError("helper was not exactly reaped before supervisor return")
+        os.close(oracle_pidfd)
+    check(_fd_baseline() == baseline_fds and _direct_child_pids() == baseline_children,
+          "helper signal retry changed fd/child baseline")
 
 
 class _ProbeError(Exception):
@@ -393,19 +550,336 @@ def _parent_death_gate_test(tree):
         _set_subreaper(bool(previous))
 
 
+def _pre_pdeath_gate_test(tree, cut):
+    """Drive parent death before helper/PID1 has armed and read back PDEATHSIG."""
+    parent_control, creator_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    previous = _set_subreaper(True)
+    creator = os.fork()
+    if creator == 0:
+        parent_control.close()
+        control_fd = creator_control.detach()
+        original_pdeath = module._set_parent_death_signal
+        original_close_except = module._close_except
+        original_snapshot = module._fd_snapshot
+        calls = [0]
+        helper_identity = [-1]
+        module._close_except = lambda allowed: original_close_except([*allowed, control_fd])
+        module._fd_snapshot = lambda audit: original_snapshot(audit) - {control_fd}
+        def pause_before_arm():
+            calls[0] += 1
+            if calls[0] == 1:
+                helper_identity[0] = os.getpid()
+            selected = (cut == "helper" and calls[0] == 1) or (cut == "pid1" and calls[0] == 2)
+            if selected:
+                if cut == "helper":
+                    payload = f"HELPER:{helper_identity[0]}".encode("ascii")
+                else:
+                    status = Path("/proc/self/status").read_bytes().splitlines()
+                    nspid = [row for row in status if row.startswith(b"NSpid:\t")]
+                    host_pid = int(nspid[0].split()[1])
+                    payload = f"PID1:{helper_identity[0]}:{host_pid}".encode("ascii")
+                module._control_send(control_fd, payload)
+                gate = socket.socket(fileno=control_fd)
+                try:
+                    check(gate.recv(16) == b"ARM", "pre-PDEATH gate malformed")
+                finally:
+                    gate.detach()
+            original_pdeath()
+        module._set_parent_death_signal = pause_before_arm
+        try:
+            deadline = module.time.monotonic_ns() + 12 * module.NS
+            outcome = module._run_candidate_child(
+                tree, {}, {}, _ProbePackage, deadline, deadline + 3 * module.NS)
+            module._control_send(
+                control_fd,
+                f"OUTCOME:{int(outcome[3])}:{len(outcome[2])}:{int(outcome[1] is not None)}".encode("ascii"),
+            )
+        except BaseException as error:
+            try:
+                module._control_send(control_fd, f"RAISED:{type(error).__name__}".encode("ascii"))
+            except BaseException:
+                pass
+        os._exit(0)
+
+    creator_control.close()
+    os.close(tree)
+    control = parent_control
+    control.settimeout(10)
+    creator_pidfd = os.pidfd_open(creator, 0)
+    target_pidfds = []
+    try:
+        packet = control.recv(128)
+        if cut == "helper":
+            prefix, helper_raw = packet.split(b":")
+            check(prefix == b"HELPER", f"wrong helper pre-arm packet: {packet!r}")
+            helper = int(helper_raw)
+            helper_pidfd = os.pidfd_open(helper, 0)
+            target_pidfds.append(helper_pidfd)
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+            creator_info = module._wait_pidfd_reap(
+                creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            check((creator_info.si_code, creator_info.si_status) == (os.CLD_KILLED, signal.SIGKILL),
+                  f"outer pre-arm oracle got wrong creator status: {creator_info}")
+            control.send(b"ARM")
+            helper_info = module._wait_pidfd_reap(
+                helper_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            check(helper_info.si_code == os.CLD_EXITED,
+                  f"helper did not exit after arming against dead outer: {helper_info}")
+            check(not Path(f"/proc/{helper}").exists(), "helper pre-arm identity remains")
+        else:
+            prefix, helper_raw, pid1_raw = packet.split(b":")
+            check(prefix == b"PID1", f"wrong PID1 pre-arm packet: {packet!r}")
+            helper, pid1 = int(helper_raw), int(pid1_raw)
+            helper_pidfd, pid1_pidfd = os.pidfd_open(helper, 0), os.pidfd_open(pid1, 0)
+            target_pidfds.extend((helper_pidfd, pid1_pidfd))
+            signal.pidfd_send_signal(helper_pidfd, signal.SIGKILL)
+            control.send(b"ARM")
+            outcome = control.recv(128)
+            check(outcome.startswith(b"OUTCOME:1:"), f"PID1 pre-arm cut did not settle: {outcome!r}")
+            creator_info = module._wait_pidfd_reap(
+                creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            check(creator_info.si_code == os.CLD_EXITED and creator_info.si_status == 0,
+                  f"PID1 pre-arm creator failed: {creator_info}")
+            for name, pidfd, pid in (("helper", helper_pidfd, helper), ("PID1", pid1_pidfd, pid1)):
+                poller = select.poll()
+                poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+                check(bool(poller.poll(0)) and not Path(f"/proc/{pid}").exists(),
+                      f"{name} pre-arm identity remains")
+    finally:
+        for pidfd in target_pidfds:
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+        except OSError:
+            pass
+        for pidfd in target_pidfds:
+            try:
+                module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + module.NS)
+            except BaseException:
+                pass
+        try:
+            module._wait_pidfd_reap(creator_pidfd, module.time.monotonic_ns() + module.NS)
+        except BaseException:
+            pass
+        for pidfd in target_pidfds:
+            os.close(pidfd)
+        os.close(creator_pidfd)
+        control.close()
+        _set_subreaper(bool(previous))
+
+
 def _native_case(descriptor, *, helper_exit=None, fail_helper_pidfd=False,
                  fail_pidfd=False, package=_ProbePackage):
+    baseline = _native_baseline()
     module._NATIVE_TEST_HELPER_EXIT_STAGE = helper_exit
     module._NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = fail_helper_pidfd
     module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = fail_pidfd
     try:
         tree = module._open_detached_tree(descriptor)
         deadline = module.time.monotonic_ns() + 10 * module.NS
-        return module._run_candidate_child(tree, {}, {}, package, deadline, deadline + 5 * module.NS)
+        outcome = module._run_candidate_child(tree, {}, {}, package, deadline, deadline + 5 * module.NS)
     finally:
         module._NATIVE_TEST_HELPER_EXIT_STAGE = None
         module._NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = False
         module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = False
+    _check_native_baseline(baseline, f"native case helper-exit={helper_exit}")
+    return outcome
+
+
+def _adopted_waitid_fault_case(descriptor, permanent):
+    baseline = _native_baseline()
+    outer_pid = os.getpid()
+    original_waitid = module.os.waitid
+    original_hook = module._NATIVE_TEST_BEFORE_PID1_GO
+    target_pid = [-1]
+    target_fds = set()
+    helper_fds = set()
+    oracle = [-1]
+    failures = []
+    def capture_pid1(helper, pid1, _gate):
+        target_pid[0] = pid1
+        for name in os.listdir("/proc/self/fd"):
+            if name.isdigit():
+                try:
+                    process = module._pidfd_process(int(name))
+                    if process == pid1:
+                        target_fds.add(int(name))
+                    elif process == helper:
+                        helper_fds.add(int(name))
+                except BaseException:
+                    pass
+        oracle[0] = os.pidfd_open(pid1, 0)
+    def faulty_waitid(idtype, identifier, options):
+        if os.getpid() == outer_pid and idtype == os.P_PIDFD:
+            if permanent and target_pid[0] > 0 and identifier not in helper_fds and identifier != oracle[0]:
+                target_fds.add(identifier)
+            if identifier not in target_fds and target_pid[0] > 0:
+                try:
+                    if module._pidfd_process(identifier) == target_pid[0]:
+                        target_fds.add(identifier)
+                except BaseException:
+                    pass
+            if identifier in target_fds and (permanent or not failures):
+                failures.append(identifier)
+                raise OSError(5, "injected adopted PID1 waitid fault")
+        return original_waitid(idtype, identifier, options)
+    module._NATIVE_TEST_BEFORE_PID1_GO = capture_pid1
+    module.os.waitid = faulty_waitid
+    try:
+        tree = module._open_detached_tree(descriptor)
+        deadline = module.time.monotonic_ns() + 5 * module.NS
+        result, error, cleanup, settled = module._run_candidate_child(
+            tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
+    finally:
+        module.os.waitid = original_waitid
+        module._NATIVE_TEST_BEFORE_PID1_GO = original_hook
+    try:
+        check(target_pid[0] > 0 and oracle[0] >= 0 and failures,
+              "adopted PID1 waitid fault was not reached")
+        if permanent:
+            check(settled and any(stage == "adopted-pid1-reap" for stage, _error in cleanup),
+                  f"final adopted waitid fault lost its diagnostic/settlement proof: {error!r}; {cleanup!r}")
+            try:
+                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED | os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                raise AssertionError("final-waitid adopted PID1 was not independently proved reaped")
+        else:
+            check(settled and error is None
+                  and any(stage == "adopted-pid1-reap" for stage, _error in cleanup),
+                  f"transient adopted waitid fault did not settle/stay diagnostic: {error!r}; {cleanup!r}")
+            try:
+                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED | os.WNOHANG)
+            except ChildProcessError:
+                pass
+            else:
+                raise AssertionError("transient adopted PID1 was not exactly reaped by supervisor")
+    finally:
+        if oracle[0] >= 0:
+            try:
+                signal.pidfd_send_signal(oracle[0], signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED)
+            except BaseException:
+                pass
+            os.close(oracle[0])
+    _check_native_baseline(baseline, f"adopted waitid permanent={permanent}")
+
+
+def _subreaper_fault_cases(descriptor):
+    for cut in ("set", "readback", "restore"):
+        baseline = _native_baseline()
+        original_libc = module._libc_call
+        original_set = module._set_subreaper
+        gets = [0]
+        def faulty_libc(name, *arguments):
+            operation = arguments[0].value if name == "prctl" and arguments else -1
+            if operation == module.PR_GET_CHILD_SUBREAPER:
+                gets[0] += 1
+                if cut == "readback" and gets[0] == 3:
+                    raise OSError(5, "injected subreaper readback fault")
+            if cut == "set" and operation == module.PR_SET_CHILD_SUBREAPER:
+                cut_seen = getattr(faulty_libc, "cut_seen", False)
+                if not cut_seen:
+                    faulty_libc.cut_seen = True
+                    raise OSError(5, "injected subreaper set fault")
+            return original_libc(name, *arguments)
+        set_calls = [0]
+        def faulty_set(enabled):
+            set_calls[0] += 1
+            result = original_set(enabled)
+            if cut == "restore" and set_calls[0] == 2:
+                raise OSError(5, "injected subreaper restore uncertainty")
+            return result
+        if cut == "restore":
+            module._set_subreaper = faulty_set
+        else:
+            module._libc_call = faulty_libc
+        try:
+            tree = module._open_detached_tree(descriptor)
+            deadline = module.time.monotonic_ns() + 5 * module.NS
+            result, error, cleanup, settled = module._run_candidate_child(
+                tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
+        finally:
+            module._libc_call = original_libc
+            module._set_subreaper = original_set
+        if cut == "restore":
+            check(result == b'{"native":true}' and not settled
+                  and any(stage == "subreaper-restore" for stage, _error in cleanup),
+                  f"restore uncertainty did not suppress safe settlement: {error!r}; {cleanup!r}")
+        else:
+            check(result is None and isinstance(error, OSError) and settled,
+                  f"pre-fork subreaper {cut} fault was not no-child settled: {error!r}; {cleanup!r}")
+        _check_native_baseline(baseline, f"subreaper {cut}")
+
+
+def _parent_close_uncertainty_cases(descriptor):
+    for close_index, expected_stage in ((1, "control_helper-close"), (6, "parent-tree-close"),
+                                        (7, "parent-device-null-close")):
+        baseline = _native_baseline()
+        outer_pid = os.getpid()
+        original_fork = module.os.fork
+        original_close = module._close_and_prove
+        parent_forked = [False]
+        parent_closes = [0]
+        injected = [False]
+        def tracked_fork():
+            pid = original_fork()
+            if pid > 0 and os.getpid() == outer_pid:
+                parent_forked[0] = True
+            return pid
+        def uncertain_close(fd):
+            if os.getpid() == outer_pid and parent_forked[0]:
+                parent_closes[0] += 1
+                if parent_closes[0] == close_index:
+                    injected[0] = True
+                    original_close(fd)
+                    raise OSError(5, "injected actual parent close uncertainty")
+            return original_close(fd)
+        module.os.fork = tracked_fork
+        module._close_and_prove = uncertain_close
+        try:
+            tree = module._open_detached_tree(descriptor)
+            deadline = module.time.monotonic_ns() + 5 * module.NS
+            result, error, cleanup, settled = module._run_candidate_child(
+                tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
+        finally:
+            module.os.fork = original_fork
+            module._close_and_prove = original_close
+        check(injected[0] and not settled
+              and any(stage == expected_stage for stage, _error in cleanup),
+              f"actual parent {expected_stage} uncertainty was not retained: {error!r}; {cleanup!r}")
+        _check_native_baseline(baseline, expected_stage)
+
+
+def _adopted_census_retry_case(descriptor):
+    baseline = _native_baseline()
+    original = module._direct_namespace_children
+    calls = []
+    def fail_once():
+        calls.append(None)
+        if len(calls) == 1:
+            raise OSError(5, "injected adopted census fault")
+        return original()
+    module._direct_namespace_children = fail_once
+    try:
+        tree = module._open_detached_tree(descriptor)
+        deadline = module.time.monotonic_ns() + 5 * module.NS
+        result, error, cleanup, settled = module._run_candidate_child(
+            tree, {}, {}, _DescendantProbePackage, deadline, deadline + 2 * module.NS)
+    finally:
+        module._direct_namespace_children = original
+    check(result == b'{"descendant":true}' and error is None and settled and len(calls) >= 2
+          and any(stage == "adopted-census" for stage, _error in cleanup),
+          f"adopted census was not retried to settlement: {error!r}; {cleanup!r}")
+    _check_native_baseline(baseline, "adopted census retry")
 
 
 def native_test():
@@ -420,6 +894,7 @@ def native_test():
     descriptor = -1
     try:
         descriptor = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        case_baseline = _native_baseline()
         result, work_error, cleanup_errors, settled = _native_case(descriptor)
         check(work_error is None,
               f"native child failed: {work_error!r}; result={result!r}; cleanup={cleanup_errors!r}")
@@ -448,6 +923,7 @@ def native_test():
 
         # A failed outer fork creates no process tree.  Once every setup FD and
         # detached tree closes, child absence is proved and cleanup is safe.
+        fork_baseline = _native_baseline()
         fork_tree = module._open_detached_tree(descriptor)
         original_fork = module.os.fork
         module.os.fork = lambda: (_ for _ in ()).throw(OSError(11, "test outer fork failure"))
@@ -459,9 +935,24 @@ def native_test():
             module.os.fork = original_fork
         check(result is None and isinstance(error, OSError) and cleanup == [] and settled,
               f"pre-fork no-child failure was not settled: {error!r}; {cleanup!r}")
+        _check_native_baseline(fork_baseline, "outer fork failure")
 
+        _adopted_census_retry_case(descriptor)
+        for permanent in (False, True):
+            _adopted_waitid_fault_case(descriptor, permanent)
+        _subreaper_fault_cases(descriptor)
+        _parent_close_uncertainty_cases(descriptor)
+
+        death_baseline = _native_baseline()
         death_tree = module._open_detached_tree(descriptor)
         _parent_death_gate_test(death_tree)
+        _check_native_baseline(death_baseline, "armed parent-death gate")
+        for cut in ("helper", "pid1"):
+            baseline = _native_baseline()
+            prearm_tree = module._open_detached_tree(descriptor)
+            _pre_pdeath_gate_test(prearm_tree, cut)
+            _check_native_baseline(baseline, f"pre-PDEATH {cut}")
+        _check_native_baseline(case_baseline, "complete hostile native corpus")
     finally:
         if descriptor >= 0:
             os.close(descriptor)
