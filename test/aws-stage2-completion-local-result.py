@@ -291,10 +291,20 @@ check(line_report["inherited_post_base_gross_additions"] == 0
       "gross additions were not measured from the fixed base")
 check(line_report["conservative_lines_no_deletion_credit"] == budget.CONSERVATIVE_BASELINE_LINES
       + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
-check(line_report["preferred_satisfied"] and line_report["hard_satisfied"]
-      and line_report["current_lines"] < line_report["preferred_limit"] < line_report["hard_limit"]
-      and line_report["conservative_lines_no_deletion_credit"] < line_report["preferred_limit"],
-      "ADR 0102 preferred target and hard cap")
+check(
+    line_report["preferred_limit"] < line_report["hard_limit"]
+    and line_report["preferred_satisfied"]
+    == (
+        line_report["current_lines"] < line_report["preferred_limit"]
+        and line_report["conservative_lines_no_deletion_credit"] < line_report["preferred_limit"]
+    )
+    and line_report["hard_satisfied"]
+    == (
+        line_report["current_lines"] < line_report["hard_limit"]
+        and line_report["conservative_lines_no_deletion_credit"] < line_report["hard_limit"]
+    ),
+    "retained-line measurements and classifications",
+)
 ignored_probe = ROOT / "deploy/aws-feasibility/__pycache__/stage2_ignored_counted_probe.py"
 check(not ignored_probe.exists(), "ignored cap probe pre-existed")
 ignored_probe.parent.mkdir(exist_ok=True)

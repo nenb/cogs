@@ -2367,7 +2367,8 @@ def _observe_ready_teardown(journal, ip, nft, tc, prior):
 
 
 def _effect(journal, action, ip, nft, tc, prior, final=False):
-    if action in _SETUP_ACTIONS or action is Action.NFT_REMOVE_ATOMIC:
+    if action in _SETUP_ACTIONS or action in {
+            Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC}:
         nft_owner.require_active(journal)
     intent = _effect_body(journal, action, target=prior)
     try:
@@ -2678,6 +2679,7 @@ def _settle_cleanup(journal, target, phase):
 
 def _remove_fixed_network(journal, ip, nft, tc):
     try:
+        nft_owner.require_active(journal)
         journal.begin_network_cleanup("network")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "network-absent":
@@ -2742,9 +2744,22 @@ def _remove_fixed_network(journal, ip, nft, tc):
 
 
 def _remove_fixed_firewall(journal, ip, nft, tc):
+    import completion_kata_operation as operation
     try:
+        nft_owner.require_active(journal)
+        phase = operation._durable_phase(journal)
+        if phase == "FIREWALL_ABSENT":
+            baselines, rows = _baselines(journal)
+            if rows[-1]["snapshot_kind"] != "firewall-restored":
+                raise NetworkError("durable firewall absence snapshot missing")
+            if _network_cleanup_active(journal):
+                journal.settle_network_cleanup("firewall")
+            nft_owner.settle_free(journal, "firewall")
+            return rows[-1]
         journal.begin_network_cleanup("firewall")
-        baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
+        baselines, rows = _baselines(journal)
+        _resume_effect(journal, ip, nft, tc)
+        baselines, rows = _baselines(journal)
         if rows[-1]["snapshot_kind"] == "firewall-restored":
             _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT")
             nft_owner.settle_free(journal, "firewall")
@@ -2752,19 +2767,23 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         retained = rows[-1]
         if retained["snapshot_kind"] != "network-absent":
             raise NetworkError("firewall removal order")
+        settled = _settled_effects(journal)
+        removal_settled = bool(
+            settled and settled[-1]["action"] == Action.NFT_REMOVE_ATOMIC.value)
         table_name = _bound_names(journal)[1]
         ruleset = _perform_fixed(journal, Action.NFT_RULESET, ip, nft, tc)
         rows_value = _load(ruleset); tables = [row["table"] for row in rows_value.get("nftables", [])
                                                if type(row) is dict and "table" in row]
         owned = [row for row in tables if row.get("family") == "inet" and row.get("name") == table_name]
-        if not owned:
-            raise NetworkError("owned NFT table is unexpectedly absent")
-        if len(owned) != 1:
-            raise NetworkError("firewall replacement before removal")
-        settled = _settled_effects(journal)
-        absent = (_effect(journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained["identity"])
-                  if not settled or settled[-1]["action"] != Action.NFT_REMOVE_ATOMIC.value
-                  else settled[-1]["identity"])
+        if removal_settled:
+            if owned:
+                raise NetworkError("foreign NFT table appeared after removal")
+            absent = settled[-1]["identity"]
+        else:
+            if len(owned) != 1:
+                raise NetworkError("owned NFT table replacement before removal")
+            absent = _effect(
+                journal, Action.NFT_REMOVE_ATOMIC, ip, nft, tc, retained["identity"])
         _raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
         if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
             raise NetworkError("final network/firewall/mount baseline not restored")
@@ -2813,6 +2832,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
     """Reverse a settled setup prefix once, then durably enter cleanup-only absence."""
     import completion_kata_operation as operation
     try:
+        nft_owner.require_active(journal)
         baselines, rows = _baselines(journal)
         if rows[-1]["snapshot_kind"] == "network-absent":
             phase = operation._durable_phase(journal)

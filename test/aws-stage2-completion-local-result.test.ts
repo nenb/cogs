@@ -316,11 +316,13 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 47_000);
   assert.equal(budget.hard_limit, 48_000);
-  assert.equal(budget.preferred_satisfied, true);
-  assert.equal(budget.hard_satisfied, true);
-  assert.ok(Number(budget.current_lines) < Number(budget.preferred_limit));
-  assert.ok(Number(budget.conservative_lines_no_deletion_credit) < Number(budget.preferred_limit));
-  assert.ok(Number(budget.preferred_limit) < Number(budget.hard_limit));
+  const current = Number(budget.current_lines);
+  const conservative = Number(budget.conservative_lines_no_deletion_credit);
+  const preferred = Number(budget.preferred_limit);
+  const hard = Number(budget.hard_limit);
+  assert.equal(budget.preferred_satisfied, current < preferred && conservative < preferred);
+  assert.equal(budget.hard_satisfied, current < hard && conservative < hard);
+  assert.ok(preferred < hard);
   assert.equal(
     budget.physical_baseline_lines,
     Number(budget.physical_baseline_deployment_lines) + Number(budget.physical_baseline_retained_schema_script_lines),

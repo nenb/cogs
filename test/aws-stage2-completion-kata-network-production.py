@@ -557,7 +557,8 @@ for snapshot_kind, existing, expected_removals in (("ready", netns_object, [netw
         netns_calls.append(1); return existing if len(netns_calls) == 1 else None
     def remove_effect(_journal, action, _ip, _nft, _tc, _prior):
         removals.append(action); return absent_identity()
-    with patch.object(network, "_baselines", return_value=(BASELINES, teardown.rows)), \
+    with patch.object(network.nft_owner, "require_active"), \
+         patch.object(network, "_baselines", return_value=(BASELINES, teardown.rows)), \
          patch.object(network, "_resume_effect"), patch.object(network, "_netns_identity", side_effect=netns_observe), \
          patch.object(network, "_observe_ready_teardown", return_value=ready), \
          patch.object(network, "_observe_discovered_identity", return_value=runtime_id), \
@@ -652,9 +653,12 @@ for target, cleanup, marker in (
     settlement = OSError(target + " uncertainty append failed")
     owner = CleanupFaultJournal(durable, target, settlement)
     def fail_after_intent(*_args):
-        check(journal_model.active_cleanup(durable) == marker, "cleanup began before durable intent")
+        check(journal_model.active_cleanup(durable) == marker,
+              "cleanup began before durable intent")
         raise primary
-    with patch.object(network, "_baselines", side_effect=fail_after_intent):
+    with patch.object(network.nft_owner, "require_active"), \
+         patch.object(operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+         patch.object(network, "_baselines", side_effect=fail_after_intent):
         try:
             cleanup(owner, object(), object(), object())
         except network.NetworkCleanupError as error:
@@ -720,13 +724,16 @@ settlement_calls = []
 class DurableSnapshotJournal:
     def begin_network_cleanup(self, _target): pass
 firewall_snapshot = {"snapshot_kind": "firewall-restored"}
-with patch.object(network, "_baselines", return_value=(BASELINES, [firewall_snapshot])), \
-     patch.object(network, "_resume_effect"), patch.object(network, "_settle_cleanup"), \
+with patch.object(network.nft_owner, "require_active"), \
+     patch.object(operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
+     patch.object(network, "_network_cleanup_active", return_value=False), \
+     patch.object(network, "_baselines", return_value=(BASELINES, [firewall_snapshot])), \
      patch.object(network.nft_owner, "settle_free", side_effect=lambda _j, target: settlement_calls.append(target)):
     check(network._remove_fixed_firewall(DurableSnapshotJournal(), object(), object(), object()) is firewall_snapshot,
           "durable firewall snapshot did not return")
 network_snapshot = {"snapshot_kind": "network-absent"}
-with patch.object(network, "_baselines", return_value=(BASELINES, [network_snapshot])), \
+with patch.object(network.nft_owner, "require_active"), \
+     patch.object(network, "_baselines", return_value=(BASELINES, [network_snapshot])), \
      patch.object(operation, "_durable_phase", return_value="NETWORK_ABSENT"), \
      patch.object(network, "_network_cleanup_active", return_value=False), \
      patch.object(network.nft_owner, "settle_free", side_effect=lambda _j, target: settlement_calls.append(target)):
@@ -750,10 +757,17 @@ for target, cleanup, phase, snapshot_kind in (
     def complete_then_report_failure(_journal, observed_phase):
         check(observed_phase == phase, "wrong ambiguous completion phase")
         durable.append(CleanupRecord(phase)); raise completion_error
-    with patch.object(network, "_baselines", return_value=(BASELINES, [{"snapshot_kind": snapshot_kind}])), \
+    phase_reads = []
+    def ambiguous_phase(_journal):
+        phase_reads.append(1)
+        if target == "firewall" and len(phase_reads) == 1:
+            return "SHARE_ABSENT"
+        raise confirmation_error
+    with patch.object(network.nft_owner, "require_active"), \
+         patch.object(network, "_baselines", return_value=(BASELINES, [{"snapshot_kind": snapshot_kind}])), \
          patch.object(network, "_resume_effect"), \
          patch.object(operation, "_settle_network_phase", side_effect=complete_then_report_failure), \
-         patch.object(operation, "_durable_phase", side_effect=confirmation_error):
+         patch.object(operation, "_durable_phase", side_effect=ambiguous_phase):
         try: cleanup(ambiguous, object(), object(), object())
         except network.NetworkCleanupError as error:
             primary, poison = error.errors
