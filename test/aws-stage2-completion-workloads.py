@@ -630,22 +630,29 @@ candidate_value = {
     "execution_binding": binding,
 }
 contract.validate_candidate_result(candidate_value)
-native_revision = (os.environ.get("COGS_PACKAGE_REVIEWED_HEAD")
-                   or os.environ.get("EXACT_REVIEWED_HEAD") or "1" * 40)
+native_revision = "1" * 40
+native_manifest = "2" * 64
 native_binding = contract.native_execution_binding(
-    tools, runtime_pin, contract.NATIVE_LAUNCHER_SHA256, native_revision, "2" * 64)
+    tools, runtime_pin, contract.NATIVE_LAUNCHER_SHA256, native_revision, native_manifest)
 native_value = {
     **candidate_value,
     "version": "cogs.stage2-workload-candidate/v2",
     "authority": "non-authoritative-retained-rootfs-candidate-only",
     "execution_binding": native_binding,
 }
-contract.validate_native_candidate_result(native_value)
+contract.validate_native_candidate_result(native_value, native_revision, native_manifest)
+rejected(lambda: contract.validate_native_candidate_result(native_value), TypeError)
+rejected(lambda: contract.validate_native_candidate_result(
+    native_value, None, native_manifest), contract.WorkloadContractError)
+rejected(lambda: contract.validate_native_candidate_result(
+    native_value, native_revision, None), contract.WorkloadContractError)
 rejected(lambda: contract.validate_candidate_result(native_value), contract.WorkloadContractError)
-rejected(lambda: contract.validate_native_candidate_result(candidate_value), contract.WorkloadContractError)
+rejected(lambda: contract.validate_native_candidate_result(
+    candidate_value, native_revision, native_manifest), contract.WorkloadContractError)
 changed_native = copy.deepcopy(native_value)
 changed_native["execution_binding"]["rootfs_execution"] = "not-used-by-host-candidate-or-reproduction"
-rejected(lambda: contract.validate_native_candidate_result(changed_native), contract.WorkloadContractError)
+rejected(lambda: contract.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
 for field in (
     "launcher_implementation_sha256",
     "native_producer_implementation_sha256",
@@ -654,15 +661,24 @@ for field in (
     changed_native = copy.deepcopy(native_value)
     changed_native["execution_binding"][field] = "d" * 64
     rejected(lambda changed_native=changed_native:
-             contract.validate_native_candidate_result(changed_native),
+             contract.validate_native_candidate_result(
+                 changed_native, native_revision, native_manifest),
              contract.WorkloadContractError)
 rejected(lambda: contract.native_execution_binding(
-    tools, runtime_pin, "d" * 64, native_revision, "2" * 64), contract.WorkloadContractError)
-if os.environ.get("COGS_PACKAGE_REVIEWED_HEAD") or os.environ.get("EXACT_REVIEWED_HEAD"):
-    changed_native = copy.deepcopy(native_value)
-    changed_native["execution_binding"]["source_revision"] = "3" * 40
-    rejected(lambda: contract.validate_native_candidate_result(changed_native),
+    tools, runtime_pin, "d" * 64, native_revision, native_manifest), contract.WorkloadContractError)
+for expected_revision, expected_manifest in (
+    ("3" * 40, native_manifest),
+    (native_revision, "3" * 64),
+):
+    rejected(lambda expected_revision=expected_revision, expected_manifest=expected_manifest:
+             contract.validate_native_candidate_result(
+                 native_value, expected_revision, expected_manifest),
              contract.WorkloadContractError)
+for field, hostile in (("source_revision", "3" * 40), ("source_manifest_sha256", "3" * 64)):
+    changed_native = copy.deepcopy(native_value)
+    changed_native["execution_binding"][field] = hostile
+    rejected(lambda changed_native=changed_native: contract.validate_native_candidate_result(
+        changed_native, native_revision, native_manifest), contract.WorkloadContractError)
 for key, hostile in (
     ("authority", "authoritative"),
     ("final_pin_sha256", "f" * 64),

@@ -98,7 +98,7 @@ def run_candidate_transaction():
                 tools.close()
     _raise_failure(failure)
     _require(result is not None)
-    validate_native_candidate_result(result)
+    validate_native_candidate_result(result, SOURCE_REVISION, SOURCE_MANIFEST_SHA256)
     raw = canonical_json(result)
     _require(len(raw) <= MAX_OUTPUT_BYTES)
     return raw

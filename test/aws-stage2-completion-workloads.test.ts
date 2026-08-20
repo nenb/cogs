@@ -176,13 +176,16 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
 
 test("retained-rootfs V2 is truthful without reinterpreting historical V1", () => {
   const validateV1 = compile("stage2-workload-candidate-v1.json");
+  const schemaPath = join(root, "schemas/stage2-workload-candidate-v2.json");
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<string, unknown>;
+  assert.match(String(schema.$comment), /exact V2 codec requires explicit expected source revision and manifest/u);
   const validateV2 = compile("stage2-workload-candidate-v2.json");
   const nativeBinding = {
     fixture_implementation_sha256: executionBinding.fixture_implementation_sha256,
     workload_implementation_sha256: executionBinding.workload_implementation_sha256,
     owner_implementation_sha256: executionBinding.owner_implementation_sha256,
-    native_producer_implementation_sha256: "6abb303e556631cbad3a7511ddb1d01de1ab14b4a387e0de6e9a91de8e657dd8",
-    runtime_codec_implementation_sha256: "0ce963d444d2248d7bfa0fe3128a85a617764bd511e841af94173aeba2bf5dcb",
+    native_producer_implementation_sha256: "dd260872048c0caf4edc76b94f6768f7aa7406404f3ea273472aa0aa2cce0a83",
+    runtime_codec_implementation_sha256: "7b28b61a8416636a5f67bd48c3be3eed631ea7c522e82adb0e450d979a31c371",
     launcher_implementation_sha256: "ac97184de528c0f6f98ad245e7dce788eccc8ee59011baf48ed47c3c3f51584d",
     source_revision: "1".repeat(40),
     source_manifest_sha256: "2".repeat(64),

@@ -411,30 +411,32 @@ def execution_binding(tool_observations, runtime_closure):
     }
 
 
-def _validate_native_source_identity(source_revision, source_manifest_sha256):
-    _require(type(source_revision) is str and len(source_revision) == 40
-             and set(source_revision) <= _HEX, "fixed-source revision is invalid")
-    _require(type(source_manifest_sha256) is str and len(source_manifest_sha256) == 64
-             and set(source_manifest_sha256) <= _HEX, "fixed-source manifest is invalid")
-    available_heads = {
-        value for name in ("COGS_PACKAGE_REVIEWED_HEAD", "EXACT_REVIEWED_HEAD")
-        if (value := os.environ.get(name))
-    }
-    _require(len(available_heads) <= 1, "reviewed source revisions conflict")
-    if available_heads:
-        _require(source_revision == next(iter(available_heads)), "reviewed source revision differs")
+def _validate_native_source_identity(source_revision, source_manifest_sha256,
+                                     expected_source_revision, expected_source_manifest_sha256):
+    for value, length, message in (
+        (source_revision, 40, "fixed-source revision is invalid"),
+        (source_manifest_sha256, 64, "fixed-source manifest is invalid"),
+        (expected_source_revision, 40, "expected fixed-source revision is required"),
+        (expected_source_manifest_sha256, 64, "expected fixed-source manifest is required"),
+    ):
+        _require(type(value) is str and len(value) == length and set(value) <= _HEX, message)
+    _require(source_revision == expected_source_revision, "fixed-source revision differs")
+    _require(source_manifest_sha256 == expected_source_manifest_sha256,
+             "fixed-source manifest differs")
 
 
 def native_execution_binding(tool_observations, runtime_closure, launcher_sha256,
-                             source_revision, source_manifest_sha256):
+                             verified_source_revision, verified_source_manifest_sha256):
     """Bind V2 to the exact fixed-source producer, codec, launcher, and source approval."""
     _require(type(runtime_closure) is RuntimeClosurePin)
     _require(launcher_sha256 == NATIVE_LAUNCHER_SHA256, "native launcher identity differs")
-    _validate_native_source_identity(source_revision, source_manifest_sha256)
+    _validate_native_source_identity(
+        verified_source_revision, verified_source_manifest_sha256,
+        verified_source_revision, verified_source_manifest_sha256)
     return {
         **native_implementation_digests(),
-        "source_revision": source_revision,
-        "source_manifest_sha256": source_manifest_sha256,
+        "source_revision": verified_source_revision,
+        "source_manifest_sha256": verified_source_manifest_sha256,
         "tool_observations": tool_observations,
         "runtime_closure": runtime_closure.value(),
         "contract_validator": "exact-fixed-source-native-v2-codec",
@@ -571,7 +573,7 @@ def validate_candidate_result(value):
     return value
 
 
-def _validate_native_execution(value):
+def _validate_native_execution(value, expected_source_revision, expected_source_manifest_sha256):
     implementation_digests = native_implementation_digests()
     keys = (
         *implementation_digests, "source_revision", "source_manifest_sha256",
@@ -582,7 +584,9 @@ def _validate_native_execution(value):
     _exact_keys(value, keys)
     for name, digest in implementation_digests.items():
         _require(value[name] == digest, "native implementation identity differs")
-    _validate_native_source_identity(value["source_revision"], value["source_manifest_sha256"])
+    _validate_native_source_identity(
+        value["source_revision"], value["source_manifest_sha256"],
+        expected_source_revision, expected_source_manifest_sha256)
     exact_tool_observations(value["tool_observations"])
     _runtime_closure_value(value["runtime_closure"])
     _require(value["contract_validator"] == "exact-fixed-source-native-v2-codec")
@@ -596,8 +600,9 @@ def _validate_native_execution(value):
              == "output-after-pid1-and-helper-settlement-and-retained-root-removal")
 
 
-def validate_native_candidate_result(value):
-    """Validate V2 without changing the historical V1 candidate contract."""
+def validate_native_candidate_result(value, expected_source_revision,
+                                     expected_source_manifest_sha256):
+    """Validate V2 against mandatory exact source expectations; V1 remains unchanged."""
     keys = ("version", "result", "authority", "candidate_contract_sha256", "final_pin_sha256", "package_identity", "reproductions", "a_equals_b", "lifecycle_deleted", "promotion", "execution_binding")
     _exact_keys(value, keys)
     _require(value["version"] == "cogs.stage2-workload-candidate/v2")
@@ -609,7 +614,8 @@ def validate_native_candidate_result(value):
     _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
     _require(value["a_equals_b"] is True and value["lifecycle_deleted"] is True
              and value["promotion"] == "external-manual-review-required")
-    _validate_native_execution(value["execution_binding"])
+    _validate_native_execution(
+        value["execution_binding"], expected_source_revision, expected_source_manifest_sha256)
     return value
 
 

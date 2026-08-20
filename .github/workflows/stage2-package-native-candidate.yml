@@ -71,7 +71,8 @@ jobs:
                   or type(value["entries"]) is not int or value["entries"] < 1):
               raise SystemExit(2)
           print(value["manifest_sha256"])' "$EXACT_REVIEWED_HEAD" <<<"$result")
-          printf 'manifest_sha256=%s\n' "$manifest_sha256" >>"$GITHUB_OUTPUT"
+          printf 'revision=%s\nmanifest_sha256=%s\n' \
+            "$EXACT_REVIEWED_HEAD" "$manifest_sha256" >>"$GITHUB_OUTPUT"
 
       - name: Execute the single native package candidate attempt in this workflow run
         id: candidate_attempt
@@ -221,6 +222,9 @@ jobs:
         id: validate
         if: always() && steps.candidate_attempt.outcome == 'success' && steps.cleanup.outcome == 'success'
         continue-on-error: true
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
         run: |
           set -euo pipefail
           test "$(/usr/bin/find "$CANDIDATE_STAGING" -mindepth 1 -maxdepth 1 -type f -printf '%f\n')" = candidate.partial
@@ -248,7 +252,9 @@ jobs:
               if (observed.st_dev, observed.st_ino) != (before.st_dev, before.st_ino):
                   raise SystemExit(2)
               value = json.loads(raw)
-              validate_native_candidate_result(value)
+              validate_native_candidate_result(
+                  value, os.environ["EXPECTED_SOURCE_REVISION"],
+                  os.environ["EXPECTED_SOURCE_MANIFEST_SHA256"])
               launcher = pathlib.Path("scripts/run-stage2-package-native-candidate.py").read_bytes()
               if value["execution_binding"]["launcher_implementation_sha256"] != hashlib.sha256(launcher).hexdigest():
                   raise SystemExit(2)
@@ -287,6 +293,7 @@ jobs:
         if: always() && steps.upload.outcome == 'success'
         continue-on-error: true
         env:
+          SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
           SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
           CANDIDATE_SHA256: ${{ steps.validate.outputs.candidate_sha256 }}
           CANDIDATE_BYTES: ${{ steps.validate.outputs.candidate_bytes }}
@@ -301,6 +308,11 @@ jobs:
           import pathlib
           import re
           import stat
+          import sys
+
+          contracts = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "deploy/aws-feasibility/remote"
+          sys.path.insert(0, str(contracts))
+          from completion_runtime_contract import validate_native_candidate_result
 
           staging = pathlib.Path(os.environ["CANDIDATE_STAGING"])
           candidate = staging / "candidate.json"
@@ -312,14 +324,21 @@ jobs:
           candidate_bytes = len(raw)
           if candidate_sha256 != os.environ["CANDIDATE_SHA256"] or str(candidate_bytes) != os.environ["CANDIDATE_BYTES"]:
               raise SystemExit(2)
+          expected_revision = os.environ["SOURCE_REVISION"]
+          expected_manifest = os.environ["SOURCE_MANIFEST_SHA256"]
+          try:
+              value = json.loads(raw)
+          except (UnicodeDecodeError, json.JSONDecodeError):
+              raise SystemExit(2)
+          validate_native_candidate_result(value, expected_revision, expected_manifest)
+          candidate_source = value["execution_binding"]
           artifact_id = os.environ["CANDIDATE_ARTIFACT_ID"]
           artifact_digest = os.environ["CANDIDATE_ARTIFACT_DIGEST"]
-          source_manifest = os.environ["SOURCE_MANIFEST_SHA256"]
           if re.fullmatch(r"[1-9][0-9]*", artifact_id) is None:
               raise SystemExit(2)
           if re.fullmatch(r"[0-9a-f]{64}", artifact_digest) is None:
               raise SystemExit(2)
-          if re.fullmatch(r"[0-9a-f]{64}", source_manifest) is None:
+          if re.fullmatch(r"[0-9a-f]{64}", expected_manifest) is None:
               raise SystemExit(2)
           run_id = os.environ["GITHUB_RUN_ID"]
           run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
@@ -345,8 +364,8 @@ jobs:
               "reviewed_head": os.environ["EXACT_REVIEWED_HEAD"],
               "run": {"attempt": int(run_attempt), "id": int(run_id)},
               "source": {
-                  "manifest_sha256": source_manifest,
-                  "revision": os.environ["EXACT_REVIEWED_HEAD"],
+                  "manifest_sha256": candidate_source["source_manifest_sha256"],
+                  "revision": candidate_source["source_revision"],
               },
               "version": "cogs.stage2-native-package-upload-receipt/v1",
           }

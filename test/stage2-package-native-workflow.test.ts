@@ -108,7 +108,15 @@ test("partial validation and fsync precede atomic candidate publication", () => 
   assert.ok(0 < attempt && attempt < cleanup && cleanup < validate && validate < upload);
   const validation = workflow.slice(validate, upload);
   assert.match(validation, /candidate\.partial/u);
-  assert.match(validation, /validate_native_candidate_result\(value\)/u);
+  assert.match(validation, /EXPECTED_SOURCE_REVISION: \$\{\{ steps\.fixed_source\.outputs\.revision \}\}/u);
+  assert.match(
+    validation,
+    /EXPECTED_SOURCE_MANIFEST_SHA256: \$\{\{ steps\.fixed_source\.outputs\.manifest_sha256 \}\}/u,
+  );
+  assert.match(
+    validation,
+    /validate_native_candidate_result\(\s*value, os\.environ\["EXPECTED_SOURCE_REVISION"\],\s*os\.environ\["EXPECTED_SOURCE_MANIFEST_SHA256"\]\)/u,
+  );
   assert.match(validation, /raw != canonical_json\(value\)/u);
   assert.match(validation, /os\.fsync\(source\.fileno\(\)\)[\s\S]*os\.replace\(partial, final\)/u);
   assert.match(validation, /os\.replace\(partial, final\)[\s\S]*os\.fsync\(directory\)/u);
@@ -124,10 +132,16 @@ test("run-unique uploads are bound by a separate non-authoritative receipt", () 
     workflow,
     /CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-\$\{\{ inputs\.reviewed_head \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u,
   );
+  assert.match(workflow, /printf 'revision=%s\\nmanifest_sha256=%s\\n'/u);
+  assert.match(workflow, /SOURCE_REVISION: \$\{\{ steps\.fixed_source\.outputs\.revision \}\}/u);
   assert.match(workflow, /CANDIDATE_ARTIFACT_ID: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/u);
   assert.match(workflow, /CANDIDATE_ARTIFACT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/u);
   assert.match(workflow, /candidate_sha256 != os\.environ\["CANDIDATE_SHA256"\]/u);
-  assert.match(workflow, /"manifest_sha256": source_manifest/u);
+  assert.match(workflow, /value = json\.loads\(raw\)/u);
+  assert.match(workflow, /validate_native_candidate_result\(value, expected_revision, expected_manifest\)/u);
+  assert.match(workflow, /candidate_source = value\["execution_binding"\]/u);
+  assert.match(workflow, /"manifest_sha256": candidate_source\["source_manifest_sha256"\]/u);
+  assert.match(workflow, /"revision": candidate_source\["source_revision"\]/u);
   assert.match(workflow, /"reviewed_head": os\.environ\["EXACT_REVIEWED_HEAD"\]/u);
   assert.match(workflow, /"run": \{"attempt": int\(run_attempt\), "id": int\(run_id\)\}/u);
   assert.match(workflow, /"digest": artifact_digest/u);
