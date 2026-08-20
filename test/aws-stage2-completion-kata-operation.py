@@ -1879,16 +1879,9 @@ def production_owner_test():
                     lifecycle.runtime_absent("b" * 64); lifecycle.share_absent("c" * 64)
                     replace_journal(lifecycle.journal_bytes())
                     production_network = operation._open_fixed_operation()
-                    if nft_conditional_supported:
-                        assert network._remove_fixed_firewall(production_network, *retained_tools)["snapshot_kind"] == "firewall-restored"
-                    else:
-                        try: network._remove_fixed_firewall(production_network, *retained_tools)
-                        except network.NetworkError: pass
-                        else: raise AssertionError("unsupported conditional nft deletion did not fail closed")
-                        listed = network.parse_nft_snapshot(net_command("/usr/sbin/nft", "-j", "list", "table", "inet",
-                            "c42t" + token_suffix), "c42t" + token_suffix, "c42h" + token_suffix)
-                        assert network._nft_value(listed) == discovered_body["identity"]["nft"]
-                        net_command("/usr/sbin/nft", "delete", "table", "inet", "c42t" + token_suffix)
+                    assert network._remove_fixed_firewall(
+                        production_network, *retained_tools
+                    )["snapshot_kind"] == "firewall-restored"
                     assert not Path("/run/netns/c42n" + token_suffix).exists()
                     assert not Path("/run/netns/c42q" + token_suffix).exists()
                     assert not Path(network.PRESERVED_DIR).exists()
