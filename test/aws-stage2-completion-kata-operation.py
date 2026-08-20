@@ -1744,9 +1744,10 @@ def production_owner_test():
                                     os._exit(93)
                             original_record_outcome = operation._record_command_outcome
                             def nft_outcome_exit(owner, body):
-                                original_record_outcome(owner, body)
+                                durable = original_record_outcome(owner, body)
                                 if body["command_id"] == "NFT_REMOVE_ATOMIC":
                                     os._exit(94)
+                                return durable
                             try:
                                 with patch.object(operation, "_record_network", side_effect=nft_chunk_exit), \
                                      patch.object(operation, "_record_command_outcome", side_effect=nft_outcome_exit):
