@@ -163,6 +163,7 @@
         "candidate_recovery_implementation_sha256",
         "post_pin_recovery_implementation_sha256",
         "tool_observations",
+        "runtime_closure",
         "contract_validator",
         "source_checkout",
         "linux_dynamic_tool_closure",
@@ -179,7 +180,7 @@
           "const": "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850"
         },
         "orchestrator_implementation_sha256": {
-          "const": "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8"
+          "const": "8341389e56e16e82bb6c477a9181c57d90af59e97e7e03b0cbd9c9a0e4774ce1"
         },
         "tool_observations": {
           "type": "array",
@@ -194,6 +195,15 @@
                   "properties": {
                     "name": {
                       "const": "git"
+                    },
+                    "sha256": {
+                      "const": "356db14e102d68a1a37d8a1ac577dfd678d45d46e92f468bef8b7154e7bfdc60"
+                    },
+                    "bytes": {
+                      "const": 4082768
+                    },
+                    "version": {
+                      "const": "git version 2.47.3"
                     }
                   }
                 }
@@ -209,6 +219,15 @@
                   "properties": {
                     "name": {
                       "const": "dpkg-deb"
+                    },
+                    "sha256": {
+                      "const": "5346e5fdfdc81d58bbc9d2a3de20ff3738dc479cdb04cc52b91503cbb13440eb"
+                    },
+                    "bytes": {
+                      "const": 182816
+                    },
+                    "version": {
+                      "const": "Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64)."
                     }
                   }
                 }
@@ -224,6 +243,15 @@
                   "properties": {
                     "name": {
                       "const": "dpkg"
+                    },
+                    "sha256": {
+                      "const": "0a20f6015fbb7c011571f3ed227a138b12ce282e46b7fdfc239558bc5a7bc9e5"
+                    },
+                    "bytes": {
+                      "const": 326704
+                    },
+                    "version": {
+                      "const": "Debian 'dpkg' package management program version 1.22.22 (amd64)."
                     }
                   }
                 }
@@ -241,7 +269,7 @@
           "const": "unbound-current-checkout"
         },
         "linux_dynamic_tool_closure": {
-          "const": "unbound-kernel-libc-loader-libraries-config-helpers"
+          "const": "exact-static-elf-closure-runtime-mapping-attestation-required"
         },
         "rootfs_execution": {
           "const": "not-used-by-host-candidate-or-reproduction"
@@ -263,6 +291,57 @@
         },
         "operation_parent_isolation": {
           "const": "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp"
+        },
+        "runtime_closure": {
+          "$ref": "#/$defs/runtimeClosure"
+        }
+      }
+    },
+    "runtimeClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "object_count", "tools"],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-runtime-tool-closure/v1"
+        },
+        "manifest_sha256": {
+          "const": "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850"
+        },
+        "object_count": {
+          "const": 35
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": {
+                "name": "git",
+                "sha256": "356db14e102d68a1a37d8a1ac577dfd678d45d46e92f468bef8b7154e7bfdc60",
+                "bytes": 4082768,
+                "version": "git version 2.47.3"
+              }
+            },
+            {
+              "const": {
+                "name": "dpkg-deb",
+                "sha256": "5346e5fdfdc81d58bbc9d2a3de20ff3738dc479cdb04cc52b91503cbb13440eb",
+                "bytes": 182816,
+                "version": "Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64)."
+              }
+            },
+            {
+              "const": {
+                "name": "dpkg",
+                "sha256": "0a20f6015fbb7c011571f3ed227a138b12ce282e46b7fdfc239558bc5a7bc9e5",
+                "bytes": 326704,
+                "version": "Debian 'dpkg' package management program version 1.22.22 (amd64)."
+              }
+            }
+          ],
+          "items": false
         }
       }
     }

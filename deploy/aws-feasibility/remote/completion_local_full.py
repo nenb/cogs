@@ -329,8 +329,10 @@ def main():
         receipt = coordinator._run_fixed_local_qualification()
     except coordinator.CoordinatorBlocked as error:
         raise LocalResultBlocked() from error
-    value = coordinator._consume_local_receipt(receipt)
-    raw = canonical_result(value)
+    # Consumption returns the exact custody-bound canonical bytes, not a
+    # caller-visible value that could be swapped between validation and write.
+    raw = coordinator._consume_local_receipt(receipt)
+    _require(load_result(raw)["qualified"] is True)
     _require(sys.stdout.buffer.write(raw) == len(raw))
 
 

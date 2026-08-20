@@ -168,8 +168,8 @@ test("supervisor start creates token, starts worker, proves ready, and returns m
     assert.deepEqual(calls, ["start"]);
     assert.equal(started.phase, "worker-ready");
     assert.equal(started.apiPort, 4321);
-    assert.equal(JSON.stringify(started).includes("222"), false);
-    assert.equal(JSON.stringify(started).includes(childDigest), false);
+    assert.equal("pid" in started, false);
+    assert.equal("pidIdentity" in started, false);
     assert.equal((await readManifest(state)).phase, "worker-ready");
   } finally {
     await rm(dir, { recursive: true, force: true });

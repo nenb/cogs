@@ -105,11 +105,6 @@ def _committed_routes():
         def __init__(self, key, checks):
             _fail(key is seal)
             self.checks = checks
-    class CommittedGate:
-        __slots__ = ()
-        def __new__(cls, key=None):
-            _fail(key is seal)
-            return super().__new__(cls)
     def kvm_candidate():
         try:
             observed = os.stat("/dev/kvm", follow_symlinks=False)
@@ -126,14 +121,10 @@ def _committed_routes():
         ))
     def report():
         return _report(collect().checks, "committed-local-preflight")
-    def claim():
-        value = collect()
-        _fail(not _report(value.checks, "committed-local-preflight")["blockers"])
-        return CommittedGate(seal)
-    return report, claim
+    return report
 
 
-committed_report, _claim_committed_gate = _committed_routes()
+committed_report = _committed_routes()
 del _committed_routes
 
 

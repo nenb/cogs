@@ -24,12 +24,12 @@ import stat
 import struct
 import time
 import completion_kata_actions as actions
+import completion_kata_admission as admission
 import completion_kata_command_policy as command_policy
 import completion_kata_fdmap as fdmap
 import completion_kata_network as kata_network
 import completion_kata_operation as kata_operation
 import completion_kata_owner as owner_helpers
-import completion_kata_qualification as qualification
 import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
 
@@ -239,8 +239,8 @@ def _attested_executable_routes(install_policy):
                 try: os.close(descriptor)
                 except OSError: pass
             raise
-    def open_fixed():
-        qualification._claim_committed_gate()
+    def open_fixed(custody, custody_qualification):
+        admission._consume_custody_qualification(custody, custody_qualification)
         return issue(command_policy.REVIEWED_HOST_TOOL_CONTRACTS)
     def open_synthetic():
         if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":

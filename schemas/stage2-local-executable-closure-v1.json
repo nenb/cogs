@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-executable-closure-v1.json",
+  "title": "Non-authoritative retained-ELF closure description",
+  "$comment": "SONAME, NEEDED, paths, and identities are re-derived from retained ELF/file bytes by admission. Schema success grants no custody.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "architecture", "role", "path", "dynamic_tags", "objects", "closure_sha256"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-local-executable-closure/v1"
+    },
+    "architecture": {
+      "const": "x86_64"
+    },
+    "role": {
+      "enum": ["ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"]
+    },
+    "path": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "dynamic_tags": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "^[A-Z0-9_]+$",
+        "not": {
+          "enum": ["RPATH", "RUNPATH", "AUDIT", "DEPAUDIT", "FILTER", "AUXILIARY", "CONFIG"]
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 130,
+      "items": {
+        "$ref": "#/$defs/object"
+      },
+      "contains": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "const": "executable"
+          }
+        }
+      },
+      "minContains": 1,
+      "maxContains": 1
+    },
+    "closure_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 256,
+      "pattern": "^/(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "soname": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._+~-]+$"
+    },
+    "needed": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/soname"
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "size", "sha256", "interpreter", "soname", "needed"],
+      "properties": {
+        "kind": {
+          "enum": ["executable", "loader", "library"]
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "interpreter": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/absolutePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "soname": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/soname"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "needed": {
+          "$ref": "#/$defs/needed"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "library"
+              }
+            },
+            "required": ["kind"],
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "soname": {
+                "$ref": "#/$defs/soname"
+              },
+              "interpreter": {
+                "type": "null"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "executable"
+              }
+            },
+            "required": ["kind"],
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "soname": {
+                "type": "null"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -22,6 +22,28 @@ REVIEWED_CANDIDATE_SHA256 = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12a
 # A later exact review must replace None with the digest of the canonical committed pin.
 # Merely creating FINAL_PATH can never open this gate.
 REVIEWED_FINAL_PIN_SHA256 = None
+RUNTIME_CLOSURE_MANIFEST_SHA256 = "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850"
+RUNTIME_CLOSURE_OBJECT_COUNT = 35
+EXACT_TOOL_OBSERVATIONS = (
+    {
+        "name": "git",
+        "sha256": "356db14e102d68a1a37d8a1ac577dfd678d45d46e92f468bef8b7154e7bfdc60",
+        "bytes": 4_082_768,
+        "version": "git version 2.47.3",
+    },
+    {
+        "name": "dpkg-deb",
+        "sha256": "5346e5fdfdc81d58bbc9d2a3de20ff3738dc479cdb04cc52b91503cbb13440eb",
+        "bytes": 182_816,
+        "version": "Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64).",
+    },
+    {
+        "name": "dpkg",
+        "sha256": "0a20f6015fbb7c011571f3ed227a138b12ce282e46b7fdfc239558bc5a7bc9e5",
+        "bytes": 326_704,
+        "version": "Debian 'dpkg' package management program version 1.22.22 (amd64).",
+    },
+)
 _HEX = frozenset("0123456789abcdef")
 
 # Filled with exact raw source digests after this correction is complete. These bind the
@@ -30,7 +52,7 @@ REVIEWED_SOURCE_DIGESTS = {
     "fixture_implementation_sha256": "c877bdbbce0f1c7920294f5a240aa8b83c81dd96ce3c4daab650a9fbadc7f9f4",
     "workload_implementation_sha256": "c856bb997e1d799c712cf08b48c2fb3de314b8e0efe8985908a5b58d08b3c850",
     "owner_implementation_sha256": "498407f393924ab472d3f014a3c2e54257e0b38f6b0783f24fcf35e820b31796",
-    "orchestrator_implementation_sha256": "edb057827c213e35d00f9088abba238bf1ab687b963212eaa311acdc9f0f18f8",
+    "orchestrator_implementation_sha256": "8341389e56e16e82bb6c477a9181c57d90af59e97e7e03b0cbd9c9a0e4774ce1",
     "candidate_recovery_implementation_sha256": "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5",
     "post_pin_recovery_implementation_sha256": "1bae8dbde70ea7c0465dbb808a9d85205d88cdf03302f389128a25884ec2c060",
 }
@@ -66,10 +88,27 @@ class CandidateContract:
 
 
 @dataclass(frozen=True)
+class RuntimeClosurePin:
+    manifest_sha256: str
+    object_count: int
+    tools: tuple[dict, ...]
+
+    def value(self):
+        return {
+            "version": "cogs.stage2-runtime-tool-closure/v1",
+            "manifest_sha256": self.manifest_sha256,
+            "object_count": self.object_count,
+            "tools": [dict(row) for row in self.tools],
+        }
+
+
+@dataclass(frozen=True)
 class FinalPin:
     candidate_contract_sha256: str
+    candidate_result_sha256: str
     final_pin_sha256: str
     package_identity: PackageIdentity
+    runtime_closure: RuntimeClosurePin
 
     @property
     def candidate_a(self):
@@ -289,13 +328,41 @@ def _verify_source_bindings():
         _require(_sha(_read_regular(path, 131_072)) == REVIEWED_SOURCE_DIGESTS[name], "reviewed host source changed")
 
 
-def execution_binding(tool_observations):
+def exact_runtime_closure():
+    """Recompute the exact Git/dpkg ELF closure from all 16 authenticated bytes."""
+    try:
+        from completion_rootfs_plan import load_verified_build_inputs
+        from completion_runtime_closure import fixed_runtime_closure
+
+        closure = fixed_runtime_closure(load_verified_build_inputs())
+    except Exception as error:
+        # Collapse parser, cache, and platform details at this production boundary.
+        raise WorkloadContractError("exact runtime closure is unavailable") from error
+    _require(closure.manifest_sha256 == RUNTIME_CLOSURE_MANIFEST_SHA256)
+    _require(closure.object_count == len(closure.records) == RUNTIME_CLOSURE_OBJECT_COUNT)
+    records = {record.path: record for record in closure.records}
+    expected_paths = {"git": "usr/bin/git", "dpkg-deb": "usr/bin/dpkg-deb", "dpkg": "usr/bin/dpkg"}
+    for expected in EXACT_TOOL_OBSERVATIONS:
+        record = records.get(expected_paths[expected["name"]])
+        _require(record is not None)
+        _require((record.content_sha256, record.size) == (expected["sha256"], expected["bytes"]))
+        _require(record.interpreter == "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2")
+    return RuntimeClosurePin(
+        RUNTIME_CLOSURE_MANIFEST_SHA256,
+        RUNTIME_CLOSURE_OBJECT_COUNT,
+        tuple(dict(row) for row in EXACT_TOOL_OBSERVATIONS),
+    )
+
+
+def execution_binding(tool_observations, runtime_closure):
+    _require(type(runtime_closure) is RuntimeClosurePin)
     return {
         **REVIEWED_SOURCE_DIGESTS,
         "tool_observations": tool_observations,
+        "runtime_closure": runtime_closure.value(),
         "contract_validator": "unbound-self-referential-host-validator",
         "source_checkout": "unbound-current-checkout",
-        "linux_dynamic_tool_closure": "unbound-kernel-libc-loader-libraries-config-helpers",
+        "linux_dynamic_tool_closure": "exact-static-elf-closure-runtime-mapping-attestation-required",
         "process_containment": "linux-subreaper-pidfd-or-start-time-no-cgroup-v2",
         "process_containment_limitation": "no-cgroup-proof-honest-supervisor-crash-only-not-hostile-process-closure",
         "operation_parent_isolation": "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
@@ -331,14 +398,26 @@ def parse_identity(value):
     return identity
 
 
+def _runtime_closure_value(value):
+    expected = RuntimeClosurePin(
+        RUNTIME_CLOSURE_MANIFEST_SHA256,
+        RUNTIME_CLOSURE_OBJECT_COUNT,
+        tuple(dict(row) for row in EXACT_TOOL_OBSERVATIONS),
+    )
+    _require(value == expected.value(), "runtime closure pin differs")
+    return expected
+
+
 def validate_final_value(value):
-    """Use one package identity, making contradictory A/B unrepresentable."""
-    _exact_keys(value, ("version", "candidate_contract_sha256", "package_identity", "reproductions", "promotion"))
+    """Use one package identity and one exact runtime closure."""
+    _exact_keys(value, ("version", "candidate_contract_sha256", "candidate_result_sha256", "runtime_closure", "package_identity", "reproductions", "promotion"))
     _require(value["version"] == "cogs.stage2-workload-final-pin/v1")
     _require(value["candidate_contract_sha256"] == REVIEWED_CANDIDATE_SHA256)
+    _require(type(value["candidate_result_sha256"]) is str and len(value["candidate_result_sha256"]) == 64)
+    _require(set(value["candidate_result_sha256"]) <= _HEX)
     _require(value["reproductions"] == ["A", "B"])
     _require(value["promotion"] == "manual-reviewed-a-equals-b")
-    return parse_identity(value["package_identity"])
+    return parse_identity(value["package_identity"]), _runtime_closure_value(value["runtime_closure"])
 
 
 def load_final_pin():
@@ -354,31 +433,47 @@ def load_final_pin():
     value = _json(raw)
     _require(raw == canonical_json(value), "final pin bytes are not canonical")
     contract = load_candidate_contract()
-    identity = validate_final_value(value)
+    identity, pinned_closure = validate_final_value(value)
     _require(value["candidate_contract_sha256"] == contract.sha256)
-    return FinalPin(contract.sha256, REVIEWED_FINAL_PIN_SHA256, identity)
+    observed_closure = exact_runtime_closure()
+    _require(observed_closure == pinned_closure, "runtime closure bytes differ")
+    return FinalPin(
+        contract.sha256,
+        value["candidate_result_sha256"],
+        REVIEWED_FINAL_PIN_SHA256,
+        identity,
+        observed_closure,
+    )
 
 
 def _validate_observation(value):
     _exact_keys(value, ("name", "sha256", "bytes", "version"))
-    _require(value["name"] in {"git", "dpkg-deb", "dpkg"})
     _require(type(value["sha256"]) is str and len(value["sha256"]) == 64 and set(value["sha256"]) <= _HEX)
     _require(type(value["bytes"]) is int and not isinstance(value["bytes"], bool) and value["bytes"] > 0)
     _require(type(value["version"]) is str and 0 < len(value["version"]) <= 160)
+    expected = next((row for row in EXACT_TOOL_OBSERVATIONS if row["name"] == value["name"]), None)
+    _require(value == expected, "tool identity or version differs")
+
+
+def exact_tool_observations(value):
+    _require(type(value) is list and len(value) == 3)
+    for row in value:
+        _validate_observation(row)
+    expected = [dict(row) for row in EXACT_TOOL_OBSERVATIONS]
+    _require(value == expected, "tool observation order differs")
+    return expected
 
 
 def _validate_execution(value):
-    keys = (*REVIEWED_SOURCE_DIGESTS, "tool_observations", "contract_validator", "source_checkout", "linux_dynamic_tool_closure", "process_containment", "process_containment_limitation", "operation_parent_isolation", "rootfs_execution")
+    keys = (*REVIEWED_SOURCE_DIGESTS, "tool_observations", "runtime_closure", "contract_validator", "source_checkout", "linux_dynamic_tool_closure", "process_containment", "process_containment_limitation", "operation_parent_isolation", "rootfs_execution")
     _exact_keys(value, keys)
     for name, digest in REVIEWED_SOURCE_DIGESTS.items():
         _require(value[name] == digest)
-    _require(type(value["tool_observations"]) is list and len(value["tool_observations"]) == 3)
-    for row in value["tool_observations"]:
-        _validate_observation(row)
-    _require([row["name"] for row in value["tool_observations"]] == ["git", "dpkg-deb", "dpkg"])
+    exact_tool_observations(value["tool_observations"])
+    _runtime_closure_value(value["runtime_closure"])
     _require(value["contract_validator"] == "unbound-self-referential-host-validator")
     _require(value["source_checkout"] == "unbound-current-checkout")
-    _require(value["linux_dynamic_tool_closure"] == "unbound-kernel-libc-loader-libraries-config-helpers")
+    _require(value["linux_dynamic_tool_closure"] == "exact-static-elf-closure-runtime-mapping-attestation-required")
     _require(value["process_containment"] == "linux-subreaper-pidfd-or-start-time-no-cgroup-v2")
     _require(value["process_containment_limitation"] == "no-cgroup-proof-honest-supervisor-crash-only-not-hostile-process-closure")
     _require(value["operation_parent_isolation"] == "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp")

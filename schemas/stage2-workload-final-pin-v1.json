@@ -1,25 +1,57 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.invalid/schemas/stage2-workload-final-pin-v1.json",
-  "title": "Externally reviewed Stage 2 package final pin",
+  "title": "Externally reviewed Stage 2 package and exact runtime production pin",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "candidate_contract_sha256", "package_identity", "reproductions", "promotion"],
+  "required": [
+    "version",
+    "candidate_contract_sha256",
+    "candidate_result_sha256",
+    "runtime_closure",
+    "package_identity",
+    "reproductions",
+    "promotion"
+  ],
   "properties": {
-    "version": { "const": "cogs.stage2-workload-final-pin/v1" },
-    "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
-    "package_identity": { "$ref": "#/$defs/identity" },
+    "version": {
+      "const": "cogs.stage2-workload-final-pin/v1"
+    },
+    "candidate_contract_sha256": {
+      "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3"
+    },
+    "package_identity": {
+      "$ref": "#/$defs/identity"
+    },
     "reproductions": {
       "type": "array",
-      "prefixItems": [{ "const": "A" }, { "const": "B" }],
+      "prefixItems": [
+        {
+          "const": "A"
+        },
+        {
+          "const": "B"
+        }
+      ],
       "items": false,
       "minItems": 2,
       "maxItems": 2
     },
-    "promotion": { "const": "manual-reviewed-a-equals-b" }
+    "promotion": {
+      "const": "manual-reviewed-a-equals-b"
+    },
+    "runtime_closure": {
+      "$ref": "#/$defs/runtimeClosure"
+    },
+    "candidate_result_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "identity": {
       "type": "object",
       "additionalProperties": false,
@@ -34,14 +66,80 @@
         "architecture"
       ],
       "properties": {
-        "deb_sha256": { "$ref": "#/$defs/sha256" },
-        "deb_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
-        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
-        "installed_entries": { "const": 259 },
-        "installed_bytes": { "const": 1048576 },
-        "package": { "const": "cogs-stage2-fixture" },
-        "version": { "const": "1.0" },
-        "architecture": { "const": "all" }
+        "deb_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "deb_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "installed_tree_sha256": {
+          "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"
+        },
+        "installed_entries": {
+          "const": 259
+        },
+        "installed_bytes": {
+          "const": 1048576
+        },
+        "package": {
+          "const": "cogs-stage2-fixture"
+        },
+        "version": {
+          "const": "1.0"
+        },
+        "architecture": {
+          "const": "all"
+        }
+      }
+    },
+    "runtimeClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "object_count", "tools"],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-runtime-tool-closure/v1"
+        },
+        "manifest_sha256": {
+          "const": "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850"
+        },
+        "object_count": {
+          "const": 35
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": {
+                "name": "git",
+                "sha256": "356db14e102d68a1a37d8a1ac577dfd678d45d46e92f468bef8b7154e7bfdc60",
+                "bytes": 4082768,
+                "version": "git version 2.47.3"
+              }
+            },
+            {
+              "const": {
+                "name": "dpkg-deb",
+                "sha256": "5346e5fdfdc81d58bbc9d2a3de20ff3738dc479cdb04cc52b91503cbb13440eb",
+                "bytes": 182816,
+                "version": "Debian 'dpkg-deb' package archive backend version 1.22.22 (amd64)."
+              }
+            },
+            {
+              "const": {
+                "name": "dpkg",
+                "sha256": "0a20f6015fbb7c011571f3ed227a138b12ce282e46b7fdfc239558bc5a7bc9e5",
+                "bytes": 326704,
+                "version": "Debian 'dpkg' package management program version 1.22.22 (amd64)."
+              }
+            }
+          ],
+          "items": false
+        }
       }
     }
   }
