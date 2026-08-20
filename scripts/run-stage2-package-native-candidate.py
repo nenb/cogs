@@ -88,7 +88,7 @@ def _private_rootfs(root_descriptor):
     )
     os.chroot(root)
     os.chdir("/")
-    _mount(None, "/proc", None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC)
+    _mount(None, "/proc", None, MS_BIND | MS_REMOUNT | MS_RDONLY)
 
 
 def _write_all(descriptor, raw):
@@ -112,7 +112,11 @@ def _child_candidate(write_descriptor, root_descriptor, contract, closure, packa
         os.close(write_descriptor)
         os._exit(0)
     except BaseException as error:
-        category = getattr(error, "category", type(error).__name__)
+        category = (
+            f"OSError_{error.errno}"
+            if isinstance(error, OSError) and error.errno is not None
+            else getattr(error, "category", type(error).__name__)
+        )
         if not isinstance(category, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category) is None:
             category = "unknown"
         try:
