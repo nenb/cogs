@@ -92,8 +92,10 @@ def _write_all(descriptor, raw):
 
 
 def _child_candidate(write_descriptor, root_descriptor, contract, closure, package):
+    stage = "mount"
     try:
         _private_rootfs(root_descriptor)
+        stage = "transaction"
         package.load_candidate_contract = lambda: contract
         package.exact_runtime_closure = lambda: closure
         raw = package.run_candidate_transaction()
@@ -101,8 +103,12 @@ def _child_candidate(write_descriptor, root_descriptor, contract, closure, packa
         _write_all(write_descriptor, len(raw).to_bytes(4, "big") + raw)
         os.close(write_descriptor)
         os._exit(0)
-    except BaseException:
+    except BaseException as error:
+        category = getattr(error, "category", type(error).__name__)
+        if not isinstance(category, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category) is None:
+            category = "unknown"
         try:
+            os.write(2, f"native package child failed:{stage}:{category}\n".encode("ascii"))
             os.close(write_descriptor)
         except OSError:
             pass
@@ -353,9 +359,13 @@ def main():
         raw = run()
         _write_all(sys.stdout.fileno(), raw)
         return 0
-    except BaseException:
+    except BaseException as error:
+        cause = error.__cause__
+        category = getattr(cause, "category", type(cause).__name__ if cause is not None else type(error).__name__)
+        if not isinstance(category, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category) is None:
+            category = "unknown"
         try:
-            os.write(2, b"native package candidate failed\n")
+            os.write(2, f"native package candidate failed:{category}\n".encode("ascii"))
         except OSError:
             pass
         return 1
