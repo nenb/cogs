@@ -1353,7 +1353,22 @@ def production_owner_test():
 
             intent = ("ROOTFS_ACQUIRE_INTENT", rootfs_intent)
             leased_records = (intent, ("ROOTFS_LEASED", leased))
+            def reset_nft_owner_fixture():
+                nft = network.nft_owner
+                for live in tuple(nft._OWNERS.values()):
+                    for descriptor in (live.lock_fd, *reversed(live.descriptors)):
+                        try: os.close(descriptor)
+                        except OSError: pass
+                nft._OWNERS.clear()
+                descriptors, parent, _identity = nft._open_parent()
+                try:
+                    free = nft._parse_state(nft.initial_free_for_tests("f" * 64))
+                    nft._replace_state(parent, free)
+                finally:
+                    for descriptor in reversed(descriptors):
+                        os.close(descriptor)
             def production_fixture(bodies):
+                reset_nft_owner_fixture()
                 fixture_journal(completion, bodies, host_boot_id=process._boot_id())
             for bodies in ((intent,), leased_records):
                 for mismatch in ("journal", "state"):
