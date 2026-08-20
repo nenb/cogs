@@ -29,6 +29,7 @@ CLONE_NEWNS = 0x00020000
 SYS_OPEN_TREE = 428
 SYS_MOVE_MOUNT = 429
 AT_FDCWD = -100
+AT_EMPTY_PATH = 0x1000
 OPEN_TREE_CLONE = 1
 OPEN_TREE_CLOEXEC = 0o2000000
 MOVE_MOUNT_F_EMPTY_PATH = 0x00000004
@@ -104,8 +105,8 @@ def _private_rootfs(root_descriptor, stage):
     tree = _syscall(
         SYS_OPEN_TREE,
         ctypes.c_int(root_descriptor),
-        ctypes.c_char_p(b"."),
-        ctypes.c_uint(OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC),
+        ctypes.c_char_p(b""),
+        ctypes.c_uint(AT_EMPTY_PATH | OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC),
     )
     try:
         stage[0] = "root-move-mount"
