@@ -28,10 +28,10 @@ test("S0 fixed operation foundation fails closed", async () => {
   const lease = await readFile(leasePath, "utf8");
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
-  // ADR0102 supersedes the old slice-local guard with measured integrated limits.
-  const adr0102Preferred = 47_000;
-  const adr0102Hard = 48_000;
-  assert.ok(adr0102Preferred < adr0102Hard);
+  // ADR0103 retains the workflow security owners under measured integrated limits.
+  const adr0103Preferred = 49_000;
+  const adr0103Hard = 50_000;
+  assert.ok(adr0103Preferred < adr0103Hard);
   assert.ok(
     operationLines + leaseExtension <= 2900,
     `Integrated process, network, SSH, runtime, and recovery extension exceeds 2900: ${operationLines + leaseExtension}`,

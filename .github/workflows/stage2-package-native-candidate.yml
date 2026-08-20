@@ -15,7 +15,8 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The 84-minute sum of step bounds leaves a six-minute job-lifecycle reserve.
+    timeout-minutes: 90
     concurrency:
       group: stage2-native-package-${{ inputs.reviewed_head }}
       cancel-in-progress: false
@@ -26,6 +27,7 @@ jobs:
       RECEIPT_ARTIFACT_NAME: stage2-native-package-candidate-receipt-${{ inputs.reviewed_head }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out the dispatched repository head only
+        timeout-minutes: 2
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
@@ -33,6 +35,7 @@ jobs:
           persist-credentials: false
 
       - name: Gate exact reviewed head and first execution of this dispatch
+        timeout-minutes: 1
         env:
           CONFIGURED_REVIEWED_HEAD: ${{ vars.STAGE2_PACKAGE_REVIEWED_HEAD }}
           DISPATCH_HEAD: ${{ github.sha }}
@@ -46,6 +49,7 @@ jobs:
           test -z "$(/usr/bin/git status --porcelain)"
 
       - name: Run the required bounded privileged double-fork integration
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 300s \
@@ -57,6 +61,7 @@ jobs:
 
       - name: Materialize and bind the exact fixed source manifest
         id: fixed_source
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           result=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 300s \
@@ -77,6 +82,7 @@ jobs:
       - name: Execute the single native package candidate attempt in this workflow run
         id: candidate_attempt
         continue-on-error: true
+        timeout-minutes: 51
         run: |
           set -euo pipefail
           test ! -e "$CANDIDATE_STAGING"
@@ -94,6 +100,7 @@ jobs:
         id: cleanup
         if: always()
         continue-on-error: true
+        timeout-minutes: 11
         env:
           CANDIDATE_ATTEMPT_OUTCOME: ${{ steps.candidate_attempt.outcome }}
         run: |
@@ -102,111 +109,15 @@ jobs:
           # Fail closed before unmounting or deleting any retained/runtime root name.
           test "$CANDIDATE_ATTEMPT_OUTCOME" = success
 
-          check_settlement() {
-            local phase=$1
-            sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
-              env -i PATH=/usr/bin:/bin SETTLEMENT_PHASE="$phase" \
-              /usr/bin/python3 -I -B - <<'PY'
-          import errno
-          import os
-          import re
-          import sys
-
-          targets = (
-              "/var/lib/cogs",
-              "/run/cogs-stage2-native-preflight-source-v1",
-              "/run/cogs-stage2-native-private-v1",
-          )
-          marker = b"run-stage2-package-native-candidate.py"
-          phase = os.environ.get("SETTLEMENT_PHASE")
-          if phase not in {"before-unmount", "after-unmount"}:
-              raise SystemExit(2)
-
-          def vanished(error):
-              return error.errno in {errno.ENOENT, errno.ESRCH}
-
-          def read(path):
-              try:
-                  with open(path, "rb", buffering=0) as source:
-                      return source.read()
-              except OSError as error:
-                  if vanished(error):
-                      return None
-                  raise
-
-          def link(path):
-              try:
-                  return os.readlink(path)
-              except OSError as error:
-                  if vanished(error):
-                      return None
-                  raise
-
-          def identity(path):
-              try:
-                  value = os.stat(path)
-                  return value.st_dev, value.st_ino
-              except OSError as error:
-                  if vanished(error):
-                      return None
-                  raise
-
-          def refers(value):
-              if value is None:
-                  return False
-              value = value.removesuffix(" (deleted)")
-              return any(value == target or value.startswith(target + "/") for target in targets)
-
-          def decoded_mount_fields(raw):
-              def replace(match):
-                  return bytes((int(match.group(1), 8),))
-              return re.sub(rb"\\([0-7]{3})", replace, raw).decode("utf-8", "surrogateescape").split()
-
-          own_namespace = identity("/proc/self/ns/mnt")
-          if own_namespace is None:
-              raise SystemExit(2)
-          try:
-              pids = sorted(name for name in os.listdir("/proc") if name.isdecimal())
-          except OSError:
-              raise SystemExit(2)
-          for name in pids:
-              base = f"/proc/{name}"
-              command = read(base + "/cmdline")
-              if command is not None and marker in command:
-                  raise SystemExit(f"unsettled candidate process: {name}")
-              mounts = read(base + "/mountinfo")
-              if mounts is None:
-                  continue
-              has_target_mount = any(refers(field) for field in decoded_mount_fields(mounts))
-              if has_target_mount:
-                  namespace = identity(base + "/ns/mnt")
-                  if namespace is None:
-                      continue
-                  if phase == "after-unmount" or namespace != own_namespace:
-                      raise SystemExit(f"unsettled target mount namespace: {name}")
-              for entry in ("root", "cwd", "exe"):
-                  if refers(link(base + "/" + entry)):
-                      raise SystemExit(f"unsettled process path: {name}/{entry}")
-              try:
-                  descriptors = os.listdir(base + "/fd")
-              except OSError as error:
-                  if vanished(error):
-                      continue
-                  raise
-              for descriptor in descriptors:
-                  if refers(link(base + "/fd/" + descriptor)):
-                      raise SystemExit(f"unsettled process descriptor: {name}/{descriptor}")
-          PY
-          }
-
-          check_settlement before-unmount
-          for path in /run/cogs-stage2-native-preflight-source-v1 /run/cogs-stage2-native-private-v1; do
-            if /usr/bin/mountpoint -q "$path"; then
-              sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
-                /bin/umount -- "$path"
-            fi
-          done
-          check_settlement after-unmount
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan before-unmount
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 130s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" unmount
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan after-unmount
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 300s \
             /bin/rm -rf --one-file-system -- \
             /var/lib/cogs /run/cogs-stage2-native-preflight-source-v1 \
@@ -222,6 +133,7 @@ jobs:
         id: validate
         if: always() && steps.candidate_attempt.outcome == 'success' && steps.cleanup.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 1
         env:
           EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
@@ -292,104 +204,20 @@ jobs:
         id: bind_upload
         if: always() && steps.upload.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 2
         env:
-          SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
-          SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
+          EXPECTED_SOURCE_REVISION: ${{ steps.fixed_source.outputs.revision }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.fixed_source.outputs.manifest_sha256 }}
           CANDIDATE_SHA256: ${{ steps.validate.outputs.candidate_sha256 }}
           CANDIDATE_BYTES: ${{ steps.validate.outputs.candidate_bytes }}
           CANDIDATE_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
-          /usr/bin/python3 -I -B - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import re
-          import stat
-          import sys
-
-          contracts = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "deploy/aws-feasibility/remote"
-          sys.path.insert(0, str(contracts))
-          from completion_runtime_contract import validate_native_candidate_result
-
-          staging = pathlib.Path(os.environ["CANDIDATE_STAGING"])
-          candidate = staging / "candidate.json"
-          raw = candidate.read_bytes()
-          observed = candidate.stat(follow_symlinks=False)
-          if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
-              raise SystemExit(2)
-          candidate_sha256 = hashlib.sha256(raw).hexdigest()
-          candidate_bytes = len(raw)
-          if candidate_sha256 != os.environ["CANDIDATE_SHA256"] or str(candidate_bytes) != os.environ["CANDIDATE_BYTES"]:
-              raise SystemExit(2)
-          expected_revision = os.environ["SOURCE_REVISION"]
-          expected_manifest = os.environ["SOURCE_MANIFEST_SHA256"]
-          try:
-              value = json.loads(raw)
-          except (UnicodeDecodeError, json.JSONDecodeError):
-              raise SystemExit(2)
-          validate_native_candidate_result(value, expected_revision, expected_manifest)
-          candidate_source = value["execution_binding"]
-          artifact_id = os.environ["CANDIDATE_ARTIFACT_ID"]
-          artifact_digest = os.environ["CANDIDATE_ARTIFACT_DIGEST"]
-          if re.fullmatch(r"[1-9][0-9]*", artifact_id) is None:
-              raise SystemExit(2)
-          if re.fullmatch(r"[0-9a-f]{64}", artifact_digest) is None:
-              raise SystemExit(2)
-          if re.fullmatch(r"[0-9a-f]{64}", expected_manifest) is None:
-              raise SystemExit(2)
-          run_id = os.environ["GITHUB_RUN_ID"]
-          run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
-          if re.fullmatch(r"[1-9][0-9]*", run_id) is None or re.fullmatch(r"[1-9][0-9]*", run_attempt) is None:
-              raise SystemExit(2)
-          receipt = {
-              "artifact": {
-                  "digest": artifact_digest,
-                  "id": int(artifact_id),
-                  "name": os.environ["CANDIDATE_ARTIFACT_NAME"],
-              },
-              "authority": "non-authoritative-upload-binding-only",
-              "candidate": {"bytes": candidate_bytes, "sha256": candidate_sha256},
-              "outcomes": {
-                  "candidate_attempt": "success",
-                  "candidate_upload": "success",
-                  "candidate_validation": "success",
-                  "post_upload_local_identity": "success",
-                  "runtime_cleanup": "success",
-              },
-              "promotion_authorized": False,
-              "repeat_dispatch_policy": "each-dispatch-is-a-distinct-observation-and-must-not-be-merged",
-              "reviewed_head": os.environ["EXACT_REVIEWED_HEAD"],
-              "run": {"attempt": int(run_attempt), "id": int(run_id)},
-              "source": {
-                  "manifest_sha256": candidate_source["source_manifest_sha256"],
-                  "revision": candidate_source["source_revision"],
-              },
-              "version": "cogs.stage2-native-package-upload-receipt/v1",
-          }
-          encoded = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode() + b"\n"
-          partial = staging / "receipt.partial"
-          final = staging / "receipt.json"
-          descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-          try:
-              view = memoryview(encoded)
-              while view:
-                  written = os.write(descriptor, view)
-                  if written <= 0:
-                      raise SystemExit(2)
-                  view = view[written:]
-              os.fsync(descriptor)
-          finally:
-              os.close(descriptor)
-          os.replace(partial, final)
-          directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
-          try:
-              os.fsync(directory)
-          finally:
-              os.close(directory)
-          PY
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" create
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 30s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-upload-receipt.py" validate
 
       - name: Upload the separate non-authoritative receipt for this run
         id: receipt_upload
@@ -407,6 +235,7 @@ jobs:
         id: output_cleanup
         if: always()
         continue-on-error: true
+        timeout-minutes: 1
         run: |
           set -euo pipefail
           /bin/rm -rf -- "$CANDIDATE_STAGING"
@@ -414,6 +243,7 @@ jobs:
 
       - name: Enforce this run's attempt, cleanup, validation, uploads, and zero residue
         if: always()
+        timeout-minutes: 1
         env:
           ATTEMPT: ${{ steps.candidate_attempt.outcome }}
           CLEANUP: ${{ steps.cleanup.outcome }}
