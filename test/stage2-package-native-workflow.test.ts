@@ -64,13 +64,13 @@ test("job and step timeout arithmetic preserves a cleanup/publication reserve", 
   assert.equal(jobMinutes, 90);
   assert.equal(boundedMinutes, 87);
   assert.equal(jobMinutes * 60 - boundedMinutes * 60, 180);
-  assert.ok(300 + 10 <= stepTimeout(names[2]) * 60);
-  assert.ok(300 + 5 <= stepTimeout(names[3]) * 60);
-  assert.ok(3000 + 10 <= stepTimeout(names[4]) * 60);
-  assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= stepTimeout(names[5]) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[9]) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[10]) * 60);
-  assert.ok(45 + 5 <= stepTimeout(names[13]) * 60);
+  assert.ok(300 + 10 <= stepTimeout(names[2]!) * 60);
+  assert.ok(300 + 5 <= stepTimeout(names[3]!) * 60);
+  assert.ok(3000 + 10 <= stepTimeout(names[4]!) * 60);
+  assert.ok(2 * (60 + 5) + (130 + 5) + (300 + 5) <= stepTimeout(names[5]!) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[9]!) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[10]!) * 60);
+  assert.ok(45 + 5 <= stepTimeout(names[13]!) * 60);
 });
 
 test("native driver performs one exact retained-rootfs package transaction", () => {
