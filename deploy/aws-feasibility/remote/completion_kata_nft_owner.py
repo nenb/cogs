@@ -346,7 +346,7 @@ def _process_census():
         raise NftOwnerError("global process census unavailable") from error
     if len(pids) > MAX_PROCESSES:
         raise NftOwnerError("bounded global process census required")
-    identities, offenders = [], []
+    offenders = []
     for pid in pids:
         try:
             before = _proc_start_time(pid)
@@ -370,20 +370,27 @@ def _process_census():
             raise NftOwnerError(f"exact process census unavailable:{pid}") from error
         if before != after:
             raise NftOwnerError("process identity changed during legacy census")
-        identities.append([pid, before])
         if pid == os.getpid():
             continue
         text = cmdline.decode("utf-8", "surrogateescape")
+        executable_name = os.path.basename(executable)
+        is_python_owner = executable_name.startswith("python")
         reasons = []
-        if SOURCE_ROOT in text or "completion_kata_" in text or "completion_local_full.py" in text:
+        if is_python_owner and (
+                SOURCE_ROOT in text or "completion_kata_" in text
+                or "completion_local_full.py" in text):
             reasons.append("command")
-        if ((cwd == SOURCE_ROOT or cwd.startswith(SOURCE_ROOT + "/"))
-                and os.path.basename(executable).startswith("python")):
+        if (is_python_owner and
+                (cwd == SOURCE_ROOT or cwd.startswith(SOURCE_ROOT + "/"))):
             reasons.append("cwd")
-        if ("/cogs-stage2-completion-v1" in cgroup.decode("ascii", "strict")
-                or any(target == OPERATION_JOURNAL or target.startswith(OWNER_DIR + "/")
-                       or target.startswith(SOURCE_ROOT + "/") for _fd, target, *_rest in descriptors)):
-            reasons.append("fd-cgroup-source")
+        if "/cogs-stage2-completion-v1" in cgroup.decode("ascii", "strict"):
+            reasons.append("cgroup")
+        if any(target == OPERATION_JOURNAL or target.startswith(OWNER_DIR + "/")
+               or is_python_owner and target.startswith(SOURCE_ROOT + "/")
+               for _fd, target, *_rest in descriptors):
+            reasons.append("fd")
+        if executable_name == "nft" and "cogs_stage2" in text:
+            reasons.append("nft")
         if reasons:
             offenders.append({
                 "pid": pid, "start_time": before, "reasons": sorted(set(reasons)),
@@ -391,7 +398,7 @@ def _process_census():
                 "cgroup_sha256": hashlib.sha256(cgroup).hexdigest(), "cwd": cwd,
                 "executable": executable, "descriptors": descriptors,
             })
-    return {"identities": identities, "offenders": offenders}
+    return {"offenders": offenders}
 
 
 def _global_legacy_census(context=None, provisioning=False):

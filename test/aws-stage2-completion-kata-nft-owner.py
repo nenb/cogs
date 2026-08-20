@@ -51,7 +51,7 @@ assert journal_model.effect_command_trace(
 
 # The production route derives a repeated global census itself. A paused old
 # source owner is visible before it creates a child or command cgroup.
-clean_processes = {"identities": [[1, 1]], "offenders": []}
+clean_processes = {"offenders": []}
 clean_source = {"module_sha256": "1" * 64}
 clean_journal = {"present": False}
 clean_cgroup = {"present": False}
@@ -64,7 +64,7 @@ common = (
 with common[0], common[1], common[2], common[3], \
      patch.object(owner, "_process_census", return_value=clean_processes):
     assert len(owner._global_legacy_census(provisioning=True)) == 64
-paused = {"identities": [[1, 1], [77, 9]], "offenders": [{
+paused = {"offenders": [{
     "pid": 77, "start_time": 9, "reasons": ["command"],
     "cmdline_sha256": "2" * 64, "cgroup_sha256": "3" * 64,
     "cwd": owner.SOURCE_ROOT, "executable": "/usr/bin/python3", "descriptors": [],
