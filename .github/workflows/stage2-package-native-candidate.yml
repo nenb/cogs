@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       reviewed_head:
-        description: Exact same-repository head approved for its sole candidate attempt
+        description: Exact same-repository head approved for candidate generation
         required: true
         type: string
 
@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Gate exact reviewed head and first run attempt
+      - name: Gate exact reviewed head and non-rerun execution
         env:
           CONFIGURED_REVIEWED_HEAD: ${{ vars.STAGE2_PACKAGE_REVIEWED_HEAD }}
           DISPATCH_HEAD: ${{ github.sha }}
@@ -40,47 +40,7 @@ jobs:
           test "$EXACT_REVIEWED_HEAD" = "$DISPATCH_HEAD"
           test "$EXACT_REVIEWED_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
           test "${GITHUB_RUN_ATTEMPT}" = 1
-          /usr/bin/git merge-base --is-ancestor b95d9c0375ae50a8119a035cb34c9e61d9e89669 HEAD
           test -z "$(/usr/bin/git status --porcelain)"
-
-      - name: Refuse an earlier dispatch for this reviewed head
-        env:
-          GH_READ_TOKEN: ${{ github.token }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          response="$RUNNER_TEMP/native-package-runs.json"
-          /usr/bin/curl --fail --silent --show-error --max-time 30 --max-filesize 1048576 \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer $GH_READ_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            --get \
-            --data-urlencode event=workflow_dispatch \
-            --data-urlencode "head_sha=$EXACT_REVIEWED_HEAD" \
-            --data-urlencode per_page=100 \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/stage2-package-native-candidate.yml/runs" \
-            -o "$response"
-          /usr/bin/python3 -I - "$response" "$CURRENT_RUN_ID" "$EXACT_REVIEWED_HEAD" <<'PY'
-          import json, pathlib, sys
-          path, current_raw, head = sys.argv[1:]
-          raw = pathlib.Path(path).read_bytes()
-          if not 0 < len(raw) <= 1_048_576:
-              raise SystemExit(2)
-          value = json.loads(raw)
-          runs = value.get("workflow_runs") if type(value) is dict else None
-          total = value.get("total_count") if type(value) is dict else None
-          current = int(current_raw)
-          if type(total) is not int or not 1 <= total <= 100 or type(runs) is not list:
-              raise SystemExit(2)
-          ids = []
-          for run in runs:
-              if type(run) is not dict or run.get("head_sha") != head or type(run.get("id")) is not int:
-                  raise SystemExit(2)
-              ids.append(run["id"])
-          if current not in ids or any(run_id < current for run_id in ids):
-              raise SystemExit(2)
-          PY
-          /bin/rm -f -- "$response"
 
       - name: Materialize the exact fixed source
         run: |

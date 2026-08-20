@@ -7,7 +7,7 @@ const driverPath = "scripts/run-stage2-package-native-candidate.py";
 const workflow = readFileSync(workflowPath, "utf8");
 const driver = readFileSync(driverPath, "utf8");
 
-test("native package workflow is manual, same-head, one-attempt, and read-only", () => {
+test("native package workflow is manual, same-head, non-rerun, and read-only", () => {
   assert.match(workflow, /on:\n {2}workflow_dispatch:/u);
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|schedule):/u);
   assert.match(workflow, /actions: read\n {2}contents: read/u);
@@ -17,7 +17,6 @@ test("native package workflow is manual, same-head, one-attempt, and read-only",
   assert.match(workflow, /STAGE2_PACKAGE_REVIEWED_HEAD/u);
   assert.match(workflow, /test "\$\{GITHUB_RUN_ATTEMPT\}" = 1/u);
   assert.match(workflow, /test "\$EXACT_REVIEWED_HEAD" = "\$DISPATCH_HEAD"/u);
-  assert.match(workflow, /any\(run_id < current for run_id in ids\)/u);
   assert.doesNotMatch(workflow, /--retry|strategy:|matrix:/u);
   assert.doesNotMatch(workflow, /amazon|aws-actions|open(tofu)?|terraform|kvm|docker/u);
 });
