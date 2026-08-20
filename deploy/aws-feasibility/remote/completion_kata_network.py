@@ -2751,10 +2751,9 @@ def _remove_fixed_network(journal, ip, nft, tc):
 
 
 def _remove_fixed_firewall(journal, ip, nft, tc):
-    import completion_kata_operation as operation
     try:
         nft_owner.require_active(journal)
-        phase = operation._durable_phase(journal)
+        phase = journal.durable_phase()
         if phase == "FIREWALL_ABSENT":
             baselines, rows = _baselines(journal)
             if rows[-1]["snapshot_kind"] != "firewall-restored":

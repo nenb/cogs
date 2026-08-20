@@ -1355,6 +1355,9 @@ def production_owner_test():
             leased_records = (intent, ("ROOTFS_LEASED", leased))
             def reset_nft_owner_fixture():
                 nft = network.nft_owner
+                if (os.environ.get("COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION") != "1"
+                        or not os.path.isdir(nft.OWNER_DIR)):
+                    return
                 for live in tuple(nft._OWNERS.values()):
                     for descriptor in (live.lock_fd, *reversed(live.descriptors)):
                         try: os.close(descriptor)

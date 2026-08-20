@@ -629,6 +629,8 @@ class CleanupFaultJournal:
         self.target = target
         self.settlement = settlement
         self.poisoned = poisoned
+    def durable_phase(self):
+        return "SHARE_ABSENT" if self.target == "firewall" else "TASK_STOPPED"
     def begin_network_cleanup(self, observed_target):
         check(observed_target == self.target, "wrong cleanup intent target")
         marker = {"network": "NETWORK_CLEANUP_INTENT_V2",
@@ -722,6 +724,7 @@ for target in ("network", "firewall"):
 # success while leaving persistent ownership ACTIVE.
 settlement_calls = []
 class DurableSnapshotJournal:
+    def durable_phase(self): return "FIREWALL_ABSENT"
     def begin_network_cleanup(self, _target): pass
     def network_history(self):
         return (("FIREWALL_CLEANUP_INTENT_V2", {}),
@@ -760,8 +763,14 @@ for target, cleanup, phase, snapshot_kind in (
     confirmation_error = OSError(target + " completion confirmation failed")
     uncertainty_error = OSError(target + " uncertainty append failed")
     class AmbiguousJournal(CleanupFaultJournal):
-        def __init__(self): super().__init__(durable, target, uncertainty_error)
-        def durable_phase(self): raise confirmation_error
+        def __init__(self):
+            super().__init__(durable, target, uncertainty_error)
+            self.direct_phase_reads = 0
+        def durable_phase(self):
+            self.direct_phase_reads += 1
+            if target == "firewall" and self.direct_phase_reads == 1:
+                return "SHARE_ABSENT"
+            raise confirmation_error
     ambiguous = AmbiguousJournal()
     def complete_then_report_failure(_journal, observed_phase):
         check(observed_phase == phase, "wrong ambiguous completion phase")
