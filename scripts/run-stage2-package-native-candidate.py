@@ -89,7 +89,7 @@ def _private_rootfs(root_descriptor, stage):
         f"{root}/tmp",
         "tmpfs",
         MS_NOSUID | MS_NODEV,
-        "mode=1777,size=134217728,nr_inodes=32768",
+        "mode=1777,size=134217728",
     )
     stage[0] = "chroot"
     os.chroot(root)
