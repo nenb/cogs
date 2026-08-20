@@ -1330,7 +1330,9 @@ def production_owner_test():
         def factory(control):
             return linux_chain_factory(completion, control)
 
-        with patch.object(operation, "_open_base_chain", side_effect=factory):
+        with patch.object(operation, "_open_base_chain", side_effect=factory), \
+             patch.object(network.nft_owner, "OPERATION_JOURNAL",
+                          str(fixture_journal_path(completion))):
             opened = operation._open_fixed_operation()
             assert opened.status() == "absent" and not hasattr(opened, "__dict__")
             for name in ("create", "write_record", "unlink", "_io", "_records", "_append"):
