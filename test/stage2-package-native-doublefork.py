@@ -672,6 +672,230 @@ def _pre_pdeath_gate_test(tree, cut):
         _set_subreaper(bool(previous))
 
 
+def _custodied_native_case(descriptor, *, helper_exit=None, fail_helper_pidfd=False,
+                            fail_pidfd=False, package=_ProbePackage, waitid_fault=None):
+    """Run a sacrificial outer while this process retains helper/PID1 pidfds."""
+    baseline = _native_baseline()
+    previous = _set_subreaper(True)
+    parent_control, creator_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    tree = module._open_detached_tree(descriptor)
+    creator = os.fork()
+    if creator == 0:
+        parent_control.close()
+        control_fd = creator_control.detach()
+        outer_pid = os.getpid()
+        original_helper = module._helper_main
+        original_pid1 = module._pid1_main
+        original_close_except = module._close_except
+        original_snapshot = module._fd_snapshot
+        original_waitid = module.os.waitid
+        original_fork = module.os.fork
+        original_gate_classifier = module._classify_pid1_gate_packet
+        target_pid = [-1]
+        target_fds = set()
+        helper_fds = set()
+        wait_failures = []
+        module._close_except = lambda allowed: original_close_except([*allowed, control_fd])
+        module._fd_snapshot = lambda audit: original_snapshot(audit) - {control_fd}
+        def advertise(kind):
+            rows = Path("/proc/self/status").read_bytes().splitlines()
+            nspid = [row for row in rows if row.startswith(b"NSpid:\t")]
+            host_pid = int(nspid[0].split()[1])
+            authority = os.pidfd_open(os.getpid(), 0)
+            try:
+                module._control_send(control_fd, f"{kind}:{host_pid}".encode("ascii"), authority)
+            finally:
+                os.close(authority)
+        def observed_helper(*arguments):
+            advertise("HELPER")
+            return original_helper(*arguments)
+        def observed_pid1(*arguments):
+            advertise("PID1")
+            return original_pid1(*arguments)
+        module._helper_main = observed_helper
+        module._pid1_main = observed_pid1
+        if fail_helper_pidfd or fail_pidfd or helper_exit == "before-pidfd-transfer":
+            def gated_observation_fork():
+                pid = original_fork()
+                expected = None
+                if pid > 0 and os.getpid() == outer_pid and fail_helper_pidfd:
+                    expected = b"HELPER-SEEN"
+                elif pid > 0 and os.getpid() != outer_pid:
+                    expected = b"PID1-SEEN"
+                if expected is not None:
+                    gate = socket.socket(fileno=control_fd)
+                    try:
+                        check(gate.recv(32) == expected, "custodian fork gate failed")
+                    finally:
+                        gate.detach()
+                return pid
+            module.os.fork = gated_observation_fork
+        if waitid_fault is not None:
+            def capture_report(packet, passed, expected_parent=None, available=True):
+                action = original_gate_classifier(packet, passed, expected_parent, available)
+                if action[0] == "pid1":
+                    target_pid[0] = action[1]
+                    target_fds.add(action[2])
+                    for name in os.listdir("/proc/self/fd"):
+                        if not name.isdigit():
+                            continue
+                        try:
+                            if module._pidfd_process(int(name)) == expected_parent:
+                                helper_fds.add(int(name))
+                        except BaseException:
+                            pass
+                return action
+            module._classify_pid1_gate_packet = capture_report
+            def capture_pid1(helper, pid1, _gate):
+                check(target_pid[0] == pid1 and helper_fds,
+                      "outer PID1 gate hook lacked transferred/adopted authority")
+            def faulty_waitid(idtype, identifier, options):
+                if os.getpid() == outer_pid and idtype == os.P_PIDFD:
+                    if target_pid[0] > 0 and identifier not in helper_fds:
+                        target_fds.add(identifier)
+                    if identifier not in target_fds and target_pid[0] > 0:
+                        try:
+                            if module._pidfd_process(identifier) == target_pid[0]:
+                                target_fds.add(identifier)
+                        except BaseException:
+                            pass
+                    if identifier in target_fds and (waitid_fault == "final" or not wait_failures):
+                        wait_failures.append(identifier)
+                        raise OSError(5, "injected outer adopted-PID1 waitid fault")
+                return original_waitid(idtype, identifier, options)
+            module._NATIVE_TEST_BEFORE_PID1_GO = capture_pid1
+            module.os.waitid = faulty_waitid
+            module._NATIVE_TEST_HELPER_EXIT_STAGE = "after-pidfd-transfer"
+        else:
+            module._NATIVE_TEST_HELPER_EXIT_STAGE = helper_exit
+        module._NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = fail_helper_pidfd
+        module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = fail_pidfd
+        try:
+            deadline = module.time.monotonic_ns() + 8 * module.NS
+            result, error, cleanup, settled = module._run_candidate_child(
+                tree, {}, {}, package, deadline, deadline + 3 * module.NS)
+            adopted_diagnostic = int(any(stage.startswith("adopted-") for stage, _item in cleanup))
+            payload = (f"OUTCOME:{int(settled)}:{int(result is not None)}:"
+                       f"{int(error is not None)}:{len(wait_failures)}:{adopted_diagnostic}").encode("ascii")
+            module._control_send(control_fd, payload)
+            gate = socket.socket(fileno=control_fd)
+            try:
+                check(gate.recv(16) == b"CUSTODIAN-OK", "custodian acknowledgement missing")
+            finally:
+                gate.detach()
+        except BaseException as error:
+            try:
+                module._control_send(control_fd, f"RAISED:{type(error).__name__}".encode("ascii"))
+            except BaseException:
+                pass
+        os._exit(0)
+
+    creator_control.close()
+    os.close(tree)
+    control_fd = parent_control.detach()
+    creator_pidfd = os.pidfd_open(creator, 0)
+    authorities = {}
+    outcome = None
+    try:
+        deadline = module.time.monotonic_ns() + 15 * module.NS
+        while outcome is None:
+            packet, passed = module._wait_control(control_fd, creator_pidfd, deadline)
+            if packet.startswith((b"HELPER:", b"PID1:")):
+                kind, pid_raw = packet.split(b":")
+                check(passed >= 0 and kind.decode("ascii") not in authorities,
+                      f"duplicate/missing custodian authority: {packet!r}")
+                decoded_kind = kind.decode("ascii")
+                authorities[decoded_kind] = (module._pidfd_process(passed), passed)
+                release = None
+                if decoded_kind == "HELPER" and fail_helper_pidfd:
+                    release = b"HELPER-SEEN"
+                elif decoded_kind == "PID1" and (fail_pidfd or helper_exit == "before-pidfd-transfer"):
+                    release = b"PID1-SEEN"
+                if release is not None:
+                    control = socket.socket(fileno=control_fd)
+                    try:
+                        check(control.send(release) == len(release), "short custodian fork gate")
+                    finally:
+                        control.detach()
+            else:
+                check(passed < 0 and packet.startswith(b"OUTCOME:"),
+                      f"custodied outer failed before outcome: {packet!r}")
+                outcome = packet.decode("ascii").split(":")
+        expect_pid1 = not fail_helper_pidfd
+        check("HELPER" in authorities and (("PID1" in authorities) == expect_pid1),
+              f"wrong custodian authority set: {authorities!r}")
+        residual_pid1 = waitid_fault == "final"
+        if residual_pid1:
+            check(outcome[1] == "0", f"final adopted waitid fault was not unsettled: {outcome!r}")
+        for kind, (pid, pidfd) in authorities.items():
+            poller = select.poll()
+            poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+            terminal = bool(poller.poll(0))
+            if residual_pid1 and kind == "PID1":
+                check(terminal and Path(f"/proc/{pid}").exists(),
+                      "final adopted waitid oracle did not retain the unreaped PID1")
+                rows = Path(f"/proc/{pid}/status").read_bytes().splitlines()
+                parent = [row for row in rows if row.startswith(b"PPid:\t")]
+                check(len(parent) == 1 and int(parent[0].split()[1]) == creator,
+                      "final adopted PID1 was not owned by sacrificial outer")
+            else:
+                check(terminal and not Path(f"/proc/{pid}").exists(),
+                      f"{kind} escaped or remained unreaped while outer was alive: pid={pid}")
+                try:
+                    os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
+                except ChildProcessError:
+                    pass
+                else:
+                    raise AssertionError(f"external custodian unexpectedly owned {kind} reap")
+        control = socket.socket(fileno=control_fd)
+        try:
+            check(control.send(b"CUSTODIAN-OK") == len(b"CUSTODIAN-OK"),
+                  "short custodian acknowledgement")
+        finally:
+            control.detach()
+        creator_info = module._wait_pidfd_reap(
+            creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+        check(creator_info.si_code == os.CLD_EXITED and creator_info.si_status == 0,
+              f"custodied outer failed: {creator_info}")
+        if residual_pid1:
+            pid, pidfd = authorities["PID1"]
+            info = os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+            check(info is not None and not Path(f"/proc/{pid}").exists(),
+                  "external custodian did not exactly reap final-fault PID1")
+    finally:
+        for _kind, (pid, pidfd) in authorities.items():
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            control = socket.socket(fileno=control_fd)
+            control.send(b"CUSTODIAN-OK")
+            control.detach()
+        except OSError:
+            pass
+        for _kind, (_pid, pidfd) in authorities.items():
+            try:
+                module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + module.NS)
+            except BaseException:
+                pass
+            os.close(pidfd)
+        try:
+            module._wait_pidfd_reap(creator_pidfd, module.time.monotonic_ns() + module.NS)
+        except BaseException:
+            pass
+        os.close(creator_pidfd)
+        os.close(control_fd)
+        _set_subreaper(bool(previous))
+    _check_native_baseline(baseline, "external custodian case")
+    return outcome
+
+
 def _native_case(descriptor, *, helper_exit=None, fail_helper_pidfd=False,
                  fail_pidfd=False, package=_ProbePackage):
     baseline = _native_baseline()
@@ -691,93 +915,18 @@ def _native_case(descriptor, *, helper_exit=None, fail_helper_pidfd=False,
 
 
 def _adopted_waitid_fault_case(descriptor, permanent):
-    baseline = _native_baseline()
-    outer_pid = os.getpid()
-    original_waitid = module.os.waitid
-    original_hook = module._NATIVE_TEST_BEFORE_PID1_GO
-    target_pid = [-1]
-    target_fds = set()
-    helper_fds = set()
-    oracle = [-1]
-    failures = []
-    def capture_pid1(helper, pid1, _gate):
-        target_pid[0] = pid1
-        for name in os.listdir("/proc/self/fd"):
-            if name.isdigit():
-                try:
-                    process = module._pidfd_process(int(name))
-                    if process == pid1:
-                        target_fds.add(int(name))
-                    elif process == helper:
-                        helper_fds.add(int(name))
-                except BaseException:
-                    pass
-        oracle[0] = os.pidfd_open(pid1, 0)
-    def faulty_waitid(idtype, identifier, options):
-        if os.getpid() == outer_pid and idtype == os.P_PIDFD:
-            if permanent and target_pid[0] > 0 and identifier not in helper_fds and identifier != oracle[0]:
-                target_fds.add(identifier)
-            if identifier not in target_fds and target_pid[0] > 0:
-                try:
-                    if module._pidfd_process(identifier) == target_pid[0]:
-                        target_fds.add(identifier)
-                except BaseException:
-                    pass
-            if identifier in target_fds and (permanent or not failures):
-                failures.append(identifier)
-                raise OSError(5, "injected adopted PID1 waitid fault")
-        return original_waitid(idtype, identifier, options)
-    module._NATIVE_TEST_BEFORE_PID1_GO = capture_pid1
-    module.os.waitid = faulty_waitid
-    try:
-        tree = module._open_detached_tree(descriptor)
-        deadline = module.time.monotonic_ns() + 5 * module.NS
-        result, error, cleanup, settled = module._run_candidate_child(
-            tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
-    finally:
-        module.os.waitid = original_waitid
-        module._NATIVE_TEST_BEFORE_PID1_GO = original_hook
-    try:
-        check(target_pid[0] > 0 and oracle[0] >= 0 and failures,
-              "adopted PID1 waitid fault was not reached")
-        if permanent:
-            check(settled and any(stage == "adopted-pid1-reap" for stage, _error in cleanup),
-                  f"final adopted waitid fault lost its diagnostic/settlement proof: {error!r}; {cleanup!r}")
-            try:
-                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED | os.WNOHANG)
-            except ChildProcessError:
-                pass
-            else:
-                raise AssertionError("final-waitid adopted PID1 was not independently proved reaped")
-        else:
-            check(settled and error is None
-                  and any(stage == "adopted-pid1-reap" for stage, _error in cleanup),
-                  f"transient adopted waitid fault did not settle/stay diagnostic: {error!r}; {cleanup!r}")
-            try:
-                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED | os.WNOHANG)
-            except ChildProcessError:
-                pass
-            else:
-                raise AssertionError("transient adopted PID1 was not exactly reaped by supervisor")
-    finally:
-        if oracle[0] >= 0:
-            try:
-                signal.pidfd_send_signal(oracle[0], signal.SIGKILL)
-            except OSError:
-                pass
-            try:
-                original_waitid(os.P_PIDFD, oracle[0], os.WEXITED)
-            except BaseException:
-                pass
-            os.close(oracle[0])
-    _check_native_baseline(baseline, f"adopted waitid permanent={permanent}")
+    outcome = _custodied_native_case(
+        descriptor, waitid_fault="final" if permanent else "transient")
+    expected_settled = "0" if permanent else "1"
+    check(outcome[1] == expected_settled and int(outcome[4]) >= 1,
+          f"adopted waitid fault did not run after helper exit: {outcome!r}")
+    check(outcome[5] == "1", f"adopted waitid diagnostic missing after helper exit: {outcome!r}")
 
 
 def _subreaper_fault_cases(descriptor):
-    for cut in ("set", "readback", "restore"):
+    for cut in ("set", "readback"):
         baseline = _native_baseline()
         original_libc = module._libc_call
-        original_set = module._set_subreaper
         gets = [0]
         def faulty_libc(name, *arguments):
             operation = arguments[0].value if name == "prctl" and arguments else -1
@@ -791,17 +940,7 @@ def _subreaper_fault_cases(descriptor):
                     faulty_libc.cut_seen = True
                     raise OSError(5, "injected subreaper set fault")
             return original_libc(name, *arguments)
-        set_calls = [0]
-        def faulty_set(enabled):
-            set_calls[0] += 1
-            result = original_set(enabled)
-            if cut == "restore" and set_calls[0] == 2:
-                raise OSError(5, "injected subreaper restore uncertainty")
-            return result
-        if cut == "restore":
-            module._set_subreaper = faulty_set
-        else:
-            module._libc_call = faulty_libc
+        module._libc_call = faulty_libc
         try:
             tree = module._open_detached_tree(descriptor)
             deadline = module.time.monotonic_ns() + 5 * module.NS
@@ -809,15 +948,95 @@ def _subreaper_fault_cases(descriptor):
                 tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
         finally:
             module._libc_call = original_libc
-            module._set_subreaper = original_set
-        if cut == "restore":
-            check(result == b'{"native":true}' and not settled
-                  and any(stage == "subreaper-restore" for stage, _error in cleanup),
-                  f"restore uncertainty did not suppress safe settlement: {error!r}; {cleanup!r}")
-        else:
-            check(result is None and isinstance(error, OSError) and settled,
-                  f"pre-fork subreaper {cut} fault was not no-child settled: {error!r}; {cleanup!r}")
+        check(result is None and isinstance(error, OSError) and settled,
+              f"pre-fork subreaper {cut} fault was not no-child settled: {error!r}; {cleanup!r}")
         _check_native_baseline(baseline, f"subreaper {cut}")
+
+
+def _subreaper_restore_sacrificial_case(descriptor):
+    baseline = _native_baseline()
+    marker_fd, marker_name = tempfile.mkstemp(prefix="stage2-no-cleanup-")
+    os.close(marker_fd)
+    marker = Path(marker_name)
+    parent_control, creator_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    tree = module._open_detached_tree(descriptor)
+    creator = os.fork()
+    if creator == 0:
+        parent_control.close()
+        control = creator_control
+        check(control.recv(16) == b"START", "restore sacrificial start gate failed")
+        original_set = module._set_subreaper
+        calls = [0]
+        def fail_before_restore(enabled):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError(5, "injected restore failure before state change")
+            return original_set(enabled)
+        module._set_subreaper = fail_before_restore
+        deadline = module.time.monotonic_ns() + 8 * module.NS
+        result, error, cleanup, settled = module._run_candidate_child(
+            tree, {}, {}, _ProbePackage, deadline, deadline + 3 * module.NS)
+        # Model the production caller's cleanup gate without touching retained
+        # authority: an unsettled result must leave the sentinel untouched.
+        if settled:
+            marker.unlink()
+        state = module._subreaper_state()
+        stages = ",".join(stage for stage, _item in cleanup) or "none"
+        module._control_send(
+            control.fileno(),
+            f"OUTCOME:{int(settled)}:{state}:{int(marker.exists())}:{stages}".encode("ascii"),
+        )
+        check(control.recv(16) == b"CLEANED", "restore custodian acknowledgement missing")
+        os._exit(0)
+
+    creator_control.close()
+    os.close(tree)
+    previous = _set_subreaper(True)
+    creator_pidfd = os.pidfd_open(creator, 0)
+    try:
+        check(parent_control.send(b"START") == len(b"START"), "short restore start gate")
+        packet, passed = module._wait_control(
+            parent_control.fileno(), creator_pidfd, module.time.monotonic_ns() + 15 * module.NS)
+        check(passed < 0, "restore outcome carried a descriptor")
+        outcome = packet.decode("ascii").split(":")
+        check(outcome[0:4] == ["OUTCOME", "0", "1", "1"]
+              and "subreaper-restore" in outcome[4] and marker.exists(),
+              f"before-effect restore failure did not prove unsettled/no-cleanup: {outcome!r}")
+        check(parent_control.send(b"CLEANED") == len(b"CLEANED"), "short restore cleanup ack")
+        info = module._wait_pidfd_reap(
+            creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+        check(info.si_code == os.CLD_EXITED and info.si_status == 0,
+              f"restore sacrificial outer failed: {info}")
+    finally:
+        try:
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            parent_control.send(b"CLEANED")
+        except OSError:
+            pass
+        try:
+            module._wait_pidfd_reap(creator_pidfd, module.time.monotonic_ns() + module.NS)
+        except BaseException:
+            pass
+        for child in _direct_child_pids():
+            try:
+                authority = os.pidfd_open(child, 0)
+                signal.pidfd_send_signal(authority, signal.SIGKILL)
+                module._wait_pidfd_reap(authority, module.time.monotonic_ns() + module.NS)
+                os.close(authority)
+            except BaseException:
+                pass
+        os.close(creator_pidfd)
+        parent_control.close()
+        _set_subreaper(bool(previous))
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+    _check_native_baseline(baseline, "before-effect subreaper restore failure")
 
 
 def _parent_close_uncertainty_cases(descriptor):
@@ -859,27 +1078,259 @@ def _parent_close_uncertainty_cases(descriptor):
         _check_native_baseline(baseline, expected_stage)
 
 
+def _spawn_known_adopted_namespace_child():
+    read_end, write_end = os.pipe2(os.O_CLOEXEC)
+    creator = os.fork()
+    if creator == 0:
+        os.close(read_end)
+        module._libc_call("unshare", ctypes.c_int(module.CLONE_NEWPID))
+        pid = os.fork()
+        if pid == 0:
+            rows = Path("/proc/self/status").read_bytes().splitlines()
+            nspid = [row for row in rows if row.startswith(b"NSpid:\t")]
+            host_pid = int(nspid[0].split()[1])
+            os.write(write_end, f"{host_pid}\n".encode("ascii"))
+            while True:
+                signal.pause()
+        os._exit(0)
+    os.close(write_end)
+    try:
+        waited, status = os.waitpid(creator, 0)
+        check(waited == creator and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+              "namespace-child creator failed")
+        raw = os.read(read_end, 64)
+        check(raw.endswith(b"\n") and raw[:-1].isdigit(), "missing known adopted child identity")
+        child = int(raw)
+    finally:
+        os.close(read_end)
+    deadline = module.time.monotonic_ns() + module.NS
+    while module.time.monotonic_ns() < deadline:
+        children = _direct_child_pids()
+        if child in children:
+            return child
+        module.time.sleep(0.01)
+    raise AssertionError("known namespace child was not adopted")
+
+
 def _adopted_census_retry_case(descriptor):
     baseline = _native_baseline()
     original = module._direct_namespace_children
     calls = []
+    known_adopted = set()
+    retry_verified = [False]
     def fail_once():
-        calls.append(None)
+        if not known_adopted:
+            known_adopted.add(_spawn_known_adopted_namespace_child())
+        children = original()
+        calls.append(tuple(children))
+        observed = {pid for pid, _is_pid1 in children}
         if len(calls) == 1:
-            raise OSError(5, "injected adopted census fault")
-        return original()
+            check(known_adopted <= observed, "known adopted child missing at first census fault")
+            raise OSError(5, "injected adopted census fault with known child held")
+        if known_adopted and not retry_verified[0]:
+            check(known_adopted & observed, "known adopted child was not held across census retry")
+            retry_verified[0] = True
+        return children
     module._direct_namespace_children = fail_once
     try:
         tree = module._open_detached_tree(descriptor)
         deadline = module.time.monotonic_ns() + 5 * module.NS
         result, error, cleanup, settled = module._run_candidate_child(
-            tree, {}, {}, _DescendantProbePackage, deadline, deadline + 2 * module.NS)
+            tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
     finally:
         module._direct_namespace_children = original
-    check(result == b'{"descendant":true}' and error is None and settled and len(calls) >= 2
+    check(result == b'{"native":true}' and error is None and settled and len(calls) >= 2
+          and known_adopted and retry_verified[0]
           and any(stage == "adopted-census" for stage, _error in cleanup),
           f"adopted census was not retried to settlement: {error!r}; {cleanup!r}")
     _check_native_baseline(baseline, "adopted census retry")
+
+
+def _post_go_lifecycle_case(descriptor, cut):
+    """Causal deadline/helper/outer cuts after PID1 GO with a live descendant."""
+    baseline = _native_baseline()
+    own_mount = os.stat("/proc/self/ns/mnt")
+    own_mount_identity = own_mount.st_dev, own_mount.st_ino
+    previous = _set_subreaper(True)
+    parent_control, creator_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    tree = module._open_detached_tree(descriptor)
+    creator = os.fork()
+    if creator == 0:
+        parent_control.close()
+        control_fd = creator_control.detach()
+        original_helper = module._helper_main
+        original_pid1 = module._pid1_main
+        original_close_except = module._close_except
+        original_snapshot = module._fd_snapshot
+        module._close_except = lambda allowed: original_close_except([*allowed, control_fd])
+        module._fd_snapshot = lambda audit: original_snapshot(audit) - {control_fd}
+        def advertise(kind):
+            rows = Path("/proc/self/status").read_bytes().splitlines()
+            nspid = [row for row in rows if row.startswith(b"NSpid:\t")]
+            host_pid = int(nspid[0].split()[1])
+            authority = os.pidfd_open(os.getpid(), 0)
+            try:
+                module._control_send(control_fd, f"{kind}:{host_pid}".encode("ascii"), authority)
+            finally:
+                os.close(authority)
+            return host_pid
+        def observed_helper(*arguments):
+            advertise("HELPER")
+            return original_helper(*arguments)
+        def observed_pid1(*arguments):
+            advertise("PID1")
+            return original_pid1(*arguments)
+        module._helper_main = observed_helper
+        module._pid1_main = observed_pid1
+        work_deadline = module.time.monotonic_ns() + ((2 if cut == "deadline" else 8) * module.NS)
+        class ActiveDescendantPackage:
+            @staticmethod
+            def run_candidate_transaction():
+                _ProbePackage.run_candidate_transaction()
+                ready_read, ready_write = os.pipe2(os.O_CLOEXEC)
+                descendant = os.fork()
+                if descendant == 0:
+                    os.close(ready_read)
+                    advertise("DESCENDANT")
+                    os.write(ready_write, b"1")
+                    while True:
+                        signal.pause()
+                os.close(ready_write)
+                check(os.read(ready_read, 1) == b"1", "descendant did not become active")
+                os.close(ready_read)
+                module._control_send(control_fd, f"ACTIVE:{work_deadline}".encode("ascii"))
+                while True:
+                    signal.pause()
+        result, error, cleanup, settled = module._run_candidate_child(
+            tree, {}, {}, ActiveDescendantPackage, work_deadline, work_deadline + 3 * module.NS)
+        stages = ",".join(stage for stage, _item in cleanup) or "none"
+        module._control_send(
+            control_fd,
+            f"OUTCOME:{int(settled)}:{int(error is not None)}:{stages}".encode("ascii"),
+        )
+        gate = socket.socket(fileno=control_fd)
+        try:
+            check(gate.recv(16) == b"POST-GO-OK", "post-GO custodian acknowledgement missing")
+        finally:
+            gate.detach()
+        os._exit(0)
+
+    creator_control.close()
+    os.close(tree)
+    control_fd = parent_control.detach()
+    creator_pidfd = os.pidfd_open(creator, 0)
+    authorities = {}
+    active_deadline = None
+    outcome = None
+    creator_reaped = False
+    mount_identities = {}
+    try:
+        deadline = module.time.monotonic_ns() + 15 * module.NS
+        while active_deadline is None:
+            packet, passed = module._wait_control(control_fd, creator_pidfd, deadline)
+            if packet.startswith((b"HELPER:", b"PID1:", b"DESCENDANT:")):
+                kind, pid_raw = packet.split(b":")
+                decoded = kind.decode("ascii")
+                check(passed >= 0 and decoded not in authorities,
+                      f"invalid post-GO authority: {packet!r}")
+                pid = module._pidfd_process(passed)
+                authorities[decoded] = (pid, passed)
+            else:
+                check(passed < 0 and packet.startswith(b"ACTIVE:"),
+                      f"post-GO case failed before activation: {packet!r}")
+                active_deadline = int(packet.split(b":", 1)[1])
+        check(set(authorities) == {"HELPER", "PID1", "DESCENDANT"},
+              f"post-GO authority set incomplete: {authorities!r}")
+        for kind, (pid, _pidfd) in authorities.items():
+            observed = os.stat(f"/proc/{pid}/ns/mnt")
+            mount_identities[kind] = observed.st_dev, observed.st_ino
+        check(mount_identities["PID1"] == mount_identities["DESCENDANT"]
+              and mount_identities["PID1"] != own_mount_identity,
+              f"post-GO mount oracle did not observe private namespace: {mount_identities!r}")
+        if cut == "helper":
+            signal.pidfd_send_signal(authorities["HELPER"][1], signal.SIGKILL)
+        elif cut == "outer":
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+        if cut == "outer":
+            info = module._wait_pidfd_reap(
+                creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            creator_reaped = True
+            check((info.si_code, info.si_status) == (os.CLD_KILLED, signal.SIGKILL),
+                  f"post-GO outer got wrong status: {info}")
+        else:
+            packet, passed = module._wait_control(control_fd, creator_pidfd, deadline)
+            check(passed < 0 and packet.startswith(b"OUTCOME:1:1:"),
+                  f"post-GO {cut} did not settle with work error: {packet!r}")
+            outcome = packet
+            if cut == "deadline":
+                check(module.time.monotonic_ns() >= active_deadline,
+                      "native post-GO deadline case returned before work deadline")
+        for kind, (pid, pidfd) in authorities.items():
+            poller = select.poll()
+            poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+            wait_deadline = module.time.monotonic_ns() + 5 * module.NS
+            while not poller.poll(50) and module.time.monotonic_ns() < wait_deadline:
+                pass
+            check(bool(poller.poll(0)), f"post-GO {cut} left live {kind} identity {pid}")
+            if cut == "outer":
+                try:
+                    info = os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+                    check(info is not None, f"missing external {kind} reap status")
+                except ChildProcessError:
+                    pass
+            check(not Path(f"/proc/{pid}").exists(),
+                  f"post-GO {cut} left unreaped {kind} identity {pid}")
+            check(not Path(f"/proc/{pid}/ns/mnt").exists(),
+                  f"post-GO {cut} left {kind} mount namespace path")
+        if cut != "outer":
+            control = socket.socket(fileno=control_fd)
+            try:
+                check(control.send(b"POST-GO-OK") == len(b"POST-GO-OK"),
+                      "short post-GO acknowledgement")
+            finally:
+                control.detach()
+            info = module._wait_pidfd_reap(
+                creator_pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            creator_reaped = True
+            check(info.si_code == os.CLD_EXITED and info.si_status == 0,
+                  f"post-GO {cut} outer failed: {info}")
+    finally:
+        for _kind, (_pid, pidfd) in authorities.items():
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            signal.pidfd_send_signal(creator_pidfd, signal.SIGKILL)
+        except OSError:
+            pass
+        if cut != "outer":
+            try:
+                control = socket.socket(fileno=control_fd)
+                control.send(b"POST-GO-OK")
+                control.detach()
+            except OSError:
+                pass
+        if not creator_reaped:
+            try:
+                module._wait_pidfd_reap(creator_pidfd, module.time.monotonic_ns() + module.NS)
+            except BaseException:
+                pass
+        for _kind, (_pid, pidfd) in authorities.items():
+            try:
+                module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + module.NS)
+            except BaseException:
+                pass
+            os.close(pidfd)
+        os.close(creator_pidfd)
+        os.close(control_fd)
+        _set_subreaper(bool(previous))
+    current_mount = os.stat("/proc/self/ns/mnt")
+    check((current_mount.st_dev, current_mount.st_ino) == own_mount_identity,
+          f"post-GO {cut} changed custodian mount namespace")
+    check(not module.PRIVATE_STAGING.exists(), f"post-GO {cut} leaked private mount staging")
+    _check_native_baseline(baseline, f"post-GO {cut}")
 
 
 def native_test():
@@ -906,6 +1357,9 @@ def native_test():
         result, error, cleanup, settled = _native_case(descriptor, package=_DescendantProbePackage)
         check(result == b'{"descendant":true}' and error is None and cleanup == [] and settled,
               f"adopted namespace descendant did not settle: {error!r}; {cleanup!r}")
+        custodied_descendant = _custodied_native_case(descriptor, package=_DescendantProbePackage)
+        check(custodied_descendant[1:4] == ["1", "1", "0"],
+              f"custodied descendant case failed: {custodied_descendant!r}")
 
         for stage, fail_helper_pidfd, fail_pidfd in (
             ("before-pidfd-transfer", False, False),
@@ -913,13 +1367,12 @@ def native_test():
             (None, False, True),
             (None, True, False),
         ):
-            result, error, cleanup, settled = _native_case(
+            outcome = _custodied_native_case(
                 descriptor, helper_exit=stage, fail_helper_pidfd=fail_helper_pidfd,
                 fail_pidfd=fail_pidfd)
-            check(result is None and error is not None, f"fault cut unexpectedly succeeded: {stage}")
-            check(cleanup == [] and settled,
-                  f"fault cut did not settle: stage={stage}; helper-pidfd={fail_helper_pidfd}; "
-                  f"error={error!r}; cleanup={cleanup!r}")
+            check(outcome[1:4] == ["1", "0", "1"],
+                  f"custodied fault cut did not settle: stage={stage}; "
+                  f"helper-pidfd={fail_helper_pidfd}; outcome={outcome!r}")
 
         # A failed outer fork creates no process tree.  Once every setup FD and
         # detached tree closes, child absence is proved and cleanup is safe.
@@ -941,7 +1394,10 @@ def native_test():
         for permanent in (False, True):
             _adopted_waitid_fault_case(descriptor, permanent)
         _subreaper_fault_cases(descriptor)
+        _subreaper_restore_sacrificial_case(descriptor)
         _parent_close_uncertainty_cases(descriptor)
+        for cut in ("deadline", "helper", "outer"):
+            _post_go_lifecycle_case(descriptor, cut)
 
         death_baseline = _native_baseline()
         death_tree = module._open_detached_tree(descriptor)
