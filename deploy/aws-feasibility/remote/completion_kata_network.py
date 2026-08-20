@@ -2653,10 +2653,12 @@ def _network_cleanup_active(journal):
     import completion_kata_operation as operation
     active = None
     for kind, _body in operation._network_history(journal):
-        if kind in {"NETWORK_CLEANUP_INTENT_V1", "NETWORK_CLEANUP_INTENT_V2"}:
+        if kind in operation.network_journal.CLEANUP_INTENTS:
             active = kind
-        elif kind == "NETWORK_CLEANUP_SETTLED_V2" or (
-                kind == "NETWORK_ABSENT" and active == "NETWORK_CLEANUP_INTENT_V1"):
+        elif kind in operation.network_journal.CLEANUP_SETTLED or (
+                kind in {"NETWORK_ABSENT", "FIREWALL_ABSENT"}
+                and active in {"NETWORK_CLEANUP_INTENT_V1",
+                               "FIREWALL_CLEANUP_INTENT_V1"}):
             active = None
     return active is not None
 

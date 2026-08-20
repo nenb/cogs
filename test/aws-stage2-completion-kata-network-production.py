@@ -726,6 +726,13 @@ class DurableSnapshotJournal:
     def network_history(self):
         return (("FIREWALL_CLEANUP_INTENT_V2", {}),
                 ("FIREWALL_CLEANUP_SETTLED_V2", {}))
+class PendingFirewallAckJournal(DurableSnapshotJournal):
+    def network_history(self):
+        return (("FIREWALL_CLEANUP_INTENT_V2", {}),)
+check(not network._network_cleanup_active(DurableSnapshotJournal()),
+      "acknowledged firewall cleanup remained active")
+check(network._network_cleanup_active(PendingFirewallAckJournal()),
+      "unacknowledged firewall cleanup was lost")
 firewall_snapshot = {"snapshot_kind": "firewall-restored"}
 with patch.object(network.nft_owner, "require_active"), \
      patch.object(operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
