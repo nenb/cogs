@@ -8,7 +8,7 @@ const driverPath = "scripts/run-stage2-package-native-candidate.py";
 const workflow = readFileSync(workflowPath, "utf8");
 const driver = readFileSync(driverPath, "utf8");
 
-test("native package workflow is manual, same-head, non-rerun, and read-only", () => {
+test("native package workflow is manual, same-head, first-run, and read-only", () => {
   assert.match(workflow, /on:\n {2}workflow_dispatch:/u);
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|schedule):/u);
   assert.match(workflow, /actions: read\n {2}contents: read/u);
@@ -18,6 +18,9 @@ test("native package workflow is manual, same-head, non-rerun, and read-only", (
   assert.match(workflow, /STAGE2_PACKAGE_REVIEWED_HEAD/u);
   assert.match(workflow, /test "\$\{GITHUB_RUN_ATTEMPT\}" = 1/u);
   assert.match(workflow, /test "\$EXACT_REVIEWED_HEAD" = "\$DISPATCH_HEAD"/u);
+  assert.match(workflow, /each dispatch is a distinct observation/u);
+  assert.match(workflow, /single native package candidate attempt in this workflow run/u);
+  assert.doesNotMatch(workflow, /\bsole\b/u);
   assert.doesNotMatch(workflow, /--retry|strategy:|matrix:/u);
   assert.doesNotMatch(workflow, /amazon|aws-actions|opentofu|terraform|kvm|docker/u);
 });
@@ -58,7 +61,7 @@ test("native driver performs one exact retained-rootfs package transaction", () 
   );
 });
 
-test("double-fork protocol keeps cleanup uncertainty sticky", () => {
+test("double-fork protocol keeps cleanup uncertainty sticky and has an outer bound", () => {
   const result = spawnSync("python3", ["test/stage2-package-native-doublefork.py"], {
     encoding: "utf8",
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
@@ -68,20 +71,71 @@ test("double-fork protocol keeps cleanup uncertainty sticky", () => {
   assert.match(result.stdout, /stage2 package double-fork tests passed; native=not-requested/u);
   assert.match(workflow, /COGS_REQUIRE_DOUBLEFORK_NATIVE_TEST=1/u);
   assert.match(workflow, /COGS_DOUBLEFORK_NATIVE_TEST=1/u);
+  assert.match(
+    workflow,
+    /timeout --foreground --signal=TERM --kill-after=10s 300s[\s\S]{0,300}stage2-package-native-doublefork\.py/u,
+  );
 });
 
-test("cleanup and canonical validation gate the only uploaded file", () => {
-  const attempt = workflow.indexOf("Execute the sole native package candidate attempt");
-  const cleanup = workflow.indexOf("Remove all native candidate source and runtime residue");
-  const validate = workflow.indexOf("Validate the sole canonical non-authoritative output");
-  const upload = workflow.indexOf("Upload candidate JSON for manual final-pin review only");
+test("cleanup refuses retained-name deletion until producer and namespace settlement are certain", () => {
+  const cleanupStart = workflow.indexOf("Remove native candidate source and runtime residue after proven settlement");
+  const validateStart = workflow.indexOf("Validate and atomically publish");
+  assert.ok(0 < cleanupStart && cleanupStart < validateStart);
+  const cleanup = workflow.slice(cleanupStart, validateStart);
+  const outcomeGate = cleanup.indexOf('test "$CANDIDATE_ATTEMPT_OUTCOME" = success');
+  const preUnmount = cleanup.indexOf("check_settlement before-unmount");
+  const ordinaryUnmount = cleanup.indexOf('/bin/umount -- "$path"');
+  const postUnmount = cleanup.indexOf("check_settlement after-unmount");
+  const retainedDelete = cleanup.indexOf("/var/lib/cogs /run/cogs-stage2-native-preflight-source-v1");
+  assert.ok(
+    0 < outcomeGate &&
+      outcomeGate < preUnmount &&
+      preUnmount < ordinaryUnmount &&
+      ordinaryUnmount < postUnmount &&
+      postUnmount < retainedDelete,
+  );
+  assert.match(cleanup, /unsettled candidate process/u);
+  assert.match(cleanup, /unsettled target mount namespace/u);
+  assert.match(cleanup, /unsettled process (path|descriptor)/u);
+  assert.doesNotMatch(cleanup, /umount\s+-l|--lazy/u);
+});
+
+test("partial validation and fsync precede atomic candidate publication", () => {
+  const attempt = workflow.indexOf("Execute the single native package candidate attempt in this workflow run");
+  const cleanup = workflow.indexOf("Remove native candidate source and runtime residue after proven settlement");
+  const validate = workflow.indexOf("Validate and atomically publish");
+  const upload = workflow.indexOf("Upload this run's candidate JSON");
   assert.ok(0 < attempt && attempt < cleanup && cleanup < validate && validate < upload);
-  assert.match(workflow, /raw != canonical_json\(value\)/u);
-  assert.match(workflow, /candidate\.partial/u);
-  assert.match(workflow, /os\.replace\(partial, final\)/u);
-  assert.match(workflow, /validate_native_candidate_result\(value\)/u);
-  assert.match(workflow, /path: \/var\/tmp\/cogs-stage2-native-package-candidate-v1\/candidate\.json/u);
+  const validation = workflow.slice(validate, upload);
+  assert.match(validation, /candidate\.partial/u);
+  assert.match(validation, /validate_native_candidate_result\(value\)/u);
+  assert.match(validation, /raw != canonical_json\(value\)/u);
+  assert.match(validation, /os\.fsync\(source\.fileno\(\)\)[\s\S]*os\.replace\(partial, final\)/u);
+  assert.match(validation, /os\.replace\(partial, final\)[\s\S]*os\.fsync\(directory\)/u);
+  assert.doesNotMatch(workflow.slice(attempt, validate), /os\.replace\(partial, final\)/u);
+});
+
+test("run-unique uploads are bound by a separate non-authoritative receipt", () => {
+  assert.match(
+    workflow,
+    /CANDIDATE_STAGING: \/var\/tmp\/cogs-stage2-native-package-candidate-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /CANDIDATE_ARTIFACT_NAME: stage2-native-package-candidate-\$\{\{ inputs\.reviewed_head \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/u,
+  );
+  assert.match(workflow, /CANDIDATE_ARTIFACT_ID: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/u);
+  assert.match(workflow, /CANDIDATE_ARTIFACT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/u);
+  assert.match(workflow, /candidate_sha256 != os\.environ\["CANDIDATE_SHA256"\]/u);
+  assert.match(workflow, /"manifest_sha256": source_manifest/u);
+  assert.match(workflow, /"reviewed_head": os\.environ\["EXACT_REVIEWED_HEAD"\]/u);
+  assert.match(workflow, /"run": \{"attempt": int\(run_attempt\), "id": int\(run_id\)\}/u);
+  assert.match(workflow, /"digest": artifact_digest/u);
+  assert.match(workflow, /"id": int\(artifact_id\)/u);
+  assert.match(workflow, /"candidate": \{"bytes": candidate_bytes, "sha256": candidate_sha256\}/u);
+  assert.match(workflow, /"authority": "non-authoritative-upload-binding-only"/u);
+  assert.match(workflow, /"promotion_authorized": False/u);
+  assert.match(workflow, /each-dispatch-is-a-distinct-observation-and-must-not-be-merged/u);
+  assert.match(workflow, /Upload the separate non-authoritative receipt for this run/u);
   assert.doesNotMatch(workflow, /git (commit|push)|stage2-completion-runtime-v1\.json/u);
-  assert.match(workflow, /test ! -e \/var\/lib\/cogs/u);
-  assert.match(workflow, /test ! -e \/var\/tmp\/cogs-stage2-native-package-candidate-v1/u);
 });
