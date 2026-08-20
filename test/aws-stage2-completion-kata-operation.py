@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1752,10 +1753,12 @@ def production_owner_test():
                                 with patch.object(operation, "_record_network", side_effect=nft_chunk_exit), \
                                      patch.object(operation, "_record_command_outcome", side_effect=nft_outcome_exit):
                                     network._remove_fixed_firewall(production_network, *retained_tools)
-                            except network.NetworkError: os._exit(42)
+                            except BaseException:
+                                traceback.print_exc()
+                                os._exit(42)
                             os._exit(95)
                         _pid, child_status = os.waitpid(child, 0); child_code = os.waitstatus_to_exitcode(child_status)
-                        assert child_code in {93, 94}
+                        assert child_code in {93, 94}, child_code
                         production_network.close(); production_network = operation._open_fixed_operation()
                         restored = network._remove_fixed_firewall(production_network, *retained_tools)
                         assert restored["snapshot_kind"] == "firewall-restored"
