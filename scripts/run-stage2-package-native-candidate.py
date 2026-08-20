@@ -91,6 +91,7 @@ _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _NATIVE_TEST_BEFORE_PID1_GO = None
 _NATIVE_TEST_HELPER_EXIT_STAGE = None
+_NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = False
 _NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = False
 
 _LIBC = ctypes.CDLL(None, use_errno=True)
@@ -497,20 +498,68 @@ def _control_receive(descriptor):
     except BaseException as primary:
         cleanup = []
         for passed in received:
-            try: _close_and_prove(passed)
-            except BaseException as error: cleanup.append(("rejected-control-fd-close", error))
+            cleanup.extend(_retire_rejected_control_right(passed))
         if cleanup: raise CleanupUncertain(primary, cleanup) from primary
         raise
 
+def _retire_rejected_control_right(passed):
+    if passed < 0:
+        return []
+    try:
+        _close_and_prove(passed)
+        return []
+    except BaseException as error:
+        return [("rejected-control-fd-close", error)]
+
+def _control_adopt(raw, passed, validator):
+    """Transfer a received right only after the complete packet validates."""
+    try:
+        return validator(raw, passed)
+    except BaseException as primary:
+        cleanup = _retire_rejected_control_right(passed)
+        if cleanup:
+            raise CleanupUncertain(primary, cleanup) from primary
+        raise
+
 def _control_no_fd(raw, passed, expected, message):
-    if raw == expected and passed < 0: return
-    cleanup = []
-    if passed >= 0:
-        try: _close_and_prove(passed)
-        except BaseException as error: cleanup.append(("rejected-control-fd-close", error))
-    primary = NativeCandidateError(message)
-    if cleanup: raise CleanupUncertain(primary, cleanup) from primary
-    raise primary
+    def validate(packet, right):
+        _require(packet == expected and right < 0, message)
+    _control_adopt(raw, passed, validate)
+
+def _classify_pid1_gate_packet(packet, passed, expected_parent=None, available=True):
+    if packet.startswith(b"HELPER-NO-PID1-ERROR:"):
+        _require(passed < 0, "helper error carried a descriptor")
+        return "no-pid1",
+    _require(packet.startswith(PID1_FD) and packet[len(PID1_FD):].isdigit(),
+             "PID1 descriptor report malformed")
+    _require(available and passed >= 0, "PID1 pidfd missing or duplicate")
+    pid = int(packet[len(PID1_FD):])
+    if expected_parent is not None:
+        _validate_pidfd(passed, pid, expected_parent, namespace_pid1=True)
+    return "pid1", pid, passed
+
+def _classify_supervisor_packet(packet, passed, expected_parent, pid1_available):
+    if packet.startswith(PID1_FD):
+        _require(packet[len(PID1_FD):].isdigit(), "malformed PID1 descriptor report")
+        _require(passed >= 0 and pid1_available, "PID1 pidfd missing or duplicate")
+        pid = int(packet[len(PID1_FD):])
+        _validate_pidfd(passed, pid, expected_parent, namespace_pid1=True)
+        return "pid1", passed
+    if not packet:
+        _require(passed < 0, "control EOF carried a descriptor")
+        return "eof",
+    if packet.startswith(b"PID1-EXIT:"):
+        _require(passed < 0, "PID1 exit report carried a descriptor")
+        _prefix, code, status = packet.decode("ascii").split(":")
+        return "pid1-exit", int(code), int(status)
+    if packet.startswith(b"HELPER-NO-PID1-ERROR:"):
+        _require(passed < 0, "helper error carried a descriptor")
+        return "no-pid1",
+    if packet.startswith(b"HELPER-ERROR:"):
+        _require(passed < 0, "helper error carried a descriptor")
+        return "helper-error",
+    raise NativeCandidateError("unexpected control packet")
+
 def _wait_control(descriptor, guard_pidfd, deadline_ns):
     poller = select.poll()
     poller.register(descriptor, select.POLLIN | select.POLLHUP | select.POLLERR)
@@ -523,7 +572,11 @@ def _wait_control(descriptor, guard_pidfd, deadline_ns):
                 raise NativeCandidateError("gate owner exited")
             if ready == descriptor:
                 raw, passed = _control_receive(descriptor)
-                _require(raw, "control gate EOF")
+                if not raw:
+                    _control_adopt(
+                        raw, passed,
+                        lambda _raw, _passed: _require(False, "control gate EOF"),
+                    )
                 return raw, passed
 def _wait_pipe_token(descriptor, token, guard_pidfd, deadline_ns):
     _require(type(token) is bytes and token, "empty pipe gate token")
@@ -761,13 +814,25 @@ def _helper_main(control_descriptor, ready_write, go_read, result_write, tree,
 
 def _signal_kill(pidfd, cleanup_errors, stage="pidfd-signal"):
     if pidfd < 0:
-        return
+        return True
     try:
         signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        return True
     except ProcessLookupError:
-        pass
+        return True
     except BaseException as error:
         cleanup_errors.append((stage, error))
+        return False
+
+def _signal_kill_pid(pid, cleanup_errors, stage="numeric-signal"):
+    try:
+        _libc_call("kill", ctypes.c_int(pid), ctypes.c_int(signal.SIGKILL))
+        return True
+    except OSError as error:
+        if error.errno == errno.ESRCH:
+            return True
+        cleanup_errors.append((stage, error))
+        return False
 
 
 def _parse_frame(raw):
@@ -801,6 +866,26 @@ def _direct_namespace_children():
             if len(values) >= 2: found.append((int(name), values[-1] == 1))
     return found
 
+def _signal_reap_pidfd(pidfd, deadline_ns, cleanup_errors, stage):
+    start = time.monotonic_ns()
+    window = max(0, deadline_ns - start)
+    reap_tail = min(NS, max(NS // 10, window // 5))
+    signal_until_ns = max(start, deadline_ns - reap_tail)
+    next_signal_ns = start
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+    while time.monotonic_ns() < deadline_ns:
+        now = time.monotonic_ns()
+        if now <= signal_until_ns and now >= next_signal_ns:
+            _signal_kill(pidfd, cleanup_errors, stage)
+            next_signal_ns = now + NS // 10
+        remaining = deadline_ns - now
+        if poller.poll(min(50, max(1, (remaining + 999_999) // 1_000_000))):
+            info = os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+            _require(info is not None, "missing adopted wait status")
+            return info
+    raise NativeCandidateError("adopted pidfd reap timeout")
+
 def _drain_adopted_namespace(deadline_ns, cleanup_errors):
     pid1_status = None
     try:
@@ -813,8 +898,8 @@ def _drain_adopted_namespace(deadline_ns, cleanup_errors):
                     try: pidfd = os.pidfd_open(pid, 0)
                     except OSError: status = _kill_wait_child_pid(pid, deadline_ns)
                     else:
-                        _signal_kill(pidfd, cleanup_errors, "adopted-signal")
-                        info = _wait_pidfd_reap(pidfd, deadline_ns)
+                        info = _signal_reap_pidfd(
+                            pidfd, deadline_ns, cleanup_errors, "adopted-signal")
                         status = (info.si_code, info.si_status)
                     if is_pid1 and status is not None: pid1_status = status
                 except (ProcessLookupError, ChildProcessError): pass
@@ -835,22 +920,29 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
     oversize = pipe_eof = control_eof = pid1_terminal = helper_reaped = False
     no_pid1, work_error = initial_no_pid1, initial_error
     helper_info = pid1_report = adopted_pid1 = None
-    final_signal = descendants_empty = False
+    descendants_empty = False
     reap_reserve = min(POST_KILL_REAP_SECONDS * NS, max(NS // 10, (settlement_deadline_ns - work_deadline_ns) // 2))
     force_ns = max(time.monotonic_ns(), settlement_deadline_ns - reap_reserve)
+    signal_until_ns = force_ns
+    next_signal_ns = force_ns
+    def reserve_reap_time():
+        nonlocal signal_until_ns
+        window = max(0, settlement_deadline_ns - force_ns)
+        reap_tail = min(NS, max(NS // 10, window // 5))
+        signal_until_ns = max(force_ns, settlement_deadline_ns - reap_tail)
     if work_error is not None:
         settlement_deadline_ns = min(settlement_deadline_ns, time.monotonic_ns() + REAP_SECONDS * NS)
         force_ns = time.monotonic_ns()
+        next_signal_ns = force_ns
+    reserve_reap_time()
     def work(error):
-        nonlocal work_error, force_ns, settlement_deadline_ns
+        nonlocal work_error, force_ns, settlement_deadline_ns, next_signal_ns
         if work_error is None:
             work_error = error
             settlement_deadline_ns = min(settlement_deadline_ns, time.monotonic_ns() + REAP_SECONDS * NS)
             force_ns = min(force_ns, time.monotonic_ns())
-    def close_passed(passed, stage):
-        if passed < 0: return
-        try: _close_and_prove(passed)
-        except BaseException as error: cleanup_errors.append((stage, error))
+            next_signal_ns = min(next_signal_ns, force_ns)
+            reserve_reap_time()
     try:
         for descriptor in (result_descriptor, control_descriptor):
             if descriptor >= 0:
@@ -865,22 +957,20 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
                 adopted, descendants_empty = _drain_adopted_namespace(settlement_deadline_ns, cleanup_errors)
                 if adopted is not None: adopted_pid1 = adopted
                 if descendants_empty: break
-            if now >= force_ns and not final_signal:
-                work(NativeCandidateError("settlement deadline"))
-                _signal_kill(pid1_pidfd, cleanup_errors)
-                _signal_kill(helper_pidfd, cleanup_errors, "helper-final-signal")
-                if helper_pidfd < 0 and helper_pid > 0:
-                    try:
-                        status = _kill_wait_child_pid(helper_pid, settlement_deadline_ns)
-                        helper_reaped = True
-                        if status is not None: helper_info = status
-                    except BaseException as error: cleanup_errors.append(("helper-numeric-reap", error))
-                final_signal = True
-            elif work_error is not None:
-                _signal_kill(pid1_pidfd, cleanup_errors)
-            elif now >= work_deadline_ns:
+            if work_error is None and now >= work_deadline_ns:
                 work(NativeCandidateError("child deadline"))
-                _signal_kill(pid1_pidfd, cleanup_errors)
+            if now >= force_ns:
+                if work_error is None:
+                    work(NativeCandidateError("settlement deadline"))
+                if now <= signal_until_ns and now >= next_signal_ns:
+                    if not pid1_terminal and adopted_pid1 is None and not no_pid1:
+                        _signal_kill(pid1_pidfd, cleanup_errors)
+                    if not helper_reaped:
+                        if helper_pidfd >= 0:
+                            _signal_kill(helper_pidfd, cleanup_errors, "helper-final-signal")
+                        elif helper_pid > 0:
+                            _signal_kill_pid(helper_pid, cleanup_errors, "helper-final-numeric-signal")
+                    next_signal_ns = now + NS // 10
             ready = set()
             try:
                 poller = select.poll()
@@ -907,25 +997,28 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
                 except BlockingIOError: packet = None
                 except BaseException as error: work(error); packet = None
                 if packet is not None:
-                    adopted = False
                     try:
-                        if packet.startswith(PID1_FD) and passed >= 0 and pid1_pidfd < 0:
-                            reported_pid = int(packet[len(PID1_FD):])
-                            expected_parent = _pidfd_process(helper_pidfd) if helper_pidfd >= 0 else helper_pid
-                            _validate_pidfd(passed, reported_pid, expected_parent, namespace_pid1=True)
-                            pid1_pidfd, adopted = passed, True
-                        elif not packet: control_eof = True
-                        elif packet.startswith(b"PID1-EXIT:") and passed < 0:
-                            _, code, status = packet.decode("ascii").split(":")
-                            pid1_report = int(code), int(status)
-                        elif packet.startswith(b"HELPER-NO-PID1-ERROR:") and passed < 0:
+                        action = _control_adopt(
+                            packet, passed,
+                            lambda raw_packet, right: _classify_supervisor_packet(
+                                raw_packet, right,
+                                ((_pidfd_process(helper_pidfd) if helper_pidfd >= 0 else helper_pid)
+                                 if raw_packet.startswith(PID1_FD) else -1),
+                                pid1_pidfd < 0,
+                            ),
+                        )
+                    except CleanupUncertain as error:
+                        work(error.work_error or error)
+                        cleanup_errors.extend(error.cleanup_errors)
+                    except BaseException as error:
+                        work(error)
+                    else:
+                        if action[0] == "pid1": pid1_pidfd = action[1]
+                        elif action[0] == "eof": control_eof = True
+                        elif action[0] == "pid1-exit": pid1_report = action[1], action[2]
+                        elif action[0] == "no-pid1":
                             no_pid1 = True; work(NativeCandidateError("helper setup failed before PID1"))
-                        elif packet.startswith(b"HELPER-ERROR:") and passed < 0:
-                            work(NativeCandidateError("helper setup failed"))
-                        else: work(NativeCandidateError("unexpected control packet"))
-                    except BaseException as error: work(error)
-                    finally:
-                        if not adopted: close_passed(passed, "rejected-control-fd-close")
+                        elif action[0] == "helper-error": work(NativeCandidateError("helper setup failed"))
             if pid1_pidfd in ready: pid1_terminal = True
             if helper_pidfd >= 0 and not helper_reaped:
                 try:
@@ -934,6 +1027,15 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
                 except ChildProcessError as error:
                     cleanup_errors.append(("helper-pidfd-reap", error)); helper_reaped = True
                 except BaseException as error: work(error)
+            elif helper_pidfd < 0 and helper_pid > 0 and not helper_reaped:
+                try:
+                    waited, status = os.waitpid(helper_pid, os.WNOHANG)
+                    if waited == helper_pid:
+                        helper_info, helper_reaped = _wait_status(status), True
+                except ChildProcessError:
+                    helper_reaped = True
+                except BaseException as error:
+                    work(error)
             if helper_reaped and pid1_terminal and adopted_pid1 is None:
                 try:
                     info = os.waitid(os.P_PIDFD, pid1_pidfd, os.WEXITED | os.WNOHANG)
@@ -951,11 +1053,15 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
                      or (pid1_report is not None and (pid1_terminal or pid1_pidfd < 0))
                      or (pid1_terminal and helper_reaped and control_eof))
         if not (helper_reaped and pipe_eof and control_eof and pid1_done and descendants_empty):
-            _signal_kill(pid1_pidfd, cleanup_errors)
-            _signal_kill(helper_pidfd, cleanup_errors, "helper-final-signal")
-            if helper_pidfd < 0 and helper_pid > 0 and not helper_reaped:
-                try: helper_info, helper_reaped = _kill_wait_child_pid(helper_pid, settlement_deadline_ns), True
-                except BaseException as error: cleanup_errors.append(("helper-numeric-reap", error))
+            now = time.monotonic_ns()
+            if now <= signal_until_ns:
+                if not pid1_terminal and adopted_pid1 is None and not no_pid1:
+                    _signal_kill(pid1_pidfd, cleanup_errors)
+                if not helper_reaped:
+                    if helper_pidfd >= 0:
+                        _signal_kill(helper_pidfd, cleanup_errors, "helper-final-signal")
+                    elif helper_pid > 0:
+                        _signal_kill_pid(helper_pid, cleanup_errors, "helper-final-numeric-signal")
             adopted, descendants_empty = _drain_adopted_namespace(settlement_deadline_ns, cleanup_errors)
             if adopted is not None: adopted_pid1, pid1_terminal = adopted, True
         if not helper_reaped: cleanup_errors.append(("helper-reap-timeout", NativeCandidateError("helper not reaped")))
@@ -978,7 +1084,7 @@ def _supervise_candidate(helper_pidfd, pid1_pidfd, control_descriptor, result_de
     if raw and not oversize:
         try: result = _parse_frame(bytes(raw))
         except BaseException as error:
-            if work_error is None or isinstance(error, ChildCandidateError): work_error = error
+            work(error)
     elif work_error is None: work_error = NativeCandidateError("missing child result")
     settled = (helper_reaped and pipe_eof and control_eof and descendants_empty
                and (no_pid1 or adopted_pid1 is not None
@@ -991,7 +1097,7 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
         "go_read", "go_write", "result_read", "result_write", "parent_pidfd")}
     helper = helper_pidfd = pid1_pidfd = -1
     parent_close_errors, initial_error = [], None
-    known_no_pid1 = launched = close_uncertain = False
+    known_no_pid1 = launched = helper_go_sent = close_uncertain = False
     subreaper_previous = -1
     try:
         subreaper_previous = _subreaper_state()
@@ -1013,6 +1119,8 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
             except BaseException: os._exit(126)
             os._exit(127)
         launched = True
+        if _NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN:
+            raise OSError(errno.EMFILE, "test helper pidfd_open failure")
         helper_pidfd = os.pidfd_open(helper, 0)
     except BaseException as error: initial_error = error
     if launched:
@@ -1034,6 +1142,7 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
             _control_no_fd(packet, passed, HELPER_READY, "helper READY malformed")
             _validate_pidfd(helper_pidfd, helper, os.getpid(), namespace_pid1=False)
             _control_send(descriptors["control_parent"], HELPER_GO)
+            helper_go_sent = True
             pid1_ready, pid1 = False, -1
             while not (pid1_ready and pid1_pidfd >= 0):
                 remaining = work_deadline_ns - time.monotonic_ns(); _require(remaining > 0, "PID1 gate timeout")
@@ -1044,15 +1153,24 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
                 if descriptors["ready_read"] in ready and not pid1_ready:
                     _wait_pipe_token(descriptors["ready_read"], PID1_READY, helper_pidfd, work_deadline_ns); pid1_ready = True
                 if descriptors["control_parent"] in ready:
-                    packet, passed = _control_receive(descriptors["control_parent"]); adopted = False
+                    packet, passed = _control_receive(descriptors["control_parent"])
                     try:
-                        if packet.startswith(b"HELPER-NO-PID1-ERROR:") and passed < 0:
-                            known_no_pid1 = True; raise NativeCandidateError("helper failed before PID1")
-                        _require(packet.startswith(PID1_FD) and packet[len(PID1_FD):].isdigit(), "PID1 descriptor report malformed")
-                        _require(pid1_pidfd < 0 and passed >= 0, "PID1 pidfd missing or duplicate")
-                        pid1, pid1_pidfd, adopted = int(packet[len(PID1_FD):]), passed, True
-                    finally:
-                        if not adopted and passed >= 0: _close_and_prove(passed)
+                        action = _control_adopt(
+                            packet, passed,
+                            lambda raw, right: _classify_pid1_gate_packet(
+                                raw, right, helper, pid1_pidfd < 0),
+                        )
+                    except CleanupUncertain as error:
+                        if error.work_error is not None and initial_error is None:
+                            initial_error = error.work_error
+                        parent_close_errors.extend(error.cleanup_errors)
+                        close_uncertain = True
+                        raise
+                    if action[0] == "no-pid1":
+                        known_no_pid1 = True
+                        raise NativeCandidateError("helper failed before PID1")
+                    _require(pid1_pidfd < 0, "PID1 pidfd duplicate")
+                    pid1, pid1_pidfd = action[1], action[2]
                 if helper_pidfd in ready and pid1_pidfd < 0: raise NativeCandidateError("helper exited before PID1 release")
             _validate_pidfd(pid1_pidfd, pid1, helper, namespace_pid1=True)
             _validate_pidfd(helper_pidfd, helper, os.getpid(), namespace_pid1=False)
@@ -1067,21 +1185,28 @@ def _run_candidate_child(tree, contract, closure, package, work_deadline_ns, set
         control, descriptors["control_parent"] = descriptors["control_parent"], -1
         result_fd, descriptors["result_read"] = descriptors["result_read"], -1
         result, work_error, supervised, settled = _supervise_candidate(helper_pidfd, pid1_pidfd, control, result_fd,
-            work_deadline_ns, settlement_deadline_ns, initial_error, known_no_pid1, helper)
+            work_deadline_ns, settlement_deadline_ns, initial_error,
+            known_no_pid1 or not helper_go_sent, helper)
         cleanup_errors.extend(supervised)
     else:
-        result, work_error, settled = None, initial_error or NativeCandidateError("launch failed"), False
+        result = None
+        work_error = initial_error or NativeCandidateError("launch failed")
+        settled = not isinstance(work_error, CleanupUncertain)
     for name, descriptor in tuple(descriptors.items()):
         if descriptor >= 0:
             descriptors[name] = -1
             try: _close_and_prove(descriptor)
-            except BaseException as error: cleanup_errors.append((f"failed-launch-{name}-close", error))
+            except BaseException as error:
+                cleanup_errors.append((f"failed-launch-{name}-close", error))
+                settled = False
     detached = (("failed-launch-tree-close", tree), *((f"failed-launch-device-{name}-close", fd) for name, fd, _device in device_sources))
     tree, device_sources = -1, ()
     for stage, descriptor in detached:
         if descriptor >= 0:
             try: _close_and_prove(descriptor)
-            except BaseException as error: cleanup_errors.append((stage, error))
+            except BaseException as error:
+                cleanup_errors.append((stage, error))
+                settled = False
     if subreaper_previous >= 0:
         try: _set_subreaper(bool(subreaper_previous))
         except BaseException as error: cleanup_errors.append(("subreaper-restore", error)); settled = False

@@ -98,6 +98,28 @@ def portable_tests():
             check(set(os.listdir("/proc/self/fd")) == before, "malformed packet right leaked")
     finally:
         left.close(); right.close(); os.close(source)
+
+    # An empty datagram can still install a right.  The transport gate owns
+    # and retires it before reporting EOF.
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    source = os.open("/dev/null", os.O_RDONLY)
+    guard_read, guard_write = os.pipe()
+    before = set(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").exists() else None
+    try:
+        rights = array.array("i", [source])
+        left.sendmsg([b""], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
+        try:
+            module._wait_control(
+                right.fileno(), guard_read, module.time.monotonic_ns() + module.NS)
+        except module.NativeCandidateError:
+            pass
+        else:
+            raise AssertionError("empty control packet with a right was accepted")
+        if before is not None:
+            check(set(os.listdir("/proc/self/fd")) == before, "empty packet right leaked")
+    finally:
+        left.close(); right.close(); os.close(source)
+        os.close(guard_read); os.close(guard_write)
         if portable_cmsg_flag: del socket.MSG_CMSG_CLOEXEC
 
     reads = []
@@ -125,9 +147,15 @@ def portable_tests():
     original_close = module._close_and_prove
     module._close_and_prove = lambda descriptor: calls.append(descriptor) or (_ for _ in ()).throw(OSError(5, "close uncertain"))
     try:
-        try: module._control_no_fd(b"BAD", 12345, module.HELPER_GO, "bad gate")
-        except module.CleanupUncertain: pass
-        else: raise AssertionError("uncertain rejected-right close was not sticky")
+        try:
+            module._control_adopt(b"MALFORMED-PID1", 12345, module._classify_pid1_gate_packet)
+        except module.CleanupUncertain as error:
+            check(isinstance(error.work_error, module.NativeCandidateError),
+                  "malformed PID1 packet primary error was replaced")
+            check(len(error.cleanup_errors) == 1,
+                  "rejected PID1 right close uncertainty was not aggregated")
+        else:
+            raise AssertionError("uncertain rejected PID1-right close was not sticky")
         check(calls == [12345], "uncertain close was retried")
     finally:
         module._close_and_prove = original_close
@@ -174,14 +202,71 @@ def _supervisor_protocol_tests():
     check(result == payload and error is None and cleanup == [] and settled,
           "queued PID1 report was lost to helper readiness/EOF race")
 
+    child_failure = b"transaction:OSError_5"
+    error_frame = len(child_failure + b"E").to_bytes(4, "big") + b"E" + child_failure
     original_poll = module.select.poll
     module.select.poll = lambda: (_ for _ in ()).throw(OSError(5, "poll fault"))
     try:
-        result, error, cleanup, settled = _supervisor_protocol_row(frame)
+        result, error, cleanup, settled = _supervisor_protocol_row(error_frame)
     finally:
         module.select.poll = original_poll
-    check(isinstance(error, OSError) and settled,
-          f"supervisor poll exception escaped or abandoned ownership: {error!r}; {cleanup!r}")
+    check(isinstance(error, OSError) and not isinstance(error, module.ChildCandidateError) and settled,
+          f"child E frame replaced poll fault or ownership was abandoned: {error!r}; {cleanup!r}")
+
+    _helper_signal_retry_test()
+
+
+def _helper_signal_retry_test():
+    """The reserve retries helper SIGKILL and reaps after the successful retry."""
+    parent_control, child_control = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    result_read, result_write = os.pipe2(os.O_CLOEXEC)
+    child = os.fork()
+    if child == 0:
+        parent_control.close(); os.close(result_read)
+        while True:
+            signal.pause()
+    child_control.close(); os.close(result_write)
+    helper_pidfd = os.pidfd_open(child, 0)
+    original_signal = module.signal.pidfd_send_signal
+    attempts = []
+    primary = OSError(5, "supervisor work fault")
+    def fail_once(pidfd, sent_signal, siginfo=None, flags=0):
+        if pidfd == helper_pidfd and sent_signal == signal.SIGKILL:
+            attempts.append(pidfd)
+            if len(attempts) == 1:
+                raise OSError(5, "first helper signal fault")
+        return original_signal(pidfd, sent_signal, siginfo, flags)
+    module.signal.pidfd_send_signal = fail_once
+    try:
+        deadline = module.time.monotonic_ns() + 2 * module.NS
+        result, error, cleanup, settled = module._supervise_candidate(
+            helper_pidfd, -1, parent_control.detach(), result_read,
+            deadline - module.NS, deadline, primary, True, child)
+    finally:
+        module.signal.pidfd_send_signal = original_signal
+        try:
+            original_signal(helper_pidfd, signal.SIGKILL)
+        except OSError:
+            try:
+                module._libc_call("kill", ctypes.c_int(child), ctypes.c_int(signal.SIGKILL))
+            except OSError:
+                pass
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass
+    check(result is None and error is primary and settled,
+          f"helper signal retry did not preserve work and settlement: {error!r}; {cleanup!r}")
+    check(len(attempts) >= 2, "helper SIGKILL was not retried during the reap reserve")
+    check(any(stage == "helper-final-signal" for stage, _error in cleanup),
+          "first helper signal failure was not retained")
+    try:
+        os.waitpid(child, os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError("helper was not exactly reaped before supervisor return")
 
 
 class _ProbeError(Exception):
@@ -308,8 +393,10 @@ def _parent_death_gate_test(tree):
         _set_subreaper(bool(previous))
 
 
-def _native_case(descriptor, *, helper_exit=None, fail_pidfd=False, package=_ProbePackage):
+def _native_case(descriptor, *, helper_exit=None, fail_helper_pidfd=False,
+                 fail_pidfd=False, package=_ProbePackage):
     module._NATIVE_TEST_HELPER_EXIT_STAGE = helper_exit
+    module._NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = fail_helper_pidfd
     module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = fail_pidfd
     try:
         tree = module._open_detached_tree(descriptor)
@@ -317,6 +404,7 @@ def _native_case(descriptor, *, helper_exit=None, fail_pidfd=False, package=_Pro
         return module._run_candidate_child(tree, {}, {}, package, deadline, deadline + 5 * module.NS)
     finally:
         module._NATIVE_TEST_HELPER_EXIT_STAGE = None
+        module._NATIVE_TEST_FAIL_HELPER_PIDFD_OPEN = False
         module._NATIVE_TEST_FAIL_PID1_PIDFD_OPEN = False
 
 
@@ -344,13 +432,33 @@ def native_test():
         check(result == b'{"descendant":true}' and error is None and cleanup == [] and settled,
               f"adopted namespace descendant did not settle: {error!r}; {cleanup!r}")
 
-        for stage, fail_pidfd in (("before-pidfd-transfer", False), ("after-pidfd-transfer", False),
-                                  (None, True)):
+        for stage, fail_helper_pidfd, fail_pidfd in (
+            ("before-pidfd-transfer", False, False),
+            ("after-pidfd-transfer", False, False),
+            (None, False, True),
+            (None, True, False),
+        ):
             result, error, cleanup, settled = _native_case(
-                descriptor, helper_exit=stage, fail_pidfd=fail_pidfd)
+                descriptor, helper_exit=stage, fail_helper_pidfd=fail_helper_pidfd,
+                fail_pidfd=fail_pidfd)
             check(result is None and error is not None, f"fault cut unexpectedly succeeded: {stage}")
             check(cleanup == [] and settled,
-                  f"fault cut did not settle: stage={stage}; error={error!r}; cleanup={cleanup!r}")
+                  f"fault cut did not settle: stage={stage}; helper-pidfd={fail_helper_pidfd}; "
+                  f"error={error!r}; cleanup={cleanup!r}")
+
+        # A failed outer fork creates no process tree.  Once every setup FD and
+        # detached tree closes, child absence is proved and cleanup is safe.
+        fork_tree = module._open_detached_tree(descriptor)
+        original_fork = module.os.fork
+        module.os.fork = lambda: (_ for _ in ()).throw(OSError(11, "test outer fork failure"))
+        try:
+            deadline = module.time.monotonic_ns() + 5 * module.NS
+            result, error, cleanup, settled = module._run_candidate_child(
+                fork_tree, {}, {}, _ProbePackage, deadline, deadline + 2 * module.NS)
+        finally:
+            module.os.fork = original_fork
+        check(result is None and isinstance(error, OSError) and cleanup == [] and settled,
+              f"pre-fork no-child failure was not settled: {error!r}; {cleanup!r}")
 
         death_tree = module._open_detached_tree(descriptor)
         _parent_death_gate_test(death_tree)
