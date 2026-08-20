@@ -4,19 +4,29 @@ V1 deliberately describes the host route and remains immutable.  This module
 owns the distinct result contract for execution in the retained Stage 2 rootfs.
 """
 import hashlib
+import json
+import os
 from pathlib import Path
 from completion_guest_workloads import (CleanupUncertain, Deadline, OwnedRoot, SignalScope,
     ToolSet, WorkloadError, WorkloadInterrupted, _check_versions, _run_package_sample,
     require_linux_amd64_root)
 from completion_runtime_contract import (canonical_json, exact_runtime_closure,
     exact_tool_observations, load_candidate_contract, native_execution_binding,
-    validate_native_candidate_result)
+    native_implementation_digests, validate_native_candidate_result)
 CANDIDATE_ROOT = Path("/tmp/cogs-stage2-workload-candidate-v2")
-FIXED_NATIVE_DRIVER = Path("/var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-package-native-candidate.py")
+FIXED_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
+FIXED_NATIVE_DRIVER = FIXED_SOURCE / "scripts/run-stage2-package-native-candidate.py"
+FIXED_SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 MAX_OUTPUT_BYTES = 4096
-# Captured while the fixed source is still visible, before namespace/chroot entry.
+# Captured after fixed-source verification and while its names are still visible,
+# before namespace/chroot entry removes access to the source directory.
 NATIVE_LAUNCHER_BYTES = FIXED_NATIVE_DRIVER.read_bytes()
 NATIVE_LAUNCHER_SHA256 = hashlib.sha256(NATIVE_LAUNCHER_BYTES).hexdigest()
+SOURCE_MANIFEST_BYTES = FIXED_SOURCE_MANIFEST.read_bytes()
+SOURCE_MANIFEST_SHA256 = hashlib.sha256(SOURCE_MANIFEST_BYTES).hexdigest()
+SOURCE_REVISION = json.loads(SOURCE_MANIFEST_BYTES)["revision"]
+# Cache all fixed-source implementation bytes before chroot hides the source tree.
+NATIVE_IMPLEMENTATION_DIGESTS = native_implementation_digests()
 class NativeCandidateTransactionError(WorkloadError):
     category = "native-candidate-mismatch"
 def _require(condition):
@@ -44,6 +54,8 @@ def run_candidate_transaction():
     deadline = Deadline.start()
     root = tools = failure = result = None
     _require(0 < len(NATIVE_LAUNCHER_BYTES) <= 256 * 1024)
+    _require(0 < len(SOURCE_MANIFEST_BYTES) <= 16 * 1024 * 1024)
+    _require(SOURCE_REVISION == os.environ.get("COGS_PACKAGE_REVIEWED_HEAD"))
     launcher_sha256 = NATIVE_LAUNCHER_SHA256
     with SignalScope():
         try:
@@ -51,7 +63,7 @@ def run_candidate_transaction():
             require_linux_amd64_root()
             runtime_closure = exact_runtime_closure()
             tools = ToolSet()
-            root = OwnedRoot(CANDIDATE_ROOT, deadline, "retained-rootfs-candidate")
+            root = OwnedRoot(CANDIDATE_ROOT, deadline, "host-candidate")
             root.mkdir("private-home", 0o700)
             root.mkdir("private-tmp", 0o700)
             _check_versions(root, tools, deadline)
@@ -75,7 +87,8 @@ def run_candidate_transaction():
                 "lifecycle_deleted": True,
                 "promotion": "external-manual-review-required",
                 "execution_binding": native_execution_binding(
-                    tool_observations, runtime_closure, launcher_sha256),
+                    tool_observations, runtime_closure, launcher_sha256,
+                    SOURCE_REVISION, SOURCE_MANIFEST_SHA256),
             }
         except BaseException as error:
             failure = error

@@ -178,14 +178,24 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
   const validateV1 = compile("stage2-workload-candidate-v1.json");
   const validateV2 = compile("stage2-workload-candidate-v2.json");
   const nativeBinding = {
-    ...executionBinding,
-    launcher_implementation_sha256: "d".repeat(64),
-    contract_validator: "fixed-source-manifest-verified-native-v2-validator",
-    source_checkout: "fixed-reviewed-source-loaded-before-chroot",
+    fixture_implementation_sha256: executionBinding.fixture_implementation_sha256,
+    workload_implementation_sha256: executionBinding.workload_implementation_sha256,
+    owner_implementation_sha256: executionBinding.owner_implementation_sha256,
+    native_producer_implementation_sha256: "6abb303e556631cbad3a7511ddb1d01de1ab14b4a387e0de6e9a91de8e657dd8",
+    runtime_codec_implementation_sha256: "f104b05a90ca9159fd3ea465fe707a43a22d14375614f4e5e6587482487106e9",
+    launcher_implementation_sha256: "986b744a17e89104e7afe5a10131aa2f3ad4e5795d56de226279124798a1f192",
+    source_revision: "1".repeat(40),
+    source_manifest_sha256: "2".repeat(64),
+    tool_observations: exactTools,
+    runtime_closure: runtimeClosure,
+    contract_validator: "exact-fixed-source-native-v2-codec",
+    source_checkout: "manifest-verified-reviewed-revision-loaded-before-chroot",
     linux_dynamic_tool_closure: "exact-static-elf-closure-executed-from-retained-rootfs",
-    process_containment: "gated-os-fork-helper-newns-newpid-newnet-os-fork-pid1-pidfd-v1",
+    process_containment: "parent-gated-fork-helper-newns-newpid-newnet-fork-pid1-dual-pidfd-v1",
     process_containment_limitation: "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
+    operation_parent_isolation: "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
     rootfs_execution: "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
+    retained_root_lifecycle: "output-after-pid1-and-helper-settlement-and-retained-root-removal",
   };
   const native = {
     version: "cogs.stage2-workload-candidate/v2",
@@ -204,6 +214,24 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
   assert.equal(validateV1(native), false);
   assert.equal(validateV2({ ...native, version: "cogs.stage2-workload-candidate/v1" }), false);
   assert.equal(validateV2({ ...native, execution_binding: executionBinding }), false);
+  for (const field of [
+    "native_producer_implementation_sha256",
+    "runtime_codec_implementation_sha256",
+    "launcher_implementation_sha256",
+  ] as const) {
+    assert.equal(
+      validateV2({ ...native, execution_binding: { ...nativeBinding, [field]: "d".repeat(64) } }),
+      false,
+      `${field} accepted arbitrary hex`,
+    );
+  }
+  assert.equal(
+    validateV2({
+      ...native,
+      execution_binding: { ...nativeBinding, orchestrator_implementation_sha256: "d".repeat(64) },
+    }),
+    false,
+  );
   assert.equal(executionBinding.rootfs_execution, "not-used-by-host-candidate-or-reproduction");
 });
 
