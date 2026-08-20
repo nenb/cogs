@@ -54,6 +54,21 @@ try:
     __import__("os").write(poll_w, b"x"); assert poller.poll(1000)
 finally:
     __import__("os").close(poll_r); __import__("os").close(poll_w)
+# A retained pidfd/descriptor is proven EBADF before a successful outcome can
+# become durable; close doubt is an outcome error, never silent completion.
+proof_r, proof_w = os.pipe()
+proof_errors = []
+assert process._close_and_prove_absent(proof_r, "portable-fd", proof_errors)
+assert proof_errors == []
+rejected(lambda: os.fstat(proof_r))
+real_close = os.close
+with patch.object(process.os, "close", side_effect=OSError(errno.EINTR, "uncertain")):
+    assert not process._close_and_prove_absent(proof_w, "portable-fd", proof_errors)
+real_close(proof_w)
+assert proof_errors == [f"portable-fd-close:{errno.EINTR}"]
+process_source = (REMOTE / "completion_kata_process.py").read_text()
+assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
+       process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
 rejected(lambda: process._start_fixed_daemon(object(), object()))
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}

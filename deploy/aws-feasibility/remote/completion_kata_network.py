@@ -2320,6 +2320,8 @@ def _baselines(journal):
 
 def _capture_fixed_baselines(journal, ip, nft, tc):
     import completion_kata_operation as operation
+    nft_owner.acquire(journal)
+    nft_owner.require_active(journal)
     raws = tuple(_perform_fixed(journal, action, ip, nft, tc) for action in _BASELINE_ACTIONS)
     _support_ownership(journal)
     mountinfo = _read_mountinfo(); baselines = _complete_baseline(raws, mountinfo, journal)
@@ -2365,9 +2367,7 @@ def _observe_ready_teardown(journal, ip, nft, tc, prior):
 
 
 def _effect(journal, action, ip, nft, tc, prior, final=False):
-    if action is Action.NFT_INSTALL_OWNED:
-        nft_owner.acquire(journal)
-    elif action is Action.NFT_REMOVE_ATOMIC:
+    if action in _SETUP_ACTIONS or action is Action.NFT_REMOVE_ATOMIC:
         nft_owner.require_active(journal)
     intent = _effect_body(journal, action, target=prior)
     try:
@@ -2400,6 +2400,7 @@ def _setup_fixed_network(journal, ip, nft, tc):
                              for kind, _body in operation._network_history(journal)):
         raise NetworkError("setup replay forbidden")
     identity = rows[0]["identity"]
+    nft_owner.require_active(journal)
     for index, action in enumerate(_SETUP_ACTIONS):
         identity = _effect(journal, action, ip, nft, tc, identity,
                            index == len(_SETUP_ACTIONS) - 1)
@@ -2614,6 +2615,8 @@ def _resume_effect(journal, ip, nft, tc):
     if not effects or effects[-1][0] == "NETWORK_EFFECT_SETTLED_V2":
         return
     kind, body = effects[-1]
+    if body["action"] in {item.value for item in _SETUP_ACTIONS}:
+        nft_owner.require_active(journal)
     if (operation._command_context(journal).lifecycle_phase == "UNCERTAIN"
             and body["action"] != Action.IP_NETNS_REMOVE.value):
         raise NetworkError("uncertain setup effect cannot resume")
@@ -2630,8 +2633,7 @@ def _resume_effect(journal, ip, nft, tc):
          else _descriptor_remove_netns(journal, body["target"]))
     _resume_observer_chunk(journal, ip, nft, tc, Action(body["action"]))
     if body["action"] not in {row["source_id"] for row in _sources(journal, "NETWORK_EFFECT_INTENT_V2")}:
-        raw = (_retained_observation_raw(journal, "NFT_TABLE", "NETWORK_EFFECT_INTENT_V2")
-               if body["action"] == Action.NFT_REMOVE_ATOMIC.value else b"")
+        raw = b""
         if (mutation_outcome is None or mutation_outcome["stdout_length"] != len(raw) or
                 mutation_outcome["stdout_sha256"] != hashlib.sha256(raw).hexdigest()):
             raise NetworkError("mutation output cannot be reconstructed")
@@ -2744,7 +2746,9 @@ def _remove_fixed_firewall(journal, ip, nft, tc):
         journal.begin_network_cleanup("firewall")
         baselines, rows = _baselines(journal); _resume_effect(journal, ip, nft, tc)
         if rows[-1]["snapshot_kind"] == "firewall-restored":
-            _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT"); return rows[-1]
+            _settle_cleanup(journal, "firewall", "FIREWALL_ABSENT")
+            nft_owner.settle_free(journal, "firewall")
+            return rows[-1]
         retained = rows[-1]
         if retained["snapshot_kind"] != "network-absent":
             raise NetworkError("firewall removal order")
@@ -2816,6 +2820,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
                 _settle_cleanup(journal, "network", "NETWORK_ABSENT")
             elif _network_cleanup_active(journal):
                 journal.settle_network_cleanup("network")
+            nft_owner.settle_free(journal, "network")
             return rows[-1]
         if len(rows) != 1 or rows[0]["snapshot_kind"] != "baseline":
             raise NetworkError("setup abort order")
@@ -2875,8 +2880,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         body = _snapshot(journal, "network-absent", baselines, retained,
                          _sources(journal, "NETWORK_SNAPSHOT_V2"))
         _settle_cleanup(journal, "network", "NETWORK_ABSENT")
-        if setup[-1]["identity"]["nft"] is not None:
-            nft_owner.settle_free(journal, "network")
+        nft_owner.settle_free(journal, "network")
         return body
     except BaseException as error:
         try: _poison_fixed_network(journal, "incomplete")

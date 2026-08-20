@@ -1279,6 +1279,23 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
     return buffers, overflow, wait_status, pipes_eof, state, errors
 
 
+def _close_and_prove_absent(descriptor, label, errors):
+    try:
+        os.close(descriptor)
+    except OSError as error:
+        errors.append(f"{label}-close:{error.errno}")
+        return False
+    try:
+        os.fstat(descriptor)
+    except OSError as error:
+        if error.errno == errno.EBADF:
+            return True
+        errors.append(f"{label}-absence:{error.errno}")
+        return False
+    errors.append(f"{label}-still-open")
+    return False
+
+
 def _wait_all_children(leader_pid, errors):
     """Reap every waitable child and prove the subreaper has no child left."""
     leader_reaped = False
@@ -1313,10 +1330,7 @@ def _settle_cgroup(owner, leader_pid, deadline, errors):
             break
         time.sleep(0.005)
     for descriptor, _row in tuple(owner.pidfds.values()):
-        try:
-            os.close(descriptor)
-        except OSError as error:
-            errors.append(f"pidfd-close:{error.errno}")
+        _close_and_prove_absent(descriptor, "pidfd", errors)
     owner.pidfds.clear()
     removed = False
     if stable_empty:
@@ -1563,6 +1577,10 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         subreaper_restored = True
         if not _cleanup_closed(cleanup, pid, wait_status):
             raise ProcessError("cleanup continuation required")
+        if pidfd is not None:
+            retained_pidfd = pidfd
+            pidfd = None
+            _close_and_prove_absent(retained_pidfd, "leader-pidfd", errors)
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
@@ -1617,6 +1635,10 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             except BaseException as error:
                 errors.append(f"subreaper-restore:{type(error).__name__}")
             subreaper_restored = True
+        if pidfd is not None:
+            retained_pidfd = pidfd
+            pidfd = None
+            _close_and_prove_absent(retained_pidfd, "leader-pidfd", errors)
         failure_state = {"term": False, "kill": killed_cgroup}
         failure_body = _outcome_body(
             intent, "uncertain" if preexec_recorded else "not-started", None, None,
@@ -1637,10 +1659,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             try: os.close(network_fd)
             except OSError: pass
         if pidfd is not None:
-            try:
-                os.close(pidfd)
-            except OSError:
-                pass
+            _close_and_prove_absent(pidfd, "leader-pidfd-final", errors)
         if previous_subreaper is not None and not subreaper_restored:
             try:
                 _set_subreaper(previous_subreaper)

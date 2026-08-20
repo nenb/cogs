@@ -133,6 +133,24 @@ check(positions[network.Action.NFT_INSTALL_OWNED] < positions[network.Action.IP_
       positions[network.Action.IP_HOST_ADDRGEN_NONE] < positions[network.Action.IP_HOST_LINK_UP],
       "live link/address precedes firewall or addrgen")
 
+# Persistent ownership precedes the first authoritative baseline command, and
+# every setup mutation checks it before recording or mutating.
+gate_events = []
+class GateCut(Exception): pass
+with patch.object(network.nft_owner, "acquire", side_effect=lambda _j: gate_events.append("acquire")), \
+     patch.object(network.nft_owner, "require_active", side_effect=lambda _j: gate_events.append("require")), \
+     patch.object(network, "_perform_fixed", side_effect=lambda *_a: (_ for _ in ()).throw(GateCut())):
+    try: network._capture_fixed_baselines(object(), object(), object(), object())
+    except GateCut: pass
+check(gate_events == ["acquire", "require"], "baseline command preceded persistent NFT admission")
+for setup_action in network._SETUP_ACTIONS:
+    recorded = []
+    with patch.object(network.nft_owner, "require_active", side_effect=GateCut()), \
+         patch.object(network, "_record_effect", side_effect=lambda *_a: recorded.append(1)):
+        try: network._effect(object(), setup_action, object(), object(), object(), EMPTY)
+        except GateCut: pass
+    check(not recorded, f"setup mutation intent preceded NFT gate:{setup_action.value}")
+
 # The real journal codec enforces intent/observed/settled ordering, exact setup
 # order, and nsfs replacement rejection rather than trusting a fake owner type.
 state = journal_model.initial(); state["snapshots"] = [BASELINE]; state["current"] = EMPTY
@@ -554,6 +572,29 @@ for snapshot_kind, existing, expected_removals in (("ready", netns_object, [netw
         network._remove_fixed_network(teardown, object(), object(), object())
     check(removals == expected_removals, "ready-only/absent teardown issued wrong rm")
 
+# Recovery of a successful direct table deletion reconstructs its real empty
+# stdout and never substitutes the cached pre-delete NFT_TABLE observation.
+removal_body = {"action": network.Action.NFT_REMOVE_ATOMIC.value, "target": READY_ID}
+removal_outcome = {"command_id": network.Action.NFT_REMOVE_ATOMIC.value,
+    "command_serial": 17, "outcome": "exited", "status": 0,
+    "stdout_length": 0, "stdout_sha256": hashlib.sha256(b"").hexdigest()}
+removal_raw = []
+removal_history = [("NETWORK_EFFECT_INTENT_V2", removal_body),
+                   ("COMMAND_OUTCOME_V2", removal_outcome)]
+removal_context = type("Context", (), {"lifecycle_phase": "TASK_STOPPED"})()
+with patch.object(operation, "_network_history", return_value=removal_history), \
+     patch.object(operation, "_command_context", return_value=removal_context), \
+     patch.object(network, "_resume_observer_chunk"), \
+     patch.object(network, "_sources", return_value=[]), \
+     patch.object(network, "_retained_observation_raw", side_effect=AssertionError("cached NFT_TABLE used")), \
+     patch.object(network, "_record_observation", side_effect=lambda _j, _a, raw, _s: removal_raw.append(raw)), \
+     patch.object(network, "_settled_effects", return_value=[]), \
+     patch.object(network, "_observed_identity", return_value=EMPTY), \
+     patch.object(network, "_effect_body", return_value={"identity": EMPTY}), \
+     patch.object(network, "_record_effect"):
+    network._resume_effect(object(), object(), object(), object())
+check(removal_raw == [b""], "successful deletion recovery did not reconstruct empty stdout")
+
 # Cleanup intent is durable before fallible work. If poisoning cannot append
 # UNCERTAIN, both failures survive and neither this owner nor a reopen can progress.
 class CleanupRecord:
@@ -672,6 +713,26 @@ for target in ("network", "firewall"):
         next_kind = "TASK_ABSENT" if target == "network" else "INPUT_REMOVED"
         check(journal_model.cleanup_step(active, next_kind, settled.phase) == (None, False),
               "acked cleanup blocked normal reopen")
+
+# Re-entry at either already-durable terminal cleanup snapshot cannot report
+# success while leaving persistent ownership ACTIVE.
+settlement_calls = []
+class DurableSnapshotJournal:
+    def begin_network_cleanup(self, _target): pass
+firewall_snapshot = {"snapshot_kind": "firewall-restored"}
+with patch.object(network, "_baselines", return_value=(BASELINES, [firewall_snapshot])), \
+     patch.object(network, "_resume_effect"), patch.object(network, "_settle_cleanup"), \
+     patch.object(network.nft_owner, "settle_free", side_effect=lambda _j, target: settlement_calls.append(target)):
+    check(network._remove_fixed_firewall(DurableSnapshotJournal(), object(), object(), object()) is firewall_snapshot,
+          "durable firewall snapshot did not return")
+network_snapshot = {"snapshot_kind": "network-absent"}
+with patch.object(network, "_baselines", return_value=(BASELINES, [network_snapshot])), \
+     patch.object(operation, "_durable_phase", return_value="NETWORK_ABSENT"), \
+     patch.object(network, "_network_cleanup_active", return_value=False), \
+     patch.object(network.nft_owner, "settle_free", side_effect=lambda _j, target: settlement_calls.append(target)):
+    check(network._abort_fixed_setup(DurableSnapshotJournal(), object(), object(), object()) is network_snapshot,
+          "durable setup-abort snapshot did not return")
+check(settlement_calls == ["firewall", "network"], "durable cleanup omitted or repeated FREE settlement")
 
 # If completion is durably appended, its reported failure cannot erase intent
 # when confirmation and the subsequent UNCERTAIN append both fail. This is the

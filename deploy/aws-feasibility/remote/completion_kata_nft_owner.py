@@ -19,6 +19,12 @@ import completion_kata_fdmap as fdmap
 OWNER_DIR = "/var/lib/cogs-stage2-nft-owner-v1"
 LOCK_NAME = "writer.lock"
 STATE_NAME = "state.json"
+SOURCE_ROOT = "/var/lib/cogs/stage2-completion-v1/source"
+OPERATION_JOURNAL = (SOURCE_ROOT +
+    "/deploy/aws-feasibility/.state/completion-v1/kata-operation-v1/operation-v1.jsonl")
+CGROUP_BASE = "/sys/fs/cgroup/cogs-stage2-completion-v1"
+MAX_PROCESSES = 32_768
+MAX_PROCESS_FDS = 4_096
 STATE_VERSION = "cogs.stage2-host-global-nft-state/v1"
 LOCK_ROLE = fdmap.NFT_WRITER_LOCK
 LOCK_TARGET_FD = fdmap.NFT_WRITER_LOCK_FD
@@ -194,7 +200,7 @@ def _replace_state(parent, value):
     temporary = f".state-{os.getpid()}-{os.urandom(12).hex()}"
     descriptor = None
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+        descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL |
                              os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=parent)
         _regular_identity(descriptor, 0o600)
         offset = 0
@@ -248,21 +254,173 @@ def _journal_bindings(journal):
     return context, history, binding, genesis
 
 
+def _bounded_proc_file(path, limit):
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        raw = os.read(descriptor, limit + 1)
+        if len(raw) > limit:
+            raise NftOwnerError(f"bounded legacy census required:{path}")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _proc_start_time(pid):
+    raw = _bounded_proc_file(f"/proc/{pid}/stat", 4096)
+    close = raw.rfind(b")")
+    fields = raw[close + 2:].split() if close > 0 else ()
+    if len(fields) < 20:
+        raise NftOwnerError("canonical process stat census unavailable")
+    try:
+        value = int(fields[19])
+    except ValueError as error:
+        raise NftOwnerError("canonical process start census unavailable") from error
+    if value <= 0:
+        raise NftOwnerError("invalid process start census")
+    return value
+
+
+def _source_census():
+    module = os.path.realpath(__file__)
+    if not (module.startswith(SOURCE_ROOT + "/") and module.endswith("completion_kata_nft_owner.py")):
+        raise NftOwnerError("trusted production NFT owner source unavailable")
+    root = os.stat(SOURCE_ROOT, follow_symlinks=False)
+    descriptor = os.open(module, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        observed = os.fstat(descriptor)
+        raw = os.read(descriptor, 131_073)
+    finally:
+        os.close(descriptor)
+    if (not stat.S_ISDIR(root.st_mode) or root.st_uid != 0 or root.st_gid != 0
+            or root.st_mode & 0o022 or not stat.S_ISREG(observed.st_mode)
+            or observed.st_uid != 0 or observed.st_gid != 0
+            or observed.st_mode & 0o022 or observed.st_nlink != 1
+            or observed.st_size != len(raw) or len(raw) > 131_072):
+        raise NftOwnerError("unsafe trusted NFT owner source")
+    return {
+        "root": [root.st_dev, root.st_ino, root.st_mode, root.st_uid, root.st_gid],
+        "module": [observed.st_dev, observed.st_ino, observed.st_mode,
+                   observed.st_uid, observed.st_gid, observed.st_size],
+        "module_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _journal_census(context, provisioning):
+    try:
+        observed = os.stat(OPERATION_JOURNAL, follow_symlinks=False)
+    except FileNotFoundError:
+        if not provisioning:
+            raise NftOwnerError("fixed operation journal census unavailable")
+        return {"present": False}
+    if provisioning:
+        raise NftOwnerError("fresh-host provisioning found an operation journal")
+    key = context.journal_key
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0 or observed.st_gid != 0
+            or stat.S_IMODE(observed.st_mode) != 0o600 or observed.st_nlink != 1
+            or type(key) is not dict or key.get("device") != observed.st_dev
+            or key.get("inode") != observed.st_ino):
+        raise NftOwnerError("fixed operation journal identity mismatch")
+    return {"present": True, "device": observed.st_dev, "inode": observed.st_ino,
+            "size": observed.st_size, "mtime_ns": observed.st_mtime_ns,
+            "ctime_ns": observed.st_ctime_ns}
+
+
+def _cgroup_census():
+    try:
+        observed = os.stat(CGROUP_BASE, follow_symlinks=False)
+        names = sorted(os.listdir(CGROUP_BASE))
+        members = _bounded_proc_file(CGROUP_BASE + "/cgroup.procs", 262_144)
+    except FileNotFoundError:
+        return {"present": False}
+    if not stat.S_ISDIR(observed.st_mode) or len(names) > MAX_PROCESS_FDS:
+        raise NftOwnerError("bounded legacy command cgroup census unavailable")
+    return {"present": True, "device": observed.st_dev, "inode": observed.st_ino,
+            "names": names, "members_sha256": hashlib.sha256(members).hexdigest(),
+            "members_length": len(members)}
+
+
+def _process_census():
+    try:
+        pids = sorted(int(name) for name in os.listdir("/proc") if name.isdigit())
+    except (OSError, ValueError) as error:
+        raise NftOwnerError("global process census unavailable") from error
+    if len(pids) > MAX_PROCESSES:
+        raise NftOwnerError("bounded global process census required")
+    identities, offenders = [], []
+    for pid in pids:
+        try:
+            before = _proc_start_time(pid)
+            cmdline = _bounded_proc_file(f"/proc/{pid}/cmdline", 131_072)
+            cgroup = _bounded_proc_file(f"/proc/{pid}/cgroup", 65_536)
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            executable = os.readlink(f"/proc/{pid}/exe")
+            names = sorted(os.listdir(f"/proc/{pid}/fd"), key=lambda item: int(item))
+            if len(names) > MAX_PROCESS_FDS or any(not name.isdigit() for name in names):
+                raise NftOwnerError("bounded process descriptor census required")
+            descriptors = []
+            for name in names:
+                target = os.readlink(f"/proc/{pid}/fd/{name}")
+                identity = os.stat(f"/proc/{pid}/fd/{name}")
+                descriptors.append([int(name), target, identity.st_dev, identity.st_ino,
+                                    identity.st_mode])
+            after = _proc_start_time(pid)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as error:
+            raise NftOwnerError(f"exact process census unavailable:{pid}") from error
+        if before != after:
+            raise NftOwnerError("process identity changed during legacy census")
+        identities.append([pid, before])
+        if pid == os.getpid():
+            continue
+        text = cmdline.decode("utf-8", "surrogateescape")
+        reasons = []
+        if SOURCE_ROOT in text or "completion_kata_" in text or "completion_local_full.py" in text:
+            reasons.append("command")
+        if ((cwd == SOURCE_ROOT or cwd.startswith(SOURCE_ROOT + "/"))
+                and os.path.basename(executable).startswith("python")):
+            reasons.append("cwd")
+        if ("/cogs-stage2-completion-v1" in cgroup.decode("ascii", "strict")
+                or any(target == OPERATION_JOURNAL or target.startswith(OWNER_DIR + "/")
+                       or target.startswith(SOURCE_ROOT + "/") for _fd, target, *_rest in descriptors)):
+            reasons.append("fd-cgroup-source")
+        if reasons:
+            offenders.append({
+                "pid": pid, "start_time": before, "reasons": sorted(set(reasons)),
+                "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+                "cgroup_sha256": hashlib.sha256(cgroup).hexdigest(), "cwd": cwd,
+                "executable": executable, "descriptors": descriptors,
+            })
+    return {"identities": identities, "offenders": offenders}
+
+
+def _global_legacy_census(context=None, provisioning=False):
+    if provisioning != (context is None):
+        raise NftOwnerError("exact provisioning census mode required")
+    boot_before = _boot_id()
+    first = {"boot_id": boot_before, "source": _source_census(),
+             "journal": _journal_census(context, provisioning),
+             "cgroup": _cgroup_census(), "processes": _process_census()}
+    second = {"boot_id": _boot_id(), "source": _source_census(),
+              "journal": _journal_census(context, provisioning),
+              "cgroup": _cgroup_census(), "processes": _process_census()}
+    if first != second:
+        raise NftOwnerError("fresh global legacy census changed")
+    if first["cgroup"]["present"] or first["processes"]["offenders"]:
+        raise NftOwnerError("global legacy process/cgroup census is not empty")
+    return _digest(first)
+
+
 def _legacy_fence(context, history, boot_id, host_netns):
     legacy = [row for row in history["intents"] if row["command_id"] == "NFT_REMOVE_ATOMIC"
               and row["inherited_fds"] == []]
     if legacy:
         raise NftOwnerError("legacy pending NFT deletion journal is fenced")
-    cgroup = "/sys/fs/cgroup/cogs-stage2-completion-v1"
-    try:
-        names = os.listdir(cgroup)
-    except FileNotFoundError:
-        names = []
-    if names:
-        raise NftOwnerError("legacy command cgroup census is not empty")
+    census = _global_legacy_census(context)
     return _digest({
         "operation_token": context.operation_token, "journal_tip": history["terminal_sha256"],
-        "boot_id": boot_id, "host_netns": host_netns, "legacy_cgroups": [],
+        "source_revision": context.source_revision, "boot_id": boot_id,
+        "host_netns": host_netns, "global_census_sha256": census,
     })
 
 
@@ -279,7 +437,20 @@ class _OwnerState:
 
 
 _OWNERS = {}
-_CLOSE_AMBIGUITIES = []
+
+
+def _close_proven(descriptor, label):
+    try:
+        os.close(descriptor)
+    except OSError as error:
+        raise NftOwnerError(f"{label} close uncertainty:{error.errno}") from error
+    try:
+        os.fstat(descriptor)
+    except OSError as error:
+        if error.errno == errno.EBADF:
+            return
+        raise NftOwnerError(f"{label} absence proof unavailable:{error.errno}") from error
+    raise NftOwnerError(f"{label} descriptor remains open")
 
 
 def _ofd_lock_present(descriptor):
@@ -397,6 +568,8 @@ def _successful_delete(history):
                 and outcome["leader_reaped"] and outcome["descendants_reaped"]
                 and outcome["cgroup_empty"] and outcome["cgroup_removed"]
                 and outcome["pipes_eof"] and not outcome["errors"]
+                and outcome["stdout_length"] == 0
+                and outcome["stdout_sha256"] == hashlib.sha256(b"").hexdigest()
                 and outcome["stderr_length"] == 0 and not outcome["stdout_truncated"]
                 and not outcome["stderr_truncated"])
     if not required:
@@ -415,6 +588,24 @@ def _successful_delete(history):
     return intent, outcome
 
 
+def _cleanup_command_evidence(owner, history, cleanup_target):
+    removals = [row for row in history["intents"]
+                if row["command_id"] == "NFT_REMOVE_ATOMIC"]
+    if removals:
+        intent, outcome = _successful_delete(history)
+        return _digest({
+            "binding_sha256": intent["binding_sha256"],
+            "command_serial": intent["command_serial"], "outcome": outcome,
+            "cleanup_target": cleanup_target,
+        })
+    nft_mutations = [row for row in history["intents"] if row["command_id"] in {
+        "NFT_INSTALL", "NFT_INSTALL_OWNED", "NFT_REMOVE", "NFT_REMOVE_ATOMIC"}]
+    if cleanup_target != "network" or nft_mutations or owner.child_binding_issued:
+        raise NftOwnerError("successful NFT deletion evidence required")
+    return _digest({"cleanup_target": cleanup_target, "nft_mutations": [],
+                    "deletion_binding_issued": False})
+
+
 def settle_free(journal, cleanup_target):
     owner = _require_owner(journal)
     if cleanup_target not in {"network", "firewall"}:
@@ -428,11 +619,7 @@ def settle_free(journal, cleanup_target):
     if history["phase"] != expected_phase or history["tip"] not in {
             "NETWORK_CLEANUP_SETTLED_V2", "FIREWALL_CLEANUP_SETTLED_V2"}:
         raise NftOwnerError("durable NFT cleanup settlement absent")
-    intent, outcome = _successful_delete(history)
-    command = _digest({
-        "binding_sha256": intent["binding_sha256"], "command_serial": intent["command_serial"],
-        "outcome": outcome, "cleanup_target": cleanup_target,
-    })
+    command = _cleanup_command_evidence(owner, history, cleanup_target)
     cleanup = _digest({
         "journal_terminal_sha256": history["terminal_sha256"], "phase": history["phase"],
         "tip": history["tip"], "command_binding_sha256": command,
@@ -442,6 +629,15 @@ def settle_free(journal, cleanup_target):
                        owner.active["record_sha256"], cleanup, command,
                        owner.active["legacy_fence_sha256"])
     _replace_state(owner.parent, releasing)
+    retained_lock = owner.lock_fd
+    owner.lock_fd = -1
+    _close_proven(retained_lock, "retained NFT writer lock")
+    probe, probe_identity = _open_lock(owner.parent)
+    if probe_identity != owner.lock_identity:
+        try: os.close(probe)
+        except OSError: pass
+        raise NftOwnerError("NFT writer lock changed during absence proof")
+    _close_proven(probe, "NFT writer lock absence probe")
     free = _state("FREE", releasing["sequence"] + 1, context.operation_token,
                   binding, genesis, releasing["host_boot_id"], releasing["host_netns"],
                   releasing["record_sha256"], cleanup, command,
@@ -449,25 +645,76 @@ def settle_free(journal, cleanup_target):
     _replace_state(owner.parent, free)
     owner.active = free
     _OWNERS.pop(context.operation_token, None)
-    errors = []
-    try: os.close(owner.lock_fd)
-    except OSError as error: errors.append(error)
     for descriptor in reversed(owner.descriptors):
         try: os.close(descriptor)
-        except OSError as error: errors.append(error)
-    if errors:
-        # FREE is already durable.  Do not reinterpret a close result: the next
-        # contender must independently open and lock the fixed inode, which is
-        # the authoritative resolution of whether this OFD still exists.
-        _CLOSE_AMBIGUITIES.append(tuple(errors))
+        except OSError:
+            # Directory descriptors convey no writer authority. FREE was made
+            # durable only after both writer-lock OFDs were proven absent.
+            pass
     return free
 
 
+def provision_initial_free():
+    """Perform the trusted, zero-input, one-time fresh-host provisioning."""
+    if os.geteuid() != 0 or os.path.dirname(OWNER_DIR) != "/var/lib" or not re.fullmatch(
+            r"[A-Za-z0-9._-]+", os.path.basename(OWNER_DIR)):
+        raise NftOwnerError("fixed root provisioning path required")
+    fence = _global_legacy_census(provisioning=True)
+    parent_descriptors = []
+    try:
+        for path in ("/", "/var", "/var/lib"):
+            descriptor, _identity = _directory(path)
+            parent_descriptors.append(descriptor)
+        varlib = parent_descriptors[-1]
+        previous = os.umask(0o077)
+        try:
+            os.mkdir(os.path.basename(OWNER_DIR), 0o700, dir_fd=varlib)
+        finally:
+            if os.umask(previous) != 0o077:
+                raise NftOwnerError("provisioning umask changed")
+        os.fsync(varlib)
+        descriptors, parent, _identity = _open_parent()
+        parent_descriptors.extend(descriptors)
+        lock = os.open(LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
+                       os.O_CLOEXEC, 0o600, dir_fd=parent)
+        try:
+            _regular_identity(lock, 0o600)
+            os.fsync(lock)
+        finally:
+            _close_proven(lock, "provisioned NFT lock")
+        os.fsync(parent)
+        value = _state("FREE", 0, ZERO, ZERO, ZERO, _boot_id(), _host_netns(), ZERO,
+                       _digest({"initial": "provisioned", "global_census_sha256": fence}),
+                       _digest({"initial": "no-command"}), fence)
+        _replace_state(parent, value)
+        return value
+    except FileExistsError as error:
+        raise NftOwnerError("NFT owner is already provisioned or nonclean") from error
+    except BaseException:
+        # A partial directory is intentionally retained as nonclean. Admission
+        # never treats a missing state as FREE.
+        raise
+    finally:
+        for descriptor in reversed(parent_descriptors):
+            try: os.close(descriptor)
+            except OSError: pass
+
+
 def initial_free_for_tests(legacy_fence_sha256, boot_id=None, host_netns=None):
-    """Return bytes for explicit test/provisioning fixtures; it performs no I/O."""
+    """Return bytes for explicit test fixtures; it performs no I/O."""
     if not _hex(legacy_fence_sha256):
         raise NftOwnerError("explicit legacy fence proof required")
     value = _state("FREE", 0, ZERO, ZERO, ZERO, boot_id or _boot_id(),
                    host_netns or _host_netns(), ZERO, _digest({"initial": "provisioned"}),
                    _digest({"initial": "no-command"}), legacy_fence_sha256)
     return _canonical(value)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 1:
+        raise SystemExit(64)
+    try:
+        provision_initial_free()
+    except (NftOwnerError, OSError, ValueError):
+        raise SystemExit(2) from None
