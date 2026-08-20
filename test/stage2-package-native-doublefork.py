@@ -1339,6 +1339,7 @@ def _shared_source_preflight_test():
     if pid == 0:
         try:
             module._libc_call("unshare", module.ctypes.c_int(module.CLONE_NEWNS))
+            module._mount(None, "/", None, module.MS_REC | module.MS_PRIVATE)
             module._mount(None, "/", None, module.MS_REC | (1 << 20))  # MS_SHARED
             module._lifecycle_preflight()
             mountinfo = Path("/proc/self/mountinfo").read_bytes()
@@ -1349,13 +1350,42 @@ def _shared_source_preflight_test():
             os._exit(0)
         except BaseException:
             os._exit(2)
-    pidfd = os.pidfd_open(pid, 0)
+    pidfd, reaped, primary = -1, False, None
     try:
+        pidfd = os.pidfd_open(pid, 0)
         info = module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + 20 * module.NS)
+        reaped = True
         check(info.si_code == os.CLD_EXITED and info.si_status == 0,
               f"shared-source preflight failed: {info.si_code}:{info.si_status}")
-    finally:
+    except BaseException as error:
+        primary = error
+    if not reaped:
+        try:
+            if pidfd >= 0:
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                module._wait_pidfd_reap(pidfd, module.time.monotonic_ns() + 5 * module.NS)
+            else:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                deadline = module.time.monotonic_ns() + 5 * module.NS
+                while module.time.monotonic_ns() < deadline:
+                    waited, _status = os.waitpid(pid, os.WNOHANG)
+                    if waited == pid:
+                        break
+                    module.time.sleep(0.01)
+                else:
+                    raise AssertionError("shared-source child reap timeout")
+        except BaseException as cleanup:
+            raise AssertionError("shared-source child cleanup uncertain") from cleanup
+    if pidfd >= 0:
         os.close(pidfd)
+    if primary is not None:
+        raise primary
 
 
 def native_test():
