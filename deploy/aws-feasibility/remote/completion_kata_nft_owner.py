@@ -339,6 +339,29 @@ def _cgroup_census():
             "members_length": len(members)}
 
 
+def _legacy_process_reasons(executable, cmdline, cwd, cgroup, descriptors):
+    text = cmdline.decode("utf-8", "surrogateescape")
+    executable_name = os.path.basename(executable)
+    is_python_owner = executable_name.startswith("python")
+    reasons = []
+    if is_python_owner and (
+            SOURCE_ROOT in text or "completion_kata_" in text
+            or "completion_local_full.py" in text
+            or "aws-stage2-completion-kata-operation.py" in text):
+        reasons.append("command")
+    if is_python_owner and (cwd == SOURCE_ROOT or cwd.startswith(SOURCE_ROOT + "/")):
+        reasons.append("cwd")
+    if "/cogs-stage2-completion-v1" in cgroup.decode("ascii", "strict"):
+        reasons.append("cgroup")
+    if any(target == OPERATION_JOURNAL or target.startswith(OWNER_DIR + "/")
+           or is_python_owner and target.startswith(SOURCE_ROOT + "/")
+           for _fd, target, *_rest in descriptors):
+        reasons.append("fd")
+    if executable_name == "nft" and "cogs_stage2" in text:
+        reasons.append("nft")
+    return sorted(set(reasons))
+
+
 def _process_census():
     try:
         pids = sorted(int(name) for name in os.listdir("/proc") if name.isdigit())
@@ -372,25 +395,8 @@ def _process_census():
             raise NftOwnerError("process identity changed during legacy census")
         if pid == os.getpid():
             continue
-        text = cmdline.decode("utf-8", "surrogateescape")
-        executable_name = os.path.basename(executable)
-        is_python_owner = executable_name.startswith("python")
-        reasons = []
-        if is_python_owner and (
-                SOURCE_ROOT in text or "completion_kata_" in text
-                or "completion_local_full.py" in text):
-            reasons.append("command")
-        if (is_python_owner and
-                (cwd == SOURCE_ROOT or cwd.startswith(SOURCE_ROOT + "/"))):
-            reasons.append("cwd")
-        if "/cogs-stage2-completion-v1" in cgroup.decode("ascii", "strict"):
-            reasons.append("cgroup")
-        if any(target == OPERATION_JOURNAL or target.startswith(OWNER_DIR + "/")
-               or is_python_owner and target.startswith(SOURCE_ROOT + "/")
-               for _fd, target, *_rest in descriptors):
-            reasons.append("fd")
-        if executable_name == "nft" and "cogs_stage2" in text:
-            reasons.append("nft")
+        reasons = _legacy_process_reasons(
+            executable, cmdline, cwd, cgroup, descriptors)
         if reasons:
             offenders.append({
                 "pid": pid, "start_time": before, "reasons": sorted(set(reasons)),

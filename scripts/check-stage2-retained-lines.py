@@ -119,8 +119,8 @@ def measure():
         "preferred_satisfied": current < PREFERRED_LIMIT and conservative < PREFERRED_LIMIT,
         "hard_satisfied": current < HARD_LIMIT and conservative < HARD_LIMIT,
     }
-    # Report both measurements truthfully. Integration review currently
-    # prioritizes readable security code; enforcement is deferred.
+    # Keep the preferred target advisory, but retain the mandatory hard stop.
+    _require(report["hard_satisfied"])
     return report
 
 

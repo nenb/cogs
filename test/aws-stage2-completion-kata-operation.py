@@ -1748,17 +1748,10 @@ def production_owner_test():
                             except network.NetworkError: os._exit(42)
                             os._exit(95)
                         _pid, child_status = os.waitpid(child, 0); child_code = os.waitstatus_to_exitcode(child_status)
-                        nft_conditional_supported = child_code == 93
-                        if not nft_conditional_supported:
-                            assert child_code == 42
-                            listed = network.parse_nft_snapshot(net_command("/usr/sbin/nft", "-j", "list", "table", "inet",
-                                "c42t" + token_suffix), "c42t" + token_suffix, "c42h" + token_suffix)
-                            assert network._nft_value(listed) == runtime_body["identity"]["nft"]
-                            net_command("/usr/sbin/nft", "delete", "table", "inet", "c42t" + token_suffix)
-                        if nft_conditional_supported:
-                            production_network.close(); production_network = operation._open_fixed_operation()
-                            restored = network._remove_fixed_firewall(production_network, *retained_tools)
-                            assert restored["snapshot_kind"] == "firewall-restored"
+                        assert child_code in {93, 94}
+                        production_network.close(); production_network = operation._open_fixed_operation()
+                        restored = network._remove_fixed_firewall(production_network, *retained_tools)
+                        assert restored["snapshot_kind"] == "firewall-restored"
                     finally:
                         if tun is not None: os.close(tun)
                     original_placeholder = Path("/run/netns/c42n" + token_suffix)

@@ -64,6 +64,13 @@ common = (
 with common[0], common[1], common[2], common[3], \
      patch.object(owner, "_process_census", return_value=clean_processes):
     assert len(owner._global_legacy_census(provisioning=True)) == 64
+real_legacy_cmdline = (
+    b"/usr/bin/python3\0-I\0-B\0test/aws-stage2-completion-kata-operation.py\0"
+)
+assert owner._legacy_process_reasons(
+    "/usr/bin/python3", real_legacy_cmdline, "/home/runner/work/cogs/cogs",
+    b"0::/user.slice\n", [],
+) == ["command"]
 paused = {"offenders": [{
     "pid": 77, "start_time": 9, "reasons": ["command"],
     "cmdline_sha256": "2" * 64, "cgroup_sha256": "3" * 64,
