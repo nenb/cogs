@@ -73,12 +73,17 @@ def _mount(source, target, filesystem, flags, data=None):
     )
 
 
-def _private_rootfs(root_descriptor):
+def _private_rootfs(root_descriptor, stage):
+    stage[0] = "unshare"
     _libc_call("unshare", ctypes.c_int(CLONE_NEWNS))
+    stage[0] = "root-private"
     _mount(None, "/", None, MS_REC | MS_PRIVATE)
     root = f"/proc/self/fd/{root_descriptor}"
+    stage[0] = "proc-bind"
     _mount("/proc", f"{root}/proc", None, MS_BIND | MS_REC)
+    stage[0] = "dev-bind"
     _mount("/dev", f"{root}/dev", None, MS_BIND | MS_REC)
+    stage[0] = "tmpfs"
     _mount(
         "tmpfs",
         f"{root}/tmp",
@@ -86,8 +91,10 @@ def _private_rootfs(root_descriptor):
         MS_NOSUID | MS_NODEV,
         "mode=1777,size=134217728,nr_inodes=32768",
     )
+    stage[0] = "chroot"
     os.chroot(root)
     os.chdir("/")
+    stage[0] = "proc-readonly"
     _mount(None, "/proc", None, MS_BIND | MS_REMOUNT | MS_RDONLY)
 
 
@@ -100,10 +107,10 @@ def _write_all(descriptor, raw):
 
 
 def _child_candidate(write_descriptor, root_descriptor, contract, closure, package):
-    stage = "mount"
+    stage = ["start"]
     try:
-        _private_rootfs(root_descriptor)
-        stage = "transaction"
+        _private_rootfs(root_descriptor, stage)
+        stage[0] = "transaction"
         package.load_candidate_contract = lambda: contract
         package.exact_runtime_closure = lambda: closure
         raw = package.run_candidate_transaction()
@@ -120,7 +127,7 @@ def _child_candidate(write_descriptor, root_descriptor, contract, closure, packa
         if not isinstance(category, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", category) is None:
             category = "unknown"
         try:
-            os.write(2, f"native package child failed:{stage}:{category}\n".encode("ascii"))
+            os.write(2, f"native package child failed:{stage[0]}:{category}\n".encode("ascii"))
             os.close(write_descriptor)
         except OSError:
             pass
