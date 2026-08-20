@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Executable hostile tests for fixed native workflow security scripts."""
+import array
 import copy
 from dataclasses import replace
 import hashlib
@@ -9,6 +10,7 @@ import mmap
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -231,12 +233,15 @@ def publication_tests():
         staging.mkdir()
         proc.mkdir()
         (staging / "candidate.partial").write_bytes(candidate_raw)
+        source_identity = ((staging / "candidate.partial").stat().st_dev,
+                           (staging / "candidate.partial").stat().st_ino)
         digest, size = publication.publish(
             staging, revision, manifest, os.geteuid(), proc_root=proc,
             frozen_uid=os.geteuid(), frozen_gid=os.getegid())
         final = staging / "candidate.json"
         assert digest == hashlib.sha256(candidate_raw).hexdigest() and size == len(candidate_raw)
         assert final.read_bytes() == candidate_raw and final.stat().st_mode & 0o777 == 0o444
+        assert (final.stat().st_dev, final.stat().st_ino) != source_identity
         assert staging.stat().st_mode & 0o777 == 0o555
         assert set(path.name for path in staging.iterdir()) == {"candidate.json"}
 
@@ -309,6 +314,50 @@ def publication_tests():
             finally:
                 mapping.close()
                 os.close(descriptor)
+
+
+def queued_scm_rights_fresh_inode_test():
+    revision, manifest = "1" * 40, "2" * 64
+    candidate_raw = candidate(revision, manifest)
+    replacement = b"Q" + candidate_raw[1:]
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        staging, proc = root / "staging", root / "proc"
+        staging.mkdir()
+        proc.mkdir()
+        source = staging / "candidate.partial"
+        source.write_bytes(candidate_raw)
+        sender, receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        writer = os.open(source, os.O_RDWR)
+        rights = array.array("i", [writer])
+        sender.sendmsg([b"x"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)])
+        os.close(writer)
+        recovered = []
+        try:
+            def mutate_queued_source():
+                _message, ancillary, _flags, _address = receiver.recvmsg(
+                    1, socket.CMSG_SPACE(rights.itemsize))
+                descriptors = array.array("i")
+                descriptors.frombytes(ancillary[0][2][:rights.itemsize])
+                recovered.append(descriptors[0])
+                os.pwrite(recovered[0], replacement, 0)
+                os.fsync(recovered[0])
+
+            publication.publish(
+                staging, revision, manifest, os.geteuid(), proc_root=proc,
+                frozen_uid=os.geteuid(), frozen_gid=os.getegid(),
+                after_copy=mutate_queued_source)
+            assert os.pread(recovered[0], len(replacement), 0) == replacement
+            assert (staging / "candidate.json").read_bytes() == candidate_raw
+            assert (os.fstat(recovered[0]).st_dev, os.fstat(recovered[0]).st_ino) != (
+                (staging / "candidate.json").stat().st_dev,
+                (staging / "candidate.json").stat().st_ino)
+            assert not source.exists()
+        finally:
+            for descriptor in recovered:
+                os.close(descriptor)
+            sender.close()
+            receiver.close()
 
 
 def frozen_owner_chmod_reopen_test():
@@ -463,6 +512,7 @@ else:
     scanner_race_and_mount_tests()
     unmount_tests()
     publication_tests()
+    queued_scm_rights_fresh_inode_test()
     frozen_owner_chmod_reopen_test()
     uploaded_member_substitution_test()
     receipt_readback_substitution_test()

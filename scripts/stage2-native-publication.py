@@ -223,57 +223,68 @@ def _validate(raw, revision, manifest):
 
 
 def publish(staging, revision, manifest, runner_uid, proc_root=Path("/proc"),
-            frozen_uid=0, frozen_gid=0):
+            frozen_uid=0, frozen_gid=0, after_copy=None):
     staging = Path(staging)
     directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    descriptor = None
-    readback = None
+    source = fresh = readback = None
     try:
         if set(os.listdir(directory)) != {"candidate.partial"}:
             raise PublicationError("staging does not contain exactly candidate.partial")
-        descriptor = os.open("candidate.partial", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                             dir_fd=directory)
-        initial, initial_directory = os.fstat(descriptor), os.fstat(directory)
+        source = os.open("candidate.partial", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=directory)
+        initial, initial_directory = os.fstat(source), os.fstat(directory)
         if (not stat.S_ISREG(initial.st_mode) or initial.st_nlink != 1
                 or initial.st_uid != runner_uid or not stat.S_ISDIR(initial_directory.st_mode)
                 or initial_directory.st_uid != runner_uid):
             raise PublicationError("candidate staging ownership differs")
-        raw, generation = _read_bounded(descriptor, MAX_CANDIDATE_BYTES)
+        raw, source_generation = _read_bounded(source, MAX_CANDIDATE_BYTES)
         _validate(raw, revision, manifest)
-        if _generation(os.fstat(descriptor)) != _generation(generation):
-            raise PublicationError("candidate changed after validation")
-        os.fchown(descriptor, frozen_uid, frozen_gid)
-        os.fchmod(descriptor, 0o444)
+        if _generation(os.fstat(source)) != _generation(source_generation):
+            raise PublicationError("candidate source changed after validation")
         os.fchown(directory, frozen_uid, frozen_gid)
         os.fchmod(directory, 0o700)
-        frozen, frozen_directory = os.fstat(descriptor), os.fstat(directory)
-        named_directory = os.stat(staging, follow_symlinks=False)
-        named = os.stat("candidate.partial", dir_fd=directory, follow_symlinks=False)
-        if (frozen.st_uid != frozen_uid or frozen.st_gid != frozen_gid
-                or stat.S_IMODE(frozen.st_mode) != 0o444 or frozen.st_nlink != 1
-                or frozen_directory.st_uid != frozen_uid or frozen_directory.st_gid != frozen_gid
+        frozen_directory = os.fstat(directory)
+        if (frozen_directory.st_uid != frozen_uid or frozen_directory.st_gid != frozen_gid
                 or stat.S_IMODE(frozen_directory.st_mode) != 0o700
-                or _generation(named_directory) != _generation(frozen_directory)
-                or _generation(named) != _generation(frozen)):
-            raise PublicationError("candidate did not freeze outside runner ownership")
-        prove_no_writable_aliases(descriptor, runner_uid, proc_root)
-        frozen_raw, generation = _read_bounded(descriptor, MAX_CANDIDATE_BYTES)
-        if frozen_raw != raw:
-            raise PublicationError("candidate changed across ownership freeze")
-        try:
-            os.stat("candidate.json", dir_fd=directory, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise PublicationError("published candidate already exists")
-        os.fsync(descriptor)
-        os.rename("candidate.partial", "candidate.json", src_dir_fd=directory, dst_dir_fd=directory)
+                or _generation(os.stat(staging, follow_symlinks=False)) != _generation(frozen_directory)
+                or _generation(os.stat("candidate.partial", dir_fd=directory,
+                                       follow_symlinks=False)) != _generation(source_generation)):
+            raise PublicationError("candidate source authority transition differs")
+        fresh = os.open("candidate.fresh", os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                        | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        view = memoryview(raw)
+        while view:
+            written = os.write(fresh, view)
+            if written <= 0:
+                raise PublicationError("fresh candidate write did not progress")
+            view = view[written:]
+        os.fchown(fresh, frozen_uid, frozen_gid)
+        os.fchmod(fresh, 0o444)
+        os.fsync(fresh)
+        fresh_generation = os.fstat(fresh)
+        if (not stat.S_ISREG(fresh_generation.st_mode) or fresh_generation.st_nlink != 1
+                or fresh_generation.st_uid != frozen_uid or fresh_generation.st_gid != frozen_gid
+                or stat.S_IMODE(fresh_generation.st_mode) != 0o444):
+            raise PublicationError("fresh candidate generation did not freeze")
+        os.close(fresh)
+        fresh = None
+        fresh = os.open("candidate.fresh", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=directory)
+        copied_raw, fresh_generation = _read_bounded(fresh, MAX_CANDIDATE_BYTES)
+        _validate(copied_raw, revision, manifest)
+        if copied_raw != raw:
+            raise PublicationError("fresh candidate differs from validated source bytes")
+        if after_copy is not None:
+            after_copy()
+        os.unlink("candidate.partial", dir_fd=directory)
+        os.rename("candidate.fresh", "candidate.json", src_dir_fd=directory, dst_dir_fd=directory)
         os.fchmod(directory, 0o555)
-        renamed = os.fstat(descriptor)
-        if not _rename_generation(generation, renamed):
-            raise PublicationError("candidate generation changed unexpectedly across rename")
+        renamed = os.fstat(fresh)
+        if not _rename_generation(fresh_generation, renamed):
+            raise PublicationError("fresh candidate changed unexpectedly across rename")
         final_directory = os.fstat(directory)
-        if (stat.S_IMODE(final_directory.st_mode) != 0o555
+        if (set(os.listdir(directory)) != {"candidate.json"}
+                or stat.S_IMODE(final_directory.st_mode) != 0o555
                 or _generation(os.stat(staging, follow_symlinks=False)) != _generation(final_directory)):
             raise PublicationError("published staging is not root-owned readonly and traversable")
         os.fsync(directory)
@@ -281,14 +292,16 @@ def publish(staging, revision, manifest, runner_uid, proc_root=Path("/proc"),
                            dir_fd=directory)
         readback_raw, readback_generation = _read_bounded(readback, MAX_CANDIDATE_BYTES)
         if readback_raw != raw or _generation(readback_generation) != _generation(renamed):
-            raise PublicationError("published candidate readback differs")
+            raise PublicationError("published fresh candidate readback differs")
         prove_no_writable_aliases(readback, runner_uid, proc_root)
         return hashlib.sha256(raw).hexdigest(), len(raw)
     finally:
         if readback is not None:
             os.close(readback)
-        if descriptor is not None:
-            os.close(descriptor)
+        if fresh is not None:
+            os.close(fresh)
+        if source is not None:
+            os.close(source)
         os.close(directory)
 
 
