@@ -6,7 +6,7 @@
 
 ## Context
 
-The reviewed process, network, runtime, SSH/input, workload, recovery, and result owners measure 44,810 conservative lines after genuine deduplication. The remaining exact rootfs-host-tool issuer, Kata artifact binding, executable coordinator, and non-AWS qualification wiring cannot fit readably below ADR 0099's 45,000 hard cap.
+At acceptance, the reviewed owners measured 44,810 conservative lines. At exact integration head `f9809d66e3952db0b621b4410f2698bbe1c82007`, the checker reports 45,244 physical/current lines and 47,178 conservative no-deletion-credit lines: the 47,000 preferred target is not satisfied, while the mandatory 48,000 hard cap is satisfied. This update corrects the measured status without changing either limit or granting deletion credit.
 
 ## Decision
 
