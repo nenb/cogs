@@ -228,6 +228,11 @@ jobs:
           sudo -n tar -xzf "$runtime_archive" -C "$runtime_fixture" bin/containerd bin/ctr
           sudo -n chown 0:0 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
           sudo -n chmod 0500 "$runtime_fixture/bin/containerd" "$runtime_fixture/bin/ctr"
+          source_root=/var/lib/cogs/stage2-completion-v1/source
+          sudo -n mkdir -p -m 0755 "$source_root"
+          git archive --format=tar HEAD | sudo -n tar -xf - -C "$source_root"
+          sudo -n chown -R 0:0 "$source_root"
+          sudo -n chmod -R go-w "$source_root"
           sudo -n test ! -e /run/netns
           sudo -n test ! -L /run/netns
           sudo -n mkdir -m 0755 /run/netns
@@ -235,12 +240,12 @@ jobs:
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_HOST_NETWORK_STABILITY=1 \
-            /usr/bin/python3 -I -B scripts/stabilize-stage2-host-network.py
+            /usr/bin/python3 -I -B "$source_root/scripts/stabilize-stage2-host-network.py"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             /usr/bin/python3 -I -B \
-            deploy/aws-feasibility/remote/completion_kata_nft_owner.py
+            "$source_root/deploy/aws-feasibility/remote/completion_kata_nft_owner.py"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
@@ -248,12 +253,12 @@ jobs:
             COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
             COGS_STAGE2_KATA_NATIVE_TEST_SHARD="$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" \
             COGS_STAGE2_CONTAINERD_FIXTURE="$runtime_fixture" \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-operation.py
+            /usr/bin/python3 -I -B "$source_root/test/aws-stage2-completion-kata-operation.py"
           sudo -n env -i \
             HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
             PYTHONDONTWRITEBYTECODE=1 \
             COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION=1 \
-            /usr/bin/python3 -I -B test/aws-stage2-completion-kata-network-linux.py
+            /usr/bin/python3 -I -B "$source_root/test/aws-stage2-completion-kata-network-linux.py"
           sudo -n test ! -e /sys/fs/cgroup/cogs-stage2-completion-v1
           test -z "$(/usr/bin/pgrep -f '[/]tmp/cogs-kata-process-s1-v1/helper' || true)"
           sudo -n test ! -e "$fixture"
