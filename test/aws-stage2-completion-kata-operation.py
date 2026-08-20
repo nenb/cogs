@@ -1742,8 +1742,14 @@ def production_owner_test():
                                         body["source_id"] == "NFT_REMOVE_ATOMIC" and body["chunk_index"] == 0):
                                     if body["chunk_count"] <= 1: os._exit(94)
                                     os._exit(93)
+                            original_record_outcome = operation._record_command_outcome
+                            def nft_outcome_exit(owner, body):
+                                original_record_outcome(owner, body)
+                                if body["command_id"] == "NFT_REMOVE_ATOMIC":
+                                    os._exit(94)
                             try:
-                                with patch.object(operation, "_record_network", side_effect=nft_chunk_exit):
+                                with patch.object(operation, "_record_network", side_effect=nft_chunk_exit), \
+                                     patch.object(operation, "_record_command_outcome", side_effect=nft_outcome_exit):
                                     network._remove_fixed_firewall(production_network, *retained_tools)
                             except network.NetworkError: os._exit(42)
                             os._exit(95)
