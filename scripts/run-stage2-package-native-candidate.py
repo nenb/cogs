@@ -26,6 +26,8 @@ CHILD_SECONDS = 1_300
 NS = 1_000_000_000
 CLONE_NEWNS = 0x00020000
 MS_RDONLY = 1
+MS_NOSUID = 2
+MS_NODEV = 4
 MS_REMOUNT = 32
 MS_BIND = 4096
 MS_REC = 16384
@@ -77,7 +79,13 @@ def _private_rootfs(root_descriptor):
     root = f"/proc/self/fd/{root_descriptor}"
     _mount("/proc", f"{root}/proc", None, MS_BIND | MS_REC)
     _mount("/dev", f"{root}/dev", None, MS_BIND | MS_REC)
-    _mount("tmpfs", f"{root}/tmp", "tmpfs", 0, "mode=1777,nosuid,nodev,size=134217728,nr_inodes=32768")
+    _mount(
+        "tmpfs",
+        f"{root}/tmp",
+        "tmpfs",
+        MS_NOSUID | MS_NODEV,
+        "mode=1777,size=134217728,nr_inodes=32768",
+    )
     os.chroot(root)
     os.chdir("/")
     _mount(None, "/proc", None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC)
