@@ -2296,6 +2296,7 @@ def _make_authority():
                          if item.record_type == "NETWORK_SNAPSHOT_V2" or
                          item.record_type in network_journal.ALL_RECORDS or
                          item.record_type in network_journal.CLEANUP_INTENTS or
+                         item.record_type in network_journal.CLEANUP_SETTLED or
                          item.record_type == "COMMAND_OUTCOME_V2" and
                          item.body["command_id"] in {value.value for value in actions.NETWORK_COMMANDS})
         def record_network(self, kind, body):

@@ -723,10 +723,12 @@ for target in ("network", "firewall"):
 settlement_calls = []
 class DurableSnapshotJournal:
     def begin_network_cleanup(self, _target): pass
+    def network_history(self):
+        return (("FIREWALL_CLEANUP_INTENT_V2", {}),
+                ("FIREWALL_CLEANUP_SETTLED_V2", {}))
 firewall_snapshot = {"snapshot_kind": "firewall-restored"}
 with patch.object(network.nft_owner, "require_active"), \
      patch.object(operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
-     patch.object(network, "_network_cleanup_active", return_value=False), \
      patch.object(network, "_baselines", return_value=(BASELINES, [firewall_snapshot])), \
      patch.object(network.nft_owner, "settle_free", side_effect=lambda _j, target: settlement_calls.append(target)):
     check(network._remove_fixed_firewall(DurableSnapshotJournal(), object(), object(), object()) is firewall_snapshot,
