@@ -962,9 +962,11 @@ def publish_fixed_candidate(control_raw, members):
     destination.mkdir(mode=0o700)
     try:
         payloads = {CONTROL_MEMBER: control_raw, **members}
+        directories = {destination}
         for name, raw in sorted(payloads.items()):
             path = destination / name
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directories.add(path.parent)
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o400)
             try:
                 offset = 0
@@ -972,6 +974,14 @@ def publish_fixed_candidate(control_raw, members):
                     written = os.write(descriptor, raw[offset:])
                     _require(type(written) is int and written > 0)
                     offset += written
+                os.fchmod(descriptor, 0o444)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+            os.chmod(directory, 0o555)
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)

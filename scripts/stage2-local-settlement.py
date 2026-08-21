@@ -16,7 +16,6 @@ spec.loader.exec_module(native)
 
 FIXED_ROOTS = (
     "/var/lib/cogs",
-    "/run/cogs-stage2-local-control-v2",
     "/run/cogs-stage2-local-private-v2",
     "/run/cogs-stage2-native-preflight-source-v1",
     "/run/cogs-stage2-native-private-v1",

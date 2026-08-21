@@ -24,6 +24,7 @@ guard = load("stage2_local_guard_test", "scripts/stage2-local-qualification-guar
 settlement = load("stage2_local_settlement_test", "scripts/stage2-local-settlement.py")
 publication = load("stage2_local_publication_test", "scripts/stage2-local-publication.py")
 receipt = load("stage2_local_receipt_test", "scripts/stage2-local-upload-receipt.py")
+control_staging = load("stage2_control_staging_test", "scripts/stage2-stage-reviewed-control.py")
 
 
 def rejected(call, exception):
@@ -168,6 +169,27 @@ def receipt_tests():
     rejected(lambda: receipt.validate_receipt(encoded, swapped, raw), receipt.LocalReceiptError)
 
 
+def control_staging_tests():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        (root / "contracts").mkdir()
+        (root / "control.json").write_bytes(b"control\n")
+        (root / "contracts/tool.json").write_bytes(b"tool\n")
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            assert control_staging._read_regular(descriptor, "control.json", 32) == b"control\n"
+            assert control_staging._read_regular(descriptor, "contracts/tool.json", 32) == b"tool\n"
+            rejected(lambda: control_staging._read_regular(descriptor, "../control.json", 32),
+                     control_staging.ControlStagingError)
+            (root / "link").symlink_to("control.json")
+            rejected(lambda: control_staging._read_regular(descriptor, "link", 32), OSError)
+            (root / "linked-contracts").symlink_to("contracts", target_is_directory=True)
+            rejected(lambda: control_staging._read_regular(
+                descriptor, "linked-contracts/tool.json", 32), OSError)
+        finally:
+            os.close(descriptor)
+
+
 def settlement_tests():
     environment = {
         "GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "1",
@@ -186,5 +208,6 @@ def settlement_tests():
 guard_tests()
 publication_tests()
 receipt_tests()
+control_staging_tests()
 settlement_tests()
 print("stage2 local workflow script tests passed")

@@ -49,6 +49,7 @@ RETAINED_FILES = (
     "scripts/stage2-local-settlement.py",
     "scripts/stage2-local-publication.py",
     "scripts/stage2-local-upload-receipt.py",
+    "scripts/stage2-stage-reviewed-control.py",
     "schemas/stage2-phase-a-candidate-v1.json",
     "schemas/stage2-phase-a-candidate-v2.json",
     "schemas/stage2-workload-candidate-v1.json",

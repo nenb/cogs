@@ -15,9 +15,11 @@ import completion_kata_process as process
 import completion_kata_qualification as qualification
 import completion_kata_runtime as runtime
 import completion_kata_ssh as ssh
+import completion_local_evidence as local_evidence
 import completion_local_receipt as local_receipt
 
 _claim_execution_custody = admission._take_execution_custody_issuer()
+_produce_owner_evidence = local_receipt._take_owner_evidence_producer()
 _issue_owner_receipt = local_receipt._take_local_receipt_issuer()
 
 FORWARD_ORDER = (
@@ -70,6 +72,7 @@ CLEANUP_ORDER = (
     "FINAL_BASELINES",
     "RETIRED",
     "OPERATION_REMOVED",
+    "INDEPENDENT_RESIDUE",
 )
 RECOVERY_FORBIDDEN = (
     "acquire_rootfs",
@@ -118,6 +121,7 @@ class _Lifecycle:
     ownership_proof: object = None
     final_baselines: object = None
     retired: object = None
+    residue: object = None
     primary_failure: BaseException = None
     custody_settled: bool = False
 
@@ -144,13 +148,30 @@ class _AdmissionBoundary:
 
 
 class _PrivateEvidenceBoundary:
-    """No JSON/report adapter exists here; only the future sealed owner issuer fits."""
+    """Translate only exact terminal owner facts into closure-private evidence."""
 
     def normal(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        if lifecycle.primary_failure is not None:
+            raise CoordinatorBlocked("failed lifecycle cannot produce pass evidence")
+        try:
+            bindings = local_evidence._BindingOwnerResult(
+                **admission._static_custody_binding(lifecycle.static_custody))
+            if type(lifecycle.retired) is not local_evidence._RetiredJournalOwnerResult:
+                raise CoordinatorBlocked("exact retired journal owner result required")
+            if type(lifecycle.session) is not ssh.AuthenticatedSession:
+                raise CoordinatorBlocked("exact authenticated SSH session required")
+            if type(lifecycle.runtime_proof) is not local_evidence._RuntimeOwnerResult:
+                raise CoordinatorBlocked("exact causal runtime owner result required")
+            if type(lifecycle.residue) is not local_evidence._ResidueOwnerResult:
+                raise CoordinatorBlocked("exact independent residue owner result required")
+            return _produce_owner_evidence(
+                lifecycle.static_custody, bindings, lifecycle.retired,
+                lifecycle.session, lifecycle.runtime_proof, lifecycle.residue)
+        except local_evidence.LocalEvidenceError as error:
+            raise CoordinatorBlocked("exact terminal owner evidence required") from error
 
     def recovery(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        raise CoordinatorBlocked("cleanup-only recovery cannot produce pass evidence")
 
 
 class _PackagePrivateOwners:
@@ -266,6 +287,9 @@ class _PackagePrivateOwners:
     def remove_operation(self, lifecycle):
         return operation_bridge._remove_operation(self.operation, lifecycle)
 
+    def observe_independent_residue(self, lifecycle):
+        raise CoordinatorBlocked(BLOCKED_REASON)
+
     def abandon_prepared_rootfs(self, lifecycle):
         return operation_bridge._abandon_prepared_rootfs(self.operation, lifecycle)
 
@@ -316,6 +340,8 @@ def _cleanup_operation(lifecycle):
         errors, lambda: _owners.observe_final_baselines(lifecycle))
     lifecycle.retired = _collect(errors, lambda: _owners.retire_operation(lifecycle))
     _collect(errors, lambda: _owners.remove_operation(lifecycle))
+    lifecycle.residue = _collect(
+        errors, lambda: _owners.observe_independent_residue(lifecycle))
     return errors
 
 
@@ -346,9 +372,11 @@ def _raise_failures(message, errors):
 
 def _finish(lifecycle):
     evidence = _owners.owner_evidence(lifecycle)
-    receipt = _issue_owner_receipt(lifecycle.static_custody, evidence)
+    # From this call onward the receipt transaction exclusively owns custody
+    # close, including every no-mint failure. The coordinator must never retry
+    # an uncertain or already-effective descriptor close.
     lifecycle.custody_settled = True
-    return receipt
+    return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
 def _run_fixed_local_qualification():
@@ -393,27 +421,26 @@ def _recover_fixed_local_qualification():
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.operation = _owners.open_existing_operation(lifecycle)
-        _owners.recover_pending(lifecycle)
+        if lifecycle.operation is not None:
+            _owners.recover_pending(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
 
     errors = _cleanup(lifecycle)
+    if lifecycle.primary_failure is not None:
+        errors.insert(0, lifecycle.primary_failure)
     if errors:
-        if lifecycle.primary_failure is not None:
-            errors.insert(0, lifecycle.primary_failure)
         _abort_custody(lifecycle, errors)
         _raise_failures("fixed recovery cleanup was not exact", errors)
-    if lifecycle.operation is None:
-        errors = [lifecycle.primary_failure or CoordinatorBlocked(BLOCKED_REASON)]
-        _abort_custody(lifecycle, errors)
-        _raise_failures("fixed recovery operation was unavailable", errors)
 
-    try:
-        return _finish(lifecycle)
-    except BaseException as error:
-        errors = [error]
-        _abort_custody(lifecycle, errors)
-        _raise_failures("fixed recovery evidence was not exact", errors)
+    # Recovery has cleanup authority only.  Even exact absence cannot mint or
+    # consume normal evidence, and therefore can never become a qualification
+    # pass.  Close static custody after the final independent observation.
+    errors = []
+    _abort_custody(lifecycle, errors)
+    if errors:
+        _raise_failures("fixed recovery custody close was not exact", errors)
+    return None
 
 
 def _consume_local_receipt(receipt):

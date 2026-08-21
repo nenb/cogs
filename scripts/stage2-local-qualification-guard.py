@@ -11,7 +11,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-local-kata-qualification.yml"
-CONTROL = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v2.json"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v2"
+CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v1.json"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-kata-qualification.yml"
 # Deliberate review stops.  A reviewed G commit must replace every None with the
@@ -73,8 +74,19 @@ def _read_json(path, maximum):
 
 
 def _digest(path):
-    raw = Path(path).read_bytes()
-    return hashlib.sha256(raw).hexdigest()
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        _require(0 < before.st_size <= MAX_API_BYTES, "reviewed file byte bound failed")
+        raw = os.read(descriptor, MAX_API_BYTES + 1)
+        after = os.fstat(descriptor)
+        _require(len(raw) == before.st_size and (before.st_dev, before.st_ino,
+                 before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                 == (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                     after.st_mtime_ns, after.st_ctime_ns), "reviewed file changed")
+        return hashlib.sha256(raw).hexdigest()
+    finally:
+        os.close(descriptor)
 
 
 def _reviewed_constants():

@@ -8,11 +8,15 @@ const guardPath = "scripts/stage2-local-qualification-guard.py";
 const settlementPath = "scripts/stage2-local-settlement.py";
 const publicationPath = "scripts/stage2-local-publication.py";
 const receiptPath = "scripts/stage2-local-upload-receipt.py";
+const recoveryPath = "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh";
+const controlStagingPath = "scripts/stage2-stage-reviewed-control.py";
 const workflow = readFileSync(workflowPath, "utf8");
 const guard = readFileSync(guardPath, "utf8");
 const settlement = readFileSync(settlementPath, "utf8");
 const publication = readFileSync(publicationPath, "utf8");
 const receipt = readFileSync(receiptPath, "utf8");
+const recoverySource = readFileSync(recoveryPath, "utf8");
+const controlStaging = readFileSync(controlStagingPath, "utf8");
 
 function stepTimeout(name: string): number {
   const start = workflow.indexOf(`      - name: ${name}`);
@@ -103,7 +107,10 @@ test("attempt and first-created guard precede H acquisition and every qualificat
   assert.match(guard, /this is not the first-created dispatch/u);
   assert.doesNotMatch(guard, /"Authorization"|GITHUB_TOKEN|github\.token/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
-  assert.match(workflow.slice(preparation, entry), /stage2-completion-local-control-v2\.json/u);
+  assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
+  assert.match(workflow.slice(preparation, entry),
+    /stage2-completion-v1\/control\/stage2-local-static-control-v1\.json/u);
+  assert.doesNotMatch(workflow.slice(preparation, entry), /\/run\/cogs-stage2-local-control-v2/u);
   assert.doesNotMatch(workflow.slice(0, entry), /\/dev\/kvm|qmp|containerd|completion_local_full\.py/u);
   assert.equal(workflow.match(/completion_local_full\.py/gu)?.length, 1);
 });
@@ -134,6 +141,12 @@ test("recovery and independent settlement always run without turning cancellatio
     assert.match(workflow.slice(start, next), /if: always\(\)/u);
   }
   assert.match(workflow, /recover-stage2-completion-remote\.sh/u);
+  assert.match(recoverySource, /_recover_fixed_local_qualification/u);
+  assert.match(recoverySource, /result is None/u);
+  assert.doesNotMatch(recoverySource, /_run_fixed_local_qualification|_consume_local_receipt|completion_local_full/u);
+  assert.match(controlStaging, /stage2-local-static-control-v1\.json/u);
+  assert.match(controlStaging, /validate_control_members/u);
+  assert.match(controlStaging, /os\.O_EXCL/u);
   assert.match(settlement, /native\.scan\("after-unmount"/u);
   assert.match(settlement, /\/sys\/class\/net/u);
   assert.match(settlement, /\/sys\/fs\/cgroup/u);

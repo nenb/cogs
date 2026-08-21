@@ -107,4 +107,4 @@ def _new_local_receipt_routes(custody_binding, custody_close):
 
 (_take_owner_evidence_producer, _take_local_receipt_issuer,
  _consume_local_receipt) = _new_local_receipt_routes(
-     admission._execution_custody_binding, admission._abort_execution_custody)
+     admission._static_custody_binding, admission._abort_static_preparation)

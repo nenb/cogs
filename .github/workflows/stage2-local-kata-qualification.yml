@@ -80,19 +80,20 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e /var/lib/cogs
-          test ! -e /run/cogs-stage2-local-control-v2
-          prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
+          prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
           /usr/bin/python3 -I -c 'import json,sys
           value=json.loads(sys.stdin.buffer.read())
           assert value["revision"] == sys.argv[1] and value["manifest_sha256"] == sys.argv[2]
           ' "${{ steps.gate.outputs.implementation_head }}" "$EXPECTED_MANIFEST" <<<"$prepared"
-          sudo -n /usr/bin/install -d -o root -g root -m 0500 /run/cogs-stage2-local-control-v2
-          sudo -n /usr/bin/install -o root -g root -m 0400 \
-            "$GITHUB_WORKSPACE/deploy/aws-feasibility/remote/stage2-completion-local-control-v2.json" \
-            /run/cogs-stage2-local-control-v2/control.json
-          observed=$(/usr/bin/sha256sum /run/cogs-stage2-local-control-v2/control.json | /usr/bin/cut -d' ' -f1)
+          staged=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-stage-reviewed-control.py")
+          test "$staged" = "control_sha256=$EXPECTED_CONTROL_SHA256"
+          observed=$(/usr/bin/sha256sum \
+            /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v1.json \
+            | /usr/bin/cut -d' ' -f1)
           test "$observed" = "$EXPECTED_CONTROL_SHA256"
           test ! -e /run/cogs-stage2-local-private-v2
 

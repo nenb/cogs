@@ -42,6 +42,7 @@ METHOD_EVENT = {
     "observe_final_baselines": "FINAL_BASELINES",
     "retire_operation": "RETIRED",
     "remove_operation": "OPERATION_REMOVED",
+    "observe_independent_residue": "INDEPENDENT_RESIDUE",
 }
 FORWARD_METHODS = tuple(name for name, event in METHOD_EVENT.items()
                         if event in coordinator.FORWARD_ORDER)
@@ -108,6 +109,8 @@ class FakeOwners:
     def observe_final_baselines(self, _lifecycle): return self.step("observe_final_baselines")
     def retire_operation(self, _lifecycle): return self.step("retire_operation")
     def remove_operation(self, _lifecycle): return self.step("remove_operation")
+    def observe_independent_residue(self, _lifecycle):
+        return self.step("observe_independent_residue")
 
     def abandon_prepared_rootfs(self, _lifecycle):
         return self.step("ABANDON_PREPARED_ROOTFS")
@@ -145,6 +148,8 @@ def invoke(entry, fake, receipt_cut=None):
             coordinator, "_issue_owner_receipt", side_effect=issue):
         try:
             value = entry()
+            if entry is coordinator._recover_fixed_local_qualification:
+                return value is None
             return value is receipt
         except BaseException:
             return False
@@ -208,16 +213,19 @@ for side in ("before", "after"):
     fake = FakeOwners()
     assert not invoke(coordinator._run_fixed_local_qualification, fake, side)
     assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
-    assert fake.events.count("CUSTODY_ABORTED") == 1
+    # Receipt entry owns the one close on both no-mint and minted outcomes;
+    # coordinator cleanup may not retry it.
+    assert fake.events.count("CUSTODY_ABORTED") == 0
 
 # Recovery has only immutable custody, exact existing-state opening, pending
-# child settlement, cleanup, failure/uncertain evidence, and receipt issuance.
+# child settlement, cleanup, and custody close. It cannot issue evidence/receipt.
 recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED")
 fake = FakeOwners()
 assert invoke(coordinator._recover_fixed_local_qualification, fake)
 assert tuple(fake.events) == (*recovery_prefix, *coordinator.CLEANUP_ORDER,
-                              "RECOVERY_EVIDENCE", "RECEIPT_ISSUED")
-for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER, "RECOVERY_EVIDENCE"):
+                              "CUSTODY_ABORTED")
+assert "RECOVERY_EVIDENCE" not in fake.events and "RECEIPT_ISSUED" not in fake.events
+for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER):
     for side in ("before", "after"):
         fake = FakeOwners((side, event))
         invoke(coordinator._recover_fixed_local_qualification, fake)
@@ -228,6 +236,7 @@ for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER, "RECOVERY_EVIDENCE")
                              if not (side == "before" and item == event))
             assert observed == expected
             assert "RECOVERY_EVIDENCE" not in fake.events
+            assert "RECEIPT_ISSUED" not in fake.events
         if event in {"STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"}:
             assert cleanup_projection(fake.events) == ()
 
@@ -244,6 +253,12 @@ for forbidden in coordinator.RECOVERY_FORBIDDEN:
     assert f".{forbidden}(" not in recovery
 for forbidden in ("getenv", "environ", "argv", "callback", "retry", "fallback", "kvm"):
     assert forbidden not in recovery.lower()
+assert "_finish(" not in recovery and "owner_evidence(" not in recovery
+normal_evidence = ast.get_source_segment(source, functions["normal"])
+for required in ("_BindingOwnerResult", "_RetiredJournalOwnerResult", "AuthenticatedSession",
+                 "_RuntimeOwnerResult", "_ResidueOwnerResult", "_produce_owner_evidence"):
+    assert required in normal_evidence
+assert normal_evidence.index("lifecycle.primary_failure") < normal_evidence.index("_produce_owner_evidence")
 try:
     coordinator.open_fixed_coordinator()
 except coordinator.CoordinatorBlocked:

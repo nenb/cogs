@@ -63,6 +63,10 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         "policy_version": operation.command_policy.POLICY_VERSION,
         "parser_source_sha256": operation.SSH_PARSER_SHA256,
     }))
+    causal = record(len(rows), "NETWORK_CAUSAL_PROOF_V1", {
+        "operation_token": token, "causal_proof_sha256": "a" * 64,
+    })
+    rows.append(causal)
     mount = record(len(rows), "RUNTIME_MOUNT_V2", {
         "operation_token": token, "manifest_sha256": "4" * 64,
         "mount_generation": {}, "issuance_sha256": "5" * 64,
@@ -91,7 +95,8 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
         rows.append(record(len(rows), phase, body))
     runtime = evidence._RuntimeOwnerResult(
-        token, mount.line_sha256, "9" * 64, "c" * 64, 12, True, True)
+        token, mount.line_sha256, causal.body["causal_proof_sha256"],
+        "9" * 64, "c" * 64, 12, True, True)
     residue = evidence._ResidueOwnerResult(token, "8" * 64, local.RESIDUE_FACTS)
     bindings = {
         "source_head": genesis["source_revision"],
@@ -195,7 +200,8 @@ try:
             evidence._RetiredJournalOwnerResult(b"replaced-journal\n"), runtime_value, custody_value)),
         ("runtime", lambda journal, runtime_value, custody_value: (
             journal, evidence._RuntimeOwnerResult(runtime_value.operation_token,
-                runtime_value.runtime_mount_record_sha256, "0" * 63 + "1",
+                runtime_value.runtime_mount_record_sha256,
+                runtime_value.network_causal_proof_sha256, "0" * 63 + "1",
                 runtime_value.qemu_process_sha256, 12, True, True), custody_value)),
         ("binding", lambda journal, runtime_value, custody_value: (
             journal, runtime_value, {**custody_value, "final_pin_sha256": "0" * 64})),
@@ -248,6 +254,14 @@ receipt_source = (REMOTE / "completion_local_receipt.py").read_text()
 for forbidden in ("report_raw", "local.load_result(", "issue(report", "caller_report", "qualified="):
     check(forbidden not in source + receipt_source, f"caller report adapter surface: {forbidden}")
 check("operation._parse(journal.raw)" in source, "production operation parser is not journal authority")
+check('causal = _one(records, "NETWORK_CAUSAL_PROOF_V1")' in source,
+      "causal network proof is not journal-bound")
+check('runtime.network_causal_proof_sha256 == causal.body["causal_proof_sha256"]' in source,
+      "typed runtime can detach from causal network proof")
 check("local.canonical_result(report)" in source, "derived report is not canonicalized exactly once")
 check("custody_close(target)" in receipt_source, "custody closure is not transactional")
+check("admission._static_custody_binding, admission._abort_static_preparation" in receipt_source,
+      "production receipt realm is not bound to exact V2 static custody")
+check("_execution_custody_binding" not in receipt_source,
+      "historical V1 custody entered the production receipt realm")
 print("completion local typed evidence and receipt tests passed")

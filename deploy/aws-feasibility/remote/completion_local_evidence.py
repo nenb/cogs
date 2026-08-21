@@ -85,9 +85,10 @@ class _RetiredJournalOwnerResult:
 
 @dataclass(frozen=True)
 class _RuntimeOwnerResult:
-    """Causal runtime/QMP result tied to the journal's exact mount record."""
+    """Causal network/runtime/QMP fact retained through exact teardown."""
     operation_token: str
     runtime_mount_record_sha256: str
+    network_causal_proof_sha256: str
     live_mapping_sha256: str
     qemu_process_sha256: str
     kvm_api: int
@@ -96,7 +97,8 @@ class _RuntimeOwnerResult:
 
     def __post_init__(self):
         _token(self.operation_token)
-        for value in (self.runtime_mount_record_sha256, self.live_mapping_sha256,
+        for value in (self.runtime_mount_record_sha256,
+                      self.network_causal_proof_sha256, self.live_mapping_sha256,
                       self.qemu_process_sha256):
             _digest(value)
         _require(type(self.kvm_api) is int and self.kvm_api == 12)
@@ -123,6 +125,7 @@ def _runtime_attestation_value(result):
     return {
         "kvm_api": result.kvm_api,
         "live_mapping_sha256": result.live_mapping_sha256,
+        "network_causal_proof_sha256": result.network_causal_proof_sha256,
         "operation_token": result.operation_token,
         "qemu_process_sha256": result.qemu_process_sha256,
         "qmp_enabled": result.qmp_enabled,
@@ -189,11 +192,14 @@ def _validate_bindings(bindings, owner_bindings, genesis, runtime):
 def _validate_session(records, session, runtime):
     _require(type(session) is ssh.AuthenticatedSession)
     mount = _one(records, "RUNTIME_MOUNT_V2")
+    causal = _one(records, "NETWORK_CAUSAL_PROOF_V1")
     result = _one(records, "SSH_RESULT_V2")
     ready = _one(records, "SSH_READY_V2")
     body = result.body
     _require(runtime.runtime_mount_record_sha256 == mount.line_sha256)
-    _require(runtime.operation_token == mount.body["operation_token"] == body["operation_token"])
+    _require(runtime.network_causal_proof_sha256 == causal.body["causal_proof_sha256"])
+    _require(runtime.operation_token == mount.body["operation_token"]
+             == causal.body["operation_token"] == body["operation_token"])
     _require(body["runtime_mount_sha256"] == mount.line_sha256)
     _require(ready.body["operation_token"] == runtime.operation_token)
     _require(ready.body["result_record_sha256"] == result.line_sha256)

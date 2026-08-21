@@ -217,6 +217,24 @@ escaping_link = [{"path": "runtime/link", "kind": "symlink", "mode": 0o777,
                   "uid": 0, "gid": 0, "size": 0, "link_target": "../../host", "sha256": None}]
 reject(lambda: preparation.section(escaping_link))
 
+with tempfile.TemporaryDirectory() as directory:
+    original_observation_root = preparation.OBSERVATION_ROOT
+    try:
+        preparation.OBSERVATION_ROOT = Path(directory)
+        digest = preparation.publish_fixed_candidate(first_control, first_members)
+        candidate = Path(directory) / "candidate"
+        assert digest == sha(first_control)
+        assert (candidate / preparation.CONTROL_MEMBER).read_bytes() == first_control
+        assert {path.relative_to(candidate).as_posix() for path in candidate.rglob("*") if path.is_file()} \
+            == {preparation.CONTROL_MEMBER, *first_members}
+        assert all(path.stat().st_mode & 0o777 == 0o444
+                   for path in candidate.rglob("*") if path.is_file())
+        assert all(path.stat().st_mode & 0o777 == 0o555
+                   for path in (candidate, *(path for path in candidate.rglob("*") if path.is_dir())))
+        reject(lambda: preparation.publish_fixed_candidate(first_control, first_members))
+    finally:
+        preparation.OBSERVATION_ROOT = original_observation_root
+
 source = (REMOTE / "completion_kata_preparation.py").read_text()
 assert "/dev/kvm" not in source and "QMP_SOCKET" not in source
 assert "os.getpid" not in source and "import completion_kata_coordinator" not in source
