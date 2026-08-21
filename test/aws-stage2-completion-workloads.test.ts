@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -186,7 +187,7 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
     owner_implementation_sha256: executionBinding.owner_implementation_sha256,
     native_producer_implementation_sha256: "a7f2a314bbf6e724d2d536de724d5bd268384c17dff9ce538bb31666c355e1c3",
     native_codec_implementation_sha256: "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0",
-    runtime_codec_implementation_sha256: "2548e636d496592c325357d6f08c96510e52c127bf0d501486d20925db8595cd",
+    runtime_codec_implementation_sha256: "3ed164fbdc0630c944b9f79a03c109080f3fbeb7d846ee6e83a4ebe7f22404af",
     launcher_implementation_sha256: "9e0fec1d8735f2f3ce83bc550f282c2477450b25dcd406c9d8e54bdf5b3e8882",
     source_revision: "1".repeat(40),
     source_manifest_sha256: "2".repeat(64),
@@ -284,16 +285,22 @@ test("fixed candidate and recovery entries redact every invocation failure", () 
   }
 });
 
-test("production final-pin bytes and authority remain absent", () => {
-  assert.equal(existsSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")), false);
+test("production final-pin bytes bind the manually reviewed native candidate", () => {
+  const expected = "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31";
+  const raw = readFileSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json"));
+  assert.equal(createHash("sha256").update(raw).digest("hex"), expected);
+  const value = JSON.parse(raw.toString("utf8")) as { candidate_result_sha256?: unknown };
+  assert.equal(value.candidate_result_sha256, "e967438172de7faee443c417fa85bf040f68decc889d74e21759b0aeb19d2b7b");
   const contractSource = readFileSync(
     join(root, "deploy/aws-feasibility/remote/completion_runtime_contract.py"),
     "utf8",
   );
-  assert.match(contractSource, /^REVIEWED_FINAL_PIN_SHA256 = None$/mu);
+  assert.match(contractSource, new RegExp(`^REVIEWED_FINAL_PIN_SHA256 = "${expected}"$`, "mu"));
 });
 
 test("Darwin CLI is categorical and cannot create a final pin", { skip: process.platform !== "darwin" }, () => {
+  const finalPath = join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json");
+  const finalBefore = readFileSync(finalPath);
   const result = spawnSync("python3", ["-B", "deploy/aws-feasibility/remote/completion_package_candidate.py"], {
     cwd: root,
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
@@ -304,7 +311,7 @@ test("Darwin CLI is categorical and cannot create a final pin", { skip: process.
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /^completion host candidate failed: [a-z-]+\n$/u);
   assert.doesNotMatch(result.stderr, /\/|git|dpkg|Traceback|Kata|qualification/u);
-  assert.throws(() => readFileSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")));
+  assert.deepEqual(readFileSync(finalPath), finalBefore);
   for (const entry of [
     "deploy/aws-feasibility/remote/completion_package_candidate_recovery.py",
     "deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py",

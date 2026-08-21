@@ -45,8 +45,19 @@ candidate_exact_bytes = contract.CANDIDATE_PATH.read_bytes()
 check(hashlib.sha256(candidate_exact_bytes).hexdigest() == contract.REVIEWED_CANDIDATE_SHA256, "raw candidate digest drift")
 check(candidate_exact_bytes != contract.canonical_json(fixed.value), "pretty reviewed input was mislabeled canonical")
 check(fixed.value["sample_count"] == 7 and "deb_sha256" not in json.dumps(fixed.value), "candidate contract changed")
-check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "an unreviewed final digest was invented")
-rejected(contract.load_final_pin, contract.FinalPinUnavailable)
+EXPECTED_FINAL_PIN_SHA256 = "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31"
+check(contract.REVIEWED_FINAL_PIN_SHA256 == EXPECTED_FINAL_PIN_SHA256,
+      "reviewed final digest drift")
+reviewed_final_raw = contract.FINAL_PATH.read_bytes()
+check(hashlib.sha256(reviewed_final_raw).hexdigest() == EXPECTED_FINAL_PIN_SHA256,
+      "reviewed final bytes drift")
+reviewed_final_value = json.loads(reviewed_final_raw)
+reviewed_identity, reviewed_closure = contract.validate_final_value(reviewed_final_value)
+check(reviewed_final_raw == contract.canonical_json(reviewed_final_value),
+      "reviewed final bytes are not canonical")
+check(reviewed_identity.deb_sha256 == "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf"
+      and reviewed_closure.manifest_sha256 == contract.RUNTIME_CLOSURE_MANIFEST_SHA256,
+      "reviewed final pin did not validate")
 
 identity = {
     "deb_sha256": "a" * 64,
@@ -113,7 +124,7 @@ with tempfile.TemporaryDirectory() as temporary:
         canonical = contract.canonical_json(final_value)
         final_path.write_bytes(canonical)
         contract.FINAL_PATH = final_path
-        rejected(contract.load_final_pin, contract.FinalPinUnavailable)
+        rejected(contract.load_final_pin, contract.WorkloadContractError)
         contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(canonical).hexdigest()
         contract.exact_runtime_closure = lambda: contract._runtime_closure_value(runtime_closure)
         final = contract.load_final_pin()
@@ -1172,7 +1183,8 @@ if sys.platform == "darwin":
     check(not os.path.lexists(candidate.CANDIDATE_ROOT), "candidate root pre-existed")
     rejected(candidate.run_candidate_transaction)
     check(not os.path.lexists(candidate.CANDIDATE_ROOT), "Darwin created a candidate root")
-    check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
+    check(contract.REVIEWED_FINAL_PIN_SHA256 == EXPECTED_FINAL_PIN_SHA256,
+          "Darwin changed the reviewed final pin")
 
 native_source = (REMOTE / "completion_package_native_candidate.py").read_text()
 check('REVIEWED_NATIVE_CODEC_SHA256 = "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0"'
