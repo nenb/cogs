@@ -254,6 +254,10 @@ test("partial validation and fsync precede atomic candidate publication", () => 
   assert.match(publication, /writable shared mapping/u);
   assert.match(publication, /_generation\(after\) != _generation\(before\)/u);
   assert.match(publication, /prove_no_writable_aliases/u);
+  assert.match(publication, /MAX_ALIAS_PASSES = 120/u);
+  assert.match(publication, /current <= inspected/u);
+  assert.match(publication, /coverage\.get\(generation, 0\) \+ 1/u);
+  assert.match(publication, /native publication failed:/u);
   assert.match(publication, /validate_native_candidate_result\(value, revision, manifest\)/u);
   assert.match(publication, /raw != canonical_json\(value\)/u);
   assert.match(publication, /os\.fsync\(fresh\)[\s\S]*os\.rename\(/u);

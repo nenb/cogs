@@ -164,7 +164,7 @@ def _candidate_target(environ):
 
 
 def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os.environ):
-    """Reject references over repeated stable, starttime-owned process generations."""
+    """Reject references over repeated complete inspections of every final live generation."""
     if targets is None:
         targets = FIXED_TARGETS + (_candidate_target(environ),)
     if phase not in PHASES or not targets or not marker:
@@ -173,25 +173,31 @@ def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os
     own_namespace = _identity(proc_root / "self/ns/mnt")
     if own_namespace is None:
         raise SettlementError("mount namespace unavailable")
-    signature = None
     consecutive = 0
+    coverage = {}
     for _ in range(MAX_SCAN_PASSES):
         before, complete = _inventory(proc_root)
-        stable = complete
+        inspected = set()
         for name, starttime in sorted(before.items()):
-            if not _inspect_generation(phase, proc_root, name, starttime,
-                                       own_namespace, targets, marker):
-                stable = False
+            if _inspect_generation(phase, proc_root, name, starttime,
+                                   own_namespace, targets, marker):
+                inspected.add((name, starttime))
         after, final_complete = _inventory(proc_root)
-        stable = stable and final_complete and before == after
-        current = tuple(sorted(after.items())) if stable else None
-        if stable and current == signature:
+        # Births and reused generations in the final census were not inspected and
+        # force another pass.  A generation that vanished after a complete clean
+        # inspection cannot retain a target and does not couple acceptance to
+        # unrelated whole-runner process churn.
+        current = set(after.items())
+        stable = complete and final_complete and current <= inspected
+        if stable:
             consecutive += 1
-        elif stable:
-            signature, consecutive = current, 1
+            coverage = {generation: coverage.get(generation, 0) + 1
+                        for generation in current}
         else:
-            signature, consecutive = None, 0
-        if consecutive >= REQUIRED_STABLE_PASSES:
+            consecutive, coverage = 0, {}
+        if (consecutive >= REQUIRED_STABLE_PASSES
+                and all(count >= REQUIRED_STABLE_PASSES
+                        for count in coverage.values())):
             return
         time.sleep(0.01)
     raise SettlementError("process generations did not reach stable settlement")

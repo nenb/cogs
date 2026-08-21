@@ -137,6 +137,29 @@ def extended_convergence_tests():
             assert run_pattern([True, True, False, True, True, True]) == 12
             rejected(lambda: run_pattern([False] * 13 + [True] * 3, True),
                      settlement.SettlementError)
+
+            changing_calls = [0]
+            def changing_inventory(_proc_root):
+                pass_index, half = divmod(changing_calls[0], 2)
+                changing_calls[0] += 1
+                current = {"41": 100}
+                if half == 0:
+                    current[str(2000 + pass_index)] = 3000 + pass_index
+                return current, True
+            settlement._inventory = changing_inventory
+            settlement._inspect_generation = lambda *_arguments: True
+            settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
+            assert changing_calls[0] == 6
+
+            replacement_calls = [0]
+            def replacement_inventory(_proc_root):
+                pass_index = replacement_calls[0] // 2
+                replacement_calls[0] += 1
+                return ({"41": 100} if pass_index == 0 else {"42": 200}), True
+            settlement._inventory = replacement_inventory
+            settlement._inspect_generation = lambda *_arguments: True
+            settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
+            assert replacement_calls[0] == 8
         finally:
             settlement._inventory = original_inventory
             settlement._inspect_generation = original_inspect
@@ -327,6 +350,39 @@ def publication_tests():
         assert staging.stat().st_mode & 0o777 == 0o555
         assert set(path.name for path in staging.iterdir()) == {"candidate.json"}
 
+    # Exact bounds and forced short reads cannot publish a regular-file prefix.
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(b"X" * publication.MAX_CANDIDATE_BYTES)
+        source.flush()
+        descriptor = os.open(source.name, os.O_RDONLY)
+        try:
+            raw, _status = publication._read_bounded(
+                descriptor, publication.MAX_CANDIDATE_BYTES)
+            assert len(raw) == publication.MAX_CANDIDATE_BYTES
+        finally:
+            os.close(descriptor)
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(b"X" * (publication.MAX_CANDIDATE_BYTES + 1))
+        source.flush()
+        descriptor = os.open(source.name, os.O_RDONLY)
+        try:
+            rejected(lambda: publication._read_bounded(
+                descriptor, publication.MAX_CANDIDATE_BYTES), publication.PublicationError)
+        finally:
+            os.close(descriptor)
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(candidate_raw)
+        source.flush()
+        descriptor = os.open(source.name, os.O_RDONLY)
+        original_read = publication.os.read
+        publication.os.read = lambda fd, maximum: original_read(fd, max(1, maximum // 2))
+        try:
+            rejected(lambda: publication._read_bounded(
+                descriptor, publication.MAX_CANDIDATE_BYTES), publication.PublicationError)
+        finally:
+            publication.os.read = original_read
+            os.close(descriptor)
+
     # A same-size write between the complete before/after fstats is rejected.
     with tempfile.NamedTemporaryFile() as source:
         source.write(candidate_raw)
@@ -396,6 +452,98 @@ def publication_tests():
             finally:
                 mapping.close()
                 os.close(descriptor)
+
+
+def publication_convergence_tests():
+    with tempfile.NamedTemporaryFile() as source:
+        source.write(b"candidate")
+        source.flush()
+        descriptor = os.open(source.name, os.O_RDONLY)
+        original_inventory = publication._inventory
+        original_sweep = publication._writable_alias_sweep
+        original_sleep = publication.time.sleep
+        original_generation = publication._generation
+        try:
+            publication.time.sleep = lambda _seconds: None
+            def run_pattern(pattern):
+                calls = [0]
+                current_before = [{}]
+                def inventory(_proc_root, _owner_uid):
+                    pass_index, half = divmod(calls[0], 2)
+                    calls[0] += 1
+                    before, after, _omitted = pattern[
+                        pass_index if pass_index < len(pattern) else -1]
+                    if half == 0:
+                        current_before[0] = before
+                        return dict(before), True
+                    return dict(after), True
+                def sweep(_proc_root, _expected, _inventory):
+                    pass_index = max(0, (calls[0] - 1) // 2)
+                    _before, _after, omitted = pattern[
+                        pass_index if pass_index < len(pattern) else -1]
+                    return set(current_before[0].items()) - set(omitted)
+                publication._inventory = inventory
+                publication._writable_alias_sweep = sweep
+                publication.prove_no_writable_aliases(descriptor, os.geteuid(), Path("/synthetic"))
+                return calls[0]
+
+            a, b = {"41": 100}, {"41": 100, "42": 200}
+            assert run_pattern([(b, a, ()), ({"41": 100, "43": 300}, a, ())]) == 4
+            c = {"42": 200}
+            assert run_pattern([(a, a, ()), (c, c, ()), (c, c, ())]) == 6
+            assert run_pattern([(a, b, ()), (b, b, ()), (b, b, ())]) == 6
+            assert run_pattern([(a, a, ()), (a, b, ()), (b, b, ()), (b, b, ())]) == 8
+            reused = {"41": 101}
+            assert run_pattern([(a, reused, ()), (reused, reused, ()),
+                                (reused, reused, ())]) == 6
+
+            calls = [0]
+            publication._inventory = lambda *_args: (dict(a), True)
+            def incomplete(*_args):
+                calls[0] += 1
+                return set()
+            publication._writable_alias_sweep = incomplete
+            rejected(lambda: publication.prove_no_writable_aliases(
+                descriptor, os.geteuid(), Path("/synthetic")), publication.PublicationError)
+            assert calls[0] == publication.MAX_ALIAS_PASSES == 120
+
+            pass_count = [0]
+            def late_inventory(*_args):
+                half = pass_count[0] % 2
+                pass_count[0] += 1
+                return (dict(a) if half == 0 else dict(b)), True
+            def late_alias(*_args):
+                if pass_count[0] > 26:
+                    raise publication.PublicationError("candidate has writable descriptor alias: 42/7")
+                return set(a.items())
+            publication._inventory = late_inventory
+            publication._writable_alias_sweep = late_alias
+            rejected(lambda: publication.prove_no_writable_aliases(
+                descriptor, os.geteuid(), Path("/synthetic")), publication.PublicationError)
+
+            publication._inventory = lambda *_args: ({}, True)
+            publication._writable_alias_sweep = lambda *_args: set()
+            generations = [0]
+            def changed_generation(status):
+                generations[0] += 1
+                value = original_generation(status)
+                return value if generations[0] == 1 else (*value[:-1], value[-1] + 1)
+            publication._generation = changed_generation
+            rejected(lambda: publication.prove_no_writable_aliases(
+                descriptor, os.geteuid(), Path("/synthetic")), publication.PublicationError)
+        finally:
+            publication._inventory = original_inventory
+            publication._writable_alias_sweep = original_sweep
+            publication.time.sleep = original_sleep
+            publication._generation = original_generation
+            os.close(descriptor)
+
+    cli = subprocess.run(
+        [sys.executable, "-I", "-B", str(ROOT / "scripts/stage2-native-publication.py"), "invalid"],
+        capture_output=True, check=False,
+    )
+    assert cli.returncode == 2 and cli.stdout == b""
+    assert cli.stderr == b"native publication failed:request-error\n"
 
 
 def queued_scm_rights_fresh_inode_test():
@@ -596,6 +744,7 @@ else:
     settlement_diagnostic_tests()
     unmount_tests()
     publication_tests()
+    publication_convergence_tests()
     queued_scm_rights_fresh_inode_test()
     frozen_owner_chmod_reopen_test()
     uploaded_member_substitution_test()

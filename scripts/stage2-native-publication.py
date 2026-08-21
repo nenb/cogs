@@ -16,7 +16,7 @@ from completion_package_native_codec import validate_native_candidate_result
 from completion_runtime_contract import canonical_json
 
 MAX_CANDIDATE_BYTES = 4096
-MAX_ALIAS_PASSES = 12
+MAX_ALIAS_PASSES = 120
 REQUIRED_ALIAS_PASSES = 2
 VANISHED = frozenset((errno.ENOENT, errno.ESRCH))
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -41,6 +41,8 @@ def _rename_generation(before, after):
 
 def _read_bounded(descriptor, maximum, after_read=None):
     before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
+        raise PublicationError("candidate byte bound failed")
     os.lseek(descriptor, 0, os.SEEK_SET)
     raw = os.read(descriptor, maximum + 1)
     if after_read is not None:
@@ -50,8 +52,8 @@ def _read_bounded(descriptor, maximum, after_read=None):
     after = os.fstat(descriptor)
     if _generation(after) != _generation(before) or repeated != raw:
         raise PublicationError("candidate generation or bytes changed while reading")
-    if not 0 < len(raw) <= maximum:
-        raise PublicationError("candidate byte bound failed")
+    if len(raw) != before.st_size:
+        raise PublicationError("candidate byte read was incomplete")
     return raw, after
 
 
@@ -118,18 +120,17 @@ def _fd_names(path):
 
 
 def _writable_alias_sweep(proc_root, expected, inventory):
-    stable = True
+    inspected = set()
     device = os.major(expected[0]), os.minor(expected[0])
     for name, starttime in inventory.items():
+        generation_complete = True
         if _starttime(proc_root, name) != starttime:
-            stable = False
             continue
         base = proc_root / name
         try:
             mappings = (base / "maps").read_bytes().splitlines()
         except OSError as error:
             if error.errno in VANISHED:
-                stable = False
                 continue
             raise PublicationError("mapping inventory failed") from error
         for row in mappings:
@@ -147,7 +148,6 @@ def _writable_alias_sweep(proc_root, expected, inventory):
                 raise PublicationError(f"candidate has writable shared mapping: {name}")
         descriptors = _fd_names(base / "fd")
         if descriptors is None:
-            stable = False
             continue
         for descriptor in descriptors:
             path = base / "fd" / descriptor
@@ -155,7 +155,7 @@ def _writable_alias_sweep(proc_root, expected, inventory):
                 observed = os.stat(path)
             except OSError as error:
                 if error.errno in VANISHED:
-                    stable = False
+                    generation_complete = False
                     continue
                 raise PublicationError("descriptor identity inspection failed") from error
             if (observed.st_dev, observed.st_ino) != expected:
@@ -164,7 +164,7 @@ def _writable_alias_sweep(proc_root, expected, inventory):
                 info = (base / "fdinfo" / descriptor).read_bytes()
             except OSError as error:
                 if error.errno in VANISHED:
-                    stable = False
+                    generation_complete = False
                     continue
                 raise PublicationError("descriptor mode inspection failed") from error
             flags = [line.split()[1] for line in info.splitlines()
@@ -178,28 +178,32 @@ def _writable_alias_sweep(proc_root, expected, inventory):
             if access != os.O_RDONLY:
                 raise PublicationError(f"candidate has writable descriptor alias: {name}/{descriptor}")
         if _starttime(proc_root, name) != starttime:
-            stable = False
-    return stable
+            generation_complete = False
+        if generation_complete:
+            inspected.add((name, starttime))
+    return inspected
 
 
 def prove_no_writable_aliases(descriptor, owner_uid, proc_root=Path("/proc")):
     expected = os.fstat(descriptor)
     identity = expected.st_dev, expected.st_ino
-    signature = None
     consecutive = 0
+    coverage = {}
     for _ in range(MAX_ALIAS_PASSES):
         before, complete = _inventory(proc_root, owner_uid)
-        stable = complete and _writable_alias_sweep(proc_root, identity, before)
+        inspected = _writable_alias_sweep(proc_root, identity, before)
         after, final_complete = _inventory(proc_root, owner_uid)
-        stable = stable and final_complete and before == after
-        current = tuple(sorted(after.items())) if stable else None
-        if stable and current == signature:
+        current = set(after.items())
+        stable = complete and final_complete and current <= inspected
+        if stable:
             consecutive += 1
-        elif stable:
-            signature, consecutive = current, 1
+            coverage = {generation: coverage.get(generation, 0) + 1
+                        for generation in current}
         else:
-            signature, consecutive = None, 0
-        if consecutive >= REQUIRED_ALIAS_PASSES:
+            consecutive, coverage = 0, {}
+        if (consecutive >= REQUIRED_ALIAS_PASSES
+                and all(count >= REQUIRED_ALIAS_PASSES
+                        for count in coverage.values())):
             if _generation(os.fstat(descriptor)) != _generation(expected):
                 raise PublicationError("candidate changed during alias proof")
             return
@@ -334,8 +338,36 @@ def main():
     print(f"candidate_bytes={size}")
 
 
+def _failure_token(error):
+    message = str(error)
+    categories = (
+        ("writable-alias absence did not stabilize", "alias-nonconvergence"),
+        ("candidate has writable shared mapping", "writable-shared-mapping"),
+        ("candidate has writable descriptor alias", "writable-descriptor"),
+        ("candidate changed", "candidate-mutation"),
+        ("candidate generation", "candidate-mutation"),
+        ("candidate byte read", "candidate-mutation"),
+        ("source candidate changed", "candidate-mutation"),
+        ("fresh candidate", "candidate-mutation"),
+        ("published fresh candidate readback", "candidate-mutation"),
+        ("process ", "alias-inspection"),
+        ("invalid process ", "alias-inspection"),
+        ("mapping ", "alias-inspection"),
+        ("descriptor ", "alias-inspection"),
+        ("candidate/source contract", "candidate-contract"),
+        ("usage:", "request-error"),
+        ("missing ", "request-error"),
+        ("invalid run identity", "request-error"),
+        ("staging identity", "request-error"),
+        ("root publication", "request-error"),
+    )
+    return next((token for prefix, token in categories if message.startswith(prefix)),
+                "publication-error")
+
+
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, PublicationError):
+    except (OSError, PublicationError) as error:
+        print(f"native publication failed:{_failure_token(error)}", file=sys.stderr)
         raise SystemExit(2)
