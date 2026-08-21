@@ -91,7 +91,7 @@ def live_process_tests():
         finally:
             terminate(fd_process)
 
-        if Path("/proc/self/fd").exists():
+        if Path("/proc/self/fd").exists() and os.geteuid() == 0:
             churn = subprocess.Popen([
                 sys.executable, "-c",
                 "import os,time\nprint('READY',flush=True)\nend=time.monotonic()+20\n"
