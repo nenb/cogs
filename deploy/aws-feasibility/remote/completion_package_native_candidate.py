@@ -23,6 +23,7 @@ FIXED_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 FIXED_NATIVE_DRIVER = FIXED_SOURCE / "scripts/run-stage2-package-native-candidate.py"
 FIXED_SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 MAX_OUTPUT_BYTES = 4096
+MAX_PACKAGE_EFFECT_BYTES = 4_194_304
 # Captured after fixed-source verification and while its names are still visible,
 # before namespace/chroot entry removes access to the source directory.
 NATIVE_LAUNCHER_BYTES = FIXED_NATIVE_DRIVER.read_bytes()
@@ -109,9 +110,20 @@ def _raise_failure(failure):
     raise NativeCandidateTransactionError("native candidate transaction failed") from None
 
 
-def _run_native_command(argv, root, deadline, pass_fds=()):
+def _limit_package_effects():
+    # This assignment occurs only in the already-forked child.  The shared owner
+    # then applies the identical identity/capability boundary with this fixed,
+    # package-sized per-file limit instead of its command-log-sized limit.
+    workload_owner.MAX_COMMAND_OUTPUT = MAX_PACKAGE_EFFECT_BYTES
+    workload_owner._limit_output()
+
+
+def _run_native_command(argv, root, deadline, pass_fds=(), environment=None,
+                        package_effects=False):
     """Mirror the fixed command owner while retaining only bounded categorical failure facts."""
     workload_owner._require(type(argv) is tuple and argv and all(type(item) is str and item for item in argv))
+    workload_owner._require(type(package_effects) is bool)
+    selected_environment = dict(_ENV) if environment is None else dict(environment)
     output_fd = -1
     process = None
     raw = b""
@@ -130,14 +142,14 @@ def _run_native_command(argv, root, deadline, pass_fds=()):
         process = subprocess.Popen(
             argv,
             cwd=root.proc_path(),
-            env=root.child_environment(dict(_ENV)),
+            env=root.child_environment(selected_environment),
             stdin=subprocess.DEVNULL,
             stdout=output_fd,
             stderr=subprocess.STDOUT,
             close_fds=True,
             pass_fds=tuple({root.fd, *pass_fds}),
             start_new_session=True,
-            preexec_fn=workload_owner._limit_output,
+            preexec_fn=_limit_package_effects if package_effects else workload_owner._limit_output,
         )
         return_code = workload_owner._wait_process(process, deadline.effect_seconds())
         if return_code is None:
@@ -193,6 +205,11 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
         root.mkdir(prefix, 0o700)
     except BaseException as error:
         raise _stage_failure(f"{diagnostic_prefix}-{stage}", error) from error
+    package_environment = {
+        **_ENV,
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "TMPDIR": root.proc_path("private-tmp"),
+    }
     stage = "package-source"
     try:
         _materialize(fixture.source.records, root, source)
@@ -203,8 +220,8 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
                 tools.dpkg_deb.executable,
                 "--build",
                 "--root-owner-group",
-                "--compression=xz",
-                "--compression-level=6",
+                "-Zxz",
+                "-z6",
                 "--threads-max=1",
                 root.proc_path(source),
                 root.proc_path(deb),
@@ -212,6 +229,8 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             root,
             deadline,
             pass_fds=tools.descriptors,
+            environment=package_environment,
+            package_effects=True,
         )
         build_ms = (time.monotonic_ns() - build_start) // 1_000_000
         stage = "deb-readback"
@@ -233,6 +252,7 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             (
                 tools.dpkg.executable,
                 "--force-not-root",
+                "--log=/dev/null",
                 "--admindir",
                 root.proc_path(admin),
                 "--instdir",
@@ -243,8 +263,20 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             root,
             deadline,
             pass_fds=tools.descriptors,
+            environment=package_environment,
+            package_effects=True,
         )
         install_ms = (time.monotonic_ns() - install_start) // 1_000_000
+        stage = "installed-mtime-normalize"
+        for record in reversed(fixture.installed.records):
+            if record.kind != "directory":
+                continue
+            relative = installed if record.path == "." else f"{installed}/{record.path}"
+            descriptor = root._open_dir(relative)
+            try:
+                os.utime(descriptor, (record.mtime, record.mtime))
+            finally:
+                os.close(descriptor)
         stage = "installed-tree"
         observed = _verify_installed(root, installed)
         stage = "status-readback"

@@ -691,10 +691,13 @@ else:
 command_root = ProbePackageRoot()
 original_materialize = native_probe._materialize
 original_command = native_probe._run_native_command
+observed_package_environments = []
+def fail_package_command(*_args, **kwargs):
+    observed_package_environments.append(kwargs.get("environment"))
+    raise native_probe.NativeCommandObserved(7, b"private-error-marker\n")
 try:
     native_probe._materialize = lambda *_args: None
-    native_probe._run_native_command = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        native_probe.NativeCommandObserved(7, b"private-error-marker\n"))
+    native_probe._run_native_command = fail_package_command
     native_probe._run_native_package_sample(
         command_root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
 except native_probe.NativeCandidateStageError as package_error:
@@ -703,6 +706,11 @@ except native_probe.NativeCandidateStageError as package_error:
           "native command package category changed")
     check("private" not in str(package_error) and "marker" not in str(package_error),
           "native command package diagnostic leaked output")
+    check(len(observed_package_environments) == 1
+          and observed_package_environments[0] == {
+              **guest._ENV, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+              "TMPDIR": "/probe/private-tmp"},
+          "native package command did not use its owned temporary directory")
 else:
     raise AssertionError("native package command failure was accepted")
 finally:
@@ -754,6 +762,49 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
             os.close(read_fd)
             shared_root.cleanup()
         check(native_raw == shared_raw == b"C:fd-ok\n", "native/shared command success parity changed")
+
+        package_path = Path(temporary) / "package-command"
+        package_deadline = owner.Deadline.start(120, 30)
+        package_root = owner.OwnedRoot(package_path, package_deadline, "host-candidate")
+        package_tools = guest.ToolSet()
+        try:
+            package_root.mkdir("private-tmp", 0o700)
+            package_root.mkdir("package", 0o700)
+            native_probe._materialize(
+                guest.fixed_fixtures().package.source.records, package_root, "package/source")
+            try:
+                package_output = native_probe._run_native_command(
+                    (package_tools.dpkg_deb.executable, "--build", "--root-owner-group",
+                     "-Zxz", "-z6", "--threads-max=1", package_root.proc_path("package/source"),
+                     package_root.proc_path("package/fixture.deb")),
+                    package_root, package_deadline, package_tools.descriptors,
+                    {**guest._ENV, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                     "TMPDIR": package_root.proc_path("private-tmp")},
+                    package_effects=True)
+            except native_probe.NativeCommandObserved as error:
+                raise AssertionError(f"native dpkg-deb observation {error.category}") from error
+            package_raw, package_status = package_root.read_file("package/fixture.deb", 4_194_304)
+            check(package_output.startswith(b"dpkg-deb: building package ")
+                  and 0 < len(package_raw) == package_status.st_size,
+                  "native dpkg-deb build invocation failed")
+            try:
+                package_identity, build_ms, install_ms = native_probe._run_native_package_sample(
+                    package_root, "candidate-a", "build-a", package_tools, package_deadline)
+            except native_probe.NativeCandidateStageError as error:
+                raise AssertionError(
+                    f"native package transaction observation {error.category}:{error.stage}") from error
+            second_identity, second_build_ms, second_install_ms = (
+                native_probe._run_native_package_sample(
+                    package_root, "candidate-b", "build-b", package_tools, package_deadline))
+            check(package_identity == second_identity
+                  and package_identity.package == "cogs-stage2-fixture"
+                  and package_identity.version == "1.0"
+                  and package_identity.architecture == "all"
+                  and min(build_ms, install_ms, second_build_ms, second_install_ms) >= 0,
+                  "native package A/B build/install transaction failed")
+        finally:
+            package_tools.close()
+            package_root.cleanup()
 
         observed_path = Path(temporary) / "observed-command"
         observed_deadline = owner.Deadline.start(30, 20)
@@ -998,6 +1049,14 @@ if sys.platform == "darwin":
     check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
 
 native_source = (REMOTE / "completion_package_native_candidate.py").read_text()
+check('"-Zxz"' in native_source and '"-z6"' in native_source
+      and '"--compression=xz"' not in native_source
+      and '"--compression-level=6"' not in native_source,
+      "native package command does not use dpkg-deb's supported compression flags")
+check('"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"' in native_source
+      and '"TMPDIR": root.proc_path("private-tmp")' in native_source
+      and '"--log=/dev/null"' in native_source,
+      "native package command lost its fixed paths, private temporary directory, or log sink")
 check("class NativeCandidateStageError" in native_source and "_stage_failure(stage, error)" in native_source,
       "native transaction stage errors are not retained")
 for required_stage in (
@@ -1007,7 +1066,7 @@ for required_stage in (
     "post-b-contract", "result-binding", "transaction-cleanup", "tool-close",
     "signal-scope-close", "result-presence", "result-validation", "result-encoding",
     "package-parent", "package-source", "dpkg-build", "deb-readback", "admin-setup", "dpkg-install",
-    "installed-tree", "status-readback", "status-verify", "identity",
+    "installed-mtime-normalize", "installed-tree", "status-readback", "status-verify", "identity",
     "package-cleanup", "duration",
 ):
     check(required_stage in native_source, f"missing native transaction stage {required_stage}")
