@@ -113,21 +113,26 @@ jobs:
           # Fail closed before unmounting or deleting any retained/runtime root name.
           test "$CANDIDATE_ATTEMPT_OUTCOME" = success
 
+          echo "native cleanup stage:scan-before-unmount"
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
             env -i PATH=/usr/bin:/bin CANDIDATE_STAGING="$CANDIDATE_STAGING" \
             GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan before-unmount
+          echo "native cleanup stage:ordinary-unmount"
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 130s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" unmount
+          echo "native cleanup stage:scan-after-unmount"
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 60s \
             env -i PATH=/usr/bin:/bin CANDIDATE_STAGING="$CANDIDATE_STAGING" \
             GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-native-settlement.py" scan after-unmount
+          echo "native cleanup stage:remove-fixed-roots"
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 300s \
             /bin/rm -rf --one-file-system -- \
             /var/lib/cogs /run/cogs-stage2-native-preflight-source-v1 \
             /run/cogs-stage2-native-private-v1
+          echo "native cleanup stage:verify-zero-residue"
           test ! -e /var/lib/cogs
           test ! -e /run/cogs-stage2-native-preflight-source-v1
           test ! -e /run/cogs-stage2-native-private-v1

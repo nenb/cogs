@@ -175,16 +175,43 @@ test("fixed settlement owner is invoked around ordinary bounded unmount and dele
   const validateStart = workflow.indexOf("Validate and atomically publish");
   const cleanup = workflow.slice(cleanupStart, validateStart);
   const outcome = cleanup.indexOf('test "$CANDIDATE_ATTEMPT_OUTCOME" = success');
+  const beforeTag = cleanup.indexOf("native cleanup stage:scan-before-unmount");
   const before = cleanup.indexOf('stage2-native-settlement.py" scan before-unmount');
+  const unmountTag = cleanup.indexOf("native cleanup stage:ordinary-unmount");
   const unmount = cleanup.indexOf('stage2-native-settlement.py" unmount');
+  const afterTag = cleanup.indexOf("native cleanup stage:scan-after-unmount");
   const after = cleanup.indexOf('stage2-native-settlement.py" scan after-unmount');
+  const removeTag = cleanup.indexOf("native cleanup stage:remove-fixed-roots");
+  const remove = cleanup.indexOf("/bin/rm -rf --one-file-system");
   const deletion = cleanup.indexOf("/var/lib/cogs /run/cogs-stage2-native-preflight-source-v1");
-  assert.ok(0 < outcome && outcome < before && before < unmount && unmount < after && after < deletion);
+  const verifyTag = cleanup.indexOf("native cleanup stage:verify-zero-residue");
+  const verify = cleanup.indexOf("test ! -e /var/lib/cogs");
+  assert.ok(
+    0 < outcome &&
+      outcome < beforeTag &&
+      beforeTag < before &&
+      before < unmountTag &&
+      unmountTag < unmount &&
+      unmount < afterTag &&
+      afterTag < after &&
+      after < removeTag &&
+      removeTag < remove &&
+      remove < deletion &&
+      deletion < verifyTag &&
+      verifyTag < verify,
+  );
   assert.match(settlement, /unsettled candidate process/u);
   assert.match(settlement, /unsettled target mount namespace/u);
   assert.match(settlement, /unsettled process path/u);
   assert.match(settlement, /unsettled process descriptor/u);
+  assert.match(settlement, /MAX_SCAN_PASSES = 120/u);
   assert.match(settlement, /REQUIRED_STABLE_PASSES = 3/u);
+  assert.match(settlement, /native settlement failed:/u);
+  assert.match(cleanup, /native cleanup stage:scan-before-unmount/u);
+  assert.match(cleanup, /native cleanup stage:ordinary-unmount/u);
+  assert.match(cleanup, /native cleanup stage:scan-after-unmount/u);
+  assert.match(cleanup, /native cleanup stage:remove-fixed-roots/u);
+  assert.match(cleanup, /native cleanup stage:verify-zero-residue/u);
   assert.match(settlement, /_starttime/u);
   assert.match(settlement, /FIXED_TARGETS \+ \(_candidate_target\(environ\),\)/u);
   assert.match(workflow, /CANDIDATE_STAGING="\$CANDIDATE_STAGING"[\s\S]{0,300}stage2-native-settlement\.py" scan/u);

@@ -17,7 +17,7 @@ MOUNT_TARGETS = FIXED_TARGETS[1:]
 MARKER = b"run-stage2-package-native-candidate.py"
 PHASES = frozenset(("before-unmount", "after-unmount"))
 COMMAND_SECONDS = 60
-MAX_SCAN_PASSES = 12
+MAX_SCAN_PASSES = 120
 REQUIRED_STABLE_PASSES = 3
 VANISHED = frozenset((errno.ENOENT, errno.ESRCH))
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -222,8 +222,38 @@ def main():
         raise SettlementError("usage: stage2-native-settlement.py scan PHASE | unmount")
 
 
+def _failure_token(error):
+    message = str(error)
+    categories = (
+        ("process generations did not reach stable settlement", "scan-nonconvergence"),
+        ("unsettled candidate process", "candidate-process"),
+        ("unsettled target mount namespace", "target-mount-namespace"),
+        ("unsettled process path", "target-process-path"),
+        ("unsettled process descriptor", "target-process-descriptor"),
+        ("stable process link", "process-link-inspection"),
+        ("stable process", "process-inspection"),
+        ("stable namespace", "namespace-inspection"),
+        ("stable descriptor", "descriptor-inspection"),
+        ("process inspection", "process-inspection"),
+        ("process link inspection", "process-link-inspection"),
+        ("namespace inspection", "namespace-inspection"),
+        ("process inventory", "process-inventory"),
+        ("invalid process generation", "process-generation"),
+        ("mount namespace", "mount-namespace"),
+        ("mountpoint inspection", "mountpoint-inspection"),
+        ("ordinary unmount", "ordinary-unmount"),
+        ("invalid run identity", "request-error"),
+        ("staging identity", "request-error"),
+        ("invalid settlement request", "request-error"),
+        ("usage:", "request-error"),
+    )
+    return next((token for prefix, token in categories if message.startswith(prefix)),
+                "settlement-error")
+
+
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, SettlementError):
+    except (OSError, SettlementError) as error:
+        print(f"native settlement failed:{_failure_token(error)}", file=sys.stderr)
         raise SystemExit(2)

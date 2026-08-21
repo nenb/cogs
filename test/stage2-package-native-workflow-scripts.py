@@ -105,7 +105,51 @@ def synthetic_proc(mount_target):
     return temporary, proc, pid
 
 
+def extended_convergence_tests():
+    with tempfile.TemporaryDirectory() as temporary:
+        proc = Path(temporary)
+        (proc / "self/ns").mkdir(parents=True)
+        (proc / "self/ns/mnt").write_bytes(b"own")
+        original_inventory = settlement._inventory
+        original_inspect = settlement._inspect_generation
+        original_sleep = settlement.time.sleep
+        try:
+            settlement.time.sleep = lambda _seconds: None
+            def run_pattern(pattern, late_target=False):
+                calls = [0]
+                def inventory(_proc_root):
+                    pass_index, half = divmod(calls[0], 2)
+                    calls[0] += 1
+                    stable = pattern[pass_index] if pass_index < len(pattern) else True
+                    before = {"41": 100}
+                    after = before if stable else {"41": 100, str(1000 + pass_index): 2000 + pass_index}
+                    return (before if half == 0 else after), True
+                def inspect(*_arguments):
+                    if late_target and calls[0] > 26:
+                        raise settlement.SettlementError("unsettled candidate process: 41")
+                    return True
+                settlement._inventory = inventory
+                settlement._inspect_generation = inspect
+                settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
+                return calls[0]
+
+            assert run_pattern([False] * 13 + [True] * 3) == 32
+            assert run_pattern([True, True, False, True, True, True]) == 12
+            rejected(lambda: run_pattern([False] * 13 + [True] * 3, True),
+                     settlement.SettlementError)
+        finally:
+            settlement._inventory = original_inventory
+            settlement._inspect_generation = original_inspect
+            settlement.time.sleep = original_sleep
+
+
 def scanner_race_and_mount_tests():
+    temporary, proc, _pid = synthetic_proc("/unrelated")
+    try:
+        settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
+    finally:
+        temporary.cleanup()
+
     temporary, proc, _pid = synthetic_proc("/run/cogs-stage2-native-private-v1")
     try:
         rejected(lambda: settlement.scan("before-unmount", proc_root=proc,
@@ -167,6 +211,43 @@ def scanner_race_and_mount_tests():
             settlement._inspect_generation = original_inspect
             if child is not None:
                 terminate(child)
+
+
+def settlement_diagnostic_tests():
+    cases = {
+        "process generations did not reach stable settlement": "scan-nonconvergence",
+        "unsettled candidate process: 41": "candidate-process",
+        "unsettled target mount namespace: 41": "target-mount-namespace",
+        "unsettled process path: 41/cwd": "target-process-path",
+        "unsettled process descriptor: 41/7": "target-process-descriptor",
+        "stable process inspection unavailable: 41": "process-inspection",
+        "stable process link inspection unavailable: 41/cwd": "process-link-inspection",
+        "stable namespace inspection unavailable: 41": "namespace-inspection",
+        "stable descriptor inventory unavailable: 41": "descriptor-inspection",
+        "process inspection failed": "process-inspection",
+        "process link inspection failed": "process-link-inspection",
+        "namespace inspection failed": "namespace-inspection",
+        "process inventory failed": "process-inventory",
+        "process inventory unavailable": "process-inventory",
+        "invalid process generation": "process-generation",
+        "mount namespace unavailable": "mount-namespace",
+        "mountpoint inspection failed": "mountpoint-inspection",
+        "ordinary unmount did not settle": "ordinary-unmount",
+        "invalid run identity": "request-error",
+        "staging identity is not run-unique": "request-error",
+        "invalid settlement request": "request-error",
+        "usage: stage2-native-settlement.py": "request-error",
+        "other": "settlement-error",
+    }
+    for message, expected in cases.items():
+        assert settlement._failure_token(settlement.SettlementError(message)) == expected
+    assert settlement.MAX_SCAN_PASSES == 120 and settlement.REQUIRED_STABLE_PASSES == 3
+    cli = subprocess.run(
+        [sys.executable, "-I", "-B", str(ROOT / "scripts/stage2-native-settlement.py"), "invalid"],
+        capture_output=True, check=False,
+    )
+    assert cli.returncode == 2 and cli.stdout == b""
+    assert cli.stderr == b"native settlement failed:request-error\n"
 
 
 def unmount_tests():
@@ -511,6 +592,8 @@ if sys.argv[1:] == ["--frozen-owner-case"]:
 else:
     live_process_tests()
     scanner_race_and_mount_tests()
+    extended_convergence_tests()
+    settlement_diagnostic_tests()
     unmount_tests()
     publication_tests()
     queued_scm_rights_fresh_inode_test()
