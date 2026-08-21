@@ -3,6 +3,7 @@
 
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ sys.path.insert(0, str(REMOTE))
 
 import completion_guest_workloads as guest
 import completion_package_candidate as candidate
+import completion_package_native_codec as native_codec
 import completion_runtime_contract as contract
 import completion_workload_owner as owner
 
@@ -43,8 +45,19 @@ candidate_exact_bytes = contract.CANDIDATE_PATH.read_bytes()
 check(hashlib.sha256(candidate_exact_bytes).hexdigest() == contract.REVIEWED_CANDIDATE_SHA256, "raw candidate digest drift")
 check(candidate_exact_bytes != contract.canonical_json(fixed.value), "pretty reviewed input was mislabeled canonical")
 check(fixed.value["sample_count"] == 7 and "deb_sha256" not in json.dumps(fixed.value), "candidate contract changed")
-check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "an unreviewed final digest was invented")
-rejected(contract.load_final_pin, contract.FinalPinUnavailable)
+EXPECTED_FINAL_PIN_SHA256 = "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31"
+check(contract.REVIEWED_FINAL_PIN_SHA256 == EXPECTED_FINAL_PIN_SHA256,
+      "reviewed final digest drift")
+reviewed_final_raw = contract.FINAL_PATH.read_bytes()
+check(hashlib.sha256(reviewed_final_raw).hexdigest() == EXPECTED_FINAL_PIN_SHA256,
+      "reviewed final bytes drift")
+reviewed_final_value = json.loads(reviewed_final_raw)
+reviewed_identity, reviewed_closure = contract.validate_final_value(reviewed_final_value)
+check(reviewed_final_raw == contract.canonical_json(reviewed_final_value),
+      "reviewed final bytes are not canonical")
+check(reviewed_identity.deb_sha256 == "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf"
+      and reviewed_closure.manifest_sha256 == contract.RUNTIME_CLOSURE_MANIFEST_SHA256,
+      "reviewed final pin did not validate")
 
 identity = {
     "deb_sha256": "a" * 64,
@@ -111,7 +124,7 @@ with tempfile.TemporaryDirectory() as temporary:
         canonical = contract.canonical_json(final_value)
         final_path.write_bytes(canonical)
         contract.FINAL_PATH = final_path
-        rejected(contract.load_final_pin, contract.FinalPinUnavailable)
+        rejected(contract.load_final_pin, contract.WorkloadContractError)
         contract.REVIEWED_FINAL_PIN_SHA256 = hashlib.sha256(canonical).hexdigest()
         contract.exact_runtime_closure = lambda: contract._runtime_closure_value(runtime_closure)
         final = contract.load_final_pin()
@@ -379,6 +392,7 @@ for number in (signal.SIGTERM, signal.SIGINT):
 # forks from TERM, setsid-escapes, ignores TERM in one generation, and outlives its leader.
 linux_containment_recovery_cases_ran = False
 linux_exact_tool_transaction_cases_ran = False
+linux_native_command_cases_ran = False
 if sys.platform.startswith("linux") and os.geteuid() == 0:
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
@@ -612,6 +626,442 @@ root.cleanup()
                 contract.FINAL_PATH = original_final
                 contract.REVIEWED_FINAL_PIN_SHA256 = original_digest
 
+# The V2 producer is normally imported only from the verified fixed source. Load it with
+# bounded synthetic top-level bytes to execute its diagnostic state machine portably.
+def load_native_probe():
+    driver = Path("/var/lib/cogs/stage2-completion-v1/source/scripts/run-stage2-package-native-candidate.py")
+    manifest = Path("/var/lib/cogs/stage2-completion-v1/source/.cogs-stage2-source-manifest-v1.json")
+    original = Path.read_bytes
+    def read_bytes(path):
+        if path == driver:
+            return b"reviewed-launcher"
+        if path == manifest:
+            return b'{"revision":"1111111111111111111111111111111111111111"}\n'
+        return original(path)
+    Path.read_bytes = read_bytes
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "completion_package_native_candidate_probe",
+            REMOTE / "completion_package_native_candidate.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        Path.read_bytes = original
+
+
+native_probe = load_native_probe()
+command_observation = native_probe.NativeCommandObserved(2, b"command: warning: error\n")
+check(command_observation.category == "exit-2-warning-1-error-1-bytes-24",
+      "native command observation category changed")
+command_observation = native_probe.NativeCommandObserved(-9, b"")
+check(command_observation.category == "exit--9-warning-0-error-0-bytes-0",
+      "native command signal observation category changed")
+command_observation = native_probe.NativeCommandObserved(
+    2, b"dpkg: error: cannot access archive: No such file or directory\n")
+check(command_observation.category == "exit-2-archive-access-bytes-62",
+      "native command recognized observation category changed")
+detail_cases = (
+    (b"ADMINDIR MUST BE INSIDE INSTDIR: permission denied", "admin-outside-install"),
+    (b"not found in PATH or not executable: no such file or directory", "required-tool-missing"),
+    (b"cannot access archive: no such file or directory", "archive-access"),
+    (b"database lock in dpkg database directory: permission denied", "database-lock"),
+    (b"frontend lock: permission denied", "database-lock"),
+    (b"dpkg database directory: permission denied", "database-access"),
+    (b"backup file: permission denied", "database-backup"),
+    (b"status file: permission denied", "database-status"),
+    (b"log file: permission denied", "log-access"),
+    (b"failed to chdir: permission denied", "directory-enter"),
+    (b"failed to chroot: permission denied", "directory-enter"),
+    (b"unable to stat: permission denied", "metadata-access"),
+    (b"cannot stat: permission denied", "metadata-access"),
+    (b"unable to execute: permission denied", "execute-access"),
+    (b"failed to write: permission denied", "write-access"),
+    (b"cannot write: permission denied", "write-access"),
+    (b"failed to read: permission denied", "read-access"),
+    (b"cannot read: permission denied", "read-access"),
+    (b"unable to lock: permission denied", "lock-access"),
+    (b"cannot mkdir: permission denied", "directory-create"),
+    (b"cannot change ownership: permission denied", "ownership-update"),
+    (b"cannot chown: permission denied", "ownership-update"),
+    (b"cannot chmod: permission denied", "mode-update"),
+    (b"cannot utime: permission denied", "time-update"),
+    (b"cannot rename: permission denied", "rename-access"),
+    (b"cannot remove: permission denied", "remove-access"),
+    (b"failed to make temporary file: permission denied", "temporary-file"),
+    (b"file size limit exceeded", "file-size-limit"),
+    (b"unknown option", "unknown-option"),
+    (b"read-only file system", "read-only"),
+    (b"permission denied", "permission-denied"),
+    (b"no such file or directory", "path-missing"),
+    (b"unable to create: no such file or directory", "create-failed"),
+    (b"unable to open: permission denied", "open-failed"),
+    (b"cannot open: no such file or directory", "open-failed"),
+    (b"dpkg-deb: permission denied", "archive-helper"),
+    (b"tar: permission denied", "archive-tar"),
+    (b"subprocess: permission denied", "subprocess-failed"),
+    (b"unknown option then file size limit exceeded", "file-size-limit"),
+)
+for raw, token in detail_cases:
+    observed = native_probe.NativeCommandObserved(2, raw + b" /private/secret")
+    combined = raw + b" /private/secret"
+    expected = f"exit-2-{token}-bytes-{len(combined)}"
+    if token == "permission-denied":
+        expected += f"-sha-{hashlib.sha256(combined).hexdigest()[:12]}"
+    check(observed.category == expected, f"native detail precedence changed for {token}")
+    check(len(observed.category) <= 64
+          and all(value.isascii() and (value.isalnum() or value in "_-")
+                  for value in observed.category)
+          and "private" not in observed.category and "secret" not in observed.category,
+          f"native detail token was unsafe for {token}")
+for return_code in (-255, 256):
+    observed = native_probe.NativeCommandObserved(return_code, b"x" * owner.MAX_COMMAND_OUTPUT)
+    check(len(observed.category) <= 64
+          and all(value.isascii() and (value.isalnum() or value in "_-")
+                  for value in observed.category),
+          "native extreme observation category was unsafe")
+class ProbePackageDeadline:
+    def cleanup_check(self): pass
+class ProbePackageRoot:
+    def __init__(self, cleanup_error=None, parent_error=None):
+        self.cleanup_error, self.parent_error, self.remove_calls = cleanup_error, parent_error, 0
+    def mkdir(self, relative, *_args, **_kwargs):
+        if relative == "package-candidate-a" and self.parent_error is not None:
+            raise self.parent_error
+    def proc_path(self, value=""): return f"/probe/{value}" if value else "/probe"
+    def remove_tree(self, _relative):
+        self.remove_calls += 1
+        if self.cleanup_error is not None: raise self.cleanup_error
+class ProbePackageTools:
+    descriptors = ()
+    dpkg_deb = type("Tool", (), {"executable": "/usr/bin/dpkg-deb"})()
+    dpkg = type("Tool", (), {"executable": "/usr/bin/dpkg"})()
+
+def package_stage_failure(materialize_error, cleanup_error=None):
+    root = ProbePackageRoot(cleanup_error)
+    original_materialize = native_probe._materialize
+    try:
+        native_probe._materialize = lambda *_args: (_ for _ in ()).throw(materialize_error)
+        native_probe._run_native_package_sample(
+            root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+    except native_probe.NativeCandidateStageError as error:
+        return error
+    finally:
+        native_probe._materialize = original_materialize
+    raise AssertionError("native package sample staged failure was accepted")
+
+parent_root = ProbePackageRoot(parent_error=OSError(5, "parent"))
+try:
+    native_probe._run_native_package_sample(
+        parent_root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+except native_probe.NativeCandidateStageError as package_error:
+    check((package_error.stage, package_error.category) == ("build-a-package-parent", "OSError_5"),
+          "native package parent stage changed")
+    check(parent_root.remove_calls == 0, "pre-ownership package failure attempted cleanup")
+else:
+    raise AssertionError("native package parent failure was accepted")
+
+command_root = ProbePackageRoot()
+original_materialize = native_probe._materialize
+original_command = native_probe._run_native_command
+observed_package_environments = []
+def fail_package_command(*_args, **kwargs):
+    observed_package_environments.append(kwargs.get("environment"))
+    raise native_probe.NativeCommandObserved(7, b"private-error-marker\n")
+try:
+    native_probe._materialize = lambda *_args: None
+    native_probe._run_native_command = fail_package_command
+    native_probe._run_native_package_sample(
+        command_root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+except native_probe.NativeCandidateStageError as package_error:
+    check(package_error.stage == "build-a-dpkg-build", "native command package stage changed")
+    check(package_error.category == "exit-7-warning-0-error-1-bytes-21",
+          "native command package category changed")
+    check("private" not in str(package_error) and "marker" not in str(package_error),
+          "native command package diagnostic leaked output")
+    check(len(observed_package_environments) == 1
+          and observed_package_environments[0] == {
+              **guest._ENV, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+              "TMPDIR": "private-tmp"},
+          "native package command did not use its owned temporary directory")
+else:
+    raise AssertionError("native package command failure was accepted")
+finally:
+    native_probe._materialize = original_materialize
+    native_probe._run_native_command = original_command
+
+package_error = package_stage_failure(owner.WorkloadError("source"))
+check((package_error.stage, package_error.category) == ("build-a-package-source", "invariant"),
+      "native package source stage changed")
+package_error = package_stage_failure(
+    owner.WorkloadError("source"), owner.CleanupUncertain("cleanup"))
+check((package_error.stage, package_error.category) == ("build-a-package-cleanup", "cleanup-uncertain"),
+      "native package cleanup stage did not override work")
+package_error = package_stage_failure(KeyboardInterrupt())
+check((package_error.stage, package_error.category) == ("build-a-package-source", "interrupted"),
+      "native package sample interruption category changed")
+
+if sys.platform.startswith("linux") and os.geteuid() == 0:
+    with tempfile.TemporaryDirectory() as temporary:
+        native_path = Path(temporary) / "native-command"
+        shared_path = Path(temporary) / "shared-command"
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"fd-ok")
+        os.close(write_fd)
+        program = (
+            "import os,sys; raw=os.read(int(sys.argv[1]),5); "
+            "sys.stdout.buffer.write(os.environ['LANG'].encode()+b':' + raw + b'\\n')"
+        )
+        native_deadline = owner.Deadline.start(30, 20)
+        native_root = owner.OwnedRoot(native_path, native_deadline, "host-candidate")
+        try:
+            native_raw = native_probe._run_native_command(
+                (sys.executable, "-I", "-c", program, str(read_fd)),
+                native_root, native_deadline, (read_fd,))
+        finally:
+            os.close(read_fd)
+            native_root.cleanup()
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"fd-ok")
+        os.close(write_fd)
+        shared_deadline = owner.Deadline.start(30, 20)
+        shared_root = owner.OwnedRoot(shared_path, shared_deadline, "host-candidate")
+        try:
+            shared_raw = owner._run(
+                (sys.executable, "-I", "-c", program, str(read_fd)),
+                shared_root, shared_deadline, pass_fds=(read_fd,),
+                environment=dict(guest._ENV))
+        finally:
+            os.close(read_fd)
+            shared_root.cleanup()
+        check(native_raw == shared_raw == b"C:fd-ok\n", "native/shared command success parity changed")
+
+        package_path = Path("/tmp") / f"cogs-stage2-native-package-test-{os.getpid()}"
+        check(not package_path.exists(), "native package test root pre-existed")
+        package_deadline = owner.Deadline.start(120, 30)
+        package_root = owner.OwnedRoot(package_path, package_deadline, "host-candidate")
+        package_tools = guest.ToolSet()
+        try:
+            package_root.mkdir("private-tmp", 0o700)
+            package_root.mkdir("package", 0o700)
+            native_probe._materialize(
+                guest.fixed_fixtures().package.source.records, package_root, "package/source")
+            try:
+                package_output = native_probe._run_native_command(
+                    (package_tools.dpkg_deb.executable, "--build", "--root-owner-group",
+                     "-Zxz", "-z6", "--threads-max=1", package_root.proc_path("package/source"),
+                     package_root.proc_path("package/fixture.deb")),
+                    package_root, package_deadline, package_tools.descriptors,
+                    {**guest._ENV, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                     "TMPDIR": package_root.proc_path("private-tmp")},
+                    package_effects=True)
+            except native_probe.NativeCommandObserved as error:
+                raise AssertionError(f"native dpkg-deb observation {error.category}") from error
+            package_raw, package_status = package_root.read_file("package/fixture.deb", 4_194_304)
+            check(package_output.startswith(b"dpkg-deb: building package ")
+                  and 0 < len(package_raw) == package_status.st_size,
+                  "native dpkg-deb build invocation failed")
+            try:
+                package_identity, build_ms, install_ms = native_probe._run_native_package_sample(
+                    package_root, "candidate-a", "build-a", package_tools, package_deadline)
+            except native_probe.NativeCandidateStageError as error:
+                raise AssertionError(
+                    f"native package transaction observation {error.category}:{error.stage}") from error
+            second_identity, second_build_ms, second_install_ms = (
+                native_probe._run_native_package_sample(
+                    package_root, "candidate-b", "build-b", package_tools, package_deadline))
+            check(package_identity == second_identity
+                  and package_identity.package == "cogs-stage2-fixture"
+                  and package_identity.version == "1.0"
+                  and package_identity.architecture == "all"
+                  and min(build_ms, install_ms, second_build_ms, second_install_ms) >= 0,
+                  "native package A/B build/install transaction failed")
+            original_native_command = native_probe._run_native_command
+            def fail_dpkg_install(argv, *arguments, **kwargs):
+                if argv[0] == package_tools.dpkg.executable:
+                    raise native_probe.NativeCommandObserved(7, b"injected install error\n")
+                return original_native_command(argv, *arguments, **kwargs)
+            native_probe._run_native_command = fail_dpkg_install
+            try:
+                try:
+                    native_probe._run_native_package_sample(
+                        package_root, "candidate-a", "build-a", package_tools, package_deadline)
+                except native_probe.NativeCandidateStageError as error:
+                    check((error.stage, error.category)
+                          == ("build-a-dpkg-install", "exit-7-warning-0-error-1-bytes-23"),
+                          "native install failure lost its stage after parent restoration")
+                else:
+                    raise AssertionError("injected native install failure was accepted")
+            finally:
+                native_probe._run_native_command = original_native_command
+            check(stat.S_IMODE(os.fstat(package_root.parent_fd).st_mode) == 0o700,
+                  "native install failure did not restore the root-owned parent mode")
+
+            original_fchmod = native_probe.os.fchmod
+            parent_opened = [False]
+            def fail_parent_restore(descriptor, mode):
+                if descriptor == package_root.parent_fd and mode == 0o711:
+                    parent_opened[0] = True
+                if descriptor == package_root.parent_fd and mode == 0o700 and parent_opened[0]:
+                    raise OSError(5, "injected parent restore failure")
+                return original_fchmod(descriptor, mode)
+            def omit_dpkg_install(argv, *arguments, **kwargs):
+                if argv[0] == package_tools.dpkg.executable:
+                    return b""
+                return original_native_command(argv, *arguments, **kwargs)
+            native_probe.os.fchmod = fail_parent_restore
+            native_probe._run_native_command = omit_dpkg_install
+            try:
+                try:
+                    native_probe._run_native_package_sample(
+                        package_root, "candidate-a", "build-a", package_tools, package_deadline)
+                except native_probe.NativeCandidateStageError as error:
+                    check((error.stage, error.category)
+                          == ("build-a-dpkg-parent-restore", "cleanup-uncertain"),
+                          "native parent restore uncertainty was not sticky")
+                else:
+                    raise AssertionError("native parent restore failure was accepted")
+            finally:
+                native_probe.os.fchmod = original_fchmod
+                native_probe._run_native_command = original_native_command
+                original_fchmod(package_root.parent_fd, 0o700)
+            check(stat.S_IMODE(os.fstat(package_root.parent_fd).st_mode) == 0o700,
+                  "native parent restore fault test left a traversable parent")
+        finally:
+            package_tools.close()
+            package_root.cleanup()
+
+        observed_path = Path(temporary) / "observed-command"
+        observed_deadline = owner.Deadline.start(30, 20)
+        observed_root = owner.OwnedRoot(observed_path, observed_deadline, "host-candidate")
+        try:
+            try:
+                native_probe._run_native_command(
+                    (sys.executable, "-I", "-c", "import sys; print('private-error-marker'); sys.exit(7)"),
+                    observed_root, observed_deadline)
+            except native_probe.NativeCommandObserved as error:
+                check(error.category == "exit-7-warning-0-error-1-bytes-21",
+                      "native nonzero observation changed")
+                check("private" not in str(error) and "marker" not in str(error),
+                      "native nonzero observation leaked output")
+            else:
+                raise AssertionError("native nonzero command was accepted")
+        finally:
+            observed_root.cleanup()
+
+        bounded_path = Path(temporary) / "bounded-command"
+        bounded_deadline = owner.Deadline.start(30, 20)
+        bounded_root = owner.OwnedRoot(bounded_path, bounded_deadline, "host-candidate")
+        try:
+            bounded_raw = native_probe._run_native_command(
+                (sys.executable, "-I", "-c", "import os; os.write(1,b'x'*70000)"),
+                bounded_root, bounded_deadline)
+            check(len(bounded_raw) <= owner.MAX_COMMAND_OUTPUT,
+                  "native command output exceeded its bound")
+        finally:
+            bounded_root.cleanup()
+
+        timeout_path = Path(temporary) / "timeout-command"
+        timeout_deadline = owner.Deadline.start(2, 1)
+        descriptors_before = len(os.listdir("/proc/self/fd"))
+        timeout_root = owner.OwnedRoot(timeout_path, timeout_deadline, "host-candidate")
+        try:
+            rejected(lambda: native_probe._run_native_command(
+                (sys.executable, "-I", "-c",
+                 "import subprocess,time; subprocess.Popen(['sleep','10']); time.sleep(10)"),
+                timeout_root, timeout_deadline), owner.WorkloadDeadline)
+            check(not owner._children(), "native timeout left descendants")
+        finally:
+            timeout_root.cleanup()
+        descriptors_after = len(os.listdir("/proc/self/fd"))
+        check(descriptors_after == descriptors_before,
+              f"native timeout changed descriptor baseline {descriptors_before}->{descriptors_after}")
+
+        removal_path = Path(temporary) / "removal-command"
+        removal_deadline = owner.Deadline.start(30, 20)
+        removal_root = owner.OwnedRoot(removal_path, removal_deadline, "host-candidate")
+        original_remove_output = removal_root.remove_output
+        removal_root.remove_output = lambda _descriptor: (_ for _ in ()).throw(
+            owner.OutputUncertain("injected output removal uncertainty"))
+        try:
+            rejected(lambda: native_probe._run_native_command(
+                (sys.executable, "-I", "-c", "import sys; sys.exit(7)"),
+                removal_root, removal_deadline), owner.OutputUncertain)
+        finally:
+            removal_root.remove_output = original_remove_output
+            removal_root.cleanup()
+        linux_native_command_cases_ran = True
+
+original_environment = os.environ.get("COGS_PACKAGE_REVIEWED_HEAD")
+os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = native_probe.SOURCE_REVISION
+class ProbeSignalScope:
+    close_error = None
+    def __enter__(self): return self
+    def __exit__(self, *_args):
+        if self.close_error is not None: raise self.close_error
+        return False
+class ProbeRoot:
+    def __init__(self, cleanup_error): self.cleanup_error = cleanup_error
+    def mkdir(self, *_args, **_kwargs): pass
+    def cleanup(self):
+        if self.cleanup_error is not None: raise self.cleanup_error
+class ProbeTools:
+    def __init__(self, close_error): self.close_error = close_error
+    def close(self):
+        if self.close_error is not None: raise self.close_error
+
+def staged_transaction_failure(primary, cleanup_error=None, close_error=None,
+                               signal_close_error=None):
+    root = ProbeRoot(cleanup_error)
+    tools_probe = ProbeTools(close_error)
+    replacements = {
+        "Deadline": type("ProbeDeadline", (), {"start": staticmethod(lambda: object())}),
+        "SignalScope": ProbeSignalScope,
+        "load_candidate_contract": lambda: object(),
+        "require_linux_amd64_root": lambda: None,
+        "exact_runtime_closure": lambda: object(),
+        "ToolSet": lambda: tools_probe,
+        "OwnedRoot": lambda *_args: root,
+        "_check_versions": lambda *_args: (_ for _ in ()).throw(primary),
+    }
+    previous = {name: getattr(native_probe, name) for name in replacements}
+    try:
+        ProbeSignalScope.close_error = signal_close_error
+        for name, value in replacements.items(): setattr(native_probe, name, value)
+        native_probe.run_candidate_transaction()
+    except native_probe.NativeCandidateStageError as error:
+        return error
+    finally:
+        ProbeSignalScope.close_error = None
+        for name, value in previous.items(): setattr(native_probe, name, value)
+    raise AssertionError("staged native transaction failure was accepted")
+
+try:
+    staged = staged_transaction_failure(owner.WorkloadError("primary"))
+    check((staged.stage, staged.category) == ("tool-version", "invariant"),
+          "primary native transaction stage/category changed")
+    staged = staged_transaction_failure(
+        owner.WorkloadError("primary"), owner.CleanupUncertain("cleanup"))
+    check((staged.stage, staged.category) == ("transaction-cleanup", "cleanup-uncertain"),
+          "native transaction cleanup did not override the primary stage")
+    staged = staged_transaction_failure(owner.WorkloadError("primary"), close_error=OSError(5, "close"))
+    check((staged.stage, staged.category) == ("tool-close", "OSError_5"),
+          "native tool-close category changed")
+    staged = staged_transaction_failure(KeyboardInterrupt())
+    check((staged.stage, staged.category) == ("tool-version", "interrupted"),
+          "native transaction interruption category changed")
+    staged = staged_transaction_failure(
+        owner.WorkloadError("primary"), signal_close_error=OSError(5, "signal close"))
+    check((staged.stage, staged.category) == ("signal-scope-close", "OSError_5"),
+          "native signal-scope teardown stage changed")
+finally:
+    if original_environment is None:
+        os.environ.pop("COGS_PACKAGE_REVIEWED_HEAD", None)
+    else:
+        os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = original_environment
+
 # Semantic codecs make A=B structural (one identity) and reject every summary mismatch.
 tools = [dict(row) for row in contract.EXACT_TOOL_OBSERVATIONS]
 runtime_pin = contract._runtime_closure_value(runtime_closure)
@@ -630,6 +1080,65 @@ candidate_value = {
     "execution_binding": binding,
 }
 contract.validate_candidate_result(candidate_value)
+native_revision = "1" * 40
+native_manifest = "2" * 64
+native_binding = native_codec.native_execution_binding(
+    tools, runtime_pin, contract.NATIVE_LAUNCHER_SHA256, native_revision, native_manifest)
+native_value = {
+    **candidate_value,
+    "version": "cogs.stage2-workload-candidate/v2",
+    "authority": "non-authoritative-retained-rootfs-candidate-only",
+    "execution_binding": native_binding,
+}
+native_codec.validate_native_candidate_result(native_value, native_revision, native_manifest)
+rejected(lambda: native_codec.validate_native_candidate_result(native_value), TypeError)
+rejected(lambda: native_codec.validate_native_candidate_result(
+    native_value, None, native_manifest), contract.WorkloadContractError)
+rejected(lambda: native_codec.validate_native_candidate_result(
+    native_value, native_revision, None), contract.WorkloadContractError)
+rejected(lambda: contract.validate_candidate_result(native_value), contract.WorkloadContractError)
+rejected(lambda: native_codec.validate_native_candidate_result(
+    candidate_value, native_revision, native_manifest), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+changed_native["execution_binding"]["rootfs_execution"] = "not-used-by-host-candidate-or-reproduction"
+rejected(lambda: native_codec.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+changed_native["execution_binding"]["operation_parent_isolation"] = (
+    native_codec.HISTORICAL_PARENT_ISOLATION)
+rejected(lambda: native_codec.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+del changed_native["execution_binding"]["native_codec_implementation_sha256"]
+rejected(lambda: native_codec.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
+for field in (
+    "launcher_implementation_sha256",
+    "native_producer_implementation_sha256",
+    "native_codec_implementation_sha256",
+    "runtime_codec_implementation_sha256",
+):
+    changed_native = copy.deepcopy(native_value)
+    changed_native["execution_binding"][field] = "d" * 64
+    rejected(lambda changed_native=changed_native:
+             native_codec.validate_native_candidate_result(
+                 changed_native, native_revision, native_manifest),
+             contract.WorkloadContractError)
+rejected(lambda: native_codec.native_execution_binding(
+    tools, runtime_pin, "d" * 64, native_revision, native_manifest), contract.WorkloadContractError)
+for expected_revision, expected_manifest in (
+    ("3" * 40, native_manifest),
+    (native_revision, "3" * 64),
+):
+    rejected(lambda expected_revision=expected_revision, expected_manifest=expected_manifest:
+             native_codec.validate_native_candidate_result(
+                 native_value, expected_revision, expected_manifest),
+             contract.WorkloadContractError)
+for field, hostile in (("source_revision", "3" * 40), ("source_manifest_sha256", "3" * 64)):
+    changed_native = copy.deepcopy(native_value)
+    changed_native["execution_binding"][field] = hostile
+    rejected(lambda changed_native=changed_native: native_codec.validate_native_candidate_result(
+        changed_native, native_revision, native_manifest), contract.WorkloadContractError)
 for key, hostile in (
     ("authority", "authoritative"),
     ("final_pin_sha256", "f" * 64),
@@ -674,7 +1183,39 @@ if sys.platform == "darwin":
     check(not os.path.lexists(candidate.CANDIDATE_ROOT), "candidate root pre-existed")
     rejected(candidate.run_candidate_transaction)
     check(not os.path.lexists(candidate.CANDIDATE_ROOT), "Darwin created a candidate root")
-    check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
+    check(contract.REVIEWED_FINAL_PIN_SHA256 == EXPECTED_FINAL_PIN_SHA256,
+          "Darwin changed the reviewed final pin")
+
+native_source = (REMOTE / "completion_package_native_candidate.py").read_text()
+check('REVIEWED_NATIVE_CODEC_SHA256 = "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0"'
+      in native_source and "NATIVE_CODEC_SHA256 != REVIEWED_NATIVE_CODEC_SHA256" in native_source,
+      "native producer does not reject changed V2 codec bytes")
+check('"-Zxz"' in native_source and '"-z6"' in native_source
+      and '"--compression=xz"' not in native_source
+      and '"--compression-level=6"' not in native_source,
+      "native package command does not use dpkg-deb's supported compression flags")
+check('"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"' in native_source
+      and '"TMPDIR": "private-tmp"' in native_source
+      and 'f"--log={prefix}/dpkg.log"' in native_source,
+      "native package command lost its fixed paths, private temporary directory, or log sink")
+check("root.proc_path(source)" not in native_source
+      and "root.proc_path(deb)" not in native_source
+      and "root.proc_path(admin)" not in native_source
+      and "root.proc_path(installed)" not in native_source,
+      "native dpkg arguments reintroduced post-drop proc-fd path traversal")
+check("class NativeCandidateStageError" in native_source and "_stage_failure(stage, error)" in native_source,
+      "native transaction stage errors are not retained")
+for required_stage in (
+    "transaction-inputs", "contract-load", "platform-check", "runtime-closure",
+    "tool-open", "owned-root", "tool-version", "tool-observations", "build-a",
+    "post-a-tools", "post-a-contract", "build-b", "compare-a-b", "post-b-tools",
+    "post-b-contract", "result-binding", "transaction-cleanup", "tool-close",
+    "signal-scope-close", "result-presence", "result-validation", "result-encoding",
+    "package-parent", "package-source", "dpkg-build", "deb-readback", "admin-setup", "dpkg-install",
+    "installed-mtime-normalize", "installed-tree", "status-readback", "status-verify", "identity",
+    "package-cleanup", "duration",
+):
+    check(required_stage in native_source, f"missing native transaction stage {required_stage}")
 
 source = "\n".join((REMOTE / name).read_text() for name in (
     "completion_runtime_contract.py",
@@ -701,6 +1242,7 @@ if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
     check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
     check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")
     check(linux_containment_recovery_cases_ran, "Linux containment/recovery cases skipped")
+    check(linux_native_command_cases_ran, "Linux native command cases skipped")
     required_foundations = {
         "source-swap",
         "quarantine-collision",
@@ -718,5 +1260,6 @@ print(
     "completion workload contract tests passed "
     f"linux_destructive={linux_destructive_cases_ran} "
     f"linux_containment_recovery={linux_containment_recovery_cases_ran} "
+    f"linux_native_command={linux_native_command_cases_ran} "
     f"linux_exact_tools={linux_exact_tool_transaction_cases_ran}"
 )

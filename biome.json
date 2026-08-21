@@ -44,6 +44,8 @@
         "test/fixtures/stage2-completion/attested-*-contract-v1.json",
         "config/stage2-completion-ssh-workload-v2.json",
         "schemas/stage2-workload-local-qualification-v2.json",
+        "schemas/stage2-workload-candidate-v2.json",
+        "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -174,6 +175,72 @@ test("candidate, final, and post-pin schemas make A=B structural", () => {
   }
 });
 
+test("retained-rootfs V2 is truthful without reinterpreting historical V1", () => {
+  const validateV1 = compile("stage2-workload-candidate-v1.json");
+  const schemaPath = join(root, "schemas/stage2-workload-candidate-v2.json");
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<string, unknown>;
+  assert.match(String(schema.$comment), /exact V2 codec requires explicit expected source revision and manifest/u);
+  const validateV2 = compile("stage2-workload-candidate-v2.json");
+  const nativeBinding = {
+    fixture_implementation_sha256: executionBinding.fixture_implementation_sha256,
+    workload_implementation_sha256: executionBinding.workload_implementation_sha256,
+    owner_implementation_sha256: executionBinding.owner_implementation_sha256,
+    native_producer_implementation_sha256: "a7f2a314bbf6e724d2d536de724d5bd268384c17dff9ce538bb31666c355e1c3",
+    native_codec_implementation_sha256: "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0",
+    runtime_codec_implementation_sha256: "3ed164fbdc0630c944b9f79a03c109080f3fbeb7d846ee6e83a4ebe7f22404af",
+    launcher_implementation_sha256: "9e0fec1d8735f2f3ce83bc550f282c2477450b25dcd406c9d8e54bdf5b3e8882",
+    source_revision: "1".repeat(40),
+    source_manifest_sha256: "2".repeat(64),
+    tool_observations: exactTools,
+    runtime_closure: runtimeClosure,
+    contract_validator: "exact-fixed-source-native-v2-codec",
+    source_checkout: "manifest-verified-reviewed-revision-loaded-before-chroot",
+    linux_dynamic_tool_closure: "exact-static-elf-closure-executed-from-retained-rootfs",
+    process_containment: "parent-gated-fork-helper-newns-newpid-newnet-fork-pid1-dual-pidfd-v1",
+    process_containment_limitation: "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
+    operation_parent_isolation:
+      "root-owned-mode-0700-baseline-transient-root-owned-execute-only-0711-dpkg-install-verified-0700-restore-workload-uid-gid-65534-zero-capabilities-nnp",
+    rootfs_execution: "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
+    retained_root_lifecycle: "output-after-pid1-and-helper-settlement-and-retained-root-removal",
+  };
+  const native = {
+    version: "cogs.stage2-workload-candidate/v2",
+    result: "pass",
+    authority: "non-authoritative-retained-rootfs-candidate-only",
+    candidate_contract_sha256: contractSha,
+    final_pin_sha256: null,
+    package_identity: identity,
+    reproductions,
+    a_equals_b: true,
+    lifecycle_deleted: true,
+    promotion: "external-manual-review-required",
+    execution_binding: nativeBinding,
+  };
+  assert.equal(validateV2(native), true, JSON.stringify(validateV2.errors));
+  assert.equal(validateV1(native), false);
+  assert.equal(validateV2({ ...native, version: "cogs.stage2-workload-candidate/v1" }), false);
+  assert.equal(validateV2({ ...native, execution_binding: executionBinding }), false);
+  for (const field of [
+    "native_producer_implementation_sha256",
+    "runtime_codec_implementation_sha256",
+    "launcher_implementation_sha256",
+  ] as const) {
+    assert.equal(
+      validateV2({ ...native, execution_binding: { ...nativeBinding, [field]: "d".repeat(64) } }),
+      false,
+      `${field} accepted arbitrary hex`,
+    );
+  }
+  assert.equal(
+    validateV2({
+      ...native,
+      execution_binding: { ...nativeBinding, orchestrator_implementation_sha256: "d".repeat(64) },
+    }),
+    false,
+  );
+  assert.equal(executionBinding.rootfs_execution, "not-used-by-host-candidate-or-reproduction");
+});
+
 test("rejected v1 is absent from protected main and host foundations remain non-authoritative", () => {
   const rejectedV1 = spawnSync(
     "git",
@@ -218,16 +285,22 @@ test("fixed candidate and recovery entries redact every invocation failure", () 
   }
 });
 
-test("production final-pin bytes and authority remain absent", () => {
-  assert.equal(existsSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")), false);
+test("production final-pin bytes bind the manually reviewed native candidate", () => {
+  const expected = "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31";
+  const raw = readFileSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json"));
+  assert.equal(createHash("sha256").update(raw).digest("hex"), expected);
+  const value = JSON.parse(raw.toString("utf8")) as { candidate_result_sha256?: unknown };
+  assert.equal(value.candidate_result_sha256, "e967438172de7faee443c417fa85bf040f68decc889d74e21759b0aeb19d2b7b");
   const contractSource = readFileSync(
     join(root, "deploy/aws-feasibility/remote/completion_runtime_contract.py"),
     "utf8",
   );
-  assert.match(contractSource, /^REVIEWED_FINAL_PIN_SHA256 = None$/mu);
+  assert.match(contractSource, new RegExp(`^REVIEWED_FINAL_PIN_SHA256 = "${expected}"$`, "mu"));
 });
 
 test("Darwin CLI is categorical and cannot create a final pin", { skip: process.platform !== "darwin" }, () => {
+  const finalPath = join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json");
+  const finalBefore = readFileSync(finalPath);
   const result = spawnSync("python3", ["-B", "deploy/aws-feasibility/remote/completion_package_candidate.py"], {
     cwd: root,
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
@@ -238,7 +311,7 @@ test("Darwin CLI is categorical and cannot create a final pin", { skip: process.
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /^completion host candidate failed: [a-z-]+\n$/u);
   assert.doesNotMatch(result.stderr, /\/|git|dpkg|Traceback|Kata|qualification/u);
-  assert.throws(() => readFileSync(join(root, "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json")));
+  assert.deepEqual(readFileSync(finalPath), finalBefore);
   for (const entry of [
     "deploy/aws-feasibility/remote/completion_package_candidate_recovery.py",
     "deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py",

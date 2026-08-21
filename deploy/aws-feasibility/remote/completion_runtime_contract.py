@@ -21,7 +21,7 @@ REVIEWED_ROOTFS_SHA256 = "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420
 REVIEWED_CANDIDATE_SHA256 = "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3"
 # A later exact review must replace None with the digest of the canonical committed pin.
 # Merely creating FINAL_PATH can never open this gate.
-REVIEWED_FINAL_PIN_SHA256 = None
+REVIEWED_FINAL_PIN_SHA256 = "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31"
 RUNTIME_CLOSURE_MANIFEST_SHA256 = "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850"
 RUNTIME_CLOSURE_OBJECT_COUNT = 35
 EXACT_TOOL_OBSERVATIONS = (
@@ -56,6 +56,12 @@ REVIEWED_SOURCE_DIGESTS = {
     "candidate_recovery_implementation_sha256": "1408a9b51b9e5a241a731ac2f453ee28ff1f44f8e92d4111cd9a4100010522e5",
     "post_pin_recovery_implementation_sha256": "1bae8dbde70ea7c0465dbb808a9d85205d88cdf03302f389128a25884ec2c060",
 }
+
+# V2 authenticates the code that actually produces and validates V2.  Its
+# schema is the separate reviewed byte object that can pin this module's exact
+# digest without creating an impossible self-referential source constant.
+NATIVE_LAUNCHER_SHA256 = "9e0fec1d8735f2f3ce83bc550f282c2477450b25dcd406c9d8e54bdf5b3e8882"
+_NATIVE_IMPLEMENTATION_DIGESTS = None
 
 
 class WorkloadContractError(Exception):
@@ -269,6 +275,41 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def native_implementation_digests():
+    """Load V2's reviewed constants and prove they name the available exact bytes."""
+    global _NATIVE_IMPLEMENTATION_DIGESTS
+    if _NATIVE_IMPLEMENTATION_DIGESTS is None:
+        schema_path = REMOTE.parents[2] / "schemas/stage2-workload-candidate-v2.json"
+        schema = _json(_read_regular(schema_path, 131_072))
+        try:
+            properties = schema["$defs"]["executionBinding"]["properties"]
+            names = (
+                "fixture_implementation_sha256", "workload_implementation_sha256",
+                "owner_implementation_sha256", "native_producer_implementation_sha256",
+                "runtime_codec_implementation_sha256", "launcher_implementation_sha256",
+            )
+            reviewed = {name: properties[name]["const"] for name in names}
+        except (KeyError, TypeError) as error:
+            raise WorkloadContractError("native schema bindings are invalid") from error
+        observed = {
+            "fixture_implementation_sha256": _sha(_read_regular(
+                REMOTE / "completion_fixtures.py", 131_072)),
+            "workload_implementation_sha256": _sha(_read_regular(
+                REMOTE / "completion_guest_workloads.py", 131_072)),
+            "owner_implementation_sha256": _sha(_read_regular(
+                REMOTE / "completion_workload_owner.py", 131_072)),
+            "native_producer_implementation_sha256": _sha(_read_regular(
+                REMOTE / "completion_package_native_candidate.py", 131_072)),
+            "runtime_codec_implementation_sha256": _sha(_read_regular(Path(__file__), 131_072)),
+            "launcher_implementation_sha256": _sha(_read_regular(
+                REMOTE.parents[2] / "scripts/run-stage2-package-native-candidate.py", 262_144)),
+        }
+        _require(reviewed == observed, "reviewed native implementation changed")
+        _require(reviewed["launcher_implementation_sha256"] == NATIVE_LAUNCHER_SHA256)
+        _NATIVE_IMPLEMENTATION_DIGESTS = reviewed
+    return dict(_NATIVE_IMPLEMENTATION_DIGESTS)
+
+
 def _exact_keys(value, keys):
     _require(type(value) is dict and set(value) == set(keys) and len(value) == len(keys), "contract keys are invalid")
 
@@ -367,6 +408,45 @@ def execution_binding(tool_observations, runtime_closure):
         "process_containment_limitation": "no-cgroup-proof-honest-supervisor-crash-only-not-hostile-process-closure",
         "operation_parent_isolation": "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
         "rootfs_execution": "not-used-by-host-candidate-or-reproduction",
+    }
+
+
+def _validate_native_source_identity(source_revision, source_manifest_sha256,
+                                     expected_source_revision, expected_source_manifest_sha256):
+    for value, length, message in (
+        (source_revision, 40, "fixed-source revision is invalid"),
+        (source_manifest_sha256, 64, "fixed-source manifest is invalid"),
+        (expected_source_revision, 40, "expected fixed-source revision is required"),
+        (expected_source_manifest_sha256, 64, "expected fixed-source manifest is required"),
+    ):
+        _require(type(value) is str and len(value) == length and set(value) <= _HEX, message)
+    _require(source_revision == expected_source_revision, "fixed-source revision differs")
+    _require(source_manifest_sha256 == expected_source_manifest_sha256,
+             "fixed-source manifest differs")
+
+
+def native_execution_binding(tool_observations, runtime_closure, launcher_sha256,
+                             verified_source_revision, verified_source_manifest_sha256):
+    """Bind V2 to the exact fixed-source producer, codec, launcher, and source approval."""
+    _require(type(runtime_closure) is RuntimeClosurePin)
+    _require(launcher_sha256 == NATIVE_LAUNCHER_SHA256, "native launcher identity differs")
+    _validate_native_source_identity(
+        verified_source_revision, verified_source_manifest_sha256,
+        verified_source_revision, verified_source_manifest_sha256)
+    return {
+        **native_implementation_digests(),
+        "source_revision": verified_source_revision,
+        "source_manifest_sha256": verified_source_manifest_sha256,
+        "tool_observations": tool_observations,
+        "runtime_closure": runtime_closure.value(),
+        "contract_validator": "exact-fixed-source-native-v2-codec",
+        "source_checkout": "manifest-verified-reviewed-revision-loaded-before-chroot",
+        "linux_dynamic_tool_closure": "exact-static-elf-closure-executed-from-retained-rootfs",
+        "process_containment": "parent-gated-fork-helper-newns-newpid-newnet-fork-pid1-dual-pidfd-v1",
+        "process_containment_limitation": "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
+        "operation_parent_isolation": "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
+        "rootfs_execution": "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
+        "retained_root_lifecycle": "output-after-pid1-and-helper-settlement-and-retained-root-removal",
     }
 
 
@@ -490,6 +570,52 @@ def validate_candidate_result(value):
     _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
     _require(value["a_equals_b"] is True and value["lifecycle_deleted"] is True and value["promotion"] == "external-manual-review-required")
     _validate_execution(value["execution_binding"])
+    return value
+
+
+def _validate_native_execution(value, expected_source_revision, expected_source_manifest_sha256):
+    implementation_digests = native_implementation_digests()
+    keys = (
+        *implementation_digests, "source_revision", "source_manifest_sha256",
+        "tool_observations", "runtime_closure", "contract_validator", "source_checkout",
+        "linux_dynamic_tool_closure", "process_containment", "process_containment_limitation",
+        "operation_parent_isolation", "rootfs_execution", "retained_root_lifecycle",
+    )
+    _exact_keys(value, keys)
+    for name, digest in implementation_digests.items():
+        _require(value[name] == digest, "native implementation identity differs")
+    _validate_native_source_identity(
+        value["source_revision"], value["source_manifest_sha256"],
+        expected_source_revision, expected_source_manifest_sha256)
+    exact_tool_observations(value["tool_observations"])
+    _runtime_closure_value(value["runtime_closure"])
+    _require(value["contract_validator"] == "exact-fixed-source-native-v2-codec")
+    _require(value["source_checkout"] == "manifest-verified-reviewed-revision-loaded-before-chroot")
+    _require(value["linux_dynamic_tool_closure"] == "exact-static-elf-closure-executed-from-retained-rootfs")
+    _require(value["process_containment"] == "parent-gated-fork-helper-newns-newpid-newnet-fork-pid1-dual-pidfd-v1")
+    _require(value["process_containment_limitation"] == "trusted-initial-user-namespace-root-no-hostile-root-security-boundary")
+    _require(value["operation_parent_isolation"] == "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp")
+    _require(value["rootfs_execution"] == "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp")
+    _require(value["retained_root_lifecycle"]
+             == "output-after-pid1-and-helper-settlement-and-retained-root-removal")
+
+
+def validate_native_candidate_result(value, expected_source_revision,
+                                     expected_source_manifest_sha256):
+    """Validate V2 against mandatory exact source expectations; V1 remains unchanged."""
+    keys = ("version", "result", "authority", "candidate_contract_sha256", "final_pin_sha256", "package_identity", "reproductions", "a_equals_b", "lifecycle_deleted", "promotion", "execution_binding")
+    _exact_keys(value, keys)
+    _require(value["version"] == "cogs.stage2-workload-candidate/v2")
+    _require(value["result"] == "pass"
+             and value["authority"] == "non-authoritative-retained-rootfs-candidate-only")
+    _require(value["candidate_contract_sha256"] == REVIEWED_CANDIDATE_SHA256
+             and value["final_pin_sha256"] is None)
+    parse_identity(value["package_identity"])
+    _require(value["reproductions"] == [{"id": "A", "deleted": True}, {"id": "B", "deleted": True}])
+    _require(value["a_equals_b"] is True and value["lifecycle_deleted"] is True
+             and value["promotion"] == "external-manual-review-required")
+    _validate_native_execution(
+        value["execution_binding"], expected_source_revision, expected_source_manifest_sha256)
     return value
 
 
