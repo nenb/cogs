@@ -694,7 +694,10 @@ detail_cases = (
 )
 for raw, token in detail_cases:
     observed = native_probe.NativeCommandObserved(2, raw + b" /private/secret")
-    expected = f"exit-2-{token}-bytes-{len(raw) + 16}"
+    combined = raw + b" /private/secret"
+    expected = f"exit-2-{token}-bytes-{len(combined)}"
+    if token == "permission-denied":
+        expected += f"-sha-{hashlib.sha256(combined).hexdigest()[:12]}"
     check(observed.category == expected, f"native detail precedence changed for {token}")
     check(len(observed.category) <= 64
           and all(value.isascii() and (value.isalnum() or value in "_-")

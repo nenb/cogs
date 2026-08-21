@@ -85,6 +85,8 @@ class NativeCommandObserved(WorkloadError):
         if detail is None:
             detail = f"warning-{int(b'warning' in lowered)}-error-{int(b'error' in lowered)}"
         self.category = f"exit-{code}-{detail}-bytes-{len(raw)}"
+        if detail == "permission-denied":
+            self.category += f"-sha-{hashlib.sha256(raw).hexdigest()[:12]}"
         super().__init__("native command returned a rejected bounded observation")
 
 
