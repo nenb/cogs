@@ -255,6 +255,8 @@ test("partial validation and fsync precede atomic candidate publication", () => 
   assert.match(publication, /_generation\(after\) != _generation\(before\)/u);
   assert.match(publication, /prove_no_writable_aliases/u);
   assert.match(publication, /MAX_ALIAS_PASSES = 120/u);
+  assert.match(publication, /MAX_LARGE_PROC_BYTES = 8 \* 1024 \* 1024/u);
+  assert.match(publication, /os\.scandir/u);
   assert.match(publication, /current <= inspected/u);
   assert.match(publication, /coverage\.get\(generation, 0\) \+ 1/u);
   assert.match(publication, /native publication failed:/u);

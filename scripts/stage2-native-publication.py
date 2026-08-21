@@ -18,6 +18,10 @@ from completion_runtime_contract import canonical_json
 MAX_CANDIDATE_BYTES = 4096
 MAX_ALIAS_PASSES = 120
 REQUIRED_ALIAS_PASSES = 2
+MAX_PROC_ENTRIES = 32768
+MAX_FD_ENTRIES = 65536
+MAX_SMALL_PROC_BYTES = 1024 * 1024
+MAX_LARGE_PROC_BYTES = 8 * 1024 * 1024
 VANISHED = frozenset((errno.ENOENT, errno.ESRCH))
 POSITIVE = re.compile(r"[1-9][0-9]*")
 
@@ -57,13 +61,46 @@ def _read_bounded(descriptor, maximum, after_read=None):
     return raw, after
 
 
-def _starttime(proc_root, name):
+def _proc_bytes(path, maximum, message):
+    descriptor = None
     try:
-        raw = (proc_root / name / "stat").read_bytes()
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - len(raw)))
+            if not chunk:
+                return bytes(raw)
+            raw.extend(chunk)
+        raise PublicationError(message)
     except OSError as error:
         if error.errno in VANISHED:
             return None
-        raise PublicationError("process generation inspection failed") from error
+        raise PublicationError(message) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _bounded_names(path, maximum, message, vanished=False):
+    try:
+        names = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if len(names) >= maximum:
+                    raise PublicationError(message)
+                names.append(entry.name)
+        return names
+    except OSError as error:
+        if vanished and error.errno in VANISHED:
+            return None
+        raise PublicationError(message) from error
+
+
+def _starttime(proc_root, name):
+    raw = _proc_bytes(proc_root / name / "stat", MAX_SMALL_PROC_BYTES,
+                      "process generation inspection failed")
+    if raw is None:
+        return None
     close = raw.rfind(b")")
     fields = raw[close + 2:].split() if close >= 0 else ()
     if len(fields) < 20 or not fields[19].isdigit():
@@ -72,12 +109,11 @@ def _starttime(proc_root, name):
 
 
 def _process_uid(proc_root, name):
-    try:
-        rows = (proc_root / name / "status").read_bytes().splitlines()
-    except OSError as error:
-        if error.errno in VANISHED:
-            return None
-        raise PublicationError("process ownership inspection failed") from error
+    raw = _proc_bytes(proc_root / name / "status", MAX_SMALL_PROC_BYTES,
+                      "process ownership inspection failed")
+    if raw is None:
+        return None
+    rows = raw.splitlines()
     values = [row.split() for row in rows if row.startswith(b"Uid:")]
     if len(values) != 1 or len(values[0]) != 5 or not values[0][2].isdigit():
         raise PublicationError("invalid process ownership")
@@ -85,10 +121,7 @@ def _process_uid(proc_root, name):
 
 
 def _inventory(proc_root, owner_uid):
-    try:
-        names = os.listdir(proc_root)
-    except OSError as error:
-        raise PublicationError("process inventory failed") from error
+    names = _bounded_names(proc_root, MAX_PROC_ENTRIES, "process inventory failed")
     result = {}
     complete = True
     for name in names:
@@ -111,12 +144,7 @@ def _inventory(proc_root, owner_uid):
 
 
 def _fd_names(path):
-    try:
-        return os.listdir(path)
-    except OSError as error:
-        if error.errno in VANISHED:
-            return None
-        raise PublicationError("descriptor inventory failed") from error
+    return _bounded_names(path, MAX_FD_ENTRIES, "descriptor inventory failed", vanished=True)
 
 
 def _writable_alias_sweep(proc_root, expected, inventory):
@@ -127,13 +155,11 @@ def _writable_alias_sweep(proc_root, expected, inventory):
         if _starttime(proc_root, name) != starttime:
             continue
         base = proc_root / name
-        try:
-            mappings = (base / "maps").read_bytes().splitlines()
-        except OSError as error:
-            if error.errno in VANISHED:
-                continue
-            raise PublicationError("mapping inventory failed") from error
-        for row in mappings:
+        mapping_bytes = _proc_bytes(base / "maps", MAX_LARGE_PROC_BYTES,
+                                    "mapping inventory failed")
+        if mapping_bytes is None:
+            continue
+        for row in mapping_bytes.splitlines():
             fields = row.split(None, 5)
             try:
                 mapped_device = tuple(int(item, 16) for item in fields[3].split(b":"))
@@ -160,13 +186,11 @@ def _writable_alias_sweep(proc_root, expected, inventory):
                 raise PublicationError("descriptor identity inspection failed") from error
             if (observed.st_dev, observed.st_ino) != expected:
                 continue
-            try:
-                info = (base / "fdinfo" / descriptor).read_bytes()
-            except OSError as error:
-                if error.errno in VANISHED:
-                    generation_complete = False
-                    continue
-                raise PublicationError("descriptor mode inspection failed") from error
+            info = _proc_bytes(base / "fdinfo" / descriptor, MAX_SMALL_PROC_BYTES,
+                               "descriptor mode inspection failed")
+            if info is None:
+                generation_complete = False
+                continue
             flags = [line.split()[1] for line in info.splitlines()
                      if line.startswith(b"flags:") and len(line.split()) == 2]
             if len(flags) != 1:

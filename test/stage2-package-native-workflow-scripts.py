@@ -185,7 +185,7 @@ def scanner_race_and_mount_tests():
     temporary, proc, pid = synthetic_proc("/unrelated")
     original = settlement._bytes
     try:
-        settlement._bytes = lambda path: None if Path(path) == pid / "mountinfo" else original(path)
+        settlement._bytes = lambda path, *args: None if Path(path) == pid / "mountinfo" else original(path, *args)
         rejected(lambda: settlement.scan("before-unmount", proc_root=proc, targets=("/target",)),
                  settlement.SettlementError)
     finally:
@@ -199,14 +199,14 @@ def scanner_race_and_mount_tests():
     target = Path(temporary.name) / "target"
     target.mkdir()
     try:
-        def reuse(path):
+        def reuse(path, *args):
             nonlocal changed
             if not changed and Path(path) == pid / "mountinfo":
                 changed = True
                 (pid / "stat").write_text(process_stat(41, 200))
                 (pid / "cwd").unlink()
                 (pid / "cwd").symlink_to(target)
-            return original(path)
+            return original(path, *args)
         settlement._bytes = reuse
         rejected(lambda: settlement.scan("before-unmount", proc_root=proc,
                                           targets=(str(target),)), settlement.SettlementError)
@@ -235,6 +235,20 @@ def scanner_race_and_mount_tests():
             if child is not None:
                 terminate(child)
 
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        bounded = root / "bounded"
+        bounded.write_bytes(b"12345678")
+        assert settlement._bytes(bounded, 8) == b"12345678"
+        bounded.write_bytes(b"123456789")
+        rejected(lambda: settlement._bytes(bounded, 8), settlement.SettlementError)
+        inventory = root / "inventory"
+        inventory.mkdir()
+        for name in ("1", "2", "3"):
+            (inventory / name).mkdir()
+        rejected(lambda: settlement._names(
+            inventory, 2, "process inventory failed"), settlement.SettlementError)
+
 
 def settlement_diagnostic_tests():
     cases = {
@@ -252,6 +266,7 @@ def settlement_diagnostic_tests():
         "namespace inspection failed": "namespace-inspection",
         "process inventory failed": "process-inventory",
         "process inventory unavailable": "process-inventory",
+        "descriptor inventory failed": "descriptor-inspection",
         "invalid process generation": "process-generation",
         "mount namespace unavailable": "mount-namespace",
         "mountpoint inspection failed": "mountpoint-inspection",
@@ -537,6 +552,39 @@ def publication_convergence_tests():
             publication.time.sleep = original_sleep
             publication._generation = original_generation
             os.close(descriptor)
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        bounded = root / "bounded"
+        bounded.write_bytes(b"12345678")
+        assert publication._proc_bytes(
+            bounded, 8, "mapping inventory failed") == b"12345678"
+        bounded.write_bytes(b"123456789")
+        rejected(lambda: publication._proc_bytes(
+            bounded, 8, "mapping inventory failed"), publication.PublicationError)
+        inventory = root / "inventory"
+        inventory.mkdir()
+        for name in ("1", "2", "3"):
+            (inventory / name).mkdir()
+        rejected(lambda: publication._bounded_names(
+            inventory, 2, "process inventory failed"), publication.PublicationError)
+
+    failure_cases = {
+        "writable-alias absence did not stabilize": "alias-nonconvergence",
+        "candidate has writable shared mapping: 41": "writable-shared-mapping",
+        "candidate has writable descriptor alias: 41/7": "writable-descriptor",
+        "candidate changed during alias proof": "candidate-mutation",
+        "candidate byte read was incomplete": "candidate-mutation",
+        "process inventory failed": "alias-inspection",
+        "process generation inspection failed": "alias-inspection",
+        "process ownership inspection failed": "alias-inspection",
+        "mapping inventory failed": "alias-inspection",
+        "descriptor inventory failed": "alias-inspection",
+        "candidate/source contract differs": "candidate-contract",
+        "other": "publication-error",
+    }
+    for message, expected in failure_cases.items():
+        assert publication._failure_token(publication.PublicationError(message)) == expected
 
     cli = subprocess.run(
         [sys.executable, "-I", "-B", str(ROOT / "scripts/stage2-native-publication.py"), "invalid"],

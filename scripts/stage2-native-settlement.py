@@ -19,6 +19,10 @@ PHASES = frozenset(("before-unmount", "after-unmount"))
 COMMAND_SECONDS = 60
 MAX_SCAN_PASSES = 120
 REQUIRED_STABLE_PASSES = 3
+MAX_PROC_ENTRIES = 32768
+MAX_FD_ENTRIES = 65536
+MAX_SMALL_PROC_BYTES = 1024 * 1024
+MAX_LARGE_PROC_BYTES = 8 * 1024 * 1024
 VANISHED = frozenset((errno.ENOENT, errno.ESRCH))
 POSITIVE = re.compile(r"[1-9][0-9]*")
 
@@ -31,14 +35,24 @@ def _vanished(error):
     return error.errno in VANISHED
 
 
-def _bytes(path):
+def _bytes(path, maximum=MAX_SMALL_PROC_BYTES):
+    descriptor = None
     try:
-        with open(path, "rb", buffering=0) as source:
-            return source.read()
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - len(raw)))
+            if not chunk:
+                return bytes(raw)
+            raw.extend(chunk)
+        raise SettlementError("process inspection exceeded bound")
     except OSError as error:
         if _vanished(error):
             return None
         raise SettlementError("process inspection failed") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _link(path):
@@ -60,13 +74,19 @@ def _identity(path):
         raise SettlementError("namespace inspection failed") from error
 
 
-def _names(path):
+def _names(path, maximum, message):
     try:
-        return os.listdir(path)
+        names = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if len(names) >= maximum:
+                    raise SettlementError(message)
+                names.append(entry.name)
+        return names
     except OSError as error:
         if _vanished(error):
             return None
-        raise SettlementError("process inventory failed") from error
+        raise SettlementError(message) from error
 
 
 def _starttime(base):
@@ -81,7 +101,7 @@ def _starttime(base):
 
 
 def _inventory(proc_root):
-    names = _names(proc_root)
+    names = _names(proc_root, MAX_PROC_ENTRIES, "process inventory failed")
     if names is None:
         raise SettlementError("process inventory unavailable")
     result = {}
@@ -115,7 +135,7 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
     if _starttime(base) != starttime:
         return False
     command = _bytes(base / "cmdline")
-    mounts = _bytes(base / "mountinfo")
+    mounts = _bytes(base / "mountinfo", MAX_LARGE_PROC_BYTES)
     if command is None or mounts is None:
         if _starttime(base) == starttime:
             raise SettlementError(f"stable process inspection unavailable: {name}")
@@ -136,7 +156,7 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
             raise SettlementError(f"stable process link inspection unavailable: {name}/{entry}")
         if _refers(value, targets):
             raise SettlementError(f"unsettled process path: {name}/{entry}")
-    descriptors = _names(base / "fd")
+    descriptors = _names(base / "fd", MAX_FD_ENTRIES, "descriptor inventory failed")
     if descriptors is None:
         if _starttime(base) == starttime:
             raise SettlementError(f"stable descriptor inventory unavailable: {name}")
@@ -244,6 +264,7 @@ def _failure_token(error):
         ("process link inspection", "process-link-inspection"),
         ("namespace inspection", "namespace-inspection"),
         ("process inventory", "process-inventory"),
+        ("descriptor inventory", "descriptor-inspection"),
         ("invalid process generation", "process-generation"),
         ("mount namespace", "mount-namespace"),
         ("mountpoint inspection", "mountpoint-inspection"),
