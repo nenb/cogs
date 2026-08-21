@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Portable refusal ordering and static production-composition checks."""
+"""Exhaustive fake-owner cuts for fixed composition and cleanup-only recovery."""
 import ast
 from pathlib import Path
-import subprocess
 import sys
 from unittest.mock import patch
 
@@ -11,70 +10,251 @@ REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_coordinator as coordinator
 
+METHOD_EVENT = {
+    "claim_static_custody": "STATIC_CUSTODY",
+    "acquire_rootfs": "ROOTFS_ACQUIRED",
+    "open_operation": "OPERATION_ADMITTED",
+    "claim_live_custody": "LIVE_CUSTODY",
+    "claim_executables": "EXECUTABLES_RETAINED",
+    "create_inputs": "INPUTS_CREATED",
+    "capture_baselines": "BASELINES_CAPTURED",
+    "create_network": "NETWORK_READY",
+    "prove_network_causality": "NETWORK_CAUSAL_PROOF",
+    "stage_runtime": "RUNTIME_STAGED",
+    "bind_execution_mapping": "EXECUTION_MAPPING_BOUND",
+    "launch_task": "TASK_LAUNCHED",
+    "prove_runtime": "RUNTIME_PROVED",
+    "authenticate_ssh": "SSH_AUTHENTICATED",
+    "revoke_readiness": "READINESS_REVOKED",
+    "observe_ownership": "OWNERSHIP_OBSERVED",
+    "stop_task": "TASK_STOPPED",
+    "remove_network": "NETWORK_ABSENT",
+    "remove_task": "TASK_ABSENT",
+    "remove_container": "CONTAINER_ABSENT",
+    "remove_runtime": "RUNTIME_ABSENT",
+    "remove_share": "SHARE_ABSENT",
+    "stop_containerd": "CONTAINERD_ABSENT",
+    "remove_firewall": "FIREWALL_ABSENT",
+    "remove_inputs": "INPUT_REMOVED",
+    "prepare_rootfs_release": "ROOTFS_RELEASE_READY",
+    "authorize_rootfs_release": "ROOTFS_RELEASE_AUTHORIZED",
+    "remove_rootfs": "ROOTFS_ABSENT",
+    "observe_final_baselines": "FINAL_BASELINES",
+    "retire_operation": "RETIRED",
+    "remove_operation": "OPERATION_REMOVED",
+}
+FORWARD_METHODS = tuple(name for name, event in METHOD_EVENT.items()
+                        if event in coordinator.FORWARD_ORDER)
+CLEANUP_METHODS = tuple(name for name, event in METHOD_EVENT.items()
+                        if event in coordinator.CLEANUP_ORDER)
+assert tuple(METHOD_EVENT[name] for name in FORWARD_METHODS) == coordinator.FORWARD_ORDER
+assert tuple(METHOD_EVENT[name] for name in CLEANUP_METHODS) == coordinator.CLEANUP_ORDER
 
-def rejected(call, kind=coordinator.CoordinatorBlocked):
-    try:
-        call()
-    except kind:
-        return
-    raise AssertionError("expected fixed refusal")
+
+class Cut(Exception):
+    pass
 
 
-def mutation(*_args, **_kwargs):
-    raise AssertionError("a mutable owner was opened")
+class FakeOwners:
+    def __init__(self, cut=None):
+        self.cut = cut
+        self.events = []
+
+    def step(self, name, value=None):
+        event = METHOD_EVENT.get(name, name)
+        if self.cut == ("before", event):
+            raise Cut(event)
+        self.events.append(event)
+        if self.cut == ("after", event):
+            raise Cut(event)
+        return event if value is None else value
+
+    def claim_static_custody(self, _lifecycle):
+        self.step("claim_static_custody")
+        return "custody", "static-gate"
+
+    def acquire_rootfs(self, _lifecycle): return self.step("acquire_rootfs")
+    def open_operation(self, _lifecycle): return self.step("open_operation")
+    def claim_live_custody(self, _lifecycle):
+        return self.step("claim_live_custody", ("custody", "live-gate"))
+    def claim_executables(self, _lifecycle): return self.step("claim_executables")
+    def create_inputs(self, _lifecycle): return self.step("create_inputs")
+    def capture_baselines(self, _lifecycle): return self.step("capture_baselines")
+    def create_network(self, _lifecycle): return self.step("create_network")
+    def prove_network_causality(self, lifecycle):
+        assert lifecycle.baselines == "BASELINES_CAPTURED"
+        assert lifecycle.network_owner == "NETWORK_READY"
+        return self.step("prove_network_causality")
+    def stage_runtime(self, _lifecycle): return self.step("stage_runtime")
+    def bind_execution_mapping(self, _lifecycle): return self.step("bind_execution_mapping")
+    def launch_task(self, _lifecycle): return self.step("launch_task")
+    def prove_runtime(self, _lifecycle): return self.step("prove_runtime")
+    def authenticate_ssh(self, _lifecycle): return self.step("authenticate_ssh")
+
+    def revoke_readiness(self, _lifecycle): return self.step("revoke_readiness")
+    def observe_ownership(self, _lifecycle): return self.step("observe_ownership")
+    def stop_task(self, _lifecycle): return self.step("stop_task")
+    def remove_network(self, _lifecycle): return self.step("remove_network")
+    def remove_task(self, _lifecycle): return self.step("remove_task")
+    def remove_container(self, _lifecycle): return self.step("remove_container")
+    def remove_runtime(self, _lifecycle): return self.step("remove_runtime")
+    def remove_share(self, _lifecycle): return self.step("remove_share")
+    def stop_containerd(self, _lifecycle): return self.step("stop_containerd")
+    def remove_firewall(self, _lifecycle): return self.step("remove_firewall")
+    def remove_inputs(self, _lifecycle): return self.step("remove_inputs")
+    def prepare_rootfs_release(self, _lifecycle): return self.step("prepare_rootfs_release")
+    def authorize_rootfs_release(self, _lifecycle): return self.step("authorize_rootfs_release")
+    def remove_rootfs(self, _lifecycle): return self.step("remove_rootfs")
+    def observe_final_baselines(self, _lifecycle): return self.step("observe_final_baselines")
+    def retire_operation(self, _lifecycle): return self.step("retire_operation")
+    def remove_operation(self, _lifecycle): return self.step("remove_operation")
+
+    def abandon_prepared_rootfs(self, _lifecycle):
+        return self.step("ABANDON_PREPARED_ROOTFS")
+
+    def open_existing_operation(self, _lifecycle):
+        return self.step("RECOVERY_OPERATION_OPENED")
+
+    def recover_pending(self, _lifecycle):
+        return self.step("PENDING_OWNER_RECOVERED")
+
+    def owner_evidence(self, lifecycle):
+        name = "RECOVERY_EVIDENCE" if lifecycle.recovery else "OWNER_EVIDENCE"
+        if lifecycle.operation is None:
+            raise Cut("terminal operation evidence absent")
+        if lifecycle.recovery:
+            assert lifecycle.primary_failure is not None or lifecycle.session is None
+        return self.step(name, (name, lifecycle.primary_failure is None))
+
+    def abort_custody(self, _lifecycle):
+        return self.step("CUSTODY_ABORTED")
 
 
-# Admission is the only immutable prerequisite/final-pin authority and stops
-# before all integrated mutable owners.
-events = []
-with (patch.object(coordinator, "_claim_execution_custody",
-                   side_effect=lambda: events.append("custody") or (_ for _ in ()).throw(
-                       coordinator.admission.AdmissionUnavailable())),
-      patch.object(coordinator.process, "_open_attested_executable_owner", mutation),
-      patch.object(coordinator.runtime, "_open_production_owner", mutation)):
-    rejected(coordinator._run_fixed_local_qualification)
-assert events == ["custody"]
+def invoke(entry, fake, receipt_cut=None):
+    receipt = object()
+    def issue(custody, evidence):
+        assert custody == "custody"
+        if receipt_cut == "before":
+            raise Cut("receipt")
+        fake.events.append("RECEIPT_ISSUED")
+        if receipt_cut == "after":
+            raise Cut("receipt")
+        assert evidence[0] in {"OWNER_EVIDENCE", "RECOVERY_EVIDENCE"}
+        return receipt
+    with patch.object(coordinator, "_owners", fake), patch.object(
+            coordinator, "_issue_owner_receipt", side_effect=issue):
+        try:
+            value = entry()
+            return value is receipt
+        except BaseException:
+            return False
 
-events.clear()
-with (patch.object(coordinator, "_claim_execution_custody",
-                   side_effect=lambda: events.append("custody") or (object(), object())),
-      patch.object(coordinator.admission, "_abort_execution_custody",
-                   side_effect=lambda _value: events.append("abort")),
-      patch.object(coordinator.process, "_open_attested_executable_owner", mutation),
-      patch.object(coordinator.runtime, "_open_production_owner", mutation)):
-    rejected(coordinator._run_fixed_local_qualification)
-    rejected(coordinator._recover_fixed_local_qualification)
-assert events == ["custody", "abort", "custody", "abort"]
-rejected(lambda: coordinator._consume_local_receipt(object()), coordinator.CoordinatorError)
 
-# Production entry/recovery contain no fixture issuer, callback, argv, path, or
-# environment selector. Recovery cannot call the work entry or rerun work.
+def cleanup_projection(events):
+    return tuple(event for event in events if event in coordinator.CLEANUP_ORDER)
+
+
+# Complete lifecycle is ordinary forward order, exact reverse settlement, then
+# private evidence and one receipt. No action is repeated.
+fake = FakeOwners()
+assert invoke(coordinator._run_fixed_local_qualification, fake)
+assert tuple(fake.events) == (*coordinator.FORWARD_ORDER, *coordinator.CLEANUP_ORDER,
+                              "OWNER_EVIDENCE", "RECEIPT_ISSUED")
+assert len(fake.events) == len(set(fake.events))
+
+# Every before/after forward cut stops forward progress. Once an operation was
+# returned, all cleanup phases are attempted in order. Before that, only the
+# retained preparation can be abandoned.
+for ordinal, event in enumerate(coordinator.FORWARD_ORDER):
+    for side in ("before", "after"):
+        fake = FakeOwners((side, event))
+        invoke(coordinator._run_fixed_local_qualification, fake)
+        forward = tuple(item for item in fake.events if item in coordinator.FORWARD_ORDER)
+        expected = coordinator.FORWARD_ORDER[:ordinal + (side == "after")]
+        assert forward == expected, (side, event, fake.events)
+        # A cut raised on return prevents Python from assigning that result.
+        operation_returned = ordinal > 2
+        if operation_returned:
+            assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+        else:
+            assert cleanup_projection(fake.events) == ()
+            rootfs_returned = ordinal > 1
+            assert ("ABANDON_PREPARED_ROOTFS" in fake.events) == rootfs_returned
+        assert not any(item in fake.events for item in
+                       coordinator.FORWARD_ORDER[ordinal + 1:])
+
+# Every cleanup cut is attempted once, later cleanup still runs in order, no
+# evidence is issued from uncertain cleanup, and custody is aborted once.
+for event in coordinator.CLEANUP_ORDER:
+    for side in ("before", "after"):
+        fake = FakeOwners((side, event))
+        assert not invoke(coordinator._run_fixed_local_qualification, fake)
+        observed = cleanup_projection(fake.events)
+        expected = tuple(item for item in coordinator.CLEANUP_ORDER
+                         if not (side == "before" and item == event))
+        assert observed == expected, (side, event, fake.events)
+        assert "OWNER_EVIDENCE" not in fake.events
+        assert fake.events.count("CUSTODY_ABORTED") == 1
+
+# Private evidence and receipt cuts occur only after exact cleanup and settle
+# custody by receipt or abort, never both successfully.
+for event in ("OWNER_EVIDENCE",):
+    for side in ("before", "after"):
+        fake = FakeOwners((side, event))
+        assert not invoke(coordinator._run_fixed_local_qualification, fake)
+        assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+        assert fake.events.count("CUSTODY_ABORTED") == 1
+for side in ("before", "after"):
+    fake = FakeOwners()
+    assert not invoke(coordinator._run_fixed_local_qualification, fake, side)
+    assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+    assert fake.events.count("CUSTODY_ABORTED") == 1
+
+# Recovery has only immutable custody, exact existing-state opening, pending
+# child settlement, cleanup, failure/uncertain evidence, and receipt issuance.
+recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED")
+fake = FakeOwners()
+assert invoke(coordinator._recover_fixed_local_qualification, fake)
+assert tuple(fake.events) == (*recovery_prefix, *coordinator.CLEANUP_ORDER,
+                              "RECOVERY_EVIDENCE", "RECEIPT_ISSUED")
+for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER, "RECOVERY_EVIDENCE"):
+    for side in ("before", "after"):
+        fake = FakeOwners((side, event))
+        invoke(coordinator._recover_fixed_local_qualification, fake)
+        assert not any(item in fake.events for item in coordinator.FORWARD_ORDER[1:])
+        if event in coordinator.CLEANUP_ORDER:
+            observed = cleanup_projection(fake.events)
+            expected = tuple(item for item in coordinator.CLEANUP_ORDER
+                             if not (side == "before" and item == event))
+            assert observed == expected
+            assert "RECOVERY_EVIDENCE" not in fake.events
+        if event in {"STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"}:
+            assert cleanup_projection(fake.events) == ()
+
+# Source shape keeps both production entries zero argument and recovery cannot
+# name any work-opening method. Public openers and arbitrary receipts stay shut.
 source = (REMOTE / "completion_kata_coordinator.py").read_text()
 tree = ast.parse(source)
 functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-for name in ("_claim_complete_prerequisites", "run", "recover"):
-    text = ast.get_source_segment(source, functions[name])
-    assert text is not None
-    lowered = text.lower()
-    for forbidden in ("fake", "synthetic", "callback", "getenv", "environ", "argv", "aws", "provider"):
-        assert forbidden not in lowered, (name, forbidden)
-recovery = ast.get_source_segment(source, functions["recover"])
-assert "run(" not in recovery
-assert "_claim_complete_prerequisites" in recovery
-assert coordinator.TEARDOWN_ORDER == (
-    "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-    "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
-    "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED",
-)
+for name in ("_run_fixed_local_qualification", "_recover_fixed_local_qualification"):
+    node = functions[name]
+    assert not node.args.args and node.args.vararg is node.args.kwarg is None
+recovery = ast.get_source_segment(source, functions["_recover_fixed_local_qualification"])
+for forbidden in coordinator.RECOVERY_FORBIDDEN:
+    assert f".{forbidden}(" not in recovery
+for forbidden in ("getenv", "environ", "argv", "callback", "retry", "fallback", "kvm"):
+    assert forbidden not in recovery.lower()
+try:
+    coordinator.open_fixed_coordinator()
+except coordinator.CoordinatorBlocked:
+    pass
+else:
+    raise AssertionError("public coordinator opener accepted")
+try:
+    coordinator._consume_local_receipt(object())
+except coordinator.CoordinatorError:
+    pass
+else:
+    raise AssertionError("caller-created receipt accepted")
 
-entry = REMOTE / "completion_local_full.py"
-environment = {"HOME": "/nonexistent", "LC_ALL": "C", "PATH": "/usr/bin:/bin",
-               "PYTHONDONTWRITEBYTECODE": "1"}
-blocked = subprocess.run([sys.executable, "-B", str(entry)], cwd=ROOT,
-                         env=environment, capture_output=True, timeout=5, check=False)
-assert blocked.returncode == 3 and blocked.stdout == blocked.stderr == b""
-argument = subprocess.run([sys.executable, "-B", str(entry), "unexpected"], cwd=ROOT,
-                          env=environment, capture_output=True, timeout=5, check=False)
-assert argument.returncode == 3 and argument.stdout == argument.stderr == b""
-print("completion coordinator portable refusal/failure-cut matrix passed")
+print("completion coordinator exhaustive composition/cut/recovery matrix passed")
