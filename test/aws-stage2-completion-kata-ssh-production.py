@@ -17,7 +17,8 @@ REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 sys.path.insert(0, str(ROOT / "test"))
 from stage2_attested_fixture import SHA256 as SYNTHETIC_ELF_SHA256, ensure_attested_static_fixture
-import completion_guest_workloads_v2 as guest
+import completion_guest_workloads_v2 as historical_guest
+import completion_guest_workloads_v3 as guest
 import completion_kata_command_policy as policy
 import completion_kata_fdmap as fdmap
 import completion_kata_inputs as inputs
@@ -43,13 +44,17 @@ def reject(call, message="hostile B3 value accepted"):
 
 
 runtime_contract._verify_source_bindings()
-v2_source_sha = hashlib.sha256((REMOTE / "completion_guest_workloads_v2.py").read_bytes()).hexdigest()
-check(v2_source_sha == operation.SSH_PARSER_SHA256, "V2 parser source binding drift")
-v2_contract = json.loads((ROOT / "config/stage2-completion-ssh-workload-v2.json").read_bytes())
-check(v2_contract["source_sha256"] == v2_source_sha
-      and v2_contract["total_deadline_ns"] == policy.SSH_TOTAL_NS
-      and v2_contract["cleanup_reserve_ns"] == policy.SSH_CLEANUP_RESERVE_NS,
-      "V2 workload contract drift")
+v3_source_sha = hashlib.sha256((REMOTE / "completion_guest_workloads_v3.py").read_bytes()).hexdigest()
+check(v3_source_sha == operation.SSH_PARSER_SHA256, "V3 parser source binding drift")
+v3_contract = json.loads((ROOT / "config/stage2-completion-ssh-workload-v3.json").read_bytes())
+check(v3_contract["source_sha256"] == v3_source_sha
+      and v3_contract["guest_program_sha256"] == guest.GUEST_PROGRAM_SHA256
+      and v3_contract["final_deb_sha256"] == guest.FINAL_DEB_SHA256
+      and v3_contract["final_deb_bytes"] == guest.FINAL_DEB_BYTES
+      and v3_contract["final_installed_tree_sha256"] == guest.FINAL_INSTALLED_TREE_SHA256
+      and v3_contract["total_deadline_ns"] == policy.SSH_TOTAL_NS
+      and v3_contract["cleanup_reserve_ns"] == policy.SSH_CLEANUP_RESERVE_NS,
+      "V3 workload contract drift")
 for role, descriptor in policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS.items():
     contract_raw = (ROOT / f"test/fixtures/stage2-completion/attested-{role}-contract-v1.json").read_bytes()
     contract = process._parse_contract(contract_raw, descriptor["contract_sha256"])
@@ -255,7 +260,8 @@ check(cleanup.called and recovery_calls == [cleanup_journal], "cleanup SSH recov
 # Exact guest parser and canonical typed result: marker plus all 21 fixed rows.
 lines = [guest.GUEST_READY_MARKER]
 for ordinal, (label, digest) in enumerate(guest.GUEST_WORKLOAD_PLAN, 1):
-    lines.append(f"COGS_STAGE2_RESULT_V1|{ordinal:02d}|{label}|1|{digest}|deleted=true\n".encode())
+    lines.append(
+        f"{guest.GUEST_RESULT_PREFIX}|{ordinal:02d}|{label}|1|{digest}|deleted=true\n".encode())
 stdout = b"".join(lines)
 parsed = guest.parse_guest_workload_output(stdout)
 canonical = ssh._canonical_result(parsed)
@@ -383,7 +389,12 @@ if native_supported:
             finally: os.close(descriptor)
         executable_path = str(staged[0][1])
         executed_ssh = subprocess.run((executable_path, "-F"), check=True, capture_output=True)
-        check(executed_ssh.stdout == stdout, "synthetic static SSH effect drift")
+        historical_lines = [historical_guest.GUEST_READY_MARKER]
+        for ordinal, (label, digest) in enumerate(historical_guest.GUEST_WORKLOAD_PLAN, 1):
+            historical_lines.append(
+                f"COGS_STAGE2_RESULT_V1|{ordinal:02d}|{label}|1|{digest}|deleted=true\n".encode())
+        check(executed_ssh.stdout == b"".join(historical_lines),
+              "historical synthetic static SSH effect drift")
         with tempfile.TemporaryDirectory(prefix="cogs-static-key-") as key_dir:
             for key_name in ("client", "server"):
                 key_path = str(Path(key_dir) / key_name)

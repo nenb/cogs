@@ -5,11 +5,11 @@ route with the exact attested process transaction and guest-program source.
 """
 from dataclasses import dataclass
 import hashlib
-import completion_guest_workloads_v2 as guest
+import completion_guest_workloads_v3 as guest
 import completion_kata_fdmap as fdmap
 import completion_kata_operation as operation
 
-MARKER = b"COGS_STAGE2_SSH_READY_V1\n"
+MARKER = guest.GUEST_READY_MARKER
 MARKER_SHA256 = hashlib.sha256(MARKER).hexdigest()
 KEY_FD = 200
 KNOWN_HOSTS_FD = 201
@@ -192,7 +192,7 @@ make_test_local_fake, authenticate_test_local, revoke_test_local, fake_state_for
 del _fake_routes
 
 
-PARSER_ID = "completion_guest_workloads.parse_guest_workload_output/v1"
+PARSER_ID = "completion_guest_workloads_v3.parse_guest_workload_output/v3"
 PARSER_SHA256 = hashlib.sha256(PARSER_ID.encode("ascii")).hexdigest()
 
 

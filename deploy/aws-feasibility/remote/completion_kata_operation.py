@@ -11,7 +11,7 @@ import json
 import os
 import time
 import unicodedata
-import completion_guest_workloads_v2 as guest_workloads
+import completion_guest_workloads_v3 as guest_workloads
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_network_journal as network_journal
@@ -198,8 +198,8 @@ LIFECYCLE = (
     "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
 )
 PRODUCTION_ADMISSION_VERSION = "cogs.stage2-kata-operation-production/v2"
-SSH_PARSER_ID = "completion_guest_workloads_v2.parse_guest_workload_output/v2"
-SSH_PARSER_SHA256 = "723bf54ef1b9b1fe4670b1a0d82e6744a29d33fbd0dc2cad4b3cc88863dae406"
+SSH_PARSER_ID = "completion_guest_workloads_v3.parse_guest_workload_output/v3"
+SSH_PARSER_SHA256 = "3e2c93c96364561eb527716dd8d2e5a24116b5001f7be461915365bfe98caf2e"
 PROOF_LIFECYCLE = frozenset({
     "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "TASK_STOPPED",
     "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",

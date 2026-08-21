@@ -3,7 +3,10 @@
 
 import dataclasses
 import hashlib
+import json
+import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import tempfile
@@ -13,6 +16,7 @@ REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 
 import completion_guest_workloads_v2 as guest
+import completion_guest_workloads_v3 as guest_v3
 import completion_fixtures as fixtures
 
 
@@ -161,5 +165,143 @@ for index in range(1, len(lines)):
     row = lines[index]
     rejected(b"".join([*lines[:index], row.replace(b"deleted=true", b"deleted=false"), *lines[index + 1 :]]))
     rejected(b"".join([*lines[:index], row.replace(f"|{index:02d}|".encode(), b"|00|", 1), *lines[index + 1 :]]))
+
+# V3 is an additive route. Historical V2 stdin and canonical milliseconds stay
+# byte-for-byte covered above rather than being silently reinterpreted.
+program_v3 = guest_v3.guest_program_bytes()
+snapshot_v3 = (ROOT / "test/fixtures/stage2-completion/guest-workload-v2.sh").read_bytes()
+check(program_v3 == snapshot_v3, "V3 guest stdin snapshot differs")
+check(hashlib.sha256(program_v3).hexdigest() == guest_v3.GUEST_PROGRAM_SHA256,
+      "V3 guest stdin digest differs")
+source_v3 = (REMOTE / "completion_guest_workloads_v3.py").read_bytes()
+config_v3 = json.loads(
+    (ROOT / "config/stage2-completion-ssh-workload-v3.json").read_bytes())
+check(config_v3 == {
+    "canonical_result_version": "cogs.stage2-guest-workload-result/v3",
+    "cleanup_reserve_ns": 30_000_000_000,
+    "final_deb_bytes": guest_v3.FINAL_DEB_BYTES,
+    "final_deb_sha256": guest_v3.FINAL_DEB_SHA256,
+    "final_installed_bytes": guest_v3.FINAL_INSTALLED_BYTES,
+    "final_installed_entries": guest_v3.FINAL_INSTALLED_ENTRIES,
+    "final_installed_tree_sha256": guest_v3.FINAL_INSTALLED_TREE_SHA256,
+    "guest_program_sha256": guest_v3.GUEST_PROGRAM_SHA256,
+    "parser": "completion_guest_workloads_v3.parse_guest_workload_output",
+    "source_path": "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
+    "source_sha256": hashlib.sha256(source_v3).hexdigest(),
+    "total_deadline_ns": 1_200_000_000_000,
+    "version": "cogs.stage2-completion-ssh-workload/v3",
+}, "V3 workload config/source binding differs")
+text_v3 = program_v3.decode("ascii")
+check(guest_v3.FINAL_DEB_SHA256 ==
+      "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf"
+      and guest_v3.FINAL_DEB_BYTES == 1_064_816,
+      "V3 final DEB constants differ")
+check(guest_v3.FINAL_INSTALLED_TREE_SHA256 ==
+      "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"
+      and guest_v3.FINAL_INSTALLED_ENTRIES == 259
+      and guest_v3.FINAL_INSTALLED_BYTES == 1_048_576,
+      "V3 final installed-tree constants differ")
+for forbidden in ("DEB_REFERENCE_SHA", "DEB_REFERENCE_SIZE", "/1000000", "duration_ms"):
+    check(forbidden not in text_v3, "V3 retained an unpinned or rounded meaning")
+for required in (
+    "FINAL_DEB_SHA=08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf",
+    "FINAL_DEB_SIZE=1064816", '[ "$observed_sha" = "$FINAL_DEB_SHA" ]',
+    '[ "$observed_size" -eq "$FINAL_DEB_SIZE" ]',
+    "ELAPSED=$(($2-$1))", '[ "$ELAPSED" -gt 0 ]',
+    'require_sha "$scratch.tree" "$FINAL_TREE_SHA"',
+    '[ "$observed_bytes" -eq "$FINAL_TREE_BYTES" ]',
+    '[ "$DEB_BUILD_COUNT" -eq 14 ]', "COGS_STAGE2_SSH_READY_V2",
+):
+    check(required in text_v3, "V3 final-pin/nanosecond plan is incomplete")
+check(text_v3.count('observe_deb "$p/package.deb"') == 2,
+      "V3 build and install build sites differ")
+check(text_v3.count('verify_installed_tree "$p/installed"') == 1
+      and text_v3.count('verify_installed_tree "$check"') == 1,
+      "V3 package extraction/install tree checks differ")
+check("| /usr/bin" not in text_v3 and "$(/usr/bin/find" not in text_v3,
+      "V3 find failure can be hidden by a pipeline or substitution")
+
+lines_v3 = [guest_v3.GUEST_READY_MARKER]
+for ordinal, (label, digest) in enumerate(guest_v3.GUEST_WORKLOAD_PLAN, 1):
+    lines_v3.append(
+        f"{guest_v3.GUEST_RESULT_PREFIX}|{ordinal:02d}|{label}|{ordinal}|{digest}|deleted=true\n".encode("ascii")
+    )
+valid_v3 = b"".join(lines_v3)
+parsed_v3 = guest_v3.parse_guest_workload_output(valid_v3)
+check(len(parsed_v3.samples) == 21 and parsed_v3.samples[0].duration_ns == 1,
+      "V3 nanosecond result differs")
+check(tuple(row.category for row in parsed_v3.samples)
+      == tuple(row[0] for row in guest_v3.GUEST_WORKLOAD_PLAN),
+      "V3 21-row order differs")
+canonical_v3 = guest_v3.canonical_guest_workload_result(parsed_v3)
+check(b'"duration_ns"' in canonical_v3 and b'"duration_ms"' not in canonical_v3
+      and b'"version":"cogs.stage2-guest-workload-result/v3"' in canonical_v3,
+      "V3 canonical timing/version differs")
+check(guest_v3.parse_canonical_guest_workload_result(canonical_v3) == parsed_v3,
+      "V3 canonical result did not round trip")
+for hostile in (
+    valid_v3.replace(b"|1|", b"|0|", 1),
+    valid_v3.replace(b"|1|", b"|1200000000001|", 1),
+    valid_v3.replace(b"deleted=true", b"deleted=false", 1),
+    valid_v3.replace(guest_v3.FINAL_DEB_SHA256.encode("ascii"), b"f" * 64, 1),
+    valid_v3.replace(b"COGS_STAGE2_RESULT_V2", b"COGS_STAGE2_RESULT_V1", 1),
+    b"".join([lines_v3[0], lines_v3[2], lines_v3[1], *lines_v3[3:]]),
+):
+    try:
+        guest_v3.parse_guest_workload_output(hostile)
+    except guest_v3.WorkloadError:
+        pass
+    else:
+        raise RuntimeError("hostile V3 guest output was accepted")
+for hostile in (
+    canonical_v3.replace(b'"duration_ns":1', b'"duration_ns":0', 1),
+    canonical_v3.replace(b'"duration_ns":1', b'"duration_ns":1200000000001', 1),
+    canonical_v3.replace(b'"deleted":true', b'"deleted":false', 1),
+):
+    try:
+        guest_v3.parse_canonical_guest_workload_result(hostile)
+    except guest_v3.WorkloadError:
+        pass
+    else:
+        raise RuntimeError("hostile V3 canonical result was accepted")
+
+# Exercise the literal shell tree codec where the production GNU userland is
+# available. This independently proves that its stream is exactly the reviewed
+# logical-tree digest rather than merely checking source text.
+if platform.system() == "Linux" and os.geteuid() == 0:
+    with tempfile.TemporaryDirectory() as temporary:
+        base = Path(temporary)
+        installed = base / "installed"
+        installed.mkdir(mode=0o755)
+        for record in fixtures.fixed_fixtures().package.installed.records[1:]:
+            path = installed / record.path
+            if record.kind == "directory":
+                path.mkdir(mode=record.mode)
+            else:
+                path.write_bytes(record.content)
+                path.chmod(record.mode)
+        for record in reversed(fixtures.fixed_fixtures().package.installed.records):
+            path = installed if record.path == "." else installed / record.path
+            path.chmod(record.mode)
+            os.utime(path, (record.mtime, record.mtime))
+        helpers = (
+            "line_count() {"
+            + text_v3.split("line_count() {", 1)[1].split("mount_invariant() {", 1)[0]
+            + "metadata_rows() {"
+            + text_v3.split("metadata_rows() {", 1)[1].split("observe_deb() {", 1)[0]
+            + "verify_installed_tree() {"
+            + text_v3.split("verify_installed_tree() {", 1)[1].split("git_sample() {", 1)[0]
+        )
+        probe = (
+            "set -eu\n"
+            "FINAL_TREE_SHA=" + guest_v3.FINAL_INSTALLED_TREE_SHA256 + "\n"
+            "FINAL_TREE_ENTRIES=259\nFINAL_TREE_BYTES=1048576\n"
+            "INSTALLED_MANIFEST=f0d03497ac0a1784d0cb0c6bd7dd13932eb376c131fd550de438cefa25deb483\n"
+            + helpers
+            + f'\nverify_installed_tree "{installed}" "{base / "scratch"}"\n'
+        )
+        result = subprocess.run(("/bin/sh", "-c", probe), capture_output=True, check=False)
+        check(result.returncode == 0,
+              "literal V3 installed-tree shell codec failed: " + result.stderr.decode("utf-8", "replace"))
 
 print("completion guest workload program tests passed")
