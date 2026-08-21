@@ -647,6 +647,40 @@ check(command_observation.category == "exit-2-warning-1-error-1-bytes-25",
 command_observation = native_probe.NativeCommandObserved(-9, b"")
 check(command_observation.category == "exit--9-warning-0-error-0-bytes-0",
       "native command signal observation category changed")
+command_observation = native_probe.NativeCommandObserved(
+    2, b"dpkg: error: cannot access archive: No such file or directory\n")
+check(command_observation.category == "exit-2-archive-access-bytes-62",
+      "native command recognized observation category changed")
+detail_cases = (
+    (b"ADMINDIR MUST BE INSIDE INSTDIR: permission denied", "admin-outside-install"),
+    (b"not found in PATH or not executable: no such file or directory", "required-tool-missing"),
+    (b"cannot access archive: no such file or directory", "archive-access"),
+    (b"failed to make temporary file: permission denied", "temporary-file"),
+    (b"file size limit exceeded", "file-size-limit"),
+    (b"unknown option", "unknown-option"),
+    (b"read-only file system", "read-only"),
+    (b"permission denied", "permission-denied"),
+    (b"no such file or directory", "path-missing"),
+    (b"unable to create: no such file or directory", "create-failed"),
+    (b"unable to open: permission denied", "open-failed"),
+    (b"cannot open: no such file or directory", "open-failed"),
+    (b"unknown option then file size limit exceeded", "file-size-limit"),
+)
+for raw, token in detail_cases:
+    observed = native_probe.NativeCommandObserved(2, raw + b" /private/secret")
+    expected = f"exit-2-{token}-bytes-{len(raw) + 16}"
+    check(observed.category == expected, f"native detail precedence changed for {token}")
+    check(len(observed.category) <= 64
+          and all(value.isascii() and (value.isalnum() or value in "_-")
+                  for value in observed.category)
+          and "private" not in observed.category and "secret" not in observed.category,
+          f"native detail token was unsafe for {token}")
+for return_code in (-255, 256):
+    observed = native_probe.NativeCommandObserved(return_code, b"x" * owner.MAX_COMMAND_OUTPUT)
+    check(len(observed.category) <= 64
+          and all(value.isascii() and (value.isalnum() or value in "_-")
+                  for value in observed.category),
+          "native extreme observation category was unsafe")
 class ProbePackageDeadline:
     def cleanup_check(self): pass
 class ProbePackageRoot:

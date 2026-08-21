@@ -40,10 +40,25 @@ class NativeCandidateTransactionError(WorkloadError):
 class NativeCommandObserved(WorkloadError):
     def __init__(self, return_code, raw):
         code = str(return_code) if type(return_code) is int and -255 <= return_code <= 255 else "invalid"
-        self.category = (
-            f"exit-{code}-warning-{int(b'warning' in raw.lower())}"
-            f"-error-{int(b'error' in raw.lower())}-bytes-{len(raw)}"
+        lowered = raw.lower()
+        details = (
+            (b"admindir must be inside instdir", "admin-outside-install"),
+            (b"not found in path or not executable", "required-tool-missing"),
+            (b"cannot access archive", "archive-access"),
+            (b"failed to make temporary file", "temporary-file"),
+            (b"file size limit exceeded", "file-size-limit"),
+            (b"unknown option", "unknown-option"),
+            (b"unable to create", "create-failed"),
+            (b"unable to open", "open-failed"),
+            (b"cannot open", "open-failed"),
+            (b"read-only file system", "read-only"),
+            (b"permission denied", "permission-denied"),
+            (b"no such file or directory", "path-missing"),
         )
+        detail = next((token for needle, token in details if needle in lowered), None)
+        if detail is None:
+            detail = f"warning-{int(b'warning' in lowered)}-error-{int(b'error' in lowered)}"
+        self.category = f"exit-{code}-{detail}-bytes-{len(raw)}"
         super().__init__("native command returned a rejected bounded observation")
 
 
