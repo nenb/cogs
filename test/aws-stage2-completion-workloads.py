@@ -21,6 +21,7 @@ sys.path.insert(0, str(REMOTE))
 
 import completion_guest_workloads as guest
 import completion_package_candidate as candidate
+import completion_package_native_codec as native_codec
 import completion_runtime_contract as contract
 import completion_workload_owner as owner
 
@@ -826,7 +827,8 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
             shared_root.cleanup()
         check(native_raw == shared_raw == b"C:fd-ok\n", "native/shared command success parity changed")
 
-        package_path = Path(temporary) / "package-command"
+        package_path = Path("/tmp") / f"cogs-stage2-native-package-test-{os.getpid()}"
+        check(not package_path.exists(), "native package test root pre-existed")
         package_deadline = owner.Deadline.start(120, 30)
         package_root = owner.OwnedRoot(package_path, package_deadline, "host-candidate")
         package_tools = guest.ToolSet()
@@ -865,6 +867,57 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
                   and package_identity.architecture == "all"
                   and min(build_ms, install_ms, second_build_ms, second_install_ms) >= 0,
                   "native package A/B build/install transaction failed")
+            original_native_command = native_probe._run_native_command
+            def fail_dpkg_install(argv, *arguments, **kwargs):
+                if argv[0] == package_tools.dpkg.executable:
+                    raise native_probe.NativeCommandObserved(7, b"injected install error\n")
+                return original_native_command(argv, *arguments, **kwargs)
+            native_probe._run_native_command = fail_dpkg_install
+            try:
+                try:
+                    native_probe._run_native_package_sample(
+                        package_root, "candidate-a", "build-a", package_tools, package_deadline)
+                except native_probe.NativeCandidateStageError as error:
+                    check((error.stage, error.category)
+                          == ("build-a-dpkg-install", "exit-7-warning-0-error-1-bytes-23"),
+                          "native install failure lost its stage after parent restoration")
+                else:
+                    raise AssertionError("injected native install failure was accepted")
+            finally:
+                native_probe._run_native_command = original_native_command
+            check(stat.S_IMODE(os.fstat(package_root.parent_fd).st_mode) == 0o700,
+                  "native install failure did not restore the root-owned parent mode")
+
+            original_fchmod = native_probe.os.fchmod
+            parent_opened = [False]
+            def fail_parent_restore(descriptor, mode):
+                if descriptor == package_root.parent_fd and mode == 0o711:
+                    parent_opened[0] = True
+                if descriptor == package_root.parent_fd and mode == 0o700 and parent_opened[0]:
+                    raise OSError(5, "injected parent restore failure")
+                return original_fchmod(descriptor, mode)
+            def omit_dpkg_install(argv, *arguments, **kwargs):
+                if argv[0] == package_tools.dpkg.executable:
+                    return b""
+                return original_native_command(argv, *arguments, **kwargs)
+            native_probe.os.fchmod = fail_parent_restore
+            native_probe._run_native_command = omit_dpkg_install
+            try:
+                try:
+                    native_probe._run_native_package_sample(
+                        package_root, "candidate-a", "build-a", package_tools, package_deadline)
+                except native_probe.NativeCandidateStageError as error:
+                    check((error.stage, error.category)
+                          == ("build-a-dpkg-parent-restore", "cleanup-uncertain"),
+                          "native parent restore uncertainty was not sticky")
+                else:
+                    raise AssertionError("native parent restore failure was accepted")
+            finally:
+                native_probe.os.fchmod = original_fchmod
+                native_probe._run_native_command = original_native_command
+                original_fchmod(package_root.parent_fd, 0o700)
+            check(stat.S_IMODE(os.fstat(package_root.parent_fd).st_mode) == 0o700,
+                  "native parent restore fault test left a traversable parent")
         finally:
             package_tools.close()
             package_root.cleanup()
@@ -1018,7 +1071,7 @@ candidate_value = {
 contract.validate_candidate_result(candidate_value)
 native_revision = "1" * 40
 native_manifest = "2" * 64
-native_binding = contract.native_execution_binding(
+native_binding = native_codec.native_execution_binding(
     tools, runtime_pin, contract.NATIVE_LAUNCHER_SHA256, native_revision, native_manifest)
 native_value = {
     **candidate_value,
@@ -1026,44 +1079,54 @@ native_value = {
     "authority": "non-authoritative-retained-rootfs-candidate-only",
     "execution_binding": native_binding,
 }
-contract.validate_native_candidate_result(native_value, native_revision, native_manifest)
-rejected(lambda: contract.validate_native_candidate_result(native_value), TypeError)
-rejected(lambda: contract.validate_native_candidate_result(
+native_codec.validate_native_candidate_result(native_value, native_revision, native_manifest)
+rejected(lambda: native_codec.validate_native_candidate_result(native_value), TypeError)
+rejected(lambda: native_codec.validate_native_candidate_result(
     native_value, None, native_manifest), contract.WorkloadContractError)
-rejected(lambda: contract.validate_native_candidate_result(
+rejected(lambda: native_codec.validate_native_candidate_result(
     native_value, native_revision, None), contract.WorkloadContractError)
 rejected(lambda: contract.validate_candidate_result(native_value), contract.WorkloadContractError)
-rejected(lambda: contract.validate_native_candidate_result(
+rejected(lambda: native_codec.validate_native_candidate_result(
     candidate_value, native_revision, native_manifest), contract.WorkloadContractError)
 changed_native = copy.deepcopy(native_value)
 changed_native["execution_binding"]["rootfs_execution"] = "not-used-by-host-candidate-or-reproduction"
-rejected(lambda: contract.validate_native_candidate_result(
+rejected(lambda: native_codec.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+changed_native["execution_binding"]["operation_parent_isolation"] = (
+    native_codec.HISTORICAL_PARENT_ISOLATION)
+rejected(lambda: native_codec.validate_native_candidate_result(
+    changed_native, native_revision, native_manifest), contract.WorkloadContractError)
+changed_native = copy.deepcopy(native_value)
+del changed_native["execution_binding"]["native_codec_implementation_sha256"]
+rejected(lambda: native_codec.validate_native_candidate_result(
     changed_native, native_revision, native_manifest), contract.WorkloadContractError)
 for field in (
     "launcher_implementation_sha256",
     "native_producer_implementation_sha256",
+    "native_codec_implementation_sha256",
     "runtime_codec_implementation_sha256",
 ):
     changed_native = copy.deepcopy(native_value)
     changed_native["execution_binding"][field] = "d" * 64
     rejected(lambda changed_native=changed_native:
-             contract.validate_native_candidate_result(
+             native_codec.validate_native_candidate_result(
                  changed_native, native_revision, native_manifest),
              contract.WorkloadContractError)
-rejected(lambda: contract.native_execution_binding(
+rejected(lambda: native_codec.native_execution_binding(
     tools, runtime_pin, "d" * 64, native_revision, native_manifest), contract.WorkloadContractError)
 for expected_revision, expected_manifest in (
     ("3" * 40, native_manifest),
     (native_revision, "3" * 64),
 ):
     rejected(lambda expected_revision=expected_revision, expected_manifest=expected_manifest:
-             contract.validate_native_candidate_result(
+             native_codec.validate_native_candidate_result(
                  native_value, expected_revision, expected_manifest),
              contract.WorkloadContractError)
 for field, hostile in (("source_revision", "3" * 40), ("source_manifest_sha256", "3" * 64)):
     changed_native = copy.deepcopy(native_value)
     changed_native["execution_binding"][field] = hostile
-    rejected(lambda changed_native=changed_native: contract.validate_native_candidate_result(
+    rejected(lambda changed_native=changed_native: native_codec.validate_native_candidate_result(
         changed_native, native_revision, native_manifest), contract.WorkloadContractError)
 for key, hostile in (
     ("authority", "authoritative"),
@@ -1112,6 +1175,9 @@ if sys.platform == "darwin":
     check(contract.REVIEWED_FINAL_PIN_SHA256 is None, "Darwin invented a final pin")
 
 native_source = (REMOTE / "completion_package_native_candidate.py").read_text()
+check('REVIEWED_NATIVE_CODEC_SHA256 = "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0"'
+      in native_source and "NATIVE_CODEC_SHA256 != REVIEWED_NATIVE_CODEC_SHA256" in native_source,
+      "native producer does not reject changed V2 codec bytes")
 check('"-Zxz"' in native_source and '"-z6"' in native_source
       and '"--compression=xz"' not in native_source
       and '"--compression-level=6"' not in native_source,

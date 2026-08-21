@@ -31,6 +31,7 @@ settlement = load("stage2_native_settlement", "scripts/stage2-native-settlement.
 publication = load("stage2_native_publication", "scripts/stage2-native-publication.py")
 receipt = load("stage2_native_upload_receipt", "scripts/stage2-native-upload-receipt.py")
 contract = sys.modules["completion_runtime_contract"]
+native_codec = sys.modules["completion_package_native_codec"]
 
 
 def rejected(call, exception):
@@ -194,7 +195,7 @@ def candidate(revision, manifest):
         contract.RUNTIME_CLOSURE_OBJECT_COUNT,
         tuple(dict(row) for row in contract.EXACT_TOOL_OBSERVATIONS),
     )
-    binding = contract.native_execution_binding(
+    binding = native_codec.native_execution_binding(
         tools, runtime, contract.NATIVE_LAUNCHER_SHA256, revision, manifest)
     value = {
         "version": "cogs.stage2-workload-candidate/v2",

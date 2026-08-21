@@ -184,7 +184,8 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
     fixture_implementation_sha256: executionBinding.fixture_implementation_sha256,
     workload_implementation_sha256: executionBinding.workload_implementation_sha256,
     owner_implementation_sha256: executionBinding.owner_implementation_sha256,
-    native_producer_implementation_sha256: "5709a9a569fc9118a8400581aac347051c9cf67b88f82b0faa893db1078c4339",
+    native_producer_implementation_sha256: "a7f2a314bbf6e724d2d536de724d5bd268384c17dff9ce538bb31666c355e1c3",
+    native_codec_implementation_sha256: "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0",
     runtime_codec_implementation_sha256: "2548e636d496592c325357d6f08c96510e52c127bf0d501486d20925db8595cd",
     launcher_implementation_sha256: "9e0fec1d8735f2f3ce83bc550f282c2477450b25dcd406c9d8e54bdf5b3e8882",
     source_revision: "1".repeat(40),
@@ -196,7 +197,8 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
     linux_dynamic_tool_closure: "exact-static-elf-closure-executed-from-retained-rootfs",
     process_containment: "parent-gated-fork-helper-newns-newpid-newnet-fork-pid1-dual-pidfd-v1",
     process_containment_limitation: "trusted-initial-user-namespace-root-no-hostile-root-security-boundary",
-    operation_parent_isolation: "root-owned-mode-0700-parent-workload-uid-gid-65534-zero-capabilities-nnp",
+    operation_parent_isolation:
+      "root-owned-mode-0700-baseline-transient-root-owned-execute-only-0711-dpkg-install-verified-0700-restore-workload-uid-gid-65534-zero-capabilities-nnp",
     rootfs_execution: "detached-recursive-read-only-retained-stage2-rootfs-fresh-proc-dev-tmp",
     retained_root_lifecycle: "output-after-pid1-and-helper-settlement-and-retained-root-removal",
   };

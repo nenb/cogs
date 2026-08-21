@@ -12,7 +12,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility/remote"))
-from completion_runtime_contract import canonical_json, validate_native_candidate_result
+from completion_package_native_codec import validate_native_candidate_result
+from completion_runtime_contract import canonical_json
 
 MAX_CANDIDATE_BYTES = 4096
 MAX_ALIAS_PASSES = 12

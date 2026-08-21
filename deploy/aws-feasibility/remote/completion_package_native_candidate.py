@@ -15,15 +15,19 @@ from completion_fixtures import SOURCE_EPOCH, fixed_fixtures
 from completion_guest_workloads import (CleanupUncertain, Deadline, LIFECYCLE_SECONDS, OwnedRoot,
     SignalScope, ToolSet, WorkloadError, WorkloadInterrupted, _ENV, _check_versions, _materialize,
     _remove_relative, _status_fields, _verify_installed, require_linux_amd64_root)
+from completion_package_native_codec import (NATIVE_CODEC_SHA256, native_execution_binding,
+    validate_native_candidate_result)
 from completion_runtime_contract import (PackageIdentity, canonical_json, exact_runtime_closure,
-    exact_tool_observations, load_candidate_contract, native_execution_binding,
-    native_implementation_digests, validate_native_candidate_result)
+    exact_tool_observations, load_candidate_contract, native_implementation_digests)
 CANDIDATE_ROOT = Path("/tmp/cogs-stage2-workload-candidate-v2")
 FIXED_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 FIXED_NATIVE_DRIVER = FIXED_SOURCE / "scripts/run-stage2-package-native-candidate.py"
 FIXED_SOURCE_MANIFEST = FIXED_SOURCE / ".cogs-stage2-source-manifest-v1.json"
 MAX_OUTPUT_BYTES = 4096
 MAX_PACKAGE_EFFECT_BYTES = 4_194_304
+REVIEWED_NATIVE_CODEC_SHA256 = "cd8f7867d05aaa44e0114117a0bdb272abb6bcc00f1f006be018ae7c65d74ca0"
+if NATIVE_CODEC_SHA256 != REVIEWED_NATIVE_CODEC_SHA256:
+    raise RuntimeError("reviewed native V2 codec changed")
 # Captured after fixed-source verification and while its names are still visible,
 # before namespace/chroot entry removes access to the source directory.
 NATIVE_LAUNCHER_BYTES = FIXED_NATIVE_DRIVER.read_bytes()
@@ -289,27 +293,59 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             os.utime(installed_fd, (SOURCE_EPOCH, SOURCE_EPOCH))
         finally:
             os.close(installed_fd)
-        stage = "dpkg-install"
-        install_start = time.monotonic_ns()
-        _run_native_command(
-            (
-                tools.dpkg.executable,
-                "--force-not-root",
-                f"--log={prefix}/dpkg.log",
-                "--admindir",
-                admin,
-                "--instdir",
-                f"{installed}/",
-                "--install",
-                deb,
-            ),
-            root,
-            deadline,
-            pass_fds=tools.descriptors,
-            environment=package_environment,
-            package_effects=True,
-        )
-        install_ms = (time.monotonic_ns() - install_start) // 1_000_000
+        stage = "dpkg-parent-traverse"
+        install_failure = install_failure_stage = None
+        parent_before = os.fstat(root.parent_fd)
+        _require(parent_before.st_uid == workload_owner.SUPERVISOR_UID
+                 and stat.S_IMODE(parent_before.st_mode) == 0o700)
+        try:
+            os.fchmod(root.parent_fd, 0o711)
+            parent_open = os.fstat(root.parent_fd)
+            _require((parent_open.st_dev, parent_open.st_ino, parent_open.st_uid,
+                      parent_open.st_gid, parent_open.st_nlink)
+                     == (parent_before.st_dev, parent_before.st_ino, parent_before.st_uid,
+                         parent_before.st_gid, parent_before.st_nlink)
+                     and stat.S_IMODE(parent_open.st_mode) == 0o711)
+            stage = "dpkg-install"
+            install_start = time.monotonic_ns()
+            _run_native_command(
+                (
+                    tools.dpkg.executable,
+                    "--force-not-root",
+                    f"--log={prefix}/dpkg.log",
+                    "--admindir",
+                    admin,
+                    "--instdir",
+                    f"{installed}/",
+                    "--install",
+                    deb,
+                ),
+                root,
+                deadline,
+                pass_fds=tools.descriptors,
+                environment=package_environment,
+                package_effects=True,
+            )
+            install_ms = (time.monotonic_ns() - install_start) // 1_000_000
+        except BaseException as error:
+            install_failure, install_failure_stage = error, stage
+        finally:
+            stage = "dpkg-parent-restore"
+            try:
+                os.fchmod(root.parent_fd, 0o700)
+                parent_after = os.fstat(root.parent_fd)
+                _require((parent_after.st_dev, parent_after.st_ino, parent_after.st_uid,
+                          parent_after.st_gid, parent_after.st_nlink)
+                         == (parent_before.st_dev, parent_before.st_ino, parent_before.st_uid,
+                             parent_before.st_gid, parent_before.st_nlink)
+                         and stat.S_IMODE(parent_after.st_mode) == 0o700)
+            except BaseException as error:
+                install_failure = CleanupUncertain("dpkg parent traversal restore failed")
+                install_failure_stage = None
+        if install_failure is not None:
+            if install_failure_stage is not None:
+                stage = install_failure_stage
+            raise install_failure
         stage = "installed-mtime-normalize"
         for record in reversed(fixture.installed.records):
             if record.kind != "directory":
