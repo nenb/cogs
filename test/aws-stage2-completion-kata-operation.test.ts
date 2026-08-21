@@ -28,13 +28,13 @@ test("S0 fixed operation foundation fails closed", async () => {
   const lease = await readFile(leasePath, "utf8");
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
-  // ADR0103 retains the workflow security owners under measured integrated limits.
-  const adr0103Preferred = 49_000;
-  const adr0103Hard = 50_000;
-  assert.ok(adr0103Preferred < adr0103Hard);
+  // ADR0105 permits the bounded network-causality/final-observer correction.
+  const adr0105Preferred = 60_000;
+  const adr0105Hard = 62_000;
+  assert.ok(adr0105Preferred < adr0105Hard);
   assert.ok(
-    operationLines + leaseExtension <= 2900,
-    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2900: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 2950,
+    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2950: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,
@@ -65,6 +65,9 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.match(operation, /def close\(self, primary=None\):/u);
   assert.match(operation, /"temporary_peer": "c42g0"/u);
   assert.match(operation, /elif kind == "FINAL_BASELINES":/u);
+  assert.match(operation, /network_state\["sensor_proof"\] is not None/u);
+  assert.match(operation, /network_state\["snapshots"\]\[-1\]\["snapshot_kind"\] == "final-absent"/u);
+  assert.match(operation, /context\.lifecycle_phase == "ROOTFS_ABSENT"[\s\S]*FINAL_NETWORK_OBSERVERS/u);
   assert.match(lease, /def _reopen_kata_reserved\(permit, control\):/u);
   assert.match(lease, /kata_operation\._claim_rootfs_reopen\(permit\)/u);
   assert.match(lease, /kata_operation\._invoke_rootfs_reopen_route\(grant, rootfs_route, control\)/u);

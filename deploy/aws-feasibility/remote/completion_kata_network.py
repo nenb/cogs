@@ -6,7 +6,7 @@ authenticated tools. The runtime handoff retains and freshly revalidates the
 exact fixed nsfs descriptor and accepts no caller identity. Public production
 opening remains unavailable until the coordinator facet is complete.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import ctypes
 import errno
@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+import time
 import completion_kata_actions as actions
 import completion_kata_nft_owner as nft_owner
 import completion_kata_owner as owner_helpers
@@ -34,6 +35,13 @@ HOST_MAC = "02:00:00:42:00:01"
 GUEST_MAC = "02:00:00:42:00:02"
 HOST_CIDR = "192.0.2.1/30"
 GUEST_CIDR = "192.0.2.2/30"
+DIRECT_TCP_PORT = 2222
+DIRECT_UDP_PORT = 5353
+ROUTE_PROBE_ADDRESS = "198.51.100.1"
+ROUTE_TCP_PORT = 443
+ROUTE_UDP_PORT = 443
+SENSOR_STABLE_POLLS = 20
+SENSOR_STABLE_INTERVAL_NS = 100_000_000
 TABLE = "cogs_stage2_ssh_v1"
 TABLE_HANDLE = "18446744073709551615"
 MAX_JSON = 262_144
@@ -49,6 +57,21 @@ TC_CONTRACT = "tc-json-qualification-candidate-v1"
 NFT_CONTRACT = "libnftables-json-qualification-candidate-v1"
 
 NFT_TRANSACTION = b'''add table inet cogs_stage2_ssh_v1
+add chain inet cogs_stage2_ssh_v1 input { type filter hook input priority filter; policy accept; }
+add chain inet cogs_stage2_ssh_v1 output { type filter hook output priority filter; policy accept; }
+add chain inet cogs_stage2_ssh_v1 forward { type filter hook forward priority filter; policy accept; }
+add rule inet cogs_stage2_ssh_v1 input iifname "c42h0" ip saddr 192.0.2.2 ip daddr 192.0.2.1 tcp dport 2222 counter drop
+add rule inet cogs_stage2_ssh_v1 input iifname "c42h0" ip saddr 192.0.2.2 ip daddr 192.0.2.1 udp dport 5353 counter drop
+add rule inet cogs_stage2_ssh_v1 input iifname "c42h0" ip saddr 192.0.2.2 ip daddr 192.0.2.1 tcp sport 22 ct state established counter accept
+add rule inet cogs_stage2_ssh_v1 input iifname "c42h0" counter drop
+add rule inet cogs_stage2_ssh_v1 output oifname "c42h0" ip saddr 192.0.2.1 ip daddr 192.0.2.2 tcp dport 22 ct state new,established counter accept
+add rule inet cogs_stage2_ssh_v1 output oifname "c42h0" counter drop
+add rule inet cogs_stage2_ssh_v1 forward iifname "c42h0" ip saddr 192.0.2.2 ip daddr 198.51.100.1 tcp dport 443 counter drop
+add rule inet cogs_stage2_ssh_v1 forward iifname "c42h0" ip saddr 192.0.2.2 ip daddr 198.51.100.1 udp dport 443 counter drop
+add rule inet cogs_stage2_ssh_v1 forward iifname "c42h0" counter drop
+add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" counter drop
+'''
+NFT_LEGACY_TRANSACTION = b'''add table inet cogs_stage2_ssh_v1
 add chain inet cogs_stage2_ssh_v1 input { type filter hook input priority filter; policy accept; }
 add chain inet cogs_stage2_ssh_v1 output { type filter hook output priority filter; policy accept; }
 add chain inet cogs_stage2_ssh_v1 forward { type filter hook forward priority filter; policy accept; }
@@ -102,7 +125,7 @@ _MUTATIONS = {
     Action.LOOPBACK_UP: (IP_CONTRACT, ("-n", NETNS, "link", "set", "dev", "lo", "up"), b""),
     Action.GUEST_ADDRESS_ADD: (IP_CONTRACT, ("-n", NETNS, "address", "add", GUEST_CIDR, "dev", GUEST_IF), b""),
     Action.GUEST_LINK_UP: (IP_CONTRACT, ("-n", NETNS, "link", "set", "dev", GUEST_IF, "up"), b""),
-    Action.NFT_INSTALL: (NFT_CONTRACT, ("-f", "-"), NFT_TRANSACTION),
+    Action.NFT_INSTALL: (NFT_CONTRACT, ("-f", "-"), NFT_LEGACY_TRANSACTION),
     Action.NFT_INSTALL_OWNED: (NFT_CONTRACT, ("-f", "-"), NFT_OWNED_TRANSACTION),
     Action.NFT_REMOVE: (NFT_CONTRACT, ("delete", "table", "inet", TABLE), b""),
     Action.NFT_REMOVE_ATOMIC: (NFT_CONTRACT, ("delete", "table", "inet", TABLE), b""),
@@ -500,7 +523,13 @@ def _nft_verdict(name):
     return {name: None}
 
 
-_NFT_RULES = {
+def _nft_counter():
+    return {"counter": None}
+
+
+# Owner-3/4 snapshots remain parseable only when replay selects their immutable
+# policy version. New production parsing always requires every exact counter.
+_NFT_RULES_LEGACY = {
     "input": (
         (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
          _nft_match(_nft_payload("ip", "daddr"), "192.0.2.1"), _nft_match(_nft_payload("tcp", "sport"), 22),
@@ -518,8 +547,48 @@ _NFT_RULES = {
         (_nft_match(_nft_meta("oifname"), HOST_IF), _nft_verdict("drop")),
     ),
 }
-_NFT_ROW_ORDER = ("table", "chain", "chain", "chain", "rule", "rule", "rule", "rule", "rule", "rule")
-_NFT_RULE_CHAIN_ORDER = ("input", "input", "output", "output", "forward", "forward")
+_NFT_RULES = {
+    "input": (
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
+         _nft_match(_nft_payload("ip", "daddr"), "192.0.2.1"), _nft_match(_nft_payload("tcp", "dport"), DIRECT_TCP_PORT),
+         _nft_counter(), _nft_verdict("drop")),
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
+         _nft_match(_nft_payload("ip", "daddr"), "192.0.2.1"), _nft_match(_nft_payload("udp", "dport"), DIRECT_UDP_PORT),
+         _nft_counter(), _nft_verdict("drop")),
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
+         _nft_match(_nft_payload("ip", "daddr"), "192.0.2.1"), _nft_match(_nft_payload("tcp", "sport"), 22),
+         _nft_match({"ct": {"key": "state"}}, {"set": ["established"]}, "in"), _nft_counter(), _nft_verdict("accept")),
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_counter(), _nft_verdict("drop")),
+    ),
+    "output": (
+        (_nft_match(_nft_meta("oifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.1"),
+         _nft_match(_nft_payload("ip", "daddr"), "192.0.2.2"), _nft_match(_nft_payload("tcp", "dport"), 22),
+         _nft_match({"ct": {"key": "state"}}, {"set": ["established", "new"]}, "in"), _nft_counter(), _nft_verdict("accept")),
+        (_nft_match(_nft_meta("oifname"), HOST_IF), _nft_counter(), _nft_verdict("drop")),
+    ),
+    "forward": (
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
+         _nft_match(_nft_payload("ip", "daddr"), ROUTE_PROBE_ADDRESS),
+         _nft_match(_nft_payload("tcp", "dport"), ROUTE_TCP_PORT), _nft_counter(), _nft_verdict("drop")),
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_match(_nft_payload("ip", "saddr"), "192.0.2.2"),
+         _nft_match(_nft_payload("ip", "daddr"), ROUTE_PROBE_ADDRESS),
+         _nft_match(_nft_payload("udp", "dport"), ROUTE_UDP_PORT), _nft_counter(), _nft_verdict("drop")),
+        (_nft_match(_nft_meta("iifname"), HOST_IF), _nft_counter(), _nft_verdict("drop")),
+        (_nft_match(_nft_meta("oifname"), HOST_IF), _nft_counter(), _nft_verdict("drop")),
+    ),
+}
+_NFT_SENSOR_NAMES = {
+    "input": ("direct-tcp-denied", "direct-udp-denied", "ssh-return-allowed", "input-other-drop"),
+    "output": ("ssh-request-allowed", "output-other-drop"),
+    "forward": ("route-tcp-denied", "route-udp-denied", "forward-guest-other-drop", "forward-host-other-drop"),
+}
+CAUSAL_POSITIVE_SENSORS = ("ssh-request-allowed", "ssh-return-allowed", "direct-tcp-denied",
+                           "direct-udp-denied", "route-tcp-denied", "route-udp-denied")
+CAUSAL_ZERO_SENSORS = ("input-other-drop", "output-other-drop", "forward-guest-other-drop",
+                       "forward-host-other-drop")
+CAUSAL_GUEST_MARKERS = ("route-baseline-no-default", "direct-tcp-denied", "direct-udp-denied",
+                        "default-route-added", "route-tcp-denied", "route-udp-denied",
+                        "default-route-removed", "route-restored-no-default")
 
 
 def _normalize_nft_expr(expressions):
@@ -551,28 +620,50 @@ class NftKernelIdentity:
 
 
 @dataclass(frozen=True)
+class NftCounter:
+    sensor: str
+    chain: str
+    ordinal: int
+    handle: int
+    packets: int
+    bytes: int
+
+
+@dataclass(frozen=True)
 class NftSnapshot:
     content: dict
     identity: NftKernelIdentity
+    counters: tuple = field(default=(), compare=False)
 
 
-def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF):
-    """Validate candidate list-table order/content and retain every handle."""
+def _counter_uint(value):
+    if type(value) is not int or value < 0 or value > (1 << 64) - 1:
+        raise NetworkError("invalid nft counter metric")
+    return value
+
+
+def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF, causal=True):
+    """Separate immutable table identity from exact mutable counter sensors."""
+    if type(causal) is not bool:
+        raise NetworkError("typed nft policy generation required")
+    rules = _NFT_RULES if causal else _NFT_RULES_LEGACY
+    chain_order = tuple(chain for chain in ("input", "output", "forward")
+                        for _row in rules[chain])
+    row_order = ("table", "chain", "chain", "chain", *("rule" for _row in chain_order))
     value = _load(raw)
     _keys(value, ("nftables",))
     rows = value["nftables"]
-    if type(rows) is not list or len(rows) != len(_NFT_ROW_ORDER) + 1:
+    if type(rows) is not list or len(rows) != len(row_order) + 1:
         raise NetworkError("nft list")
     meta = rows[0]
     _keys(meta, ("metainfo",))
     _keys(meta["metainfo"], ("json_schema_version",), ("release_name", "version"))
     if meta["metainfo"]["json_schema_version"] != 1:
         raise NetworkError("nft metainfo drift")
-    normalized, chain_handles, rule_handles = [], [], []
+    normalized, chain_handles, rule_handles, counters = [], [], [], []
     table_handle = None
-    active_chain = None
-    rule_ordinals = {name: 0 for name in _NFT_RULES}
-    for expected_kind, row in zip(_NFT_ROW_ORDER, rows[1:]):
+    rule_ordinals = {name: 0 for name in rules}
+    for expected_kind, row in zip(row_order, rows[1:], strict=True):
         if type(row) is not dict or tuple(row) != (expected_kind,):
             actual = tuple(tuple(item) if type(item) is dict else () for item in rows[1:])
             raise NetworkError(f"nft output ordering drift:{actual!r}")
@@ -583,14 +674,15 @@ def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF):
         content = {key: child for key, child in body.items() if key != "handle"}
         if expected_kind == "table":
             expected_table = {"family": "inet", "name": table_name}
-            if re.fullmatch(r"c42t[0-9a-f]{10}", table_name): expected_table["comment"] = "owner:" + table_name
+            if re.fullmatch(r"c42t[0-9a-f]{10}", table_name):
+                expected_table["comment"] = "owner:" + table_name
             if content != expected_table:
                 raise NetworkError("nft table drift")
             table_handle = handle
         elif expected_kind == "chain":
             _keys(content, ("family", "table", "name", "type", "hook", "prio", "policy"))
             active_chain = content["name"]
-            if (active_chain not in _NFT_RULES or content != {"family": "inet", "table": table_name,
+            if (active_chain not in rules or content != {"family": "inet", "table": table_name,
                     "name": active_chain, "type": "filter", "hook": active_chain, "prio": 0, "policy": "accept"}
                     or active_chain in {name for name, _handle in chain_handles}):
                 raise NetworkError("nft chain drift")
@@ -598,29 +690,145 @@ def parse_nft_snapshot(raw, table_name=TABLE, host_if=HOST_IF):
         else:
             _keys(content, ("family", "table", "chain", "expr"))
             chain = content["chain"]
-            expected_chain = _NFT_RULE_CHAIN_ORDER[len(rule_handles)]
+            expected_chain = chain_order[len(rule_handles)]
             if (chain != expected_chain or chain not in {name for name, _handle in chain_handles}
                     or content["family"] != "inet" or content["table"] != table_name):
                 raise NetworkError("nft rule ownership drift")
-            expr = tuple(_normalize_nft_expr(content["expr"]))
             ordinal = rule_ordinals[chain]
-            if ordinal >= len(_NFT_RULES[chain]): raise NetworkError("nft normalized content drift")
-            expected_expr = tuple(json.loads(json.dumps(_NFT_RULES[chain][ordinal]).replace(HOST_IF, host_if)))
+            if ordinal >= len(rules[chain]):
+                raise NetworkError("nft normalized content drift")
+            expressions = _normalize_nft_expr(content["expr"])
+            if causal:
+                positions = [index for index, expression in enumerate(expressions)
+                             if type(expression) is dict and "counter" in expression]
+                if len(positions) != 1:
+                    raise NetworkError("exactly one nft counter required")
+                metric = expressions[positions[0]]["counter"]
+                _keys(metric, ("packets", "bytes"))
+                packets, byte_count = _counter_uint(metric["packets"]), _counter_uint(metric["bytes"])
+                expressions[positions[0]] = _nft_counter()
+                counters.append(NftCounter(_NFT_SENSOR_NAMES[chain][ordinal], chain, ordinal,
+                                           handle, packets, byte_count))
+            expr = tuple(expressions)
+            expected_expr = tuple(json.loads(json.dumps(rules[chain][ordinal]).replace(HOST_IF, host_if)))
             if expr != expected_expr:
                 raise NetworkError("nft normalized content drift")
             rule_ordinals[chain] += 1
             content["expr"] = list(expr)
             rule_handles.append((chain, ordinal, handle))
         normalized.append({expected_kind: content})
+    expected_counts = {name: len(rows) for name, rows in rules.items()}
+    all_handles = ({handle for _name, handle in chain_handles}
+                   | {handle for _chain, _ordinal, handle in rule_handles})
     if ([name for name, _handle in chain_handles] != ["input", "output", "forward"]
-            or any(value != 2 for value in rule_ordinals.values())
+            or rule_ordinals != expected_counts
             or len({handle for _name, handle in chain_handles}) != 3
-            or len({handle for _chain, _ordinal, handle in rule_handles}) != 6
-            or len({handle for _name, handle in chain_handles}
-                   | {handle for _chain, _ordinal, handle in rule_handles}) != 9):
+            or len({handle for _chain, _ordinal, handle in rule_handles}) != len(chain_order)
+            or len(all_handles) != 3 + len(chain_order)
+            or causal and tuple(counter.sensor for counter in counters) != tuple(
+                sensor for chain in ("input", "output", "forward") for sensor in _NFT_SENSOR_NAMES[chain])):
         raise NetworkError("nft inventory identity drift")
     return NftSnapshot({"nftables": normalized},
-                       NftKernelIdentity(table_handle, tuple(chain_handles), tuple(rule_handles)))
+                       NftKernelIdentity(table_handle, tuple(chain_handles), tuple(rule_handles)),
+                       tuple(counters))
+
+
+@dataclass(frozen=True)
+class CausalSensorSnapshot:
+    operation_token: str
+    stage: str
+    nft: NftSnapshot
+    observation_sha256: str
+
+
+@dataclass(frozen=True)
+class GuestNetworkProof:
+    markers: tuple
+    route_before_sha256: str
+    route_after_sha256: str
+
+
+@dataclass(frozen=True)
+class CausalNetworkProof:
+    operation_token: str
+    deltas: tuple
+    marker_sha256: str
+    route_sha256: str
+    proof_sha256: str
+
+
+def _hex_digest(value):
+    return (type(value) is str and len(value) == 64 and set(value) <= set("0123456789abcdef")
+            and value != ZERO)
+
+
+def _sensor_static_sha256(snapshot):
+    if type(snapshot) is not NftSnapshot:
+        raise NetworkError("typed nft sensor snapshot required")
+    value = {"content": snapshot.content, "identity": {
+        "table_handle": snapshot.identity.table_handle,
+        "chain_handles": snapshot.identity.chain_handles,
+        "rule_handles": snapshot.identity.rule_handles}}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def bind_causal_sensor(operation_token, stage, snapshot, observation_sha256):
+    if (type(operation_token) is not str or len(operation_token) != 64
+            or set(operation_token) - set("0123456789abcdef") or operation_token == ZERO
+            or stage not in {"before", "after"} or type(snapshot) is not NftSnapshot
+            or len(snapshot.counters) != 10 or not _hex_digest(observation_sha256)):
+        raise NetworkError("invalid causal sensor binding")
+    expected_table = "c42t" + operation_token[:10]
+    table = snapshot.content["nftables"][0]["table"]
+    if table.get("name") != expected_table or table.get("comment") != "owner:" + expected_table:
+        raise NetworkError("mixed-operation causal sensor")
+    return CausalSensorSnapshot(operation_token, stage, snapshot, observation_sha256)
+
+
+def _counter_map(snapshot):
+    rows = snapshot.nft.counters
+    result = {row.sensor: row for row in rows}
+    if len(result) != len(rows) or set(result) != set(CAUSAL_POSITIVE_SENSORS) | set(CAUSAL_ZERO_SENSORS):
+        raise NetworkError("causal sensor inventory")
+    return result
+
+
+def prove_causal_network(before, after, guest):
+    """Bind authenticated guest categories to immutable host-rule counter deltas."""
+    if (type(before) is not CausalSensorSnapshot or type(after) is not CausalSensorSnapshot
+            or type(guest) is not GuestNetworkProof or before.stage != "before" or after.stage != "after"
+            or before.operation_token != after.operation_token
+            or before.observation_sha256 == after.observation_sha256
+            or before.nft != after.nft or _sensor_static_sha256(before.nft) != _sensor_static_sha256(after.nft)):
+        raise NetworkError("causal sensor replacement or order")
+    if (guest.markers != CAUSAL_GUEST_MARKERS or not _hex_digest(guest.route_before_sha256)
+            or guest.route_before_sha256 != guest.route_after_sha256):
+        raise NetworkError("guest route restoration proof")
+    first, second = _counter_map(before), _counter_map(after)
+    deltas = []
+    for name in (*CAUSAL_POSITIVE_SENSORS, *CAUSAL_ZERO_SENSORS):
+        left, right = first[name], second[name]
+        if ((left.chain, left.ordinal, left.handle) != (right.chain, right.ordinal, right.handle)
+                or right.packets < left.packets or right.bytes < left.bytes):
+            raise NetworkError("causal sensor decrease or replacement")
+        packet_delta, byte_delta = right.packets - left.packets, right.bytes - left.bytes
+        if name in CAUSAL_POSITIVE_SENSORS:
+            if packet_delta <= 0 or byte_delta <= 0:
+                raise NetworkError("required causal sensor did not increase")
+            category = "positive"
+        else:
+            if packet_delta != 0 or byte_delta != 0:
+                raise NetworkError("unexpected sibling sensor increase")
+            category = "zero"
+        deltas.append((name, category, packet_delta, byte_delta))
+    marker_raw = json.dumps(list(guest.markers), separators=(",", ":")).encode()
+    result = {"operation_token": before.operation_token, "deltas": deltas,
+              "marker_sha256": hashlib.sha256(marker_raw).hexdigest(),
+              "route_sha256": guest.route_before_sha256}
+    result["proof_sha256"] = hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return CausalNetworkProof(result["operation_token"], tuple(deltas), result["marker_sha256"],
+                              result["route_sha256"], result["proof_sha256"])
 
 
 @dataclass(frozen=True)
@@ -1153,6 +1361,17 @@ _BASELINE_KEYS = (
 )
 
 
+def _journal_policy(journal):
+    import completion_kata_operation as operation
+    versions = {body["policy_version"] for _kind, body in operation._network_history(journal)
+                if "policy_version" in body}
+    if not versions:
+        return operation.network_journal.POLICY_VERSION
+    if len(versions) != 1 or next(iter(versions)) not in operation.network_journal.POLICY_VERSIONS:
+        raise NetworkError("mixed network policy journal")
+    return next(iter(versions))
+
+
 def _bound_names(journal):
     import completion_kata_operation as operation
     token = operation._command_context(journal).operation_token
@@ -1259,7 +1478,7 @@ def _netns_parent_mount(raw=None):
 def _parent_mount_record(journal, identity):
     import completion_kata_operation as operation
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "parent_mount": identity, "proof_sha256": ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
         if name != "proof_sha256"})).hexdigest()
@@ -1355,7 +1574,7 @@ def _support_ownership(journal=None):
         return rows[0]
     elif journal is not None:
         body = {"operation_token": operation._command_context(journal).operation_token,
-                "policy_version": operation.network_journal.POLICY_VERSION,
+                "policy_version": _journal_policy(journal),
                 "support": observed, "proof_sha256": ZERO}
         body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
             if name != "proof_sha256"})).hexdigest()
@@ -1377,7 +1596,7 @@ def _placeholder_identity(value):
 def _original_placeholder_record(journal, identity):
     import completion_kata_operation as operation
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "original_name": _bound_names(journal)[0], "placeholder": identity, "proof_sha256": ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
         if name != "proof_sha256"})).hexdigest()
@@ -1402,7 +1621,7 @@ def _created_nsfs_identity(descriptor):
 def _created_nsfs_record(journal, helper_pid, identity):
     import completion_kata_operation as operation
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "helper_pid": helper_pid, "identity": identity, "proof_sha256": ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
         if name != "proof_sha256"})).hexdigest()
@@ -1423,7 +1642,7 @@ def _quarantine_name(journal):
 def _quarantine_record(journal, kind, retained, placeholder=None, preserved=None):
     import completion_kata_operation as operation
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "original_name": _bound_names(journal)[0], "quarantine_name": _quarantine_name(journal),
             "target": retained, "placeholder": placeholder, "preserved": preserved, "proof_sha256": ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
@@ -1680,7 +1899,7 @@ def _cleanup_rows(journal):
 def _cleanup_record(journal, kind, **values):
     import completion_kata_operation as operation
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION, **values,
+            "policy_version": _journal_policy(journal), **values,
             "proof_sha256": ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items()
         if name != "proof_sha256"})).hexdigest()
@@ -2098,7 +2317,7 @@ def _record_observation(journal, source_id, raw, command_serial=None):
         command_serial = first["command_serial"]
     for index, chunk in enumerate(chunks[start:], start):
         body = {"operation_token": operation._command_context(journal).operation_token,
-                "policy_version": operation.network_journal.POLICY_VERSION,
+                "policy_version": _journal_policy(journal),
                 "observation_serial": serial, "source_id": source_id, "command_serial": command_serial,
                 "chunk_index": index, "chunk_count": len(chunks), "output_sha256": digest,
                 "output_length": len(raw), "raw_hex": chunk.hex(), "proof_sha256": ZERO}
@@ -2280,7 +2499,7 @@ def _snapshot(journal, kind, baselines, identity, sources=None):
     if sources is None: sources = _sources(journal)
     identity = _bind_identity(identity, sources)
     body = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "snapshot_kind": kind, "baselines": baselines, "sources": sources, "identity": identity,
             "proof_sha256": operation.ZERO}
     body["proof_sha256"] = hashlib.sha256(operation._canonical(
@@ -2292,7 +2511,7 @@ def _effect_body(journal, action, identity=None, disposition="exact", target=Non
     history = operation._network_history(journal)
     settled = [body for kind, body in history if kind == "NETWORK_EFFECT_SETTLED_V2"]
     base = {"operation_token": operation._command_context(journal).operation_token,
-            "policy_version": operation.network_journal.POLICY_VERSION,
+            "policy_version": _journal_policy(journal),
             "effect_serial": len(settled), "action": action.value,
             "prior_proof_sha256": settled[-1]["proof_sha256"] if settled else ZERO,
             "target": target if target is not None else
@@ -2348,7 +2567,8 @@ def _owned_links(raw, names):
     return tuple(parsed.get(name) for name in names)
 
 
-def _observed_identity(journal, ip, nft, tc, prior, action, ready=False):
+def _observed_identity(journal, ip, nft, tc, prior, action, ready=False,
+                       policy_version=None):
     """Use the replay derivation for live effects as the single state authority."""
     expected = _effect_source_ids(action, prior)
     observer_expected = (("NFT_TABLE", *expected)
@@ -2359,7 +2579,8 @@ def _observed_identity(journal, ip, nft, tc, prior, action, ready=False):
         raw = raw[1:]
     outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
     scope = "ready" if ready else "effect"
-    return _derive_journal_identity(scope, action.value, outputs, prior)[0]
+    return _derive_journal_identity(scope, action.value, outputs, prior,
+                                    policy_version=policy_version)[0]
 
 
 def _observe_ready_teardown(journal, ip, nft, tc, prior):
@@ -2367,11 +2588,13 @@ def _observe_ready_teardown(journal, ip, nft, tc, prior):
     raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_SNAPSHOT_V2")
     outputs = [{"source_id": Action.IP_GUEST_LINK_UP.value, "raw": b""}, *(
         {"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True))]
-    identity, _baselines_value = _derive_journal_identity("ready", None, outputs, prior)
+    identity, _baselines_value = _derive_journal_identity(
+        "ready", None, outputs, prior, policy_version=_journal_policy(journal))
     return identity
 
 
 def _effect(journal, action, ip, nft, tc, prior, final=False):
+    import completion_kata_network_journal as journal_model
     if action in _SETUP_ACTIONS or action in {
             Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC}:
         nft_owner.require_active(journal)
@@ -2387,7 +2610,8 @@ def _effect(journal, action, ip, nft, tc, prior, final=False):
             table_name = prior["nft"]["table_name"]
             current = parse_nft_snapshot(
                 _perform_fixed(journal, Action.NFT_TABLE, ip, nft, tc),
-                table_name, _bound_host(journal))
+                table_name, _bound_host(journal),
+                _journal_policy(journal) == journal_model.POLICY_VERSION)
             if _nft_value(current) != prior["nft"]:
                 raise NetworkError("NFT replacement before post-intent deletion")
         _perform_fixed(journal, action, ip, nft, tc, prior)
@@ -2425,7 +2649,8 @@ def _observe_discovered_identity(journal, ip, nft, tc, retained):
     expected = ("IP_HOST_LINKS", "IP_NS_LINKS", "IP_HOST_ADDRESSES", "IP_NS_ADDRESSES")
     raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_SNAPSHOT_V2")
     outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
-    value = _derive_journal_identity("discovered", None, outputs, retained)[0]
+    value = _derive_journal_identity(
+        "discovered", None, outputs, retained, policy_version=_journal_policy(journal))[0]
     return _bind_identity(value, _sources(journal, "NETWORK_SNAPSHOT_V2"))
 
 
@@ -2448,9 +2673,110 @@ def _observe_fixed_runtime_network(journal, ip, nft, tc, record=True):
         "TC_QDISC:" + tap.ifname: tap, "TC_INGRESS_FILTER:eth0": guest,
         "TC_INGRESS_FILTER:" + tap.ifname: tap})
     outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
-    identity = _derive_journal_identity("runtime", None, outputs, prior, baselines)[0]
+    identity = _derive_journal_identity(
+        "runtime", None, outputs, prior, baselines, _journal_policy(journal))[0]
     sources = _sources(journal, "NETWORK_SNAPSHOT_V2")
     return _snapshot(journal, "runtime", baselines, identity, sources) if record else _bind_identity(identity, sources)
+
+
+def _sensor_record_value(journal, stage, snapshot, source):
+    import completion_kata_operation as operation
+    bound = bind_causal_sensor(operation._command_context(journal).operation_token, stage,
+                               snapshot, source["output_sha256"])
+    body = {"operation_token": bound.operation_token,
+            "policy_version": operation.network_journal.POLICY_VERSION,
+            "stage": stage, "source": source,
+            "static_sha256": _sensor_static_sha256(snapshot),
+            "counters": [{"sensor": row.sensor, "chain": row.chain, "ordinal": row.ordinal,
+                          "handle": row.handle, "packets": row.packets, "bytes": row.bytes}
+                         for row in snapshot.counters], "proof_sha256": ZERO}
+    body["proof_sha256"] = hashlib.sha256(operation._canonical(
+        {name: value for name, value in body.items() if name != "proof_sha256"})).hexdigest()
+    return body, bound
+
+
+def _capture_causal_sensor(journal, ip, nft, tc, stage):
+    """Take one complete operation-bound list-table observation under the owner lock."""
+    import completion_kata_operation as operation
+    if stage not in {"before", "after"}:
+        raise NetworkError("causal sensor stage")
+    nft_owner.require_active(journal)
+    history = operation._network_history(journal)
+    prior = [body for kind, body in history if kind == operation.network_journal.SENSOR_RECORD]
+    if len(prior) != (0 if stage == "before" else 1) or prior and prior[0]["stage"] != "before":
+        raise NetworkError("causal sensor order")
+    _resume_observer_chunk(journal, ip, nft, tc)
+    table, host = _bound_names(journal)[1], _bound_host(journal)
+    raw = _perform_fixed(journal, Action.NFT_TABLE, ip, nft, tc)
+    snapshot = parse_nft_snapshot(raw, table, host, True)
+    if stage == "after":
+        stable = False
+        for _index in range(SENSOR_STABLE_POLLS):
+            time.sleep(SENSOR_STABLE_INTERVAL_NS / 1_000_000_000)
+            candidate_raw = _perform_fixed(journal, Action.NFT_TABLE, ip, nft, tc)
+            candidate = parse_nft_snapshot(candidate_raw, table, host, True)
+            if candidate != snapshot:
+                raise NetworkError("causal sensor identity changed during stability poll")
+            if candidate.counters == snapshot.counters:
+                raw, snapshot, stable = candidate_raw, candidate, True
+                break
+            raw, snapshot = candidate_raw, candidate
+        if not stable:
+            raise NetworkError("causal sensor counters did not stabilize")
+    source = _sources(journal)[-1]
+    if source["source_id"] != "NFT_TABLE":
+        raise NetworkError("causal sensor source")
+    body, bound = _sensor_record_value(journal, stage, snapshot, source)
+    operation._record_network(journal, operation.network_journal.SENSOR_RECORD, body)
+    return bound
+
+
+def _prove_causal_guest_network(journal, ip, nft, tc, guest):
+    """Capture the after sensor and journal only canonical categories/deltas."""
+    import completion_kata_operation as operation
+    if type(guest) is not GuestNetworkProof:
+        raise NetworkError("typed guest network proof required")
+    after = _capture_causal_sensor(journal, ip, nft, tc, "after")
+    history = operation._network_history(journal)
+    sensors = [body for kind, body in history if kind == operation.network_journal.SENSOR_RECORD]
+    if len(sensors) != 2:
+        raise NetworkError("causal sensor cardinality")
+    source = sensors[0]["source"]
+    raw = _source_raw(journal, source)
+    before_snapshot = parse_nft_snapshot(raw, _bound_names(journal)[1], _bound_host(journal), True)
+    before = bind_causal_sensor(operation._command_context(journal).operation_token, "before",
+                                before_snapshot, source["output_sha256"])
+    proven = prove_causal_network(before, after, guest)
+    body = {"operation_token": proven.operation_token,
+            "policy_version": operation.network_journal.POLICY_VERSION,
+            "before_proof_sha256": sensors[0]["proof_sha256"],
+            "after_proof_sha256": sensors[1]["proof_sha256"],
+            "deltas": [list(row) for row in proven.deltas],
+            "marker_sha256": proven.marker_sha256, "route_sha256": proven.route_sha256,
+            "causal_proof_sha256": proven.proof_sha256, "proof_sha256": ZERO}
+    body["proof_sha256"] = hashlib.sha256(operation._canonical(
+        {name: value for name, value in body.items() if name != "proof_sha256"})).hexdigest()
+    operation._record_network(journal, operation.network_journal.SENSOR_PROOF_RECORD, body)
+    return body
+
+
+def _observe_final_network_absence(journal, ip, nft, tc):
+    """Fresh final read-only network baseline after every mutable owner closed."""
+    import completion_kata_operation as operation
+    baselines, snapshots = _baselines(journal)
+    if (operation._durable_phase(journal) != "ROOTFS_ABSENT"
+            or snapshots[-1]["snapshot_kind"] != "firewall-restored"):
+        raise NetworkError("final network observation order")
+    expected = tuple(item.value for item in _BASELINE_ACTIONS) + ("MOUNTINFO", "NETNS_STAT")
+    raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_SNAPSHOT_V2")
+    outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
+    identity, fresh = _derive_journal_identity(
+        "final-absent", None, outputs, snapshots[-1]["identity"], baselines,
+        operation.network_journal.POLICY_VERSION)
+    if fresh != baselines:
+        raise NetworkError("final network baseline drift")
+    return _snapshot(journal, "final-absent", baselines, identity,
+                     _sources(journal, "NETWORK_SNAPSHOT_V2"))
 
 
 def _journal_output_map(outputs):
@@ -2482,12 +2808,20 @@ def _journal_netns(rows, prior):
     return parse_netns_identity(mountinfo, stat, "/run/netns/" + name)
 
 
-def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
+def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
+                             policy_version=None):
     """Purely derive durable state from exact canonical observer bytes."""
+    if policy_version is None:
+        causal = True
+    else:
+        import completion_kata_network_journal as journal_model
+        if policy_version not in journal_model.POLICY_VERSIONS:
+            raise NetworkError("unknown network policy generation")
+        causal = policy_version == journal_model.POLICY_VERSION
     rows = _journal_output_map(outputs)
     ids = tuple(output["source_id"] for output in outputs)
     baseline_ids = tuple(item.value for item in _BASELINE_ACTIONS) + ("MOUNTINFO", "NETNS_STAT")
-    if kind in {"baseline", "network-absent", "firewall-restored"}:
+    if kind in {"baseline", "network-absent", "firewall-restored", "final-absent"}:
         if ids[-len(baseline_ids):] != baseline_ids: raise NetworkError("terminal source cardinality")
         raw = tuple(rows[item.value][-1] for item in _BASELINE_ACTIONS)
         mountinfo = rows["MOUNTINFO"][-1]
@@ -2531,7 +2865,7 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
                 ("IP_NS_ROUTES4", 4, namespace), ("IP_NS_ROUTES6", 6, namespace)):
             parse_routes(rows[name][0], family, links, host_name)
         netns = _journal_netns(rows, prior); table = "c42t" + netns.mount_point.rsplit("c42n", 1)[-1]
-        nft_state = parse_nft_snapshot(rows["NFT_TABLE"][0], table, host_name)
+        nft_state = parse_nft_snapshot(rows["NFT_TABLE"][0], table, host_name, causal)
         qdisc = parse_tc_qdiscs(rows["TC_QDISC"][0], guest)
         if len(qdisc) != 1 or _load(rows["TC_INGRESS_FILTER"][0]) != []: raise NetworkError("ready tc drift")
         value = _identity(netns, host_link, guest, nft_state, tc=_tc_value(qdisc, ()),
@@ -2559,7 +2893,8 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
                    parse_tc_filters(rows["TC_INGRESS_FILTER:" + tap.ifname][0], tap, guest))
         binding = runtime_difference(RuntimeState(netns, host_links, retained, (guest_q[0],), ()),
                                      RuntimeState(netns, host_links, links, guest_q + tap_q, filters))
-        table = prior["nft"]["table_name"]; nft_state = parse_nft_snapshot(rows["NFT_TABLE"][0], table, host.ifname)
+        table = prior["nft"]["table_name"]; nft_state = parse_nft_snapshot(
+            rows["NFT_TABLE"][0], table, host.ifname, causal)
         value = _identity(netns, host, guest, nft_state, tap, _tc_value(binding.qdiscs, binding.filters),
                           prior["addresses_sha256"], hashlib.sha256(b"".join(rows[name][0] for name in
                           ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6"))).hexdigest())
@@ -2594,7 +2929,7 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None):
     nft_state = None
     if "NFT_TABLE" in rows:
         table = prior["nft"]["table_name"] if prior and prior.get("nft") else "c42t" + netns.mount_point.rsplit("c42n", 1)[-1]
-        nft_state = parse_nft_snapshot(rows["NFT_TABLE"][-1], table, host_name)
+        nft_state = parse_nft_snapshot(rows["NFT_TABLE"][-1], table, host_name, causal)
     value = _identity(netns, host, peer, nft_state)
     if prior and prior.get("nft") is not None and nft_state is None and action != "NFT_REMOVE_ATOMIC":
         value["nft"] = prior["nft"]
@@ -2646,7 +2981,8 @@ def _resume_effect(journal, ip, nft, tc):
         _record_observation(journal, body["action"], raw, mutation_outcome["command_serial"])
     prior = _settled_effects(journal)
     identity = _observed_identity(journal, ip, nft, tc,
-        prior[-1]["identity"] if prior else _empty_identity(), Action(body["action"]))
+        prior[-1]["identity"] if prior else _empty_identity(), Action(body["action"]),
+        policy_version=body.get("policy_version", _journal_policy(journal)))
     observed = _effect_body(journal, Action(body["action"]), identity,
                             "absent" if body["action"] in {item.value for item in
                             (Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC)} else "exact", body["target"])
@@ -2831,7 +3167,8 @@ def _setup_abort_observed(journal, ip, nft, tc, settled):
     outputs = [{"source_id": action.value, "raw": b""}, *(
         {"source_id": name, "raw": raw} for name, raw in zip(expected, raws, strict=True))]
     scope = "ready" if action is _SETUP_ACTIONS[-1] else "effect"
-    return _derive_journal_identity(scope, action.value, outputs, retained)[0]
+    return _derive_journal_identity(
+        scope, action.value, outputs, retained, policy_version=_journal_policy(journal))[0]
 
 
 def _abort_fixed_setup(journal, ip, nft, tc):

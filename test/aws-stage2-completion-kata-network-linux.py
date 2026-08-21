@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import struct
 import subprocess
+import time
 import sys
 
 if sys.platform != "linux" or os.geteuid() != 0 or os.environ.get("COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION") != "1":
@@ -34,6 +36,47 @@ def ip(*args): return run(("/usr/sbin/ip", *args)).stdout
 def ns_ip(*args): return ip("-n", netns, *args)
 def tc(*args): return run(("/usr/sbin/tc", "-n", netns, *args)).stdout
 
+def host_baseline():
+    commands = (("/usr/sbin/ip", "-j", "-d", "link", "show"),
+        ("/usr/sbin/ip", "-j", "address", "show"),
+        ("/usr/sbin/ip", "-4", "-j", "route", "show", "table", "all"),
+        ("/usr/sbin/ip", "-6", "-j", "route", "show", "table", "all"),
+        ("/usr/sbin/ip", "-j", "netns", "list"),
+        ("/usr/sbin/nft", "-j", "list", "ruleset"))
+    outputs = [run(command).stdout for command in commands]
+    if outputs[4] == b"": outputs[4] = b"[]"
+    values = [network._load(raw, network.MAX_NFT_ITEMS if index == 5 else network.MAX_ITEMS)
+              for index, raw in enumerate(outputs)]
+    normalized = [network._normalize_baseline_links(values[0]),
+        *(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+          for value in values[1:5]), network._normalize_baseline_nft(values[5])]
+    return tuple(hashlib.sha256(raw).hexdigest() for raw in normalized)
+
+def checksum(raw):
+    if len(raw) % 2: raw += b"\0"
+    total = sum(struct.unpack(f"!{len(raw) // 2}H", raw))
+    while total >> 16: total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+def guest_frame(protocol, destination, port, sequence):
+    source_ip, destination_ip = socket.inet_aton("192.0.2.2"), socket.inet_aton(destination)
+    if protocol == socket.IPPROTO_TCP:
+        transport = struct.pack("!HHLLBBHHH", 40000 + sequence, port, sequence, 0, 5 << 4, 2, 65535, 0, 0)
+    else:
+        transport = struct.pack("!HHHH", 50000 + sequence, port, 8, 0)
+    pseudo = source_ip + destination_ip + struct.pack("!BBH", 0, protocol, len(transport))
+    transport_checksum = checksum(pseudo + transport)
+    if protocol == socket.IPPROTO_TCP:
+        transport = transport[:16] + struct.pack("!H", transport_checksum) + transport[18:]
+    elif transport_checksum:
+        transport = transport[:6] + struct.pack("!H", transport_checksum)
+    ip_header = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(transport), sequence,
+                            0x4000, 64, protocol, 0, source_ip, destination_ip)
+    ip_header = ip_header[:10] + struct.pack("!H", checksum(ip_header)) + ip_header[12:]
+    ethernet = bytes.fromhex(network.HOST_MAC.replace(":", "")) + bytes.fromhex(
+        network.GUEST_MAC.replace(":", "")) + struct.pack("!H", 0x0800)
+    return ethernet + ip_header + transport
+
 def mountinfo(): return Path("/proc/self/mountinfo").read_bytes()
 def ns_identity(name):
     path = "/run/netns/" + name; seen = os.stat(path, follow_symlinks=False)
@@ -56,6 +99,7 @@ def move_to_quarantine(expected):
 def nft_input():
     return network.NFT_OWNED_TRANSACTION.replace(network.TABLE.encode(), table.encode()).replace(network.HOST_IF.encode(), host.encode())
 
+baseline = host_baseline()
 try:
     network._prepare_netns_parent(); created["parent_mount"] = True
     ip("netns", "add", netns); created["netns"] = True
@@ -104,6 +148,51 @@ try:
         network.RuntimeState(retained_ns, host_links, runtime_links, guest_q + tap_q, filters))
     if len(binding.qdiscs) != 4 or len(binding.filters) != 4: raise AssertionError("runtime tc difference")
 
+    before = network.parse_nft_snapshot(run(("/usr/sbin/nft", "-j", "list", "table", "inet", table)).stdout,
+                                        table, host)
+    frames = ((socket.IPPROTO_TCP, "192.0.2.1", network.DIRECT_TCP_PORT),
+              (socket.IPPROTO_UDP, "192.0.2.1", network.DIRECT_UDP_PORT),
+              (socket.IPPROTO_TCP, network.ROUTE_PROBE_ADDRESS, network.ROUTE_TCP_PORT),
+              (socket.IPPROTO_UDP, network.ROUTE_PROBE_ADDRESS, network.ROUTE_UDP_PORT))
+    for sequence, (protocol, destination, port) in enumerate(frames, 1):
+        if os.write(tun, b"\0" * 10 + guest_frame(protocol, destination, port, sequence)) <= 0:
+            raise AssertionError("TAP frame injection failed")
+    deadline = time.monotonic() + 3
+    expected = {"direct-tcp-denied", "direct-udp-denied", "route-tcp-denied", "route-udp-denied"}
+    while True:
+        after = network.parse_nft_snapshot(run(("/usr/sbin/nft", "-j", "list", "table", "inet", table)).stdout,
+                                           table, host)
+        first, second = ({row.sensor: row for row in snapshot.counters} for snapshot in (before, after))
+        if all(second[name].packets > first[name].packets for name in expected): break
+        if time.monotonic() >= deadline: raise AssertionError("causal TAP/nft sensor timeout")
+        time.sleep(0.05)
+    if before != after: raise AssertionError("counter traffic changed immutable nft identity")
+    for name, row in second.items():
+        delta = row.packets - first[name].packets
+        if (name in expected) != (delta > 0):
+            raise AssertionError(f"unexpected nft sensor delta:{name}:{delta}")
+
+    # Production order closes the TAP fd and exact namespace/tc/veth before firewall removal.
+    os.close(tun); created["tap_fd"] = None
+    move_to_quarantine(retained_ns)
+    # Crash/reopen cut: only the quarantined name survives and retains exact nsfs identity.
+    if (not same_moved_identity(ns_identity(quarantine), retained_ns)
+            or Path("/run/netns/" + netns).exists()):
+        raise AssertionError("quarantine crash cut is not recoverable")
+    ip("netns", "add", netns); created["replacement"] = True
+    network._prepare_netns_parent()
+    replacement = ns_identity(netns)
+    if same_moved_identity(replacement, retained_ns):
+        raise AssertionError("replacement nsfs not distinct")
+    ip("netns", "delete", quarantine); created["quarantine"] = False
+    if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
+    ip("netns", "delete", netns); created["replacement"] = False
+    if Path("/sys/class/net/" + host).exists():
+        deleted = run(("/usr/sbin/ip", "link", "delete", "dev", host), allow=True)
+        if deleted.returncode != 0 and Path("/sys/class/net/" + host).exists():
+            raise RuntimeError("exact host veth deletion failed")
+    if Path("/sys/class/net/" + host).exists():
+        raise AssertionError("host veth survived exact cleanup")
     # The same kernel transaction lists and deletes only the retained table handle.
     delete_batch = (network.NFT_DELETE_TRANSACTION.replace(network.TABLE.encode(), table.encode())
                     .replace(network.TABLE_HANDLE.encode(), str(nft_state.identity.table_handle).encode()))
@@ -125,27 +214,6 @@ try:
                                               table, host)
         if retained.identity != nft_state.identity: raise AssertionError("unsupported conditional delete changed replacement")
         run(("/usr/sbin/nft", "delete", "table", "inet", table)); created["nft"] = False
-    os.close(tun); created["tap_fd"] = None
-    move_to_quarantine(retained_ns)
-    # Crash/reopen cut: only the quarantined name survives and retains exact nsfs identity.
-    if (not same_moved_identity(ns_identity(quarantine), retained_ns)
-            or Path("/run/netns/" + netns).exists()):
-        raise AssertionError("quarantine crash cut is not recoverable")
-    ip("netns", "add", netns); created["replacement"] = True
-    network._prepare_netns_parent()
-    replacement = ns_identity(netns)
-    if same_moved_identity(replacement, retained_ns):
-        raise AssertionError("replacement nsfs not distinct")
-    ip("netns", "delete", quarantine); created["quarantine"] = False
-    if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
-    ip("netns", "delete", netns); created["replacement"] = False
-    if Path("/sys/class/net/" + host).exists():
-        deleted = run(("/usr/sbin/ip", "link", "delete", "dev", host), allow=True)
-        if deleted.returncode != 0 and Path("/sys/class/net/" + host).exists():
-            raise RuntimeError("exact host veth deletion failed")
-    if Path("/sys/class/net/" + host).exists():
-        raise AssertionError("host veth survived exact cleanup")
-    print("completion Kata Linux network namespace foundation passed")
 finally:
     if created["tap_fd"] is not None:
         try: os.close(created["tap_fd"])
@@ -165,3 +233,6 @@ finally:
         created["parent_mount"] = False
         if network._netns_parent_mount() is not None:
             raise RuntimeError("owned private netns parent remains")
+if host_baseline() != baseline:
+    raise RuntimeError("final links/addresses/routes/netns/nft baseline drift")
+print("completion Kata Linux network namespace foundation passed")

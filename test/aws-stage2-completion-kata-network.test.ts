@@ -53,7 +53,10 @@ test("S3 fixed network/firewall owner is closed and identity-conservative", asyn
   assert.match(source, /TcObservation = actions\.CommandId/u);
   assert.match(source, /NFT_TRANSACTION = b'''add table inet cogs_stage2_ssh_v1/u);
   assert.match(source, /QUALIFICATION_CANDIDATE = "UNQUALIFIED_FIXED_HOST_TOOL_OUTPUT_CANDIDATE_V1"/u);
-  assert.match(source, /def parse_nft_snapshot\(raw, table_name=TABLE, host_if=HOST_IF\):/u);
+  assert.match(source, /def parse_nft_snapshot\(raw, table_name=TABLE, host_if=HOST_IF, causal=True\):/u);
+  assert.match(source, /class NftSnapshot:[\s\S]*counters: tuple = field\(default=\(\), compare=False\)/u);
+  assert.match(source, /def prove_causal_network\(before, after, guest\):/u);
+  assert.match(source, /def _observe_final_network_absence\(journal, ip, nft, tc\):/u);
   assert.match(source, /def parse_netns_identity\(raw, stat, path=NETNS_PATH\):/u);
   assert.match(source, /def parse_tc_qdiscs\(raw, endpoint\):/u);
   assert.match(source, /def parse_tc_filters\(raw, source, target\):/u);

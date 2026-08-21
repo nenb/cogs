@@ -3,12 +3,14 @@ import hashlib
 import re
 from types import MappingProxyType
 LEGACY_POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-3"
-POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-4-nft-gate"
+NFT_GATE_POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-4-nft-gate"
+POLICY_VERSION = "cogs.stage2-kata-network-policy/b1-owner-5-causal-sensors"
+POLICY_VERSIONS = frozenset({LEGACY_POLICY_VERSION, NFT_GATE_POLICY_VERSION, POLICY_VERSION})
 BASELINES = (
     "host_links", "host_addresses", "host_routes4", "host_routes6",
     "netns_names", "nft_ruleset", "mountinfo",
 )
-SNAPSHOTS = ("baseline", "ready", "discovered", "runtime", "network-absent", "firewall-restored")
+SNAPSHOTS = ("baseline", "ready", "discovered", "runtime", "network-absent", "firewall-restored", "final-absent")
 SETUP = (
     "IP_NETNS_ADD", "IP_VETH_ADD_ATOMIC", "NFT_INSTALL_OWNED",
     "IP_HOST_ADDRESS_ADD", "IP_HOST_ADDRGEN_NONE",
@@ -39,7 +41,10 @@ DETACHED_CLEANUP_INTENT = "NETWORK_DETACHED_CLEANUP_INTENT_V3"
 DETACHED_CLEANUP_STEP = "NETWORK_DETACHED_CLEANUP_STEP_V3"
 CLEANUP_OWNERSHIP_RECORDS = frozenset({SUPPORT_RECORD, PARENT_MOUNT_RECORD,
                                        DETACHED_CLEANUP_INTENT, DETACHED_CLEANUP_STEP})
-ALL_RECORDS = (RECORDS | QUARANTINE_RECORDS | CLEANUP_OWNERSHIP_RECORDS |
+SENSOR_RECORD = "NETWORK_CAUSAL_SENSOR_V1"
+SENSOR_PROOF_RECORD = "NETWORK_CAUSAL_PROOF_V1"
+SENSOR_RECORDS = frozenset({SENSOR_RECORD, SENSOR_PROOF_RECORD})
+ALL_RECORDS = (RECORDS | QUARANTINE_RECORDS | CLEANUP_OWNERSHIP_RECORDS | SENSOR_RECORDS |
                {OUTPUT_RECORD, ORIGINAL_PLACEHOLDER_RECORD, CREATED_NSFS_RECORD})
 CLEANUP_INTENTS = MappingProxyType({
     # V1 completion records historically settled their intent. V2 keeps the
@@ -82,7 +87,7 @@ LEGACY_EFFECT_COMMAND_TRACES = MappingProxyType({
     "NFT_REMOVE_ATOMIC": ("NFT_REMOVE_ATOMIC", "NFT_RULESET", "IP_ALL_LINKS"),
 })
 def effect_command_trace(action, target, policy_version=POLICY_VERSION):
-    traces = (EFFECT_COMMAND_TRACES if policy_version == POLICY_VERSION
+    traces = (EFFECT_COMMAND_TRACES if policy_version in {POLICY_VERSION, NFT_GATE_POLICY_VERSION}
               else LEGACY_EFFECT_COMMAND_TRACES if policy_version == LEGACY_POLICY_VERSION
               else None)
     _fail(traces is not None)
@@ -219,6 +224,9 @@ _RECORD_FIELDS = MappingProxyType({
     OUTPUT_RECORD: ("observation_serial", "source_id", "command_serial", "chunk_index",
                     "chunk_count", "output_sha256", "output_length", "raw_hex"),
     "NETWORK_SNAPSHOT_V2": ("snapshot_kind", "baselines", "sources", "identity"),
+    SENSOR_RECORD: ("stage", "source", "static_sha256", "counters"),
+    SENSOR_PROOF_RECORD: ("before_proof_sha256", "after_proof_sha256", "deltas",
+                          "marker_sha256", "route_sha256", "causal_proof_sha256"),
 })
 def validate(kind, body, canonical):
     """Validate the cryptographic envelope; ``advance`` owns semantic validation."""
@@ -231,7 +239,7 @@ def validate(kind, body, canonical):
     else:
         _fail(kind in _RECORD_FIELDS); fields = _RECORD_FIELDS[kind]
     proof = kind != "NETWORK_EFFECT_INTENT_V2"; names = common + fields + (("proof_sha256",) if proof else ())
-    _keys(body, names); _hex(body["operation_token"]); _fail(body["policy_version"] in {POLICY_VERSION, LEGACY_POLICY_VERSION})
+    _keys(body, names); _hex(body["operation_token"]); _fail(body["policy_version"] in POLICY_VERSIONS)
     if proof:
         _hex(body["proof_sha256"])
         _fail(hashlib.sha256(canonical({key: value for key, value in body.items()
@@ -267,6 +275,33 @@ def validate(kind, body, canonical):
               and body["action"] in {"relocated", "removed"})
         if body["resource"] == "parent-mount": exact_mount(body["identity"])
         else: exact_stat(body["identity"])
+    elif kind == SENSOR_RECORD:
+        _fail(body["policy_version"] == POLICY_VERSION and body["stage"] in {"before", "after"})
+        _keys(body["source"], ("observation_serial", "source_id", "output_sha256", "output_length"))
+        source = body["source"]
+        _fail(type(source["observation_serial"]) is int and source["observation_serial"] >= 0
+              and source["source_id"] == "NFT_TABLE" and type(source["output_length"]) is int
+              and 0 < source["output_length"] <= 262144)
+        _hex(source["output_sha256"]); _hex(body["static_sha256"])
+        counters = body["counters"]
+        _fail(type(counters) is list and len(counters) == 10)
+        for row in counters:
+            _keys(row, ("sensor", "chain", "ordinal", "handle", "packets", "bytes"))
+            _fail(type(row["sensor"]) is str and type(row["chain"]) is str
+                  and all(type(row[name]) is int and row[name] >= 0 for name in
+                          ("ordinal", "handle", "packets", "bytes"))
+                  and row["handle"] > 0 and row["packets"] <= (1 << 64) - 1
+                  and row["bytes"] <= (1 << 64) - 1)
+    elif kind == SENSOR_PROOF_RECORD:
+        _fail(body["policy_version"] == POLICY_VERSION)
+        for name in ("before_proof_sha256", "after_proof_sha256", "marker_sha256",
+                     "route_sha256", "causal_proof_sha256"):
+            _hex(body[name])
+        _fail(type(body["deltas"]) is list and len(body["deltas"]) == 10)
+        for row in body["deltas"]:
+            _fail(type(row) is list and len(row) == 4 and type(row[0]) is str
+                  and row[1] in {"positive", "zero"}
+                  and type(row[2]) is type(row[3]) is int and row[2] >= 0 and row[3] >= 0)
 def _source_outputs(state, sources):
     selected = []
     for source in sources:
@@ -278,7 +313,7 @@ def advance(state, kind, body, phase):
     state = {**state, "snapshots": list(state["snapshots"]), "effects": list(state["effects"]),
              "effect_commands": list(state["effect_commands"]), "effect_replays": list(state["effect_replays"]),
              "replay_serials": list(state["replay_serials"]), "observations": list(state["observations"]),
-             "cleanup_steps": list(state["cleanup_steps"])}
+             "sensors": list(state["sensors"]), "cleanup_steps": list(state["cleanup_steps"])}
     if kind in ALL_RECORDS:
         _fail(state["policy_version"] in {None, body["policy_version"]})
         state["policy_version"] = body["policy_version"]
@@ -384,23 +419,65 @@ def advance(state, kind, body, phase):
                   {name: stage[1][name] for name in (*core, "placeholder")} == {**core, "placeholder": body["placeholder"]} and
                   body["preserved"] is not None)
         state["quarantine"] = (kind, {**core, "placeholder": body["placeholder"], "preserved": body["preserved"]}); return state
+    if kind == SENSOR_RECORD:
+        _fail(phase == "RUNTIME_READY" and state["policy_version"] == POLICY_VERSION
+              and state["snapshots"] and state["snapshots"][-1]["snapshot_kind"] == "runtime"
+              and state["sensor_proof"] is None and len(state["sensors"]) < 2
+              and body["stage"] == ("before" if not state["sensors"] else "after"))
+        outputs = _source_outputs(state, [body["source"]])
+        _fail(len(outputs) == 1 and outputs[0]["source_id"] == "NFT_TABLE")
+        import completion_kata_network as network
+        identity = state["snapshots"][-1]["identity"]
+        parsed = network.parse_nft_snapshot(outputs[0]["raw"], identity["nft"]["table_name"],
+                                            identity["host_link"]["ifname"], True)
+        sensor = network.bind_causal_sensor(body["operation_token"], body["stage"], parsed,
+                                            body["source"]["output_sha256"])
+        values = [{"sensor": row.sensor, "chain": row.chain, "ordinal": row.ordinal,
+                   "handle": row.handle, "packets": row.packets, "bytes": row.bytes}
+                  for row in sensor.nft.counters]
+        _fail(network._nft_value(parsed) == identity["nft"]
+              and body["static_sha256"] == network._sensor_static_sha256(parsed)
+              and body["counters"] == values)
+        state["sensors"].append(body); return state
+    if kind == SENSOR_PROOF_RECORD:
+        _fail(phase == "RUNTIME_READY" and state["policy_version"] == POLICY_VERSION
+              and len(state["sensors"]) == 2 and state["sensor_proof"] is None
+              and body["before_proof_sha256"] == state["sensors"][0]["proof_sha256"]
+              and body["after_proof_sha256"] == state["sensors"][1]["proof_sha256"])
+        import completion_kata_network as network
+        bound = []
+        for row in state["sensors"]:
+            output = _source_outputs(state, [row["source"]])[0]
+            identity = state["snapshots"][-1]["identity"]
+            parsed = network.parse_nft_snapshot(output["raw"], identity["nft"]["table_name"],
+                                                identity["host_link"]["ifname"], True)
+            bound.append(network.bind_causal_sensor(body["operation_token"], row["stage"], parsed,
+                                                    row["source"]["output_sha256"]))
+        guest = network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS,
+                                          body["route_sha256"], body["route_sha256"])
+        proven = network.prove_causal_network(bound[0], bound[1], guest)
+        _fail(body["deltas"] == [list(row) for row in proven.deltas]
+              and body["marker_sha256"] == proven.marker_sha256
+              and body["causal_proof_sha256"] == proven.proof_sha256)
+        state["sensor_proof"] = body; return state
     if kind == "NETWORK_SNAPSHOT_V2":
         outputs = _source_outputs(state, body["sources"])
         import completion_kata_network as network
         derived, derived_baselines = network._derive_journal_identity(
             body["snapshot_kind"], None, outputs, state["current"],
-            state["snapshots"][0]["baselines"] if state["snapshots"] else None)
+            state["snapshots"][0]["baselines"] if state["snapshots"] else None,
+            body["policy_version"])
         _fail(all(body["identity"][name] == derived[name] for name in derived if name != "state_sha256"))
         if body["snapshot_kind"] == "baseline": _fail(body["baselines"] == derived_baselines)
         allowed_phase = {"baseline": {"ROOTFS_LEASED", "FS_SETTLED"},
             "ready": {"BASELINES_CAPTURED"}, "discovered": {"NETWORK_READY", "RUNTIME_READY"},
             "runtime": {"NETWORK_READY", "RUNTIME_READY"},
             "network-absent": {"BASELINES_CAPTURED", "TASK_STOPPED", "OWNERSHIP_OBSERVED"},
-            "firewall-restored": {"SHARE_ABSENT"}}
+            "firewall-restored": {"SHARE_ABSENT"}, "final-absent": {"ROOTFS_ABSENT"}}
         _fail(phase in allowed_phase[body["snapshot_kind"]])
         expected = {None: "baseline", "baseline": "ready", "ready": "discovered",
                     "discovered": "runtime", "runtime": "network-absent",
-                    "network-absent": "firewall-restored"}
+                    "network-absent": "firewall-restored", "firewall-restored": "final-absent"}
         previous = state["snapshots"][-1]["snapshot_kind"] if state["snapshots"] else None
         # Runtime is optional on failed launch.
         allowed = {expected[previous]}
@@ -418,6 +495,10 @@ def advance(state, kind, body, phase):
             discovered = state["snapshots"][-1]["identity"]
             for name in ("netns", "host_link", "peer_link", "nft", "tap", "addresses_sha256"):
                 _fail(body["identity"][name] == discovered[name])
+        if body["snapshot_kind"] == "final-absent":
+            _fail(state["policy_version"] == POLICY_VERSION and
+                  all(body["identity"][name] is None for name in
+                      ("netns", "host_link", "peer_link", "nft", "tap", "tc")))
         if body["snapshot_kind"] == "network-absent":
             source = next((row for row in reversed(state["snapshots"])
                            if row["snapshot_kind"] in {"ready", "discovered", "runtime"}), None)
@@ -456,7 +537,9 @@ def advance(state, kind, body, phase):
         outputs = _source_outputs(state, body["sources"])
         import completion_kata_network as network
         scope = "ready" if body["action"] == SETUP[-1] else "effect"
-        derived, _unused = network._derive_journal_identity(scope, body["action"], outputs, pending["target"])
+        derived, _unused = network._derive_journal_identity(
+            scope, body["action"], outputs, pending["target"],
+            policy_version=body["policy_version"])
         _fail(all(body["identity"][name] == derived[name] for name in derived if name != "state_sha256"))
         if body["action"] == "IP_NETNS_ADD":
             created = state["created_nsfs"]["identity"] if state["created_nsfs"] else None
@@ -479,6 +562,7 @@ def initial():
             "effect_commands": [], "effect_replays": [], "replay_serials": [], "current": None,
             "policy_version": None,
             "observations": [], "output_pending": None, "quarantine": None,
+            "sensors": [], "sensor_proof": None,
             "original_placeholder": None, "created_nsfs": None, "support": None,
             "parent_mount": None, "cleanup_authority": None, "cleanup_steps": []}
 def setup_abort_complete(state):
@@ -503,7 +587,7 @@ def successful_phase_trace(records, index, phase, state, settled):
 def successful_trace(command_ids, phase, replay_indices=(), policy_version=POLICY_VERSION):
     observed = tuple(value for index, value in enumerate(command_ids) if index not in replay_indices)
     variants = SUCCESS_PHASE_TRACE_VARIANTS.get(phase)
-    setup_abort_traces = (SETUP_ABORT_TRACES if policy_version == POLICY_VERSION
+    setup_abort_traces = (SETUP_ABORT_TRACES if policy_version in {POLICY_VERSION, NFT_GATE_POLICY_VERSION}
                           else LEGACY_SETUP_ABORT_TRACES)
     valid = (observed in variants if variants is not None else
              phase == "BASELINES_CAPTURED" and observed in setup_abort_traces or
@@ -539,7 +623,8 @@ def command_intent(intent, state):
               and intent["stdout_limit"] == intent["stderr_limit"] == 65536)
         inherited = intent["inherited_fds"]
         gated_delete = (command_id == "NFT_REMOVE_ATOMIC" and state["pending"] is not None
-                        and state["pending"][1].get("policy_version") == POLICY_VERSION)
+                        and state["pending"][1].get("policy_version") in
+                        {POLICY_VERSION, NFT_GATE_POLICY_VERSION})
         if gated_delete:
             _fail(len(inherited) == 1 and inherited[0]["role"] == "NFT_WRITER_LOCK"
                   and inherited[0]["target_fd"] == 202 and inherited[0]["content_length"] == 0

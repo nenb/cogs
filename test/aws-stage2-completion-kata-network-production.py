@@ -484,6 +484,140 @@ def directional(source_link, target_link, index):
 nft_object = network.NftSnapshot({"nftables": [{"table": {"name": NFT["table_name"]}}]},
     network.NftKernelIdentity(7, tuple(tuple(row) for row in NFT["chain_handles"]),
                               tuple(tuple(row) for row in NFT["rule_handles"])))
+
+# Current sensor records replay from their referenced raw list-table bytes;
+# duplicate/stale/mixed/decreasing/replacement cuts never authorize SSH.
+def causal_nft_raw(packet_delta=0, handle_delta=0):
+    rows = [{"metainfo": {"json_schema_version": 1}},
+        {"table": {"family": "inet", "name": NFT["table_name"],
+                   "comment": "owner:" + NFT["table_name"], "handle": 7 + handle_delta}}]
+    for index, chain in enumerate(("input", "output", "forward")):
+        rows.append({"chain": {"family": "inet", "table": NFT["table_name"], "name": chain,
+            "type": "filter", "hook": chain, "prio": 0, "policy": "accept",
+            "handle": 8 + index + handle_delta}})
+    handle = 20 + handle_delta
+    for chain in ("input", "output", "forward"):
+        for ordinal, expression in enumerate(network._NFT_RULES[chain]):
+            current = json.loads(json.dumps(expression).replace(network.HOST_IF, "c42haaaaaaaaaa"))
+            position = next(index for index, item in enumerate(current) if "counter" in item)
+            name = network._NFT_SENSOR_NAMES[chain][ordinal]
+            increase = packet_delta if name in network.CAUSAL_POSITIVE_SENSORS else 0
+            current[position] = {"counter": {"packets": increase, "bytes": increase * 64}}
+            rows.append({"rule": {"family": "inet", "table": NFT["table_name"], "chain": chain,
+                                  "expr": current, "handle": handle}}); handle += 1
+    return json.dumps({"nftables": rows}, separators=(",", ":")).encode()
+
+def sensor_source(serial, raw):
+    return {"observation_serial": serial, "source_id": "NFT_TABLE",
+            "output_sha256": hashlib.sha256(raw).hexdigest(), "output_length": len(raw)}
+
+def sensor_body(stage, raw, serial):
+    parsed = network.parse_nft_snapshot(raw, NFT["table_name"], "c42haaaaaaaaaa")
+    source = sensor_source(serial, raw)
+    body = {"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+        "stage": stage, "source": source, "static_sha256": network._sensor_static_sha256(parsed),
+        "counters": [{"sensor": row.sensor, "chain": row.chain, "ordinal": row.ordinal,
+            "handle": row.handle, "packets": row.packets, "bytes": row.bytes}
+            for row in parsed.counters], "proof_sha256": operation.ZERO}
+    return proof(body)
+
+before_raw, after_raw = causal_nft_raw(), causal_nft_raw(1)
+sensor_identity = copy.deepcopy(READY_ID)
+sensor_identity["host_link"]["ifname"] = "c42haaaaaaaaaa"
+sensor_identity["nft"] = network._nft_value(network.parse_nft_snapshot(
+    before_raw, NFT["table_name"], "c42haaaaaaaaaa"))
+sensor_state = journal_model.initial(); sensor_state.update({
+    "policy_version": journal_model.POLICY_VERSION, "current": sensor_identity,
+    "snapshots": [{"snapshot_kind": "runtime", "identity": sensor_identity, "baselines": BASELINES}],
+    "observations": [{**sensor_source(0, before_raw), "raw": before_raw},
+                     {**sensor_source(1, after_raw), "raw": after_raw}]})
+before_body, after_body = sensor_body("before", before_raw, 0), sensor_body("after", after_raw, 1)
+for body in (before_body, after_body):
+    journal_model.validate(journal_model.SENSOR_RECORD, body, operation._canonical)
+    sensor_state = journal_model.advance(sensor_state, journal_model.SENSOR_RECORD, body, "RUNTIME_READY")
+reject(lambda: journal_model.advance(sensor_state, journal_model.SENSOR_RECORD, after_body, "RUNTIME_READY"),
+       "duplicate causal sensor accepted")
+bound_before = network.bind_causal_sensor("a" * 64, "before", network.parse_nft_snapshot(
+    before_raw, NFT["table_name"], "c42haaaaaaaaaa"), hashlib.sha256(before_raw).hexdigest())
+bound_after = network.bind_causal_sensor("a" * 64, "after", network.parse_nft_snapshot(
+    after_raw, NFT["table_name"], "c42haaaaaaaaaa"), hashlib.sha256(after_raw).hexdigest())
+causal = network.prove_causal_network(bound_before, bound_after,
+    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64))
+causal_body = proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+    "before_proof_sha256": before_body["proof_sha256"], "after_proof_sha256": after_body["proof_sha256"],
+    "deltas": [list(row) for row in causal.deltas], "marker_sha256": causal.marker_sha256,
+    "route_sha256": causal.route_sha256, "causal_proof_sha256": causal.proof_sha256,
+    "proof_sha256": operation.ZERO})
+journal_model.validate(journal_model.SENSOR_PROOF_RECORD, causal_body, operation._canonical)
+proven_sensor_state = journal_model.advance(sensor_state, journal_model.SENSOR_PROOF_RECORD,
+                                             causal_body, "RUNTIME_READY")
+check(proven_sensor_state["sensor_proof"] == causal_body, "causal proof did not settle")
+for field in ("marker_sha256", "causal_proof_sha256", "before_proof_sha256"):
+    hostile = copy.deepcopy(causal_body); hostile[field] = "4" * 64; hostile = proof(hostile)
+    reject(lambda hostile=hostile: journal_model.advance(copy.deepcopy(sensor_state),
+        journal_model.SENSOR_PROOF_RECORD, hostile, "RUNTIME_READY"),
+        f"hostile causal proof accepted:{field}")
+replaced_raw = causal_nft_raw(1, 100)
+replaced_state = copy.deepcopy(sensor_state); replaced_state["observations"][1] = {
+    **sensor_source(1, replaced_raw), "raw": replaced_raw}
+replaced_body = sensor_body("after", replaced_raw, 1)
+replaced_state["sensors"] = [before_body]
+reject(lambda: journal_model.advance(replaced_state, journal_model.SENSOR_RECORD,
+    replaced_body, "RUNTIME_READY"), "replacement sensor table accepted")
+
+final_sources = [{"observation_serial": index, "source_id": name,
+                  "output_sha256": hashlib.sha256(name.encode()).hexdigest(),
+                  "output_length": len(name)}
+                 for index, name in enumerate(("IP_ALL_LINKS", "IP_ALL_ADDRESSES",
+                    "IP_ALL_ROUTES4", "IP_ALL_ROUTES6", "IP_NETNS_LIST", "NFT_RULESET",
+                    "MOUNTINFO", "NETNS_STAT"))]
+final_state = journal_model.initial(); final_state.update({
+    "policy_version": journal_model.POLICY_VERSION, "current": EMPTY,
+    "snapshots": [{"snapshot_kind": "firewall-restored", "identity": EMPTY,
+                   "baselines": BASELINES}],
+    "observations": [{**source, "raw": source["source_id"].encode()} for source in final_sources]})
+final_identity = bind(network._empty_identity(), final_sources)
+final_body = proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
+    "snapshot_kind": "final-absent", "baselines": BASELINES, "sources": final_sources,
+    "identity": final_identity, "proof_sha256": operation.ZERO})
+with patch.object(network, "_derive_journal_identity", return_value=(network._empty_identity(), BASELINES)):
+    final_state = journal_model.advance(final_state, "NETWORK_SNAPSHOT_V2", final_body, "ROOTFS_ABSENT")
+check(final_state["snapshots"][-1]["snapshot_kind"] == "final-absent",
+      "final read-only network snapshot did not settle")
+for phase in ("FIREWALL_ABSENT", "FINAL_BASELINES"):
+    hostile = journal_model.initial(); hostile.update({
+        "policy_version": journal_model.POLICY_VERSION, "current": EMPTY,
+        "snapshots": [{"snapshot_kind": "firewall-restored", "identity": EMPTY,
+                       "baselines": BASELINES}],
+        "observations": [{**source, "raw": source["source_id"].encode()} for source in final_sources]})
+    with patch.object(network, "_derive_journal_identity", return_value=(network._empty_identity(), BASELINES)):
+        reject(lambda hostile=hostile, phase=phase: journal_model.advance(
+            hostile, "NETWORK_SNAPSHOT_V2", final_body, phase),
+            f"final network snapshot accepted in {phase}")
+class FinalObserverJournal:
+    pass
+final_hook_rows = [{"snapshot_kind": "firewall-restored", "identity": EMPTY,
+                    "baselines": BASELINES}]
+final_hook_result = {"snapshot_kind": "final-absent"}
+expected_final_ids = ("IP_ALL_LINKS", "IP_ALL_ADDRESSES", "IP_ALL_ROUTES4",
+    "IP_ALL_ROUTES6", "IP_NETNS_LIST", "NFT_RULESET", "MOUNTINFO", "NETNS_STAT")
+with patch.object(network, "_baselines", return_value=(BASELINES, final_hook_rows)), \
+     patch.object(operation, "_durable_phase", return_value="ROOTFS_ABSENT"), \
+     patch.object(network, "_observer_pass", side_effect=lambda _j, _i, _n, _t, expected, *_a:
+         tuple(name.encode() for name in expected)), \
+     patch.object(network, "_derive_journal_identity", return_value=(network._empty_identity(), BASELINES)), \
+     patch.object(network, "_sources", return_value=final_sources), \
+     patch.object(network, "_snapshot", return_value=final_hook_result):
+    check(network._observe_final_network_absence(FinalObserverJournal(), object(), object(), object())
+          is final_hook_result, "final observer hook did not settle")
+    check(tuple(source["source_id"] for source in final_sources) == expected_final_ids,
+          "final observer omitted a network baseline domain")
+with patch.object(network, "_baselines", return_value=(BASELINES, final_hook_rows)), \
+     patch.object(operation, "_durable_phase", return_value="FIREWALL_ABSENT"):
+    reject(lambda: network._observe_final_network_absence(
+        FinalObserverJournal(), object(), object(), object()),
+        "final observer ran before runtime/cache/rootfs owners closed")
+
 ready = network._identity(netns_object, host_object, guest_object, nft_object,
                           tc=network._tc_value((qroot,), ()))
 ready = bind(ready, SOURCE)

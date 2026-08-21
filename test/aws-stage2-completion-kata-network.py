@@ -38,7 +38,7 @@ assert commands[network.Action.HOST_ADDRGEN_NONE].argv_tail == (
 assert commands[network.Action.PEER_ADDRGEN_NONE].argv_tail[-2:] == ("addrgenmode", "none")
 assert commands[network.Action.LOOPBACK_UP].argv_tail[-2:] == ("lo", "up")
 assert commands[network.Action.GUEST_ADDRESS_ADD].argv_tail[-3:] == ("192.0.2.2/30", "dev", "eth0")
-assert commands[network.Action.NFT_INSTALL].stdin == network.NFT_TRANSACTION
+assert commands[network.Action.NFT_INSTALL].stdin == network.NFT_LEGACY_TRANSACTION
 assert commands[network.Action.NFT_REMOVE].argv_tail == (
     "delete", "table", "inet", "cogs_stage2_ssh_v1",
 )
@@ -52,7 +52,7 @@ assert commands[network.Action.IP_VETH_ADD_ATOMIC].argv_tail[-4:] == ("address",
 assert len(commands) == 18
 assert all("qualification-candidate" in item.tool_contract for item in commands.values())
 assert network.QUALIFICATION_CANDIDATE.startswith("UNQUALIFIED_")
-assert network.NFT_TRANSACTION.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
+assert network.NFT_TRANSACTION.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" counter drop\n')
 assert b"policy accept" in network.NFT_TRANSACTION and b"priority filter" in network.NFT_TRANSACTION
 assert b"flush" not in network.NFT_TRANSACTION and b"nat" not in network.NFT_TRANSACTION.lower()
 rejected(lambda: network.command("NETNS_ADD"))
@@ -235,27 +235,39 @@ def verdict(name):
     return {name: None}
 
 
+def counter(packets=0, byte_count=0):
+    return {"counter": {"packets": packets, "bytes": byte_count}}
+
+
 rules = {
     "input": [
         [match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
+         match(payload("ip", "daddr"), "192.0.2.1"), match(payload("tcp", "dport"), 2222), counter(), verdict("drop")],
+        [match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
+         match(payload("ip", "daddr"), "192.0.2.1"), match(payload("udp", "dport"), 5353), counter(), verdict("drop")],
+        [match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
          match(payload("ip", "daddr"), "192.0.2.1"), match(payload("tcp", "sport"), 22),
-         match({"ct": {"key": "state"}}, {"set": ["established"]}, "in"), verdict("accept")],
-        [match(meta("iifname"), "c42h0"), verdict("drop")],
+         match({"ct": {"key": "state"}}, {"set": ["established"]}, "in"), counter(), verdict("accept")],
+        [match(meta("iifname"), "c42h0"), counter(), verdict("drop")],
     ],
     "output": [
         [match(meta("oifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.1"),
          match(payload("ip", "daddr"), "192.0.2.2"), match(payload("tcp", "dport"), 22),
-         match({"ct": {"key": "state"}}, {"set": ["new", "established"]}, "in"), verdict("accept")],
-        [match(meta("oifname"), "c42h0"), verdict("drop")],
+         match({"ct": {"key": "state"}}, {"set": ["new", "established"]}, "in"), counter(), verdict("accept")],
+        [match(meta("oifname"), "c42h0"), counter(), verdict("drop")],
     ],
     "forward": [
-        [match(meta("iifname"), "c42h0"), verdict("drop")],
-        [match(meta("oifname"), "c42h0"), verdict("drop")],
+        [match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
+         match(payload("ip", "daddr"), "198.51.100.1"), match(payload("tcp", "dport"), 443), counter(), verdict("drop")],
+        [match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
+         match(payload("ip", "daddr"), "198.51.100.1"), match(payload("udp", "dport"), 443), counter(), verdict("drop")],
+        [match(meta("iifname"), "c42h0"), counter(), verdict("drop")],
+        [match(meta("oifname"), "c42h0"), counter(), verdict("drop")],
     ],
 }
 
 
-def nft_fixture(handle_offset=0):
+def nft_fixture(handle_offset=0, packet_offset=0):
     rows = [
         {"metainfo": {"json_schema_version": 1}},
         {"table": {"family": "inet", "name": "cogs_stage2_ssh_v1", "handle": 7 + handle_offset}},
@@ -265,11 +277,15 @@ def nft_fixture(handle_offset=0):
         rows.append({"chain": {"family": "inet", "table": "cogs_stage2_ssh_v1", "name": chain,
                                "type": "filter", "hook": chain, "prio": 0, "policy": "accept",
                                "handle": 8 + chain_index + handle_offset}})
+    metric = 0
     for chain in ("input", "output", "forward"):
         for expression in rules[chain]:
+            current = copy.deepcopy(expression)
+            position = next(index for index, item in enumerate(current) if "counter" in item)
+            current[position] = counter(packet_offset + metric, (packet_offset + metric) * 64)
             rows.append({"rule": {"family": "inet", "table": "cogs_stage2_ssh_v1", "chain": chain,
-                                  "expr": expression, "handle": rule_handle}})
-            rule_handle += 1
+                                  "expr": current, "handle": rule_handle}})
+            rule_handle += 1; metric += 1
     return {"nftables": rows}
 
 
@@ -278,22 +294,23 @@ nft_snapshot = network.parse_nft_snapshot(encoded(nft))
 assert nft_snapshot.identity.table_handle == 7
 assert nft_snapshot.identity.chain_handles == (("input", 8), ("output", 9), ("forward", 10))
 assert all("handle" not in json.dumps(row) for row in nft_snapshot.content["nftables"])
+assert len(nft_snapshot.counters) == 10
 replaced_nft_snapshot = network.parse_nft_snapshot(encoded(nft_fixture(100)))
 assert replaced_nft_snapshot.content == nft_snapshot.content
+traffic_nft_snapshot = network.parse_nft_snapshot(encoded(nft_fixture(packet_offset=100)))
+assert traffic_nft_snapshot == nft_snapshot and traffic_nft_snapshot.counters != nft_snapshot.counters
 dynamic_nft = json.loads(json.dumps(nft).replace("cogs_stage2_ssh_v1", "c42taaaaaaaaaa").replace("c42h0", "c42haaaaaaaaaa"))
 dynamic_nft["nftables"][1]["table"]["comment"] = "owner:c42taaaaaaaaaa"
 network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 assert replaced_nft_snapshot.identity != nft_snapshot.identity
-counter_a = copy.deepcopy(nft); counter_b = copy.deepcopy(nft)
-counter_a["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 1, "bytes": 2}})
-counter_b["nftables"][5]["rule"]["expr"].append({"counter": {"packets": 900, "bytes": 800}})
+counter_a = copy.deepcopy(nft); counter_b = nft_fixture(packet_offset=900)
 assert network._normalize_baseline_nft(counter_a) == network._normalize_baseline_nft(counter_b)
 counter_b["nftables"][5]["rule"]["chain"] = "output"
 assert network._normalize_baseline_nft(counter_a) != network._normalize_baseline_nft(counter_b)
 native_singleton_nft = copy.deepcopy(nft)
-native_singleton_nft["nftables"][5]["rule"]["expr"][4]["match"]["right"] = "established"
+native_singleton_nft["nftables"][7]["rule"]["expr"][4]["match"]["right"] = "established"
 native_set_nft = copy.deepcopy(native_singleton_nft)
-native_set_nft["nftables"][7]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
+native_set_nft["nftables"][9]["rule"]["expr"][4]["match"]["right"] = ["established", "new"]
 assert network.parse_nft_snapshot(encoded(native_singleton_nft)).content == nft_snapshot.content
 assert network.parse_nft_snapshot(encoded(native_set_nft)).content == nft_snapshot.content
 for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "handle"):
@@ -305,12 +322,84 @@ for change in ("policy", "interface", "duplicate", "bare-set", "ordering", "hand
     if change == "duplicate":
         hostile["nftables"].append(copy.deepcopy(hostile["nftables"][-1]))
     if change == "bare-set":
-        hostile["nftables"][5]["rule"]["expr"][4]["match"]["right"] = ["established", "invalid"]
+        hostile["nftables"][7]["rule"]["expr"][4]["match"]["right"] = ["established", "invalid"]
     if change == "ordering":
         hostile["nftables"][2], hostile["nftables"][3] = hostile["nftables"][3], hostile["nftables"][2]
     if change == "handle":
         hostile["nftables"][-1]["rule"]["handle"] = hostile["nftables"][-2]["rule"]["handle"]
     rejected(lambda hostile=hostile: network.parse_nft_snapshot(encoded(hostile)))
+for counter_change in ("missing", "duplicate", "negative", "float", "overflow", "reordered"):
+    hostile = copy.deepcopy(nft); expressions = hostile["nftables"][5]["rule"]["expr"]
+    position = next(index for index, item in enumerate(expressions) if "counter" in item)
+    if counter_change == "missing": expressions.pop(position)
+    if counter_change == "duplicate": expressions.insert(position, copy.deepcopy(expressions[position]))
+    if counter_change == "negative": expressions[position]["counter"]["packets"] = -1
+    if counter_change == "float": expressions[position]["counter"]["bytes"] = 1.5
+    if counter_change == "overflow": expressions[position]["counter"]["packets"] = 1 << 64
+    if counter_change == "reordered": expressions[position], expressions[position + 1] = expressions[position + 1], expressions[position]
+    rejected(lambda hostile=hostile: network.parse_nft_snapshot(encoded(hostile)))
+# The historical owner-4 grammar remains explicit and cannot be selected by the current parser.
+legacy = copy.deepcopy(nft)
+legacy["nftables"] = legacy["nftables"][:5]
+legacy_rules = {
+    "input": [[match(meta("iifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.2"),
+        match(payload("ip", "daddr"), "192.0.2.1"), match(payload("tcp", "sport"), 22),
+        match({"ct": {"key": "state"}}, {"set": ["established"]}, "in"), verdict("accept")],
+        [match(meta("iifname"), "c42h0"), verdict("drop")]],
+    "output": [[match(meta("oifname"), "c42h0"), match(payload("ip", "saddr"), "192.0.2.1"),
+        match(payload("ip", "daddr"), "192.0.2.2"), match(payload("tcp", "dport"), 22),
+        match({"ct": {"key": "state"}}, {"set": ["new", "established"]}, "in"), verdict("accept")],
+        [match(meta("oifname"), "c42h0"), verdict("drop")]],
+    "forward": [[match(meta("iifname"), "c42h0"), verdict("drop")],
+                [match(meta("oifname"), "c42h0"), verdict("drop")]],
+}
+handle = 20
+for chain in ("input", "output", "forward"):
+    for expression in legacy_rules[chain]:
+        legacy["nftables"].append({"rule": {"family": "inet", "table": network.TABLE,
+            "chain": chain, "expr": expression, "handle": handle}}); handle += 1
+assert len(network.parse_nft_snapshot(encoded(legacy), causal=False).counters) == 0
+rejected(lambda: network.parse_nft_snapshot(encoded(legacy)))
+
+# Immutable handles/static expressions are separate from mutable causal counters.
+operation_token = "a" * 64
+causal_before = network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
+changed = []
+for row in causal_before.counters:
+    increase = 1 if row.sensor in network.CAUSAL_POSITIVE_SENSORS else 0
+    changed.append(network.NftCounter(row.sensor, row.chain, row.ordinal, row.handle,
+                                      row.packets + increase, row.bytes + increase * 64))
+causal_after = network.NftSnapshot(causal_before.content, causal_before.identity, tuple(changed))
+before_sensor = network.bind_causal_sensor(operation_token, "before", causal_before, "1" * 64)
+after_sensor = network.bind_causal_sensor(operation_token, "after", causal_after, "2" * 64)
+guest_proof = network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64)
+causal_proof = network.prove_causal_network(before_sensor, after_sensor, guest_proof)
+assert tuple(row[0] for row in causal_proof.deltas) == (*network.CAUSAL_POSITIVE_SENSORS,
+                                                        *network.CAUSAL_ZERO_SENSORS)
+for hostile in (
+    network.CausalSensorSnapshot("b" * 64, "after", causal_after, "2" * 64),
+    network.CausalSensorSnapshot(operation_token, "after", causal_after, "1" * 64),
+    network.CausalSensorSnapshot(operation_token, "after", replaced_nft_snapshot, "2" * 64),
+):
+    rejected(lambda hostile=hostile: network.prove_causal_network(before_sensor, hostile, guest_proof))
+missing = list(changed); row = missing[0]; missing[0] = network.NftCounter(
+    row.sensor, row.chain, row.ordinal, row.handle, causal_before.counters[0].packets,
+    causal_before.counters[0].bytes)
+rejected(lambda: network.prove_causal_network(before_sensor,
+    network.CausalSensorSnapshot(operation_token, "after",
+        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(missing)), "2" * 64), guest_proof))
+sibling = list(changed); index = next(index for index, row in enumerate(sibling)
+                                    if row.sensor in network.CAUSAL_ZERO_SENSORS)
+row = sibling[index]; sibling[index] = network.NftCounter(
+    row.sensor, row.chain, row.ordinal, row.handle, row.packets + 1, row.bytes + 64)
+rejected(lambda: network.prove_causal_network(before_sensor,
+    network.CausalSensorSnapshot(operation_token, "after",
+        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(sibling)), "2" * 64), guest_proof))
+for bad_guest in (
+    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS[:-1], "3" * 64, "3" * 64),
+    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "4" * 64),
+):
+    rejected(lambda bad_guest=bad_guest: network.prove_causal_network(before_sensor, after_sensor, bad_guest))
 
 # Complete mountinfo is bounded at 4096 and target fields correlate with descriptor stat.
 inode = 4026533000

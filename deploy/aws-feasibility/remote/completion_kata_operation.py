@@ -1151,7 +1151,11 @@ def _legal(records):
         if kind == "NETWORK_SNAPSHOT_V2" or kind in network_journal.ALL_RECORDS:
             _fail(command_generation in {None, "v2"}); command_generation = "v2"
             _fail(rootfs and command_phase is None)
-            _fail(cleanup_mode is None or not (kind == "NETWORK_EFFECT_INTENT_V2" and body["action"] in network_journal.SETUP or kind == "NETWORK_SNAPSHOT_V2" and body["snapshot_kind"] in {"ready", "discovered", "runtime"}))
+            _fail(cleanup_mode is None or not (
+                kind in network_journal.SENSOR_RECORDS
+                or kind == "NETWORK_EFFECT_INTENT_V2" and body["action"] in network_journal.SETUP
+                or kind == "NETWORK_SNAPSHOT_V2" and body["snapshot_kind"] in
+                   {"ready", "discovered", "runtime"}))
             try:
                 network_state = network_journal.advance(network_state, kind, body, phase)
             except ValueError as error:
@@ -1159,7 +1163,7 @@ def _legal(records):
             continue
         if kind == "COMMAND_INTENT_V2":
             _fail(rootfs and command_phase is None and phase in {
-                "ROOTFS_LEASED", "FS_SETTLED", *LIFECYCLE[:14],
+                "ROOTFS_LEASED", "FS_SETTLED", *LIFECYCLE[:14], "ROOTFS_ABSENT",
             })
             _fail(body["command_serial"] == next_serial)
             network_ids = {value.value for value in actions.NETWORK_COMMANDS}
@@ -1283,6 +1287,8 @@ def _legal(records):
         if kind == "SSH_RESULT_V2":
             _fail(production_admitted and phase == "RUNTIME_READY" and ssh_result is None
                   and runtime_mount is not None)
+            _fail(network_state["policy_version"] != network_journal.POLICY_VERSION
+                  or network_state["sensor_proof"] is not None)
             outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
                         and item.body["command_id"] == "SSH_READY"]
             _fail(len(outcomes) == 1 and records[index - 1] is outcomes[0])
@@ -1429,6 +1435,9 @@ def _legal(records):
             pending = record
         elif kind == "FINAL_BASELINES":
             _fail(rootfs and phase == "ROOTFS_ABSENT" and not ever_uncertain)
+            _fail(network_state["policy_version"] != network_journal.POLICY_VERSION
+                  or network_state["snapshots"] and
+                     network_state["snapshots"][-1]["snapshot_kind"] == "final-absent")
             phase = kind
             pending = record
         elif kind == "RETIRE_INTENT":
@@ -2359,9 +2368,11 @@ def _make_authority():
                 network = (network_journal.active_cleanup(records, _fail) is not None and
                            command_id in {value.value for value in actions.CLEANUP_NETWORK_COMMANDS})
                 runtime = command_id in {value.value for value in actions.CLEANUP_RUNTIME_COMMANDS}
-                _fail(context.lifecycle_phase in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and
-                      command_id in {value.value for value in actions.CLEANUP_COMMANDS} and
-                      (runtime or network))
+                final_network = (context.lifecycle_phase == "ROOTFS_ABSENT" and
+                    command_id in {value.value for value in actions.FINAL_NETWORK_OBSERVERS})
+                _fail((context.lifecycle_phase in {"READINESS_REVOKED", *LIFECYCLE[5:13]} and
+                       command_id in {value.value for value in actions.CLEANUP_COMMANDS} and
+                       (runtime or network)) or final_network)
                 _fail(now < body["deadline_boottime_ns"] <= now + body["duration_ns"])
             else:
                 _fail(now < deadline["journal_deadline_boottime_ns"] and body["deadline_boottime_ns"]
