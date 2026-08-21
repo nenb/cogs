@@ -184,7 +184,7 @@ test("retained-rootfs V2 is truthful without reinterpreting historical V1", () =
     fixture_implementation_sha256: executionBinding.fixture_implementation_sha256,
     workload_implementation_sha256: executionBinding.workload_implementation_sha256,
     owner_implementation_sha256: executionBinding.owner_implementation_sha256,
-    native_producer_implementation_sha256: "3eb970e7e90314814583e5a4bb06b539a48d69a19d08320ab1305b5ea0334265",
+    native_producer_implementation_sha256: "fd43735b028e2ea41c6b7cc74109eefcb050603d2861353a4dee9dc04aa4827b",
     runtime_codec_implementation_sha256: "2548e636d496592c325357d6f08c96510e52c127bf0d501486d20925db8595cd",
     launcher_implementation_sha256: "9e0fec1d8735f2f3ce83bc550f282c2477450b25dcd406c9d8e54bdf5b3e8882",
     source_revision: "1".repeat(40),

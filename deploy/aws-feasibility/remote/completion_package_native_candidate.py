@@ -7,11 +7,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
 import time
+import completion_workload_owner as workload_owner
 from completion_fixtures import SOURCE_EPOCH, fixed_fixtures
 from completion_guest_workloads import (CleanupUncertain, Deadline, LIFECYCLE_SECONDS, OwnedRoot,
-    SignalScope, ToolSet, WorkloadError, WorkloadInterrupted, _check_versions, _materialize,
-    _remove_relative, _run, _status_fields, _verify_installed, require_linux_amd64_root)
+    SignalScope, ToolSet, WorkloadError, WorkloadInterrupted, _ENV, _check_versions, _materialize,
+    _remove_relative, _status_fields, _verify_installed, require_linux_amd64_root)
 from completion_runtime_contract import (PackageIdentity, canonical_json, exact_runtime_closure,
     exact_tool_observations, load_candidate_contract, native_execution_binding,
     native_implementation_digests, validate_native_candidate_result)
@@ -31,6 +34,16 @@ SOURCE_REVISION = json.loads(SOURCE_MANIFEST_BYTES)["revision"]
 NATIVE_IMPLEMENTATION_DIGESTS = native_implementation_digests()
 class NativeCandidateTransactionError(WorkloadError):
     category = "native-candidate-mismatch"
+
+
+class NativeCommandObserved(WorkloadError):
+    def __init__(self, return_code, raw):
+        code = str(return_code) if type(return_code) is int and -255 <= return_code <= 255 else "invalid"
+        self.category = (
+            f"exit-{code}-warning-{int(b'warning' in raw.lower())}"
+            f"-error-{int(b'error' in raw.lower())}-bytes-{len(raw)}"
+        )
+        super().__init__("native command returned a rejected bounded observation")
 
 
 class NativeCandidateStageError(WorkloadError):
@@ -96,6 +109,76 @@ def _raise_failure(failure):
     raise NativeCandidateTransactionError("native candidate transaction failed") from None
 
 
+def _run_native_command(argv, root, deadline, pass_fds=()):
+    """Mirror the fixed command owner while retaining only bounded categorical failure facts."""
+    workload_owner._require(type(argv) is tuple and argv and all(type(item) is str and item for item in argv))
+    output_fd = -1
+    process = None
+    raw = b""
+    failure = None
+    try:
+        output_fd = os.open(
+            "command.out", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600, dir_fd=root.fd)
+        os.fchown(output_fd, workload_owner.WORKLOAD_UID, workload_owner.WORKLOAD_GID)
+        output_status = os.fstat(output_fd)
+        workload_owner._require(
+            stat.S_ISREG(output_status.st_mode) and output_status.st_nlink == 1
+            and output_status.st_uid == workload_owner.WORKLOAD_UID
+            and output_status.st_gid == workload_owner.WORKLOAD_GID)
+        workload_owner._require(stat.S_IMODE(output_status.st_mode) == 0o600)
+        process = subprocess.Popen(
+            argv,
+            cwd=root.proc_path(),
+            env=root.child_environment(dict(_ENV)),
+            stdin=subprocess.DEVNULL,
+            stdout=output_fd,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            pass_fds=tuple({root.fd, *pass_fds}),
+            start_new_session=True,
+            preexec_fn=workload_owner._limit_output,
+        )
+        return_code = workload_owner._wait_process(process, deadline.effect_seconds())
+        if return_code is None:
+            raise workload_owner.WorkloadDeadline("fixed child exceeded parent deadline")
+        workload_owner._drain_descendants(deadline, fail_if_found=True)
+        os.fsync(output_fd)
+        raw = workload_owner._read_fd(output_fd, workload_owner.MAX_COMMAND_OUTPUT)
+        after = os.fstat(output_fd)
+        current = os.stat("command.out", dir_fd=root.fd, follow_symlinks=False)
+        workload_owner._require(
+            after.st_nlink == 1
+            and workload_owner._status_identity(after) == workload_owner._status_identity(current))
+        if return_code != 0 or b"warning" in raw.lower() or b"error" in raw.lower():
+            raise NativeCommandObserved(return_code, raw)
+    except BaseException as error:
+        failure = error
+        if process is not None and process.poll() is None:
+            try:
+                workload_owner._terminate_leader(process, deadline)
+            except BaseException as cleanup_error:
+                failure = cleanup_error
+        try:
+            workload_owner._drain_descendants(deadline)
+        except BaseException as cleanup_error:
+            failure = cleanup_error
+    finally:
+        if output_fd >= 0:
+            try:
+                root.remove_output(output_fd)
+            except BaseException as cleanup_error:
+                failure = cleanup_error
+            os.close(output_fd)
+    if failure is not None:
+        if isinstance(failure, WorkloadError):
+            raise failure
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise WorkloadInterrupted("transaction interrupted") from None
+        raise WorkloadError("fixed command failed") from None
+    return raw
+
+
 def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
     _require(label in {"candidate-a", "candidate-b"})
     _require(diagnostic_prefix in {"build-a", "build-b"})
@@ -115,7 +198,7 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
         _materialize(fixture.source.records, root, source)
         stage = "dpkg-build"
         build_start = time.monotonic_ns()
-        _run(
+        _run_native_command(
             (
                 tools.dpkg_deb.executable,
                 "--build",
@@ -146,7 +229,7 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             os.close(installed_fd)
         stage = "dpkg-install"
         install_start = time.monotonic_ns()
-        _run(
+        _run_native_command(
             (
                 tools.dpkg.executable,
                 "--force-not-root",

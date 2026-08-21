@@ -380,6 +380,7 @@ for number in (signal.SIGTERM, signal.SIGINT):
 # forks from TERM, setsid-escapes, ignores TERM in one generation, and outlives its leader.
 linux_containment_recovery_cases_ran = False
 linux_exact_tool_transaction_cases_ran = False
+linux_native_command_cases_ran = False
 if sys.platform.startswith("linux") and os.geteuid() == 0:
     guest._enable_subreaper()
     with tempfile.TemporaryDirectory() as temporary:
@@ -640,6 +641,12 @@ def load_native_probe():
 
 
 native_probe = load_native_probe()
+command_observation = native_probe.NativeCommandObserved(2, b"dpkg-deb: warning: error\n")
+check(command_observation.category == "exit-2-warning-1-error-1-bytes-25",
+      "native command observation category changed")
+command_observation = native_probe.NativeCommandObserved(-9, b"")
+check(command_observation.category == "exit--9-warning-0-error-0-bytes-0",
+      "native command signal observation category changed")
 class ProbePackageDeadline:
     def cleanup_check(self): pass
 class ProbePackageRoot:
@@ -659,16 +666,15 @@ class ProbePackageTools:
 
 def package_stage_failure(materialize_error, cleanup_error=None):
     root = ProbePackageRoot(cleanup_error)
-    original_materialize, original_run = native_probe._materialize, native_probe._run
+    original_materialize = native_probe._materialize
     try:
         native_probe._materialize = lambda *_args: (_ for _ in ()).throw(materialize_error)
-        native_probe._run = lambda *_args, **_kwargs: None
         native_probe._run_native_package_sample(
             root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
     except native_probe.NativeCandidateStageError as error:
         return error
     finally:
-        native_probe._materialize, native_probe._run = original_materialize, original_run
+        native_probe._materialize = original_materialize
     raise AssertionError("native package sample staged failure was accepted")
 
 parent_root = ProbePackageRoot(parent_error=OSError(5, "parent"))
@@ -682,6 +688,27 @@ except native_probe.NativeCandidateStageError as package_error:
 else:
     raise AssertionError("native package parent failure was accepted")
 
+command_root = ProbePackageRoot()
+original_materialize = native_probe._materialize
+original_command = native_probe._run_native_command
+try:
+    native_probe._materialize = lambda *_args: None
+    native_probe._run_native_command = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        native_probe.NativeCommandObserved(7, b"private-error-marker\n"))
+    native_probe._run_native_package_sample(
+        command_root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+except native_probe.NativeCandidateStageError as package_error:
+    check(package_error.stage == "build-a-dpkg-build", "native command package stage changed")
+    check(package_error.category == "exit-7-warning-0-error-1-bytes-21",
+          "native command package category changed")
+    check("private" not in str(package_error) and "marker" not in str(package_error),
+          "native command package diagnostic leaked output")
+else:
+    raise AssertionError("native package command failure was accepted")
+finally:
+    native_probe._materialize = original_materialize
+    native_probe._run_native_command = original_command
+
 package_error = package_stage_failure(owner.WorkloadError("source"))
 check((package_error.stage, package_error.category) == ("build-a-package-source", "invariant"),
       "native package source stage changed")
@@ -692,6 +719,103 @@ check((package_error.stage, package_error.category) == ("build-a-package-cleanup
 package_error = package_stage_failure(KeyboardInterrupt())
 check((package_error.stage, package_error.category) == ("build-a-package-source", "interrupted"),
       "native package sample interruption category changed")
+
+if sys.platform.startswith("linux") and os.geteuid() == 0:
+    with tempfile.TemporaryDirectory() as temporary:
+        native_path = Path(temporary) / "native-command"
+        shared_path = Path(temporary) / "shared-command"
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"fd-ok")
+        os.close(write_fd)
+        program = (
+            "import os,sys; raw=os.read(int(sys.argv[1]),5); "
+            "sys.stdout.buffer.write(os.environ['LANG'].encode()+b':' + raw + b'\\n')"
+        )
+        native_deadline = owner.Deadline.start(30, 20)
+        native_root = owner.OwnedRoot(native_path, native_deadline, "host-candidate")
+        try:
+            native_raw = native_probe._run_native_command(
+                (sys.executable, "-I", "-c", program, str(read_fd)),
+                native_root, native_deadline, (read_fd,))
+        finally:
+            os.close(read_fd)
+            native_root.cleanup()
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"fd-ok")
+        os.close(write_fd)
+        shared_deadline = owner.Deadline.start(30, 20)
+        shared_root = owner.OwnedRoot(shared_path, shared_deadline, "host-candidate")
+        try:
+            shared_raw = owner._run(
+                (sys.executable, "-I", "-c", program, str(read_fd)),
+                shared_root, shared_deadline, pass_fds=(read_fd,),
+                environment=dict(guest._ENV))
+        finally:
+            os.close(read_fd)
+            shared_root.cleanup()
+        check(native_raw == shared_raw == b"C:fd-ok\n", "native/shared command success parity changed")
+
+        observed_path = Path(temporary) / "observed-command"
+        observed_deadline = owner.Deadline.start(30, 20)
+        observed_root = owner.OwnedRoot(observed_path, observed_deadline, "host-candidate")
+        try:
+            try:
+                native_probe._run_native_command(
+                    (sys.executable, "-I", "-c", "import sys; print('private-error-marker'); sys.exit(7)"),
+                    observed_root, observed_deadline)
+            except native_probe.NativeCommandObserved as error:
+                check(error.category == "exit-7-warning-0-error-1-bytes-21",
+                      "native nonzero observation changed")
+                check("private" not in str(error) and "marker" not in str(error),
+                      "native nonzero observation leaked output")
+            else:
+                raise AssertionError("native nonzero command was accepted")
+        finally:
+            observed_root.cleanup()
+
+        bounded_path = Path(temporary) / "bounded-command"
+        bounded_deadline = owner.Deadline.start(30, 20)
+        bounded_root = owner.OwnedRoot(bounded_path, bounded_deadline, "host-candidate")
+        try:
+            bounded_raw = native_probe._run_native_command(
+                (sys.executable, "-I", "-c", "import os; os.write(1,b'x'*70000)"),
+                bounded_root, bounded_deadline)
+            check(len(bounded_raw) <= owner.MAX_COMMAND_OUTPUT,
+                  "native command output exceeded its bound")
+        finally:
+            bounded_root.cleanup()
+
+        timeout_path = Path(temporary) / "timeout-command"
+        timeout_deadline = owner.Deadline.start(2, 1)
+        descriptors_before = len(os.listdir("/proc/self/fd"))
+        timeout_root = owner.OwnedRoot(timeout_path, timeout_deadline, "host-candidate")
+        try:
+            rejected(lambda: native_probe._run_native_command(
+                (sys.executable, "-I", "-c",
+                 "import subprocess,time; subprocess.Popen(['sleep','10']); time.sleep(10)"),
+                timeout_root, timeout_deadline), owner.WorkloadDeadline)
+            check(not owner._children(), "native timeout left descendants")
+        finally:
+            timeout_root.cleanup()
+        descriptors_after = len(os.listdir("/proc/self/fd"))
+        check(descriptors_after == descriptors_before,
+              f"native timeout changed descriptor baseline {descriptors_before}->{descriptors_after}")
+
+        removal_path = Path(temporary) / "removal-command"
+        removal_deadline = owner.Deadline.start(30, 20)
+        removal_root = owner.OwnedRoot(removal_path, removal_deadline, "host-candidate")
+        original_remove_output = removal_root.remove_output
+        removal_root.remove_output = lambda _descriptor: (_ for _ in ()).throw(
+            owner.OutputUncertain("injected output removal uncertainty"))
+        try:
+            rejected(lambda: native_probe._run_native_command(
+                (sys.executable, "-I", "-c", "import sys; sys.exit(7)"),
+                removal_root, removal_deadline), owner.OutputUncertain)
+        finally:
+            removal_root.remove_output = original_remove_output
+            removal_root.cleanup()
+        linux_native_command_cases_ran = True
+
 original_environment = os.environ.get("COGS_PACKAGE_REVIEWED_HEAD")
 os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = native_probe.SOURCE_REVISION
 class ProbeSignalScope:
@@ -913,6 +1037,7 @@ if os.environ.get("COGS_REQUIRE_STAGE2_WORKLOAD_LINUX_FOUNDATIONS") == "1":
     check(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root foundation environment absent")
     check(linux_destructive_cases_ran, "Linux destructive ownership cases skipped")
     check(linux_containment_recovery_cases_ran, "Linux containment/recovery cases skipped")
+    check(linux_native_command_cases_ran, "Linux native command cases skipped")
     required_foundations = {
         "source-swap",
         "quarantine-collision",
@@ -930,5 +1055,6 @@ print(
     "completion workload contract tests passed "
     f"linux_destructive={linux_destructive_cases_ran} "
     f"linux_containment_recovery={linux_containment_recovery_cases_ran} "
+    f"linux_native_command={linux_native_command_cases_ran} "
     f"linux_exact_tools={linux_exact_tool_transaction_cases_ran}"
 )
