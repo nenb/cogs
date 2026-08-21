@@ -133,8 +133,8 @@ def extended_convergence_tests():
                 settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
                 return calls[0]
 
-            assert run_pattern([False] * 13 + [True] * 3) == 32
-            assert run_pattern([True, True, False, True, True, True]) == 12
+            assert run_pattern([False] * 13 + [True] * 3) == 28
+            assert run_pattern([True, True, False, True, True, True]) == 8
             rejected(lambda: run_pattern([False] * 13 + [True] * 3, True),
                      settlement.SettlementError)
 
@@ -168,9 +168,20 @@ def extended_convergence_tests():
 
 def scanner_race_and_mount_tests():
     temporary, proc, _pid = synthetic_proc("/unrelated")
+    original_starttime = settlement._starttime
+    original_slot = settlement._slot_generation
     try:
         settlement.scan("before-unmount", proc_root=proc, targets=("/target",))
+        settlement._starttime = lambda _base: None
+        assert settlement._inventory(proc) == ({}, True)
+        observations = iter((("unstable", None), ("stable", 200)))
+        settlement._slot_generation = lambda *_args: next(observations)
+        assert settlement._inventory(proc) == ({"41": 200}, True)
+        settlement._slot_generation = lambda *_args: ("unstable", None)
+        assert settlement._inventory(proc) == ({}, False)
     finally:
+        settlement._starttime = original_starttime
+        settlement._slot_generation = original_slot
         temporary.cleanup()
 
     temporary, proc, _pid = synthetic_proc("/run/cogs-stage2-native-private-v1")
@@ -190,6 +201,25 @@ def scanner_race_and_mount_tests():
                  settlement.SettlementError)
     finally:
         settlement._bytes = original
+        temporary.cleanup()
+
+    # Any listed descriptor that vanishes keeps that generation incomplete.
+    temporary, proc, pid = synthetic_proc("/unrelated")
+    original_link = settlement._link
+    descriptor_path = pid / "fd" / "7"
+    descriptor_path.symlink_to("/unrelated")
+    try:
+        def close_unrelated(path):
+            if Path(path) == descriptor_path:
+                descriptor_path.unlink()
+                return None
+            return original_link(path)
+        settlement._link = close_unrelated
+        assert not settlement._inspect_generation(
+            "before-unmount", proc, "41", 100,
+            settlement._identity(proc / "self/ns/mnt"), ("/target",), settlement.MARKER)
+    finally:
+        settlement._link = original_link
         temporary.cleanup()
 
     # Reuse/change of a listed PID is retried as a new process generation, not skipped.
@@ -252,7 +282,10 @@ def scanner_race_and_mount_tests():
 
 def settlement_diagnostic_tests():
     cases = {
-        "process generations did not reach stable settlement": "scan-nonconvergence",
+        "process observations did not converge": "scan-mixed-nonconvergence",
+        "process coverage did not converge": "scan-coverage-nonconvergence",
+        "process inspection did not converge": "scan-inspection-nonconvergence",
+        "process inventory did not converge": "scan-inventory-nonconvergence",
         "unsettled candidate process: 41": "candidate-process",
         "unsettled target mount namespace: 41": "target-mount-namespace",
         "unsettled process path: 41/cwd": "target-process-path",
@@ -266,6 +299,7 @@ def settlement_diagnostic_tests():
         "namespace inspection failed": "namespace-inspection",
         "process inventory failed": "process-inventory",
         "process inventory unavailable": "process-inventory",
+        "process identity inspection failed": "process-identity",
         "descriptor inventory failed": "descriptor-inspection",
         "invalid process generation": "process-generation",
         "mount namespace unavailable": "mount-namespace",
@@ -447,6 +481,39 @@ def publication_tests():
         finally:
             os.close(descriptor)
 
+    # Any listed descriptor that vanishes during stat or fdinfo keeps the
+    # process generation incomplete for this pass.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        candidate_path, proc = root / "candidate", root / "proc"
+        candidate_path.write_bytes(candidate_raw)
+        descriptor = os.open(candidate_path, os.O_RDONLY)
+        pid = proc / "51"
+        (pid / "fd").mkdir(parents=True)
+        (pid / "fdinfo").mkdir()
+        (pid / "maps").write_bytes(b"")
+        (pid / "stat").write_text(process_stat(51, 300))
+        original_fd_names = publication._fd_names
+        original_proc_bytes = publication._proc_bytes
+        try:
+            publication._fd_names = lambda _path: ["7"]
+            assert publication._writable_alias_sweep(
+                proc, (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino),
+                {"51": 300}) == set()
+
+            fd_path = pid / "fd" / "7"
+            fd_path.symlink_to(candidate_path)
+            publication._proc_bytes = lambda path, *args: (
+                None if Path(path) == pid / "fdinfo" / "7"
+                else original_proc_bytes(path, *args))
+            assert publication._writable_alias_sweep(
+                proc, (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino),
+                {"51": 300}) == set()
+        finally:
+            publication._fd_names = original_fd_names
+            publication._proc_bytes = original_proc_bytes
+            os.close(descriptor)
+
     # A closed-fd MAP_SHARED alias remains writable after chmod and is inventoried.
     if Path("/proc/self/maps").exists():
         with tempfile.TemporaryDirectory() as temporary:
@@ -470,6 +537,23 @@ def publication_tests():
 
 
 def publication_convergence_tests():
+    with tempfile.TemporaryDirectory() as temporary:
+        proc = Path(temporary)
+        (proc / "41").mkdir()
+        original_uid = publication._process_uid
+        original_owned = publication._owned_generation
+        try:
+            publication._process_uid = lambda *_args: None
+            assert publication._inventory(proc, os.geteuid()) == ({}, True)
+            observations = iter((("unstable", False, None), ("stable", True, 200)))
+            publication._owned_generation = lambda *_args: next(observations)
+            assert publication._inventory(proc, os.geteuid()) == ({"41": 200}, True)
+            publication._owned_generation = lambda *_args: ("unstable", False, None)
+            assert publication._inventory(proc, os.geteuid()) == ({}, False)
+        finally:
+            publication._process_uid = original_uid
+            publication._owned_generation = original_owned
+
     with tempfile.NamedTemporaryFile() as source:
         source.write(b"candidate")
         source.flush()
@@ -578,6 +662,7 @@ def publication_convergence_tests():
         "process inventory failed": "alias-inspection",
         "process generation inspection failed": "alias-inspection",
         "process ownership inspection failed": "alias-inspection",
+        "process identity inspection failed": "alias-inspection",
         "mapping inventory failed": "alias-inspection",
         "descriptor inventory failed": "alias-inspection",
         "candidate/source contract differs": "candidate-contract",

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import stat
 import sys
 import time
@@ -120,6 +121,39 @@ def _process_uid(proc_root, name):
     return int(values[0][2])
 
 
+def _owned_generation(proc_root, name, owner_uid):
+    descriptor = None
+    try:
+        if proc_root == Path("/proc"):
+            descriptor = os.pidfd_open(int(name), 0)
+        before = _starttime(proc_root, name)
+        poller = None
+        if descriptor is not None:
+            poller = select.poll()
+            poller.register(descriptor, select.POLLIN)
+            if poller.poll(0):
+                return "absent", False, None
+        if before is None:
+            return (("unstable", False, None) if descriptor is not None
+                    else ("absent", False, None))
+        uid = _process_uid(proc_root, name)
+        after = _starttime(proc_root, name)
+        if poller is not None and poller.poll(0):
+            return "absent", False, None
+        if uid is None or after is None or after != before:
+            return "unstable", False, None
+        # Root/other host services are trusted; the untrusted publication adversary
+        # is every surviving process in the runner UID's generation inventory.
+        return "stable", uid == owner_uid, after
+    except ProcessLookupError:
+        return "absent", False, None
+    except (AttributeError, OSError) as error:
+        raise PublicationError("process identity inspection failed") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _inventory(proc_root, owner_uid):
     names = _bounded_names(proc_root, MAX_PROC_ENTRIES, "process inventory failed")
     result = {}
@@ -127,19 +161,13 @@ def _inventory(proc_root, owner_uid):
     for name in names:
         if not name.isdecimal():
             continue
-        uid = _process_uid(proc_root, name)
-        if uid is None:
-            complete = False
-            continue
-        # Root/other host services are trusted; the untrusted publication adversary
-        # is every surviving process in the runner UID's generation inventory.
-        if uid != owner_uid:
-            continue
-        identity = _starttime(proc_root, name)
-        if identity is None:
-            complete = False
-        else:
+        state, owned, identity = _owned_generation(proc_root, name, owner_uid)
+        if state == "unstable":
+            state, owned, identity = _owned_generation(proc_root, name, owner_uid)
+        if state == "stable" and owned:
             result[name] = identity
+        elif state == "unstable":
+            complete = False
     return result, complete
 
 
@@ -211,26 +239,30 @@ def _writable_alias_sweep(proc_root, expected, inventory):
 def prove_no_writable_aliases(descriptor, owner_uid, proc_root=Path("/proc")):
     expected = os.fstat(descriptor)
     identity = expected.st_dev, expected.st_ino
-    consecutive = 0
+    empty_coverage = 0
     coverage = {}
     for _ in range(MAX_ALIAS_PASSES):
         before, complete = _inventory(proc_root, owner_uid)
         inspected = _writable_alias_sweep(proc_root, identity, before)
         after, final_complete = _inventory(proc_root, owner_uid)
         current = set(after.items())
-        stable = complete and final_complete and current <= inspected
-        if stable:
-            consecutive += 1
-            coverage = {generation: coverage.get(generation, 0) + 1
-                        for generation in current}
+        if complete and final_complete:
+            coverage = {
+                generation: min(REQUIRED_ALIAS_PASSES,
+                                coverage.get(generation, 0) + 1)
+                if generation in inspected else 0
+                for generation in current
+            }
+            empty_coverage = empty_coverage + 1 if not current else 0
+            covered = ((current and all(count >= REQUIRED_ALIAS_PASSES
+                                        for count in coverage.values()))
+                       or (not current and empty_coverage >= REQUIRED_ALIAS_PASSES))
+            if covered:
+                if _generation(os.fstat(descriptor)) != _generation(expected):
+                    raise PublicationError("candidate changed during alias proof")
+                return
         else:
-            consecutive, coverage = 0, {}
-        if (consecutive >= REQUIRED_ALIAS_PASSES
-                and all(count >= REQUIRED_ALIAS_PASSES
-                        for count in coverage.values())):
-            if _generation(os.fstat(descriptor)) != _generation(expected):
-                raise PublicationError("candidate changed during alias proof")
-            return
+            empty_coverage, coverage = 0, {}
         time.sleep(0.01)
     raise PublicationError("writable-alias absence did not stabilize")
 

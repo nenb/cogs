@@ -4,6 +4,7 @@ import errno
 import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
 import time
@@ -100,6 +101,30 @@ def _starttime(base):
     return int(fields[19])
 
 
+def _slot_generation(proc_root, name):
+    if proc_root != Path("/proc"):
+        identity = _starttime(proc_root / name)
+        return ("absent", None) if identity is None else ("stable", identity)
+    descriptor = None
+    try:
+        descriptor = os.pidfd_open(int(name), 0)
+        identity = _starttime(proc_root / name)
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+        if poller.poll(0):
+            return "absent", None
+        if identity is None:
+            return "unstable", None
+        return "stable", identity
+    except ProcessLookupError:
+        return "absent", None
+    except (AttributeError, OSError) as error:
+        raise SettlementError("process identity inspection failed") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _inventory(proc_root):
     names = _names(proc_root, MAX_PROC_ENTRIES, "process inventory failed")
     if names is None:
@@ -107,12 +132,15 @@ def _inventory(proc_root):
     result = {}
     complete = True
     for name in names:
-        if name.isdecimal():
-            identity = _starttime(proc_root / name)
-            if identity is None:
-                complete = False
-            else:
-                result[name] = identity
+        if not name.isdecimal():
+            continue
+        state, identity = _slot_generation(proc_root, name)
+        if state == "unstable":
+            state, identity = _slot_generation(proc_root, name)
+        if state == "stable":
+            result[name] = identity
+        elif state == "unstable":
+            complete = False
     return result, complete
 
 
@@ -193,8 +221,9 @@ def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os
     own_namespace = _identity(proc_root / "self/ns/mnt")
     if own_namespace is None:
         raise SettlementError("mount namespace unavailable")
-    consecutive = 0
+    empty_coverage = 0
     coverage = {}
+    reasons = set()
     for _ in range(MAX_SCAN_PASSES):
         before, complete = _inventory(proc_root)
         inspected = set()
@@ -208,19 +237,29 @@ def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os
         # inspection cannot retain a target and does not couple acceptance to
         # unrelated whole-runner process churn.
         current = set(after.items())
-        stable = complete and final_complete and current <= inspected
-        if stable:
-            consecutive += 1
-            coverage = {generation: coverage.get(generation, 0) + 1
-                        for generation in current}
+        if complete and final_complete:
+            missing = current - inspected
+            incomplete = set(before.items()) - inspected
+            reasons.add("inspection" if missing or incomplete else "coverage")
+            coverage = {
+                generation: min(REQUIRED_STABLE_PASSES,
+                                coverage.get(generation, 0) + 1)
+                if generation in inspected else 0
+                for generation in current
+            }
+            empty_coverage = empty_coverage + 1 if not current else 0
+            if ((current and all(count >= REQUIRED_STABLE_PASSES
+                                 for count in coverage.values()))
+                    or (not current and empty_coverage >= REQUIRED_STABLE_PASSES)):
+                return
         else:
-            consecutive, coverage = 0, {}
-        if (consecutive >= REQUIRED_STABLE_PASSES
-                and all(count >= REQUIRED_STABLE_PASSES
-                        for count in coverage.values())):
-            return
+            reasons.add("inventory")
+            empty_coverage, coverage = 0, {}
         time.sleep(0.01)
-    raise SettlementError("process generations did not reach stable settlement")
+    if len(reasons) != 1:
+        raise SettlementError("process observations did not converge")
+    reason = next(iter(reasons))
+    raise SettlementError(f"process {reason} did not converge")
 
 
 def unmount(run=subprocess.run):
@@ -251,7 +290,10 @@ def main():
 def _failure_token(error):
     message = str(error)
     categories = (
-        ("process generations did not reach stable settlement", "scan-nonconvergence"),
+        ("process observations did not converge", "scan-mixed-nonconvergence"),
+        ("process coverage did not converge", "scan-coverage-nonconvergence"),
+        ("process inspection did not converge", "scan-inspection-nonconvergence"),
+        ("process inventory did not converge", "scan-inventory-nonconvergence"),
         ("unsettled candidate process", "candidate-process"),
         ("unsettled target mount namespace", "target-mount-namespace"),
         ("unsettled process path", "target-process-path"),
@@ -264,6 +306,7 @@ def _failure_token(error):
         ("process link inspection", "process-link-inspection"),
         ("namespace inspection", "namespace-inspection"),
         ("process inventory", "process-inventory"),
+        ("process identity inspection", "process-identity"),
         ("descriptor inventory", "descriptor-inspection"),
         ("invalid process generation", "process-generation"),
         ("mount namespace", "mount-namespace"),
