@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-static-control-package-v1.json",
+  "title": "Non-authoritative reviewed Stage 2 static control package",
+  "$comment": "Control revision G contains these data bytes and describes the earlier implementation revision H. Schema success grants no preparation, execution, KVM, QMP, or coordinator authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "directional_binding", "implementation", "members", "producer"],
+  "properties": {
+    "version": { "const": "cogs.stage2-local-static-control-package/v1" },
+    "authority": { "const": "non-authoritative-reviewed-static-control-data" },
+    "directional_binding": { "const": "control-revision-g-describes-earlier-implementation-revision-h" },
+    "implementation": { "$ref": "#/$defs/implementation" },
+    "members": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/member" },
+      "contains": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": { "kind": { "const": "envelope" } }
+      },
+      "minContains": 1,
+      "maxContains": 1
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "implementation_revision",
+        "source_manifest_sha256",
+        "kvm_absent",
+        "network_used",
+        "forbidden_surfaces"
+      ],
+      "properties": {
+        "classification": { "const": "deterministic-no-kvm-static-observation-candidate" },
+        "implementation_revision": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "kvm_absent": { "const": true },
+        "network_used": { "const": false },
+        "forbidden_surfaces": {
+          "const": ["containerd", "coordinator", "kata", "kvm", "qmp", "ssh", "task"]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "selectedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 2097152 }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_manifest_sha256", "selected_sources", "selected_sources_sha256"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "selected_sources": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/selectedSource" }
+        },
+        "selected_sources_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "sha256", "size"],
+      "properties": {
+        "name": { "$ref": "#/$defs/relativePath" },
+        "kind": { "enum": ["envelope", "runtime-manifest", "executable-closure"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 33554432 }
+      }
+    }
+  }
+}

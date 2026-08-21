@@ -180,6 +180,11 @@ with tempfile.TemporaryDirectory() as directory:
     reject(lambda: admission._open_fixed_relative(root, "fixed/value", 64, status.st_uid, status.st_gid))
 
 assert admission.committed_status() == {"envelope_reviewed": False, "runtime_manifest_reviewed": False, "custody_issued": False}
+assert admission.static_status()["v2_static_only"] is True
+assert admission.static_status()["kvm_permit"] is False
+static_issuer = admission._take_static_preparation_issuer()
+reject(static_issuer)
+reject(static_issuer, admission.AdmissionUnavailable)
 assert not hasattr(admission, "_claim_committed_execution_custody")
 assert not hasattr(receipt, "_issue_local_receipt")
 reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)

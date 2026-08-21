@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-execution-envelope-v2.json",
+  "title": "Reviewed static Stage 2 execution-envelope description",
+  "$comment": "Revision G carries these data bytes and names earlier implementation H. Dynamic runtime attestation is intentionally absent and is derived privately from the held lease during the operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "directional_binding",
+    "implementation",
+    "package",
+    "rootfs",
+    "runtime",
+    "programs",
+    "result_binding_base",
+    "receipt"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-local-execution-envelope/v2" },
+    "authority": { "const": "non-authoritative-reviewed-static-control-data" },
+    "directional_binding": { "const": "control-revision-g-describes-earlier-implementation-revision-h" },
+    "implementation": { "$ref": "#/$defs/implementation" },
+    "package": { "$ref": "#/$defs/package" },
+    "rootfs": { "$ref": "#/$defs/rootfs" },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "programs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guest_program_sha256", "coordinator_sha256", "owner_source_set_sha256"],
+      "properties": {
+        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
+        "coordinator_sha256": { "$ref": "#/$defs/sha256" },
+        "owner_source_set_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "result_binding_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "rootfs_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
+        "owner_implementation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "receipt": {
+      "const": {
+        "version": "cogs.stage2-local-private-receipt/v1",
+        "domain": "cogs.stage2-local-private-receipt/v1\u0000"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "selectedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 2097152 }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_manifest_sha256", "selected_sources", "selected_sources_sha256"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "selected_sources": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/selectedSource" }
+        },
+        "selected_sources_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": { "$ref": "#/$defs/sha256" },
+        "deb_bytes": { "const": 1064816 },
+        "installed_tree_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" },
+        "installed_entries": { "const": 259 },
+        "installed_bytes": { "const": 1048576 },
+        "package": { "const": "cogs-stage2-fixture" },
+        "version": { "const": "1.0" },
+        "architecture": { "const": "all" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_contract_sha256", "candidate_result_sha256", "final_pin_sha256", "identity"],
+      "properties": {
+        "candidate_contract_sha256": { "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3" },
+        "candidate_result_sha256": { "const": "e967438172de7faee443c417fa85bf040f68decc889d74e21759b0aeb19d2b7b" },
+        "final_pin_sha256": { "const": "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31" },
+        "identity": { "$ref": "#/$defs/identity" }
+      }
+    },
+    "rootfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_sha256", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"],
+      "properties": {
+        "contract_sha256": { "const": "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54" },
+        "manifest_sha256": { "const": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691" },
+        "manifest_size": { "const": 1049443 },
+        "ustar_sha256": { "const": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3" },
+        "ustar_size": { "const": 136905728 },
+        "entry_count": { "const": 4353 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_member",
+        "manifest_sha256",
+        "archive_set_sha256",
+        "launch_assets_sha256",
+        "executable_set_sha256"
+      ],
+      "properties": {
+        "manifest_member": { "const": "stage2-local-runtime-manifest-v2.json" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "archive_set_sha256": { "$ref": "#/$defs/sha256" },
+        "launch_assets_sha256": { "$ref": "#/$defs/sha256" },
+        "executable_set_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
