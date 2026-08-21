@@ -640,6 +640,58 @@ def load_native_probe():
 
 
 native_probe = load_native_probe()
+class ProbePackageDeadline:
+    def cleanup_check(self): pass
+class ProbePackageRoot:
+    def __init__(self, cleanup_error=None, parent_error=None):
+        self.cleanup_error, self.parent_error, self.remove_calls = cleanup_error, parent_error, 0
+    def mkdir(self, relative, *_args, **_kwargs):
+        if relative == "package-candidate-a" and self.parent_error is not None:
+            raise self.parent_error
+    def proc_path(self, value=""): return f"/probe/{value}" if value else "/probe"
+    def remove_tree(self, _relative):
+        self.remove_calls += 1
+        if self.cleanup_error is not None: raise self.cleanup_error
+class ProbePackageTools:
+    descriptors = ()
+    dpkg_deb = type("Tool", (), {"executable": "/usr/bin/dpkg-deb"})()
+    dpkg = type("Tool", (), {"executable": "/usr/bin/dpkg"})()
+
+def package_stage_failure(materialize_error, cleanup_error=None):
+    root = ProbePackageRoot(cleanup_error)
+    original_materialize, original_run = native_probe._materialize, native_probe._run
+    try:
+        native_probe._materialize = lambda *_args: (_ for _ in ()).throw(materialize_error)
+        native_probe._run = lambda *_args, **_kwargs: None
+        native_probe._run_native_package_sample(
+            root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+    except native_probe.NativeCandidateStageError as error:
+        return error
+    finally:
+        native_probe._materialize, native_probe._run = original_materialize, original_run
+    raise AssertionError("native package sample staged failure was accepted")
+
+parent_root = ProbePackageRoot(parent_error=OSError(5, "parent"))
+try:
+    native_probe._run_native_package_sample(
+        parent_root, "candidate-a", "build-a", ProbePackageTools(), ProbePackageDeadline())
+except native_probe.NativeCandidateStageError as package_error:
+    check((package_error.stage, package_error.category) == ("build-a-package-parent", "OSError_5"),
+          "native package parent stage changed")
+    check(parent_root.remove_calls == 0, "pre-ownership package failure attempted cleanup")
+else:
+    raise AssertionError("native package parent failure was accepted")
+
+package_error = package_stage_failure(owner.WorkloadError("source"))
+check((package_error.stage, package_error.category) == ("build-a-package-source", "invariant"),
+      "native package source stage changed")
+package_error = package_stage_failure(
+    owner.WorkloadError("source"), owner.CleanupUncertain("cleanup"))
+check((package_error.stage, package_error.category) == ("build-a-package-cleanup", "cleanup-uncertain"),
+      "native package cleanup stage did not override work")
+package_error = package_stage_failure(KeyboardInterrupt())
+check((package_error.stage, package_error.category) == ("build-a-package-source", "interrupted"),
+      "native package sample interruption category changed")
 original_environment = os.environ.get("COGS_PACKAGE_REVIEWED_HEAD")
 os.environ["COGS_PACKAGE_REVIEWED_HEAD"] = native_probe.SOURCE_REVISION
 class ProbeSignalScope:
@@ -830,8 +882,11 @@ for required_stage in (
     "post-a-tools", "post-a-contract", "build-b", "compare-a-b", "post-b-tools",
     "post-b-contract", "result-binding", "transaction-cleanup", "tool-close",
     "signal-scope-close", "result-presence", "result-validation", "result-encoding",
+    "package-parent", "package-source", "dpkg-build", "deb-readback", "admin-setup", "dpkg-install",
+    "installed-tree", "status-readback", "status-verify", "identity",
+    "package-cleanup", "duration",
 ):
-    check(f'"{required_stage}"' in native_source, f"missing native transaction stage {required_stage}")
+    check(required_stage in native_source, f"missing native transaction stage {required_stage}")
 
 source = "\n".join((REMOTE / name).read_text() for name in (
     "completion_runtime_contract.py",

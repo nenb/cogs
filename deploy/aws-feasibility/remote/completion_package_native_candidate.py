@@ -7,10 +7,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from completion_guest_workloads import (CleanupUncertain, Deadline, OwnedRoot, SignalScope,
-    ToolSet, WorkloadError, WorkloadInterrupted, _check_versions, _run_package_sample,
-    require_linux_amd64_root)
-from completion_runtime_contract import (canonical_json, exact_runtime_closure,
+import time
+from completion_fixtures import SOURCE_EPOCH, fixed_fixtures
+from completion_guest_workloads import (CleanupUncertain, Deadline, LIFECYCLE_SECONDS, OwnedRoot,
+    SignalScope, ToolSet, WorkloadError, WorkloadInterrupted, _check_versions, _materialize,
+    _remove_relative, _run, _status_fields, _verify_installed, require_linux_amd64_root)
+from completion_runtime_contract import (PackageIdentity, canonical_json, exact_runtime_closure,
     exact_tool_observations, load_candidate_contract, native_execution_binding,
     native_implementation_digests, validate_native_candidate_result)
 CANDIDATE_ROOT = Path("/tmp/cogs-stage2-workload-candidate-v2")
@@ -48,7 +50,14 @@ class NativeCandidateStageError(WorkloadError):
 
 
 def _stage_failure(stage, cause):
-    return cause if isinstance(cause, NativeCandidateStageError) else NativeCandidateStageError(stage, cause)
+    if isinstance(cause, NativeCandidateStageError):
+        return cause
+    nested = getattr(cause, "stage", None)
+    combined = f"{stage}-{nested}" if isinstance(nested, str) else stage
+    safe = (1 <= len(combined) <= 64
+            and all(value.isascii() and (value.isalnum() or value in "_-")
+                    for value in combined))
+    return NativeCandidateStageError(combined if safe else stage, cause)
 
 
 class _StagedSignalScope:
@@ -85,6 +94,111 @@ def _raise_failure(failure):
             raise WorkloadInterrupted("transaction interrupted") from None
         raise failure
     raise NativeCandidateTransactionError("native candidate transaction failed") from None
+
+
+def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
+    _require(label in {"candidate-a", "candidate-b"})
+    _require(diagnostic_prefix in {"build-a", "build-b"})
+    fixture = fixed_fixtures().package
+    prefix = f"package-{label}"
+    source = f"{prefix}/source"
+    deb = f"{prefix}/cogs-stage2-fixture_1.0_all.deb"
+    admin = f"{prefix}/dpkg-admin"
+    installed = f"{prefix}/installed"
+    stage, failure = "package-parent", None
+    try:
+        root.mkdir(prefix, 0o700)
+    except BaseException as error:
+        raise _stage_failure(f"{diagnostic_prefix}-{stage}", error) from error
+    stage = "package-source"
+    try:
+        _materialize(fixture.source.records, root, source)
+        stage = "dpkg-build"
+        build_start = time.monotonic_ns()
+        _run(
+            (
+                tools.dpkg_deb.executable,
+                "--build",
+                "--root-owner-group",
+                "--compression=xz",
+                "--compression-level=6",
+                "--threads-max=1",
+                root.proc_path(source),
+                root.proc_path(deb),
+            ),
+            root,
+            deadline,
+            pass_fds=tools.descriptors,
+        )
+        build_ms = (time.monotonic_ns() - build_start) // 1_000_000
+        stage = "deb-readback"
+        deb_raw, deb_status = root.read_file(deb, 4_194_304)
+        _require(0 < len(deb_raw) == deb_status.st_size)
+        stage = "admin-setup"
+        root.mkdir(admin, 0o700)
+        root.mkdir(f"{admin}/updates", 0o700)
+        root.write_file(f"{admin}/status", b"", 0o600)
+        root.mkdir(installed, 0o755)
+        installed_fd = root._open_dir(installed)
+        try:
+            os.utime(installed_fd, (SOURCE_EPOCH, SOURCE_EPOCH))
+        finally:
+            os.close(installed_fd)
+        stage = "dpkg-install"
+        install_start = time.monotonic_ns()
+        _run(
+            (
+                tools.dpkg.executable,
+                "--force-not-root",
+                "--admindir",
+                root.proc_path(admin),
+                "--instdir",
+                f"{root.proc_path(installed)}/",
+                "--install",
+                root.proc_path(deb),
+            ),
+            root,
+            deadline,
+            pass_fds=tools.descriptors,
+        )
+        install_ms = (time.monotonic_ns() - install_start) // 1_000_000
+        stage = "installed-tree"
+        observed = _verify_installed(root, installed)
+        stage = "status-readback"
+        fields = _status_fields(root, f"{admin}/status")
+        stage = "status-verify"
+        _require(
+            (fields.get("Package"), fields.get("Version"), fields.get("Architecture"), fields.get("Status"))
+            == (observed.package, observed.version, observed.architecture, observed.status)
+        )
+        stage = "identity"
+        identity = PackageIdentity(
+            hashlib.sha256(deb_raw).hexdigest(),
+            len(deb_raw),
+            observed.logical_digest,
+            observed.entry_count,
+            observed.regular_bytes,
+            observed.package,
+            observed.version,
+            observed.architecture,
+        )
+    except BaseException as error:
+        failure = _stage_failure(f"{diagnostic_prefix}-{stage}", error)
+    finally:
+        try:
+            _remove_relative(root, prefix, deadline)
+        except BaseException as error:
+            failure = _stage_failure(f"{diagnostic_prefix}-package-cleanup", error)
+    _raise_failure(failure)
+    stage = "duration"
+    try:
+        _require(0 <= build_ms <= LIFECYCLE_SECONDS * 1000
+                 and 0 <= install_ms <= LIFECYCLE_SECONDS * 1000)
+    except BaseException as error:
+        raise _stage_failure(f"{diagnostic_prefix}-{stage}", error) from error
+    return identity, build_ms, install_ms
+
+
 def run_candidate_transaction():
     """Build A and B once using authentic retained-rootfs Git/dpkg tools."""
     deadline = Deadline.start()
@@ -114,15 +228,15 @@ def run_candidate_transaction():
                 stage = "tool-observations"
                 tool_observations = exact_tool_observations(tools.observations())
                 stage = "build-a"
-                first, _build_a_ms, _install_a_ms = _run_package_sample(
-                    root, "candidate-a", tools, deadline)
+                first, _build_a_ms, _install_a_ms = _run_native_package_sample(
+                    root, "candidate-a", "build-a", tools, deadline)
                 stage = "post-a-tools"
                 _require(exact_tool_observations(tools.observations()) == tool_observations)
                 stage = "post-a-contract"
                 _require(load_candidate_contract() == contract)
                 stage = "build-b"
-                second, _build_b_ms, _install_b_ms = _run_package_sample(
-                    root, "candidate-b", tools, deadline)
+                second, _build_b_ms, _install_b_ms = _run_native_package_sample(
+                    root, "candidate-b", "build-b", tools, deadline)
                 stage = "compare-a-b"
                 _require(first == second)
                 stage = "post-b-tools"
