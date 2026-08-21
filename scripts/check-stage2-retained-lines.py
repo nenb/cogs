@@ -20,6 +20,11 @@ PREFERRED_LIMIT = 60_000
 HARD_LIMIT = 62_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 DEPLOY_SUFFIXES = (".py", ".sh", ".tf")
+RETAINED_DEPLOY_FILES = (
+    "deploy/aws-feasibility/remote/completion_local_full.py",
+    "deploy/aws-feasibility/remote/completion_local_receipt.py",
+    "deploy/aws-feasibility/remote/completion_local_evidence.py",
+)
 RETAINED_FILES = (
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
@@ -103,10 +108,16 @@ def _gross_additions():
 
 def measure():
     retained_names = set(RETAINED_FILES)
+    retained_deploy_names = set(RETAINED_DEPLOY_FILES)
     _require(len(RETAINED_FILES) == len(retained_names))
+    _require(len(RETAINED_DEPLOY_FILES) == len(retained_deploy_names))
     tracked_names = set(_git(["ls-files", "--", *RETAINED_FILES]).splitlines())
+    tracked_deploy_names = set(_git(["ls-files", "--", *RETAINED_DEPLOY_FILES]).splitlines())
     _require(tracked_names == retained_names)
-    deploy = sum(_lines(path) for path in _deploy_paths())
+    _require(tracked_deploy_names == retained_deploy_names)
+    deploy_paths = _deploy_paths()
+    _require(retained_deploy_names <= {str(path.relative_to(ROOT)) for path in deploy_paths})
+    deploy = sum(_lines(path) for path in deploy_paths)
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
     current = deploy + retained
     gross_added = INHERITED_POST_BASE_GROSS_ADDITIONS + _gross_additions()

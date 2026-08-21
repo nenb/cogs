@@ -1,8 +1,8 @@
-"""Strict non-authoritative local Kata result data and a blocked entry.
+"""Strict non-authoritative local Kata result codec and receipt-only entry.
 
-Decoded or canonical report bytes never grant authority.  A future coordinator
-must privately type and custody-bind the complete bytes plus independently
-verified source and journal facts; no report-to-receipt adaptation exists here.
+Decoded or canonical report bytes never grant authority.  The private evidence
+path derives these bytes from typed owner and retired-journal facts; this module
+accepts no report input when consuming the one-shot custody-bound receipt.
 """
 import hashlib
 import json
@@ -318,14 +318,13 @@ def load_result(raw):
 
 
 def main():
-    """Run only the fixed local entry; current immutable prerequisites block."""
+    """Run only the fixed local entry and consume its exact private receipt."""
     if len(sys.argv) != 1:
         raise LocalResultBlocked()
     import completion_kata_coordinator as coordinator
     try:
-        # No report bytes can enter this route.  When the missing secure issuer
-        # is committed, this call must return its sealed private receipt rather
-        # than a decoded/caller-created result.
+        # No report bytes can enter this route.  The coordinator may return only
+        # the sealed receipt minted after typed evidence and custody settlement.
         receipt = coordinator._run_fixed_local_qualification()
     except coordinator.CoordinatorBlocked as error:
         raise LocalResultBlocked() from error

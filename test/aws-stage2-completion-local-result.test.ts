@@ -351,6 +351,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     "schemas/stage2-local-execution-envelope-v1.json",
     "schemas/stage2-local-runtime-manifest-v1.json",
     "schemas/stage2-workload-local-qualification-v2.json",
+    "deploy/aws-feasibility/remote/completion_local_evidence.py",
   ]) {
     assert.match(budgetSource, new RegExp(retainedPath.replaceAll(".", String.raw`\.`), "u"));
   }
