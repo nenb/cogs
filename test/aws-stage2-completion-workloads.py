@@ -641,8 +641,8 @@ def load_native_probe():
 
 
 native_probe = load_native_probe()
-command_observation = native_probe.NativeCommandObserved(2, b"dpkg-deb: warning: error\n")
-check(command_observation.category == "exit-2-warning-1-error-1-bytes-25",
+command_observation = native_probe.NativeCommandObserved(2, b"command: warning: error\n")
+check(command_observation.category == "exit-2-warning-1-error-1-bytes-24",
       "native command observation category changed")
 command_observation = native_probe.NativeCommandObserved(-9, b"")
 check(command_observation.category == "exit--9-warning-0-error-0-bytes-0",
@@ -671,6 +671,13 @@ detail_cases = (
     (b"failed to read: permission denied", "read-access"),
     (b"cannot read: permission denied", "read-access"),
     (b"unable to lock: permission denied", "lock-access"),
+    (b"cannot mkdir: permission denied", "directory-create"),
+    (b"cannot change ownership: permission denied", "ownership-update"),
+    (b"cannot chown: permission denied", "ownership-update"),
+    (b"cannot chmod: permission denied", "mode-update"),
+    (b"cannot utime: permission denied", "time-update"),
+    (b"cannot rename: permission denied", "rename-access"),
+    (b"cannot remove: permission denied", "remove-access"),
     (b"failed to make temporary file: permission denied", "temporary-file"),
     (b"file size limit exceeded", "file-size-limit"),
     (b"unknown option", "unknown-option"),
@@ -680,6 +687,9 @@ detail_cases = (
     (b"unable to create: no such file or directory", "create-failed"),
     (b"unable to open: permission denied", "open-failed"),
     (b"cannot open: no such file or directory", "open-failed"),
+    (b"dpkg-deb: permission denied", "archive-helper"),
+    (b"tar: permission denied", "archive-tar"),
+    (b"subprocess: permission denied", "subprocess-failed"),
     (b"unknown option then file size limit exceeded", "file-size-limit"),
 )
 for raw, token in detail_cases:
