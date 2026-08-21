@@ -749,7 +749,7 @@ except native_probe.NativeCandidateStageError as package_error:
     check(len(observed_package_environments) == 1
           and observed_package_environments[0] == {
               **guest._ENV, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-              "TMPDIR": "/probe/private-tmp"},
+              "TMPDIR": "private-tmp"},
           "native package command did not use its owned temporary directory")
 else:
     raise AssertionError("native package command failure was accepted")
@@ -1094,9 +1094,14 @@ check('"-Zxz"' in native_source and '"-z6"' in native_source
       and '"--compression-level=6"' not in native_source,
       "native package command does not use dpkg-deb's supported compression flags")
 check('"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"' in native_source
-      and '"TMPDIR": root.proc_path("private-tmp")' in native_source
-      and '"--log=/dev/null"' in native_source,
+      and '"TMPDIR": "private-tmp"' in native_source
+      and 'f"--log={prefix}/dpkg.log"' in native_source,
       "native package command lost its fixed paths, private temporary directory, or log sink")
+check("root.proc_path(source)" not in native_source
+      and "root.proc_path(deb)" not in native_source
+      and "root.proc_path(admin)" not in native_source
+      and "root.proc_path(installed)" not in native_source,
+      "native dpkg arguments reintroduced post-drop proc-fd path traversal")
 check("class NativeCandidateStageError" in native_source and "_stage_failure(stage, error)" in native_source,
       "native transaction stage errors are not retained")
 for required_stage in (

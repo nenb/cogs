@@ -229,7 +229,7 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
     package_environment = {
         **_ENV,
         "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-        "TMPDIR": root.proc_path("private-tmp"),
+        "TMPDIR": "private-tmp",
     }
     stage = "package-source"
     try:
@@ -244,8 +244,8 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
                 "-Zxz",
                 "-z6",
                 "--threads-max=1",
-                root.proc_path(source),
-                root.proc_path(deb),
+                source,
+                deb,
             ),
             root,
             deadline,
@@ -273,13 +273,13 @@ def _run_native_package_sample(root, label, diagnostic_prefix, tools, deadline):
             (
                 tools.dpkg.executable,
                 "--force-not-root",
-                "--log=/dev/null",
+                f"--log={prefix}/dpkg.log",
                 "--admindir",
-                root.proc_path(admin),
+                admin,
                 "--instdir",
-                f"{root.proc_path(installed)}/",
+                f"{installed}/",
                 "--install",
-                root.proc_path(deb),
+                deb,
             ),
             root,
             deadline,
