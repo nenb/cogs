@@ -38,6 +38,7 @@ RETAINED_FILES = (
     "schemas/stage2-workload-candidate-v1.json",
     "schemas/stage2-workload-candidate-v2.json",
     "schemas/stage2-workload-final-pin-v1.json",
+    "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
     "schemas/stage2-workload-post-pin-v1.json",
     "schemas/stage2-workload-local-qualification-v2.json",
     "config/stage2-completion-ssh-workload-v2.json",
