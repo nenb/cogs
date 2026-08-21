@@ -52,6 +52,32 @@ def _policy_inserter_route():
     return take
 _take_attested_policy_inserter = _policy_inserter_route()
 del _policy_inserter_route
+
+
+def _v2_policy_inserter_route():
+    available = [True]
+    def install(command_ids, value):
+        if (type(command_ids) is not tuple or not command_ids
+                or not set(command_ids) <= ATTESTED_COMMANDS
+                or type(value) is not dict or set(value) != {
+                    "executable_sha256", "tool_closure_sha256", "executable_path",
+                    "contract_version"}):
+            raise RuntimeError("invalid V2 executable policy insertion")
+        if any(name in _ATTESTED_EXECUTABLES for name in command_ids):
+            raise RuntimeError("executable policy already inserted")
+        frozen = MappingProxyType(dict(value))
+        for name in command_ids:
+            _ATTESTED_EXECUTABLES[name] = frozen
+    def take():
+        if not available[0]:
+            raise RuntimeError("V2 policy inserter already issued")
+        available[0] = False
+        return install
+    return take
+
+
+_take_v2_attested_policy_inserter = _v2_policy_inserter_route()
+del _v2_policy_inserter_route
 DEFERRED_COMMANDS = frozenset({"CTR_RUN"})
 
 # Byte-compatible protected v1 vocabulary; B1 IDs are journal-derived and do

@@ -358,6 +358,23 @@ def _acquire(approval, outer):
         _abandon_active(retained, error)
 
 
+def _abandon(lease, control):
+    """Drop live custody of a verified lease without deleting durable state."""
+    _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
+    _fail(type(control) is fs.OperationControl)
+    try:
+        _verify(lease, control)
+    except BaseException as error:
+        lease.disposition = "uncertain"
+        _close_preserving(lease.retained, error)
+    try:
+        _close_preserving(lease.retained)
+        lease.disposition = "abandoned"
+    except BaseException:
+        lease.disposition = "uncertain"
+        raise
+
+
 def _reopen_kata_reserved(permit, control):
     grant = kata_operation._claim_rootfs_reopen(permit)
     held = None

@@ -47,8 +47,10 @@ test("V1 and V2 static schemas compile independently without changing V1", () =>
   ] as const) {
     const validate = ajv.getSchema(`https://cogs.invalid/schemas/${file}`);
     assert.ok(validate);
-    assert.equal(validate(samples[name]), true, `${name}: ${JSON.stringify(validate.errors)}`);
-    const hostile = structuredClone(samples[name]);
+    const sample = samples[name];
+    assert.ok(sample);
+    assert.equal(validate(sample), true, `${name}: ${JSON.stringify(validate.errors)}`);
+    const hostile = structuredClone(sample);
     hostile.unreviewed = true;
     assert.equal(validate(hostile), false, `${name} schema accepted an extra field`);
   }

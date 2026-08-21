@@ -221,11 +221,28 @@ source = (REMOTE / "completion_kata_preparation.py").read_text()
 assert "/dev/kvm" not in source and "QMP_SOCKET" not in source
 assert "os.getpid" not in source and "import completion_kata_coordinator" not in source
 assert "subprocess.Popen" in source and '"/usr/bin/zstd"' in source
+assert "def generate_implementation_h_candidate_control_bytes():" in source
+assert "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py" in preparation.MANDATORY_SECURITY_SOURCES
+bridge_source = (REMOTE / "completion_kata_preparation_bridge.py").read_text()
+assert all(word not in bridge_source for word in ("getenv", "os.environ", "/dev/kvm", "QMP"))
+assert "completion_kata_network" not in bridge_source and "completion_local" not in bridge_source
+assert "_claim_fixed_executable_owner" in bridge_source and "_abandon_fixed_rootfs" in bridge_source
 admission_source = (REMOTE / "completion_kata_admission.py").read_text()
 assert "_claim_live_rootfs_mapping" in admission_source
 assert "type(lease) is rootfs_lease.RetainedRootfsLease" in admission_source
 assert "root.operation_fd" in admission_source
+assert "def source_approval(custody):" in admission_source
 assert "execution_path" not in runtime_description.raw.decode("ascii")
+
+# V2 is additive: the historical V1 issuer still returns only its refusal.
+import completion_kata_admission as admission
+legacy = admission._take_execution_custody_issuer()
+try:
+    legacy()
+except admission.AdmissionUnavailable:
+    pass
+else:
+    raise AssertionError("historical V1 admission unexpectedly issued custody")
 
 # The collector deterministically binds a complete archive layout and extracted
 # postwalk without retaining live filesystem identities.

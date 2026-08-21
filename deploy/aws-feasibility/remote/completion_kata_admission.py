@@ -112,6 +112,14 @@ class LiveMappingDescription:
     object_count: int
 
 
+@dataclass(frozen=True)
+class ExecutableRoleDescription:
+    role: str
+    path: str
+    closure_sha256: str
+    objects: tuple[RetainedObject, ...]
+
+
 def _require(condition, message="invalid local execution admission"):
     if not condition:
         raise AdmissionError(message)
@@ -751,7 +759,9 @@ def _static_routes():
         _require(type(claim) is _ExecutableRoleCustody and state is not None and state["custody"] is custody)
         _require(state["role"] == expected_role and not state["consumed"], "live exact executable role required")
         state["consumed"] = True
-        return state["objects"]
+        contract = custody_states[custody]["contracts"][expected_role].value
+        return ExecutableRoleDescription(
+            expected_role, contract["path"], contract["closure_sha256"], state["objects"])
 
     def mapping_from_root(custody, root_descriptor, lease_identity):
         state = custody_states.get(custody)
@@ -837,6 +847,15 @@ def _static_routes():
         state["consumed"] = True
         return state["description"]
 
+    def source_approval(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None,
+                 "live exact static custody required")
+        implementation = state["envelope"].value["implementation"]
+        import completion_rootfs_fs as rootfs_fs
+        return rootfs_fs.SourceApproval(
+            implementation["revision"], implementation["source_manifest_sha256"])
+
     def binding(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live exact static custody required")
@@ -851,14 +870,14 @@ def _static_routes():
             mapping_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer, claim_role, consume_role, claim_live_mapping,
+    return (take_issuer, source_approval, claim_role, consume_role, claim_live_mapping,
             consume_mapping, binding, abort)
 
 
-(_take_static_preparation_issuer, _claim_executable_role_custody,
- _consume_executable_role_custody, _claim_live_rootfs_mapping,
- _consume_live_rootfs_mapping, _static_custody_binding,
- _abort_static_preparation) = _static_routes()
+(_take_static_preparation_issuer, _fixed_source_approval,
+ _claim_executable_role_custody, _consume_executable_role_custody,
+ _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
+ _static_custody_binding, _abort_static_preparation) = _static_routes()
 del _static_routes
 
 

@@ -78,6 +78,7 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_command_policy.py",
     "deploy/aws-feasibility/remote/completion_kata_coordinator.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation.py",
+    "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_process.py",
     "deploy/aws-feasibility/remote/completion_kata_runtime.py",
     "deploy/aws-feasibility/remote/completion_local_full.py",
@@ -949,6 +950,11 @@ def collect_fixed_candidate():
                                runtime_contract.REVIEWED_ROOTFS_SHA256, contracts)
 
 
+def generate_implementation_h_candidate_control_bytes():
+    """Generate canonical candidate control bytes for the fixed source revision H."""
+    return collect_fixed_candidate()
+
+
 def publish_fixed_candidate(control_raw, members):
     """Publish one new candidate directory; never replace reviewed or staged bytes."""
     destination = OBSERVATION_ROOT / "candidate"
@@ -982,7 +988,7 @@ def publish_fixed_candidate(control_raw, members):
 
 def main():
     _require(len(os.sys.argv) == 1)
-    control_raw, members = collect_fixed_candidate()
+    control_raw, members = generate_implementation_h_candidate_control_bytes()
     digest = publish_fixed_candidate(control_raw, members)
     result = canonical_bytes({"version": "cogs.stage2-local-static-observation/v1",
                               "authority": "non-authoritative-discovery-candidate",

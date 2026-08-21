@@ -1802,9 +1802,28 @@ def docker_real_lease_test():
         assert (observed.st_dev, observed.st_ino, hashlib.sha256(current).hexdigest()) == initial_identity
         assert (root_observed.st_dev, root_observed.st_ino) == initial_root_identity and root_path.is_dir()
 
-    # Simulate owner death: every preservation attempt below is unlocked and
-    # therefore must decide from the durable leased ledger, not flock contention.
-    lease_module._close_preserving(held.retained)
+    # A real child faults one retained descriptor before the abandonment API.
+    # It must fail without mutating the durable lease. The parent then performs
+    # the successful no-KVM abandonment used by the preparation bridge.
+    assert all("/dev/kvm" not in os.readlink(path) for path in
+               Path("/proc/self/fd").iterdir() if path.exists())
+    child = os.fork()
+    if child == 0:
+        try:
+            descriptor = held.retained.owned.root.operation_fd.number
+            os.close(descriptor)
+            try:
+                lease_module._abandon(held, control)
+            except BaseException:
+                os._exit(0)
+            os._exit(91)
+        except BaseException:
+            os._exit(92)
+    waited, status = os.waitpid(child, 0)
+    assert waited == child and os.waitstatus_to_exitcode(status) == 0
+    preserved()
+    lease_module._abandon(held, control)
+    assert held.disposition == "abandoned"
     preserved()
 
     # Compose the real fixed operation owner with the real durable rootfs owner.

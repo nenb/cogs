@@ -34,6 +34,7 @@ import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
 
 _install_attested_policy = command_policy._take_attested_policy_inserter()
+_install_v2_attested_policy = command_policy._take_v2_attested_policy_inserter()
 CONTRACT_VERSION = "cogs.stage2-kata-tool-closure/v1"
 TEST_PATH = "/tmp/cogs-kata-process-s1-v1/helper"
 MAX_STREAM = 65_536
@@ -239,6 +240,54 @@ def _attested_executable_routes(install_policy):
                 try: os.close(descriptor)
                 except OSError: pass
             raise
+    def issue_retained(retained):
+        expected = admission.EXECUTABLES
+        if type(retained) is not tuple or len(retained) != len(expected):
+            raise ProcessError("complete fixed retained executable set required")
+        values = {}
+        descriptors = set()
+        policies = []
+        for value, (role, _source_class, path) in zip(retained, expected, strict=True):
+            if (type(value) is not RetainedExecutable or (value.role, value.path) != (role, path)
+                    or type(value.closure_descriptors) is not tuple):
+                raise ProcessError("retained executable role set differs")
+            current = (value.descriptor, *value.closure_descriptors)
+            if (any(type(descriptor) is not int or descriptor < 0 for descriptor in current)
+                    or descriptors & set(current)):
+                raise ProcessError("retained executable descriptors alias")
+            descriptors.update(current)
+            observed = fdmap.identity(value.descriptor)
+            if (_host_generation(value.descriptor) != value.generation
+                    or _digest_fd(value.descriptor, observed.size) != value.sha256
+                    or fdmap.identity(value.descriptor) != observed):
+                raise ProcessError("retained executable changed before ownership")
+            values[role] = [value, False]
+            command_ids = (("SSH_READY",) if role == "ssh" else
+                           command_policy.KEY_COMMAND_ORDER if role == "ssh-keygen" else ())
+            if command_ids:
+                policies.append((command_ids, {
+                    "executable_sha256": value.sha256,
+                    "tool_closure_sha256": value.closure_sha256,
+                    "executable_path": value.path,
+                    "contract_version": command_policy.HOST_TOOL_CONTRACT_VERSION,
+                }))
+        if any(name in command_policy.ATTESTED_EXECUTABLES for name in command_policy.ATTESTED_COMMANDS):
+            raise ProcessError("attested executable policy already issued")
+        for command_ids, policy_value in policies:
+            _install_v2_attested_policy(command_ids, policy_value)
+        return states.issue(values)
+    def abort_owner(owner):
+        state = states.pop(owner)
+        errors = []
+        for retained, _consumed in state.values():
+            if id(retained) in released:
+                continue
+            released.add(id(retained))
+            for descriptor in (retained.descriptor, *retained.closure_descriptors):
+                try: os.close(descriptor)
+                except OSError as error: errors.append(error)
+        if errors:
+            raise BaseExceptionGroup("attested executable owner abort", errors)
     def open_fixed(custody, custody_qualification):
         admission._consume_custody_qualification(custody, custody_qualification)
         return issue(command_policy.REVIEWED_HOST_TOOL_CONTRACTS)
@@ -246,11 +295,13 @@ def _attested_executable_routes(install_policy):
         if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":
             raise ProcessError("synthetic attestation test admission absent")
         return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
-    return AttestedExecutableOwner, claim, require, release, issue, open_fixed, open_synthetic
+    return (AttestedExecutableOwner, claim, require, release, issue, issue_retained,
+            abort_owner, open_fixed, open_synthetic)
 
 
 (AttestedExecutableOwner, _claim_attested_executable, _require_attested_executable,
  _release_attested_executable, _issue_attested_executable_owner,
+ _issue_retained_executable_owner, _abort_attested_executable_owner,
  _open_attested_executable_owner,
  _open_synthetic_attested_executable_owner_for_tests) = _attested_executable_routes(
      _install_attested_policy)

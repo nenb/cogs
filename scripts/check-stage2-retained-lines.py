@@ -24,6 +24,7 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
+    "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
 RETAINED_FILES = (
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
