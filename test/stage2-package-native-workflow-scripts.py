@@ -42,6 +42,14 @@ def rejected(call, exception):
     raise AssertionError(f"did not reject with {exception.__name__}")
 
 
+def rejection_message(call, exception):
+    try:
+        call()
+    except exception as error:
+        return str(error)
+    raise AssertionError(f"did not reject with {exception.__name__}")
+
+
 def terminate(process):
     process.terminate()
     try:
@@ -72,15 +80,32 @@ def live_process_tests():
         held = Path(target) / "held"
         held.write_bytes(b"held")
         fd_process = subprocess.Popen([
-            sys.executable, "-c", "import os,sys,time;f=os.open(sys.argv[1],os.O_RDONLY);time.sleep(30)",
-            str(held),
-        ])
+            sys.executable, "-c",
+            "import os,sys,time;f=os.open(sys.argv[1],os.O_RDONLY);"
+            "print('READY',flush=True);time.sleep(30)", str(held),
+        ], stdout=subprocess.PIPE)
         try:
-            time.sleep(0.05)
-            rejected(lambda: settlement.scan("before-unmount", targets=(target,)),
-                     settlement.SettlementError)
+            assert fd_process.stdout is not None and fd_process.stdout.readline() == b"READY\n"
+            message = rejection_message(
+                lambda: settlement.scan("before-unmount", targets=(target,)),
+                settlement.SettlementError)
+            if Path("/proc/self/fd").exists():
+                assert message.startswith("unsettled process descriptor:")
         finally:
             terminate(fd_process)
+
+        if Path("/proc/self/fd").exists():
+            churn = subprocess.Popen([
+                sys.executable, "-c",
+                "import os,time\nprint('READY',flush=True)\nend=time.monotonic()+20\n"
+                "while time.monotonic()<end:\n"
+                " f=os.open('/dev/null',os.O_RDONLY);os.close(f);time.sleep(0.001)",
+            ], stdout=subprocess.PIPE)
+            try:
+                assert churn.stdout is not None and churn.stdout.readline() == b"READY\n"
+                settlement.scan("before-unmount", targets=(target,))
+            finally:
+                terminate(churn)
 
 
 def process_stat(pid, starttime):
@@ -203,7 +228,7 @@ def scanner_race_and_mount_tests():
         settlement._bytes = original
         temporary.cleanup()
 
-    # Any listed descriptor that vanishes keeps that generation incomplete.
+    # A listed descriptor that vanishes in a foreign namespace stays incomplete.
     temporary, proc, pid = synthetic_proc("/unrelated")
     original_link = settlement._link
     descriptor_path = pid / "fd" / "7"
@@ -220,6 +245,71 @@ def scanner_race_and_mount_tests():
             settlement._identity(proc / "self/ns/mnt"), ("/target",), settlement.MARKER)
     finally:
         settlement._link = original_link
+        temporary.cleanup()
+
+    # Same-namespace control-process FD closes are tolerated, while observed
+    # targets and namespace transitions remain fail closed.
+    temporary, proc, pid = synthetic_proc("/unrelated")
+    own_mount = proc / "self/ns/mnt"
+    process_mount = pid / "ns/mnt"
+    process_mount.unlink()
+    os.link(own_mount, process_mount)
+    descriptor_path = pid / "fd" / "7"
+    descriptor_path.symlink_to("/unrelated")
+    original_link = settlement._link
+    original_bytes = settlement._bytes
+    try:
+        settlement._link = lambda path: (
+            None if Path(path) == descriptor_path else original_link(path))
+        assert settlement._inspect_generation(
+            "before-unmount", proc, "41", 100, settlement._identity(own_mount),
+            ("/target",), settlement.MARKER)
+
+        settlement._link = original_link
+        descriptor_path.unlink()
+        descriptor_path.symlink_to("/target/held")
+        message = rejection_message(lambda: settlement._inspect_generation(
+            "before-unmount", proc, "41", 100, settlement._identity(own_mount),
+            ("/target",), settlement.MARKER), settlement.SettlementError)
+        assert message.startswith("unsettled process descriptor:")
+
+        descriptor_path.unlink()
+        (pid / "mountinfo").write_bytes(
+            b"1 2 0:1 / /target rw - tmpfs tmpfs rw\n")
+        message = rejection_message(lambda: settlement._inspect_generation(
+            "after-unmount", proc, "41", 100, settlement._identity(own_mount),
+            ("/target",), settlement.MARKER), settlement.SettlementError)
+        assert message.startswith("unsettled target mount namespace:")
+
+        (pid / "mountinfo").write_bytes(
+            b"1 2 0:1 / /unrelated rw - tmpfs tmpfs rw\n")
+        def change_namespace_during_mount(path, *args):
+            raw = original_bytes(path, *args)
+            if Path(path) == pid / "mountinfo":
+                process_mount.unlink()
+                process_mount.write_bytes(b"foreign-during-mount")
+            return raw
+        settlement._bytes = change_namespace_during_mount
+        assert not settlement._inspect_generation(
+            "before-unmount", proc, "41", 100, settlement._identity(own_mount),
+            ("/target",), settlement.MARKER)
+        settlement._bytes = original_bytes
+        process_mount.unlink()
+        os.link(own_mount, process_mount)
+
+        descriptor_path.symlink_to("/unrelated")
+        def change_namespace(path):
+            if Path(path) == descriptor_path:
+                process_mount.unlink()
+                process_mount.write_bytes(b"foreign-again")
+            return original_link(path)
+        settlement._link = change_namespace
+        assert not settlement._inspect_generation(
+            "before-unmount", proc, "41", 100, settlement._identity(own_mount),
+            ("/target",), settlement.MARKER)
+    finally:
+        settlement._link = original_link
+        settlement._bytes = original_bytes
         temporary.cleanup()
 
     # Reuse/change of a listed PID is retried as a new process generation, not skipped.

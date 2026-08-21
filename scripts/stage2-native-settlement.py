@@ -162,22 +162,25 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
     base = proc_root / name
     if _starttime(base) != starttime:
         return False
+    namespace = _identity(base / "ns/mnt")
+    if namespace is None:
+        if _starttime(base) == starttime:
+            raise SettlementError(f"stable namespace inspection unavailable: {name}")
+        return False
     command = _bytes(base / "cmdline")
     mounts = _bytes(base / "mountinfo", MAX_LARGE_PROC_BYTES)
+    observed_namespace = _identity(base / "ns/mnt")
     if command is None or mounts is None:
         if _starttime(base) == starttime:
             raise SettlementError(f"stable process inspection unavailable: {name}")
         return False
+    if observed_namespace != namespace:
+        return False
     if marker in command:
         raise SettlementError(f"unsettled candidate process: {name}")
-    if any(_refers(field, targets) for field in _mount_fields(mounts)):
-        namespace = _identity(base / "ns/mnt")
-        if namespace is None:
-            if _starttime(base) == starttime:
-                raise SettlementError(f"stable namespace inspection unavailable: {name}")
-            return False
-        if phase == "after-unmount" or namespace != own_namespace:
-            raise SettlementError(f"unsettled target mount namespace: {name}")
+    if (any(_refers(field, targets) for field in _mount_fields(mounts))
+            and (phase == "after-unmount" or namespace != own_namespace)):
+        raise SettlementError(f"unsettled target mount namespace: {name}")
     for entry in ("root", "cwd", "exe"):
         value = _link(base / entry)
         if value is None and entry != "exe" and _starttime(base) == starttime:
@@ -193,10 +196,16 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
     for descriptor in descriptors:
         value = _link(base / "fd" / descriptor)
         if value is None:
-            stable = False
+            # Same-namespace host/control processes are trusted infrastructure;
+            # unrelated closes must not couple cleanup to runner FD churn.  A
+            # retained workload process has a distinct mount namespace and stays
+            # strict on every listed descriptor observation.
+            if namespace != own_namespace:
+                stable = False
         elif _refers(value, targets):
             raise SettlementError(f"unsettled process descriptor: {name}/{descriptor}")
-    return stable and _starttime(base) == starttime
+    return (stable and _identity(base / "ns/mnt") == namespace
+            and _starttime(base) == starttime)
 
 
 def _candidate_target(environ):
