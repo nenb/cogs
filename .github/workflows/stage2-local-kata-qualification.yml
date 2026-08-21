@@ -1,0 +1,361 @@
+name: Stage 2 local Kata qualification
+run-name: Stage 2 local Kata qualification H=${{ inputs.reviewed_implementation_head }} G=${{ inputs.reviewed_control_head }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_implementation_head:
+        description: Exact reviewed implementation revision H
+        required: true
+        type: string
+      reviewed_control_head:
+        description: Exact reviewed control revision G containing this unchanged workflow
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  local-kata:
+    runs-on: ubuntu-24.04
+    # Fixed step bounds total 87 minutes inside one 5,400-second envelope.
+    # Recovery, fixed-root cleanup, independent residue, and publication retain
+    # a non-borrowing 21-minute reserve after the sole entry bound.
+    timeout-minutes: 90
+    concurrency:
+      group: stage2-local-kata-qualification
+      cancel-in-progress: false
+    env:
+      EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
+      EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+      REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-local-receipt-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_ARTIFACT_NAME: stage2-local-kata-report-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_ARTIFACT_NAME: stage2-local-kata-upload-receipt-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out exact control revision G without persisted credentials
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Gate reviewed H and G and consume only the first-created dispatch
+        id: gate
+        timeout-minutes: 2
+        env:
+          CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
+          CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
+          CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_CONTROL_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
+          test -z "$(/usr/bin/git status --porcelain)"
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 90s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-qualification-guard.py" \
+            >>"$GITHUB_OUTPUT"
+
+      - name: Check out exact reviewed implementation revision H separately
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: nenb/cogs
+          ref: ${{ steps.gate.outputs.implementation_head }}
+          path: stage2-implementation-H
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Complete fixed source and external control preparation before KVM eligibility
+        id: preparation
+        timeout-minutes: 3
+        env:
+          EXPECTED_MANIFEST: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+        run: |
+          set -euo pipefail
+          test ! -e /var/lib/cogs
+          test ! -e /run/cogs-stage2-local-control-v2
+          prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
+          /usr/bin/python3 -I -c 'import json,sys
+          value=json.loads(sys.stdin.buffer.read())
+          assert value["revision"] == sys.argv[1] and value["manifest_sha256"] == sys.argv[2]
+          ' "${{ steps.gate.outputs.implementation_head }}" "$EXPECTED_MANIFEST" <<<"$prepared"
+          sudo -n /usr/bin/install -d -o root -g root -m 0500 /run/cogs-stage2-local-control-v2
+          sudo -n /usr/bin/install -o root -g root -m 0400 \
+            "$GITHUB_WORKSPACE/deploy/aws-feasibility/remote/stage2-completion-local-control-v2.json" \
+            /run/cogs-stage2-local-control-v2/control.json
+          observed=$(/usr/bin/sha256sum /run/cogs-stage2-local-control-v2/control.json | /usr/bin/cut -d' ' -f1)
+          test "$observed" = "$EXPECTED_CONTROL_SHA256"
+          test ! -e /run/cogs-stage2-local-private-v2
+
+      - name: Execute the sole zero-argument local qualification entry
+        id: local_entry
+        continue-on-error: true
+        timeout-minutes: 59
+        run: |
+          set -euo pipefail
+          test "${{ steps.preparation.outcome }}" = success
+          test ! -e "$REPORT_STAGING"
+          /bin/mkdir -m 0700 -- "$REPORT_STAGING"
+          umask 077
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 3470s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_local_full.py \
+            >"$REPORT_STAGING/report.partial"
+
+      - name: Invoke cleanup-only recovery after every local entry outcome
+        id: recovery
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 300s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
+
+      - name: Settle and remove fixed source and control roots only after recovery
+        id: fixed_cleanup
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 165s \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
+            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            RECOVERY_OUTCOME="$RECOVERY_OUTCOME" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" cleanup
+
+      - name: Independently prove zero lifecycle residue after cleanup
+        id: independent_residue
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 105s \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
+            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" residue
+
+      - name: Validate semantics and reviewed schema then freeze the private-receipt report
+        id: publication
+        if: always() && steps.recovery.outcome == 'success' && steps.fixed_cleanup.outcome == 'success' && steps.independent_residue.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+        run: |
+          set -euo pipefail
+          test ! -e "$REPORT_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 50s \
+            env -i PATH=/usr/bin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            TRUSTED_RUNNER_UID="$(/usr/bin/id -u)" \
+            EXPECTED_IMPLEMENTATION_HEAD="$EXPECTED_IMPLEMENTATION_HEAD" \
+            EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" \
+            EXPECTED_RESULT_SCHEMA_SHA256="$EXPECTED_RESULT_SCHEMA_SHA256" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-publication.py" publish \
+            >>"$GITHUB_OUTPUT"
+
+      - name: Upload the sole canonical local report member
+        id: report_upload
+        if: always() && steps.publication.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.REPORT_ARTIFACT_NAME }}
+          path: ${{ env.REPORT_STAGING }}/report.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Download report by exact numeric artifact ID with fatal digest mismatch
+        id: report_download
+        if: always() && steps.report_upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.report_upload.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ env.REPORT_READBACK_STAGING }}
+          digest-mismatch: error
+
+      - name: Byte-compare sole exact-ID report readback
+        id: report_readback
+        if: always() && steps.report_download.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+          EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+          REPORT_ARTIFACT_ID: ${{ steps.report_upload.outputs.artifact-id }}
+          REPORT_ARTIFACT_DIGEST: ${{ steps.report_upload.outputs.artifact-digest }}
+          REPORT_SHA256: ${{ steps.publication.outputs.report_sha256 }}
+          REPORT_BYTES: ${{ steps.publication.outputs.report_bytes }}
+          REPORT_RESULT: ${{ steps.publication.outputs.report_result }}
+          FAILURE_CODE: ${{ steps.publication.outputs.failure_code }}
+          ENTRY_OUTCOME: ${{ steps.local_entry.outcome }}
+        run: |
+          set -euo pipefail
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-upload-receipt.py" readback
+
+      - name: Create separate canonical upload-binding receipt after exact report readback
+        id: receipt_create
+        if: always() && steps.report_readback.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+          EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+          REPORT_ARTIFACT_ID: ${{ steps.report_upload.outputs.artifact-id }}
+          REPORT_ARTIFACT_DIGEST: ${{ steps.report_upload.outputs.artifact-digest }}
+          REPORT_SHA256: ${{ steps.publication.outputs.report_sha256 }}
+          REPORT_BYTES: ${{ steps.publication.outputs.report_bytes }}
+          REPORT_RESULT: ${{ steps.publication.outputs.report_result }}
+          FAILURE_CODE: ${{ steps.publication.outputs.failure_code }}
+          ENTRY_OUTCOME: ${{ steps.local_entry.outcome }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            env -i PATH=/usr/bin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
+            REPORT_ARTIFACT_NAME="$REPORT_ARTIFACT_NAME" RECEIPT_ARTIFACT_NAME="$RECEIPT_ARTIFACT_NAME" \
+            EXPECTED_IMPLEMENTATION_HEAD="$EXPECTED_IMPLEMENTATION_HEAD" \
+            EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" \
+            EXPECTED_CONTROL_HEAD="$EXPECTED_CONTROL_HEAD" EXPECTED_CONTROL_SHA256="$EXPECTED_CONTROL_SHA256" \
+            EXPECTED_WORKFLOW_SHA256="$EXPECTED_WORKFLOW_SHA256" \
+            EXPECTED_RESULT_SCHEMA_SHA256="$EXPECTED_RESULT_SCHEMA_SHA256" \
+            REPORT_ARTIFACT_ID="$REPORT_ARTIFACT_ID" REPORT_ARTIFACT_DIGEST="$REPORT_ARTIFACT_DIGEST" \
+            REPORT_SHA256="$REPORT_SHA256" REPORT_BYTES="$REPORT_BYTES" REPORT_RESULT="$REPORT_RESULT" \
+            FAILURE_CODE="$FAILURE_CODE" ENTRY_OUTCOME="$ENTRY_OUTCOME" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-upload-receipt.py" create
+
+      - name: Upload separate non-authoritative upload-binding receipt
+        id: receipt_upload
+        if: always() && steps.receipt_create.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.RECEIPT_ARTIFACT_NAME }}
+          path: ${{ env.REPORT_STAGING }}/receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Download receipt by its exact numeric artifact ID
+        id: receipt_download
+        if: always() && steps.receipt_upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.receipt_upload.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ env.RECEIPT_READBACK_STAGING }}
+          digest-mismatch: error
+
+      - name: Byte-compare sole exact-ID receipt readback
+        id: receipt_readback
+        if: always() && steps.receipt_download.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+          EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+          REPORT_ARTIFACT_ID: ${{ steps.report_upload.outputs.artifact-id }}
+          REPORT_ARTIFACT_DIGEST: ${{ steps.report_upload.outputs.artifact-digest }}
+          REPORT_SHA256: ${{ steps.publication.outputs.report_sha256 }}
+          REPORT_BYTES: ${{ steps.publication.outputs.report_bytes }}
+          REPORT_RESULT: ${{ steps.publication.outputs.report_result }}
+          FAILURE_CODE: ${{ steps.publication.outputs.failure_code }}
+          ENTRY_OUTCOME: ${{ steps.local_entry.outcome }}
+          RECEIPT_ARTIFACT_ID: ${{ steps.receipt_upload.outputs.artifact-id }}
+          RECEIPT_ARTIFACT_DIGEST: ${{ steps.receipt_upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-upload-receipt.py" receipt-readback
+
+      - name: Remove all local report and readback staging
+        id: output_cleanup
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            /bin/rm -rf -- "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"
+          test ! -e "$REPORT_STAGING"
+          test ! -e "$REPORT_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
+
+      - name: Enforce attempt 1 complete custody chain and final zero residue
+        if: always()
+        timeout-minutes: 1
+        env:
+          ENTRY: ${{ steps.local_entry.outcome }}
+          RECOVERY: ${{ steps.recovery.outcome }}
+          FIXED_CLEANUP: ${{ steps.fixed_cleanup.outcome }}
+          INDEPENDENT_RESIDUE: ${{ steps.independent_residue.outcome }}
+          PUBLICATION: ${{ steps.publication.outcome }}
+          REPORT_UPLOAD: ${{ steps.report_upload.outcome }}
+          REPORT_DOWNLOAD: ${{ steps.report_download.outcome }}
+          REPORT_READBACK: ${{ steps.report_readback.outcome }}
+          RECEIPT_CREATE: ${{ steps.receipt_create.outcome }}
+          RECEIPT_UPLOAD: ${{ steps.receipt_upload.outcome }}
+          RECEIPT_DOWNLOAD: ${{ steps.receipt_download.outcome }}
+          RECEIPT_READBACK: ${{ steps.receipt_readback.outcome }}
+          OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          for outcome in "$ENTRY" "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" \
+            "$PUBLICATION" "$REPORT_UPLOAD" "$REPORT_DOWNLOAD" "$REPORT_READBACK" \
+            "$RECEIPT_CREATE" "$RECEIPT_UPLOAD" "$RECEIPT_DOWNLOAD" "$RECEIPT_READBACK" \
+            "$OUTPUT_CLEANUP"
+          do
+            test "$outcome" = success
+          done
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
+            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" final
