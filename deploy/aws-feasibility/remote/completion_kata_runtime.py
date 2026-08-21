@@ -1180,6 +1180,43 @@ def _runtime_owner_routes():
         _fail(not active or socket is not None); inventories = {name: inventory(node) for name, node in (("root", root), ("state", daemon_state)) if node is not None}
         value = _Daemon(seal); daemons[value] = [journal, completion, process_owner, control, runtime, config, root, daemon_state, retained, socket, inventories]
         return value
+    def issue_attestation(executable_owner, config, control):
+        import completion_kata_process as process
+        _fail(type(config) is rootfs_fs.HeldNode
+              and type(control) is rootfs_fs.OperationControl,
+              "fixed runtime attestation inputs")
+        executables = []
+        try:
+            for role in ("containerd", "ctr", "shim", "qemu", "virtiofsd"):
+                executables.append(process._claim_attested_executable(executable_owner, role))
+            expected = (("containerd", STAGED_CONTAINERD), ("ctr", STAGED_CTR),
+                        ("shim", "/opt/kata/bin/containerd-shim-kata-v2"),
+                        ("qemu", "/opt/kata/bin/qemu-system-x86_64"),
+                        ("virtiofsd", "/opt/kata/libexec/virtiofsd"))
+            _fail(tuple((item.role, item.path) for item in executables) == expected,
+                  "fixed runtime executable roles")
+            raw = rootfs_fs._read_regular(config, 4_194_304, control)
+            digest = hashlib.sha256(raw).hexdigest()
+            _fail(digest == KATA_CONFIG_SHA256, "fixed Kata configuration")
+            value = _Attestation(seal)
+            attestations[value] = [tuple(executables), config, control, digest]
+            return value
+        except BaseException as primary:
+            errors = [primary]
+            for executable in reversed(executables):
+                try: process._release_attested_executable(executable)
+                except BaseException as error: errors.append(error)
+            if len(errors) == 1: raise
+            raise BaseExceptionGroup("runtime attestation issuance failure", errors)
+    def discard_attestation(value):
+        import completion_kata_process as process
+        state = attestations.pop(value, None)
+        _fail(state is not None, "fixed runtime attestation")
+        errors = []
+        for executable in reversed(state[0]):
+            try: process._release_attested_executable(executable)
+            except BaseException as error: errors.append(error)
+        if errors: raise BaseExceptionGroup("runtime attestation close", errors)
     def verify_attestation(value):
         import completion_kata_process as process
         state = attestations.get(value); _fail(state is not None); executables, config, control, digest = state
@@ -1242,6 +1279,31 @@ def _runtime_owner_routes():
         rootfs_lease._verify(state[1], state[7]); verify_attestation(state[5]); verify_daemon(state[6])
         if command_id == "CTR_RUN":
             kata_inputs._verify_runtime_inputs(state[8]); _fail(kata_network._verify_runtime_network(state[9]) == state[4])
+    def start_composed(journal, lease, inputs, network, attestation, completion, control):
+        executables = verify_attestation(attestation)
+        daemon_owner = _start_private_containerd(journal, executables[0])
+        daemon = None
+        try:
+            daemon = retain_daemon(journal, completion, daemon_owner, control)
+            return compose(journal, lease, inputs, network, attestation, daemon, control)
+        except BaseException as error:
+            failures = [error]
+            try:
+                if daemon is not None: shutdown_daemon(daemon)
+                else:
+                    import completion_kata_process as process
+                    process._stop_fixed_daemon(daemon_owner, journal)
+            except BaseException as cleanup_error: failures.append(cleanup_error)
+            if len(failures) == 1: raise
+            raise BaseExceptionGroup("runtime composition/rollback failure", failures)
+    def bind_mount(owner):
+        state = owners.get(owner); _fail(state is not None, "fixed runtime owner")
+        identity, generations = state[3]
+        _fail(identity.operation_token == state[0].command_context().operation_token
+              and generations, "fixed runtime input binding")
+        return kata_operation._record_runtime_mount_from_owner(
+            state[0], identity.manifest_sha256,
+            kata_operation._generation_value(generations[-1]))
     def launch(owner):
         import completion_kata_process as process
         state = owners.get(owner); _fail(state is not None); recover_pending(state)
@@ -1478,17 +1540,27 @@ def _runtime_owner_routes():
         if ".kata-runtime-v1.staging" in os.listdir(state[1].operation_fd.number): _purge_owned_tree(state[1].operation_fd.number, ".kata-runtime-v1.staging")
         _fail("kata-runtime-v1" not in os.listdir(state[1].operation_fd.number), "private runtime absence"); daemons.pop(daemon, None)
     def close(owner):
+        import completion_kata_process as process
         state = owners.pop(owner, None); _fail(type(owner) is _Owner and state is not None)
-        try:
-            kata_inputs._close_runtime_inputs(state[10])
-        finally:
-            if state[11] is not None: kata_network._close_runtime_network(state[11])
+        errors = []
+        try: kata_inputs._close_runtime_inputs(state[10])
+        except BaseException as error: errors.append(error)
+        if state[11] is not None:
+            try: kata_network._close_runtime_network(state[11])
+            except BaseException as error: errors.append(error)
+        try: discard_attestation(state[5])
+        except BaseException as error: errors.append(error)
+        if errors: raise BaseExceptionGroup("fixed runtime owner close", errors)
     def cleanup_staged(daemon):
         state = daemons.get(daemon); _fail(type(daemon) is _Daemon and state is not None and state[8] is None); shutdown_daemon(daemon); return {"runtime": "staged-absent"}
-    return (retain_daemon, compose, launch, observe, ownership, cleanup, close,
+    return (issue_attestation, discard_attestation, retain_daemon, compose,
+            start_composed, bind_mount, launch, observe, ownership, cleanup, close,
             cleanup_staged, verify_consumption, shutdown_daemon, verify_daemon)
-(_retain_private_containerd, _compose_fixed_runtime, _launch_fixed_runtime,
- _observe_fixed_runtime, _record_fixed_runtime_ownership,
- _cleanup_fixed_runtime, _close_fixed_runtime, _cleanup_staged_runtime,
- _verify_runtime_consumption, _shutdown_private_containerd, _verify_private_containerd) = _runtime_owner_routes()
+(_issue_fixed_runtime_attestation, _discard_fixed_runtime_attestation,
+ _retain_private_containerd, _compose_fixed_runtime, _start_composed_runtime,
+ _bind_fixed_runtime_mount, _launch_fixed_runtime,
+ _observe_fixed_runtime,
+ _record_fixed_runtime_ownership, _cleanup_fixed_runtime, _close_fixed_runtime,
+ _cleanup_staged_runtime, _verify_runtime_consumption, _shutdown_private_containerd,
+ _verify_private_containerd) = _runtime_owner_routes()
 del _runtime_owner_routes

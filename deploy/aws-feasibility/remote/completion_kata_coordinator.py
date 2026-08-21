@@ -8,7 +8,9 @@ replace the module-held facade with typed recorders.
 from dataclasses import dataclass
 
 import completion_kata_admission as admission
+import completion_kata_execution_bridge as execution_bridge
 import completion_kata_network as network
+import completion_kata_operation_bridge as operation_bridge
 import completion_kata_process as process
 import completion_kata_qualification as qualification
 import completion_kata_runtime as runtime
@@ -82,8 +84,7 @@ RECOVERY_FORBIDDEN = (
     "authenticate_ssh",
 )
 BLOCKED_REASON = (
-    "exact admission preparation/live-custody, operation begin/retire, and private "
-    "owner-evidence bridges required"
+    "exact static admission/live-custody and private owner-evidence bridges required"
 )
 
 
@@ -108,6 +109,7 @@ class _Lifecycle:
     baselines: object = None
     network_owner: object = None
     network_proof: object = None
+    network_guest_proof: object = None
     staged_runtime: object = None
     execution_mapping: object = None
     task: object = None
@@ -141,19 +143,6 @@ class _AdmissionBoundary:
         admission._abort_execution_custody(lifecycle.static_custody)
 
 
-class _NetworkBoundary:
-    """Name the baseline -> mutation -> retained-observation causal boundary."""
-
-    def capture(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
-
-    def create(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
-
-    def prove(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
-
-
 class _PrivateEvidenceBoundary:
     """No JSON/report adapter exists here; only the future sealed owner issuer fits."""
 
@@ -167,122 +156,118 @@ class _PrivateEvidenceBoundary:
 class _PackagePrivateOwners:
     """Fixed integration facade over package-private owners.
 
-    Admission is wired today.  The first absent sealed handoff refuses before a
-    rootfs mutation.  The straight-line coordinator remains the sole lifecycle
-    composition and can be integrated by replacing these narrow methods with
-    the matching sealed owner claims; public owner openers stay closed.
+    Mutable methods delegate only to sealed bridge owners. Static custody and
+    final evidence remain separate fail-closed prerequisites; public owner
+    openers stay closed.
     """
 
     def __init__(self):
         self.admission = _AdmissionBoundary()
-        self.network = _NetworkBoundary()
+        self.operation = operation_bridge._take_operation_bridge()
+        self.execution = execution_bridge._take_execution_bridge()
         self.evidence = _PrivateEvidenceBoundary()
 
     def claim_static_custody(self, lifecycle):
         return self.admission.claim_static()
 
     def acquire_rootfs(self, lifecycle):
-        # Current admission does not expose the complete fixed-source approval
-        # required by completion_rootfs_lease._acquire.  Deriving one from the
-        # selected V1 result binding would cross the reviewed authority model.
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._acquire_rootfs(self.operation, lifecycle)
 
     def open_operation(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._open_operation(self.operation, lifecycle)
 
     def claim_live_custody(self, lifecycle):
         return self.admission.claim_live(lifecycle)
 
     def claim_executables(self, lifecycle):
-        custody, gate = lifecycle.live_custody
-        return process._open_attested_executable_owner(custody, gate)
+        return process._open_static_attested_executable_owner(lifecycle.static_custody)
 
     def create_inputs(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._create_inputs(self.operation, lifecycle)
 
     def capture_baselines(self, lifecycle):
-        return self.network.capture(lifecycle)
+        return execution_bridge._capture_baselines(self.execution, lifecycle)
 
     def create_network(self, lifecycle):
-        return self.network.create(lifecycle)
+        return execution_bridge._create_network(self.execution, lifecycle)
 
     def prove_network_causality(self, lifecycle):
-        return self.network.prove(lifecycle)
+        return execution_bridge._prove_network_causality(self.execution, lifecycle)
 
     def stage_runtime(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._stage_runtime(self.execution, lifecycle)
 
     def bind_execution_mapping(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._bind_execution_mapping(self.execution, lifecycle)
 
     def launch_task(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._launch_task(self.execution, lifecycle)
 
     def prove_runtime(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._prove_runtime(self.execution, lifecycle)
 
     def authenticate_ssh(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._authenticate_ssh(self.execution, lifecycle)
 
     def open_existing_operation(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._open_existing_operation(self.operation, lifecycle)
 
     def recover_pending(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._recover_pending(self.operation, lifecycle)
 
     def revoke_readiness(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._revoke_readiness(self.execution, lifecycle)
 
     def observe_ownership(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._observe_ownership(self.execution, lifecycle)
 
     def stop_task(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._stop_task(self.execution, lifecycle)
 
     def remove_network(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_network(self.execution, lifecycle)
 
     def remove_task(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_task(self.execution, lifecycle)
 
     def remove_container(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_container(self.execution, lifecycle)
 
     def remove_runtime(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_runtime(self.execution, lifecycle)
 
     def remove_share(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_share(self.execution, lifecycle)
 
     def stop_containerd(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._stop_containerd(self.execution, lifecycle)
 
     def remove_firewall(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._remove_firewall(self.execution, lifecycle)
 
     def remove_inputs(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._remove_inputs(self.operation, lifecycle)
 
     def prepare_rootfs_release(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._prepare_rootfs_release(self.operation, lifecycle)
 
     def authorize_rootfs_release(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._authorize_rootfs_release(self.operation, lifecycle)
 
     def remove_rootfs(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._remove_rootfs(self.operation, lifecycle)
 
     def observe_final_baselines(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._observe_final_baselines(self.execution, lifecycle)
 
     def retire_operation(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._retire_operation(self.operation, lifecycle)
 
     def remove_operation(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._remove_operation(self.operation, lifecycle)
 
     def abandon_prepared_rootfs(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return operation_bridge._abandon_prepared_rootfs(self.operation, lifecycle)
 
     def owner_evidence(self, lifecycle):
         if lifecycle.recovery:

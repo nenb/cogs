@@ -375,6 +375,45 @@ def _abandon(lease, control):
         raise
 
 
+def _begin_kata_operation(authority, held, approval, control):
+    """Derive genesis/lease facts here, then seal them in the operation owner."""
+    _fail(type(held) is RetainedRootfsLease and held.disposition == "held"
+          and type(approval) is fs.SourceApproval and type(control) is fs.OperationControl)
+    reference = _verify(held, control)
+    baseline = hashlib.sha256(kata_operation._canonical({
+        "entry_count": reference.entry_count,
+        "manifest_sha256": reference.manifest_sha256,
+        "manifest_size": reference.manifest_size,
+        "operation_name": reference.operation_name,
+        "rootfs_token": reference.token,
+        "ustar_sha256": reference.ustar_sha256,
+        "ustar_size": reference.ustar_size,
+    })).hexdigest()
+    kata_operation._begin_production_operation(
+        authority, approval, reference.token, baseline)
+    _attach_kata_operation(authority.reserve_rootfs(), held, control)
+    kata_operation._admit_production_v2(authority)
+    return authority
+
+
+def _attach_kata_operation(permit, held, control):
+    """Settle one fresh Kata intent against the already-held exact lease."""
+    _fail(type(held) is RetainedRootfsLease and held.disposition == "held"
+          and type(control) is fs.OperationControl)
+    grant = kata_operation._claim_rootfs_reopen(permit)
+
+    def rootfs_route(token, route_control):
+        _fail(type(token) is str and token == held.reference.token
+              and route_control is control)
+        _verify(held, control)
+        return held
+
+    routed = kata_operation._invoke_rootfs_reopen_route(grant, rootfs_route, control)
+    _fail(routed is held)
+    kata_operation._settle_rootfs_reopen(grant, held.reference)
+    _verify(held, control)
+    return held
+
 def _reopen_kata_reserved(permit, control):
     grant = kata_operation._claim_rootfs_reopen(permit)
     held = None

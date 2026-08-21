@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import time
 import unicodedata
 import completion_guest_workloads_v3 as guest_workloads
@@ -860,6 +861,18 @@ class RootfsAuthorization:
         _uint(self.sequence, fs.ROOTFS_LEDGER_MAX_RECORDS - 1)
         _uint(self.offset, fs.ROOTFS_LEDGER_MAX_BYTES, 1)
         _hex(self.line_sha256)
+_RETIRED_SEAL = object()
+class RetiredOperation:
+    __slots__ = ("operation_token", "journal_sha256", "raw")
+    def __new__(cls, key=None, operation_token=None, journal_sha256=None, raw=None):
+        _fail(key is _RETIRED_SEAL)
+        value = super().__new__(cls)
+        value.operation_token, value.journal_sha256, value.raw = (
+            operation_token, journal_sha256, raw)
+        _hex(operation_token); _hex(journal_sha256)
+        _fail(type(raw) is bytes and raw.endswith(b"\n")
+              and hashlib.sha256(raw).hexdigest() == journal_sha256)
+        return value
 def _same_intent(left, right):
     names = ("operation_token", "resource_id", "action", "expected_parent_generation", "names_sha256")
     return all(left[name] == right[name] for name in names)
@@ -2382,6 +2395,67 @@ def _make_authority():
         _fail(body["host_boot_id"] == context.host_boot_id and body["source_revision"] == context.source_revision)
         _fail(body["lifecycle_phase"] == context.lifecycle_phase and body["command_serial"] == context.command_serial)
         write_validated(authority, "COMMAND_INTENT_V2", body); return CommandIntentReceipt(body["command_serial"], body["command_id"], body["binding_sha256"])
+    def begin_production(authority, approval, rootfs_token, baseline):
+        """Begin only from the rootfs bridge's verified fixed lease facts."""
+        _fail(type(approval) is fs.SourceApproval and _hex(rootfs_token)
+              and _hex(baseline))
+        io, records, status = reload(authority)
+        _fail(status == "absent" and not records)
+        operation_token = secrets.token_hex(32)
+        io.create({
+            **FIXED, "operation_token": operation_token,
+            "rootfs_token": rootfs_token, "host_boot_id": _current_boot_id(),
+            "source_revision": approval.revision,
+            "source_manifest_sha256": approval.manifest_sha256,
+            "journal_key": {"mount_id": 1, "device": 1, "inode": 1, "kind": "file"},
+            "rootfs_pin": ROOTFS_PIN, "mount_list_sha256": MOUNT_SHA,
+        })
+        _io, records, exact = reload(authority)
+        _fail(exact == "exact" and len(records) == 1)
+        genesis = records[0].body
+        write_validated(authority, "GENESIS_SETTLED", {
+            "operation_token": operation_token, "journal_key": genesis["journal_key"],
+            "state_parent": _generation_value(io.state.generation)})
+        write_validated(authority, "ROOTFS_ACQUIRE_INTENT", {
+            "operation_token": operation_token, "rootfs_token": rootfs_token,
+            "rootfs_baseline_sha256": baseline})
+        return authority
+    def retired_operation(authority):
+        if type(authority) is CleanupAuthority:
+            authority = cleanup_owners[authority]
+        io, records, status = reload(authority, True)
+        _fail(status == "exact" and _legal(records) == "RETIRED")
+        observed = io.read(); _fail(observed is not None)
+        raw, generation = observed
+        _fail(_key_value(generation.key) == records[0].body["journal_key"]
+              and _parse(raw) == records)
+        return RetiredOperation(_RETIRED_SEAL, records[0].body["operation_token"],
+                                hashlib.sha256(raw).hexdigest(), raw)
+    def retire_production(authority, final_snapshot):
+        capability = claim_production_cleanup_operation(authority)
+        _fail(type(final_snapshot) is dict and "proof_sha256" in final_snapshot)
+        digest = final_snapshot["proof_sha256"]; _hex(digest)
+        retained = cleanup_owners[capability]
+        _io, records, status = reload(retained)
+        _fail(status == "exact" and _legal(records) == "ROOTFS_ABSENT")
+        token, key = records[0].body["operation_token"], records[0].body["journal_key"]
+        write_validated(retained, "FINAL_BASELINES", {
+            "operation_token": token, "final_baselines_sha256": digest})
+        body = {"operation_token": token, "journal_key": key,
+                "final_baselines_sha256": digest}
+        write_validated(retained, "RETIRE_INTENT", body)
+        write_validated(retained, "RETIRED", body)
+        return retired_operation(retained)
+    def remove_retired(authority):
+        retained = cleanup_owners[authority] if type(authority) is CleanupAuthority else authority
+        receipt = retired_operation(retained)
+        io, records, status = reload(retained, True)
+        _fail(status == "exact" and records[-1].record_type == "RETIRED"
+              and io._loaded_generation is not None)
+        io.unlink(_key_value(io._loaded_generation.key))
+        _io, empty, absent = reload(retained, True)
+        _fail(absent == "absent" and not empty)
+        return receipt
     def claim_rootfs_reopen(permit):
         _fail(type(permit) is RootfsPermit)
         state = permits.get(permit)
@@ -2626,6 +2700,7 @@ def _make_authority():
         record_fs_settled, record_ssh_result, record_ssh_ready, durable_phase,
         revoke_readiness, revoke_or_require_terminal, record_input_removed, record_uncertain,
         network_records, network_history, record_network, settle_network_phase,
+        begin_production, retire_production, retired_operation, remove_retired,
     )
 (
     _open_fixed_operation, _create_fixed_operation_test_local, _claim_rootfs_reopen,
@@ -2643,6 +2718,8 @@ def _make_authority():
     _record_ssh_ready, _durable_phase, _revoke_readiness, _revoke_or_require_terminal,
     _record_input_removed, _record_uncertain,
     _network_records, _network_history, _record_network, _settle_network_phase,
+    _begin_production_operation, _retire_production_operation,
+    _retired_production_operation, _remove_retired_operation,
 ) = _make_authority()
 del _make_authority
 def _runtime_mount_issuance_routes(record_body):
@@ -2677,6 +2754,7 @@ def _runtime_mount_issuance_routes(record_body):
         state[3] = True
         return record_body(authority, state[1], state[2])
     return RuntimeMountIssuance, issue, record
+_record_runtime_mount_from_owner = _record_runtime_mount_body_v2
 (RuntimeMountIssuance, _issue_runtime_mount_v2,
  _record_runtime_mount_v2) = _runtime_mount_issuance_routes(_record_runtime_mount_body_v2)
 del _runtime_mount_issuance_routes, _record_runtime_mount_body_v2

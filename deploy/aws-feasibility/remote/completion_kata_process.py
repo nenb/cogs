@@ -167,8 +167,48 @@ def _attested_executable_routes(install_policy):
         sealed_message="attested executable owner is sealed")
     AttestedExecutableOwner = states.kind
     claimed, released = set(), set()
+    def admitted_role(state, role):
+        custody = state.get("__static_custody__")
+        if custody is None or role in state:
+            return
+        claim_value = admission._claim_executable_role_custody(custody, role)
+        objects = admission._consume_executable_role_custody(custody, claim_value, role)
+        if (type(objects) is not tuple or not objects or objects[0].kind != "executable"
+                or any(type(item) is not admission.RetainedObject or item.role != role
+                       for item in objects)):
+            raise ProcessError("admitted executable closure required")
+        descriptors = []
+        try:
+            for item in objects:
+                descriptor = os.dup(item.descriptor)
+                os.set_inheritable(descriptor, False)
+                descriptors.append(descriptor)
+            executable = objects[0]
+            closure = hashlib.sha256(kata_operation._canonical([{
+                "kind": item.kind, "path": item.path, "sha256": item.sha256,
+                "size": item.size, "interpreter": item.interpreter,
+                "soname": item.soname, "needed": list(item.needed),
+            } for item in objects])).hexdigest()
+            retained = RetainedExecutable(
+                role, executable.path, descriptors[0], executable.sha256, closure,
+                _host_generation(descriptors[0]), tuple(descriptors[1:]))
+            if role in {"ssh", "ssh-keygen"}:
+                command_ids = (("SSH_READY",) if role == "ssh" else command_policy.KEY_COMMAND_ORDER)
+                install_policy(command_ids, {
+                    "executable_sha256": retained.sha256,
+                    "tool_closure_sha256": retained.closure_sha256,
+                    "executable_path": retained.path,
+                    "contract_version": CONTRACT_VERSION,
+                }, command_policy.REVIEWED_HOST_TOOL_CONTRACTS)
+            state[role] = [retained, False]
+        except BaseException:
+            for descriptor in descriptors:
+                try: os.close(descriptor)
+                except OSError: pass
+            raise
     def claim(owner, role):
         state = states.require(owner)
+        admitted_role(state, role)
         if role not in state or state[role][1]:
             raise ProcessError("exact unused attested executable required")
         retained = state[role][0]
@@ -291,18 +331,21 @@ def _attested_executable_routes(install_policy):
     def open_fixed(custody, custody_qualification):
         admission._consume_custody_qualification(custody, custody_qualification)
         return issue(command_policy.REVIEWED_HOST_TOOL_CONTRACTS)
+    def open_static(custody):
+        admission._static_custody_binding(custody)
+        return states.issue({"__static_custody__": custody})
     def open_synthetic():
         if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":
             raise ProcessError("synthetic attestation test admission absent")
         return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
     return (AttestedExecutableOwner, claim, require, release, issue, issue_retained,
-            abort_owner, open_fixed, open_synthetic)
+            abort_owner, open_fixed, open_static, open_synthetic)
 
 
 (AttestedExecutableOwner, _claim_attested_executable, _require_attested_executable,
  _release_attested_executable, _issue_attested_executable_owner,
  _issue_retained_executable_owner, _abort_attested_executable_owner,
- _open_attested_executable_owner,
+ _open_attested_executable_owner, _open_static_attested_executable_owner,
  _open_synthetic_attested_executable_owner_for_tests) = _attested_executable_routes(
      _install_attested_policy)
 del _attested_executable_routes, _install_attested_policy

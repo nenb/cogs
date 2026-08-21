@@ -28,13 +28,13 @@ test("S0 fixed operation foundation fails closed", async () => {
   const lease = await readFile(leasePath, "utf8");
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
-  // ADR0105 permits the bounded network-causality/final-observer correction.
+  // The mutable-owner bridge adds sealed begin/retire/removal boundaries.
   const adr0105Preferred = 60_000;
   const adr0105Hard = 62_000;
   assert.ok(adr0105Preferred < adr0105Hard);
   assert.ok(
-    operationLines + leaseExtension <= 2950,
-    `Integrated process, network, SSH, runtime, and recovery extension exceeds 2950: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 3150,
+    `Integrated operation/rootfs ownership exceeds 3150: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,

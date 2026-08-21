@@ -18,9 +18,15 @@ PRE_BASE_GROSS_ADDITIONS = 2_949
 CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
 PREFERRED_LIMIT = 60_000
 HARD_LIMIT = 62_000
+MUTABLE_OWNER_LINE_LIMIT = 900
 DEPLOY_ROOT = "deploy/aws-feasibility"
 DEPLOY_SUFFIXES = (".py", ".sh", ".tf")
+MUTABLE_OWNER_FILES = (
+    "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
+    "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
+)
 RETAINED_DEPLOY_FILES = (
+    *MUTABLE_OWNER_FILES,
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
@@ -126,6 +132,8 @@ def measure():
     deploy_paths = _deploy_paths()
     _require(retained_deploy_names <= {str(path.relative_to(ROOT)) for path in deploy_paths})
     deploy = sum(_lines(path) for path in deploy_paths)
+    mutable_owner_lines = sum(_lines(ROOT / name) for name in MUTABLE_OWNER_FILES)
+    _require(mutable_owner_lines < MUTABLE_OWNER_LINE_LIMIT)
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
     current = deploy + retained
     gross_added = INHERITED_POST_BASE_GROSS_ADDITIONS + _gross_additions()
@@ -148,6 +156,10 @@ def measure():
         "conservative_lines_no_deletion_credit": conservative,
         "preferred_limit": PREFERRED_LIMIT,
         "hard_limit": HARD_LIMIT,
+        "mutable_owner_files": MUTABLE_OWNER_FILES,
+        "mutable_owner_lines": mutable_owner_lines,
+        "mutable_owner_line_limit": MUTABLE_OWNER_LINE_LIMIT,
+        "mutable_owner_line_limit_satisfied": mutable_owner_lines < MUTABLE_OWNER_LINE_LIMIT,
         "preferred_satisfied": current < PREFERRED_LIMIT and conservative < PREFERRED_LIMIT,
         "hard_satisfied": current < HARD_LIMIT and conservative < HARD_LIMIT,
     }
