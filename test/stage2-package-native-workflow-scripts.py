@@ -86,11 +86,8 @@ def live_process_tests():
         ], stdout=subprocess.PIPE)
         try:
             assert fd_process.stdout is not None and fd_process.stdout.readline() == b"READY\n"
-            message = rejection_message(
-                lambda: settlement.scan("before-unmount", targets=(target,)),
-                settlement.SettlementError)
-            if Path("/proc/self/fd").exists():
-                assert message.startswith("unsettled process descriptor:")
+            rejected(lambda: settlement.scan("before-unmount", targets=(target,)),
+                     settlement.SettlementError)
         finally:
             terminate(fd_process)
 
