@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Hostile tests for the authenticated pre-checkout static-control dispatch guard."""
 import importlib.util
+import inspect
 import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -32,6 +34,7 @@ def environment(**changes):
     value = {
         "ACTIONS_READ_TOKEN": TOKEN_VALUE,
         "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_EVENT_PATH": VALID_EVENT_PATH,
         "GITHUB_REPOSITORY": GUARD.REPOSITORY,
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_REF_PROTECTED": "true",
@@ -51,6 +54,15 @@ EVENT = {
     "repository": {"full_name": GUARD.REPOSITORY},
     "inputs": {"exact_implementation_head": H},
 }
+EVENT_DIRECTORY = tempfile.TemporaryDirectory(prefix="cogs-static-event-test-")
+VALID_EVENT_PATH = str(Path(EVENT_DIRECTORY.name) / "event.json")
+Path(VALID_EVENT_PATH).write_text(json.dumps(EVENT), encoding="utf-8")
+
+
+def event_environment(raw):
+    path = Path(EVENT_DIRECTORY.name) / f"event-{len(tuple(Path(EVENT_DIRECTORY.name).iterdir()))}.json"
+    path.write_bytes(raw)
+    return environment(GITHUB_EVENT_PATH=str(path))
 
 
 def run(run_id, *, head=G, title=None, **changes):
@@ -128,14 +140,14 @@ BASE_HISTORY = [
 ]
 auth_observations = []
 GUARD.guard(
-    environment(), event=EVENT,
+    environment(),
     urlopen=opener(BASE_HISTORY, observe=lambda request, headers: auth_observations.append(
         (request.host, headers["authorization"])))),
 assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
 # Response order does not confer authority; the exact current ID is still the sole earliest ID.
-GUARD.guard(environment(), event=EVENT, urlopen=opener(list(reversed(BASE_HISTORY))))
+GUARD.guard(environment(), urlopen=opener(list(reversed(BASE_HISTORY))))
 
-# Both consumed attempt-one failures are exact required predecessors.
+# All four consumed attempt-one failures are exact required predecessors.
 for predecessor_id in GUARD.PREDECESSORS:
     other_predecessors = [
         predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id
@@ -149,18 +161,18 @@ for predecessor_id in GUARD.PREDECESSORS:
         predecessor(predecessor_id, repository={"full_name": "attacker/cogs"}),
     ):
         rejection(lambda value=hostile_predecessor, others=other_predecessors: GUARD.guard(
-            environment(), event=EVENT, urlopen=opener(others + [value, run(CURRENT_RUN_ID)])))
+            environment(), urlopen=opener(others + [value, run(CURRENT_RUN_ID)])))
     rejection(lambda missing=other_predecessors: GUARD.guard(
-        environment(), event=EVENT, urlopen=opener(missing + [run(CURRENT_RUN_ID)])),
+        environment(), urlopen=opener(missing + [run(CURRENT_RUN_ID)])),
         "PREDECESSOR_REJECTED")
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT,
+    environment(),
     urlopen=opener([
         *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
         run(32550000000, head="d" * 40), run(CURRENT_RUN_ID),
     ])), "UNKNOWN_HISTORY_REJECTED")
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT,
+    environment(),
     urlopen=opener([
         *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
         run(GUARD.THIRD_PREDECESSOR_RUN_ID + 1,
@@ -171,14 +183,14 @@ rejection(lambda: GUARD.guard(
 # A second corrected-generation creation consumes no authority, regardless of which ID is current.
 second = run(CURRENT_RUN_ID + 1)
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener(BASE_HISTORY + [second])),
+    environment(), urlopen=opener(BASE_HISTORY + [second])),
     "CURRENT_SECOND_RUN")
 rejection(lambda: GUARD.guard(
-    environment(GITHUB_RUN_ID=str(CURRENT_RUN_ID + 1)), event=EVENT,
+    environment(GITHUB_RUN_ID=str(CURRENT_RUN_ID + 1)),
     urlopen=opener(BASE_HISTORY + [second])),
     "CURRENT_RUN_NOT_EARLIEST")
 rejection(lambda: GUARD.guard(
-    environment(GITHUB_RUN_ATTEMPT="2"), event=EVENT, urlopen=opener(BASE_HISTORY)))
+    environment(GITHUB_RUN_ATTEMPT="2"), urlopen=opener(BASE_HISTORY)))
 
 # Tokens are opaque bounded HTTP field values: every visible ASCII punctuation
 # character and realistic long forms pass without guessing GitHub's token format.
@@ -190,7 +202,7 @@ for accepted_token in (
     (visible_ascii * 11)[:GUARD.MAX_TOKEN_BYTES],
 ):
     GUARD.guard(
-        environment(ACTIONS_READ_TOKEN=accepted_token), event=EVENT,
+        environment(ACTIONS_READ_TOKEN=accepted_token),
         urlopen=opener(BASE_HISTORY, token=accepted_token))
 
 for name, hostile in (
@@ -199,21 +211,22 @@ for name, hostile in (
     ("GITHUB_SHA", GUARD.PREDECESSOR_WORKFLOW_HEAD),
     ("GITHUB_SHA", GUARD.SECOND_PREDECESSOR_WORKFLOW_HEAD),
     ("GITHUB_SHA", GUARD.THIRD_PREDECESSOR_WORKFLOW_HEAD),
+    ("GITHUB_SHA", GUARD.FOURTH_PREDECESSOR_WORKFLOW_HEAD),
     ("EXACT_IMPLEMENTATION_HEAD", "c" * 40),
 ):
     rejection(lambda name=name, hostile=hostile: GUARD.guard(
-        environment(**{name: hostile}), event=EVENT, urlopen=opener(BASE_HISTORY)))
+        environment(**{name: hostile}), urlopen=opener(BASE_HISTORY)))
 
 missing_token_environment = environment()
 del missing_token_environment["ACTIONS_READ_TOKEN"]
 rejection(lambda: GUARD.guard(
-    missing_token_environment, event=EVENT, urlopen=opener(BASE_HISTORY)), "TOKEN_MISSING")
+    missing_token_environment, urlopen=opener(BASE_HISTORY)), "TOKEN_MISSING")
 for hostile in ("", None):
     rejection(lambda hostile=hostile: GUARD.guard(
-        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        environment(ACTIONS_READ_TOKEN=hostile),
         urlopen=opener(BASE_HISTORY)), "TOKEN_MISSING")
 rejection(lambda: GUARD.guard(
-    environment(ACTIONS_READ_TOKEN="x" * (GUARD.MAX_TOKEN_BYTES + 1)), event=EVENT,
+    environment(ACTIONS_READ_TOKEN="x" * (GUARD.MAX_TOKEN_BYTES + 1)),
     urlopen=opener(BASE_HISTORY)), "TOKEN_BOUND")
 for hostile in (
     *(TOKEN_VALUE + chr(value) for value in range(0x00, 0x21)),
@@ -222,38 +235,65 @@ for hostile in (
     TOKEN_VALUE + "\r\nX-Injected: yes",
 ):
     rejection(lambda hostile=hostile: GUARD.guard(
-        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        environment(ACTIONS_READ_TOKEN=hostile),
         urlopen=opener(BASE_HISTORY)), "TOKEN_CHAR")
 for denied in GUARD.DENIED_ENVIRONMENT:
     rejection(lambda denied=denied: GUARD.guard(
-        {**environment(), denied: "hostile"}, event=EVENT, urlopen=opener(BASE_HISTORY)),
+        {**environment(), denied: "hostile"}, urlopen=opener(BASE_HISTORY)),
         "ENVIRONMENT_REJECTED")
+# The payload has no injectable caller path and contributes no duplicate
+# authorization fields. Documented object variants and subsets all parse; the
+# trusted default environment and typed input remain the sole identity binding.
+assert "event" not in inspect.signature(GUARD.guard).parameters
+for payload in (
+    b"{}",
+    json.dumps(EVENT).encode(),
+    json.dumps({"ref": "refs/heads/main", "inputs": EVENT["inputs"]}).encode(),
+    json.dumps({"repository": {"full_name": "attacker/cogs"},
+                "inputs": {"exact_implementation_head": "c" * 40}}).encode(),
+):
+    GUARD.guard(event_environment(payload), urlopen=opener(BASE_HISTORY))
+
+missing_event_path = environment()
+del missing_event_path["GITHUB_EVENT_PATH"]
+rejection(lambda: GUARD.guard(missing_event_path, urlopen=opener(BASE_HISTORY)),
+          "EVENT_PATH_REJECTED")
 rejection(lambda: GUARD.guard(
-    environment(), event={**EVENT, "repository": {"full_name": "attacker/cogs"}},
-    urlopen=opener(BASE_HISTORY)))
+    environment(GITHUB_EVENT_PATH=str(Path(EVENT_DIRECTORY.name) / "absent")),
+    urlopen=opener(BASE_HISTORY)), "EVENT_IO_REJECTED")
+for raw, code in (
+    (b"", "EVENT_BOUND_REJECTED"),
+    (b" " * (GUARD.MAX_EVENT_BYTES + 1), "EVENT_BOUND_REJECTED"),
+    (b"{", "EVENT_JSON_REJECTED"),
+    (b"NaN", "EVENT_JSON_REJECTED"),
+    (b"[]", "EVENT_OBJECT_REJECTED"),
+):
+    error = rejection(lambda raw=raw: GUARD.guard(
+        event_environment(raw), urlopen=opener(BASE_HISTORY)), code)
+    assert GUARD._safe_diagnostic(error) == f"{GUARD.GUARD_VERSION}: {code}\n"
+event_symlink = Path(EVENT_DIRECTORY.name) / "event-symlink"
+event_symlink.symlink_to(VALID_EVENT_PATH)
 rejection(lambda: GUARD.guard(
-    environment(), event={**EVENT, "inputs": {"exact_implementation_head": "c" * 40}},
-    urlopen=opener(BASE_HISTORY)))
-rejection(lambda: GUARD.guard(
-    environment(), event=[], urlopen=opener(BASE_HISTORY)), "EVENT_REJECTED")
+    environment(GITHUB_EVENT_PATH=str(event_symlink)), urlopen=opener(BASE_HISTORY)),
+    "EVENT_IO_REJECTED")
 
 # Authenticated API failures and every malformed/incomplete history fail closed.
 for status in (401, 403):
     error = rejection(lambda status=status: GUARD.guard(
-        environment(), event=EVENT,
+        environment(),
         urlopen=opener(BASE_HISTORY, status=status, raw=TOKEN_VALUE.encode())),
         "API_AUTH_REJECTED")
     diagnostic = GUARD._safe_diagnostic(error)
     assert diagnostic == f"{GUARD.GUARD_VERSION}: API_AUTH_REJECTED\n"
     assert TOKEN_VALUE not in diagnostic and "body" not in diagnostic.lower()
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=429)),
+    environment(), urlopen=opener(BASE_HISTORY, status=429)),
     "API_FORBIDDEN_OR_RATE_LIMITED")
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=302)),
+    environment(), urlopen=opener(BASE_HISTORY, status=302)),
     "API_REDIRECT_REJECTED")
 rejection(lambda: GUARD.guard(
-    environment(), event=EVENT,
+    environment(),
     urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(TOKEN_VALUE))),
     "API_UNAVAILABLE")
 for malformed in (
@@ -267,7 +307,7 @@ for malformed in (
     opener([predecessor(), run(CURRENT_RUN_ID), run(CURRENT_RUN_ID)]),
 ):
     rejection(lambda malformed=malformed: GUARD.guard(
-        environment(), event=EVENT, urlopen=malformed))
+        environment(), urlopen=malformed))
 
 # Diagnostics are fixed, bounded classifications; exception text, response bytes,
 # token bytes, and token lengths stay absent.
@@ -277,7 +317,7 @@ for hostile, code in (
     (TOKEN_VALUE + "\n", "TOKEN_CHAR"),
 ):
     error = rejection(lambda hostile=hostile: GUARD.guard(
-        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        environment(ACTIONS_READ_TOKEN=hostile),
         urlopen=opener(BASE_HISTORY)), code)
     diagnostic = GUARD._safe_diagnostic(error)
     assert diagnostic == f"{GUARD.GUARD_VERSION}: {code}\n"
@@ -285,7 +325,7 @@ for hostile, code in (
     assert str(len(hostile.encode())) not in diagnostic
 
 error = rejection(lambda: GUARD.guard(
-    environment(), event=EVENT,
+    environment(),
     urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(TOKEN_VALUE))),
     "API_UNAVAILABLE")
 diagnostic = GUARD._safe_diagnostic(error)

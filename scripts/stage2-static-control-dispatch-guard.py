@@ -2,12 +2,13 @@
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v4"
+GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v5"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -28,12 +29,19 @@ THIRD_PREDECESSOR_WORKFLOW_HEAD = "549126bd7ba72d571d53113722e766967aaa0d23"
 THIRD_PREDECESSOR_REVIEWED_HEAD = "5f8c04899422ccf546c0f500b3647a5816b2675c"
 THIRD_PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={THIRD_PREDECESSOR_REVIEWED_HEAD}")
+FOURTH_PREDECESSOR_RUN_ID = 32563007701
+FOURTH_PREDECESSOR_WORKFLOW_HEAD = "7f43d9acc5897b11b5d9794eb2e184767446aa48"
+FOURTH_PREDECESSOR_REVIEWED_HEAD = "d05bbc5928bda9b6bd27da1c290b0238219fd185"
+FOURTH_PREDECESSOR_RUN_TITLE = (
+    f"Non-authoritative Stage 2 static control H={FOURTH_PREDECESSOR_REVIEWED_HEAD}")
 PREDECESSORS = {
     PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
     SECOND_PREDECESSOR_RUN_ID: (
         SECOND_PREDECESSOR_WORKFLOW_HEAD, SECOND_PREDECESSOR_RUN_TITLE),
     THIRD_PREDECESSOR_RUN_ID: (
         THIRD_PREDECESSOR_WORKFLOW_HEAD, THIRD_PREDECESSOR_RUN_TITLE),
+    FOURTH_PREDECESSOR_RUN_ID: (
+        FOURTH_PREDECESSOR_WORKFLOW_HEAD, FOURTH_PREDECESSOR_RUN_TITLE),
 }
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
@@ -54,8 +62,10 @@ DIAGNOSTIC_CODES = frozenset((
     "API_AUTH_REJECTED", "API_FORBIDDEN_OR_RATE_LIMITED", "API_REDIRECT_REJECTED",
     "API_RESPONSE_REJECTED", "API_UNAVAILABLE", "CURRENT_GENERATION_MISSING",
     "CURRENT_RUN_NOT_EARLIEST", "CURRENT_SECOND_RUN", "ENVIRONMENT_REJECTED",
-    "EVENT_REJECTED", "HISTORY_INCOMPLETE", "HISTORY_JSON_REJECTED",
-    "HISTORY_RUN_REJECTED", "IDENTITY_REJECTED", "LOCAL_IO_REJECTED",
+    "EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED",
+    "EVENT_OBJECT_REJECTED", "EVENT_PATH_REJECTED", "EVENT_STABILITY_REJECTED",
+    "HISTORY_INCOMPLETE", "HISTORY_JSON_REJECTED", "HISTORY_RUN_REJECTED",
+    "IDENTITY_REJECTED", "LOCAL_IO_REJECTED",
     "PREDECESSOR_REJECTED", "TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING",
     "UNKNOWN_HISTORY_REJECTED",
 ))
@@ -91,24 +101,40 @@ def _actions_read_token(environ):
 
 
 def _read_event(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
-        before = os.fstat(descriptor)
-        _require(0 < before.st_size <= MAX_EVENT_BYTES, "EVENT_REJECTED")
-        raw = os.read(descriptor, MAX_EVENT_BYTES + 1)
-        after = os.fstat(descriptor)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise GuardError("EVENT_IO_REJECTED") from None
+    try:
+        try:
+            before = os.fstat(descriptor)
+            _require(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_EVENT_BYTES,
+                     "EVENT_BOUND_REJECTED")
+            chunks = []
+            remaining = before.st_size
+            while remaining:
+                part = os.read(descriptor, min(65_536, remaining))
+                _require(type(part) is bytes and part, "EVENT_STABILITY_REJECTED")
+                chunks.append(part)
+                remaining -= len(part)
+            _require(os.read(descriptor, 1) == b"", "EVENT_STABILITY_REJECTED")
+            after = os.fstat(descriptor)
+        except GuardError:
+            raise
+        except OSError:
+            raise GuardError("EVENT_IO_REJECTED") from None
         identity = lambda value: (
             value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns,
             value.st_ctime_ns)
-        _require(len(raw) == before.st_size and identity(before) == identity(after),
-                 "EVENT_REJECTED")
+        _require(identity(before) == identity(after), "EVENT_STABILITY_REJECTED")
+        raw = b"".join(chunks)
     finally:
         os.close(descriptor)
     try:
-        value = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise GuardError("EVENT_REJECTED") from error
-    _require(type(value) is dict, "EVENT_REJECTED")
+        value = json.loads(raw, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise GuardError("EVENT_JSON_REJECTED") from error
+    _require(type(value) is dict, "EVENT_OBJECT_REJECTED")
     return value
 
 
@@ -221,7 +247,7 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
-        "User-Agent": "cogs-stage2-static-replacement-guard-v4",
+        "User-Agent": "cogs-stage2-static-replacement-guard-v5",
         "X-GitHub-Api-Version": "2022-11-28",
     })
     response = _open_history(request, urlopen)
@@ -257,7 +283,7 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
     _require(len(current_ids) == 1, "CURRENT_SECOND_RUN")
 
 
-def guard(environ=os.environ, event=None, urlopen=_authenticated_open):
+def guard(environ=os.environ, urlopen=_authenticated_open):
     _require(not (DENIED_ENVIRONMENT & set(environ)), "ENVIRONMENT_REJECTED")
     token = _actions_read_token(environ)
     _require(_required(environ, "GITHUB_EVENT_NAME") == "workflow_dispatch",
@@ -280,18 +306,10 @@ def guard(environ=os.environ, event=None, urlopen=_authenticated_open):
              "IDENTITY_REJECTED")
     reviewed_head = _required(environ, "EXACT_IMPLEMENTATION_HEAD")
     _require(reviewed_head == REVIEWED_IMPLEMENTATION_HEAD, "IDENTITY_REJECTED")
-    if event is None:
-        try:
-            event = _read_event(_required(environ, "GITHUB_EVENT_PATH"))
-        except OSError:
-            raise GuardError("LOCAL_IO_REJECTED") from None
-    _require(type(event) is dict, "EVENT_REJECTED")
-    repository = event.get("repository")
-    _require(event.get("ref") == "main" and type(repository) is dict
-             and repository.get("full_name") == REPOSITORY,
-             "EVENT_REJECTED")
-    _require(event.get("inputs") == {"exact_implementation_head": reviewed_head},
-             "EVENT_REJECTED")
+    # GitHub's trusted default environment and typed input bind identity. The
+    # payload is accepted only as a bounded stable JSON object; duplicated
+    # payload identity fields are intentionally not an authorization source.
+    _read_event(_required(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"))
     _history(workflow_head, int(run_id_text), token, urlopen=urlopen)
 
 
