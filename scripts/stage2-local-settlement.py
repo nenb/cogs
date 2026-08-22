@@ -39,6 +39,11 @@ MAX_JSON_DEPTH = 32
 MAX_NETWORK_ROWS = 32_768
 MAX_SUPERVISOR_INPUT_BYTES = 4_096
 SUPERVISOR_SECONDS = {"cleanup": "165", "residue": "105", "final": "45"}
+_SETTLEMENT_STAGE = "entry"
+_SETTLEMENT_STAGES = frozenset({
+    "entry", "process", "fixed-roots", "network", "interfaces", "namespaces",
+    "firewall", "traffic-control", "cgroups", "output-staging",
+})
 OBSERVER_ENV = {"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
                 "PATH": "/usr/sbin:/usr/bin"}
 
@@ -223,28 +228,38 @@ def _network_state():
 
 
 def residue(environ=os.environ, final=False):
+    global _SETTLEMENT_STAGE
     staging = _run_paths(environ)
+    _SETTLEMENT_STAGE = "process"
     _scan_fixed()
+    _SETTLEMENT_STAGE = "fixed-roots"
     _require(not any(os.path.lexists(path) for path in FIXED_ROOTS),
              "fixed qualification root remains")
+    _SETTLEMENT_STAGE = "network"
     observed_interfaces, observed_netns, observed_nft, observed_tc = _network_state()
     filesystem_interfaces = tuple(_bounded_names("/sys/class/net"))
     filesystem_netns = tuple(_bounded_names("/run/netns"))
     interface_residue = set(observed_interfaces) | set(filesystem_interfaces)
     netns_residue = set(observed_netns) | set(filesystem_netns)
+    _SETTLEMENT_STAGE = "interfaces"
     _require(not (_named_residue("/sys/class/net")
                   or {"c42h0", "c42g0"} & interface_residue
                   or any(TOKEN_INTERFACE.fullmatch(name) for name in interface_residue)),
              "qualification network interface remains")
+    _SETTLEMENT_STAGE = "namespaces"
     _require(not (_named_residue("/run/netns")
                   or any(TOKEN_NETNS.fullmatch(name) for name in netns_residue)),
              "qualification network namespace remains")
+    _SETTLEMENT_STAGE = "firewall"
     _require(not any(TOKEN_NFT.fullmatch(name) or name == "cogs_stage2_ssh_v1"
                      for name in observed_nft), "qualification firewall remains")
+    _SETTLEMENT_STAGE = "traffic-control"
     _require(not any(TOKEN_RESOURCE.fullmatch(value) for value in observed_tc),
              "qualification traffic control remains")
+    _SETTLEMENT_STAGE = "cgroups"
     _require(not _walk_named("/sys/fs/cgroup"), "qualification cgroup remains")
     if final:
+        _SETTLEMENT_STAGE = "output-staging"
         _require(not any(os.path.lexists(path) for path in staging), "output staging remains")
 
 
@@ -311,4 +326,9 @@ if __name__ == "__main__":
     try:
         main()
     except (LocalSettlementError, OSError, subprocess.SubprocessError):
+        try:
+            stage = _SETTLEMENT_STAGE if _SETTLEMENT_STAGE in _SETTLEMENT_STAGES else "entry"
+            sys.stderr.write(f"local settlement failed at {stage}\n")
+        except BaseException:
+            pass
         raise SystemExit(2)

@@ -167,6 +167,7 @@ def configure(root, fail_at=None):
         assert (module.KATA_ROOT / "fixture").read_bytes() == b"fixed"
 
     module._stable_file = stable
+    module._extractor_preflight = lambda: events.append("extractor-preflight")
     module._acquire_rootfs_assets = acquisition
     module._download_runtime = download
     module._run_extract = extract
@@ -185,7 +186,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert result["runtime_archive_count"] == 2
     assert result["control_verified"] is False
     assert events == [
-        "gate", "rootfs-16", "download-kata", "download-containerd",
+        "gate", "extractor-preflight", "rootfs-16", "download-kata", "download-containerd",
         "extract-kata", "extract-containerd", "layout-readback",
         "publish-static", "installed-readback", "rootfs-readback",
     ]

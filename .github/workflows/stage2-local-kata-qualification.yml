@@ -96,7 +96,7 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 3)
+                  and len(runs) == 4)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
@@ -104,6 +104,8 @@ jobs:
                   " G=a9e02f1269684db98a42bfdaed6e2f193ba1c631")
               second_predecessor_title = ("Stage 2 local Kata qualification H=59d992b305cfd243f2d7b9c770fe24b0a36cc053"
                   " G=223d1ddddb59391010950c1880b1ef36115f8472")
+              third_predecessor_title = ("Stage 2 local Kata qualification H=a2c25f34c35d778965ab7b125fd3b8b4460b0617"
+                  " G=06a1d5124c68a34f80b932ed02173afa1bad365c")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -115,12 +117,15 @@ jobs:
                   elif item["id"] == 32586393441:
                       need(row[2:] == ("completed", "failure", "223d1ddddb59391010950c1880b1ef36115f8472",
                                       second_predecessor_title))
+                  elif item["id"] == 32596053811:
+                      need(row[2:] == ("completed", "failure", "06a1d5124c68a34f80b932ed02173afa1bad365c",
+                                      third_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
                   else: raise SystemExit(2)
               rows = tuple(sorted(rows)); need(len(rows) == len(set(rows)))
-              need({row[0] for row in rows} == {32584575939, 32586393441, int(run_id)})
+              need({row[0] for row in rows} == {32584575939, 32586393441, 32596053811, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows

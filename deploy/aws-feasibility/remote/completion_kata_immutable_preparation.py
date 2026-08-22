@@ -55,6 +55,12 @@ KATA_PARENT = Path("/opt")
 MAX_REDIRECTS = 3
 GLOBAL_SECONDS = 1_700
 CHUNK = 1024 * 1024
+_OBSERVATION_STAGE = "entry"
+_DIAGNOSTIC_STAGES = frozenset({
+    "entry", "preflight", "expected-control", "ownership", "rootfs-acquisition",
+    "runtime-acquisition", "extract-kata", "extract-containerd", "archive-values",
+    "receipt", "publication", "installed-verification", "package-verification",
+})
 ALLOWED_REDIRECT_HOSTS = frozenset({
     "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
@@ -403,12 +409,23 @@ def _download_runtime(expected, deadline):
             connection.close()
 
 
+def _extractor_preflight():
+    for path in (Path("/usr/bin/tar"), Path("/usr/bin/zstd")):
+        seen = path.lstat()
+        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == 0
+                 and stat.S_IMODE(seen.st_mode) & 0o022 == 0 and os.access(path, os.X_OK),
+                 "fixed runtime extractor unavailable")
+    space = os.statvfs("/var/lib")
+    _require(space.f_bavail * space.f_frsize >= 12 * 1024**3
+             and space.f_favail >= 200_000, "fixed runtime extraction capacity unavailable")
+
+
 def _run_extract(archive, destination):
     destination.mkdir(mode=0o700)
     command = ["/usr/bin/tar", "--extract", "--file", str(archive), "--directory", str(destination),
                "--numeric-owner", "--same-owner", "--no-overwrite-dir", "--delay-directory-restore"]
     if archive.name.endswith(".tar.zst"):
-        command.insert(2, "--zstd")
+        command.insert(2, "--use-compress-program=/usr/bin/zstd")
     result = subprocess.run(
         tuple(command), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, env={"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
@@ -725,16 +742,21 @@ def recover_failed_preparation():
 
 
 def prepare():
+    global _OBSERVATION_STAGE
     _reject_ambient_authority()
     _require(SOURCE_ROOT.is_dir())
+    _OBSERVATION_STAGE = "preflight"
+    _extractor_preflight()
     _prepare_state_parents()
     _require(not PREPARATION_ROOT.exists()
              and not IMMUTABLE_STAGING.exists()
              and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     contract = _fixed_contract()
+    _OBSERVATION_STAGE = "expected-control"
     expected_runtime = _expected_runtime()
     created = False
     try:
+        _OBSERVATION_STAGE = "ownership"
         PREPARATION_ROOT.mkdir(mode=0o700)
         created = True
         _sync_directory(PREPARATION_ROOT.parent)
@@ -742,14 +764,18 @@ def prepare():
         RUNTIME_CACHE.mkdir(mode=0o700)
         EXTRACTED_ROOT.mkdir(mode=0o700)
         deadline = time.monotonic() + GLOBAL_SECONDS
+        _OBSERVATION_STAGE = "rootfs-acquisition"
         _acquire_rootfs_assets(contract)
         _require(time.monotonic() < deadline)
+        _OBSERVATION_STAGE = "runtime-acquisition"
         archives = {pin["role"]: _download_runtime(pin, deadline) for pin in preparation.ARCHIVES}
         extracted = {}
         for pin in preparation.ARCHIVES:
+            _OBSERVATION_STAGE = f"extract-{pin['role']}"
             root = EXTRACTED_ROOT / pin["role"]
             _run_extract(archives[pin["role"]], root)
             extracted[pin["role"]] = root
+        _OBSERVATION_STAGE = "archive-values"
         values = _archive_values(expected_runtime, archives, extracted)
         raw = preparation.canonical_bytes({
             "version": VERSION,
@@ -758,10 +784,14 @@ def prepare():
             "runtime_archives": values,
             "forbidden_surfaces": ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"],
         })
+        _OBSERVATION_STAGE = "receipt"
         _write_owned_file(RECEIPT, raw, 0o400)
         _sync_directory(PREPARATION_ROOT)
+        _OBSERVATION_STAGE = "publication"
         _publish_runtime(extracted)
+        _OBSERVATION_STAGE = "installed-verification"
         _verify_installed(expected_runtime)
+        _OBSERVATION_STAGE = "package-verification"
         artifact_verifier.verify_package_archives(
             artifact_verifier.FIXED_CONTRACT_PATH, ARTIFACT_ROOT)
         return {"version": VERSION, "rootfs_artifact_count": 16,
@@ -792,7 +822,10 @@ if __name__ == "__main__":
         main()
     except BaseException:
         try:
-            sys.stderr.buffer.write(b"immutable Stage 2 preparation failed\n")
+            stage = _OBSERVATION_STAGE if _OBSERVATION_STAGE in _DIAGNOSTIC_STAGES else "entry"
+            message = f"immutable Stage 2 preparation failed at {stage}\n".encode("ascii")
+            if len(message) <= 96:
+                sys.stderr.buffer.write(message)
         except BaseException:
             pass
         raise SystemExit(2)
