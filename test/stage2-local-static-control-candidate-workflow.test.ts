@@ -21,7 +21,7 @@ test("control candidate workflow is manual reviewed-H one-shot and expressly non
   assert.match(workflow, /non-authoritative-stage2-static-control/u);
   assert.match(workflow, /^ {4}timeout-minutes: 45$/mu);
   assert.match(workflow, /Step bounds total 42 minutes with a three-minute cleanup\/runner reserve/u);
-  assert.doesNotMatch(workflow, /secrets\.|aws-actions|amazon|terraform|opentofu/u);
+  assert.doesNotMatch(workflow, /aws-actions|amazon|terraform|opentofu/u);
   assert.doesNotMatch(workflow, /(?:GITHUB_TOKEN|GH_TOKEN)\s*[:=]/u);
   assert.match(workflow, /test ! -e \/run\/netns\/cogs-stage2-ssh/u);
   assert.doesNotMatch(workflow, /completion_local_full|ctr run|systemctl|containerd --/u);
@@ -40,17 +40,18 @@ test("authenticated replacement guard is exact source and precedes every source 
 
   const guardStep = workflow.slice(guardAt, checkoutAt);
   const outsideGuard = workflow.slice(0, guardAt) + workflow.slice(checkoutAt);
-  assert.match(guardStep, /ACTIONS_READ_TOKEN: \$\{\{ github\.token \}\}/u);
-  assert.equal(workflow.match(/\$\{\{ github\.token \}\}/gu)?.length, 1);
-  assert.doesNotMatch(outsideGuard, /ACTIONS_READ_TOKEN|github\.token|Authorization/u);
+  assert.match(guardStep, /ACTIONS_READ_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/u);
+  assert.equal(workflow.match(/\$\{\{ secrets\.GITHUB_TOKEN \}\}/gu)?.length, 1);
+  assert.doesNotMatch(workflow, /github\.token/u);
+  assert.doesNotMatch(outsideGuard, /ACTIONS_READ_TOKEN|secrets\.GITHUB_TOKEN|Authorization/u);
   assert.doesNotMatch(
     workflow.slice(0, checkoutAt),
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v3"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v4"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
-  assert.match(dispatchGuard, /MAX_TOKEN_CHARS = 256/u);
+  assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
   assert.match(dispatchGuard, /ProxyHandler\(\{\}\)/u);
   assert.match(dispatchGuard, /class _RejectRedirect/u);
@@ -62,7 +63,13 @@ test("authenticated replacement guard is exact source and precedes every source 
   assert.match(dispatchGuard, /SECOND_PREDECESSOR_RUN_ID = 32560385792/u);
   assert.match(dispatchGuard, /SECOND_PREDECESSOR_WORKFLOW_HEAD = "7ccb35d14d749a0ef14602889ce2b52934c03d4d"/u);
   assert.match(dispatchGuard, /SECOND_PREDECESSOR_REVIEWED_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"/u);
-  assert.ok(dispatchGuard.includes('TOKEN = re.compile(r"[A-Za-z0-9\\-._~+/]+=?")'));
+  assert.match(dispatchGuard, /THIRD_PREDECESSOR_RUN_ID = 32561859288/u);
+  assert.match(dispatchGuard, /THIRD_PREDECESSOR_WORKFLOW_HEAD = "549126bd7ba72d571d53113722e766967aaa0d23"/u);
+  assert.match(dispatchGuard, /THIRD_PREDECESSOR_REVIEWED_HEAD = "5f8c04899422ccf546c0f500b3647a5816b2675c"/u);
+  assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
+  assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
+  assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
+  assert.match(dispatchGuard, /status in \(401, 403\)[\s\S]+"API_AUTH_REJECTED"/u);
   assert.match(dispatchGuard, /predecessor_ids == set\(PREDECESSORS\)/u);
   assert.match(dispatchGuard, /run\.get\("status"\) == "completed"[\s\S]+"failure"/u);
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);

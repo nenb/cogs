@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v3"
+GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v4"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -23,19 +23,24 @@ SECOND_PREDECESSOR_WORKFLOW_HEAD = "7ccb35d14d749a0ef14602889ce2b52934c03d4d"
 SECOND_PREDECESSOR_REVIEWED_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"
 SECOND_PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={SECOND_PREDECESSOR_REVIEWED_HEAD}")
+THIRD_PREDECESSOR_RUN_ID = 32561859288
+THIRD_PREDECESSOR_WORKFLOW_HEAD = "549126bd7ba72d571d53113722e766967aaa0d23"
+THIRD_PREDECESSOR_REVIEWED_HEAD = "5f8c04899422ccf546c0f500b3647a5816b2675c"
+THIRD_PREDECESSOR_RUN_TITLE = (
+    f"Non-authoritative Stage 2 static control H={THIRD_PREDECESSOR_REVIEWED_HEAD}")
 PREDECESSORS = {
     PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
     SECOND_PREDECESSOR_RUN_ID: (
         SECOND_PREDECESSOR_WORKFLOW_HEAD, SECOND_PREDECESSOR_RUN_TITLE),
+    THIRD_PREDECESSOR_RUN_ID: (
+        THIRD_PREDECESSOR_WORKFLOW_HEAD, THIRD_PREDECESSOR_RUN_TITLE),
 }
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 MAX_RUNS = 100
-MIN_TOKEN_CHARS = 20
-MAX_TOKEN_CHARS = 256
+MAX_TOKEN_BYTES = 1024
 SHA1 = re.compile(r"[0-9a-f]{40}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
-TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=?")
 DENIED_ENVIRONMENT = frozenset((
     "GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -46,12 +51,13 @@ DENIED_ENVIRONMENT = frozenset((
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
 ))
 DIAGNOSTIC_CODES = frozenset((
-    "API_FORBIDDEN_OR_RATE_LIMITED", "API_REDIRECT_REJECTED", "API_RESPONSE_REJECTED",
-    "API_UNAVAILABLE", "CURRENT_GENERATION_MISSING", "CURRENT_RUN_NOT_EARLIEST",
-    "CURRENT_SECOND_RUN", "ENVIRONMENT_REJECTED", "EVENT_REJECTED",
-    "HISTORY_INCOMPLETE", "HISTORY_JSON_REJECTED", "HISTORY_RUN_REJECTED",
-    "IDENTITY_REJECTED", "LOCAL_IO_REJECTED", "PREDECESSOR_REJECTED",
-    "TOKEN_REJECTED", "UNKNOWN_HISTORY_REJECTED",
+    "API_AUTH_REJECTED", "API_FORBIDDEN_OR_RATE_LIMITED", "API_REDIRECT_REJECTED",
+    "API_RESPONSE_REJECTED", "API_UNAVAILABLE", "CURRENT_GENERATION_MISSING",
+    "CURRENT_RUN_NOT_EARLIEST", "CURRENT_SECOND_RUN", "ENVIRONMENT_REJECTED",
+    "EVENT_REJECTED", "HISTORY_INCOMPLETE", "HISTORY_JSON_REJECTED",
+    "HISTORY_RUN_REJECTED", "IDENTITY_REJECTED", "LOCAL_IO_REJECTED",
+    "PREDECESSOR_REJECTED", "TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING",
+    "UNKNOWN_HISTORY_REJECTED",
 ))
 
 
@@ -70,6 +76,18 @@ def _required(environ, name, code="IDENTITY_REJECTED"):
     value = environ.get(name)
     _require(type(value) is str and value != "", code)
     return value
+
+
+def _actions_read_token(environ):
+    token = environ.get("ACTIONS_READ_TOKEN")
+    _require(type(token) is str and token != "", "TOKEN_MISSING")
+    try:
+        raw = token.encode("ascii")
+    except UnicodeEncodeError:
+        raise GuardError("TOKEN_CHAR") from None
+    _require(1 <= len(raw) <= MAX_TOKEN_BYTES, "TOKEN_BOUND")
+    _require(all(0x21 <= byte <= 0x7e for byte in raw), "TOKEN_CHAR")
+    return token
 
 
 def _read_event(path):
@@ -121,7 +139,9 @@ def _open_history(request, urlopen):
             status = error.code
         finally:
             error.close()
-        if status in (403, 429):
+        if status in (401, 403):
+            raise GuardError("API_AUTH_REJECTED") from None
+        if status == 429:
             raise GuardError("API_FORBIDDEN_OR_RATE_LIMITED") from None
         if 300 <= status < 400:
             raise GuardError("API_REDIRECT_REJECTED") from None
@@ -133,7 +153,9 @@ def _open_history(request, urlopen):
 def _response_bytes(response):
     try:
         status = getattr(response, "status", None)
-        if status in (403, 429):
+        if status in (401, 403):
+            raise GuardError("API_AUTH_REJECTED")
+        if status == 429:
             raise GuardError("API_FORBIDDEN_OR_RATE_LIMITED")
         if type(status) is int and 300 <= status < 400:
             raise GuardError("API_REDIRECT_REJECTED")
@@ -199,7 +221,7 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
-        "User-Agent": "cogs-stage2-static-replacement-guard-v3",
+        "User-Agent": "cogs-stage2-static-replacement-guard-v4",
         "X-GitHub-Api-Version": "2022-11-28",
     })
     response = _open_history(request, urlopen)
@@ -237,10 +259,7 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
 
 def guard(environ=os.environ, event=None, urlopen=_authenticated_open):
     _require(not (DENIED_ENVIRONMENT & set(environ)), "ENVIRONMENT_REJECTED")
-    token = _required(environ, "ACTIONS_READ_TOKEN", "TOKEN_REJECTED")
-    _require(MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS,
-             "TOKEN_REJECTED")
-    _require(TOKEN.fullmatch(token) is not None, "TOKEN_REJECTED")
+    token = _actions_read_token(environ)
     _require(_required(environ, "GITHUB_EVENT_NAME") == "workflow_dispatch",
              "IDENTITY_REJECTED")
     _require(_required(environ, "GITHUB_REPOSITORY") == REPOSITORY,

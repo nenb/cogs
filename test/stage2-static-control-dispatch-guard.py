@@ -15,7 +15,7 @@ SPEC.loader.exec_module(GUARD)
 H = GUARD.REVIEWED_IMPLEMENTATION_HEAD
 G = "b" * 40
 TOKEN_VALUE = "ghs_" + "A" * 36
-CURRENT_RUN_ID = 32560000001
+CURRENT_RUN_ID = 32570000001
 
 
 def rejection(call, code=None):
@@ -123,7 +123,8 @@ def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None,
 
 
 BASE_HISTORY = [
-    predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID), run(CURRENT_RUN_ID),
+    *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+    run(CURRENT_RUN_ID),
 ]
 auth_observations = []
 GUARD.guard(
@@ -155,16 +156,16 @@ for predecessor_id in GUARD.PREDECESSORS:
 rejection(lambda: GUARD.guard(
     environment(), event=EVENT,
     urlopen=opener([
-        predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID),
+        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
         run(32550000000, head="d" * 40), run(CURRENT_RUN_ID),
     ])), "UNKNOWN_HISTORY_REJECTED")
 rejection(lambda: GUARD.guard(
     environment(), event=EVENT,
     urlopen=opener([
-        predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID),
-        run(GUARD.SECOND_PREDECESSOR_RUN_ID + 1,
-            head=GUARD.SECOND_PREDECESSOR_WORKFLOW_HEAD,
-            title=GUARD.SECOND_PREDECESSOR_RUN_TITLE),
+        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+        run(GUARD.THIRD_PREDECESSOR_RUN_ID + 1,
+            head=GUARD.THIRD_PREDECESSOR_WORKFLOW_HEAD,
+            title=GUARD.THIRD_PREDECESSOR_RUN_TITLE),
     ])), "UNKNOWN_HISTORY_REJECTED")
 
 # A second corrected-generation creation consumes no authority, regardless of which ID is current.
@@ -179,13 +180,14 @@ rejection(lambda: GUARD.guard(
 rejection(lambda: GUARD.guard(
     environment(GITHUB_RUN_ATTEMPT="2"), event=EVENT, urlopen=opener(BASE_HISTORY)))
 
-# The bounded token68-style subset accepts every permitted visible character and
-# one optional terminal padding marker, while rejecting separators and injection.
+# Tokens are opaque bounded HTTP field values: every visible ASCII punctuation
+# character and realistic long forms pass without guessing GitHub's token format.
+visible_ascii = "".join(chr(value) for value in range(0x21, 0x7f))
 for accepted_token in (
-    "A" * GUARD.MIN_TOKEN_CHARS,
-    "Aa0-._~+/" * 3,
-    ("z" * (GUARD.MIN_TOKEN_CHARS - 1)) + "=",
-    "x" * GUARD.MAX_TOKEN_CHARS,
+    "!",
+    "ghs_A1b2-C3d4.E5f6_F7g8~H9i0+/=:;,@[]{}()$&'\"\\|`?#%^*<>",
+    visible_ascii,
+    (visible_ascii * 11)[:GUARD.MAX_TOKEN_BYTES],
 ):
     GUARD.guard(
         environment(ACTIONS_READ_TOKEN=accepted_token), event=EVENT,
@@ -196,22 +198,32 @@ for name, hostile in (
     ("GITHUB_REPOSITORY", "attacker/cogs"),
     ("GITHUB_SHA", GUARD.PREDECESSOR_WORKFLOW_HEAD),
     ("GITHUB_SHA", GUARD.SECOND_PREDECESSOR_WORKFLOW_HEAD),
+    ("GITHUB_SHA", GUARD.THIRD_PREDECESSOR_WORKFLOW_HEAD),
     ("EXACT_IMPLEMENTATION_HEAD", "c" * 40),
-    ("ACTIONS_READ_TOKEN", "short"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\n"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\r\nX-Injected: yes"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\t"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + " "),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\x00"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\x7f"),
-    ("ACTIONS_READ_TOKEN", "=" + TOKEN_VALUE),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "=tail"),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "=="),
-    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "é"),
-    ("ACTIONS_READ_TOKEN", "x" * (GUARD.MAX_TOKEN_CHARS + 1)),
 ):
     rejection(lambda name=name, hostile=hostile: GUARD.guard(
         environment(**{name: hostile}), event=EVENT, urlopen=opener(BASE_HISTORY)))
+
+missing_token_environment = environment()
+del missing_token_environment["ACTIONS_READ_TOKEN"]
+rejection(lambda: GUARD.guard(
+    missing_token_environment, event=EVENT, urlopen=opener(BASE_HISTORY)), "TOKEN_MISSING")
+for hostile in ("", None):
+    rejection(lambda hostile=hostile: GUARD.guard(
+        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        urlopen=opener(BASE_HISTORY)), "TOKEN_MISSING")
+rejection(lambda: GUARD.guard(
+    environment(ACTIONS_READ_TOKEN="x" * (GUARD.MAX_TOKEN_BYTES + 1)), event=EVENT,
+    urlopen=opener(BASE_HISTORY)), "TOKEN_BOUND")
+for hostile in (
+    *(TOKEN_VALUE + chr(value) for value in range(0x00, 0x21)),
+    TOKEN_VALUE + "\x7f",
+    TOKEN_VALUE + "é",
+    TOKEN_VALUE + "\r\nX-Injected: yes",
+):
+    rejection(lambda hostile=hostile: GUARD.guard(
+        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        urlopen=opener(BASE_HISTORY)), "TOKEN_CHAR")
 for denied in GUARD.DENIED_ENVIRONMENT:
     rejection(lambda denied=denied: GUARD.guard(
         {**environment(), denied: "hostile"}, event=EVENT, urlopen=opener(BASE_HISTORY)),
@@ -226,9 +238,14 @@ rejection(lambda: GUARD.guard(
     environment(), event=[], urlopen=opener(BASE_HISTORY)), "EVENT_REJECTED")
 
 # Authenticated API failures and every malformed/incomplete history fail closed.
-rejection(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=403)),
-    "API_FORBIDDEN_OR_RATE_LIMITED")
+for status in (401, 403):
+    error = rejection(lambda status=status: GUARD.guard(
+        environment(), event=EVENT,
+        urlopen=opener(BASE_HISTORY, status=status, raw=TOKEN_VALUE.encode())),
+        "API_AUTH_REJECTED")
+    diagnostic = GUARD._safe_diagnostic(error)
+    assert diagnostic == f"{GUARD.GUARD_VERSION}: API_AUTH_REJECTED\n"
+    assert TOKEN_VALUE not in diagnostic and "body" not in diagnostic.lower()
 rejection(lambda: GUARD.guard(
     environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=429)),
     "API_FORBIDDEN_OR_RATE_LIMITED")
@@ -252,7 +269,21 @@ for malformed in (
     rejection(lambda malformed=malformed: GUARD.guard(
         environment(), event=EVENT, urlopen=malformed))
 
-# Diagnostics are fixed, bounded classifications; exception text, response bytes, and token stay absent.
+# Diagnostics are fixed, bounded classifications; exception text, response bytes,
+# token bytes, and token lengths stay absent.
+for hostile, code in (
+    ("", "TOKEN_MISSING"),
+    ("x" * (GUARD.MAX_TOKEN_BYTES + 1), "TOKEN_BOUND"),
+    (TOKEN_VALUE + "\n", "TOKEN_CHAR"),
+):
+    error = rejection(lambda hostile=hostile: GUARD.guard(
+        environment(ACTIONS_READ_TOKEN=hostile), event=EVENT,
+        urlopen=opener(BASE_HISTORY)), code)
+    diagnostic = GUARD._safe_diagnostic(error)
+    assert diagnostic == f"{GUARD.GUARD_VERSION}: {code}\n"
+    assert not hostile or hostile not in diagnostic
+    assert str(len(hostile.encode())) not in diagnostic
+
 error = rejection(lambda: GUARD.guard(
     environment(), event=EVENT,
     urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(TOKEN_VALUE))),
