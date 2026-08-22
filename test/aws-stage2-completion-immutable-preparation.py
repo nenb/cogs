@@ -251,6 +251,13 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError("foreign cache material was ignored")
     assert foreign.read_bytes() == b"foreign"
 
+isolated = subprocess.run(
+    (sys.executable, "-I", "-B", "-c",
+     "import runpy,sys;runpy.run_path(sys.argv[1],run_name='isolated_import')",
+     str(REMOTE / "completion_kata_immutable_preparation.py")),
+    cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    timeout=30, check=False)
+assert isolated.returncode == 0, isolated.stderr
 source = (REMOTE / "completion_kata_immutable_preparation.py").read_text()
 assert "def prepare():" in source and "def main():" in source
 assert "subprocess.Popen" not in source

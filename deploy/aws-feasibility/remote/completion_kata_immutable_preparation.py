@@ -19,6 +19,13 @@ import sys
 import time
 from urllib.parse import urljoin, urlsplit
 
+# Isolated-mode execution intentionally omits the script directory. The caller
+# has already materialized and authenticated this fixed source root, so import
+# only sibling owner modules from this exact resolved directory.
+_REMOTE_MODULE_ROOT = Path(__file__).resolve().parent
+if not _REMOTE_MODULE_ROOT.is_dir():
+    raise ImportError("fixed remote module root is unavailable")
+sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 import completion_kata_preparation as preparation
 
 _VERIFIER_PATH = Path(__file__).with_name("verify-completion-artifacts.py")

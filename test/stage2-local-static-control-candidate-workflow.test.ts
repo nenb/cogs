@@ -50,7 +50,7 @@ test("event-contract replacement guard is exact source and precedes every source
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v5"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v6"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
   assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
@@ -70,6 +70,9 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /FOURTH_PREDECESSOR_RUN_ID = 32563007701/u);
   assert.match(dispatchGuard, /FOURTH_PREDECESSOR_WORKFLOW_HEAD = "7f43d9acc5897b11b5d9794eb2e184767446aa48"/u);
   assert.match(dispatchGuard, /FOURTH_PREDECESSOR_REVIEWED_HEAD = "d05bbc5928bda9b6bd27da1c290b0238219fd185"/u);
+  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_RUN_ID = 32564546902/u);
+  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_WORKFLOW_HEAD = "dd0e604afabe32f184ede5ec5c3ae2bbecdf464c"/u);
+  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_REVIEWED_HEAD = "a263b7eb38b1b0aa4a3732cf3d7a2d72db243109"/u);
   assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
   assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
   assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
@@ -109,7 +112,7 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "6376cbc20b5b1507dd33bf634bf7ccb60c4d56b6ef60d098c195ffc71d85ee3c"/u,
+    /NORMALIZED_WORKFLOW_SHA256 = "b1310a0eabcad1c05cfb7f0a667fa70ee824e21a6d5a03977c33df04d341a2f1"/u,
   );
   assert.match(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
