@@ -12,7 +12,7 @@ GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v7"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-REVIEWED_IMPLEMENTATION_HEAD = "fdd4b82d07a218d10c7bce11c8146689e4cafdc1"
+REVIEWED_IMPLEMENTATION_HEAD = "e7dc97c64de3735146e5c1382e6510e46e753dcf"
 RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
 PREDECESSOR_RUN_ID = 32558263561
 PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
