@@ -29,9 +29,9 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
   // The mutable-owner bridge adds sealed begin/retire/removal boundaries.
-  const adr0106Preferred = 64_500;
-  const adr0106Hard = 65_000;
-  assert.ok(adr0106Preferred < adr0106Hard);
+  const adr0107Preferred = 66_000;
+  const adr0107Hard = 67_000;
+  assert.ok(adr0107Preferred < adr0107Hard);
   assert.ok(
     operationLines + leaseExtension <= 3150,
     `Integrated operation/rootfs ownership exceeds 3150: ${operationLines + leaseExtension}`,

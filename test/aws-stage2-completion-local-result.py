@@ -286,7 +286,7 @@ check(line_report["conservative_baseline_lines"] == line_report["inherited_prede
       + line_report["pre_base_gross_additions"] == 36_861, "inherited no-deletion baseline")
 check(line_report["current_lines"] == line_report["deployment_lines"]
       + line_report["retained_schema_script_lines"] + line_report["workflow_lines"]
-      and line_report["workflow_files"] == 11, "complete retained and workflow count")
+      and line_report["workflow_files"] == 12, "complete retained and workflow count")
 check(line_report["inherited_post_base_gross_additions"] == 0
       and line_report["gross_added_lines_no_deletion_credit"] > 0,
       "gross additions were not measured from the fixed base")
