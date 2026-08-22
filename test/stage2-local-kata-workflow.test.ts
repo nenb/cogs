@@ -29,9 +29,10 @@ function stepTimeout(name: string): number {
 }
 
 const steps = [
-  "Check out exact control revision G without persisted credentials",
-  "Gate reviewed H and G and consume only the first-created dispatch",
-  "Check out exact reviewed implementation revision H separately",
+  "Admit the stable first-created dispatch before every source effect",
+  "Acquire exact control revision G without credentials",
+  "Gate reviewed H and G after unauthenticated exact-G acquisition",
+  "Acquire exact reviewed implementation revision H separately without credentials",
   "Complete exact immutable preparation before KVM eligibility and role custody",
   "Execute the sole zero-argument local qualification entry",
   "Invoke cleanup-only recovery after every local entry outcome",
@@ -55,7 +56,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|schedule|workflow_run):/u);
   assert.match(workflow, /reviewed_implementation_head:/u);
   assert.match(workflow, /reviewed_control_head:/u);
-  assert.match(workflow, /repository: nenb\/cogs/u);
+  assert.match(workflow, /get\("GITHUB_REPOSITORY"\) == "nenb\/cogs"/u);
   assert.match(guard, /GITHUB_REF_PROTECTED/u);
   assert.match(workflow, /STAGE2_LOCAL_IMPLEMENTATION_HEAD/u);
   assert.match(workflow, /STAGE2_LOCAL_CONTROL_HEAD/u);
@@ -67,7 +68,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "a3b332f2dd951afe380ea9fe80589780e0dff841320c36422d0af3f52805d092"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "64a54854c6dc82e16d62e90f82529135021eac653a36140e653bfbfc0069ee43"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -85,7 +86,7 @@ test("permissions and actions expose only bounded actions-read authority", () =>
   assert.doesNotMatch(workflow, /aws-actions|amazon|opentofu|terraform|\bsts\b|\bssm\b/u);
   assert.doesNotMatch(workflow, /strategy:|matrix:|--retry|cancelled\(\)/u);
   assert.match(workflow, /cancel-in-progress: false/u);
-  assert.equal(workflow.match(/actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/gu)?.length, 2);
+  assert.doesNotMatch(workflow, /actions\/checkout/u);
   assert.equal(workflow.match(/actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/gu)?.length, 2);
   assert.equal(workflow.match(/actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)?.length, 2);
   assert.match(guard, /DENIED_ENVIRONMENT/u);
@@ -96,24 +97,33 @@ test("permissions and actions expose only bounded actions-read authority", () =>
   );
 });
 
-test("attempt and first-created guard precede H acquisition and every qualification mutation", () => {
-  const control = workflow.indexOf("Check out exact control revision G");
-  const gate = workflow.indexOf("Gate reviewed H and G");
-  const implementation = workflow.indexOf("Check out exact reviewed implementation revision H");
+test("attempt-one stable admission is the first step and precedes unauthenticated H/G acquisition", () => {
+  const admission = workflow.indexOf("Admit the stable first-created dispatch before every source effect");
+  const control = workflow.indexOf("Acquire exact control revision G without credentials");
+  const gate = workflow.indexOf("Gate reviewed H and G after unauthenticated exact-G acquisition");
+  const implementation = workflow.indexOf(
+    "Acquire exact reviewed implementation revision H separately without credentials",
+  );
   const preparation = workflow.indexOf("Complete exact immutable preparation before KVM eligibility and role custody");
   const entry = workflow.indexOf("Execute the sole zero-argument local qualification entry");
   assert.ok(
-    0 <= control && control < gate && gate < implementation && implementation < preparation && preparation < entry,
+    0 <= admission &&
+      admission < control &&
+      control < gate &&
+      gate < implementation &&
+      implementation < preparation &&
+      preparation < entry,
   );
-  assert.match(workflow.slice(gate, implementation), /test "\$\{GITHUB_RUN_ATTEMPT\}" = 1/u);
-  assert.match(guard, /actions\/workflows\/\{WORKFLOW_NAME\}\/runs/u);
-  assert.match(guard, /value\["total_count"\] == len\(runs\)/u);
-  assert.match(guard, /return min\(identities\)/u);
-  assert.match(guard, /this is not the first-created dispatch/u);
-  assert.match(guard, /"Authorization": f"Bearer \{token\}"/u);
-  assert.match(guard, /ProxyHandler\(\{\}\)/u);
-  assert.match(guard, /MAX_VISIBILITY_OBSERVATIONS = 6/u);
-  assert.match(guard, /current_run_id in identities and identities == previous/u);
+  assert.doesNotMatch(workflow.slice(admission, control), /\n {8}uses:/u);
+  assert.match(workflow.slice(admission, control), /item\.get\("run_attempt"\) == 1/u);
+  assert.match(workflow.slice(admission, control), /rows == previous/u);
+  assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
+  assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
+  assert.match(workflow.slice(control, implementation), /PRE_EFFECT_ADMITTED_RUN_ID/u);
+  assert.match(guard, /pre-effect admission identity differs/u);
+  assert.match(guard, /"ACTIONS_READ_TOKEN"/u);
+  assert.equal(workflow.match(/clean=\(env -i HOME=\/nonexistent LANG=C LC_ALL=C PATH=\/usr\/bin:\/bin/gu)?.length, 2);
+  assert.doesNotMatch(workflow.slice(control, implementation), /GITHUB_TOKEN|GH_TOKEN/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
   assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
   assert.match(workflow.slice(preparation, entry), /completion_kata_immutable_preparation\.py/u);
@@ -138,7 +148,7 @@ test("fixed phase bounds preserve recovery, independent residue, and publication
   assert.equal(job, 120);
   assert.equal(total, 116);
   assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 59);
-  const postEntry = steps.slice(5).reduce((sum, name) => sum + stepTimeout(name), 0);
+  const postEntry = steps.slice(6).reduce((sum, name) => sum + stepTimeout(name), 0);
   assert.equal(postEntry, 21);
   assert.ok(postEntry * 60 >= 600);
   assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 3470s/u);
@@ -152,7 +162,7 @@ test("recovery and independent settlement always run without turning cancellatio
   const residue = workflow.indexOf("Independently prove zero lifecycle residue after cleanup");
   const publicationAt = workflow.indexOf("Validate semantics and reviewed schema");
   assert.ok(0 < recovery && recovery < cleanup && cleanup < residue && residue < publicationAt);
-  for (const name of steps.slice(5, 8)) {
+  for (const name of steps.slice(6, 9)) {
     const start = workflow.indexOf(`      - name: ${name}`);
     const next = workflow.indexOf("\n      - name:", start + 1);
     assert.match(workflow.slice(start, next), /if: always\(\)/u);

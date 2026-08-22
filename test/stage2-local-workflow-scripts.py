@@ -63,7 +63,7 @@ def guard_tests():
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REPOSITORY": guard.REPOSITORY,
                 "GITHUB_REF": "refs/heads/main", "GITHUB_REF_PROTECTED": "true",
                 "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "71", "GITHUB_SHA": g,
-                "ACTIONS_READ_TOKEN": "test-actions-read-token",
+                "PRE_EFFECT_ADMITTED_RUN_ID": "71",
                 "GITHUB_ACTOR": "reviewer", "CONFIGURED_AUTHORIZED_ACTOR": "reviewer",
                 "CONFIGURED_IMPLEMENTATION_HEAD": h, "CONFIGURED_CONTROL_HEAD": g,
                 "EXACT_IMPLEMENTATION_HEAD": h, "EXACT_CONTROL_HEAD": g,
@@ -77,8 +77,10 @@ def guard_tests():
             rejected(lambda: guard.guard({**environment, "GITHUB_RUN_ATTEMPT": "2"},
                                          event=event, first_created=71), guard.GuardError)
             rejected(lambda: guard.guard({key: value for key, value in environment.items()
-                                          if key != "ACTIONS_READ_TOKEN"},
-                                         event=event, first_created=71), guard.GuardError)
+                                          if key != "PRE_EFFECT_ADMITTED_RUN_ID"},
+                                         event=event), guard.GuardError)
+            rejected(lambda: guard.guard({**environment, "PRE_EFFECT_ADMITTED_RUN_ID": "70"},
+                                         event=event), guard.GuardError)
             rejected(lambda: guard.guard({**environment, "AWS_ACCESS_KEY_ID": "x"},
                                          event=event, first_created=71), guard.GuardError)
             rejected(lambda: guard.guard(environment, event=event, first_created=70), guard.GuardError)
@@ -93,44 +95,6 @@ def guard_tests():
             for name, value in zip(names, old, strict=True):
                 setattr(guard, name, value)
 
-    for hostile in ("", "x" * (guard.MAX_TOKEN_BYTES + 1), "token\n", "é"):
-        rejected(lambda hostile=hostile: guard._actions_read_token(
-            {"ACTIONS_READ_TOKEN": hostile}), guard.GuardError)
-    assert guard._actions_read_token(
-        {"ACTIONS_READ_TOKEN": "test-actions-read-token"}) == "test-actions-read-token"
-    rejected(lambda: guard._RejectRedirect().redirect_request(
-        None, None, 302, "redirect", {}, "https://example.invalid"), guard.GuardError)
-
-    class Response:
-        status = 200
-        def __init__(self, value):
-            self.raw = json.dumps(value).encode()
-        def read(self, maximum):
-            return self.raw[:maximum]
-        def close(self):
-            pass
-    def observed(request, timeout):
-        assert request.full_url.startswith("https://api.github.com/repos/nenb/cogs/actions/workflows/")
-        headers = {key.lower(): value for key, value in request.headers.items()}
-        assert timeout == 20 and headers["authorization"] == "Bearer test-actions-read-token"
-        return Response({"total_count": 2, "workflow_runs": [
-            {"event": "workflow_dispatch", "id": 80, "run_attempt": 1},
-            {"event": "workflow_dispatch", "id": 71, "run_attempt": 2},
-        ]})
-    sleeps = []
-    assert guard._api_runs("test-actions-read-token", 71, observed, sleeps.append) == 71
-    assert sleeps == [guard.VISIBILITY_INTERVAL_SECONDS]
-    rejected(lambda: guard._api_runs(
-        "test-actions-read-token", 71,
-        lambda *_args, **_kwargs: Response({"total_count": 101, "workflow_runs": []}),
-        lambda _seconds: None), guard.GuardError)
-    failures = []
-    def unavailable(*_args, **_kwargs):
-        failures.append(True)
-        raise OSError()
-    rejected(lambda: guard._api_runs(
-        "test-actions-read-token", 71, unavailable, lambda _seconds: None), guard.GuardError)
-    assert len(failures) == 1
 
 
 def publication_tests():

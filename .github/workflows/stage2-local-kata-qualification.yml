@@ -37,17 +37,9 @@ jobs:
       REPORT_ARTIFACT_NAME: stage2-local-kata-report-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
       RECEIPT_ARTIFACT_NAME: stage2-local-kata-upload-receipt-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Check out exact control revision G without persisted credentials
+      - name: Admit the stable first-created dispatch before every source effect
+        id: pre_admission
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Gate reviewed H and G and consume only the first-created dispatch
-        id: gate
-        timeout-minutes: 2
         env:
           ACTIONS_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
@@ -55,23 +47,121 @@ jobs:
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
         run: |
           set -euo pipefail
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 50s \
+            /usr/bin/python3 -I -B - <<'PY' >>"$GITHUB_OUTPUT"
+          import json, os, stat, time, urllib.parse, urllib.request
+          def need(value):
+              if not value: raise SystemExit(2)
+          denied = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+                    "AWS_WEB_IDENTITY_TOKEN_FILE", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                    "ACTIONS_ID_TOKEN_REQUEST_URL", "GITHUB_TOKEN", "GH_TOKEN", "PYTHONPATH",
+                    "PYTHONHOME", "PYTHONOPTIMIZE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                    "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+          need(not denied.intersection(os.environ))
+          get = lambda name: os.environ.get(name, "")
+          run_id = get("GITHUB_RUN_ID")
+          need(get("GITHUB_EVENT_NAME") == "workflow_dispatch" and run_id.isdigit()
+               and int(run_id) > 0 and get("GITHUB_RUN_ATTEMPT") == "1")
+          need(get("GITHUB_REPOSITORY") == "nenb/cogs" and get("GITHUB_REF") == "refs/heads/main"
+               and get("GITHUB_REF_PROTECTED") == "true")
+          need(get("EXACT_IMPLEMENTATION_HEAD") == get("CONFIGURED_IMPLEMENTATION_HEAD")
+               and get("EXACT_CONTROL_HEAD") == get("CONFIGURED_CONTROL_HEAD")
+               and get("EXACT_CONTROL_HEAD") == get("GITHUB_SHA"))
+          need(get("GITHUB_ACTOR") == get("CONFIGURED_AUTHORIZED_ACTOR"))
+          token = get("ACTIONS_READ_TOKEN")
+          try: token_bytes = token.encode("ascii")
+          except UnicodeEncodeError: raise SystemExit(2) from None
+          need(1 <= len(token_bytes) <= 1024 and all(0x21 <= byte <= 0x7e for byte in token_bytes))
+          descriptor = os.open(get("GITHUB_EVENT_PATH"), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+          try:
+              before = os.fstat(descriptor); need(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= 1048576)
+              raw = os.read(descriptor, before.st_size + 1); after = os.fstat(descriptor)
+              need(len(raw) == before.st_size and (before.st_dev, before.st_ino, before.st_size,
+                   before.st_mtime_ns, before.st_ctime_ns) == (after.st_dev, after.st_ino,
+                   after.st_size, after.st_mtime_ns, after.st_ctime_ns))
+          finally: os.close(descriptor)
+          try: event = json.loads(raw)
+          except (UnicodeError, json.JSONDecodeError): raise SystemExit(2) from None
+          need(event.get("repository", {}).get("full_name") == "nenb/cogs")
+          inputs = event.get("inputs", {})
+          need(inputs.get("reviewed_implementation_head") == get("EXACT_IMPLEMENTATION_HEAD")
+               and inputs.get("reviewed_control_head") == get("EXACT_CONTROL_HEAD"))
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *_args): raise SystemExit(2)
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+          query = urllib.parse.urlencode({"event":"workflow_dispatch", "per_page":100, "page":1})
+          url = "https://api.github.com/repos/nenb/cogs/actions/workflows/stage2-local-kata-qualification.yml/runs?" + query
+          previous = None
+          for observation in range(6):
+              request = urllib.request.Request(url, headers={"Accept":"application/vnd.github+json",
+                  "Authorization":f"Bearer {token}", "User-Agent":"cogs-stage2-local-pre-admission",
+                  "X-GitHub-Api-Version":"2022-11-28"})
+              try:
+                  with opener.open(request, timeout=20) as response:
+                      body = response.read(4194305); need(response.status == 200 and 0 < len(body) <= 4194304)
+                  value = json.loads(body)
+              except Exception: raise SystemExit(2) from None
+              runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
+                  and len(runs) <= 100)
+              rows = []
+              for item in runs:
+                  need(type(item) is dict and item.get("event") == "workflow_dispatch"
+                       and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
+                  rows.append((item["id"], item["run_attempt"]))
+              rows = tuple(sorted(rows)); need(len(rows) == len(set(rows)))
+              if (int(run_id), 1) in rows and rows == previous:
+                  need(int(run_id) == min(item[0] for item in rows)); print(f"run_id={run_id}"); break
+              previous = rows if (int(run_id), 1) in rows else None
+              if observation == 5: raise SystemExit(2)
+              time.sleep(2)
+          PY
+
+      - name: Acquire exact control revision G without credentials
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 \
+            origin "$EXACT_CONTROL_HEAD"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+
+      - name: Gate reviewed H and G after unauthenticated exact-G acquisition
+        id: gate
+        timeout-minutes: 1
+        env:
+          CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
+          CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
+          CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
+          PRE_EFFECT_ADMITTED_RUN_ID: ${{ steps.pre_admission.outputs.run_id }}
+        run: |
+          set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
           test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
           test "$EXACT_CONTROL_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
           test -z "$(/usr/bin/git status --porcelain)"
-          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 90s \
+          /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-qualification-guard.py" \
             >>"$GITHUB_OUTPUT"
 
-      - name: Check out exact reviewed implementation revision H separately
+      - name: Acquire exact reviewed implementation revision H separately without credentials
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: nenb/cogs
-          ref: ${{ steps.gate.outputs.implementation_head }}
-          path: stage2-implementation-H
-          fetch-depth: 0
-          persist-credentials: false
+        run: |
+          set -euo pipefail
+          destination=$GITHUB_WORKSPACE/stage2-implementation-H
+          test ! -e "$destination"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$destination"
+          "${clean[@]}" /usr/bin/git -C "$destination" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -C "$destination" fetch --quiet --no-tags --depth=1 \
+            origin "${{ steps.gate.outputs.implementation_head }}"
+          "${clean[@]}" /usr/bin/git -C "$destination" checkout --quiet --detach FETCH_HEAD
+          test "$(/usr/bin/git -C "$destination" rev-parse HEAD)" = "${{ steps.gate.outputs.implementation_head }}"
+          test -z "$(/usr/bin/git -C "$destination" status --porcelain)"
 
       - name: Complete exact immutable preparation before KVM eligibility and role custody
         id: preparation
