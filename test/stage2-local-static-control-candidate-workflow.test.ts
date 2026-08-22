@@ -82,7 +82,7 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
   assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "f37e7191152282482ff41b6a3d551529ab6b3919"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "fdd4b82d07a218d10c7bce11c8146689e4cafdc1"/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.match(dispatchGuard, /_read_event\(_required\(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"\)\)/u);
   assert.match(dispatchGuard, /"EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED"/u);
