@@ -230,7 +230,9 @@ def _attested_executable_routes(install_policy):
             except OSError as error: errors.append(error)
         if errors: raise BaseExceptionGroup("attested descriptor release", errors)
     def issue(reviewed):
-        synthetic = reviewed is command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS
+        synthetic_v1 = reviewed is command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS
+        synthetic_v3 = reviewed is command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3
+        synthetic = synthetic_v1 or synthetic_v3
         if not (reviewed is command_policy.REVIEWED_HOST_TOOL_CONTRACTS or synthetic) or not reviewed:
             raise ProcessError("exact committed host-tool contracts unavailable")
         if any(name in command_policy.ATTESTED_EXECUTABLES for name in command_policy.ATTESTED_COMMANDS):
@@ -254,7 +256,8 @@ def _attested_executable_routes(install_policy):
                     raw = os.read(contract_fd, 262_145)
                 finally: os.close(contract_fd)
                 contract = _parse_contract(raw, descriptor["contract_sha256"])
-                source_path = ("/tmp/cogs-stage2-attested-static-v1.elf" if synthetic else path)
+                source_path = ("/tmp/cogs-stage2-attested-static-v3.elf" if synthetic_v3 else
+                               "/tmp/cogs-stage2-attested-static-v1.elf" if synthetic_v1 else path)
                 if (contract.command_id not in expected_ids
                         or contract.executable.logical_path != source_path
                         or contract.loader is not None or contract.libraries):
@@ -338,15 +341,20 @@ def _attested_executable_routes(install_policy):
         if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":
             raise ProcessError("synthetic attestation test admission absent")
         return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
+    def open_synthetic_v3():
+        if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V3") != "1":
+            raise ProcessError("V3 synthetic attestation test admission absent")
+        return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3)
     return (AttestedExecutableOwner, claim, require, release, issue, issue_retained,
-            abort_owner, open_fixed, open_static, open_synthetic)
+            abort_owner, open_fixed, open_static, open_synthetic, open_synthetic_v3)
 
 
 (AttestedExecutableOwner, _claim_attested_executable, _require_attested_executable,
  _release_attested_executable, _issue_attested_executable_owner,
  _issue_retained_executable_owner, _abort_attested_executable_owner,
  _open_attested_executable_owner, _open_static_attested_executable_owner,
- _open_synthetic_attested_executable_owner_for_tests) = _attested_executable_routes(
+ _open_synthetic_attested_executable_owner_for_tests,
+ _open_synthetic_attested_executable_owner_v3_for_tests) = _attested_executable_routes(
      _install_attested_policy)
 del _attested_executable_routes, _install_attested_policy
 

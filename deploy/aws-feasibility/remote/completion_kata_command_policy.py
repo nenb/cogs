@@ -28,13 +28,22 @@ REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS = MappingProxyType({
     "ssh-keygen": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-keygen-contract-v1.json",
                                      "contract_sha256": "82c40b2972fe0ea40b860fcf4aaee0b5b885ceba93aa0a6ac2f58f9ba91c501c"}),
 })
+# Additive current-codec test route. The historical synthetic mapping above is
+# retained byte-for-byte for the V1 process/recovery matrices.
+REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3 = MappingProxyType({
+    "ssh": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-contract-v3.json",
+                              "contract_sha256": "d740640973f8aa8f152207970e3cdd6a7d0b6864eca4e5b274ce903cf3f4527a"}),
+    "ssh-keygen": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-keygen-contract-v3.json",
+                                     "contract_sha256": "272ab6f074b96d515402396e1768b1a04a43ace1fc706c044e457f19d1029814"}),
+})
 _ATTESTED_EXECUTABLES = {}
 ATTESTED_EXECUTABLES = MappingProxyType(_ATTESTED_EXECUTABLES)
 def _policy_inserter_route():
     available = [True]
     def install(command_ids, value, reviewed):
         if (not (reviewed is REVIEWED_HOST_TOOL_CONTRACTS
-                 or reviewed is REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS)
+                 or reviewed is REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS
+                 or reviewed is REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3)
                 or type(command_ids) is not tuple
                 or not command_ids or not set(command_ids) <= ATTESTED_COMMANDS
                 or type(value) is not dict or set(value) != {

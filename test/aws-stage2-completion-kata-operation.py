@@ -29,7 +29,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 sys.path.insert(0, str(ROOT / "test"))
-from stage2_attested_fixture import ensure_attested_static_fixture
+from stage2_attested_fixture_v3 import (
+    EXPECTED_STDOUT as ATTESTED_V3_STDOUT,
+    ensure_attested_static_fixture_v3,
+)
 import completion_kata_inputs as inputs
 import completion_kata_operation as operation
 import completion_kata_network as network
@@ -2331,16 +2334,16 @@ def production_owner_test():
 
             # Complete runtime owner -> opaque grant -> operation issuance ->
             # durable RUNTIME_MOUNT_V2 -> FixedJournal reopen round trip.
-            fixture_elf = ensure_attested_static_fixture()
+            fixture_elf = ensure_attested_static_fixture_v3()
             staged_attestation = (
                 (fixture_elf, fixture_elf, 0o500),
-                (ROOT / "test/fixtures/stage2-completion/attested-ssh-contract-v1.json",
-                 Path("/tmp/cogs-stage2-attested-ssh-contract-v1.json"), 0o600),
-                (ROOT / "test/fixtures/stage2-completion/attested-ssh-keygen-contract-v1.json",
-                 Path("/tmp/cogs-stage2-attested-ssh-keygen-contract-v1.json"), 0o600),
+                (ROOT / "test/fixtures/stage2-completion/attested-ssh-contract-v3.json",
+                 Path("/tmp/cogs-stage2-attested-ssh-contract-v3.json"), 0o600),
+                (ROOT / "test/fixtures/stage2-completion/attested-ssh-keygen-contract-v3.json",
+                 Path("/tmp/cogs-stage2-attested-ssh-keygen-contract-v3.json"), 0o600),
             )
-            previous_attestation_test = os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1")
-            os.environ["COGS_KATA_SYNTHETIC_ATTESTATION_V1"] = "1"
+            previous_attestation_test = os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V3")
+            os.environ["COGS_KATA_SYNTHETIC_ATTESTATION_V3"] = "1"
             try:
                 for source, target, mode in staged_attestation:
                     if source == target:
@@ -2351,7 +2354,7 @@ def production_owner_test():
                         while offset < len(value): offset += os.write(descriptor, value[offset:])
                         os.fsync(descriptor)
                     finally: os.close(descriptor)
-                executable_owner = process._open_synthetic_attested_executable_owner_for_tests()
+                executable_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
 
                 # Build expired cleanup fixtures only after the exact production
@@ -2496,7 +2499,7 @@ def production_owner_test():
                         os.execve(argv[0], argv, {"HOME": "/root", "LC_ALL": "C",
                             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
                             "PYTHONDONTWRITEBYTECODE": "1",
-                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1": "1"})
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V3": "1"})
                     assert os.waitpid(recovery, 0)[1] == 0
                     recovered_records = operation._parse(
                         fixture_journal_path(transaction_completion).read_bytes())
@@ -2578,7 +2581,7 @@ def production_owner_test():
                         os.execve(argv[0], argv, {"HOME": "/root", "LC_ALL": "C",
                             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
                             "PYTHONDONTWRITEBYTECODE": "1",
-                            "COGS_KATA_SYNTHETIC_ATTESTATION_V1": "1",
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V3": "1",
                             "COGS_KATA_COMPACT_INPUT_FIXTURE_V1": "1"})
                     assert os.waitpid(recovery, 0)[1] == 0
                     recovered_records = operation._parse(
@@ -2668,31 +2671,26 @@ def production_owner_test():
                         "RUNTIME_MOUNT_V2"
                     ssh_outcome, ssh_receipt = process._transact_fixed_ssh(
                         reopened_runtime, ssh_executable, bindings)
-                    assert ssh_receipt.body["outcome"] == "exited"
-                    assert ssh_outcome.stdout.startswith(b"COGS_STAGE2_SSH_READY_V1\n")
-                    route_sha256 = "a" * 64
-                    network_rows = []
-                    for network_ordinal, marker in enumerate(
-                            operation.guest_workloads.GUEST_NETWORK_MARKERS, 1):
-                        suffix = (f"|route_sha256={route_sha256}"
-                                  if network_ordinal in {1, 8} else "")
-                        network_rows.append(
-                            f"COGS_STAGE2_NETWORK_V1|{network_ordinal:02d}|{marker}{suffix}\n")
-                    sample_rows = [
-                        f"COGS_STAGE2_RESULT_V2|{ordinal:02d}|{label}|1|{digest}|deleted=true\n"
-                        for ordinal, (label, digest) in enumerate(
-                            operation.guest_workloads.GUEST_WORKLOAD_PLAN, 1)]
-                    synthetic_v3_stdout = (
-                        operation.guest_workloads.GUEST_READY_MARKER
-                        + "".join((*network_rows, *sample_rows)).encode("ascii"))
+                    actual_v3_stdout = ssh_outcome.stdout
+                    assert (ssh_receipt.body["outcome"] == "exited"
+                            and actual_v3_stdout == ATTESTED_V3_STDOUT.read_bytes())
+                    command_output = next(item.body for item in operation._parse(
+                        fixture_journal_path(transaction_completion).read_bytes())
+                        if item.record_type == "COMMAND_OUTPUT_V3"
+                        and item.body["command_serial"] == ssh_receipt.command_serial)
+                    assert bytes.fromhex(command_output["stdout_hex"]) == actual_v3_stdout
                     parsed_result = operation.guest_workloads.parse_guest_workload_output(
-                        synthetic_v3_stdout)
+                        actual_v3_stdout)
                     canonical_result = operation.guest_workloads.canonical_guest_workload_result(
                         parsed_result)
                     operation._record_ssh_result(
                         reopened_runtime, ssh_receipt.command_serial,
                         ssh_receipt.binding_sha256, manifest_sha,
-                        synthetic_v3_stdout, canonical_result)
+                        actual_v3_stdout, canonical_result)
+                    ssh_result = operation._parse(
+                        fixture_journal_path(transaction_completion).read_bytes())[-1]
+                    assert (ssh_result.record_type == "SSH_RESULT_V2"
+                            and bytes.fromhex(ssh_result.body["stdout_hex"]) == actual_v3_stdout)
                     operation._record_ssh_ready(reopened_runtime)
                     operation._revoke_readiness(reopened_runtime)
                     production_inputs.release_ssh_bindings()
@@ -2736,9 +2734,9 @@ def production_owner_test():
             finally:
                 os.environ.pop("COGS_KATA_SYNTHETIC_RUNTIME_V1", None)
                 if previous_attestation_test is None:
-                    os.environ.pop("COGS_KATA_SYNTHETIC_ATTESTATION_V1", None)
+                    os.environ.pop("COGS_KATA_SYNTHETIC_ATTESTATION_V3", None)
                 else:
-                    os.environ["COGS_KATA_SYNTHETIC_ATTESTATION_V1"] = previous_attestation_test
+                    os.environ["COGS_KATA_SYNTHETIC_ATTESTATION_V3"] = previous_attestation_test
                 for _source, target, _mode in reversed(staged_attestation):
                     try: target.unlink()
                     except FileNotFoundError: pass

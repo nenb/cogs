@@ -41,8 +41,11 @@ attestation_owner = authority = None
 retained = []
 intent = preexec = None
 try:
-    if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
+    if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V3") == "1":
+        attestation_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
+    elif os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") == "1":
         attestation_owner = process._open_synthetic_attested_executable_owner_for_tests()
+    if attestation_owner is not None:
         for role in ("ssh", "ssh-keygen"):
             retained.append(process._claim_attested_executable(attestation_owner, role))
     with patch.object(operation, "_open_base_chain", side_effect=chain_factory):

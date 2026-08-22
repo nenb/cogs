@@ -176,6 +176,7 @@ _ATTESTED_COMMANDS = command_policy.ATTESTED_COMMANDS
 _ATTESTED_EXECUTABLES = command_policy.ATTESTED_EXECUTABLES
 _REVIEWED_HOST_TOOL_CONTRACTS = command_policy.REVIEWED_HOST_TOOL_CONTRACTS
 _REVIEWED_SYNTHETIC_CONTRACTS = command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS
+_REVIEWED_SYNTHETIC_CONTRACTS_V3 = command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3
 DEADLINES = frozenset({
     "observer", "network", "keygen", "runtime-start", "task-term", "task-kill", "remove", "listener",
     "ssh", "runtime-absence",
@@ -886,6 +887,7 @@ def _policy_tables():
           and command_policy.ATTESTED_EXECUTABLES is _ATTESTED_EXECUTABLES
           and command_policy.REVIEWED_HOST_TOOL_CONTRACTS is _REVIEWED_HOST_TOOL_CONTRACTS
           and command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS is _REVIEWED_SYNTHETIC_CONTRACTS
+          and command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3 is _REVIEWED_SYNTHETIC_CONTRACTS_V3
           and type(_ATTESTED_EXECUTABLES) is type(_REVIEWED_HOST_TOOL_CONTRACTS) is MappingProxyType
           and set(_ATTESTED_EXECUTABLES) <= set(_ATTESTED_COMMANDS)
           and all(set(value) == {"executable_sha256", "tool_closure_sha256",

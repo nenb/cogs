@@ -109,8 +109,11 @@ jobs:
           cleanup_ssh_fixture() {
             for pair in \
               'cogs-stage2-attested-static-v1.elf -' \
+              'cogs-stage2-attested-static-v3.elf -' \
               'cogs-stage2-attested-ssh-contract-v1.json attested-ssh-contract-v1.json' \
-              'cogs-stage2-attested-ssh-keygen-contract-v1.json attested-ssh-keygen-contract-v1.json'; do
+              'cogs-stage2-attested-ssh-keygen-contract-v1.json attested-ssh-keygen-contract-v1.json' \
+              'cogs-stage2-attested-ssh-contract-v3.json attested-ssh-contract-v3.json' \
+              'cogs-stage2-attested-ssh-keygen-contract-v3.json attested-ssh-keygen-contract-v3.json'; do
               set -- $pair
               target="/tmp/$1"
               source="test/fixtures/stage2-completion/$2"
@@ -119,16 +122,29 @@ jobs:
                 sudo -n test -f "$target" || return 1
                 sudo -n test "$(sudo -n stat -c '%u:%g' -- "$target")" = 0:0 || return 1
                 if [[ "$2" = - ]]; then
-                  sudo -n test "$(sudo -n stat -c '%s' -- "$target")" = 13160 || return 1
-                  sudo -n test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = 6a4e31c3fe1bf1d593660b4a95fc9b21229f70abfbec00218294b47c9e3ae383 || return 1
+                  case "$1" in
+                    cogs-stage2-attested-static-v1.elf)
+                      expected_size=13160
+                      expected_sha=6a4e31c3fe1bf1d593660b4a95fc9b21229f70abfbec00218294b47c9e3ae383
+                      ;;
+                    cogs-stage2-attested-static-v3.elf)
+                      expected_size=13688
+                      expected_sha=7c2bfd83c6c9c600eb626b74c475e0c22e1fc1b5c963203083acf3a803539247
+                      ;;
+                    *) return 1 ;;
+                  esac
+                  sudo -n test "$(sudo -n stat -c '%s' -- "$target")" = "$expected_size" || return 1
+                  sudo -n test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = "$expected_sha" || return 1
                 else
                   sudo -n cmp --silent "$target" "$source" || return 1
                 fi
                 sudo -n rm -- "$target" || return 1
               fi
             done
-            sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building || return 1
-            sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building || return 1
+            for building in /tmp/cogs-stage2-attested-static-v1.building /tmp/cogs-stage2-attested-static-v3.building; do
+              sudo -n test ! -e "$building" || return 1
+              sudo -n test ! -L "$building" || return 1
+            done
           }
           cleanup_netns_parent() {
             if sudo -n test -e /run/netns || sudo -n test -L /run/netns; then
@@ -159,12 +175,21 @@ jobs:
           trap cleanup_on_exit EXIT
           sudo -n test ! -e "$fixture"
           sudo -n test ! -L "$fixture"
-          sudo -n test ! -e /tmp/cogs-stage2-attested-static-v1.building
-          sudo -n test ! -L /tmp/cogs-stage2-attested-static-v1.building
+          for building in /tmp/cogs-stage2-attested-static-v1.building /tmp/cogs-stage2-attested-static-v3.building; do
+            sudo -n test ! -e "$building"
+            sudo -n test ! -L "$building"
+          done
           fixture_cc=/usr/bin/clang-18 fixture_ld=/usr/bin/ld
           sudo -n test -x "$fixture_cc" && sudo -n test -x "$fixture_ld"
           case "$COGS_STAGE2_KATA_NATIVE_TEST_SHARD" in
             baseline)
+              for optimize in '' -O; do
+                sudo -n env -i \
+                  HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                  PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
+                  COGS_STAGE2_SYNTHETIC_V3_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_V3_LD="$fixture_ld" \
+                  /usr/bin/python3 $optimize -I -B test/aws-stage2-attested-fixture-v3.py
+              done
               sudo -n env -i \
                 HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
                 PYTHONDONTWRITEBYTECODE=1 COGS_STAGE2_SYNTHETIC_CLANG="$fixture_cc" COGS_STAGE2_SYNTHETIC_LLD="$fixture_ld" \
