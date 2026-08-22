@@ -54,6 +54,7 @@ RETAINED_FILES = (
     "scripts/stage2-native-settlement.py",
     "scripts/stage2-native-publication.py",
     "scripts/stage2-native-upload-receipt.py",
+    "scripts/stage2-static-control-dispatch-guard.py",
     "scripts/stage2-local-qualification-guard.py",
     "scripts/stage2-local-settlement.py",
     "scripts/stage2-local-publication.py",
