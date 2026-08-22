@@ -68,7 +68,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "645521ca372afaedb61256ab900605d95298dabc1e03b47a7b48bf0dac3b3a85"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "d767a499f829b358f81b9ee06262d36149cf6dda4c56125309b3bbeea5085b49"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -117,6 +117,12 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(admission, control), /\n {2}local-kata:\n {4}needs: admission/u);
   assert.doesNotMatch(workflow.slice(admission, control), /\n {8}uses:/u);
   assert.match(workflow.slice(admission, control), /item\.get\("run_attempt"\) == 1/u);
+  assert.match(workflow.slice(admission, control), /item\["id"\] == 32584575939/u);
+  assert.match(
+    workflow.slice(admission, control),
+    /"completed", "failure", "a9e02f1269684db98a42bfdaed6e2f193ba1c631"/u,
+  );
+  assert.match(workflow.slice(admission, control), /len\(runs\) == 2/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
   assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
   assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
@@ -127,6 +133,7 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.doesNotMatch(workflow.slice(control, implementation), /GITHUB_TOKEN|GH_TOKEN/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
   assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
+  assert.match(workflow.slice(preparation, entry), /observed=\$\(sudo -n \/usr\/bin\/sha256sum/u);
   assert.match(workflow.slice(preparation, entry), /completion_kata_immutable_preparation\.py/u);
   assert.match(workflow.slice(preparation, entry), /"rootfs_artifact_count":16/u);
   assert.match(workflow.slice(preparation, entry), /"runtime_archive_count":2/u);
@@ -214,6 +221,16 @@ test("publication has semantic/schema binding, exact-ID readback, separate recei
   assert.match(workflow, /stage2-local-upload-receipt\.py" receipt-readback/u);
   assert.match(workflow, /\/bin\/rm -rf -- "\$REPORT_STAGING"/u);
   assert.match(workflow, /stage2-local-settlement\.py" final/u);
+  assert.equal(
+    workflow.match(
+      /sudo -n env -i[^\n]*[\s\S]{0,500}?\/usr\/bin\/timeout[^\n]*[\s\S]{0,300}?stage2-local-settlement\.py/gu,
+    )?.length,
+    3,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /\/usr\/bin\/timeout[^\n]*[\s\S]{0,200}?env -i[^\n]*[\s\S]{0,300}?stage2-local-settlement\.py/u,
+  );
 });
 
 test("focused workflow script hostile suite passes", () => {
