@@ -372,8 +372,9 @@ for row in causal_before.counters:
 causal_after = network.NftSnapshot(causal_before.content, causal_before.identity, tuple(changed))
 before_sensor = network.bind_causal_sensor(operation_token, "before", causal_before, "1" * 64)
 after_sensor = network.bind_causal_sensor(operation_token, "after", causal_after, "2" * 64)
-guest_proof = network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64)
-causal_proof = network.prove_causal_network(before_sensor, after_sensor, guest_proof)
+rejected(lambda: network.GuestNetworkProof(
+    network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64))
+causal_proof = network._replay_causal_network(before_sensor, after_sensor, "3" * 64)
 assert tuple(row[0] for row in causal_proof.deltas) == (*network.CAUSAL_POSITIVE_SENSORS,
                                                         *network.CAUSAL_ZERO_SENSORS)
 for hostile in (
@@ -381,25 +382,23 @@ for hostile in (
     network.CausalSensorSnapshot(operation_token, "after", causal_after, "1" * 64),
     network.CausalSensorSnapshot(operation_token, "after", replaced_nft_snapshot, "2" * 64),
 ):
-    rejected(lambda hostile=hostile: network.prove_causal_network(before_sensor, hostile, guest_proof))
+    rejected(lambda hostile=hostile: network._replay_causal_network(
+        before_sensor, hostile, "3" * 64))
 missing = list(changed); row = missing[0]; missing[0] = network.NftCounter(
     row.sensor, row.chain, row.ordinal, row.handle, causal_before.counters[0].packets,
     causal_before.counters[0].bytes)
-rejected(lambda: network.prove_causal_network(before_sensor,
+rejected(lambda: network._replay_causal_network(before_sensor,
     network.CausalSensorSnapshot(operation_token, "after",
-        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(missing)), "2" * 64), guest_proof))
+        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(missing)), "2" * 64), "3" * 64))
 sibling = list(changed); index = next(index for index, row in enumerate(sibling)
                                     if row.sensor in network.CAUSAL_ZERO_SENSORS)
 row = sibling[index]; sibling[index] = network.NftCounter(
     row.sensor, row.chain, row.ordinal, row.handle, row.packets + 1, row.bytes + 64)
-rejected(lambda: network.prove_causal_network(before_sensor,
+rejected(lambda: network._replay_causal_network(before_sensor,
     network.CausalSensorSnapshot(operation_token, "after",
-        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(sibling)), "2" * 64), guest_proof))
-for bad_guest in (
-    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS[:-1], "3" * 64, "3" * 64),
-    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "4" * 64),
-):
-    rejected(lambda bad_guest=bad_guest: network.prove_causal_network(before_sensor, after_sensor, bad_guest))
+        network.NftSnapshot(causal_before.content, causal_before.identity, tuple(sibling)), "2" * 64), "3" * 64))
+rejected(lambda: network._replay_causal_network(before_sensor, after_sensor, "0" * 64))
+rejected(lambda: network.prove_causal_network(before_sensor, after_sensor, object()))
 
 # Complete mountinfo is bounded at 4096 and target fields correlate with descriptor stat.
 inode = 4026533000

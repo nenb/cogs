@@ -21,7 +21,7 @@ test("corrected custody and private receipt remain fail-closed", () => {
   const coordinator = readFileSync(join(root, "deploy/aws-feasibility/remote/completion_kata_coordinator.py"), "utf8");
   const admission = readFileSync(join(root, "deploy/aws-feasibility/remote/completion_kata_admission.py"), "utf8");
   const receipt = readFileSync(join(root, "deploy/aws-feasibility/remote/completion_local_receipt.py"), "utf8");
-  assert.match(coordinator, /_take_execution_custody_issuer\(\)/u);
+  assert.match(coordinator, /preparation_bridge\._claim_fixed_static_preparation\(\)/u);
   assert.doesNotMatch(coordinator, /load_final_pin|_claim_committed_gate/u);
   assert.doesNotMatch(admission, /def _claim_committed_execution_custody/u);
   assert.doesNotMatch(receipt, /def _issue_local_receipt|operation_raw|journal_raw/u);

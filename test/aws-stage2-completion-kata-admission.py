@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_admission as admission
+import completion_kata_preparation_bridge as preparation_bridge
 import completion_local_receipt as receipt
 
 
@@ -182,9 +183,9 @@ with tempfile.TemporaryDirectory() as directory:
 assert admission.committed_status() == {"envelope_reviewed": False, "runtime_manifest_reviewed": False, "custody_issued": False}
 assert admission.static_status()["v2_static_only"] is True
 assert admission.static_status()["kvm_permit"] is False
-static_issuer = admission._take_static_preparation_issuer()
-reject(static_issuer)
-reject(static_issuer, admission.AdmissionUnavailable)
+reject(preparation_bridge._claim_fixed_static_preparation)
+reject(preparation_bridge._claim_fixed_static_preparation, admission.AdmissionUnavailable)
+reject(admission._take_static_preparation_issuer)
 assert not hasattr(admission, "_claim_committed_execution_custody")
 assert not hasattr(receipt, "_issue_local_receipt")
 reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)

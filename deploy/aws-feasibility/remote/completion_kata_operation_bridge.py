@@ -6,8 +6,8 @@ remain in the existing operation, input, and retained-rootfs owners.
 """
 import time
 
-import completion_kata_admission as admission
 import completion_kata_inputs as inputs
+import completion_kata_preparation_bridge as preparation
 import completion_kata_operation as operation
 import completion_rootfs_fs as fs
 import completion_rootfs_lease as rootfs
@@ -41,11 +41,6 @@ def _routes():
         current["lifecycle"] = lifecycle
         return current
 
-    def approval(lifecycle):
-        binding = admission._static_custody_binding(lifecycle.static_custody)
-        _require(type(binding) is dict)
-        return fs.SourceApproval(binding["source_head"], binding["source_manifest_sha256"])
-
     def control():
         return fs.OperationControl(time.monotonic_ns() + operation.JOURNAL_TOTAL_NS,
                                    lambda: False)
@@ -57,29 +52,49 @@ def _routes():
         return current["chain"].components[-1].node
 
     def acquire(bridge, lifecycle):
+        """Acquire only through preparation's verified SourceApproval/custody realm."""
         current = state(bridge, lifecycle)
         _require(current.get("lease") is None and current.get("authority") is None)
-        source, outer = approval(lifecycle), control()
-        lease = rootfs._acquire(source, outer)
-        authority = None
-        try:
-            authority = operation._open_fixed_operation()
-            current.update({"approval": source, "lease": lease, "authority": authority})
-            open_chain(current)
-            rootfs._begin_kata_operation(
-                authority, lease, source, current["control"])
-            return lease
-        except BaseException as error:
-            if authority is not None:
-                try: authority.close()
-                except BaseException as close_error:
-                    raise BaseExceptionGroup("operation begin/close failure", (error, close_error))
-            raise
+        source = preparation._fixed_source_approval(lifecycle.static_custody)
+        _require(source is lifecycle.source_approval,
+                 "preparation SourceApproval identity differs")
+        lease = preparation._acquire_fixed_rootfs(lifecycle.static_custody)
+        _require(type(source) is fs.SourceApproval
+                 and type(lease) is rootfs.RetainedRootfsLease
+                 and lease.disposition == "held")
+        current.update({"approval": source, "lease": lease, "begin_attempted": False})
+        return lease
 
     def open_operation(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        _require(current.get("lease") is lifecycle.rootfs)
-        return operation._claim_production_operation(current["authority"])
+        _require(current.get("lease") is lifecycle.rootfs
+                 and current.get("approval") is lifecycle.source_approval
+                 and current.get("authority") is None)
+        authority = operation._open_fixed_operation()
+        current["authority"] = authority
+        current["begin_attempted"] = True
+        try:
+            open_chain(current)
+            rootfs._begin_kata_operation(
+                authority, lifecycle.rootfs, lifecycle.source_approval,
+                current["control"])
+            return operation._claim_production_operation(authority)
+        except BaseException as error:
+            # A failed begin may already have durable state. Preserve it for the
+            # cleanup-only entry; never reinterpret it as an unassigned lease.
+            errors = [error]
+            try: rootfs._close_preserving(lifecycle.rootfs.retained)
+            except BaseException as close_error: errors.append(close_error)
+            try: authority.close()
+            except BaseException as close_error: errors.append(close_error)
+            current["authority"] = None
+            current["begin_preserved"] = True
+            chain, current["chain"] = current.get("chain"), None
+            if chain is not None:
+                try: fs._close_chain(chain)
+                except BaseException as close_error: errors.append(close_error)
+            if len(errors) == 1: raise
+            raise BaseExceptionGroup("operation begin preservation failure", errors)
 
     def open_existing(bridge, lifecycle):
         current = state(bridge, lifecycle)
@@ -91,7 +106,18 @@ def _routes():
             open_chain(current)
             return cleanup
         except BaseException as error:
+            # The mandatory post-entry recovery sees exact absence after a fully
+            # retired transaction. Distinguish that read-only state from every
+            # malformed or still-owned journal before returning no operation.
+            open_chain(current)
+            if authority.status() == "absent":
+                authority.close()
+                current["authority"] = None
+                chain, current["chain"] = current.get("chain"), None
+                if chain is not None: fs._close_chain(chain)
+                return None
             authority.close()
+            current["authority"] = None
             raise error
 
     def create_inputs(bridge, lifecycle):
@@ -145,13 +171,17 @@ def _routes():
         current = state(bridge, lifecycle)
         retired = operation._retire_production_operation(
             current["cleanup"], lifecycle.final_baselines)
+        import completion_local_evidence as evidence
+        typed = evidence._RetiredJournalOwnerResult(retired.raw)
         current["retired"] = retired
-        return retired
+        current["typed_retired"] = typed
+        return typed
 
     def remove_operation(bridge, lifecycle):
         current = state(bridge, lifecycle)
         retired = operation._remove_retired_operation(current["cleanup"])
-        _require(retired.raw == current["retired"].raw)
+        _require(retired.raw == current["retired"].raw
+                 == current["typed_retired"].raw)
         current["authority"].close()
         current["authority"] = None
         chain, current["chain"] = current.get("chain"), None
@@ -160,11 +190,15 @@ def _routes():
         return retired
 
     def abandon(bridge, lifecycle):
-        """Preserve the durable leased operation when assignment was interrupted."""
+        """Abandon only unbegun preparation; preserve any attempted operation."""
         current = state(bridge, lifecycle)
         held = current.get("lease") or lifecycle.rootfs
         _require(type(held) is rootfs.RetainedRootfsLease
                  and held.disposition == "held")
+        if not current.get("begin_attempted"):
+            return preparation._abandon_fixed_rootfs(lifecycle.static_custody, held)
+        if current.get("begin_preserved"):
+            return "durable-operation-preserved"
         errors = []
         try: rootfs._close_preserving(held.retained)
         except BaseException as error: errors.append(error)

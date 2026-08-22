@@ -541,8 +541,7 @@ bound_before = network.bind_causal_sensor("a" * 64, "before", network.parse_nft_
     before_raw, NFT["table_name"], "c42haaaaaaaaaa"), hashlib.sha256(before_raw).hexdigest())
 bound_after = network.bind_causal_sensor("a" * 64, "after", network.parse_nft_snapshot(
     after_raw, NFT["table_name"], "c42haaaaaaaaaa"), hashlib.sha256(after_raw).hexdigest())
-causal = network.prove_causal_network(bound_before, bound_after,
-    network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64))
+causal = network._replay_causal_network(bound_before, bound_after, "3" * 64)
 causal_body = proof({"operation_token": "a" * 64, "policy_version": journal_model.POLICY_VERSION,
     "before_proof_sha256": before_body["proof_sha256"], "after_proof_sha256": after_body["proof_sha256"],
     "deltas": [list(row) for row in causal.deltas], "marker_sha256": causal.marker_sha256,

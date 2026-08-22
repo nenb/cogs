@@ -46,7 +46,7 @@ test("S5 qualification gate and complete lifecycle remain offline and fail close
   assert.match(ledger, /def _append_release_authorized_record/u);
   assert.match(processOwner, /_install_inherited_fds/u);
   assert.match(processOwner, /adapt_ssh_process_outcome/u);
-  assert.match(coordinator, /_take_execution_custody_issuer/u);
+  assert.match(coordinator, /preparation_bridge\._claim_fixed_static_preparation/u);
   assert.doesNotMatch(coordinator, /_claim_committed_gate|load_final_pin/u);
   assert.match(coordinator, /revoke_before_teardown/u);
 });

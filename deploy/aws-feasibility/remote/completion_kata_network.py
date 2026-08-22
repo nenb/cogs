@@ -741,11 +741,45 @@ class CausalSensorSnapshot:
     observation_sha256: str
 
 
-@dataclass(frozen=True)
-class GuestNetworkProof:
-    markers: tuple
-    route_before_sha256: str
-    route_after_sha256: str
+def _guest_network_proof_routes():
+    """Seal authenticated V3 guest observations behind a one-taken issuer."""
+    seal = object()
+    issuer_taken = False
+
+    class GuestNetworkProof:
+        __slots__ = ("markers", "route_before_sha256", "route_after_sha256")
+
+        def __new__(cls, key=None, markers=None, route_before=None, route_after=None):
+            if key is not seal:
+                raise NetworkError("guest network proof is owner-sealed")
+            value = super().__new__(cls)
+            value.markers = markers
+            value.route_before_sha256 = route_before
+            value.route_after_sha256 = route_after
+            return value
+
+    def issue(parsed):
+        import completion_guest_workloads_v3 as guest_workloads
+        if (type(parsed) is not guest_workloads.GuestWorkloadResult
+                or parsed.network_markers != CAUSAL_GUEST_MARKERS
+                or not _hex_digest(parsed.route_before_sha256)
+                or parsed.route_before_sha256 != parsed.route_after_sha256):
+            raise NetworkError("exact authenticated guest network result required")
+        return GuestNetworkProof(seal, parsed.network_markers,
+                                 parsed.route_before_sha256, parsed.route_after_sha256)
+
+    def take_issuer():
+        nonlocal issuer_taken
+        if issuer_taken:
+            raise NetworkError("guest network proof issuer already taken")
+        issuer_taken = True
+        return issue
+
+    return GuestNetworkProof, take_issuer
+
+
+GuestNetworkProof, _take_guest_network_proof_issuer = _guest_network_proof_routes()
+del _guest_network_proof_routes
 
 
 @dataclass(frozen=True)
@@ -793,16 +827,16 @@ def _counter_map(snapshot):
     return result
 
 
-def prove_causal_network(before, after, guest):
-    """Bind authenticated guest categories to immutable host-rule counter deltas."""
+def _prove_causal_values(before, after, markers, route_before, route_after):
     if (type(before) is not CausalSensorSnapshot or type(after) is not CausalSensorSnapshot
-            or type(guest) is not GuestNetworkProof or before.stage != "before" or after.stage != "after"
+            or before.stage != "before" or after.stage != "after"
             or before.operation_token != after.operation_token
             or before.observation_sha256 == after.observation_sha256
-            or before.nft != after.nft or _sensor_static_sha256(before.nft) != _sensor_static_sha256(after.nft)):
+            or before.nft != after.nft
+            or _sensor_static_sha256(before.nft) != _sensor_static_sha256(after.nft)):
         raise NetworkError("causal sensor replacement or order")
-    if (guest.markers != CAUSAL_GUEST_MARKERS or not _hex_digest(guest.route_before_sha256)
-            or guest.route_before_sha256 != guest.route_after_sha256):
+    if (markers != CAUSAL_GUEST_MARKERS or not _hex_digest(route_before)
+            or route_before != route_after):
         raise NetworkError("guest route restoration proof")
     first, second = _counter_map(before), _counter_map(after)
     deltas = []
@@ -821,14 +855,29 @@ def prove_causal_network(before, after, guest):
                 raise NetworkError("unexpected sibling sensor increase")
             category = "zero"
         deltas.append((name, category, packet_delta, byte_delta))
-    marker_raw = json.dumps(list(guest.markers), separators=(",", ":")).encode()
+    marker_raw = json.dumps(list(markers), separators=(",", ":")).encode()
     result = {"operation_token": before.operation_token, "deltas": deltas,
               "marker_sha256": hashlib.sha256(marker_raw).hexdigest(),
-              "route_sha256": guest.route_before_sha256}
+              "route_sha256": route_before}
     result["proof_sha256"] = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return CausalNetworkProof(result["operation_token"], tuple(deltas), result["marker_sha256"],
                               result["route_sha256"], result["proof_sha256"])
+
+
+def prove_causal_network(before, after, guest):
+    """Bind only an authenticated owner-sealed guest proof to host deltas."""
+    if type(guest) is not GuestNetworkProof:
+        raise NetworkError("owner-sealed guest network proof required")
+    return _prove_causal_values(
+        before, after, guest.markers, guest.route_before_sha256,
+        guest.route_after_sha256)
+
+
+def _replay_causal_network(before, after, route_sha256):
+    """Journal replay verifies fixed markers without constructing guest authority."""
+    return _prove_causal_values(before, after, CAUSAL_GUEST_MARKERS,
+                                route_sha256, route_sha256)
 
 
 @dataclass(frozen=True)

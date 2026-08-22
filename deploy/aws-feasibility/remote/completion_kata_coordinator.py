@@ -11,6 +11,7 @@ import completion_kata_admission as admission
 import completion_kata_execution_bridge as execution_bridge
 import completion_kata_network as network
 import completion_kata_operation_bridge as operation_bridge
+import completion_kata_preparation_bridge as preparation_bridge
 import completion_kata_process as process
 import completion_kata_qualification as qualification
 import completion_kata_runtime as runtime
@@ -18,7 +19,6 @@ import completion_kata_ssh as ssh
 import completion_local_evidence as local_evidence
 import completion_local_receipt as local_receipt
 
-_claim_execution_custody = admission._take_execution_custody_issuer()
 _produce_owner_evidence = local_receipt._take_owner_evidence_producer()
 _issue_owner_receipt = local_receipt._take_local_receipt_issuer()
 
@@ -31,11 +31,11 @@ FORWARD_ORDER = (
     "INPUTS_CREATED",
     "BASELINES_CAPTURED",
     "NETWORK_READY",
-    "NETWORK_CAUSAL_PROOF",
     "RUNTIME_STAGED",
     "EXECUTION_MAPPING_BOUND",
     "TASK_LAUNCHED",
     "RUNTIME_PROVED",
+    "NETWORK_CAUSAL_PROOF",
     "SSH_AUTHENTICATED",
 )
 TEARDOWN_ORDER = (
@@ -104,18 +104,20 @@ class _Lifecycle:
     recovery: bool = False
     static_custody: object = None
     static_gate: object = None
+    source_approval: object = None
     rootfs: object = None
     operation: object = None
     live_custody: object = None
+    live_mapping: object = None
     executables: object = None
     inputs: object = None
     baselines: object = None
     network_owner: object = None
     network_proof: object = None
-    network_guest_proof: object = None
     staged_runtime: object = None
     execution_mapping: object = None
     task: object = None
+    runtime_observation: object = None
     runtime_proof: object = None
     session: object = None
     ownership_proof: object = None
@@ -127,24 +129,37 @@ class _Lifecycle:
 
 
 class _AdmissionBoundary:
-    """Current immutable admission adapter; it deliberately invents no live facts."""
+    """Exact V2 preparation custody, lease mapping, and executable handoffs."""
 
     def claim_static(self):
         try:
-            custody, gate = _claim_execution_custody()
-        except admission.AdmissionError as error:
+            custody = preparation_bridge._claim_fixed_static_preparation()
+            approval = preparation_bridge._fixed_source_approval(custody)
+        except (admission.AdmissionError,
+                preparation_bridge.PreparationBridgeError) as error:
             raise CoordinatorBlocked(BLOCKED_REASON) from error
-        return custody, gate
+        return custody, approval
 
     def claim_live(self, lifecycle):
-        # V1 admission currently combines static and live custody.  Treat that
-        # exact held pair as one value; never reconstruct it from bindings.
-        if lifecycle.static_custody is None or lifecycle.static_gate is None:
+        if (lifecycle.static_custody is None or lifecycle.rootfs is None
+                or lifecycle.source_approval is not lifecycle.static_gate):
             raise CoordinatorBlocked(BLOCKED_REASON)
-        return lifecycle.static_custody, lifecycle.static_gate
+        claim = preparation_bridge._claim_fixed_live_mapping(
+            lifecycle.static_custody, lifecycle.rootfs)
+        description = preparation_bridge._consume_fixed_live_mapping(
+            lifecycle.static_custody, claim)
+        lifecycle.live_mapping = description
+        return description
+
+    def claim_executables(self, lifecycle):
+        if lifecycle.live_mapping is not lifecycle.live_custody:
+            raise CoordinatorBlocked("exact live mapping must precede executable custody")
+        return preparation_bridge._claim_fixed_executable_owner(
+            lifecycle.static_custody)
 
     def abort(self, lifecycle):
-        admission._abort_execution_custody(lifecycle.static_custody)
+        preparation_bridge._abort_fixed_static_preparation(
+            lifecycle.static_custody)
 
 
 class _PrivateEvidenceBoundary:
@@ -154,8 +169,12 @@ class _PrivateEvidenceBoundary:
         if lifecycle.primary_failure is not None:
             raise CoordinatorBlocked("failed lifecycle cannot produce pass evidence")
         try:
-            bindings = local_evidence._BindingOwnerResult(
-                **admission._static_custody_binding(lifecycle.static_custody))
+            binding_value = admission._static_custody_binding(
+                lifecycle.static_custody)
+            binding_value["runtime_attestation_sha256"] = (
+                local_evidence._runtime_attestation_sha256(
+                    lifecycle.runtime_proof))
+            bindings = local_evidence._BindingOwnerResult(**binding_value)
             if type(lifecycle.retired) is not local_evidence._RetiredJournalOwnerResult:
                 raise CoordinatorBlocked("exact retired journal owner result required")
             if type(lifecycle.session) is not ssh.AuthenticatedSession:
@@ -192,6 +211,8 @@ class _PackagePrivateOwners:
         return self.admission.claim_static()
 
     def acquire_rootfs(self, lifecycle):
+        if lifecycle.source_approval is not lifecycle.static_gate:
+            raise CoordinatorBlocked("exact preparation SourceApproval required")
         return operation_bridge._acquire_rootfs(self.operation, lifecycle)
 
     def open_operation(self, lifecycle):
@@ -201,7 +222,7 @@ class _PackagePrivateOwners:
         return self.admission.claim_live(lifecycle)
 
     def claim_executables(self, lifecycle):
-        return process._open_static_attested_executable_owner(lifecycle.static_custody)
+        return self.admission.claim_executables(lifecycle)
 
     def create_inputs(self, lifecycle):
         return operation_bridge._create_inputs(self.operation, lifecycle)
@@ -288,7 +309,8 @@ class _PackagePrivateOwners:
         return operation_bridge._remove_operation(self.operation, lifecycle)
 
     def observe_independent_residue(self, lifecycle):
-        raise CoordinatorBlocked(BLOCKED_REASON)
+        return execution_bridge._observe_independent_residue(
+            self.execution, lifecycle)
 
     def abandon_prepared_rootfs(self, lifecycle):
         return operation_bridge._abandon_prepared_rootfs(self.operation, lifecycle)
@@ -384,6 +406,7 @@ def _run_fixed_local_qualification():
     lifecycle = _Lifecycle()
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
+        lifecycle.source_approval = lifecycle.static_gate
         lifecycle.rootfs = _owners.acquire_rootfs(lifecycle)
         lifecycle.operation = _owners.open_operation(lifecycle)
         lifecycle.live_custody = _owners.claim_live_custody(lifecycle)
@@ -391,16 +414,20 @@ def _run_fixed_local_qualification():
         lifecycle.inputs = _owners.create_inputs(lifecycle)
         lifecycle.baselines = _owners.capture_baselines(lifecycle)
         lifecycle.network_owner = _owners.create_network(lifecycle)
-        lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
         lifecycle.staged_runtime = _owners.stage_runtime(lifecycle)
         lifecycle.execution_mapping = _owners.bind_execution_mapping(lifecycle)
         lifecycle.task = _owners.launch_task(lifecycle)
-        lifecycle.runtime_proof = _owners.prove_runtime(lifecycle)
+        lifecycle.runtime_observation = _owners.prove_runtime(lifecycle)
+        lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
         lifecycle.session = _owners.authenticate_ssh(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
 
     errors = _cleanup(lifecycle)
+    if lifecycle.static_custody is None and lifecycle.primary_failure is not None:
+        if isinstance(lifecycle.primary_failure, CoordinatorBlocked):
+            raise lifecycle.primary_failure
+        raise CoordinatorBlocked(BLOCKED_REASON) from lifecycle.primary_failure
     if errors:
         if lifecycle.primary_failure is not None:
             errors.insert(0, lifecycle.primary_failure)
@@ -420,6 +447,7 @@ def _recover_fixed_local_qualification():
     lifecycle = _Lifecycle(recovery=True)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
+        lifecycle.source_approval = lifecycle.static_gate
         lifecycle.operation = _owners.open_existing_operation(lifecycle)
         if lifecycle.operation is not None:
             _owners.recover_pending(lifecycle)

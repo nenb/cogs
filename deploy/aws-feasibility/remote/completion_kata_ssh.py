@@ -8,7 +8,9 @@ import hashlib
 import completion_guest_workloads_v3 as guest
 import completion_kata_fdmap as fdmap
 import completion_kata_operation as operation
+import completion_kata_network as network
 
+_issue_guest_network_proof = network._take_guest_network_proof_issuer()
 MARKER = guest.GUEST_READY_MARKER
 MARKER_SHA256 = hashlib.sha256(MARKER).hexdigest()
 KEY_FD = 200
@@ -204,6 +206,7 @@ class AuthenticatedSession:
     stdout_sha256: str
     result_sha256: str
     parsed_result: guest.GuestWorkloadResult
+    guest_network_proof: object = None
 
 
 def _canonical_result(result):
@@ -255,23 +258,25 @@ def _production_routes():
                 parsed = guest.parse_guest_workload_output(outcome.stdout)
                 canonical = _canonical_result(parsed)
                 result_sha256 = hashlib.sha256(canonical).hexdigest()
-                operation._record_ssh_result(
-                    state["journal"], context.command_serial, receipt.binding_sha256,
-                    identity.manifest_sha256, outcome.stdout, canonical)
-                operation._record_ssh_ready(state["journal"])
+                network_proof = _issue_guest_network_proof(parsed)
                 session = AuthenticatedSession(
                     context.command_serial, receipt.binding_sha256,
                     guest.GUEST_PROGRAM_SHA256, body["stdout_sha256"],
-                    result_sha256, parsed)
+                    result_sha256, parsed, network_proof)
+                state["pending_result"] = (
+                    context.command_serial, receipt.binding_sha256,
+                    identity.manifest_sha256, outcome.stdout, canonical)
+                state["session"] = session
             except BaseException as error:
                 primary = error
-            state["revoked"] = True
+            state["revoked"] = primary is not None
             settlement_errors = []
             if primary is not None and state["issued"]:
                 try: process._recover_pending_production(state["journal"])
                 except BaseException as error: settlement_errors.append(error)
-            try: operation._revoke_or_require_terminal(state["journal"])
-            except BaseException as error: settlement_errors.append(error)
+            if primary is not None:
+                try: operation._revoke_or_require_terminal(state["journal"])
+                except BaseException as error: settlement_errors.append(error)
             if claimed:
                 try: state["inputs"].release_ssh_bindings()
                 except BaseException as error: settlement_errors.append(error)
@@ -283,6 +288,16 @@ def _production_routes():
             if primary is not None or settlement_errors:
                 errors = ([primary] if primary is not None else []) + settlement_errors
                 raise BaseExceptionGroup("SSH failure/revocation/descriptor settlement", errors)
+            return session
+        def finalize_authenticated(self, session):
+            state = states[self]
+            _fail(state["session"] is session and state["pending_result"] is not None
+                  and not state["finalized"] and not state["revoked"],
+                  "authenticated SSH finalization lineage")
+            operation._record_ssh_result(state["journal"], *state["pending_result"])
+            operation._record_ssh_ready(state["journal"])
+            state["finalized"] = True
+            state["pending_result"] = None
             return session
         def revoke(self):
             import completion_kata_process as process
@@ -321,7 +336,8 @@ def _production_routes():
         value = _ProductionSsh(seal)
         states[value] = {"journal": journal, "inputs": input_owner,
                          "executable": ssh_executable, "executable_released": False,
-                         "issued": False, "revoked": False}
+                         "issued": False, "revoked": False, "finalized": False,
+                         "pending_result": None, "session": None}
         return value
 
     return _ProductionSsh, compose, recover

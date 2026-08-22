@@ -108,8 +108,10 @@ test("attempt and first-created guard precede H acquisition and every qualificat
   assert.doesNotMatch(guard, /"Authorization"|GITHUB_TOKEN|github\.token/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
   assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
-  assert.match(workflow.slice(preparation, entry),
-    /stage2-completion-v1\/control\/stage2-local-static-control-v1\.json/u);
+  assert.match(
+    workflow.slice(preparation, entry),
+    /stage2-completion-v1\/control\/stage2-local-static-control-v1\.json/u,
+  );
   assert.doesNotMatch(workflow.slice(preparation, entry), /\/run\/cogs-stage2-local-control-v2/u);
   assert.doesNotMatch(workflow.slice(0, entry), /\/dev\/kvm|qmp|containerd|completion_local_full\.py/u);
   assert.equal(workflow.match(/completion_local_full\.py/gu)?.length, 1);

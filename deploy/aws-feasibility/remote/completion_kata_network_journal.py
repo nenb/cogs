@@ -453,9 +453,8 @@ def advance(state, kind, body, phase):
                                                 identity["host_link"]["ifname"], True)
             bound.append(network.bind_causal_sensor(body["operation_token"], row["stage"], parsed,
                                                     row["source"]["output_sha256"]))
-        guest = network.GuestNetworkProof(network.CAUSAL_GUEST_MARKERS,
-                                          body["route_sha256"], body["route_sha256"])
-        proven = network.prove_causal_network(bound[0], bound[1], guest)
+        proven = network._replay_causal_network(
+            bound[0], bound[1], body["route_sha256"])
         _fail(body["deltas"] == [list(row) for row in proven.deltas]
               and body["marker_sha256"] == proven.marker_sha256
               and body["causal_proof_sha256"] == proven.proof_sha256)

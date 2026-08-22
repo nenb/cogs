@@ -169,7 +169,7 @@ for index in range(1, len(lines)):
 # V3 is an additive route. Historical V2 stdin and canonical milliseconds stay
 # byte-for-byte covered above rather than being silently reinterpreted.
 program_v3 = guest_v3.guest_program_bytes()
-snapshot_v3 = (ROOT / "test/fixtures/stage2-completion/guest-workload-v2.sh").read_bytes()
+snapshot_v3 = (ROOT / "test/fixtures/stage2-completion/guest-workload-v3.sh").read_bytes()
 check(program_v3 == snapshot_v3, "V3 guest stdin snapshot differs")
 check(hashlib.sha256(program_v3).hexdigest() == guest_v3.GUEST_PROGRAM_SHA256,
       "V3 guest stdin digest differs")
@@ -221,15 +221,22 @@ check(text_v3.count('verify_installed_tree "$p/installed"') == 1
 check("| /usr/bin" not in text_v3 and "$(/usr/bin/find" not in text_v3,
       "V3 find failure can be hidden by a pipeline or substitution")
 
+route_sha = "a" * 64
 lines_v3 = [guest_v3.GUEST_READY_MARKER]
+for ordinal, marker in enumerate(guest_v3.GUEST_NETWORK_MARKERS, 1):
+    suffix = f"|route_sha256={route_sha}" if ordinal in {1, 8} else ""
+    lines_v3.append(
+        f"{guest_v3.GUEST_NETWORK_PREFIX}|{ordinal:02d}|{marker}{suffix}\n".encode("ascii"))
 for ordinal, (label, digest) in enumerate(guest_v3.GUEST_WORKLOAD_PLAN, 1):
     lines_v3.append(
         f"{guest_v3.GUEST_RESULT_PREFIX}|{ordinal:02d}|{label}|{ordinal}|{digest}|deleted=true\n".encode("ascii")
     )
 valid_v3 = b"".join(lines_v3)
 parsed_v3 = guest_v3.parse_guest_workload_output(valid_v3)
-check(len(parsed_v3.samples) == 21 and parsed_v3.samples[0].duration_ns == 1,
-      "V3 nanosecond result differs")
+check(len(parsed_v3.samples) == 21 and parsed_v3.samples[0].duration_ns == 1
+      and parsed_v3.network_markers == guest_v3.GUEST_NETWORK_MARKERS
+      and parsed_v3.route_before_sha256 == parsed_v3.route_after_sha256 == route_sha,
+      "V3 network/nanosecond result differs")
 check(tuple(row.category for row in parsed_v3.samples)
       == tuple(row[0] for row in guest_v3.GUEST_WORKLOAD_PLAN),
       "V3 21-row order differs")

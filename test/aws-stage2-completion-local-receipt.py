@@ -45,7 +45,9 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
     samples = tuple(guest.GuestSampleResult(
         ordinal, label, (ordinal + 10) * (1_000_000 if duration_is_ns else 1), digest, True)
         for ordinal, (label, digest) in enumerate(guest.GUEST_WORKLOAD_PLAN, 1))
-    parsed = guest.GuestWorkloadResult(sha(guest.GUEST_READY_MARKER), samples)
+    parsed = guest.GuestWorkloadResult(
+        sha(guest.GUEST_READY_MARKER), samples, guest.GUEST_NETWORK_MARKERS,
+        "9" * 64, "9" * 64)
     canonical = guest.canonical_guest_workload_result(parsed)
     session = ssh.AuthenticatedSession(
         7, "e" * 64, guest.GUEST_PROGRAM_SHA256, "f" * 64, sha(canonical), parsed)
@@ -75,7 +77,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
     result = record(len(rows), "SSH_RESULT_V2", {
         "operation_token": token, "command_serial": session.command_serial,
         "binding_sha256": session.binding_sha256, "manifest_sha256": "4" * 64,
-        "runtime_mount_sha256": mount.line_sha256, "runtime_mount_generation": {},
+        "runtime_mount_sha256": mount.body["issuance_sha256"], "runtime_mount_generation": {},
         "program_sha256": guest.GUEST_PROGRAM_SHA256,
         "parser_sha256": operation.SSH_PARSER_SHA256,
         "stdout_sha256": session.stdout_sha256, "stdout_hex": "",
@@ -87,6 +89,10 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         "operation_token": token, "result_record_sha256": result.line_sha256,
         "proof_sha256": "7" * 64,
     }))
+    ownership = record(len(rows), "OWNERSHIP_OBSERVED", {
+        "operation_token": token, "proof_sha256": "c" * 64,
+    })
+    rows.append(ownership)
     for phase in evidence.JOURNAL_TEARDOWN_ORDER:
         body = {"operation_token": token}
         if phase == "FINAL_BASELINES":
@@ -95,8 +101,8 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
         rows.append(record(len(rows), phase, body))
     runtime = evidence._RuntimeOwnerResult(
-        token, mount.line_sha256, causal.body["causal_proof_sha256"],
-        "9" * 64, "c" * 64, 12, True, True)
+        token, mount.body["issuance_sha256"], causal.body["causal_proof_sha256"],
+        "9" * 64, ownership.body["proof_sha256"], 12, True, True)
     residue = evidence._ResidueOwnerResult(token, "8" * 64, local.RESIDUE_FACTS)
     bindings = {
         "source_head": genesis["source_revision"],
@@ -260,8 +266,9 @@ check('runtime.network_causal_proof_sha256 == causal.body["causal_proof_sha256"]
       "typed runtime can detach from causal network proof")
 check("local.canonical_result(report)" in source, "derived report is not canonicalized exactly once")
 check("custody_close(target)" in receipt_source, "custody closure is not transactional")
-check("admission._static_custody_binding, admission._abort_static_preparation" in receipt_source,
-      "production receipt realm is not bound to exact V2 static custody")
+check("admission._static_custody_binding" in receipt_source
+      and "preparation_bridge._abort_fixed_static_preparation" in receipt_source,
+      "production receipt realm is not bound to exact V2 preparation custody")
 check("_execution_custody_binding" not in receipt_source,
       "historical V1 custody entered the production receipt realm")
 print("completion local typed evidence and receipt tests passed")

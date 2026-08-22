@@ -12,6 +12,7 @@ sys.path.insert(0, str(REMOTE))
 import completion_kata_coordinator as coordinator
 import completion_kata_execution_bridge as execution
 import completion_kata_operation_bridge as operation
+import completion_kata_preparation_bridge as preparation
 import completion_kata_process as process
 import completion_kata_runtime as runtime
 
@@ -81,7 +82,8 @@ for method_name, (module, route_name, expected_bridge) in routes.items():
 # Executable custody is the one static-to-mutable handoff. It consumes only the
 # exact static custody object and does not reinterpret the historical gate.
 claimed = object()
-with patch.object(process, "_open_static_attested_executable_owner",
+lifecycle.live_mapping = lifecycle.live_custody = object()
+with patch.object(preparation, "_claim_fixed_executable_owner",
                   side_effect=lambda custody: (claimed if custody is lifecycle.static_custody else None)) as call:
     assert owners.claim_executables(lifecycle) is claimed
     call.assert_called_once_with(lifecycle.static_custody)

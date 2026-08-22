@@ -6,6 +6,7 @@ can enter this receipt module's issuance surface.
 import hashlib
 
 import completion_kata_admission as admission
+import completion_kata_preparation_bridge as preparation_bridge
 import completion_local_evidence as owner_evidence
 
 
@@ -107,4 +108,5 @@ def _new_local_receipt_routes(custody_binding, custody_close):
 
 (_take_owner_evidence_producer, _take_local_receipt_issuer,
  _consume_local_receipt) = _new_local_receipt_routes(
-     admission._static_custody_binding, admission._abort_static_preparation)
+     admission._static_custody_binding,
+     preparation_bridge._abort_fixed_static_preparation)

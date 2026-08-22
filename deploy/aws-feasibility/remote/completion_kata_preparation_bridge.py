@@ -36,7 +36,7 @@ def _claim_fixed_static_preparation():
     """Authenticate the sole fixed V2 package and retain its source files."""
     custody = _claim_static()
     _states[custody] = {
-        "lease": None, "mapping": None, "mapping_consumed": False,
+        "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "abandoned": False,
     }
     return custody
@@ -44,10 +44,13 @@ def _claim_fixed_static_preparation():
 
 def _fixed_source_approval(custody):
     """Return SourceApproval derived from the verified complete source manifest."""
-    _require(custody in _states)
-    approval = admission._fixed_source_approval(custody)
-    _require(type(approval) is rootfs_fs.SourceApproval)
-    return approval
+    state = _states.get(custody)
+    _require(state is not None)
+    if state["approval"] is None:
+        approval = admission._fixed_source_approval(custody)
+        _require(type(approval) is rootfs_fs.SourceApproval)
+        state["approval"] = approval
+    return state["approval"]
 
 
 def _acquire_fixed_rootfs(custody):
@@ -149,8 +152,9 @@ def _abandon_fixed_rootfs(custody, lease):
 def _abort_fixed_static_preparation(custody):
     """Close retained executable and static descriptors after lease settlement."""
     state = _states.get(custody)
-    _require(state is not None and (state["lease"] is None
-             or state["lease"].disposition != "held"))
+    lease = None if state is None else state["lease"]
+    _require(state is not None and (lease is None or lease.disposition != "held"
+             or lease.retained.disposition == "uncertain"))
     _states.pop(custody)
     errors = []
     if state["executables"] is not None:

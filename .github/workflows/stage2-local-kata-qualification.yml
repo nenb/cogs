@@ -107,11 +107,12 @@ jobs:
           test ! -e "$REPORT_STAGING"
           /bin/mkdir -m 0700 -- "$REPORT_STAGING"
           umask 077
+          cd /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 3470s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
-            /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_local_full.py \
+            /usr/bin/python3 -I -B -c \
+            'import sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote"); import runpy; runpy.run_path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_local_full.py",run_name="__main__")' \
             >"$REPORT_STAGING/report.partial"
 
       - name: Invoke cleanup-only recovery after every local entry outcome

@@ -259,6 +259,9 @@ check(cleanup.called and recovery_calls == [cleanup_journal], "cleanup SSH recov
 
 # Exact guest parser and canonical typed result: marker plus all 21 fixed rows.
 lines = [guest.GUEST_READY_MARKER]
+for ordinal, marker in enumerate(guest.GUEST_NETWORK_MARKERS, 1):
+    suffix = "|route_sha256=" + "9" * 64 if ordinal in {1, 8} else ""
+    lines.append(f"{guest.GUEST_NETWORK_PREFIX}|{ordinal:02d}|{marker}{suffix}\n".encode())
 for ordinal, (label, digest) in enumerate(guest.GUEST_WORKLOAD_PLAN, 1):
     lines.append(
         f"{guest.GUEST_RESULT_PREFIX}|{ordinal:02d}|{label}|1|{digest}|deleted=true\n".encode())
