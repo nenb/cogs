@@ -68,7 +68,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "64a54854c6dc82e16d62e90f82529135021eac653a36140e653bfbfc0069ee43"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "645521ca372afaedb61256ab900605d95298dabc1e03b47a7b48bf0dac3b3a85"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -114,6 +114,7 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
       implementation < preparation &&
       preparation < entry,
   );
+  assert.match(workflow.slice(admission, control), /\n {2}local-kata:\n {4}needs: admission/u);
   assert.doesNotMatch(workflow.slice(admission, control), /\n {8}uses:/u);
   assert.match(workflow.slice(admission, control), /item\.get\("run_attempt"\) == 1/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
@@ -144,9 +145,11 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
 
 test("fixed phase bounds preserve recovery, independent residue, and publication reserve", () => {
   const total = steps.reduce((sum, name) => sum + stepTimeout(name), 0);
-  const job = Number(workflow.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
+  const localJob = workflow.slice(workflow.indexOf("\n  local-kata:"));
+  const job = Number(localJob.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
   assert.equal(job, 120);
   assert.equal(total, 116);
+  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 115);
   assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 59);
   const postEntry = steps.slice(6).reduce((sum, name) => sum + stepTimeout(name), 0);
   assert.equal(postEntry, 21);

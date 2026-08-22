@@ -17,25 +17,19 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: stage2-local-kata-qualification
+  cancel-in-progress: false
+
 jobs:
-  local-kata:
+  admission:
     runs-on: ubuntu-24.04
-    # Fixed step bounds total 116 minutes inside one 7,200-second envelope.
-    # Immutable acquisition has its own bound and completes before custody.
-    # Recovery, cleanup, residue, and publication retain a non-borrowing
-    # 21-minute reserve after the sole mutable entry bound.
-    timeout-minutes: 120
-    concurrency:
-      group: stage2-local-kata-qualification
-      cancel-in-progress: false
+    timeout-minutes: 2
+    outputs:
+      run_id: ${{ steps.pre_admission.outputs.run_id }}
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
-      REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-${{ github.run_attempt }}
-      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-${{ github.run_attempt }}
-      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-local-receipt-upload-${{ github.run_id }}-${{ github.run_attempt }}
-      REPORT_ARTIFACT_NAME: stage2-local-kata-report-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
-      RECEIPT_ARTIFACT_NAME: stage2-local-kata-upload-receipt-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Admit the stable first-created dispatch before every source effect
         id: pre_admission
@@ -116,6 +110,23 @@ jobs:
               time.sleep(2)
           PY
 
+  local-kata:
+    needs: admission
+    runs-on: ubuntu-24.04
+    # Fixed local-job step bounds total 115 minutes inside one 7,200-second envelope.
+    # Immutable acquisition has its own bound and completes before custody.
+    # Recovery, cleanup, residue, and publication retain a non-borrowing
+    # 21-minute reserve after the sole mutable entry bound.
+    timeout-minutes: 120
+    env:
+      EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
+      EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+      REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-local-receipt-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_ARTIFACT_NAME: stage2-local-kata-report-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_ARTIFACT_NAME: stage2-local-kata-upload-receipt-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
       - name: Acquire exact control revision G without credentials
         timeout-minutes: 1
         run: |
@@ -136,7 +147,7 @@ jobs:
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
-          PRE_EFFECT_ADMITTED_RUN_ID: ${{ steps.pre_admission.outputs.run_id }}
+          PRE_EFFECT_ADMITTED_RUN_ID: ${{ needs.admission.outputs.run_id }}
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
