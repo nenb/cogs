@@ -78,7 +78,7 @@ def _routes():
         runtime_phases = {"NETWORK_READY", "RUNTIME_READY", "SSH_READY",
                           "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED",
                           "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
-                          "RUNTIME_ABSENT", "SHARE_ABSENT"}
+                          "RUNTIME_ABSENT"}
         if phase not in network_phases:
             return phase
         lifecycle.executables = preparation._reconstruct_fixed_executable_owner(
@@ -339,12 +339,21 @@ def _routes():
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
         if phase != "SHARE_ABSENT": return phase
-        owner = ensure_runtime(current, lifecycle)
-        result = runtime._cleanup_fixed_runtime(owner)
-        runtime._close_fixed_runtime(owner)
-        current["runtime"] = None
-        for node in reversed(current.pop("config_nodes", ())): fs._close_node(node)
-        return result
+        owner = current.get("runtime")
+        if owner is not None:
+            result = runtime._cleanup_fixed_runtime(owner)
+            runtime._close_fixed_runtime(owner)
+            current["runtime"] = None
+            for node in reversed(current.pop("config_nodes", ())): fs._close_node(node)
+            return result
+        # A fresh process can arrive after shutdown durably recorded the daemon
+        # outcome and removed kata-runtime-v1, but before firewall settlement.
+        # Reopen only the daemon cleanup identity: no containerd/ctr pathname or
+        # complete runtime attestation is required at this phase.
+        daemon = runtime._retain_private_containerd(
+            lifecycle.operation, fixed_chain(current), None, current["control"])
+        runtime._shutdown_private_containerd(daemon)
+        return {"containerd": "absent"}
 
     def remove_firewall(bridge, lifecycle):
         current = state(bridge, lifecycle)

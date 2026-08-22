@@ -12,7 +12,6 @@ import http.client
 import importlib.util
 import os
 from pathlib import Path
-import shutil
 import ssl
 import stat
 import subprocess
@@ -40,7 +39,10 @@ PREPARATION_ROOT = COMPLETION_ROOT / "immutable-preparation-v1"
 RUNTIME_CACHE = PREPARATION_ROOT / "runtime-cache"
 EXTRACTED_ROOT = PREPARATION_ROOT / "extracted"
 RECEIPT = PREPARATION_ROOT / "receipt.json"
+OWNERSHIP = PREPARATION_ROOT / "ownership.json"
 STAGED_RUNTIME = COMPLETION_ROOT / "kata-runtime-v1"
+IMMUTABLE_STAGING = COMPLETION_ROOT / ".kata-runtime-v1.immutable-staging"
+OWNERSHIP_VERSION = "cogs.stage2-local-immutable-preparation-ownership/v1"
 KATA_ROOT = Path("/opt/kata")
 KATA_PARENT = Path("/opt")
 MAX_REDIRECTS = 3
@@ -64,6 +66,22 @@ class ImmutablePreparationError(Exception):
     """The exact immutable preparation could not be completed."""
 
 
+class ImmutablePreparationErrorGroup(ImmutablePreparationError):
+    """Portable aggregate for hosts predating native exception groups."""
+    def __init__(self, message, errors):
+        self.errors = tuple(errors)
+        super().__init__(message + ": " + "; ".join(
+            f"{type(error).__name__}: {error}" for error in self.errors))
+
+
+def _error_group(message, errors):
+    try:
+        group = BaseExceptionGroup
+    except NameError:
+        return ImmutablePreparationErrorGroup(message, errors)
+    return group(message, tuple(errors))
+
+
 def _require(condition, message="immutable preparation failed"):
     if not condition:
         raise ImmutablePreparationError(message)
@@ -77,6 +95,99 @@ def _identity(value):
     return tuple(getattr(value, name) for name in (
         "st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink",
         "st_size", "st_mtime_ns", "st_ctime_ns"))
+
+
+def _directory_identity(path):
+    seen = os.stat(path, follow_symlinks=False)
+    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == os.geteuid()
+             and (os.geteuid() != 0 or seen.st_gid == 0)
+             and stat.S_IMODE(seen.st_mode) == 0o700)
+    return {"device": seen.st_dev, "inode": seen.st_ino}
+
+
+def _sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_owned_file(path, raw, mode):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    try:
+        offset = 0
+        while offset < len(raw):
+            count = os.write(descriptor, raw[offset:])
+            _require(count > 0)
+            offset += count
+        _chown_root(descriptor)
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _prepare_artifact_custody(contract):
+    """Durably distinguish retained cache entries from transaction entries."""
+    owned = not ARTIFACT_ROOT.exists()
+    cache = ARTIFACT_ROOT / "cache"
+    if owned:
+        ARTIFACT_ROOT.mkdir(mode=0o700)
+        cache.mkdir(mode=0o700)
+        _sync_directory(ARTIFACT_ROOT.parent)
+    artifact_identity = _directory_identity(ARTIFACT_ROOT)
+    cache_identity = _directory_identity(cache)
+    rows = {row["cache_name"]: row for row in _artifact_rows(contract)}
+    baseline = set(os.listdir(cache))
+    _require(baseline <= set(rows), "foreign retained artifact cache entry")
+    for name in sorted(baseline):
+        _stable_file(cache / name, rows[name])
+    import completion_artifact_acquisition as acquisition
+    sentinel = ARTIFACT_ROOT / acquisition.SENTINEL
+    sentinel_existed = sentinel.exists() or sentinel.is_symlink()
+    allowed = {"cache"} | ({acquisition.SENTINEL} if sentinel_existed else set())
+    _require(set(os.listdir(ARTIFACT_ROOT)) == allowed,
+             "foreign retained artifact root entry")
+    if sentinel_existed:
+        seen = sentinel.lstat()
+        _require(stat.S_ISREG(seen.st_mode) and stat.S_IMODE(seen.st_mode) == 0o600
+                 and seen.st_uid == os.geteuid() and seen.st_nlink == 1
+                 and sentinel.read_bytes() == acquisition.SENTINEL_BYTES)
+    value = {
+        "version": OWNERSHIP_VERSION,
+        "artifact_cache_created": owned,
+        "artifact_root_identity": artifact_identity,
+        "artifact_cache_identity": cache_identity,
+        "artifact_baseline": sorted(baseline),
+        "artifact_sentinel_existed": sentinel_existed,
+    }
+    raw = preparation.canonical_bytes(value)
+    _write_owned_file(OWNERSHIP, raw, 0o400)
+    _sync_directory(PREPARATION_ROOT)
+    return value
+
+
+def _load_ownership():
+    raw = OWNERSHIP.read_bytes()
+    value = preparation.decode_canonical(raw, 4096)
+    _require(set(value) == {"version", "artifact_cache_created", "artifact_root_identity",
+                            "artifact_cache_identity", "artifact_baseline",
+                            "artifact_sentinel_existed"}
+             and value["version"] == OWNERSHIP_VERSION
+             and type(value["artifact_cache_created"]) is bool
+             and type(value["artifact_sentinel_existed"]) is bool
+             and type(value["artifact_baseline"]) is list
+             and value["artifact_baseline"] == sorted(set(value["artifact_baseline"]))
+             and all(type(name) is str and 0 < len(name) <= 255 and "/" not in name
+                     for name in value["artifact_baseline"]))
+    for name in ("artifact_root_identity", "artifact_cache_identity"):
+        identity = value[name]
+        _require(type(identity) is dict and set(identity) == {"device", "inode"}
+                 and all(type(item) is int and item >= 0 for item in identity.values()))
+    _require(not value["artifact_cache_created"] or
+             (not value["artifact_baseline"] and not value["artifact_sentinel_existed"]))
+    return raw, value
 
 
 def _reject_ambient_authority():
@@ -195,7 +306,7 @@ def _runtime_response(expected, deadline):
 
 
 def _stable_file(path, expected, mode=0o400):
-    before = path.stat(follow_symlinks=False)
+    before = os.stat(path, follow_symlinks=False)
     _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
              and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == mode
              and before.st_size == expected["size"])
@@ -212,7 +323,7 @@ def _stable_file(path, expected, mode=0o400):
         _require(not os.read(descriptor, 1))
     finally:
         os.close(descriptor)
-    _require(_identity(path.stat(follow_symlinks=False)) == _identity(before)
+    _require(_identity(os.stat(path, follow_symlinks=False)) == _identity(before)
              and digest.hexdigest() == expected["sha256"])
 
 
@@ -327,27 +438,22 @@ def _copy_fixed(source, destination, mode):
 
 
 def _publish_runtime(extracted):
-    _require(not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
-    staged = STAGED_RUNTIME.with_name(".kata-runtime-v1.immutable-staging")
-    _require(not staged.exists())
-    staged.mkdir(mode=0o700)
-    (staged / "bin").mkdir(mode=0o700)
-    try:
-        for relative, size, digest, mode in __import__("completion_kata_command_policy").CONTAINERD_EXTRACTION:
-            source = extracted["containerd"] / relative
-            _require(source.is_file() and source.stat().st_size == size
-                     and hashlib.sha256(source.read_bytes()).hexdigest() == digest)
-            _copy_fixed(source, staged / relative, mode)
-        os.chmod(staged / "bin", 0o500)
-        os.rename(staged, STAGED_RUNTIME)
-        kata_source = extracted["kata"] / "opt/kata"
-        _require(kata_source.is_dir())
-        os.rename(kata_source, KATA_ROOT)
-    except BaseException:
-        shutil.rmtree(staged, ignore_errors=True)
-        shutil.rmtree(STAGED_RUNTIME, ignore_errors=True)
-        shutil.rmtree(KATA_ROOT, ignore_errors=True)
-        raise
+    _require(not STAGED_RUNTIME.exists() and not KATA_ROOT.exists()
+             and not IMMUTABLE_STAGING.exists())
+    IMMUTABLE_STAGING.mkdir(mode=0o700)
+    (IMMUTABLE_STAGING / "bin").mkdir(mode=0o700)
+    for relative, size, digest, mode in __import__("completion_kata_command_policy").CONTAINERD_EXTRACTION:
+        source = extracted["containerd"] / relative
+        _require(source.is_file() and source.stat().st_size == size
+                 and hashlib.sha256(source.read_bytes()).hexdigest() == digest)
+        _copy_fixed(source, IMMUTABLE_STAGING / relative, mode)
+    os.chmod(IMMUTABLE_STAGING / "bin", 0o500)
+    os.rename(IMMUTABLE_STAGING, STAGED_RUNTIME)
+    _sync_directory(COMPLETION_ROOT)
+    kata_source = extracted["kata"] / "opt/kata"
+    _require(kata_source.is_dir())
+    os.rename(kata_source, KATA_ROOT)
+    _sync_directory(KATA_PARENT)
 
 
 def _verify_installed(expected_runtime):
@@ -364,11 +470,217 @@ def _verify_installed(expected_runtime):
             _require(stat.S_ISLNK(seen.st_mode) and os.readlink(path) == row["link_target"])
 
 
-def recover_failed_preparation():
-    """Prove the transaction rolled back before any mutable lifecycle existed."""
-    _require(not PREPARATION_ROOT.exists() and not STAGED_RUNTIME.exists()
-             and not KATA_ROOT.exists())
-    forbidden = (
+def _receipt_value():
+    raw = RECEIPT.read_bytes()
+    value = preparation.decode_canonical(raw, preparation.MAX_RUNTIME_BYTES)
+    _require(set(value) == {"version", "authority", "rootfs_artifact_count",
+                            "runtime_archives", "forbidden_surfaces"}
+             and value["version"] == VERSION
+             and value["authority"] == "immutable-public-input-preparation-only"
+             and value["rootfs_artifact_count"] == 16
+             and value["forbidden_surfaces"] ==
+             ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"])
+    _require(type(value["runtime_archives"]) is list
+             and len(value["runtime_archives"]) == len(preparation.ARCHIVES))
+    for row, pin in zip(value["runtime_archives"], preparation.ARCHIVES):
+        preparation._archive(row, pin)
+    return raw, value
+
+
+def _same_row(left, right):
+    return left == right
+
+
+def _remove_verified_tree(root, expected, root_row=None, subset=False):
+    """Remove only a complete verified transaction tree; never discover ownership."""
+    if not root.exists() and not root.is_symlink():
+        return False
+    seen = root.lstat()
+    _require(stat.S_ISDIR(seen.st_mode) and not stat.S_ISLNK(seen.st_mode))
+    if root_row is not None:
+        _require(root_row["kind"] == "directory" and seen.st_uid == root_row["uid"]
+                 and seen.st_gid == root_row["gid"]
+                 and stat.S_IMODE(seen.st_mode) == root_row["mode"])
+    actual = preparation.extracted_postwalk(root)
+    expected_by_path = {row["path"]: row for row in expected}
+    actual_by_path = {row["path"]: row for row in actual}
+    _require((set(actual_by_path) <= set(expected_by_path) if subset else
+              set(actual_by_path) == set(expected_by_path)))
+    _require(all(_same_row(row, expected_by_path[path])
+                 for path, row in actual_by_path.items()))
+    directories = [row for row in actual if row["kind"] == "directory"]
+    for row in sorted(directories, key=lambda item: item["path"].count("/")):
+        os.chmod(root / row["path"], 0o700, follow_symlinks=False)
+    os.chmod(root, 0o700, follow_symlinks=False)
+    for row in sorted(actual, key=lambda item: (item["path"].count("/"), item["path"]),
+                      reverse=True):
+        path = root / row["path"]
+        if row["kind"] == "directory":
+            path.rmdir()
+        else:
+            path.unlink()
+    root.rmdir()
+    return True
+
+
+def _static_runtime_rows():
+    import completion_kata_command_policy as policy
+    uid, gid = os.geteuid(), os.getegid()
+    rows = [{"path": "bin", "kind": "directory", "mode": 0o500,
+             "uid": uid, "gid": gid, "size": 0, "link_target": None, "sha256": None}]
+    for relative, size, digest, mode in policy.CONTAINERD_EXTRACTION:
+        rows.append({"path": relative, "kind": "file", "mode": mode,
+                     "uid": uid, "gid": gid, "size": size,
+                     "link_target": None, "sha256": digest})
+    return sorted(rows, key=lambda row: row["path"].encode())
+
+
+def _remove_static_runtime(path, partial):
+    rows = _static_runtime_rows()
+    if partial and path.exists():
+        # Before the final bin chmod, an exact partial staging directory has a
+        # writable bin. Normalize that one reviewed intermediate generation.
+        actual = preparation.extracted_postwalk(path)
+        if actual and actual[0]["path"] == "bin" and actual[0]["kind"] == "directory" \
+                and actual[0]["mode"] == 0o700:
+            expected = [dict(row, mode=0o700) if row["path"] == "bin" else row for row in rows]
+            return _remove_verified_tree(path, expected, subset=True)
+    return _remove_verified_tree(path, rows, subset=partial)
+
+
+def _artifact_rows(contract):
+    import completion_artifact_acquisition as acquisition
+    return tuple(route.row for route in acquisition._artifact_routes(contract))
+
+
+def _remove_artifact_cache(contract, custody):
+    cache = ARTIFACT_ROOT / "cache"
+    for path, expected in ((ARTIFACT_ROOT, custody["artifact_root_identity"]),
+                           (cache, custody["artifact_cache_identity"])):
+        seen = _directory_identity(path)
+        _require(seen == expected, "transaction artifact cache identity changed")
+    rows = _artifact_rows(contract)
+    by_name = {row["cache_name"]: row for row in rows}
+    names = set(os.listdir(cache))
+    baseline = set(custody["artifact_baseline"])
+    _require(baseline <= names <= set(by_name),
+             "foreign or missing transaction cache entry")
+    for name in sorted(names):
+        _stable_file(cache / name, by_name[name])
+    sentinel = ARTIFACT_ROOT / __import__("completion_artifact_acquisition").SENTINEL
+    sentinel_present = sentinel.exists() or sentinel.is_symlink()
+    if sentinel_present:
+        seen = sentinel.lstat()
+        expected_raw = __import__("completion_artifact_acquisition").SENTINEL_BYTES
+        _require(stat.S_ISREG(seen.st_mode) and stat.S_IMODE(seen.st_mode) == 0o600
+                 and seen.st_uid == os.geteuid() and seen.st_nlink == 1
+                 and sentinel.read_bytes() == expected_raw)
+    _require(sentinel_present or not custody["artifact_sentinel_existed"],
+             "retained artifact sentinel missing")
+    allowed = {"cache"} | ({sentinel.name} if sentinel_present else set())
+    _require(set(os.listdir(ARTIFACT_ROOT)) == allowed,
+             "foreign transaction artifact entry")
+    os.chmod(cache, 0o700)
+    for name in sorted(names - baseline):
+        (cache / name).unlink()
+    _sync_directory(cache)
+    if sentinel_present and not custody["artifact_sentinel_existed"]:
+        sentinel.unlink()
+        _sync_directory(ARTIFACT_ROOT)
+    if custody["artifact_cache_created"]:
+        _require(not baseline and not os.listdir(cache))
+        cache.rmdir()
+        ARTIFACT_ROOT.rmdir()
+    _sync_directory(ARTIFACT_ROOT.parent)
+
+
+def _rollback_preparation(contract):
+    """Inspect every owned class and aggregate uncertainty; never report best effort."""
+    if not PREPARATION_ROOT.exists():
+        _require(not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists()
+                 and not KATA_ROOT.exists())
+        return
+    ownership_raw, custody = _load_ownership()
+    receipt = None
+    if RECEIPT.exists() or RECEIPT.is_symlink():
+        receipt = _receipt_value()
+    errors = []
+
+    def cleanup(action, label=None):
+        try:
+            action()
+        except BaseException as error:
+            wrapped = ImmutablePreparationError(
+                f"{label or getattr(action, '__name__', 'cleanup')} inspection failed: "
+                f"{type(error).__name__}: {error}")
+            wrapped.__cause__ = error
+            errors.append(wrapped)
+
+    values = None if receipt is None else receipt[1]["runtime_archives"]
+    kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
+    if kata_moved:
+        def remove_kata():
+            _require(values is not None, "Kata staging lacks durable manifest")
+            rows = next(row for row in values if row["role"] == "kata")["extracted"]["entries"]
+            root_row = next(row for row in rows if row["path"] == "opt/kata")
+            children = [dict(row, path=row["path"][len("opt/kata/"):]) for row in rows
+                        if row["path"].startswith("opt/kata/")]
+            _remove_verified_tree(KATA_ROOT, children, root_row)
+        cleanup(remove_kata)
+    cleanup(lambda: _remove_static_runtime(STAGED_RUNTIME, False), "staged runtime")
+    cleanup(lambda: _remove_static_runtime(IMMUTABLE_STAGING, True), "immutable staging")
+
+    if EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink():
+        def remove_extracted():
+            names = set(os.listdir(EXTRACTED_ROOT))
+            if not names:
+                EXTRACTED_ROOT.rmdir()
+                return
+            _require(values is not None, "extracted staging lacks durable manifest")
+            _require(names == {"kata", "containerd"})
+            for archive in values:
+                rows = archive["extracted"]["entries"]
+                kata_root = EXTRACTED_ROOT / "kata"
+                moved_before_recovery = (archive["role"] == "kata"
+                                         and not (kata_root / "opt/kata").exists())
+                if archive["role"] == "kata" and (kata_moved or moved_before_recovery):
+                    rows = [row for row in rows
+                            if row["path"] != "opt/kata"
+                            and not row["path"].startswith("opt/kata/")]
+                _remove_verified_tree(EXTRACTED_ROOT / archive["role"], rows)
+            EXTRACTED_ROOT.rmdir()
+        cleanup(remove_extracted)
+
+    if RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink():
+        def remove_runtime_cache():
+            _require(stat.S_ISDIR(RUNTIME_CACHE.lstat().st_mode))
+            pins = {pin["name"]: pin for pin in preparation.ARCHIVES}
+            names = set(os.listdir(RUNTIME_CACHE))
+            _require(names <= set(pins), "foreign runtime cache entry")
+            for name in sorted(names):
+                _stable_file(RUNTIME_CACHE / name, pins[name])
+            os.chmod(RUNTIME_CACHE, 0o700)
+            for name in sorted(names):
+                (RUNTIME_CACHE / name).unlink()
+            RUNTIME_CACHE.rmdir()
+        cleanup(remove_runtime_cache)
+
+    if receipt is not None:
+        cleanup(lambda: (_require(RECEIPT.read_bytes() == receipt[0]), RECEIPT.unlink()),
+                "receipt")
+    cleanup(lambda: _remove_artifact_cache(contract, custody), "artifact cache")
+    if not errors:
+        cleanup(lambda: (_require(OWNERSHIP.read_bytes() == ownership_raw), OWNERSHIP.unlink()),
+                "ownership")
+        cleanup(lambda: PREPARATION_ROOT.rmdir(), "preparation root")
+        if not errors:
+            _sync_directory(PREPARATION_ROOT.parent)
+    if errors:
+        raise _error_group("immutable preparation rollback uncertainty", errors)
+
+
+def _forbidden_mutable_paths():
+    return (
         COMPLETION_ROOT / "kata-operation-v1",
         COMPLETION_ROOT / "kata-input-v1",
         COMPLETION_ROOT / "rootfs-v1",
@@ -376,13 +688,23 @@ def recover_failed_preparation():
         Path("/run/cogs-stage2-ssh"),
         Path("/run/vc/vm/cogs-stage2-ssh-v1"),
     )
-    _require(not any(path.exists() or path.is_symlink() for path in forbidden))
+
+
+def recover_failed_preparation():
+    """Inspect and settle only durable immutable transaction custody."""
+    _require(not any(path.exists() or path.is_symlink()
+                     for path in _forbidden_mutable_paths()))
+    contract = _fixed_contract()
+    _rollback_preparation(contract)
+    _require(not PREPARATION_ROOT.exists() and not IMMUTABLE_STAGING.exists()
+             and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     return None
 
 
 def prepare():
     _reject_ambient_authority()
     _require(SOURCE_ROOT.is_dir() and not PREPARATION_ROOT.exists()
+             and not IMMUTABLE_STAGING.exists()
              and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     contract = _fixed_contract()
     expected_runtime = _expected_runtime()
@@ -390,6 +712,8 @@ def prepare():
     try:
         PREPARATION_ROOT.mkdir(mode=0o700)
         created = True
+        _sync_directory(PREPARATION_ROOT.parent)
+        _prepare_artifact_custody(contract)
         RUNTIME_CACHE.mkdir(mode=0o700)
         EXTRACTED_ROOT.mkdir(mode=0o700)
         deadline = time.monotonic() + GLOBAL_SECONDS
@@ -409,18 +733,8 @@ def prepare():
             "runtime_archives": values,
             "forbidden_surfaces": ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"],
         })
-        descriptor = os.open(RECEIPT, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        try:
-            offset = 0
-            while offset < len(raw):
-                count = os.write(descriptor, raw[offset:])
-                _require(count > 0)
-                offset += count
-            _chown_root(descriptor)
-            os.fchmod(descriptor, 0o400)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _write_owned_file(RECEIPT, raw, 0o400)
+        _sync_directory(PREPARATION_ROOT)
         _publish_runtime(extracted)
         _verify_installed(expected_runtime)
         artifact_verifier.verify_package_archives(
@@ -430,11 +744,15 @@ def prepare():
                 "receipt_sha256": hashlib.sha256(raw).hexdigest(),
                 "control_verified": expected_runtime is not None,
                 "authority": "immutable-public-input-preparation-only"}
-    except BaseException:
-        if created:
-            shutil.rmtree(PREPARATION_ROOT, ignore_errors=True)
-        shutil.rmtree(STAGED_RUNTIME, ignore_errors=True)
-        shutil.rmtree(KATA_ROOT, ignore_errors=True)
+    except BaseException as primary:
+        if not created:
+            raise
+        try:
+            _rollback_preparation(contract)
+        except BaseException as rollback:
+            raise _error_group(
+                "immutable preparation failed with rollback uncertainty",
+                (primary, rollback))
         raise
 
 

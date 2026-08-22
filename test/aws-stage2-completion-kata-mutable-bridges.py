@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Package-private mutable bridge wiring and no-KVM/fault-cut foundations."""
 import ast
+import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +18,113 @@ import completion_kata_operation_bridge as operation
 import completion_kata_preparation_bridge as preparation
 import completion_kata_process as process
 import completion_kata_runtime as runtime
+
+
+def runtime_removal_crash(root):
+    """Crash from the production bridge after daemon-tree removal returns."""
+    root = Path(root)
+    lifecycle = coordinator._Lifecycle(recovery=True, operation=object())
+    completion = object()
+    chain = SimpleNamespace(components=(SimpleNamespace(node=completion),))
+    daemon = object()
+
+    def remove_then_crash(value):
+        assert value is daemon
+        target = root / "kata-runtime-v1"
+        for name in ("containerd", "ctr"):
+            (target / "bin" / name).unlink()
+        (target / "bin").rmdir()
+        target.rmdir()
+        os._exit(93)
+
+    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+         patch.object(execution.operation, "_open_base_chain", return_value=chain), \
+         patch.object(execution.runtime, "_retain_private_containerd",
+                      side_effect=lambda journal, node, process_owner, control: daemon
+                      if journal is lifecycle.operation and node is completion
+                      and process_owner is None else None), \
+         patch.object(execution.runtime, "_shutdown_private_containerd",
+                      side_effect=remove_then_crash):
+        execution._stop_containerd(coordinator._owners.execution, lifecycle)
+    raise AssertionError("post-removal crash cut returned")
+
+
+def runtime_removal_recovery(root):
+    """Fresh recovery at durable SHARE_ABSENT claims no removed runtime tool."""
+    root = Path(root)
+    staged = root / "kata-runtime-v1"
+    assert (root / "phase").read_text() == "SHARE_ABSENT\n" and not staged.exists()
+    lifecycle = coordinator._Lifecycle(
+        recovery=True, static_custody=object(), operation=object(), rootfs=object())
+    lazy_owner = object()
+    roles = []
+    completion = object()
+    chain = SimpleNamespace(components=(SimpleNamespace(node=completion),))
+    daemon = object()
+
+    def claim(owner, role):
+        assert owner is lazy_owner
+        roles.append(role)
+        if role in {"containerd", "ctr"}:
+            raise AssertionError("removed staged executable role was reclaimed")
+        return SimpleNamespace(role=role)
+
+    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+         patch.object(execution.operation, "_network_records", return_value=()), \
+         patch.object(execution.operation, "_open_base_chain", return_value=chain), \
+         patch.object(execution.nft_owner, "reopen_cleanup", return_value=object()), \
+         patch.object(execution.preparation, "_reconstruct_fixed_executable_owner",
+                      return_value=lazy_owner), \
+         patch.object(execution.process, "_claim_attested_executable", side_effect=claim), \
+         patch.object(execution.runtime, "_reconstruct_fixed_runtime",
+                      side_effect=AssertionError("complete runtime reconstruction after removal")), \
+         patch.object(execution.runtime, "_retain_private_containerd",
+                      side_effect=lambda journal, node, process_owner, control: daemon
+                      if journal is lifecycle.operation and node is completion
+                      and process_owner is None else None), \
+         patch.object(execution.runtime, "_shutdown_private_containerd") as shutdown, \
+         patch.object(execution.network, "_remove_fixed_firewall", return_value="FIREWALL_ABSENT"):
+        execution._reconstruct_execution_cleanup(coordinator._owners.execution, lifecycle)
+        assert execution._stop_containerd(coordinator._owners.execution, lifecycle) == {
+            "containerd": "absent"}
+        assert execution._remove_firewall(coordinator._owners.execution, lifecycle) == "FIREWALL_ABSENT"
+    shutdown.assert_called_once_with(daemon)
+    assert roles == ["ip", "nft", "tc"]
+    (root / "firewall-transition").write_text("FIREWALL_ABSENT\n")
+
+
+def runtime_removal_parent():
+    assert sys.platform.startswith("linux") and not Path("/dev/kvm").exists()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        runtime_root = root / "kata-runtime-v1"
+        (runtime_root / "bin").mkdir(parents=True)
+        for name in ("containerd", "ctr"):
+            (runtime_root / "bin" / name).write_bytes((name + "\n").encode())
+        (root / "phase").write_text("SHARE_ABSENT\n")
+        crashed = subprocess.run(
+            (sys.executable, "-B", __file__, "--remove-runtime-crash", str(root)),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False)
+        assert crashed.returncode == 93 and not runtime_root.exists()
+        recovered = subprocess.run(
+            (sys.executable, "-B", __file__, "--recover-after-runtime-removal", str(root)),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False)
+        assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+        assert (root / "firewall-transition").read_text() == "FIREWALL_ABSENT\n"
+    print("fresh-process post-containerd-removal no-KVM recovery passed")
+
+
+if len(sys.argv) == 3 and sys.argv[1] == "--remove-runtime-crash":
+    runtime_removal_crash(sys.argv[2])
+    raise SystemExit(1)
+if len(sys.argv) == 3 and sys.argv[1] == "--recover-after-runtime-removal":
+    runtime_removal_recovery(sys.argv[2])
+    raise SystemExit(0)
+if sys.argv[1:] == ["--runtime-removal-parent"]:
+    runtime_removal_parent()
+    raise SystemExit(0)
 
 owners = coordinator._owners
 lifecycle = coordinator._Lifecycle(

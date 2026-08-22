@@ -604,7 +604,7 @@ def _tar_rows(stream, mode):
 
 def archive_layout(path, expected):
     path = Path(path)
-    before = path.stat(follow_symlinks=False)
+    before = os.stat(path, follow_symlinks=False)
     _require(stat.S_ISREG(before.st_mode) and before.st_size == expected["size"] and before.st_nlink == 1)
     hasher = hashlib.sha256()
     with path.open("rb") as source:
@@ -613,7 +613,7 @@ def archive_layout(path, expected):
             if not chunk:
                 break
             hasher.update(chunk)
-    _require(hasher.hexdigest() == expected["sha256"] and path.stat(follow_symlinks=False) == before,
+    _require(hasher.hexdigest() == expected["sha256"] and os.stat(path, follow_symlinks=False) == before,
              "runtime archive bytes differ")
     if expected["name"].endswith(".tar.gz"):
         with path.open("rb") as source:
@@ -637,7 +637,7 @@ def archive_layout(path, expected):
 
 def extracted_postwalk(root):
     root = Path(root)
-    observed_root = root.stat(follow_symlinks=False)
+    observed_root = os.stat(root, follow_symlinks=False)
     _require(stat.S_ISDIR(observed_root.st_mode))
     rows = []
     total_file_bytes = 0
@@ -685,7 +685,7 @@ def extracted_postwalk(root):
             _require(len(rows) <= MAX_ARCHIVE_ENTRIES)
     rows.sort(key=lambda row: row["path"].encode("utf-8"))
     _file_rows(rows, MAX_ARCHIVE_ENTRIES)
-    _require(root.stat(follow_symlinks=False) == observed_root, "extracted runtime changed during postwalk")
+    _require(os.stat(root, follow_symlinks=False) == observed_root, "extracted runtime changed during postwalk")
     return rows
 
 

@@ -148,8 +148,13 @@ def _claim_fixed_executable_owner(custody):
 
 
 def _reconstruct_fixed_executable_owner(custody, journal):
-    """Reopen host tools only when static identity equals the durable genesis."""
-    import completion_kata_operation as operation
+    """Issue lazy cleanup custody after matching the durable source identity.
+
+    Recovery claims a role only when its current cleanup phase needs it.  This
+    is essential after the exact containerd tree has been removed: containerd
+    and ctr no longer have pathnames, while retained host network tools remain
+    claimable for firewall and final-baseline settlement.
+    """
     state = _states.get(custody)
     _require(state is not None and state["lease"] is None
              and state["mapping"] is None and state["executables"] is None)
@@ -158,9 +163,9 @@ def _reconstruct_fixed_executable_owner(custody, journal):
     _require(identity["source_revision"] == approval.revision
              and identity["source_manifest_sha256"] == approval.manifest_sha256
              and identity["phase"] != "UNCERTAIN")
-    # Role custody duplicates only already-authenticated retained descriptors;
-    # it does not execute, materialize, acquire, or launch any object.
-    return _issue_fixed_executable_owner(custody)
+    owner = process._open_static_attested_executable_owner(custody)
+    state["executables"] = owner
+    return owner
 
 
 def _abandon_fixed_rootfs(custody, lease):
