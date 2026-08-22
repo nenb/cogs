@@ -160,10 +160,16 @@ test("recovery and independent settlement always run without turning cancellatio
   assert.match(settlement, /\/sys\/class\/net/u);
   assert.match(settlement, /\/sys\/fs\/cgroup/u);
   assert.match(settlement, /\("\/usr\/sbin\/nft", "-j", "list", "ruleset"\)/u);
+  assert.match(settlement, /\("\/usr\/sbin\/ip", "-j", "netns", "list"\)/u);
+  assert.match(settlement, /\("\/usr\/sbin\/tc", "-j", "qdisc", "show"\)/u);
+  assert.match(settlement, /c42\[hnqt\]/u);
   assert.match(settlement, /cogs_stage2_ssh_v1/u);
+  assert.match(settlement, /MAX_JSON_NODES/u);
   assert.match(settlement, /RECOVERY_OUTCOME/u);
   assert.doesNotMatch(settlement, /umount|--lazy|SIGKILL/u);
-  assert.match(workflow, /for outcome in "\$ENTRY"[\s\S]+test "\$outcome" = success/u);
+  assert.match(workflow, /pass:success\|failure:failure/u);
+  assert.doesNotMatch(workflow, /for outcome in "\$ENTRY"/u);
+  assert.match(workflow, /test "\$REPORT_RESULT" = pass/u);
 });
 
 test("publication has semantic/schema binding, exact-ID readback, separate receipt, and final cleanup", () => {

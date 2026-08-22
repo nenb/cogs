@@ -168,6 +168,21 @@ def receipt_tests():
     swapped = replace(expected, artifact_id=92)
     rejected(lambda: receipt.validate_receipt(encoded, swapped, raw), receipt.LocalReceiptError)
 
+    failure_raw = (ROOT / "test/fixtures/stage2-completion/local-result-v2-failure.json").read_bytes()
+    failure_value = json.loads(failure_raw)
+    _unused, failure_environment = receipt_environment(failure_value)
+    failure_environment.update({
+        "REPORT_SHA256": hashlib.sha256(failure_raw).hexdigest(),
+        "REPORT_BYTES": str(len(failure_raw)), "REPORT_RESULT": "failure",
+        "FAILURE_CODE": failure_value["failure_code"], "ENTRY_OUTCOME": "failure",
+    })
+    failure_expected = receipt.context(failure_environment)
+    failure_receipt = receipt.encode(failure_expected, failure_raw)
+    assert receipt.validate_receipt(
+        failure_receipt, failure_expected, failure_raw)["report"]["result"] == "failure"
+    rejected(lambda: receipt.context({**failure_environment, "ENTRY_OUTCOME": "success"}),
+             receipt.LocalReceiptError)
+
 
 def control_staging_tests():
     with tempfile.TemporaryDirectory() as temporary:
@@ -203,6 +218,27 @@ def settlement_tests():
     rejected(lambda: settlement.cleanup({**environment, "RECOVERY_OUTCOME": "failure"}),
              settlement.LocalSettlementError)
     assert settlement.RESIDUE_NAME.search("cogs-stage2-net")
+
+    links = settlement._bounded_json(
+        b'[{"ifindex":2,"ifname":"eth0"},{"ifindex":7,"ifname":"c42habcdef0123"}]')
+    assert settlement._interface_names(links)[-1] == "c42habcdef0123"
+    netns = settlement._bounded_json(
+        b'[{"name":"c42nabcdef0123","id":4},{"name":"c42qabcdef0123"}]')
+    assert settlement._netns_names(netns) == ("c42nabcdef0123", "c42qabcdef0123")
+    nft = settlement._bounded_json(
+        b'{"nftables":[{"metainfo":{"json_schema_version":1}},'
+        b'{"table":{"family":"inet","name":"c42tabcdef0123"}}]}')
+    assert settlement._nft_table_names(nft) == ("c42tabcdef0123",)
+    tc = settlement._bounded_json(
+        b'[{"kind":"u32","options":{"actions":[{"to_dev":"c42habcdef0123"}]}}]')
+    assert "c42habcdef0123" in settlement._all_strings(tc)
+    rejected(lambda: settlement._bounded_json(b'{"x":1,"x":2}'),
+             settlement.LocalSettlementError)
+    too_deep = b"[" * (settlement.MAX_JSON_DEPTH + 2) + b"0" + b"]" * (
+        settlement.MAX_JSON_DEPTH + 2)
+    rejected(lambda: settlement._bounded_json(too_deep), settlement.LocalSettlementError)
+    rejected(lambda: settlement._interface_names([{"ifname": "eth0"}] * 2),
+             settlement.LocalSettlementError)
 
 
 guard_tests()

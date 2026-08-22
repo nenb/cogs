@@ -350,6 +350,7 @@ jobs:
         timeout-minutes: 1
         env:
           ENTRY: ${{ steps.local_entry.outcome }}
+          REPORT_RESULT: ${{ steps.publication.outputs.report_result }}
           RECOVERY: ${{ steps.recovery.outcome }}
           FIXED_CLEANUP: ${{ steps.fixed_cleanup.outcome }}
           INDEPENDENT_RESIDUE: ${{ steps.independent_residue.outcome }}
@@ -365,7 +366,11 @@ jobs:
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
-          for outcome in "$ENTRY" "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" \
+          case "$REPORT_RESULT:$ENTRY" in
+            pass:success|failure:failure) ;;
+            *) exit 1 ;;
+          esac
+          for outcome in "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" \
             "$PUBLICATION" "$REPORT_UPLOAD" "$REPORT_DOWNLOAD" "$REPORT_READBACK" \
             "$RECEIPT_CREATE" "$RECEIPT_UPLOAD" "$RECEIPT_DOWNLOAD" "$RECEIPT_READBACK" \
             "$OUTPUT_CLEANUP"
@@ -378,3 +383,5 @@ jobs:
             REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
             RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" final
+          # Canonical certain failures are retained evidence, never a pass.
+          test "$REPORT_RESULT" = pass

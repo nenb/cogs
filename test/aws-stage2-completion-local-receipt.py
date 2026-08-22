@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hostile typed-evidence/private-receipt transaction tests."""
 import copy
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 import sys
@@ -65,6 +66,16 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         "policy_version": operation.command_policy.POLICY_VERSION,
         "parser_source_sha256": operation.SSH_PARSER_SHA256,
     }))
+    rows.append(record(len(rows), "RUNTIME_READY", {
+        "operation_token": token, "proof_sha256": "0" * 64,
+    }))
+    rows.append(record(len(rows), "COMMAND_INTENT_V2", {
+        "operation_token": token, "command_id": "SSH_READY", "command_serial": 7,
+    }))
+    rows.append(record(len(rows), "COMMAND_OUTCOME_V2", {
+        "operation_token": token, "command_id": "SSH_READY", "command_serial": 7,
+        "uncertain": False,
+    }))
     causal = record(len(rows), "NETWORK_CAUSAL_PROOF_V1", {
         "operation_token": token, "causal_proof_sha256": "a" * 64,
     })
@@ -103,6 +114,9 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
     runtime = evidence._RuntimeOwnerResult(
         token, mount.body["issuance_sha256"], causal.body["causal_proof_sha256"],
         "9" * 64, ownership.body["proof_sha256"], 12, True, True)
+    platform = evidence._PlatformOwnerResult(
+        token, runtime.live_mapping_sha256, runtime.qemu_process_sha256,
+        12, True, True)
     residue = evidence._ResidueOwnerResult(token, "8" * 64, local.RESIDUE_FACTS)
     bindings = {
         "source_head": genesis["source_revision"],
@@ -115,7 +129,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         "guest_program_sha256": guest.GUEST_PROGRAM_SHA256,
         "owner_implementation_sha256": "7" * 64,
     }
-    return (raw, tuple(rows), session, runtime, residue, bindings)
+    return (raw, tuple(rows), session, platform, runtime, residue, bindings)
 
 
 class Custody:
@@ -146,24 +160,31 @@ def close(custody):
 
 
 fixture = owner_fixture()
-raw, records, session, runtime, residue, bindings = fixture
+raw, records, session, platform, runtime, residue, bindings = fixture
+failure_raw = b"retired-owner-journal-certain-ssh-failure\n"
+failure_records = tuple(row for row in records
+                        if row.record_type not in ("SSH_RESULT_V2", "SSH_READY_V2"))
+parsed_histories = {raw: records, failure_raw: failure_records}
 original_parse = evidence.operation._parse
 
 
 def exact_parse(candidate):
-    if candidate != raw:
-        raise operation.OperationError()
-    return records
+    try:
+        return parsed_histories[candidate]
+    except KeyError as error:
+        raise operation.OperationError() from error
 
 
 evidence.operation._parse = exact_parse
 try:
+    history = evidence._typed_durable_history(evidence._RetiredJournalOwnerResult(raw))
     # The only successful path starts with typed facts and emits derived V2 bytes.
     take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
     producer = take_producer()
     custody = Custody(bindings)
     owner_result = producer(custody, typed_bindings(bindings),
-                            evidence._RetiredJournalOwnerResult(raw), session, runtime, residue)
+                            evidence._RetiredJournalOwnerResult(raw), history,
+                            session, platform, runtime, residue)
     issue = take_issuer()
     private_receipt = issue(custody, owner_result)
     check(custody.closed and custody.close_attempts == 1, "custody was not closed before mint")
@@ -184,6 +205,54 @@ try:
           "historical journal phase mapping was implicit")
     rejected(lambda: consume(private_receipt), receipt_model.LocalReceiptError,
              "private receipt replay succeeded")
+
+    # Exact retired cleanup can transactionally mint a canonical failure, but
+    # only the typed durable history—not an exception, status, or report—selects
+    # the first failure. Recovery has no route into this receipt realm.
+    take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
+    failure_journal = evidence._RetiredJournalOwnerResult(failure_raw)
+    failure_history = evidence._typed_durable_history(failure_journal)
+    failure_custody = Custody(bindings)
+    failure_evidence = take_producer()(
+        failure_custody, typed_bindings(bindings), failure_journal, failure_history,
+        None, platform, None, residue)
+    failure_receipt = take_issuer()(failure_custody, failure_evidence)
+    failure_report = local.load_result(consume(failure_receipt))
+    check(failure_report["result"] == "failure"
+          and failure_report["failure_code"] == "ssh"
+          and failure_report["qualified"] is False,
+          "typed durable SSH failure did not preserve V2 semantics")
+    check(all(row["outcome"] == "pass" for row in failure_report["teardown"])
+          and set(failure_report["zero_residue"].values()) == {"absent"},
+          "certain failure did not retain exact cleanup proof")
+
+    uncertain_records = tuple(
+        replace(row, body={**row.body, "uncertain": True})
+        if row.record_type == "COMMAND_OUTCOME_V2" else row
+        for row in failure_records)
+    if uncertain_records == failure_records:
+        uncertain_records = (*failure_records[:-1], record(
+            len(failure_records), "COMMAND_OUTCOME_V2", {
+                "uncertain": True}), failure_records[-1])
+    uncertain_raw = b"retired-owner-journal-uncertain\n"
+    parsed_histories[uncertain_raw] = uncertain_records
+    uncertain_journal = evidence._RetiredJournalOwnerResult(uncertain_raw)
+    uncertain_history = evidence._typed_durable_history(uncertain_journal)
+    take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
+    uncertain_custody = Custody(bindings)
+    uncertain_evidence = take_producer()(
+        uncertain_custody, typed_bindings(bindings), uncertain_journal,
+        uncertain_history, None, platform, None, residue)
+    rejected(lambda: take_issuer()(uncertain_custody, uncertain_evidence),
+             receipt_model.LocalReceiptError,
+             "uncertain durable history minted a cleanup failure receipt")
+    rejected(lambda: consume(object()), receipt_model.LocalReceiptError,
+             "uncertain durable history retained receipt state")
+    rejected(lambda: evidence._ResidueOwnerResult(
+        runtime.operation_token, residue.final_baselines_sha256,
+        local.RESIDUE_FACTS[:-1]), evidence.LocalEvidenceError,
+        "incomplete residue absence became typed cleanup proof")
+
     replay_custody = Custody(bindings)
     rejected(lambda: issue(replay_custody, owner_result), receipt_model.LocalReceiptError,
              "owner evidence replay succeeded")
@@ -193,7 +262,8 @@ try:
     take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
     first, second = Custody(bindings), Custody(bindings)
     swapped = take_producer()(first, typed_bindings(bindings),
-                              evidence._RetiredJournalOwnerResult(raw), session, runtime, residue)
+                              evidence._RetiredJournalOwnerResult(raw), history,
+                              session, platform, runtime, residue)
     rejected(lambda: take_issuer()(second, swapped), receipt_model.LocalReceiptError,
              "same-binding custody swap minted a receipt")
     check(first.closed and second.closed, "swapped custodies were not both settled")
@@ -217,7 +287,8 @@ try:
             evidence._RetiredJournalOwnerResult(raw), runtime, copy.deepcopy(bindings))
         hostile_custody = Custody(custody_bindings)
         hostile = take_producer()(hostile_custody, typed_bindings(bindings),
-                                  journal_value, session, runtime_value, residue)
+                                  journal_value, history, session, platform,
+                                  runtime_value, residue)
         rejected(lambda: take_issuer()(hostile_custody, hostile), receipt_model.LocalReceiptError,
                  f"{name} substitution minted a receipt")
         check(hostile_custody.closed, f"{name} failure left custody open")
@@ -228,8 +299,8 @@ try:
     take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
     bad_close = Custody(bindings, fail_close=True)
     close_evidence = take_producer()(
-        bad_close, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw),
-        session, runtime, residue)
+        bad_close, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw), history,
+        session, platform, runtime, residue)
     rejected(lambda: take_issuer()(bad_close, close_evidence), receipt_model.LocalReceiptError,
              "custody close failure minted a receipt")
     check(bad_close.closed and bad_close.close_attempts == 1, "close failure was retried")
@@ -242,11 +313,11 @@ try:
     rejected(take_producer, evidence.LocalEvidenceError, "producer was taken twice")
     one_custody = Custody(bindings)
     one_evidence = one_producer(
-        one_custody, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw),
-        session, runtime, residue)
+        one_custody, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw), history,
+        session, platform, runtime, residue)
     rejected(lambda: one_producer(
-        one_custody, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw),
-        session, runtime, residue),
+        one_custody, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw), history,
+        session, platform, runtime, residue),
         evidence.LocalEvidenceError, "producer created replacement evidence")
     one_issuer = take_issuer()
     rejected(take_issuer, receipt_model.LocalReceiptError, "receipt issuer was taken twice")

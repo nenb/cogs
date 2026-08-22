@@ -260,7 +260,8 @@ for forbidden in ("getenv", "environ", "argv", "callback", "retry", "fallback", 
 assert "_finish(" not in recovery and "owner_evidence(" not in recovery
 normal_evidence = ast.get_source_segment(source, functions["normal"])
 for required in ("_BindingOwnerResult", "_RetiredJournalOwnerResult", "AuthenticatedSession",
-                 "_RuntimeOwnerResult", "_ResidueOwnerResult", "_produce_owner_evidence"):
+                 "_PlatformOwnerResult", "_RuntimeOwnerResult", "_ResidueOwnerResult",
+                 "_typed_durable_history", "_produce_owner_evidence"):
     assert required in normal_evidence
 assert normal_evidence.index("lifecycle.primary_failure") < normal_evidence.index("_produce_owner_evidence")
 try:

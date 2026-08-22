@@ -285,12 +285,15 @@ check(line_report["physical_baseline_lines"] == line_report["physical_baseline_d
 check(line_report["conservative_baseline_lines"] == line_report["inherited_predecessor_minimum"]
       + line_report["pre_base_gross_additions"] == 36_861, "inherited no-deletion baseline")
 check(line_report["current_lines"] == line_report["deployment_lines"]
-      + line_report["retained_schema_script_lines"], "complete retained count")
+      + line_report["retained_schema_script_lines"] + line_report["workflow_lines"]
+      and line_report["workflow_files"] == 11, "complete retained and workflow count")
 check(line_report["inherited_post_base_gross_additions"] == 0
       and line_report["gross_added_lines_no_deletion_credit"] > 0,
       "gross additions were not measured from the fixed base")
-check(line_report["conservative_lines_no_deletion_credit"] == budget.CONSERVATIVE_BASELINE_LINES
-      + line_report["gross_added_lines_no_deletion_credit"], "no deletion credit")
+check(line_report["conservative_lines_no_deletion_credit"]
+      == budget.CORRECTION_BASE_CONSERVATIVE_LINES
+      + line_report["gross_added_lines_no_deletion_credit"]
+      and line_report["correction_slice_limits_satisfied"], "no deletion credit")
 check(
     line_report["preferred_limit"] < line_report["hard_limit"]
     and line_report["preferred_satisfied"]

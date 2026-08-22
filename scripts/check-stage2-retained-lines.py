@@ -9,6 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 BASE_REVISION = "746568773798d72f5a79ad639d96cb227597f3b7"
 GROSS_CHECKPOINT_REVISION = BASE_REVISION
+CORRECTION_BASE_REVISION = "6f7d5c4dfdbf9f5ee4b4be0dc7d54839eac07f57"
 INHERITED_POST_BASE_GROSS_ADDITIONS = 0
 PHYSICAL_BASELINE_DEPLOYMENT_LINES = 28_599
 PHYSICAL_BASELINE_RETAINED_LINES = 7_019
@@ -16,10 +17,18 @@ PHYSICAL_BASELINE_LINES = PHYSICAL_BASELINE_DEPLOYMENT_LINES + PHYSICAL_BASELINE
 INHERITED_PREDECESSOR_MINIMUM = 33_912
 PRE_BASE_GROSS_ADDITIONS = 2_949
 CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
-PREFERRED_LIMIT = 60_000
-HARD_LIMIT = 62_000
+CORRECTION_BASE_CURRENT_LINES = 53_352
+CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
+PREFERRED_LIMIT = 64_500
+HARD_LIMIT = 65_000
+DEPLOY_CORRECTION_HIGH = 5_750
+RETAINED_CORRECTION_HIGH = 2_500
+WORKFLOW_CORRECTION_HIGH = 500
+GLOBAL_CORRECTION_HIGH = 8_750
 MUTABLE_OWNER_LINE_LIMIT = 900
 DEPLOY_ROOT = "deploy/aws-feasibility"
+WORKFLOW_ROOT = ".github/workflows"
+WORKFLOW_SUFFIXES = (".yml", ".yaml")
 DEPLOY_SUFFIXES = (".py", ".sh", ".tf")
 MUTABLE_OWNER_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
@@ -91,6 +100,12 @@ def _deploy_paths():
     return tuple(sorted(path for path in root.rglob("*") if path.suffix in DEPLOY_SUFFIXES))
 
 
+def _workflow_paths():
+    root = ROOT / WORKFLOW_ROOT
+    return tuple(sorted(path for path in root.rglob("*")
+                        if path.suffix in WORKFLOW_SUFFIXES))
+
+
 def _git(args):
     result = subprocess.run(["git", *args], cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True)
@@ -103,20 +118,18 @@ def _counted(path):
             or path in RETAINED_FILES)
 
 
-def _gross_additions():
-    output = _git(["diff", "--numstat", GROSS_CHECKPOINT_REVISION, "--",
-                   DEPLOY_ROOT, *RETAINED_FILES])
+def _gross_slice(paths, allowed):
+    output = _git(["diff", "--numstat", CORRECTION_BASE_REVISION, "--", *paths])
     added = 0
     for line in output.splitlines():
         columns = line.split("\t")
         _require(len(columns) == 3 and columns[0].isdigit() and columns[1].isdigit())
-        _require(_counted(columns[2]))
+        _require(allowed(columns[2]))
         added += int(columns[0])
-    ordinary = _git(["ls-files", "--others", "--exclude-standard", "--", DEPLOY_ROOT, *RETAINED_FILES])
-    ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--",
-                    DEPLOY_ROOT, *RETAINED_FILES])
+    ordinary = _git(["ls-files", "--others", "--exclude-standard", "--", *paths])
+    ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--", *paths])
     for name in set(ordinary.splitlines() + ignored.splitlines()):
-        if _counted(name):
+        if allowed(name):
             added += _lines(ROOT / name)
     return added
 
@@ -132,17 +145,37 @@ def measure():
     _require(tracked_deploy_names == retained_deploy_names)
     deploy_paths = _deploy_paths()
     _require(retained_deploy_names <= {str(path.relative_to(ROOT)) for path in deploy_paths})
+    workflow_paths = _workflow_paths()
+    workflow_names = {str(path.relative_to(ROOT)) for path in workflow_paths}
+    tracked_workflow_names = set(_git(["ls-files", "--", WORKFLOW_ROOT]).splitlines())
+    _require(workflow_names == tracked_workflow_names
+             and all(name.endswith(WORKFLOW_SUFFIXES) for name in workflow_names))
     deploy = sum(_lines(path) for path in deploy_paths)
+    workflows = sum(_lines(path) for path in workflow_paths)
     mutable_owner_lines = sum(_lines(ROOT / name) for name in MUTABLE_OWNER_FILES)
     _require(mutable_owner_lines < MUTABLE_OWNER_LINE_LIMIT)
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
-    current = deploy + retained
-    gross_added = INHERITED_POST_BASE_GROSS_ADDITIONS + _gross_additions()
-    conservative = CONSERVATIVE_BASELINE_LINES + gross_added
+    current = deploy + retained + workflows
+    deploy_gross = _gross_slice((DEPLOY_ROOT,), lambda name: (
+        name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES)))
+    retained_gross = _gross_slice(RETAINED_FILES, lambda name: name in retained_names)
+    workflow_gross = _gross_slice((WORKFLOW_ROOT,), lambda name: (
+        name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)))
+    correction_gross = deploy_gross + retained_gross + workflow_gross
+    conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
+    slices_satisfied = (
+        deploy_gross <= DEPLOY_CORRECTION_HIGH
+        and retained_gross <= RETAINED_CORRECTION_HIGH
+        and workflow_gross <= WORKFLOW_CORRECTION_HIGH
+        and correction_gross <= GLOBAL_CORRECTION_HIGH
+    )
     report = {
         "version": "cogs.stage2-retained-line-budget/v1",
         "base_revision": BASE_REVISION,
         "gross_checkpoint_revision": GROSS_CHECKPOINT_REVISION,
+        "correction_base_revision": CORRECTION_BASE_REVISION,
+        "correction_base_current_lines": CORRECTION_BASE_CURRENT_LINES,
+        "correction_base_conservative_lines": CORRECTION_BASE_CONSERVATIVE_LINES,
         "inherited_post_base_gross_additions": INHERITED_POST_BASE_GROSS_ADDITIONS,
         "physical_baseline_lines": PHYSICAL_BASELINE_LINES,
         "physical_baseline_deployment_lines": PHYSICAL_BASELINE_DEPLOYMENT_LINES,
@@ -152,8 +185,19 @@ def measure():
         "conservative_baseline_lines": CONSERVATIVE_BASELINE_LINES,
         "deployment_lines": deploy,
         "retained_schema_script_lines": retained,
+        "workflow_files": len(workflow_paths),
+        "workflow_lines": workflows,
         "current_lines": current,
-        "gross_added_lines_no_deletion_credit": gross_added,
+        "gross_added_lines_no_deletion_credit": correction_gross,
+        "correction_deploy_gross_added_lines": deploy_gross,
+        "correction_retained_gross_added_lines": retained_gross,
+        "correction_workflow_gross_added_lines": workflow_gross,
+        "correction_global_gross_added_lines": correction_gross,
+        "correction_deploy_high": DEPLOY_CORRECTION_HIGH,
+        "correction_retained_high": RETAINED_CORRECTION_HIGH,
+        "correction_workflow_high": WORKFLOW_CORRECTION_HIGH,
+        "correction_global_high": GLOBAL_CORRECTION_HIGH,
+        "correction_slice_limits_satisfied": slices_satisfied,
         "conservative_lines_no_deletion_credit": conservative,
         "preferred_limit": PREFERRED_LIMIT,
         "hard_limit": HARD_LIMIT,
@@ -164,7 +208,9 @@ def measure():
         "preferred_satisfied": current < PREFERRED_LIMIT and conservative < PREFERRED_LIMIT,
         "hard_satisfied": current < HARD_LIMIT and conservative < HARD_LIMIT,
     }
-    # Keep the preferred target advisory, but retain the mandatory hard stop.
+    # Keep the preferred target advisory, but enforce every non-transferable
+    # correction slice, the global correction high, and the mandatory hard stop.
+    _require(report["correction_slice_limits_satisfied"])
     _require(report["hard_satisfied"])
     return report
 

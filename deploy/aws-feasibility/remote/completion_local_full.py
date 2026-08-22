@@ -60,6 +60,10 @@ class LocalResultBlocked(Exception):
     pass
 
 
+class LocalResultFailure(Exception):
+    """A canonical private-receipt terminal failure was emitted."""
+
+
 def _require(condition):
     if not condition:
         raise LocalResultError()
@@ -331,13 +335,18 @@ def main():
     # Consumption returns the exact custody-bound canonical bytes, not a
     # caller-visible value that could be swapped between validation and write.
     raw = coordinator._consume_local_receipt(receipt)
-    _require(load_result(raw)["qualified"] is True)
+    value = load_result(raw)
     _require(sys.stdout.buffer.write(raw) == len(raw))
+    sys.stdout.buffer.flush()
+    if value["qualified"] is False:
+        raise LocalResultFailure()
 
 
 if __name__ == "__main__":
     try:
         main()
+    except LocalResultFailure:
+        raise SystemExit(1)
     except LocalResultBlocked:
         raise SystemExit(3)
     except LocalResultError:

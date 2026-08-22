@@ -236,8 +236,17 @@ def _routes():
         qmp = fact["qmp"]
         _require(qmp["kvm_present"] is True and qmp["kvm_enabled"] is True,
                  "QMP KVM proof absent")
-        current["runtime_observation"] = fact
-        return fact
+        mapping = current.get("execution_mapping")
+        _require(mapping is lifecycle.execution_mapping,
+                 "runtime observation mapping lineage differs")
+        import completion_local_evidence as evidence
+        typed = evidence._PlatformOwnerResult(
+            operation._command_context(lifecycle.operation).operation_token,
+            mapping["live_mapping_sha256"],
+            hashlib.sha256(operation._canonical(fact)).hexdigest(),
+            12, qmp["kvm_present"], qmp["kvm_enabled"])
+        current["runtime_observation"] = typed
+        return typed
 
     def authenticate(bridge, lifecycle):
         current = state(bridge, lifecycle)
@@ -274,12 +283,22 @@ def _routes():
             return fact
         mapping = current.get("execution_mapping")
         causal = current.get("network_proof")
+        platform = current.get("runtime_observation")
         _require(mapping is lifecycle.execution_mapping
-                 and causal is lifecycle.network_proof,
+                 and causal is lifecycle.network_proof
+                 and platform is lifecycle.runtime_observation,
                  "runtime/network/mapping lineage differs")
         qmp = fact["qmp"]
         qemu_sha256 = hashlib.sha256(operation._canonical(fact)).hexdigest()
         import completion_local_evidence as evidence
+        _require(type(platform) is evidence._PlatformOwnerResult
+                 and platform.live_mapping_sha256 == mapping["live_mapping_sha256"],
+                 "pre-workload runtime mapping changed during cleanup")
+        if causal is None:
+            _require(lifecycle.session is None
+                     and operation._durable_phase(lifecycle.operation) == "OWNERSHIP_OBSERVED",
+                     "causal network proof absent outside durable terminal cleanup")
+            return fact
         lifecycle.runtime_proof = evidence._RuntimeOwnerResult(
             operation._command_context(lifecycle.operation).operation_token,
             mapping["runtime_mount_sha256"], causal["causal_proof_sha256"],

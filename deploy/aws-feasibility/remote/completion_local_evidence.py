@@ -84,6 +84,38 @@ class _RetiredJournalOwnerResult:
 
 
 @dataclass(frozen=True)
+class _DurableHistoryOwnerResult:
+    """Typed complete production parse of one exact retired journal generation."""
+    journal_sha256: str
+    records: tuple
+
+    def __post_init__(self):
+        _digest(self.journal_sha256)
+        _require(type(self.records) is tuple and self.records
+                 and all(type(row) is operation.Record for row in self.records)
+                 and self.records[-1].record_type == "RETIRED")
+
+
+@dataclass(frozen=True)
+class _PlatformOwnerResult:
+    """Typed pre-workload runtime/QMP observation retained through teardown."""
+    operation_token: str
+    live_mapping_sha256: str
+    qemu_process_sha256: str
+    kvm_api: int
+    qmp_present: bool
+    qmp_enabled: bool
+
+    def __post_init__(self):
+        _token(self.operation_token)
+        _digest(self.live_mapping_sha256)
+        _digest(self.qemu_process_sha256)
+        _require(type(self.kvm_api) is int and self.kvm_api == 12)
+        _require(type(self.qmp_present) is bool and self.qmp_present is True)
+        _require(type(self.qmp_enabled) is bool and self.qmp_enabled is True)
+
+
+@dataclass(frozen=True)
 class _RuntimeOwnerResult:
     """Causal network/runtime/QMP fact retained through exact teardown."""
     operation_token: str
@@ -152,6 +184,25 @@ def _ordered_phases(records):
         positions.append(row.sequence)
     _require(positions == sorted(positions) and len(set(positions)) == len(positions),
              "journal teardown order differs")
+
+
+def _typed_durable_history(journal):
+    _require(type(journal) is _RetiredJournalOwnerResult)
+    try:
+        records = operation._parse(journal.raw)
+    except operation.OperationError as error:
+        raise LocalEvidenceError("retired operation journal invalid") from error
+    _require(records and records[-1].record_type == "RETIRED")
+    return _DurableHistoryOwnerResult(hashlib.sha256(journal.raw).hexdigest(), records)
+
+
+def _history_records(journal, history):
+    _require(type(journal) is _RetiredJournalOwnerResult
+             and type(history) is _DurableHistoryOwnerResult)
+    _require(history.journal_sha256 == hashlib.sha256(journal.raw).hexdigest())
+    reparsed = _typed_durable_history(journal)
+    _require(reparsed == history, "typed durable history generation differs")
+    return history.records
 
 
 def _report_teardown(records, residue, binding):
@@ -240,17 +291,127 @@ def _timings(parsed, binding):
     return groups
 
 
-def _derive_report(bindings, owner_bindings, journal, session, runtime, residue):
+def _empty_timings(binding):
+    return {
+        name: [{"binding_sha256": binding, "deletion": "not-reached",
+                "duration_ns": None, "ordinal": ordinal, "outcome": "not-reached"}
+               for ordinal in range(1, 8)]
+        for name in ("git", "build", "install")
+    }
+
+
+def _derive_failure_report(bindings, owner_bindings, journal, history,
+                           session, platform, runtime, residue):
+    """Derive certainty and first failure only from the typed durable history."""
+    records = _history_records(journal, history)
+    _require(type(owner_bindings) is _BindingOwnerResult
+             and session is None
+             and (platform is None or type(platform) is _PlatformOwnerResult)
+             and (runtime is None or type(runtime) is _RuntimeOwnerResult)
+             and type(residue) is _ResidueOwnerResult)
+    kinds = tuple(row.record_type for row in records)
+    _require("SSH_READY_V2" not in kinds and "SSH_READY" not in kinds
+             and "UNCERTAIN" not in kinds)
+    terminals = tuple(row for row in records
+                      if row.record_type in ("COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"))
+    _require(all(row.body["uncertain"] is False for row in terminals),
+             "uncertain command history cannot mint failure evidence")
+
+    genesis = _one(records, "GENESIS")
+    _require(genesis.sequence == 0)
+    token = genesis.body["operation_token"]
+    _one(records, "PRODUCTION_ADMISSION_V2")
+    _ordered_phases(records)
+    final = _one(records, "FINAL_BASELINES")
+    retired = _one(records, "RETIRED")
+    _require(residue.operation_token == token
+             and residue.final_baselines_sha256 == final.body["final_baselines_sha256"]
+             and retired.body["final_baselines_sha256"] == residue.final_baselines_sha256)
+
+    bindings = dict(bindings)
+    if runtime is not None:
+        _require(runtime.operation_token == token)
+        bindings["runtime_attestation_sha256"] = _runtime_attestation_sha256(runtime)
+    if platform is not None:
+        _require(platform.operation_token == token)
+    if runtime is not None and platform is not None:
+        _require(runtime.live_mapping_sha256 == platform.live_mapping_sha256)
+    _require(bindings == owner_bindings.value())
+    _require(bindings["source_head"] == genesis.body["source_revision"]
+             and bindings["source_manifest_sha256"] == genesis.body["source_manifest_sha256"]
+             and bindings["rootfs_sha256"] == genesis.body["rootfs_pin"]["ustar_sha256"]
+             and bindings["guest_program_sha256"] == guest.GUEST_PROGRAM_SHA256)
+
+    operation_sha256 = _operation_sha256(genesis)
+    journal_sha256 = history.journal_sha256
+    binding = local._binding_digest(bindings, operation_sha256, journal_sha256)
+    runtime_started = "RUNTIME_READY" in kinds
+    ssh_intents = tuple(row for row in records
+                        if row.record_type == "COMMAND_INTENT_V2"
+                        and row.body["command_id"] == "SSH_READY")
+    _require(len(ssh_intents) <= 1)
+    if platform is None:
+        _require(runtime is None and not runtime_started and not ssh_intents)
+        admission = {"preflight": "pass", "source_binding": "pass",
+                     "attestation": "pass", "kvm": "failure"}
+        platform_value = {"kvm_api": None, "observation": "failure",
+                          "qmp_enabled": False, "qmp_present": False}
+        lifecycle = {"attempts": 0, "outcome": "not-reached",
+                     "ssh_attempts": 0, "ssh_outcome": "not-reached"}
+        failure_code = "kvm"
+    else:
+        _require(runtime_started)
+        admission = {name: "pass" for name in local.ADMISSION_PHASES}
+        platform_value = {"kvm_api": platform.kvm_api, "observation": "pass",
+                          "qmp_enabled": platform.qmp_enabled,
+                          "qmp_present": platform.qmp_present}
+        ssh_attempted = bool(ssh_intents)
+        lifecycle = {"attempts": 1, "outcome": "pass",
+                     "ssh_attempts": int(ssh_attempted),
+                     "ssh_outcome": "failure" if ssh_attempted else "not-reached"}
+        failure_code = "ssh"
+
+    timings = _empty_timings(binding)
+    teardown = _report_teardown(records, residue, binding)
+    report = {
+        "admission": admission, "authority": local.AUTHORITY,
+        "bindings": bindings, "failure_code": failure_code,
+        "lifecycle": lifecycle, "limitations": list(local.LIMITATIONS),
+        "operation": {
+            "binding_sha256": binding,
+            "final_pin_sha256": bindings["final_pin_sha256"],
+            "journal_sha256": journal_sha256,
+            "operation_sha256": operation_sha256,
+            "source_head": bindings["source_head"],
+            "source_manifest_sha256": bindings["source_manifest_sha256"],
+            "status": "retired",
+        },
+        "platform": platform_value, "qualified": False, "result": "failure",
+        "teardown": teardown,
+        "timing_summaries": {name: local._summary(rows)
+                             for name, rows in timings.items()},
+        "timings": timings,
+        "validation_classification": local.VALIDATION_CLASSIFICATION,
+        "version": local.VERSION,
+        "zero_residue": {name: "absent" for name in residue.absent_facts},
+    }
+    return local.canonical_result(report)
+
+
+def _derive_report(bindings, owner_bindings, journal, history,
+                   session, platform, runtime, residue):
+    records = _history_records(journal, history)
+    if not any(row.record_type in ("SSH_READY_V2", "SSH_READY") for row in records):
+        return _derive_failure_report(
+            bindings, owner_bindings, journal, history,
+            session, platform, runtime, residue)
     _require(type(owner_bindings) is _BindingOwnerResult)
-    _require(type(journal) is _RetiredJournalOwnerResult)
+    _require(type(platform) is _PlatformOwnerResult)
     _require(type(runtime) is _RuntimeOwnerResult)
+    _require(runtime.operation_token == platform.operation_token
+             and runtime.live_mapping_sha256 == platform.live_mapping_sha256)
     _require(type(residue) is _ResidueOwnerResult)
     _require(operation.guest_workloads is guest, "SSH and journal guest codecs differ")
-    try:
-        records = operation._parse(journal.raw)
-    except operation.OperationError as error:
-        raise LocalEvidenceError("retired operation journal invalid") from error
-    _require(records and records[-1].record_type == "RETIRED")
     genesis = _one(records, "GENESIS")
     _require(genesis.sequence == 0)
     token = genesis.body["operation_token"]
@@ -320,16 +481,20 @@ def _new_owner_evidence_routes():
             value._used = False
             return value
 
-        def __call__(self, custody, owner_bindings, journal, session, runtime, residue):
+        def __call__(self, custody, owner_bindings, journal, history,
+                     session, platform, runtime, residue):
             _require(not self._used, "owner evidence producer already used")
             self._used = True
             _require(type(owner_bindings) is _BindingOwnerResult)
             _require(type(journal) is _RetiredJournalOwnerResult)
-            _require(type(session) is ssh.AuthenticatedSession)
-            _require(type(runtime) is _RuntimeOwnerResult)
+            _require(type(history) is _DurableHistoryOwnerResult)
+            _require(session is None or type(session) is ssh.AuthenticatedSession)
+            _require(platform is None or type(platform) is _PlatformOwnerResult)
+            _require(runtime is None or type(runtime) is _RuntimeOwnerResult)
             _require(type(residue) is _ResidueOwnerResult)
             evidence = _OwnerExecutionEvidence(seal)
-            states[evidence] = (custody, owner_bindings, journal, session, runtime, residue)
+            states[evidence] = (custody, owner_bindings, journal, history,
+                                session, platform, runtime, residue)
             return evidence
 
     def take_producer():

@@ -166,26 +166,37 @@ class _PrivateEvidenceBoundary:
     """Translate only exact terminal owner facts into closure-private evidence."""
 
     def normal(self, lifecycle):
-        if lifecycle.primary_failure is not None:
-            raise CoordinatorBlocked("failed lifecycle cannot produce pass evidence")
         try:
-            binding_value = admission._static_custody_binding(
-                lifecycle.static_custody)
-            binding_value["runtime_attestation_sha256"] = (
-                local_evidence._runtime_attestation_sha256(
-                    lifecycle.runtime_proof))
-            bindings = local_evidence._BindingOwnerResult(**binding_value)
             if type(lifecycle.retired) is not local_evidence._RetiredJournalOwnerResult:
                 raise CoordinatorBlocked("exact retired journal owner result required")
-            if type(lifecycle.session) is not ssh.AuthenticatedSession:
-                raise CoordinatorBlocked("exact authenticated SSH session required")
-            if type(lifecycle.runtime_proof) is not local_evidence._RuntimeOwnerResult:
-                raise CoordinatorBlocked("exact causal runtime owner result required")
             if type(lifecycle.residue) is not local_evidence._ResidueOwnerResult:
                 raise CoordinatorBlocked("exact independent residue owner result required")
+            history = local_evidence._typed_durable_history(lifecycle.retired)
+            passed = any(row.record_type in ("SSH_READY_V2", "SSH_READY")
+                         for row in history.records)
+            if passed and lifecycle.primary_failure is not None:
+                raise CoordinatorBlocked("non-durable failure forbids pass evidence")
+            if passed and type(lifecycle.session) is not ssh.AuthenticatedSession:
+                raise CoordinatorBlocked("exact authenticated SSH session required")
+            if (lifecycle.runtime_observation is not None
+                    and type(lifecycle.runtime_observation) is not local_evidence._PlatformOwnerResult):
+                raise CoordinatorBlocked("exact typed platform owner result required")
+            if (lifecycle.runtime_proof is not None
+                    and type(lifecycle.runtime_proof) is not local_evidence._RuntimeOwnerResult):
+                raise CoordinatorBlocked("exact causal runtime owner result required")
+            if passed and lifecycle.runtime_proof is None:
+                raise CoordinatorBlocked("pass requires causal runtime owner result")
+            binding_value = admission._static_custody_binding(
+                lifecycle.static_custody)
+            if lifecycle.runtime_proof is not None:
+                binding_value["runtime_attestation_sha256"] = (
+                    local_evidence._runtime_attestation_sha256(
+                        lifecycle.runtime_proof))
+            bindings = local_evidence._BindingOwnerResult(**binding_value)
             return _produce_owner_evidence(
-                lifecycle.static_custody, bindings, lifecycle.retired,
-                lifecycle.session, lifecycle.runtime_proof, lifecycle.residue)
+                lifecycle.static_custody, bindings, lifecycle.retired, history,
+                lifecycle.session, lifecycle.runtime_observation,
+                lifecycle.runtime_proof, lifecycle.residue)
         except local_evidence.LocalEvidenceError as error:
             raise CoordinatorBlocked("exact terminal owner evidence required") from error
 
