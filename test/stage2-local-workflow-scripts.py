@@ -36,7 +36,11 @@ def rejected(call, exception):
 
 
 def guard_tests():
+    guard._reviewed_constants()
+    reviewed_head = guard.REVIEWED_IMPLEMENTATION_HEAD
+    guard.REVIEWED_IMPLEMENTATION_HEAD = None
     rejected(guard._reviewed_constants, guard.GuardError)
+    guard.REVIEWED_IMPLEMENTATION_HEAD = reviewed_head
     old = tuple(getattr(guard, name) for name in (
         "REVIEWED_IMPLEMENTATION_HEAD", "REVIEWED_IMPLEMENTATION_MANIFEST_SHA256",
         "REVIEWED_CONTROL_SHA256", "REVIEWED_WORKFLOW_SHA256",

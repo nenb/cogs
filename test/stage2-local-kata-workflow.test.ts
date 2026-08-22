@@ -49,7 +49,7 @@ const steps = [
   "Enforce attempt 1 complete custody chain and final zero residue",
 ];
 
-test("dedicated workflow is manual, same-repository, exact H/G, and deliberately blocked", () => {
+test("dedicated workflow is manual, same-repository, and exact reviewed H/G", () => {
   assert.match(workflow, /^name: Stage 2 local Kata qualification$/mu);
   assert.match(workflow, /on:\n {2}workflow_dispatch:/u);
   assert.doesNotMatch(workflow, /\n {2}(push|pull_request|schedule|workflow_run):/u);
@@ -61,14 +61,17 @@ test("dedicated workflow is manual, same-repository, exact H/G, and deliberately
   assert.match(workflow, /STAGE2_LOCAL_CONTROL_HEAD/u);
   assert.match(workflow, /STAGE2_LOCAL_AUTHORIZED_ACTOR/u);
   assert.match(guard, /REPOSITORY = "nenb\/cogs"/u);
-  for (const name of [
-    "REVIEWED_IMPLEMENTATION_HEAD",
-    "REVIEWED_IMPLEMENTATION_MANIFEST_SHA256",
-    "REVIEWED_CONTROL_SHA256",
-    "REVIEWED_WORKFLOW_SHA256",
-    "REVIEWED_RESULT_SCHEMA_SHA256",
-  ])
-    assert.match(guard, new RegExp(`^${name} = None$`, "mu"));
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"/u);
+  assert.match(
+    guard,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"/u,
+  );
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "8cdfae74dc7913df8f75814c5e78d83d5e018cca3b9fd925cb04b87d35826c6b"/u);
+  assert.match(
+    guard,
+    /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
+  );
   assert.match(guard, /review constants remain blocked/u);
   assert.doesNotMatch(guard, /REVIEWED_[A-Z_]+\s*=\s*(?:""|os\.environ|getenv)/u);
 });

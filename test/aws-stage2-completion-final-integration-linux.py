@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned-container no-KVM integration checks for the unreviewed-G stop."""
+"""Pinned-container no-KVM integration checks for reviewed-G admission."""
 import ast
 import os
 from pathlib import Path
@@ -34,8 +34,8 @@ def identities(paths):
 require(sys.platform.startswith("linux") and os.uname().machine == "x86_64",
         "exact Linux/amd64 container required")
 require(not os.path.exists("/dev/kvm"), "Docker test must not receive KVM")
-require(not (REMOTE / "stage2-completion-local-control-v2").exists(),
-        "reviewed G unexpectedly exists in implementation H")
+require((REMOTE / "stage2-completion-local-control-v2/stage2-local-static-control-v1.json").is_file(),
+        "reviewed G control package is absent")
 
 observed_paths = (
     "/var/lib/cogs", "/run/cogs-stage2-local-private-v2",
@@ -53,7 +53,7 @@ completed = subprocess.run(
          "PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "TZ": "UTC"},
     timeout=20, check=False)
 require(completed.returncode == 3 and completed.stdout == b"" and completed.stderr == b"",
-        "current missing G did not produce the fixed blocked result: "
+        "direct invocation bypassing reviewed-control staging was not blocked: "
         + repr((completed.returncode, completed.stdout, completed.stderr)))
 require(identities(observed_paths) == before,
         "missing G reached a mutable lifecycle path")
@@ -100,4 +100,4 @@ require(nft_recovery.returncode == 0 and
         "fresh-process durable NFT recovery failed: "
         + repr((nft_recovery.returncode, nft_recovery.stdout, nft_recovery.stderr)))
 
-print("pinned Linux no-KVM final integration and missing-G refusal passed")
+print("pinned Linux no-KVM reviewed-G admission refusal passed")

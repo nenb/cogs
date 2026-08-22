@@ -15,13 +15,13 @@ CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v1.json"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-kata-qualification.yml"
-# Deliberate review stops.  A reviewed G commit must replace every None with the
-# exact H/control/workflow value; environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = None
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = None
-REVIEWED_CONTROL_SHA256 = None
-REVIEWED_WORKFLOW_SHA256 = None
-REVIEWED_RESULT_SCHEMA_SHA256 = None
+# Reviewed directional binding: this data revision G describes the earlier H;
+# environment or dispatch values are never defaults.
+REVIEWED_IMPLEMENTATION_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"
+REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"
+REVIEWED_WORKFLOW_SHA256 = "8cdfae74dc7913df8f75814c5e78d83d5e018cca3b9fd925cb04b87d35826c6b"
+REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
