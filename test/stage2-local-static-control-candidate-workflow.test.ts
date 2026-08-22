@@ -51,7 +51,7 @@ test("event-contract replacement guard is exact source and precedes every source
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v14"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v15"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
   assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
@@ -98,6 +98,15 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_RUN_ID = 32577727971/u);
   assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c2540af5cb85e2845de1eebfad3475d28c0483e5"/u);
   assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"/u);
+  assert.match(dispatchGuard, /SECOND_SUCCESSFUL_PREDECESSOR_RUN_ID = 32590966571/u);
+  assert.match(
+    dispatchGuard,
+    /SECOND_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "acb99d5d6ba4cbd94ad40c9bbe4520d2f8905368"/u,
+  );
+  assert.match(
+    dispatchGuard,
+    /SECOND_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "33314a9999cbe1e0eb927ba4a1e6f1ee10fcd5df"/u,
+  );
   assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
   assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
   assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
@@ -107,7 +116,7 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
   assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "33314a9999cbe1e0eb927ba4a1e6f1ee10fcd5df"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "045ea5690c045fa22e4e89cbc7b29098a46c3cae"/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.match(dispatchGuard, /_read_event\(_required\(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"\)\)/u);
   assert.match(dispatchGuard, /"EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED"/u);
@@ -128,22 +137,29 @@ test("static dispatch guard hostile suite covers event parsing, predecessors, re
   assert.match(result.stdout, /authenticated static-control dispatch guard hostile tests passed/u);
 });
 
-test("reviewed H itself binds its corrected immutable source in the runtime boundary", () => {
+test("reviewed H itself binds corrected immutable and producer sources in the runtime boundary", () => {
   const reviewed = /REVIEWED_IMPLEMENTATION_HEAD = "([0-9a-f]{40})"/u.exec(dispatchGuard)?.[1];
   assert.ok(reviewed);
-  const preparationAtH = spawnSync(
-    "git",
-    ["show", `${reviewed}:deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py`],
-    { encoding: null },
-  );
   const boundaryAtH = spawnSync("git", ["show", `${reviewed}:scripts/stage2-static-control-runtime-boundary.py`], {
     encoding: "utf8",
   });
-  assert.equal(preparationAtH.status, 0, preparationAtH.stderr.toString());
   assert.equal(boundaryAtH.status, 0, boundaryAtH.stderr);
-  const digest = createHash("sha256").update(preparationAtH.stdout).digest("hex");
-  assert.equal(digest, "cf1757832fdfd443dcb8265c32dec68e7a7e7c4d3c28e4246f00c27120a554c9");
-  assert.match(boundaryAtH.stdout, new RegExp(`"sha256": "${digest}"`, "u"));
+  for (const [path, expected] of [
+    [
+      "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py",
+      "cf1757832fdfd443dcb8265c32dec68e7a7e7c4d3c28e4246f00c27120a554c9",
+    ],
+    [
+      "deploy/aws-feasibility/remote/completion_kata_preparation.py",
+      "be7743e0d06f63e1b184c4c7e29267dd7a81cf6374d9de28797bdd4b8103cedc",
+    ],
+  ]) {
+    const sourceAtH = spawnSync("git", ["show", `${reviewed}:${path}`], { encoding: null });
+    assert.equal(sourceAtH.status, 0, sourceAtH.stderr.toString());
+    const digest = createHash("sha256").update(sourceAtH.stdout).digest("hex");
+    assert.equal(digest, expected);
+    assert.match(boundaryAtH.stdout, new RegExp(`"sha256": "${digest}"`, "u"));
+  }
 });
 
 test("static-only cleanup uses reviewed source policy and owned process-fd censuses", () => {
@@ -159,7 +175,7 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "ce6a8a2594fef95a8c8e00b7d1cec067489dc136575247ff11a1ac4a60dc19f1"/u,
+    /NORMALIZED_WORKFLOW_SHA256 = "9ad1a4dfc5f7fedf300a148fe5b5253cae7fd80297d95e9c99e73dfa0a9a19df"/u,
   );
   assert.match(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
