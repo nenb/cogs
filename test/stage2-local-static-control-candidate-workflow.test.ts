@@ -63,7 +63,7 @@ test("authenticated replacement guard is exact source and precedes every source 
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
   assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.match(dispatchGuard, /message = f"\{GUARD_VERSION\}: \{code\}\\n"/u);
   assert.doesNotMatch(dispatchGuard, /print\(|logging|response\.read\([^M]/u);
