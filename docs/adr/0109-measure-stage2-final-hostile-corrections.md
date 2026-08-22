@@ -10,7 +10,7 @@ Hostile review of `26af976022d559ebc2dc5434dd0df45fe976be77` found deterministic
 
 ## Decision
 
-Retain exact Gate-0 and complete-workflow accounting. Set non-transferable highs to 8,000 deployment lines, 3,200 retained lines, 900 workflow lines, and 11,000 global post-Gate-0 lines. Set the preferred limit to 66,500 and retain the mandatory hard limit at 67,000. Retain the 1,200-line mutable-owner bridge high.
+Retain exact Gate-0 and complete-workflow accounting. Set non-transferable highs to 8,000 deployment lines, 3,200 retained lines, 900 workflow lines, and 11,000 global post-Gate-0 lines. Set the preferred limit to 66,500 and retain the mandatory hard limit at 67,000. Retain the 1,200-line mutable-owner bridge high. Set the readable integrated operation/rootfs ownership high to 3,170 lines so the recovery-only capability distinction can preserve historical ordinary-owner semantics without compression.
 
 These highs authorize ordinary final integration and exact-head review only. Deletion, relocation, compressed multi-effect logic, generated/data indirection, and test movement receive no credit.
 

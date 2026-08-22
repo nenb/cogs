@@ -1793,7 +1793,12 @@ def _owner_routes():
                         except BaseException as error:
                             state["journal"].record_uncertain("identity-mismatch")
                             raise error
-                elif phase in {"ROOTFS_LEASED", "FS_SETTLED", "FIREWALL_ABSENT"}:
+                elif phase in {"ROOTFS_LEASED", "FS_SETTLED"}:
+                    if operation._is_production_recovery_operation(state["journal"]):
+                        state["journal"].record_input_removed(proof)
+                    else:
+                        state["journal"].record_uncertain("incomplete")
+                elif phase == "FIREWALL_ABSENT":
                     state["journal"].record_input_removed(proof)
                 return proof
             finally:

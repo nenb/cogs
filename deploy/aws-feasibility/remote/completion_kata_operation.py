@@ -1600,6 +1600,7 @@ def _open_base_chain(control):
 def _make_authority():
     seal = object()
     owners, closed, poisoned, permits, grants, cleanup_owners = {}, set(), set(), {}, {}, {}
+    recovery_cleanup_owners = set()
     release_permits, release_grants = {}, {}
     class _FixedJournal:
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
@@ -2714,6 +2715,13 @@ def _make_authority():
         capability = CleanupAuthority(seal); cleanup_owners[capability] = authority; return capability
     def claim_production_cleanup_operation(authority):
         return cleanup_capability(authority, False)
+    def claim_production_recovery_operation(authority):
+        capability = cleanup_capability(authority, False)
+        _fail(capability not in recovery_cleanup_owners)
+        recovery_cleanup_owners.add(capability)
+        return capability
+    def is_production_recovery_operation(authority):
+        return type(authority) is CleanupAuthority and authority in recovery_cleanup_owners
     def claim_production_retired_operation(authority):
         return cleanup_capability(authority, True)
     def reconstruct_rootfs_permit(authority):
@@ -2786,6 +2794,7 @@ def _make_authority():
         invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
         invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
         admit_production_v2, claim_production_operation, claim_production_cleanup_operation,
+        claim_production_recovery_operation, is_production_recovery_operation,
         claim_production_retired_operation, reconstruct_rootfs_permit,
         command_context, pending_command, has_recovery_command,
         recovery_command, recovery_lifecycle_deadline,
@@ -2806,6 +2815,7 @@ def _make_authority():
     _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
     _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
     _admit_production_v2, _claim_production_operation, _claim_production_cleanup_operation,
+    _claim_production_recovery_operation, _is_production_recovery_operation,
     _claim_production_retired_operation, _reconstruct_rootfs_permit,
     _command_context, _pending_command, _has_recovery_command,
     _recovery_command, _recovery_lifecycle_deadline,

@@ -105,7 +105,7 @@ def _routes():
             phase = authority.reconstruction_identity()["phase"]
             cleanup = (operation._claim_production_retired_operation(authority)
                        if phase == "RETIRED" else
-                       operation._claim_production_cleanup_operation(authority))
+                       operation._claim_production_recovery_operation(authority))
             current.update({"authority": authority, "cleanup": cleanup,
                             "reconstructed_phase": phase})
             open_chain(current)
