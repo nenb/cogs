@@ -2,8 +2,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-import copy, fcntl, gzip, hashlib, json, os, re, socket, stat, time
-import completion_archive_preflight as archive_preflight
+import copy, fcntl, hashlib, json, os, re, socket, stat, time
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_inputs as kata_inputs
@@ -1004,25 +1003,10 @@ def _purge_owned_tree(parent_fd, name, depth=0):
         os.rmdir(name, dir_fd=parent_fd)
     else: os.unlink(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
-def _stage_containerd_archive(journal, completion, artifact, control):
-    _fail(type(completion) is rootfs_fs.HeldNode and type(artifact) is rootfs_fs.HeldNode
+def _activate_prepared_containerd(journal, completion, control):
+    """Add mutable daemon state to the already verified static runtime root."""
+    _fail(type(completion) is rootfs_fs.HeldNode
           and type(control) is rootfs_fs.OperationControl)
-    raw = rootfs_fs._read_regular(artifact, command_policy.CONTAINERD_ARCHIVE_SIZE, control)
-    _fail(len(raw) == command_policy.CONTAINERD_ARCHIVE_SIZE
-          and hashlib.sha256(raw).hexdigest() == command_policy.CONTAINERD_ARCHIVE_SHA256,
-          "containerd archive identity")
-    size = int.from_bytes(raw[-4:], "little"); _fail(1 <= size <= 512 * 1024 * 1024, "gzip size")
-    tar = gzip.decompress(raw); _fail(len(tar) == size)
-    bounds = {"max_entries": 64, "max_regular_bytes": 64 * 1024 * 1024}
-    frames = archive_preflight._raw_tar_frames(tar, bounds); selected = {}
-    for frame in frames:
-        path = frame.name[2:] if frame.name.startswith("./") else frame.name.rstrip("/")
-        if path in {row[0] for row in command_policy.CONTAINERD_EXTRACTION}:
-            body = tar[frame.data_offset:frame.data_offset + frame.size]
-            selected[path] = body
-    for path, expected_size, digest, _mode in command_policy.CONTAINERD_EXTRACTION:
-        _fail(path in selected and len(selected[path]) == expected_size
-              and hashlib.sha256(selected[path]).hexdigest() == digest, "extraction member")
     parent = completion.operation_fd.number; temporary = ".kata-runtime-v1.staging"
     history = journal.runtime_recovery_history()
     if not history["runtime_stage_intents"]:
@@ -1031,45 +1015,52 @@ def _stage_containerd_archive(journal, completion, artifact, control):
             "policy_sha256": command_policy.RUNTIME_POLICY_SHA256, "temporary_name": temporary})
     names = os.listdir(parent)
     _fail(not history["runtime_staged"], "runtime already staged")
-    if temporary in names or "kata-runtime-v1" in names:
+    # Immutable preparation publishes only the exact static bin directory.
+    # This mutable launch transaction verifies those bytes in place and adds
+    # only daemon configuration/state; it never extracts executable custody.
+    if temporary in names or "kata-runtime-v1" not in names:
         journal.record_uncertain("identity-mismatch")
-        raise KataRuntimeError("identity-free runtime staging residue")
-    os.mkdir(temporary, 0o700, dir_fd=parent); os.fsync(parent)
+        raise KataRuntimeError("immutable prepared runtime absent")
+    runtime_fd = os.open("kata-runtime-v1", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                         dir_fd=parent)
     try:
-        runtime_fd = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                             dir_fd=parent)
+        _fail(set(os.listdir(runtime_fd)) == {"bin"}, "prepared runtime is not static-only")
+        bin_fd = os.open("bin", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                         dir_fd=runtime_fd)
         try:
-            os.mkdir("bin", 0o700, dir_fd=runtime_fd); bin_fd = os.open("bin", os.O_RDONLY | os.O_DIRECTORY |
-                os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=runtime_fd)
-            try:
-                for path, _size, _digest, mode in command_policy.CONTAINERD_EXTRACTION:
-                    name = path.rpartition("/")[2]
-                    descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-                                         mode, dir_fd=bin_fd)
-                    try:
-                        offset = 0
-                        while offset < len(selected[path]):
-                            count = os.write(descriptor, selected[path][offset:]); _fail(count > 0); offset += count
-                        os.fchmod(descriptor, mode); os.fchown(descriptor, 0, 0); os.fsync(descriptor)
-                    finally: os.close(descriptor)
-                os.fsync(bin_fd)
-            finally: os.close(bin_fd)
-            config = os.open("containerd.toml", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-                             0o600, dir_fd=runtime_fd)
-            try:
-                offset = 0
-                while offset < len(CONTAINERD_CONFIG_BYTES):
-                    count = os.write(config, CONTAINERD_CONFIG_BYTES[offset:]); _fail(count > 0); offset += count
-                os.fsync(config)
-            finally: os.close(config)
-            os.mkdir("containerd-root", 0o700, dir_fd=runtime_fd)
-            os.mkdir("containerd-state", 0o700, dir_fd=runtime_fd); os.fsync(runtime_fd)
-        finally: os.close(runtime_fd)
-        os.rename(temporary, "kata-runtime-v1", src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent)
+            _fail(set(os.listdir(bin_fd)) == {"containerd", "ctr"})
+            for path, expected_size, digest, mode in command_policy.CONTAINERD_EXTRACTION:
+                name = path.rpartition("/")[2]
+                descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=bin_fd)
+                try:
+                    seen = os.fstat(descriptor)
+                    _fail(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                          and seen.st_nlink == 1 and stat.S_IMODE(seen.st_mode) == mode
+                          and seen.st_size == expected_size)
+                    offset = 0; digest_seen = hashlib.sha256()
+                    while offset < expected_size:
+                        chunk = os.read(descriptor, min(1024 * 1024, expected_size - offset)); _fail(chunk)
+                        digest_seen.update(chunk); offset += len(chunk)
+                    _fail(not os.read(descriptor, 1) and digest_seen.hexdigest() == digest)
+                finally: os.close(descriptor)
+        finally: os.close(bin_fd)
+        config = os.open("containerd.toml", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                         0o600, dir_fd=runtime_fd)
+        try:
+            offset = 0
+            while offset < len(CONTAINERD_CONFIG_BYTES):
+                count = os.write(config, CONTAINERD_CONFIG_BYTES[offset:]); _fail(count > 0); offset += count
+            os.fchown(config, 0, 0); os.fchmod(config, 0o600); os.fsync(config)
+        finally: os.close(config)
+        os.mkdir("containerd-root", 0o700, dir_fd=runtime_fd)
+        os.mkdir("containerd-state", 0o700, dir_fd=runtime_fd)
+        os.fsync(runtime_fd); os.fsync(parent)
     except BaseException:
-        for residue in (temporary, "kata-runtime-v1"):
-            if residue in os.listdir(parent): _purge_owned_tree(parent, residue)
+        os.close(runtime_fd)
+        if "kata-runtime-v1" in os.listdir(parent): _purge_owned_tree(parent, "kata-runtime-v1")
         raise
+    else:
+        os.close(runtime_fd)
     runtime = bin_node = None; nodes = []
     try:
         runtime = rootfs_fs._open_path_node(completion, rootfs_fs._name("kata-runtime-v1"), "directory", control)

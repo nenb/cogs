@@ -50,7 +50,8 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   assert.match(source, /def next_teardown_action\(snapshot\):/u);
   assert.match(source, /def _open_production_owner\(\):/u);
   assert.match(source, /def fixed_command_specs_v2\(\):/u);
-  assert.match(source, /def _stage_containerd_archive\(/u);
+  assert.match(source, /def _activate_prepared_containerd\(/u);
+  assert.match(source, /prepared runtime is not static-only/u);
   assert.match(source, /CONTAINERD_ARCHIVE_SHA256/u);
   assert.match(source, /def shutdown_daemon\(daemon\):/u);
   assert.match(source, /successful released TERM[\s\S]*CTR_TASK_KILL/u);

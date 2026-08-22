@@ -13,4 +13,10 @@ cd /var/lib/cogs/stage2-completion-v1/source
 exec /usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C \
   PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
   /usr/bin/python3 -I -B -c \
-  'import sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote"); import completion_kata_coordinator as c; result = c._recover_fixed_local_qualification(); raise SystemExit(0 if result is None else 70)'
+  'import sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote"); import completion_kata_coordinator as c
+try:
+ result = c._recover_fixed_local_qualification()
+except BaseException:
+ import completion_kata_immutable_preparation as p
+ result = p.recover_failed_preparation()
+raise SystemExit(0 if result is None else 70)'

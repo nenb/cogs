@@ -82,6 +82,7 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_fdmap.py",
     "deploy/aws-feasibility/remote/completion_kata_inputs.py",
+    "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py",
     "deploy/aws-feasibility/remote/completion_kata_network.py",
     "deploy/aws-feasibility/remote/completion_kata_network_journal.py",
     "deploy/aws-feasibility/remote/completion_kata_nft_owner.py",
@@ -639,6 +640,7 @@ def extracted_postwalk(root):
     observed_root = root.stat(follow_symlinks=False)
     _require(stat.S_ISDIR(observed_root.st_mode))
     rows = []
+    total_file_bytes = 0
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         directories.sort(key=os.fsencode)
         files.sort(key=os.fsencode)
@@ -649,9 +651,25 @@ def extracted_postwalk(root):
             seen = path.lstat()
             if stat.S_ISREG(seen.st_mode):
                 kind = "file"
-                digest = _sha(path.read_bytes())
-                link = None
                 size = seen.st_size
+                _require(size <= MAX_ARCHIVE_FILE_BYTES)
+                total_file_bytes += size
+                _require(total_file_bytes <= MAX_ARCHIVE_TOTAL_BYTES)
+                hasher = hashlib.sha256()
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                try:
+                    _require(os.fstat(descriptor) == seen)
+                    offset = 0
+                    while offset < size:
+                        chunk = os.read(descriptor, min(1024 * 1024, size - offset))
+                        _require(chunk)
+                        hasher.update(chunk)
+                        offset += len(chunk)
+                    _require(not os.read(descriptor, 1) and os.fstat(descriptor) == seen)
+                finally:
+                    os.close(descriptor)
+                digest = hasher.hexdigest()
+                link = None
             elif stat.S_ISDIR(seen.st_mode):
                 kind, digest, link, size = "directory", None, None, 0
             elif stat.S_ISLNK(seen.st_mode):
@@ -894,16 +912,21 @@ def collect_fixed_candidate():
     implementation["selected_sources_sha256"] = _sha(canonical_bytes(implementation["selected_sources"]))
     _validate_implementation(implementation)
 
-    archive_values = []
-    extracted_roots = {
-        "kata": OBSERVATION_ROOT / "extracted/kata",
-        "containerd": OBSERVATION_ROOT / "extracted/containerd",
-    }
-    for expected in ARCHIVES:
-        layout_rows = archive_layout(OBSERVATION_ROOT / "cache" / expected["name"], expected)
-        extracted_rows = extracted_postwalk(extracted_roots[expected["role"]])
-        archive_values.append({**expected, "layout": section(layout_rows),
-                               "extracted": section(extracted_rows)})
+    receipt_path = (SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/"
+                    "immutable-preparation-v1/receipt.json")
+    receipt = decode_canonical(receipt_path.read_bytes(), MAX_RUNTIME_BYTES)
+    _exact_keys(receipt, ("version", "authority", "rootfs_artifact_count",
+                          "runtime_archives", "forbidden_surfaces"))
+    _require(receipt["version"] == "cogs.stage2-local-immutable-preparation/v1"
+             and receipt["authority"] == "immutable-public-input-preparation-only"
+             and receipt["rootfs_artifact_count"] == 16
+             and receipt["forbidden_surfaces"] ==
+             ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"])
+    archive_values = receipt["runtime_archives"]
+    _require(type(archive_values) is list and len(archive_values) == len(ARCHIVES))
+    for value, expected in zip(archive_values, ARCHIVES, strict=True):
+        _archive(value, expected)
+    actual_runtime = SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1"
 
     import completion_kata_runtime as kata_runtime
     import completion_runtime_contract as runtime_contract
@@ -914,10 +937,10 @@ def collect_fixed_candidate():
     closure = fixed_runtime_closure(load_verified_build_inputs())
     static_objects = [json.loads(canonical_bytes(asdict(record))) for record in closure.records]
     static_closure = {**final.runtime_closure.value(), "objects": static_objects}
-    config_raw, artifacts = _configured_launch_assets(extracted_roots["kata"])
+    config_raw, artifacts = _configured_launch_assets(Path("/"))
     artifacts.extend((
-        _fixed_file("containerd", EXECUTABLES[5][2], extracted_roots["containerd"] / "bin/containerd"),
-        _fixed_file("ctr", EXECUTABLES[6][2], extracted_roots["containerd"] / "bin/ctr"),
+        _fixed_file("containerd", EXECUTABLES[5][2], actual_runtime / "bin/containerd"),
+        _fixed_file("ctr", EXECUTABLES[6][2], actual_runtime / "bin/ctr"),
     ))
     artifacts.sort(key=lambda row: row["role"])
 
@@ -928,11 +951,11 @@ def collect_fixed_candidate():
             actual = Path(declared)
             mapper = lambda logical: Path(logical)
         elif source_class == "staged-runtime":
-            actual = extracted_roots["containerd"] / ("bin/" + role)
-            mapper = lambda logical, root=extracted_roots["containerd"]: root / logical.lstrip("/")
+            actual = actual_runtime / ("bin/" + role)
+            mapper = lambda logical: Path(logical)
         else:
-            actual = extracted_roots["kata"] / declared[1:]
-            mapper = lambda logical, root=extracted_roots["kata"]: root / logical[1:]
+            actual = Path(declared)
+            mapper = lambda logical: Path(logical)
         contracts[role] = collect_executable_contract(role, declared, actual, mapper)
         executable_rows.append({"role": role, "source_class": source_class, "path": declared,
                                 "contract_member": "contracts/unset.json", "contract_sha256": "0" * 64,
@@ -972,6 +995,11 @@ def generate_implementation_h_candidate_control_bytes():
 def publish_fixed_candidate(control_raw, members):
     """Publish one new candidate directory; never replace reviewed or staged bytes."""
     destination = OBSERVATION_ROOT / "candidate"
+    parent_created = not OBSERVATION_ROOT.exists()
+    if parent_created:
+        OBSERVATION_ROOT.mkdir(mode=0o700)
+    else:
+        _require(OBSERVATION_ROOT.is_dir() and not any(OBSERVATION_ROOT.iterdir()))
     _require(not destination.exists())
     destination.mkdir(mode=0o700)
     try:
@@ -1007,6 +1035,8 @@ def publish_fixed_candidate(control_raw, members):
             for name in directories:
                 os.rmdir(Path(current) / name)
         os.rmdir(destination)
+        if parent_created:
+            os.rmdir(OBSERVATION_ROOT)
         raise
 
 

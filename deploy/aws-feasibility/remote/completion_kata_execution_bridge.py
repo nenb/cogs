@@ -177,14 +177,8 @@ def _routes():
     def stage(bridge, lifecycle):
         current = state(bridge, lifecycle)
         completion = fixed_chain(current)
-        artifact, artifact_nodes = open_relative(
-            completion, ("artifacts", "cache", "containerd-static-2.2.1-linux-amd64.tar.gz"),
-            "file", current["control"])
-        try:
-            staged = runtime._stage_containerd_archive(
-                lifecycle.operation, completion, artifact, current["control"])
-        finally:
-            for node in reversed(artifact_nodes): fs._close_node(node)
+        staged = runtime._activate_prepared_containerd(
+            lifecycle.operation, completion, current["control"])
         config, config_nodes = open_config(current["control"])
         attestation = None
         start_attempted = False

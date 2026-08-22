@@ -20,10 +20,11 @@ permissions:
 jobs:
   local-kata:
     runs-on: ubuntu-24.04
-    # Fixed step bounds total 87 minutes inside one 5,400-second envelope.
-    # Recovery, fixed-root cleanup, independent residue, and publication retain
-    # a non-borrowing 21-minute reserve after the sole entry bound.
-    timeout-minutes: 90
+    # Fixed step bounds total 116 minutes inside one 7,200-second envelope.
+    # Immutable acquisition has its own bound and completes before custody.
+    # Recovery, cleanup, residue, and publication retain a non-borrowing
+    # 21-minute reserve after the sole mutable entry bound.
+    timeout-minutes: 120
     concurrency:
       group: stage2-local-kata-qualification
       cancel-in-progress: false
@@ -71,15 +72,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Complete fixed source and external control preparation before KVM eligibility
+      - name: Complete exact immutable preparation before KVM eligibility and role custody
         id: preparation
-        timeout-minutes: 3
+        timeout-minutes: 32
         env:
           EXPECTED_MANIFEST: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
         run: |
           set -euo pipefail
           test ! -e /var/lib/cogs
+          test ! -e /opt/kata
           prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
@@ -95,6 +97,21 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v1.json \
             | /usr/bin/cut -d' ' -f1)
           test "$observed" = "$EXPECTED_CONTROL_SHA256"
+          immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1770s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py)
+          /usr/bin/python3 -I -c 'import json,sys
+          value=json.loads(sys.stdin.buffer.read())
+          assert value == {"version":"cogs.stage2-local-immutable-preparation/v1",
+            "rootfs_artifact_count":16,"runtime_archive_count":2,
+            "receipt_sha256":value["receipt_sha256"],"control_verified":True,
+            "authority":"immutable-public-input-preparation-only"}
+          assert len(value["receipt_sha256"]) == 64
+          ' <<<"$immutable"
+          test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd
+          test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr
+          test -x /opt/kata/bin/containerd-shim-kata-v2
           test ! -e /run/cogs-stage2-local-private-v2
 
       - name: Execute the sole zero-argument local qualification entry

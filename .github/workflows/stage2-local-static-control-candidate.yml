@@ -1,0 +1,102 @@
+name: Stage 2 no-KVM static control candidate
+run-name: Non-authoritative Stage 2 static control H=${{ inputs.exact_implementation_head }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      exact_implementation_head:
+        description: Exact implementation revision H containing this unchanged workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    # Step bounds total 41 minutes with a four-minute cleanup/runner reserve.
+    timeout-minutes: 45
+    concurrency:
+      group: stage2-no-kvm-static-control-${{ inputs.exact_implementation_head }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out exact implementation head without credentials
+        timeout-minutes: 2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce exact head attempt one and no KVM
+        timeout-minutes: 1
+        env:
+          EXACT_IMPLEMENTATION_HEAD: ${{ inputs.exact_implementation_head }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          test "$EXACT_IMPLEMENTATION_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_IMPLEMENTATION_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
+          test -z "$(/usr/bin/git status --porcelain)"
+          test ! -e /dev/kvm
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
+
+      - name: Materialize exact H source
+        timeout-minutes: 3
+        env:
+          EXACT_IMPLEMENTATION_HEAD: ${{ inputs.exact_implementation_head }}
+        run: |
+          set -euo pipefail
+          result=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
+            env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/prepare-stage2-fixed-source.py")
+          /usr/bin/python3 -I -c 'import json,sys
+          value=json.loads(sys.stdin.buffer.read()); assert value["revision"] == sys.argv[1]
+          ' "$EXACT_IMPLEMENTATION_HEAD" <<<"$result"
+
+      - name: Acquire verify and install immutable fixtures without runtime launch
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1770s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py \
+            > /tmp/cogs-stage2-immutable-preparation.json
+          test ! -e /dev/kvm
+          test ! -e /run/vc
+          test ! -e /run/netns/cogs-stage2-ssh
+
+      - name: Produce deterministic non-authoritative control candidate
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          cd /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B completion_kata_preparation.py \
+            > /tmp/cogs-stage2-static-candidate.json
+          test ! -e /dev/kvm
+          test ! -e /run/vc
+
+      - name: Upload non-authoritative candidate package only
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: non-authoritative-stage2-static-control-${{ inputs.exact_implementation_head }}-${{ github.run_id }}-1
+          path: /var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove every owned preparation fixture
+        if: always()
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          sudo -n /bin/rm -rf --one-file-system -- /var/lib/cogs /opt/kata \
+            /tmp/cogs-stage2-immutable-preparation.json /tmp/cogs-stage2-static-candidate.json
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
+          test ! -e /dev/kvm

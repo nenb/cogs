@@ -32,7 +32,7 @@ const steps = [
   "Check out exact control revision G without persisted credentials",
   "Gate reviewed H and G and consume only the first-created dispatch",
   "Check out exact reviewed implementation revision H separately",
-  "Complete fixed source and external control preparation before KVM eligibility",
+  "Complete exact immutable preparation before KVM eligibility and role custody",
   "Execute the sole zero-argument local qualification entry",
   "Invoke cleanup-only recovery after every local entry outcome",
   "Settle and remove fixed source and control roots only after recovery",
@@ -95,7 +95,7 @@ test("attempt and first-created guard precede H acquisition and every qualificat
   const control = workflow.indexOf("Check out exact control revision G");
   const gate = workflow.indexOf("Gate reviewed H and G");
   const implementation = workflow.indexOf("Check out exact reviewed implementation revision H");
-  const preparation = workflow.indexOf("Complete fixed source and external control preparation");
+  const preparation = workflow.indexOf("Complete exact immutable preparation before KVM eligibility and role custody");
   const entry = workflow.indexOf("Execute the sole zero-argument local qualification entry");
   assert.ok(
     0 <= control && control < gate && gate < implementation && implementation < preparation && preparation < entry,
@@ -108,27 +108,34 @@ test("attempt and first-created guard precede H acquisition and every qualificat
   assert.doesNotMatch(guard, /"Authorization"|GITHUB_TOKEN|github\.token/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
   assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
+  assert.match(workflow.slice(preparation, entry), /completion_kata_immutable_preparation\.py/u);
+  assert.match(workflow.slice(preparation, entry), /"rootfs_artifact_count":16/u);
+  assert.match(workflow.slice(preparation, entry), /"runtime_archive_count":2/u);
+  assert.match(workflow.slice(preparation, entry), /"control_verified":True/u);
   assert.match(
     workflow.slice(preparation, entry),
     /stage2-completion-v1\/control\/stage2-local-static-control-v1\.json/u,
   );
   assert.doesNotMatch(workflow.slice(preparation, entry), /\/run\/cogs-stage2-local-control-v2/u);
-  assert.doesNotMatch(workflow.slice(0, entry), /\/dev\/kvm|qmp|containerd|completion_local_full\.py/u);
+  assert.doesNotMatch(
+    workflow.slice(0, entry),
+    /\/dev\/kvm|qmp|systemctl|containerd-start|ctr (?:run|task)|completion_local_full\.py/u,
+  );
   assert.equal(workflow.match(/completion_local_full\.py/gu)?.length, 1);
 });
 
 test("fixed phase bounds preserve recovery, independent residue, and publication reserve", () => {
   const total = steps.reduce((sum, name) => sum + stepTimeout(name), 0);
   const job = Number(workflow.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
-  assert.equal(job, 90);
-  assert.equal(total, 87);
+  assert.equal(job, 120);
+  assert.equal(total, 116);
   assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 59);
   const postEntry = steps.slice(5).reduce((sum, name) => sum + stepTimeout(name), 0);
   assert.equal(postEntry, 21);
   assert.ok(postEntry * 60 >= 600);
   assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 3470s/u);
   assert.ok(3470 + 10 <= 59 * 60);
-  assert.match(workflow, /one 5,400-second envelope/u);
+  assert.match(workflow, /one 7,200-second envelope/u);
 });
 
 test("recovery and independent settlement always run without turning cancellation into success", () => {
