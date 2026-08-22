@@ -125,7 +125,7 @@ def _bounded_json(raw):
     try:
         value = json.loads(raw, object_pairs_hook=_pairs,
                            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
-    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+    except (UnicodeError, ValueError, json.JSONDecodeError, RecursionError) as error:
         raise LocalSettlementError("network observer JSON failed") from error
     count = 0
     stack = [(value, 0)]
@@ -322,13 +322,18 @@ def main():
         residue(final=mode == "final")
 
 
+def _safe_diagnostic():
+    stage = _SETTLEMENT_STAGE if _SETTLEMENT_STAGE in _SETTLEMENT_STAGES else "entry"
+    message = f"local settlement failed at {stage}\n"
+    return message if len(message) <= 64 else "local settlement failed at entry\n"
+
+
 if __name__ == "__main__":
     try:
         main()
     except (LocalSettlementError, OSError, subprocess.SubprocessError):
         try:
-            stage = _SETTLEMENT_STAGE if _SETTLEMENT_STAGE in _SETTLEMENT_STAGES else "entry"
-            sys.stderr.write(f"local settlement failed at {stage}\n")
+            sys.stderr.write(_safe_diagnostic())
         except BaseException:
             pass
         raise SystemExit(2)

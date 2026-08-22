@@ -249,6 +249,13 @@ def settlement_tests():
     too_deep = b"[" * (settlement.MAX_JSON_DEPTH + 2) + b"0" + b"]" * (
         settlement.MAX_JSON_DEPTH + 2)
     rejected(lambda: settlement._bounded_json(too_deep), settlement.LocalSettlementError)
+    parser_recursion = b"[" * 10_000 + b"0" + b"]" * 10_000
+    rejected(lambda: settlement._bounded_json(parser_recursion), settlement.LocalSettlementError)
+    for stage in settlement._SETTLEMENT_STAGES:
+        settlement._SETTLEMENT_STAGE = stage
+        assert settlement._safe_diagnostic() == f"local settlement failed at {stage}\n"
+    settlement._SETTLEMENT_STAGE = "hostile-unbounded-value"
+    assert settlement._safe_diagnostic() == "local settlement failed at entry\n"
     rejected(lambda: settlement._interface_names([{"ifname": "eth0"}] * 2),
              settlement.LocalSettlementError)
 

@@ -55,6 +55,7 @@ KATA_PARENT = Path("/opt")
 MAX_REDIRECTS = 3
 GLOBAL_SECONDS = 1_700
 CHUNK = 1024 * 1024
+EXTRACTORS = (Path("/usr/bin/tar"), Path("/usr/bin/zstd"))
 _OBSERVATION_STAGE = "entry"
 _DIAGNOSTIC_STAGES = frozenset({
     "entry", "preflight", "expected-control", "ownership", "rootfs-acquisition",
@@ -409,15 +410,23 @@ def _download_runtime(expected, deadline):
             connection.close()
 
 
+def _extractor_identity(seen, executable):
+    return (stat.S_ISREG(seen.st_mode) and seen.st_uid == 0
+            and stat.S_IMODE(seen.st_mode) & 0o022 == 0 and executable)
+
+
 def _extractor_preflight():
-    for path in (Path("/usr/bin/tar"), Path("/usr/bin/zstd")):
-        seen = path.lstat()
-        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == 0
-                 and stat.S_IMODE(seen.st_mode) & 0o022 == 0 and os.access(path, os.X_OK),
+    for path in EXTRACTORS:
+        _require(_extractor_identity(path.lstat(), os.access(path, os.X_OK)),
                  "fixed runtime extractor unavailable")
-    space = os.statvfs("/var/lib")
+    space = os.statvfs(SOURCE_ROOT)
     _require(space.f_bavail * space.f_frsize >= 12 * 1024**3
              and space.f_favail >= 200_000, "fixed runtime extraction capacity unavailable")
+
+
+def _verify_extraction_filesystem():
+    _require(SOURCE_ROOT.lstat().st_dev == COMPLETION_ROOT.lstat().st_dev,
+             "fixed runtime extraction filesystem differs")
 
 
 def _run_extract(archive, destination):
@@ -748,6 +757,7 @@ def prepare():
     _OBSERVATION_STAGE = "preflight"
     _extractor_preflight()
     _prepare_state_parents()
+    _verify_extraction_filesystem()
     _require(not PREPARATION_ROOT.exists()
              and not IMMUTABLE_STAGING.exists()
              and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())

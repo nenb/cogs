@@ -18,6 +18,40 @@ spec = importlib.util.spec_from_file_location(
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+# Extractor admission closes every ownership/mode/executable predicate and
+# observes capacity on the actual fixed-source filesystem.
+regular = stat.S_IFREG | 0o755
+assert module._extractor_identity(os.stat_result((regular, 1, 1, 1, 0, 0, 1, 0, 0, 0)), True)
+for seen, executable in (
+    (os.stat_result((stat.S_IFDIR | 0o755, 1, 1, 1, 0, 0, 1, 0, 0, 0)), True),
+    (os.stat_result((regular, 1, 1, 1, 1, 0, 1, 0, 0, 0)), True),
+    (os.stat_result((stat.S_IFREG | 0o775, 1, 1, 1, 0, 0, 1, 0, 0, 0)), True),
+    (os.stat_result((regular, 1, 1, 1, 0, 0, 1, 0, 0, 0)), False),
+):
+    assert not module._extractor_identity(seen, executable)
+original_extractors, original_statvfs, original_source = module.EXTRACTORS, module.os.statvfs, module.SOURCE_ROOT
+with tempfile.TemporaryDirectory() as temporary:
+    observed = []
+    module.EXTRACTORS = ()
+    module.SOURCE_ROOT = Path(temporary)
+    module.os.statvfs = lambda path: (observed.append(path) or type("Space", (), {
+        "f_bavail": 12 * 1024**3, "f_frsize": 1, "f_favail": 200_000})())
+    module._extractor_preflight()
+    assert observed == [module.SOURCE_ROOT]
+module.EXTRACTORS, module.os.statvfs, module.SOURCE_ROOT = original_extractors, original_statvfs, original_source
+class Device:
+    def __init__(self, device): self.device = device
+    def lstat(self): return type("Seen", (), {"st_dev": self.device})()
+original_source, original_completion = module.SOURCE_ROOT, module.COMPLETION_ROOT
+module.SOURCE_ROOT, module.COMPLETION_ROOT = Device(1), Device(2)
+try:
+    module._verify_extraction_filesystem()
+except module.ImmutablePreparationError:
+    pass
+else:
+    raise AssertionError("separate extraction filesystem accepted")
+module.SOURCE_ROOT, module.COMPLETION_ROOT = original_source, original_completion
+
 # Runtime manifests use canonical size zero for symlinks; lstat size is the
 # platform link-target byte count and is not a file-content size.
 with tempfile.TemporaryDirectory() as temporary:
