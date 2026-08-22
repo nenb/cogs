@@ -39,7 +39,7 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v12"
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v13"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -100,6 +100,11 @@ jobs:
           ELEVENTH_PREDECESSOR_REVIEWED_HEAD = "7b1dcc045182616cf657bcf941ba8aee7108eb76"
           ELEVENTH_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={ELEVENTH_PREDECESSOR_REVIEWED_HEAD}")
+          TWELFTH_PREDECESSOR_RUN_ID = 32576106736
+          TWELFTH_PREDECESSOR_WORKFLOW_HEAD = "8dd6d58f4f9e24a2f1bcccbd4719fbf03e72bbb2"
+          TWELFTH_PREDECESSOR_REVIEWED_HEAD = "4a3beae8683309f3fef30cecce3187262efc4b23"
+          TWELFTH_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={TWELFTH_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -122,6 +127,8 @@ jobs:
                   TENTH_PREDECESSOR_WORKFLOW_HEAD, TENTH_PREDECESSOR_RUN_TITLE),
               ELEVENTH_PREDECESSOR_RUN_ID: (
                   ELEVENTH_PREDECESSOR_WORKFLOW_HEAD, ELEVENTH_PREDECESSOR_RUN_TITLE),
+              TWELFTH_PREDECESSOR_RUN_ID: (
+                  TWELFTH_PREDECESSOR_WORKFLOW_HEAD, TWELFTH_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
@@ -503,7 +510,7 @@ jobs:
             test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$parent")" = root:root:711
           done
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$stage/source")" = root:root:700
-          test -r "$candidate/stage2-local-static-control.json"
+          test -r "$candidate/stage2-local-static-control-v1.json"
 
       - name: Upload non-authoritative candidate package only
         timeout-minutes: 1
