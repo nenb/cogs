@@ -16,7 +16,16 @@ import posixpath
 import stat
 import struct
 import subprocess
+import sys
 import tarfile
+
+# Isolated-mode execution omits the script directory. The fixed-source caller
+# has already authenticated this root, so sibling owner imports use only this
+# exact resolved directory.
+_REMOTE_MODULE_ROOT = Path(__file__).resolve().parent
+if not _REMOTE_MODULE_ROOT.is_dir():
+    raise ImportError("fixed remote module root is unavailable")
+sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 
 CONTROL_VERSION = "cogs.stage2-local-static-control-package/v1"
 ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v2"

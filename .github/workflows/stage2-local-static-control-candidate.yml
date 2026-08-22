@@ -39,7 +39,7 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v8"
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v9"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -80,6 +80,11 @@ jobs:
           SEVENTH_PREDECESSOR_REVIEWED_HEAD = "130832252da16efa1772e76b07051d50f20973ca"
           SEVENTH_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={SEVENTH_PREDECESSOR_REVIEWED_HEAD}")
+          EIGHTH_PREDECESSOR_RUN_ID = 32568536415
+          EIGHTH_PREDECESSOR_WORKFLOW_HEAD = "9642dcd247aedc0a29068be3aa4e8873db89de3a"
+          EIGHTH_PREDECESSOR_REVIEWED_HEAD = "94ad8206c696f950fdcdbba2a6ea2bb0136e76d9"
+          EIGHTH_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={EIGHTH_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -94,6 +99,8 @@ jobs:
                   SIXTH_PREDECESSOR_WORKFLOW_HEAD, SIXTH_PREDECESSOR_RUN_TITLE),
               SEVENTH_PREDECESSOR_RUN_ID: (
                   SEVENTH_PREDECESSOR_WORKFLOW_HEAD, SEVENTH_PREDECESSOR_RUN_TITLE),
+              EIGHTH_PREDECESSOR_RUN_ID: (
+                  EIGHTH_PREDECESSOR_WORKFLOW_HEAD, EIGHTH_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
@@ -453,10 +460,10 @@ jobs:
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          cd /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            /usr/bin/python3 -I -B completion_kata_preparation.py \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py \
             > /tmp/cogs-stage2-static-candidate.json
           test ! -e /run/vc
 

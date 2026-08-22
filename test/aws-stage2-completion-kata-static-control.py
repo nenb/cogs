@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import sys
@@ -251,6 +252,14 @@ assert "type(lease) is rootfs_lease.RetainedRootfsLease" in admission_source
 assert "root.operation_fd" in admission_source
 assert "def source_approval(custody):" in admission_source
 assert "execution_path" not in runtime_description.raw.decode("ascii")
+
+isolated = subprocess.run(
+    (sys.executable, "-I", "-B", "-c",
+     "import runpy,sys;runpy.run_path(sys.argv[1],run_name='isolated_import')",
+     str(REMOTE / "completion_kata_preparation.py")),
+    cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    timeout=30, check=False)
+assert isolated.returncode == 0, isolated.stderr
 
 # V2 is additive: the historical V1 issuer still returns only its refusal.
 import completion_kata_admission as admission
