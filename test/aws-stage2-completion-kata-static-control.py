@@ -261,6 +261,20 @@ isolated = subprocess.run(
     timeout=30, check=False)
 assert isolated.returncode == 0, isolated.stderr
 
+source_manifest = {
+    "version": "cogs.stage2-source-manifest/v1", "revision": "a" * 40,
+    "entries": [{"path": "source", "kind": "directory", "mode": 0o700,
+                 "size": 0, "sha256": None}],
+}
+source_manifest_raw = json.dumps(
+    source_manifest, ensure_ascii=False, separators=(",", ":"),
+    allow_nan=False).encode("utf-8") + b"\n"
+assert preparation.parse_source_manifest(source_manifest_raw) == source_manifest
+sorted_source_raw = json.dumps(
+    source_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    allow_nan=False).encode("utf-8") + b"\n"
+reject(lambda: preparation.parse_source_manifest(sorted_source_raw))
+
 # V2 is additive: the historical V1 issuer still returns only its refusal.
 import completion_kata_admission as admission
 legacy = admission._take_execution_custody_issuer()

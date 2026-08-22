@@ -39,7 +39,7 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v10"
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v11"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -90,6 +90,11 @@ jobs:
           NINTH_PREDECESSOR_REVIEWED_HEAD = "25bfbb4277c9051da352e9c699d4ca98dcb248e2"
           NINTH_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={NINTH_PREDECESSOR_REVIEWED_HEAD}")
+          TENTH_PREDECESSOR_RUN_ID = 32569932861
+          TENTH_PREDECESSOR_WORKFLOW_HEAD = "ee789aecc77319909186b4a7d769227896fb3c66"
+          TENTH_PREDECESSOR_REVIEWED_HEAD = "dd676027801370f7bf025539b8c2c14991689afa"
+          TENTH_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={TENTH_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -108,6 +113,8 @@ jobs:
                   EIGHTH_PREDECESSOR_WORKFLOW_HEAD, EIGHTH_PREDECESSOR_RUN_TITLE),
               NINTH_PREDECESSOR_RUN_ID: (
                   NINTH_PREDECESSOR_WORKFLOW_HEAD, NINTH_PREDECESSOR_RUN_TITLE),
+              TENTH_PREDECESSOR_RUN_ID: (
+                  TENTH_PREDECESSOR_WORKFLOW_HEAD, TENTH_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024

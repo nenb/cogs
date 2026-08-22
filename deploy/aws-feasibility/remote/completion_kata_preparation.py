@@ -206,6 +206,27 @@ def decode_canonical(raw, maximum):
     return value
 
 
+def _decode_source_manifest(raw):
+    """Decode the historical producer-ordered fixed-source manifest bytes."""
+    _require(type(raw) is bytes and 0 < len(raw) <= MAX_SOURCE_MANIFEST_BYTES
+             and raw.endswith(b"\n") and b"\0" not in raw,
+             "invalid full source manifest bytes")
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
+                           parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    except PreparationError:
+        raise
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise PreparationError("invalid full source manifest JSON") from error
+    _require(type(value) is dict and set(value) == {"version", "revision", "entries"},
+             "invalid full source manifest shape")
+    ordered = {name: value[name] for name in ("version", "revision", "entries")}
+    expected = json.dumps(ordered, ensure_ascii=False, separators=(",", ":"),
+                          allow_nan=False).encode("utf-8") + b"\n"
+    _require(expected == raw, "noncanonical full source manifest bytes")
+    return value
+
+
 def _source_row(row):
     _exact_keys(row, ("path", "kind", "mode", "size", "sha256"))
     _relative(row["path"])
@@ -220,8 +241,7 @@ def _source_row(row):
 
 def parse_source_manifest(raw, expected_revision=None, expected_sha256=None):
     _require(expected_sha256 is None or _sha(raw) == expected_sha256, "full source manifest digest differs")
-    value = decode_canonical(raw, MAX_SOURCE_MANIFEST_BYTES)
-    _exact_keys(value, ("version", "revision", "entries"))
+    value = _decode_source_manifest(raw)
     _require(value["version"] == "cogs.stage2-source-manifest/v1")
     _git_revision(value["revision"])
     _require(expected_revision is None or value["revision"] == expected_revision, "implementation revision differs")
