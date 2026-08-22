@@ -48,7 +48,7 @@ test("authenticated replacement guard is exact source and precedes every source 
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v2"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v3"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
   assert.match(dispatchGuard, /MAX_TOKEN_CHARS = 256/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
@@ -59,6 +59,11 @@ test("authenticated replacement guard is exact source and precedes every source 
   assert.match(dispatchGuard, /PREDECESSOR_RUN_ID = 32558263561/u);
   assert.match(dispatchGuard, /PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"/u);
   assert.match(dispatchGuard, /PREDECESSOR_REVIEWED_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
+  assert.match(dispatchGuard, /SECOND_PREDECESSOR_RUN_ID = 32560385792/u);
+  assert.match(dispatchGuard, /SECOND_PREDECESSOR_WORKFLOW_HEAD = "7ccb35d14d749a0ef14602889ce2b52934c03d4d"/u);
+  assert.match(dispatchGuard, /SECOND_PREDECESSOR_REVIEWED_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"/u);
+  assert.ok(dispatchGuard.includes('TOKEN = re.compile(r"[A-Za-z0-9\\-._~+/]+=?")'));
+  assert.match(dispatchGuard, /predecessor_ids == set\(PREDECESSORS\)/u);
   assert.match(dispatchGuard, /run\.get\("status"\) == "completed"[\s\S]+"failure"/u);
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
@@ -69,7 +74,7 @@ test("authenticated replacement guard is exact source and precedes every source 
   assert.doesNotMatch(dispatchGuard, /print\(|logging|response\.read\([^M]/u);
 });
 
-test("static dispatch guard hostile suite covers auth, redaction, consumed history, and API failure", () => {
+test("static dispatch guard hostile suite covers token shapes, predecessors, redaction, and API failure", () => {
   const result = spawnSync("python3", ["-B", "test/stage2-static-control-dispatch-guard.py"], {
     cwd: process.cwd(),
     encoding: "utf8",
