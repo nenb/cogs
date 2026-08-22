@@ -96,7 +96,7 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 4)
+                  and len(runs) == 5)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
@@ -106,6 +106,8 @@ jobs:
                   " G=223d1ddddb59391010950c1880b1ef36115f8472")
               third_predecessor_title = ("Stage 2 local Kata qualification H=a2c25f34c35d778965ab7b125fd3b8b4460b0617"
                   " G=06a1d5124c68a34f80b932ed02173afa1bad365c")
+              fourth_predecessor_title = ("Stage 2 local Kata qualification H=1eaec52dd4e2f1222548362e92adc780a2169025"
+                  " G=83ed917ea7df3df7d7af66f7a810b26b4e27667a")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -120,12 +122,15 @@ jobs:
                   elif item["id"] == 32596053811:
                       need(row[2:] == ("completed", "failure", "06a1d5124c68a34f80b932ed02173afa1bad365c",
                                       third_predecessor_title))
+                  elif item["id"] == 32602439014:
+                      need(row[2:] == ("completed", "failure", "83ed917ea7df3df7d7af66f7a810b26b4e27667a",
+                                      fourth_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
                   else: raise SystemExit(2)
               rows = tuple(sorted(rows)); need(len(rows) == len(set(rows)))
-              need({row[0] for row in rows} == {32584575939, 32586393441, 32596053811, int(run_id)})
+              need({row[0] for row in rows} == {32584575939, 32586393441, 32596053811, 32602439014, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows
@@ -205,8 +210,11 @@ jobs:
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
         run: |
           set -euo pipefail
+          phase() { /usr/bin/printf 'COGS_PREKVM_PHASE:%s\n' "$1"; }
+          phase baseline
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
+          phase source
           prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
@@ -214,6 +222,7 @@ jobs:
           value=json.loads(sys.stdin.buffer.read())
           assert value["revision"] == sys.argv[1] and value["manifest_sha256"] == sys.argv[2]
           ' "${{ steps.gate.outputs.implementation_head }}" "$EXPECTED_MANIFEST" <<<"$prepared"
+          phase control
           staged=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/scripts/stage2-stage-reviewed-control.py")
@@ -222,6 +231,7 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v1.json \
             | /usr/bin/cut -d' ' -f1)
           test "$observed" = "$EXPECTED_CONTROL_SHA256"
+          phase immutable
           immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1770s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             /usr/bin/python3 -I -B \
@@ -234,9 +244,10 @@ jobs:
             "authority":"immutable-public-input-preparation-only"}
           assert len(value["receipt_sha256"]) == 64
           ' <<<"$immutable"
-          test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd
-          test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr
-          test -x /opt/kata/bin/containerd-shim-kata-v2
+          phase installed
+          sudo -n /usr/bin/test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd
+          sudo -n /usr/bin/test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr
+          sudo -n /usr/bin/test -x /opt/kata/bin/containerd-shim-kata-v2
           test ! -e /run/cogs-stage2-local-private-v2
 
       - name: Execute the sole zero-argument local qualification entry

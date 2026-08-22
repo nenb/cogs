@@ -41,8 +41,9 @@ MAX_SUPERVISOR_INPUT_BYTES = 4_096
 SUPERVISOR_SECONDS = {"cleanup": "165", "residue": "105", "final": "45"}
 _SETTLEMENT_STAGE = "entry"
 _SETTLEMENT_STAGES = frozenset({
-    "entry", "process", "fixed-roots", "network", "interfaces", "namespaces",
-    "firewall", "traffic-control", "cgroups", "output-staging",
+    "entry", "process", "fixed-roots", "network-ip-link", "network-ip-netns",
+    "network-nft", "network-tc-qdisc", "network-tc-filter", "interfaces",
+    "namespaces", "firewall", "traffic-control", "cgroups", "output-staging",
 })
 OBSERVER_ENV = {"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
                 "PATH": "/usr/sbin:/usr/bin"}
@@ -145,7 +146,10 @@ def _bounded_json(raw):
     return value
 
 
-def _observe_json(command):
+def _observe_json(command, stage):
+    global _SETTLEMENT_STAGE
+    _require(stage in _SETTLEMENT_STAGES, "independent network observation stage failed")
+    _SETTLEMENT_STAGE = stage
     try:
         result = subprocess.run(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -216,11 +220,11 @@ def _nft_table_names(value):
 
 
 def _network_state():
-    links = _observe_json(("/usr/sbin/ip", "-j", "-details", "link", "show"))
-    netns = _observe_json(("/usr/sbin/ip", "-j", "netns", "list"))
-    nft = _observe_json(("/usr/sbin/nft", "-j", "list", "ruleset"))
-    qdiscs = _observe_json(("/usr/sbin/tc", "-j", "qdisc", "show"))
-    filters = _observe_json(("/usr/sbin/tc", "-j", "filter", "show"))
+    links = _observe_json(("/usr/sbin/ip", "-j", "-details", "link", "show"), "network-ip-link")
+    netns = _observe_json(("/usr/sbin/ip", "-j", "netns", "list"), "network-ip-netns")
+    nft = _observe_json(("/usr/sbin/nft", "-j", "list", "ruleset"), "network-nft")
+    qdiscs = _observe_json(("/usr/sbin/tc", "-j", "qdisc", "show"), "network-tc-qdisc")
+    filters = _observe_json(("/usr/sbin/tc", "-j", "filter", "show"), "network-tc-filter")
     _rows(qdiscs, "complete tc qdisc inventory failed")
     _rows(filters, "complete tc filter inventory failed")
     return (_interface_names(links), _netns_names(netns), _nft_table_names(nft),

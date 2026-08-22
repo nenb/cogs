@@ -10,6 +10,8 @@ const publicationPath = "scripts/stage2-local-publication.py";
 const receiptPath = "scripts/stage2-local-upload-receipt.py";
 const recoveryPath = "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh";
 const controlStagingPath = "scripts/stage2-stage-reviewed-control.py";
+const preflightWorkflowPath = ".github/workflows/stage2-mixed-hg-preflight.yml";
+const preflightPath = "scripts/stage2-mixed-hg-preflight.sh";
 const workflow = readFileSync(workflowPath, "utf8");
 const guard = readFileSync(guardPath, "utf8");
 const settlement = readFileSync(settlementPath, "utf8");
@@ -17,6 +19,8 @@ const publication = readFileSync(publicationPath, "utf8");
 const receipt = readFileSync(receiptPath, "utf8");
 const recoverySource = readFileSync(recoveryPath, "utf8");
 const controlStaging = readFileSync(controlStagingPath, "utf8");
+const preflightWorkflow = readFileSync(preflightWorkflowPath, "utf8");
+const preflight = readFileSync(preflightPath, "utf8");
 
 function stepTimeout(name: string): number {
   const start = workflow.indexOf(`      - name: ${name}`);
@@ -50,6 +54,25 @@ const steps = [
   "Enforce attempt 1 complete custody chain and final zero residue",
 ];
 
+test("mixed H-G preflight runs exact preparation and settlement but never KVM", () => {
+  assert.match(preflightWorkflow, /^name: Stage 2 exact mixed H-G no-KVM preflight$/mu);
+  assert.match(preflightWorkflow, /workflow_dispatch:/u);
+  assert.match(preflightWorkflow, /permissions: \{\}/u);
+  assert.doesNotMatch(preflightWorkflow, /actions\/checkout|upload-artifact|id-token|write/u);
+  assert.match(preflightWorkflow, /if: always\(\)/u);
+  assert.match(preflight, /H=1eaec52dd4e2f1222548362e92adc780a2169025/u);
+  assert.match(preflight, /MANIFEST=ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768/u);
+  assert.match(preflight, /CONTROL=d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d/u);
+  assert.match(preflight, /prepare-stage2-fixed-source\.py/u);
+  assert.match(preflight, /stage2-stage-reviewed-control\.py/u);
+  assert.match(preflight, /completion_kata_immutable_preparation\.py/u);
+  assert.match(preflight, /recover-stage2-completion-remote\.sh/u);
+  assert.equal(preflight.match(/stage2-local-settlement\.py" supervise-(?:cleanup|residue)/gu)?.length, 2);
+  assert.doesNotMatch(preflight, /completion_local_full|\/dev\/kvm|containerd-shim-kata-v2[^\n]*--/u);
+  const syntax = spawnSync("bash", ["-n", preflightPath], { encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr);
+});
+
 test("dedicated workflow is manual, same-repository, and exact reviewed H/G", () => {
   assert.match(workflow, /^name: Stage 2 local Kata qualification$/mu);
   assert.match(workflow, /on:\n {2}workflow_dispatch:/u);
@@ -68,7 +91,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "b9e4b406740ea7800e7bab0810ebdcb8af6cdf6470520c4923672fc6bc251465"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "6c41bf6306e7255298d2dab889404754a27f2763d0d3d8e4160ec95f9a75a978"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -124,7 +147,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   );
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32586393441/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32596053811/u);
-  assert.match(workflow.slice(admission, control), /len\(runs\) == 4/u);
+  assert.match(workflow.slice(admission, control), /item\["id"\] == 32602439014/u);
+  assert.match(workflow.slice(admission, control), /len\(runs\) == 5/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
   assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
   assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
@@ -140,6 +164,7 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(preparation, entry), /"rootfs_artifact_count":16/u);
   assert.match(workflow.slice(preparation, entry), /"runtime_archive_count":2/u);
   assert.match(workflow.slice(preparation, entry), /"control_verified":True/u);
+  assert.equal(workflow.slice(preparation, entry).match(/sudo -n \/usr\/bin\/test -x/gu)?.length, 3);
   assert.match(
     workflow.slice(preparation, entry),
     /stage2-completion-v1\/control\/stage2-local-static-control-v1\.json/u,

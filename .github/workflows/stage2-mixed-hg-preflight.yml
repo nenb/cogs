@@ -1,0 +1,48 @@
+name: Stage 2 exact mixed H-G no-KVM preflight
+run-name: Stage 2 mixed H-G preflight H=${{ inputs.implementation_head }} G=${{ inputs.control_head }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      implementation_head:
+        description: Exact reviewed implementation H
+        required: true
+        type: string
+      control_head:
+        description: Exact protected-main control G
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: stage2-mixed-hg-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    env:
+      EXACT_IMPLEMENTATION_HEAD: ${{ inputs.implementation_head }}
+      EXACT_CONTROL_HEAD: ${{ inputs.control_head }}
+    steps:
+      - name: Acquire exact protected-main G without credentials
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
+          test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$EXACT_CONTROL_HEAD"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+      - name: Execute exact mixed H-G preparation and mandatory settlement without KVM
+        timeout-minutes: 40
+        run: /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 2390s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" run
+      - name: Independently repeat mandatory settlement after every outcome
+        if: always()
+        timeout-minutes: 7
+        run: /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 410s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" settle
