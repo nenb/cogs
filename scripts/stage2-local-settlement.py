@@ -37,6 +37,8 @@ MAX_OBSERVER_BYTES = 8 * 1024 * 1024
 MAX_JSON_NODES = 100_000
 MAX_JSON_DEPTH = 32
 MAX_NETWORK_ROWS = 32_768
+MAX_SUPERVISOR_INPUT_BYTES = 4_096
+SUPERVISOR_SECONDS = {"cleanup": "165", "residue": "105", "final": "45"}
 OBSERVER_ENV = {"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
                 "PATH": "/usr/sbin:/usr/bin"}
 
@@ -266,13 +268,43 @@ def cleanup(environ=os.environ):
     _require(not any(os.path.lexists(path) for path in FIXED_ROOTS), "fixed cleanup root remains")
 
 
+def supervise(mode):
+    _require(mode in SUPERVISOR_SECONDS and os.geteuid() == 0,
+             "invalid settlement supervision")
+    raw = os.read(0, MAX_SUPERVISOR_INPUT_BYTES + 1)
+    _require(0 < len(raw) <= MAX_SUPERVISOR_INPUT_BYTES and raw.endswith(b"\n")
+             and os.read(0, 1) == b"", "invalid settlement supervision input")
+    try:
+        values = raw[:-1].decode("ascii").split("\n")
+    except UnicodeError as error:
+        raise LocalSettlementError("invalid settlement supervision input") from error
+    _require(len(values) == (6 if mode == "cleanup" else 5)
+             and all(value and "\n" not in value and "\0" not in value for value in values),
+             "invalid settlement supervision input")
+    names = ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "REPORT_STAGING",
+             "REPORT_READBACK_STAGING", "RECEIPT_READBACK_STAGING")
+    environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", **dict(zip(names, values[:5], strict=True))}
+    _run_paths(environment)
+    if mode == "cleanup":
+        environment["RECOVERY_OUTCOME"] = values[5]
+        _require(values[5] == "success", "recovery success is required before deletion")
+    command = ("/usr/bin/timeout", "--foreground", "--signal=TERM", "--kill-after=5s",
+               SUPERVISOR_SECONDS[mode], sys.executable, "-I", "-B",
+               str(Path(__file__).resolve()), mode)
+    os.execve(command[0], command, environment)
+
+
 def main():
-    _require(len(sys.argv) == 2 and sys.argv[1] in {"cleanup", "residue", "final"},
-             "invalid settlement command")
-    if sys.argv[1] == "cleanup":
+    _require(len(sys.argv) == 2 and sys.argv[1] in {
+        "cleanup", "residue", "final", "supervise-cleanup", "supervise-residue", "supervise-final"},
+        "invalid settlement command")
+    mode = sys.argv[1]
+    if mode.startswith("supervise-"):
+        supervise(mode.removeprefix("supervise-"))
+    elif mode == "cleanup":
         cleanup()
     else:
-        residue(final=sys.argv[1] == "final")
+        residue(final=mode == "final")
 
 
 if __name__ == "__main__":

@@ -209,6 +209,26 @@ def settlement_tests():
              settlement.LocalSettlementError)
     rejected(lambda: settlement.cleanup({**environment, "RECOVERY_OUTCOME": "failure"}),
              settlement.LocalSettlementError)
+
+    payload = ("\n".join((*environment.values(), "success")) + "\n").encode()
+    reads, executed = [payload, b""], []
+    old_read, old_euid, old_execve = settlement.os.read, settlement.os.geteuid, settlement.os.execve
+    class Executed(Exception):
+        pass
+    try:
+        settlement.os.read = lambda _descriptor, _maximum: reads.pop(0)
+        settlement.os.geteuid = lambda: 0
+        def execute(path, command, child_environment):
+            executed.append((path, command, child_environment))
+            raise Executed()
+        settlement.os.execve = execute
+        rejected(lambda: settlement.supervise("cleanup"), Executed)
+    finally:
+        settlement.os.read, settlement.os.geteuid = old_read, old_euid
+        settlement.os.execve = old_execve
+    assert executed[0][0] == "/usr/bin/timeout" and executed[0][1][-1] == "cleanup"
+    assert executed[0][2] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                              **environment, "RECOVERY_OUTCOME": "success"}
     assert settlement.RESIDUE_NAME.search("cogs-stage2-net")
 
     links = settlement._bounded_json(

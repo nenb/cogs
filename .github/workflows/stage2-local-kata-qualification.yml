@@ -96,12 +96,14 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 2)
+                  and len(runs) == 3)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
               predecessor_title = ("Stage 2 local Kata qualification H=59d992b305cfd243f2d7b9c770fe24b0a36cc053"
                   " G=a9e02f1269684db98a42bfdaed6e2f193ba1c631")
+              second_predecessor_title = ("Stage 2 local Kata qualification H=59d992b305cfd243f2d7b9c770fe24b0a36cc053"
+                  " G=223d1ddddb59391010950c1880b1ef36115f8472")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -110,12 +112,15 @@ jobs:
                   if item["id"] == 32584575939:
                       need(row[2:] == ("completed", "failure", "a9e02f1269684db98a42bfdaed6e2f193ba1c631",
                                       predecessor_title))
+                  elif item["id"] == 32586393441:
+                      need(row[2:] == ("completed", "failure", "223d1ddddb59391010950c1880b1ef36115f8472",
+                                      second_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
                   else: raise SystemExit(2)
               rows = tuple(sorted(rows)); need(len(rows) == len(set(rows)))
-              need({row[0] for row in rows} == {32584575939, int(run_id)})
+              need({row[0] for row in rows} == {32584575939, 32586393441, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows
@@ -268,13 +273,15 @@ jobs:
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
         run: |
           set -euo pipefail
-          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
-            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
-            RECOVERY_OUTCOME="$RECOVERY_OUTCOME" \
-            /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 165s \
-            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" cleanup
+          sudo -n /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" supervise-cleanup <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          $RECOVERY_OUTCOME
+          EOF
 
       - name: Independently prove zero lifecycle residue after cleanup
         id: independent_residue
@@ -283,12 +290,14 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
-            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
-            /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 105s \
-            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" residue
+          sudo -n /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" supervise-residue <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          EOF
 
       - name: Validate semantics and reviewed schema then freeze the private-receipt report
         id: publication
@@ -492,11 +501,13 @@ jobs:
           do
             test "$outcome" = success
           done
-          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            REPORT_STAGING="$REPORT_STAGING" REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" \
-            RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
-            /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
-            /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" final
+          sudo -n /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-local-settlement.py" supervise-final <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          EOF
           # Canonical certain failures are retained evidence, never a pass.
           test "$REPORT_RESULT" = pass

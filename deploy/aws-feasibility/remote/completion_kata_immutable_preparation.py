@@ -484,11 +484,13 @@ def _verify_installed(expected_runtime):
     for row in expected_runtime["launch"]["artifacts"]:
         path = Path(row["path"])
         seen = path.lstat()
-        _require(stat.S_IMODE(seen.st_mode) == row["mode"] and seen.st_size == row["size"])
+        _require(stat.S_IMODE(seen.st_mode) == row["mode"])
         if row["kind"] == "file":
-            _require(stat.S_ISREG(seen.st_mode) and hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"])
+            _require(stat.S_ISREG(seen.st_mode) and seen.st_size == row["size"]
+                     and hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"])
         else:
-            _require(stat.S_ISLNK(seen.st_mode) and os.readlink(path) == row["link_target"])
+            _require(row["size"] == 0 and stat.S_ISLNK(seen.st_mode)
+                     and os.readlink(path) == row["link_target"])
 
 
 def _receipt_value():

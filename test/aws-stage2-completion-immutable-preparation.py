@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,34 @@ spec = importlib.util.spec_from_file_location(
     REMOTE / "completion_kata_immutable_preparation.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+
+# Runtime manifests use canonical size zero for symlinks; lstat size is the
+# platform link-target byte count and is not a file-content size.
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    module.STAGED_RUNTIME = root / "runtime"
+    module.KATA_ROOT = root / "kata"
+    module.STAGED_RUNTIME.mkdir()
+    module.KATA_ROOT.mkdir()
+    regular = module.STAGED_RUNTIME / "containerd"
+    regular.write_bytes(b"runtime")
+    regular.chmod(0o500)
+    link = module.KATA_ROOT / "image"
+    link.symlink_to("kata-containers.img")
+    expected = {"launch": {"artifacts": [
+        {"path": str(regular), "kind": "file", "mode": 0o500,
+         "size": 7, "sha256": hashlib.sha256(b"runtime").hexdigest(), "link_target": None},
+        {"path": str(link), "kind": "symlink", "mode": stat.S_IMODE(link.lstat().st_mode),
+         "size": 0, "sha256": None, "link_target": "kata-containers.img"},
+    ]}}
+    module._verify_installed(expected)
+    expected["launch"]["artifacts"][1]["size"] = len("kata-containers.img")
+    try:
+        module._verify_installed(expected)
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("noncanonical symlink size was accepted")
 
 
 def configure(root, fail_at=None):
