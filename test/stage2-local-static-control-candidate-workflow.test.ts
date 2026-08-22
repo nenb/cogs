@@ -42,7 +42,7 @@ test("bounded first-created guard is exact source and precedes every source effe
   assert.match(dispatchGuard, /_require\(not link, "Actions history is paginated"\)/u);
   assert.match(dispatchGuard, /return min\(identities\)/u);
   assert.match(dispatchGuard, /this is not the exact earliest created run ID/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "26af976022d559ebc2dc5434dd0df45fe976be77"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "bfebb78ab4318b116357153ce37ba1d7bde3893d"/u);
   assert.match(dispatchGuard, /run\.get\("head_sha"\) == workflow_head/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.doesNotMatch(dispatchGuard, /Authorization|GITHUB_TOKEN[^",]|secrets\./u);

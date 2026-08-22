@@ -10,7 +10,7 @@ import urllib.request
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-REVIEWED_IMPLEMENTATION_HEAD = "26af976022d559ebc2dc5434dd0df45fe976be77"
+REVIEWED_IMPLEMENTATION_HEAD = "bfebb78ab4318b116357153ce37ba1d7bde3893d"
 RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
