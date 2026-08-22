@@ -40,7 +40,7 @@ jobs:
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-          REVIEWED_IMPLEMENTATION_HEAD = "79493b08aaded62fd4017ab2eb224b3bf30be07b"
+          REVIEWED_IMPLEMENTATION_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"
           RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
