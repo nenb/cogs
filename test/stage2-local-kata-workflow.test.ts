@@ -67,7 +67,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09b566a522a3d97983227b679b15f80ead189271617dbcbc70e5e1639250294d"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "388618877fab7343e687db88dde5b47326a424810fb1493927381951c7c8c45e"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "8cdfae74dc7913df8f75814c5e78d83d5e018cca3b9fd925cb04b87d35826c6b"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "a3b332f2dd951afe380ea9fe80589780e0dff841320c36422d0af3f52805d092"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -76,10 +76,12 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
   assert.doesNotMatch(guard, /REVIEWED_[A-Z_]+\s*=\s*(?:""|os\.environ|getenv)/u);
 });
 
-test("permissions, actions, and source contain no credential or retry authority", () => {
+test("permissions and actions expose only bounded actions-read authority", () => {
   assert.match(workflow, /permissions:\n {2}actions: read\n {2}contents: read/u);
   assert.doesNotMatch(workflow, /permissions:[\s\S]{0,100}(?:write|id-token)/u);
-  assert.doesNotMatch(workflow, /secrets\.|github\.token|GITHUB_TOKEN|persist-credentials: true/u);
+  assert.equal(workflow.match(/secrets\.GITHUB_TOKEN/gu)?.length, 1);
+  assert.doesNotMatch(workflow, /github\.token|persist-credentials: true/u);
+  assert.match(workflow, /ACTIONS_READ_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/u);
   assert.doesNotMatch(workflow, /aws-actions|amazon|opentofu|terraform|\bsts\b|\bssm\b/u);
   assert.doesNotMatch(workflow, /strategy:|matrix:|--retry|cancelled\(\)/u);
   assert.match(workflow, /cancel-in-progress: false/u);
@@ -108,7 +110,10 @@ test("attempt and first-created guard precede H acquisition and every qualificat
   assert.match(guard, /value\["total_count"\] == len\(runs\)/u);
   assert.match(guard, /return min\(identities\)/u);
   assert.match(guard, /this is not the first-created dispatch/u);
-  assert.doesNotMatch(guard, /"Authorization"|GITHUB_TOKEN|github\.token/u);
+  assert.match(guard, /"Authorization": f"Bearer \{token\}"/u);
+  assert.match(guard, /ProxyHandler\(\{\}\)/u);
+  assert.match(guard, /MAX_VISIBILITY_OBSERVATIONS = 6/u);
+  assert.match(guard, /current_run_id in identities and identities == previous/u);
   assert.match(workflow.slice(preparation, entry), /prepare-stage2-fixed-source\.py/u);
   assert.match(workflow.slice(preparation, entry), /stage2-stage-reviewed-control\.py/u);
   assert.match(workflow.slice(preparation, entry), /completion_kata_immutable_preparation\.py/u);

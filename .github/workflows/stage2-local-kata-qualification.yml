@@ -49,6 +49,7 @@ jobs:
         id: gate
         timeout-minutes: 2
         env:
+          ACTIONS_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
