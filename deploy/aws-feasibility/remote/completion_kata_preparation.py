@@ -699,9 +699,93 @@ def section(rows):
             "entries": rows}
 
 
-def _read_elf(path):
-    raw = Path(path).read_bytes()
-    _require(64 <= len(raw) <= 512 * 1024 * 1024)
+def _same_file_generation(left, right):
+    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink",
+              "st_size", "st_mtime_ns", "st_ctime_ns")
+    return all(getattr(left, name) == getattr(right, name) for name in fields)
+
+
+def _stable_file_bytes(path):
+    """Resolve a bounded symlink chain through held, no-follow directory fds."""
+    path = os.fspath(path)
+    _require(type(path) is str and path.startswith("/") and "\0" not in path)
+    root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    directories = [root]
+    pending = path.split("/")[1:]
+    links = steps = 0
+    try:
+        while pending:
+            steps += 1
+            _require(steps <= 256, "executable path resolution bound")
+            name = pending.pop(0)
+            if name in {"", "."}:
+                continue
+            if name == "..":
+                if len(directories) > 1:
+                    os.close(directories.pop())
+                continue
+            before = os.stat(name, dir_fd=directories[-1], follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode):
+                links += 1
+                _require(links <= 40, "executable symlink bound")
+                target = os.readlink(name, dir_fd=directories[-1])
+                _require(_same_file_generation(
+                    os.stat(name, dir_fd=directories[-1], follow_symlinks=False), before),
+                    "executable symlink replaced")
+                _require(type(target) is str and "\0" not in target)
+                if target.startswith("/"):
+                    while len(directories) > 1:
+                        os.close(directories.pop())
+                pending = target.split("/") + pending
+                continue
+            if pending:
+                _require(stat.S_ISDIR(before.st_mode), "non-directory executable component")
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=directories[-1])
+                _require(_same_file_generation(os.fstat(child), before),
+                         "executable directory replaced")
+                directories.append(child)
+                continue
+            _require(stat.S_ISREG(before.st_mode) and 64 <= before.st_size <= 512 * 1024 * 1024,
+                     "invalid executable object")
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=directories[-1])
+            try:
+                _require(_same_file_generation(os.fstat(descriptor), before),
+                         "executable object replaced")
+                raw = bytearray()
+                while len(raw) < before.st_size:
+                    part = os.read(descriptor, min(1024 * 1024, before.st_size - len(raw)))
+                    _require(part, "short executable object")
+                    raw.extend(part)
+                _require(not os.read(descriptor, 1)
+                         and _same_file_generation(os.fstat(descriptor), before)
+                         and _same_file_generation(os.stat(
+                             name, dir_fd=directories[-1], follow_symlinks=False), before),
+                         "executable object changed")
+                return bytes(raw), before
+            finally:
+                os.close(descriptor)
+        raise PreparationError("executable path resolves to directory")
+    except (FileNotFoundError, NotADirectoryError):
+        raise
+    except PreparationError:
+        raise
+    except OSError as error:
+        raise PreparationError("executable path resolution failed") from error
+    finally:
+        for descriptor in reversed(directories):
+            os.close(descriptor)
+
+
+def _read_elf(path, expected=None):
+    try:
+        raw, observed = _stable_file_bytes(path)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise PreparationError("executable object unavailable") from error
+    if expected is not None:
+        _require((observed.st_dev, observed.st_ino, raw) == expected,
+                 "resolved executable candidate changed")
     try:
         ident, kind, machine, version = struct.unpack_from("<16sHHI", raw)
         _require(ident[:7] == b"\x7fELF\x02\x01\x01" and kind in {2, 3} and machine == 62 and version == 1)
@@ -731,35 +815,51 @@ def _read_elf(path):
         raise PreparationError("invalid executable ELF") from error
 
 
+def _soname_candidate(name, logical_to_actual):
+    selected = None
+    for directory in ("/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64", "/opt/kata/lib", "/opt/kata/libexec"):
+        candidate = logical_to_actual(directory + "/" + name)
+        try:
+            candidate_raw, candidate_stat = _stable_file_bytes(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        observed = (candidate_stat.st_dev, candidate_stat.st_ino, candidate_raw)
+        if selected is None:
+            selected = (directory + "/" + name, candidate, observed)
+        elif observed != selected[2]:
+            raise PreparationError("ambiguous executable closure provider")
+    return selected
+
+
 def collect_executable_contract(role, declared_path, actual_path, logical_to_actual):
-    pending = [("executable", declared_path, Path(actual_path))]
+    pending = [("executable", declared_path, Path(actual_path), None)]
     objects = []
     seen_paths = set()
     sonames = {}
     while pending:
-        kind, logical, actual = pending.pop(0)
+        kind, logical, actual, expected = pending.pop(0)
         _absolute(logical)
-        _require(logical not in seen_paths and actual.is_file())
+        _require(logical not in seen_paths, f"duplicate executable closure path: {logical}")
         seen_paths.add(logical)
-        raw, interpreter, soname, needed = _read_elf(actual)
+        raw, interpreter, soname, needed = _read_elf(actual, expected)
         objects.append({"kind": kind, "path": logical, "size": len(raw), "sha256": _sha(raw),
                         "interpreter": interpreter if kind == "executable" else None,
                         "soname": soname, "needed": sorted(needed)})
-        if interpreter is not None:
+        if kind != "executable" and soname is not None:
+            existing = sonames.get(soname)
+            _require(existing in {None, logical}, "duplicate executable closure SONAME")
+            sonames[soname] = logical
+        if kind == "executable" and interpreter is not None:
             mapped = logical_to_actual(interpreter)
-            pending.append(("loader", interpreter, mapped))
+            pending.append(("loader", interpreter, mapped, None))
         for name in needed:
             sonames.setdefault(name, None)
         unresolved = [name for name, value in sonames.items() if value is None]
         for name in unresolved:
-            candidates = []
-            for directory in ("/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64", "/opt/kata/lib", "/opt/kata/libexec"):
-                candidate = logical_to_actual(directory + "/" + name)
-                if candidate.is_file():
-                    candidates.append((directory + "/" + name, candidate))
-            if len(candidates) == 1:
-                sonames[name] = candidates[0][0]
-                pending.append(("library", candidates[0][0], candidates[0][1]))
+            selected = _soname_candidate(name, logical_to_actual)
+            if selected is not None:
+                sonames[name] = selected[0]
+                pending.append(("library", selected[0], selected[1], selected[2]))
     _require(all(value is not None for value in sonames.values()), "unresolved executable closure")
     loader = [row for row in objects if row["kind"] == "loader"]
     libraries = sorted((row for row in objects if row["kind"] == "library"), key=lambda row: row["soname"] or "")

@@ -960,17 +960,39 @@ class _CgroupOwner:
     leaf_name: str = ""
 
 
+@dataclass(frozen=True)
+class _DaemonTransactionProfile:
+    pid: int
+    proc_row: tuple
+    cgroup_path: str
+    leaf_name: str
+    leaf_generation: tuple
+    base_generation: tuple
+
+
 def _boottime_ns():
     return time.clock_gettime_ns(CLOCK)
 
 
-def _require_no_children():
+def _child_census():
     with open(f"/proc/self/task/{os.getpid()}/children", "rb", buffering=0) as source:
         raw = source.read(65_537)
-    if len(raw) > 65_536 or any(not row.isdigit() for row in raw.split()):
+    rows = raw.split()
+    if (len(raw) > 65_536 or len(rows) > 256 or any(not row.isdigit() for row in rows)
+            or len(rows) != len(set(rows))):
         raise ProcessError("invalid child baseline")
-    if raw.split():
-        raise ProcessError("process owner has unrelated children")
+    return tuple(sorted(int(row) for row in rows))
+
+
+def _require_no_children(profile=None):
+    children = _child_census()
+    if profile is None:
+        if children:
+            raise ProcessError("process owner has unrelated children")
+        return
+    if (type(profile) is not _DaemonTransactionProfile or children != (profile.pid,)
+            or _proc_row(profile.pid) != profile.proc_row):
+        raise ProcessError("daemon transaction child baseline differs")
 
 
 def _host_generation(descriptor, kind=None):
@@ -1053,13 +1075,14 @@ def _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed=F
                             CommandId.SSH_KEYGEN_SERVER, CommandId.SSH_PUBLIC_CLIENT,
                             CommandId.SSH_PUBLIC_SERVER}:
         _require_attested_executable(executable)
+    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
     template = _FIXED_COMMANDS.get(fixed.command_id)
     if fixed.command_id in {CommandId[name] for name in command_policy.KEY_COMMANDS}:
         expected_argv = tuple(item.replace("{operation_token}", context.operation_token)
                               for item in template.argv)
         if fixed != replace(template, argv=expected_argv):
             raise ProcessError("command is not operation-derived fixed key policy")
-    elif not (_internally_fixed(fixed) or runtime_fixed):
+    elif not (_internally_fixed(fixed) or runtime_extension or runtime_fixed):
         raise ProcessError("command is not internally fixed")
     if (type(executable) is not RetainedExecutable
             or (executable.role, executable.path) != (fixed.executable_role, fixed.executable_path)):
@@ -1078,7 +1101,6 @@ def _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed=F
             "generation": _host_generation(row.source_fd),
             "content_sha256": row.content_sha256, "content_length": row.identity.size,
         })
-    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
     deadline_class = ("runtime-start" if fixed.command_id in {CommandId.CTR_RUN, CommandId.CONTAINERD_START}
                       else _spec(fixed.command_id).deadline_class)
     policy_version = (kata_operation.command_policy.RUNTIME_POLICY_VERSION if runtime_extension else
@@ -1142,7 +1164,18 @@ def _directory_identity(path):
         raise
 
 
-def _prepare_cgroup(context):
+def _cgroup_leaf_names(base_fd):
+    names = []
+    with os.scandir(base_fd) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                names.append(entry.name)
+                if len(names) > 64:
+                    raise ProcessError("cgroup leaf census bound")
+    return frozenset(names)
+
+
+def _prepare_cgroup(context, daemon_profile=None):
     _cgroup2_mount()
     root_fd, _root_generation = _directory_identity(CGROUP_ROOT)
     base_created = False
@@ -1156,12 +1189,20 @@ def _prepare_cgroup(context):
         except FileExistsError:
             pass
         base_fd, base_generation = _directory_identity(CGROUP_BASE)
-        with os.scandir(base_fd) as entries:
-            if any(entry.is_dir(follow_symlinks=False) for entry in entries):
+        leaves = _cgroup_leaf_names(base_fd)
+        if daemon_profile is None:
+            if leaves:
                 raise ProcessError("cgroup base has an owned leaf")
+        elif (type(daemon_profile) is not _DaemonTransactionProfile
+              or _generation_tuple(base_generation) != daemon_profile.base_generation
+              or leaves != {daemon_profile.leaf_name}
+              or _cgroup_generation(daemon_profile.cgroup_path) != daemon_profile.leaf_generation):
+            raise ProcessError("daemon transaction cgroup baseline differs")
         os.mkdir(leaf_name, 0o700, dir_fd=base_fd)
         leaf_created = True
         leaf_fd, leaf_generation = _directory_identity(CGROUP_BASE + "/" + leaf_name)
+        if daemon_profile is not None and _cgroup_leaf_names(base_fd) != {daemon_profile.leaf_name, leaf_name}:
+            raise ProcessError("daemon transaction cgroup set differs")
     except BaseException as primary:
         try:
             if leaf_fd is not None:
@@ -1193,6 +1234,16 @@ def _owned_cgroup_generation(owner):
     if owner.directory_fd is None:
         return _cgroup_generation(owner.path)
     return _generation_tuple(_host_generation(owner.directory_fd, "directory"))
+
+
+def _verify_daemon_transaction_census(profile, owner, leader_pid):
+    if (type(profile) is not _DaemonTransactionProfile
+            or _child_census() != tuple(sorted((profile.pid, leader_pid)))
+            or _proc_row(profile.pid) != profile.proc_row
+            or _cgroup_generation(profile.cgroup_path) != profile.leaf_generation
+            or _owned_cgroup_generation(owner) != owner.leaf_generation
+            or _cgroup_leaf_names(owner.base_fd) != {profile.leaf_name, owner.leaf_name}):
+        raise ProcessError("daemon transaction shared ownership differs")
 
 
 def _cgroup_file(owner, name, flags):
@@ -1390,9 +1441,36 @@ def _close_and_prove_absent(descriptor, label, errors):
     return False
 
 
-def _wait_all_children(leader_pid, errors):
-    """Reap every waitable child and prove the subreaper has no child left."""
+def _wait_all_children(leader_pid, errors, daemon_profile=None, owned=()):
+    """Reap transaction children while preserving one authenticated daemon."""
     leader_reaped = False
+    if daemon_profile is not None:
+        children = set(_child_census())
+        allowed = {leader_pid, *owned}
+        if (type(daemon_profile) is not _DaemonTransactionProfile
+                or daemon_profile.pid not in children
+                or _proc_row(daemon_profile.pid) != daemon_profile.proc_row):
+            errors.append("retained-daemon-child-differs")
+            return False, False
+        foreign = children - allowed - {daemon_profile.pid}
+        if foreign:
+            errors.append("foreign-child-during-daemon-transaction")
+            return False, False
+        for child in sorted(children & allowed):
+            try:
+                observed, _status = os.waitpid(child, os.WNOHANG)
+                leader_reaped = leader_reaped or observed == leader_pid
+            except ChildProcessError:
+                pass
+            except OSError as error:
+                if error.errno != errno.EINTR:
+                    errors.append(f"wait-census:{error.errno}")
+        try:
+            remaining = _child_census()
+            exact = remaining == (daemon_profile.pid,) and _proc_row(daemon_profile.pid) == daemon_profile.proc_row
+        except (OSError, ProcessError):
+            exact = False
+        return leader_reaped, exact
     while True:
         try:
             observed, _status = os.waitpid(-1, os.WNOHANG)
@@ -1409,13 +1487,14 @@ def _wait_all_children(leader_pid, errors):
             leader_reaped = True
 
 
-def _settle_cgroup(owner, leader_pid, deadline, errors):
+def _settle_cgroup(owner, leader_pid, deadline, errors, daemon_profile=None):
     stable_empty = descendants_reaped = leader_reaped = False
     while _boottime_ns() < deadline:
         members = _cgroup_members(owner)
         if members:
             _kill_cgroup(owner)
-        observed_leader, no_children = _wait_all_children(leader_pid, errors)
+        observed_leader, no_children = _wait_all_children(
+            leader_pid, errors, daemon_profile, tuple(owner.pidfds))
         leader_reaped = leader_reaped or observed_leader
         first_empty = not _cgroup_members(owner)
         stable_empty = first_empty and not _cgroup_members(owner)
@@ -1534,17 +1613,17 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             ("ctr", kata_runtime.STAGED_CTR, kata_runtime._ctr_metadata_argv(), b"") and
             fixed.duration_ns == 10_000_000_000 and fixed.stdout_limit == fixed.stderr_limit == MAX_STREAM and
             fixed.inherited_fds == ())
+    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
     template = _FIXED_COMMANDS.get(fixed.command_id)
     if fixed.command_id in {CommandId[name] for name in command_policy.KEY_COMMANDS}:
         expected = replace(template, argv=tuple(item.replace("{operation_token}", context.operation_token)
                                                 for item in template.argv))
         if fixed != expected: raise ProcessError("operation-derived key command required")
-    elif not (_internally_fixed(fixed) or runtime_fixed):
+    elif not (_internally_fixed(fixed) or runtime_extension or runtime_fixed):
         raise ProcessError(
             f"internally fixed command required:{fixed.command_id.value}:{fixed.argv!r}")
     if fixed.command_id is CommandId.CONTAINERD_START:
         raise ProcessError("long-lived containerd requires the runtime daemon owner")
-    runtime_extension = _RUNTIME_EXTENSIONS.get(id(fixed)) is fixed
     if (runtime_extension and consumption_owner is None) or ((runtime_extension or runtime_fixed) and daemon_owner is None):
         raise ProcessError("runtime path owners required")
     if not hasattr(signal, "pidfd_send_signal") or not hasattr(os, "pidfd_open"):
@@ -1556,6 +1635,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
     )
     bindings = _claim_inherited_fds(spec, inherited); network_fd = None
+    daemon_profile = None
     intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
     kata_operation._record_command_intent(journal, intent)
     owner = None
@@ -1570,10 +1650,13 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     preexec_recorded = False
     try:
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
-        _require_no_children()
+        if runtime_extension or runtime_fixed:
+            daemon_profile = _fixed_daemon_transaction_profile(daemon_owner, journal)
+        _require_no_children(daemon_profile)
         previous_subreaper = _set_subreaper(True)
         _within_work_cutoff(work_cutoff)
-        owner = _prepare_cgroup(context)
+        owner = (_prepare_cgroup(context) if daemon_profile is None
+                 else _prepare_cgroup(context, daemon_profile))
         def owned_pipe():
             pair = os.pipe2(os.O_CLOEXEC)
             pipes.extend(pair)
@@ -1628,6 +1711,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             kata_runtime._verify_runtime_consumption(consumption_owner, journal, fixed.command_id.value)
         if runtime_extension or runtime_fixed:
             _verify_fixed_daemon(daemon_owner, journal)
+            _verify_daemon_transaction_census(daemon_profile, owner, pid)
         if launch_permit is not None:
             retained_network = kata_runtime._preexec_launch_network(launch_permit, pid)
             if fixed.command_id is not CommandId.CTR_RUN or retained_network["path"] != "/run/netns/" + retained_network["identity"]["name"]:
@@ -1663,7 +1747,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             outcome, status = "signaled", os.WTERMSIG(wait_status)
         else:
             outcome, status = "uncertain", None
-        cleanup = _settle_cgroup(owner, pid, deadline, errors)
+        cleanup = _settle_cgroup(owner, pid, deadline, errors, daemon_profile)
         try:
             _set_subreaper(previous_subreaper)
         except BaseException as error:
@@ -1720,7 +1804,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             try:
                 _kill_cgroup(owner)
                 killed_cgroup = True
-                cleanup = _settle_cgroup(owner, pid, deadline, errors)
+                cleanup = _settle_cgroup(owner, pid, deadline, errors, daemon_profile)
             except BaseException as error:
                 errors.append(f"cgroup-cleanup:{type(error).__name__}")
         if previous_subreaper is not None and not subreaper_restored:
@@ -1799,6 +1883,22 @@ def _daemon_routes():
                 socket_generation() != retained["socket_generation"]):
             raise ProcessError("private daemon replacement")
         return retained
+    def transaction_profile(owner, journal):
+        retained = verify(owner, journal)
+        state = states.require(owner)
+        row = (retained["pid"], retained["ppid"], retained["pgid"],
+               retained["sid"], retained["proc_start_time"])
+        cgroup = state[3]
+        if (retained["ppid"] != os.getpid() or _proc_row(retained["pid"]) != row
+                or cgroup.path != retained["cgroup_path"]
+                or _owned_cgroup_generation(cgroup) != _generation_tuple(retained["cgroup_generation"])
+                or retained["pid"] not in _cgroup_members(cgroup)
+                or cgroup.base_fd is None):
+            raise ProcessError("private daemon transaction profile differs")
+        base_generation = _generation_tuple(_host_generation(cgroup.base_fd, "directory"))
+        return _DaemonTransactionProfile(
+            retained["pid"], row, cgroup.path, cgroup.leaf_name,
+            cgroup.leaf_generation, base_generation)
     def start(journal, executable):
         fixed = _bind_containerd_extension(); context = kata_operation._command_context(journal)
         deadline = _boottime_ns() + fixed.duration_ns
@@ -1942,9 +2042,10 @@ def _daemon_routes():
         kata_operation._record_daemon_outcome(journal, body)
         if body["uncertain"]: raise ProcessError("private daemon cleanup uncertain")
         return body
-    return start, reopen, verify, stop
+    return start, reopen, verify, stop, transaction_profile
 
-(_start_fixed_daemon, _reopen_fixed_daemon, _verify_fixed_daemon, _stop_fixed_daemon) = _daemon_routes()
+(_start_fixed_daemon, _reopen_fixed_daemon, _verify_fixed_daemon, _stop_fixed_daemon,
+ _fixed_daemon_transaction_profile) = _daemon_routes()
 del _daemon_routes
 
 

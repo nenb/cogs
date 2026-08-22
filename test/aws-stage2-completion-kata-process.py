@@ -231,6 +231,116 @@ int main(int argc, char **argv) {
 '''
 
 
+DAEMON = r'''#include <sys/socket.h>
+#include <sys/un.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
+static const char *path; static int listener;
+static void stop(int signal_number) { (void)signal_number; close(listener); unlink(path); _exit(0); }
+int main(int argc, char **argv) {
+  path = 0;
+  for (int i=1; i+1<argc; ++i) if (!strcmp(argv[i],"--address")) path=argv[i+1];
+  if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 90;
+  listener=socket(AF_UNIX,SOCK_STREAM,0);
+  struct sockaddr_un address={.sun_family=AF_UNIX};
+  memcpy(address.sun_path,path,strlen(path)+1); unlink(path);
+  if(listener<0||bind(listener,(void*)&address,sizeof(address))||listen(listener,1))return 91;
+  signal(SIGTERM,stop);
+  for(;;)pause();
+}
+'''
+
+
+def authentic_daemon_transaction_profile():
+    """Run real child/cgroup transactions beside one retained dummy daemon."""
+    if platform.system() != "Linux" or platform.machine() != "x86_64" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
+        return False
+    saved = (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
+             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR)
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+        root = Path(directory); daemon_path = root / "containerd"; source = root / "daemon.c"
+        source.write_text(DAEMON, encoding="ascii")
+        subprocess.run(["/usr/bin/cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", daemon_path, source], check=True)
+        runtime = root / "runtime"; runtime.mkdir(); (runtime / "root").mkdir(); (runtime / "state").mkdir()
+        (runtime / "config").write_bytes(b"")
+        process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT = str(runtime / "socket"), str(runtime / "root")
+        process.CONTAINERD_STATE, process.CONTAINERD_CONFIG = str(runtime / "state"), str(runtime / "config")
+        process.STAGED_CONTAINERD, process.STAGED_CTR = str(daemon_path), str(root / "ctr")
+        class Journal:
+            def __init__(self): self.serial = 0; self.daemon = None
+            def command_context(self):
+                return process.kata_operation.CommandContext(
+                    "b" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
+                    process._boot_id(), "5" * 40, "NETWORK_READY", self.serial)
+            def record_command_intent(self, body):
+                process.kata_operation._validate_body("COMMAND_INTENT_V2", body); return body
+            def record_command_preexec(self, body):
+                process.kata_operation._validate_body("COMMAND_PREEXEC_V2", body); return body
+            def record_command_output(self, body):
+                process.kata_operation._validate_body("COMMAND_OUTPUT_V3", body); return body
+            def record_command_outcome(self, body):
+                process.kata_operation._validate_body("COMMAND_OUTCOME_V2", body); self.serial += 1
+                return process.kata_operation.DurableCommandOutcome(
+                    body["command_serial"], body["command_id"], body["binding_sha256"], body)
+            def record_daemon_retained(self, body):
+                process.kata_operation._validate_body("DAEMON_RETAINED_V2", body); self.daemon = body; self.serial += 1; return body
+            def record_daemon_outcome(self, body):
+                process.kata_operation._validate_body("DAEMON_OUTCOME_V2", body); return body
+        daemon_fd = os.open(daemon_path, os.O_RDONLY | os.O_CLOEXEC)
+        true_fd = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
+        def retained(role, path, descriptor):
+            seen = os.fstat(descriptor)
+            return process.RetainedExecutable(role, path, descriptor, process._digest_fd(
+                descriptor, seen.st_size), "d" * 64, process._host_generation(descriptor))
+        daemon_executable = retained("containerd", process.STAGED_CONTAINERD, daemon_fd)
+        ctr_executable = retained("ctr", process.STAGED_CTR, true_fd)
+        try:
+            for fault in (None, "foreign-child", "foreign-leaf", "post-fork"):
+                journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
+                profile = process._fixed_daemon_transaction_profile(owner, journal)
+                foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
+                try:
+                    assert process._child_census() == (profile.pid,)
+                    if fault == "foreign-child":
+                        foreign_pid = os.fork()
+                        if foreign_pid == 0: time.sleep(30); os._exit(0)
+                    if fault == "foreign-leaf": os.mkdir(foreign_leaf, 0o700)
+                    fixed = process._bind_ctr_extension(process.CommandId.CTR_TASK_LIST)
+                    patches = [patch.object(process.kata_runtime, "_verify_runtime_consumption", return_value=None)]
+                    if fault == "post-fork": patches.append(patch.object(
+                        process, "_identity", side_effect=process.ProcessError("fault after fork")))
+                    with patches[0]:
+                        if len(patches) == 2: patches[1].start()
+                        try:
+                            if fault is None:
+                                outcome, durable = process._transact_fixed(journal, fixed, ctr_executable,
+                                    daemon_owner=owner, consumption_owner=object())
+                                assert (outcome.outcome, outcome.status, outcome.errors) == ("exited", 0, ()) and not durable.body["uncertain"]
+                            else: rejected(lambda: process._transact_fixed(journal, fixed, ctr_executable,
+                                daemon_owner=owner, consumption_owner=object()))
+                        finally:
+                            if len(patches) == 2: patches[1].stop()
+                    if foreign_pid is not None:
+                        os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0); foreign_pid = None
+                    if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
+                    base_fd, _generation = process._directory_identity(process.CGROUP_BASE)
+                    try: assert process._cgroup_leaf_names(base_fd) == {profile.leaf_name}
+                    finally: os.close(base_fd)
+                finally:
+                    if foreign_pid is not None:
+                        os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
+                    if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    process._stop_fixed_daemon(owner, journal)
+                assert not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
+            return True
+        finally:
+            os.close(daemon_fd); os.close(true_fd)
+            (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
+             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR) = saved
+
+
 def authentic_root_cgroup_recovery():
     """Crash one supervisor, then recover its leader-absent descendant fresh."""
     if platform.system() != "Linux" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
@@ -660,6 +770,13 @@ def linux_supervisor_tests():
 
 # Imported late so the portable portion does not imply process use on macOS.
 import signal
+if sys.argv[1:] == ["--daemon-transactions"]:
+    if not authentic_daemon_transaction_profile():
+        raise RuntimeError("root Linux retained-daemon transaction matrix was required")
+    print("retained dummy-daemon transaction/fault matrix passed; no KVM")
+    raise SystemExit(0)
+if sys.argv[1:]:
+    raise RuntimeError("unexpected process-test arguments")
 required = os.environ.get("COGS_REQUIRE_LINUX_PROCESS_TESTS_V1") == "1"
 qualified = platform.system() == "Linux" and platform.machine() == "x86_64"
 foundations_required = os.environ.get("COGS_REQUIRE_STAGE2_KATA_NATIVE_FOUNDATIONS") == "1"
@@ -668,12 +785,14 @@ if required and not qualified:
 if foundations_required and (not qualified or os.geteuid() != 0):
     raise RuntimeError("root Linux amd64 Kata native foundations were required")
 root_cgroup = authentic_root_cgroup_recovery()
-if foundations_required and not root_cgroup:
-    raise RuntimeError("journal/cgroup crash and settlement foundations were required")
+daemon_transactions = authentic_daemon_transaction_profile()
+if foundations_required and not (root_cgroup and daemon_transactions):
+    raise RuntimeError("journal/cgroup and retained-daemon transaction foundations were required")
 if qualified:
     linux_supervisor_tests()
     print("completion Kata process LINUX AMD64 QUALIFIED matrix passed" +
-          ("; root cgroup crash matrix passed" if root_cgroup else "; root cgroup crash matrix SKIPPED"))
+          ("; root cgroup crash matrix passed" if root_cgroup else "; root cgroup crash matrix SKIPPED") +
+          ("; retained daemon transaction matrix passed" if daemon_transactions else "; retained daemon transaction matrix SKIPPED"))
 else:
     print("completion Kata process portable matrix passed; Linux amd64 supervisor matrix SKIPPED; " +
           ("root cgroup crash matrix passed" if root_cgroup else "root cgroup crash matrix SKIPPED"))

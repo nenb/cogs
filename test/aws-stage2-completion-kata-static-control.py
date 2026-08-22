@@ -288,6 +288,41 @@ with tempfile.TemporaryDirectory() as directory:
     assert archive_rows[0]["sha256"] == postwalk_rows[-1]["sha256"] == sha(payload)
     assert all("inode" not in row and "device" not in row for row in archive_rows + postwalk_rows)
 
+# Alias admission is exact resolved identity plus exact bytes, not pathname or
+# content-only equivalence.  The production collector itself must run on the
+# usr-merged Linux/amd64 host used by the static candidate.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    target = root / "target"
+    target.write_bytes(Path(sys.executable).read_bytes())
+    alias = root / "alias"
+    alias.symlink_to(target.name)
+    same_raw, same_stat = preparation._stable_file_bytes(target)
+    alias_raw, alias_stat = preparation._stable_file_bytes(alias)
+    assert same_raw == alias_raw and (same_stat.st_dev, same_stat.st_ino) == (alias_stat.st_dev, alias_stat.st_ino)
+    copy_path = root / "copy"
+    copy_path.write_bytes(same_raw)
+    copy_raw, copy_stat = preparation._stable_file_bytes(copy_path)
+    assert copy_raw == same_raw and (copy_stat.st_dev, copy_stat.st_ino) != (same_stat.st_dev, same_stat.st_ino)
+    missing = root / "missing"
+    def mapped(logical, second=target):
+        if logical.startswith("/lib/x86_64-linux-gnu/"): return alias
+        if logical.startswith("/usr/lib/x86_64-linux-gnu/"): return second
+        return missing
+    selected = preparation._soname_candidate("libfixture.so.1", mapped)
+    assert selected is not None and selected[0].startswith("/lib/")
+    reject(lambda: preparation._soname_candidate(
+        "libfixture.so.1", lambda logical: mapped(logical, copy_path)))
+    alias.unlink(); alias.symlink_to(copy_path.name)
+    reject(lambda: preparation._read_elf(selected[1], selected[2]))
+
+if sys.platform.startswith("linux") and os.uname().machine == "x86_64":
+    ip_path = Path("/usr/sbin/ip")
+    assert ip_path.exists(), "Linux/amd64 production ip executable is required"
+    ip_contract = preparation.collect_executable_contract(
+        "ip", "/usr/sbin/ip", ip_path, lambda logical: Path(logical))
+    assert ip_contract["path"] == "/usr/sbin/ip" and len(ip_contract["objects"]) > 1
+
 if sys.argv[1:] == ["--samples"]:
     print(json.dumps({"control": control.value, "envelope": envelope.value,
                       "runtime": runtime_description.value}, separators=(",", ":")))
