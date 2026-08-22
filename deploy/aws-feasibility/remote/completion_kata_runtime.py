@@ -1354,7 +1354,20 @@ def _runtime_owner_routes():
         processes = _proc_snapshot(verify_attestation(state[5]), netns); shim = next((row for row in processes.records if row.role == "shim"), None)
         ctr = classify_ctr_observation(info, containers, tasks, None if shim is None else shim.pid,
                                        state[9], _durable_ctr_launch_path(history)); container, task, mount = ctr["container"], ctr["task"], ctr["mount"]
-        qmp = _qmp_kvm(processes); share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if shim is None else shim.pid,
+        forward_observation = history["phase"] == "RUNTIME_READY"
+        if forward_observation: state[0].record_platform_observation("qmp-intent")
+        try:
+            qmp = _qmp_kvm(processes)
+        except BaseException:
+            # A failed terminal-marker write leaves the read-only QMP intent
+            # uncertain and therefore unable to mint a receipt.
+            if forward_observation: state[0].record_platform_observation("qmp-failure")
+            raise
+        if forward_observation:
+            qmp_passed = qmp.get("kvm_present") is True and qmp.get("kvm_enabled") is True
+            state[0].record_platform_observation("qmp-pass" if qmp_passed else "qmp-failure")
+            history = state[0].runtime_recovery_history()
+        share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if shim is None else shim.pid,
                 "processes": processes.disposition.value, "qmp": qmp, "share": share}
         return fact
     def inactive_fact(state):

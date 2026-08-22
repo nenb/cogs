@@ -418,6 +418,9 @@ def _validate_body(kind, body):
         _fail(body["admission_version"] == PRODUCTION_ADMISSION_VERSION
               and body["policy_version"] == command_policy.POLICY_VERSION
               and body["parser_source_sha256"] == SSH_PARSER_SHA256)
+    elif kind == "PLATFORM_OBSERVATION_V1":
+        _keys(body, ("operation_token", "observation")); _hex(body["operation_token"])
+        _choice(body["observation"], {"qmp-intent", "qmp-failure", "qmp-pass", "platform-pass"})
     elif kind == "RUNTIME_MOUNT_V2":
         _keys(body, ("operation_token", "manifest_sha256", "mount_generation",
                      "issuance_sha256"))
@@ -1051,6 +1054,7 @@ def _legal(records):
     ownership = None
     ssh_result = None
     runtime_mount = None
+    platform_observation = None
     production_admitted = False
     lifecycle_deadline = None
     ever_uncertain = False
@@ -1095,6 +1099,14 @@ def _legal(records):
             _fail(phase == "ROOTFS_LEASED" and not production_admitted and command_phase is None)
             production_admitted = True
             continue
+        if kind == "PLATFORM_OBSERVATION_V1":
+            _fail(production_admitted and phase == "RUNTIME_READY" and command_phase is None)
+            observation = body["observation"]
+            if observation == "qmp-intent":
+                _fail(platform_observation is None); _runtime_trace(records, index, phase, ownership, complete=True)
+            elif observation == "platform-pass": _fail(platform_observation == "qmp-pass")
+            else: _fail(platform_observation == "qmp-intent")
+            platform_observation = observation; continue
         if kind == "RUNTIME_MOUNT_V2":
             _fail(production_admitted and phase == "RUNTIME_READY" and runtime_mount is None
                   and command_phase is None)
@@ -1259,7 +1271,8 @@ def _legal(records):
                 None if command_preexec_v2 is None else command_preexec_v2.body, body,
                 b1_network=command_b1,
             )
-            _fail((command_preexec_v2 is None and body["outcome"] == "not-started") or
+            _fail((command_preexec_v2 is None
+                   and body["outcome"] in {"not-started", "uncertain"}) or
                   (command_preexec_v2 is not None and body["outcome"] != "not-started"))
             if command_output_v3 is not None and not body["uncertain"]:
                 _fail(body["stdout_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stdout_hex"])).hexdigest()
@@ -2141,7 +2154,8 @@ def _make_authority():
         def record_command_outcome(self, body):
             intent, preexec = self.pending_command()
             _fail(_same_command_v2(body, intent))
-            _fail((preexec is None and body["outcome"] == "not-started") or
+            _fail((preexec is None
+                   and body["outcome"] in {"not-started", "uncertain"}) or
                   (preexec is not None and body["outcome"] != "not-started"))
             write_validated(self, "COMMAND_OUTCOME_V2", body)
             return DurableCommandOutcome(
@@ -2221,6 +2235,10 @@ def _make_authority():
                     "admission_version": PRODUCTION_ADMISSION_VERSION,
                     "policy_version": command_policy.POLICY_VERSION,
                     "parser_source_sha256": SSH_PARSER_SHA256})
+        def record_platform_observation(self, observation):
+            context = self.command_context(); _fail(context.lifecycle_phase == "RUNTIME_READY")
+            write_validated(self, "PLATFORM_OBSERVATION_V1", {
+                "operation_token": context.operation_token, "observation": observation})
         def record_runtime_mount_v2(self, key, manifest_sha256, mount_generation):
             _fail(key is seal)
             context = self.command_context()

@@ -215,7 +215,7 @@ try:
     failure_custody = Custody(bindings)
     failure_evidence = take_producer()(
         failure_custody, typed_bindings(bindings), failure_journal, failure_history,
-        None, platform, None, residue)
+        None, platform, runtime, residue)
     failure_receipt = take_issuer()(failure_custody, failure_evidence)
     failure_report = local.load_result(consume(failure_receipt))
     check(failure_report["result"] == "failure"
@@ -225,6 +225,182 @@ try:
     check(all(row["outcome"] == "pass" for row in failure_report["teardown"])
           and set(failure_report["zero_residue"].values()) == {"absent"},
           "certain failure did not retain exact cleanup proof")
+
+    # Every internal first-failure class is selected by the exact durable rows
+    # and exercised through receipt issuance, not merely through a report codec.
+    cleanup_kinds = set(evidence.JOURNAL_TEARDOWN_ORDER)
+    terminal_rows = tuple(row for row in records if row.record_type in cleanup_kinds)
+    genesis_rows = tuple(row for row in records
+                         if row.record_type in {"GENESIS", "PRODUCTION_ADMISSION_V2"})
+
+    def normalized(rows):
+        return tuple(record(index, row.record_type, row.body)
+                     for index, row in enumerate(rows))
+
+    def phase(kind, body=None):
+        return record(0, kind, {"operation_token": runtime.operation_token,
+                                **({} if body is None else body)})
+
+    def command(command_id, serial, status=0, lifecycle_phase=None):
+        intent_body = {"operation_token": runtime.operation_token,
+                       "command_id": command_id, "command_serial": serial}
+        if lifecycle_phase is not None:
+            intent_body["lifecycle_phase"] = lifecycle_phase
+        outcome_body = {**intent_body, "outcome": "exited", "status": status,
+                        "uncertain": False, "stderr_length": 0,
+                        "stdout_truncated": False, "stderr_truncated": False}
+        return phase("COMMAND_INTENT_V2", intent_body), phase("COMMAND_OUTCOME_V2", outcome_body)
+
+    staged = phase("RUNTIME_STAGED_V3")
+    daemon_intent = phase("COMMAND_INTENT_V2", {
+        "command_id": "CONTAINERD_START", "command_serial": 40})
+    daemon_retained = phase("DAEMON_RETAINED_V2", {
+        "command_id": "CONTAINERD_START", "command_serial": 40})
+    ctr_intent, ctr_outcome = command("CTR_RUN", 41, status=1, lifecycle_phase="NETWORK_READY")
+    observer = tuple(item for command_id, serial in (
+        ("CTR_CONTAINER_INFO", 50), ("CTR_CONTAINER_LIST", 51),
+        ("CTR_TASK_LIST", 52))
+        for item in command(command_id, serial, lifecycle_phase="RUNTIME_READY"))
+    causal_row = next(row for row in records if row.record_type == "NETWORK_CAUSAL_PROOF_V1")
+    ownership_row = next(row for row in records if row.record_type == "OWNERSHIP_OBSERVED")
+    mount_row = next(row for row in records if row.record_type == "RUNTIME_MOUNT_V2")
+
+    cases = {
+        "input": (),
+        "baseline": (phase("FS_SETTLED"), phase("INPUT_STEP", {
+            "path": "@manifest", "action": "create"})),
+        "network": (phase("FS_SETTLED"), phase("BASELINES_CAPTURED")),
+        "containerd": (phase("FS_SETTLED"), phase("BASELINES_CAPTURED"),
+                       phase("NETWORK_READY")),
+        "ctr-run": (phase("FS_SETTLED"), phase("BASELINES_CAPTURED"),
+                    phase("NETWORK_READY"), staged, daemon_intent,
+                    daemon_retained, ctr_intent, ctr_outcome),
+        "post-runtime-ready-pre-qmp": (phase("RUNTIME_READY"),),
+        "qmp-kvm": (phase("RUNTIME_READY"), *observer,
+                     phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-intent"}),
+                     phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-failure"})),
+    }
+
+    def direct_failure(name, forward, expected_code, platform_value=None,
+                       runtime_value=None):
+        direct_raw = f"retired-direct-{name}\n".encode()
+        direct_records = normalized((*genesis_rows, *forward, *terminal_rows))
+        parsed_histories[direct_raw] = direct_records
+        direct_journal = evidence._RetiredJournalOwnerResult(direct_raw)
+        direct_history = evidence._typed_durable_history(direct_journal)
+        check(direct_history.first_failure.classification == name,
+              f"{name} durable classification differs")
+        take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
+        direct_custody = Custody(bindings)
+        direct_evidence = take_producer()(
+            direct_custody, typed_bindings(bindings), direct_journal, direct_history,
+            None, platform_value, runtime_value, residue)
+        direct_receipt = take_issuer()(direct_custody, direct_evidence)
+        direct_report = local.load_result(consume(direct_receipt))
+        check(direct_report["failure_code"] == expected_code
+              and direct_report["result"] == "failure" and direct_custody.closed,
+              f"{name} direct receipt differs")
+        return direct_report
+
+    for name, forward in cases.items():
+        direct_failure(name, forward,
+                       "kvm" if name == "qmp-kvm" else "lifecycle-start")
+    # QMP itself can pass while the exact post-QMP mapping identity admission
+    # fails; without durable platform-pass this remains the same public KVM code.
+    identity_report = direct_failure("qmp-identity", (
+        phase("RUNTIME_READY"), *observer,
+        phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-intent"}),
+        phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-pass"})),
+        "kvm")
+    check(identity_report["platform"]["qmp_present"] is True
+          and identity_report["platform"]["qmp_enabled"] is True,
+          "post-QMP identity failure erased exact KVM facts")
+
+    empty_qmp_raw = b"retired-direct-empty-qmp-terminals\n"
+    parsed_histories[empty_qmp_raw] = normalized((
+        *genesis_rows, phase("RUNTIME_READY"),
+        phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-intent"}),
+        phase("PLATFORM_OBSERVATION_V1", {"observation": "qmp-failure"}),
+        *terminal_rows))
+    empty_qmp_journal = evidence._RetiredJournalOwnerResult(empty_qmp_raw)
+    empty_qmp_history = evidence._typed_durable_history(empty_qmp_journal)
+    check(empty_qmp_history.first_failure.classification == "uncertain",
+          "empty observer terminals vacuously proved QMP failure")
+    take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
+    empty_qmp_custody = Custody(bindings)
+    empty_qmp_evidence = take_producer()(
+        empty_qmp_custody, typed_bindings(bindings), empty_qmp_journal,
+        empty_qmp_history, None, None, None, residue)
+    rejected(lambda: take_issuer()(empty_qmp_custody, empty_qmp_evidence),
+             receipt_model.LocalReceiptError,
+             "empty QMP terminals minted a receipt")
+    rejected(lambda: consume(object()), receipt_model.LocalReceiptError,
+             "empty QMP failure retained receipt state")
+
+    for name in ("rootfs", "operation-open"):
+        pre_history = evidence._PreOperationHistoryOwnerResult(
+            name, sha((name + ":history").encode()), sha((name + ":cleanup").encode()))
+        pre_residue = evidence._PreOperationResidueOwnerResult(
+            pre_history.history_sha256, pre_history.cleanup_sha256,
+            local.RESIDUE_FACTS)
+        take_producer, take_issuer, consume = receipt_model._new_local_receipt_routes(binding, close)
+        pre_custody = Custody(bindings)
+        pre_evidence = take_producer()(
+            pre_custody, typed_bindings(bindings), None, pre_history,
+            None, None, None, pre_residue)
+        pre_receipt = take_issuer()(pre_custody, pre_evidence)
+        pre_report = local.load_result(consume(pre_receipt))
+        check(pre_report["operation"]["status"] == "not-created"
+              and pre_report["failure_code"] == "lifecycle-start"
+              and pre_custody.closed,
+              f"{name} clean pre-operation receipt differs")
+
+    # Causal QMP success plus the absence/failure of SSH is an SSH failure;
+    # platform-object presence alone never selects this class.
+    direct_failure("ssh", (phase("RUNTIME_READY"), causal_row, mount_row,
+                           ownership_row), "ssh", platform, runtime)
+
+    route_digest = b"4" * 64
+    network_lines = []
+    for ordinal, marker in enumerate(guest.GUEST_NETWORK_MARKERS, 1):
+        if ordinal in {1, len(guest.GUEST_NETWORK_MARKERS)}:
+            network_lines.append(
+                f"{guest.GUEST_NETWORK_PREFIX}|{ordinal:02d}|{marker}|route_sha256=".encode()
+                + route_digest + b"\n")
+        else:
+            network_lines.append(
+                f"{guest.GUEST_NETWORK_PREFIX}|{ordinal:02d}|{marker}\n".encode())
+
+    def sample_line(global_ordinal, deleted=True):
+        label, digest = guest.GUEST_WORKLOAD_PLAN[global_ordinal - 1]
+        return (f"{guest.GUEST_RESULT_PREFIX}|{global_ordinal:02d}|{label}|"
+                f"{1000 + global_ordinal}|{digest}|deleted="
+                f"{'true' if deleted else 'false'}\n").encode()
+
+    def workload_case(name, completed, deletion=False):
+        ssh_intent, ssh_outcome = command("SSH_READY", 70, status=1,
+                                          lifecycle_phase="RUNTIME_READY")
+        stdout = (guest.GUEST_READY_MARKER + b"".join(network_lines)
+                  + b"".join(sample_line(index) for index in range(1, completed + 1)))
+        if deletion:
+            stdout += sample_line(completed + 1, False)
+        output = phase("COMMAND_OUTPUT_V3", {
+            "command_id": "SSH_READY", "command_serial": 70,
+            "stdout_hex": stdout.hex(), "stderr_hex": ""})
+        forward = (phase("RUNTIME_READY"), causal_row, mount_row,
+                   ssh_intent, output, ssh_outcome, ownership_row)
+        report = direct_failure(name, forward, name, platform, runtime)
+        return report
+
+    git_report = workload_case("git-sample", 0)
+    build_report = workload_case("build-sample", 7)
+    install_report = workload_case("install-sample", 14)
+    deletion_report = workload_case("deletion", 0, True)
+    check(git_report["timings"]["git"][0]["outcome"] == "failure"
+          and build_report["timings"]["build"][0]["outcome"] == "failure"
+          and install_report["timings"]["install"][0]["outcome"] == "failure"
+          and deletion_report["timings"]["git"][0]["deletion"] == "not-proved",
+          "sample/deletion timing evidence differs")
 
     uncertain_records = tuple(
         replace(row, body={**row.body, "uncertain": True})
@@ -242,7 +418,7 @@ try:
     uncertain_custody = Custody(bindings)
     uncertain_evidence = take_producer()(
         uncertain_custody, typed_bindings(bindings), uncertain_journal,
-        uncertain_history, None, platform, None, residue)
+        uncertain_history, None, platform, runtime, residue)
     rejected(lambda: take_issuer()(uncertain_custody, uncertain_evidence),
              receipt_model.LocalReceiptError,
              "uncertain durable history minted a cleanup failure receipt")

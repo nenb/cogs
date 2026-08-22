@@ -111,6 +111,13 @@ def _validate_rows(rows, binding):
         _require(row["binding_sha256"] == binding)
         if row["outcome"] == "not-reached":
             _require(row["duration_ns"] is None and row["deletion"] == "not-reached")
+        elif row["outcome"] == "failure":
+            # A durable, certain guest stop identifies the first sample even
+            # when it stopped before obtaining a duration.  Historical V2
+            # rows with measured failure durations retain their exact meaning.
+            if row["duration_ns"] is not None:
+                _integer(row["duration_ns"], 1, 3_600_000_000_000)
+            _require(row["deletion"] in ("absent", "not-proved"))
         else:
             _integer(row["duration_ns"], 1, 3_600_000_000_000)
             _require(row["deletion"] in ("absent", "not-proved"))
@@ -210,13 +217,6 @@ def validate_result(value):
     platform_unobserved = {"observation": "not-reached", "kvm_api": None,
                            "qmp_present": False, "qmp_enabled": False}
     kvm_outcome = value["admission"]["kvm"]
-    if kvm_outcome == "pass":
-        _require(platform == platform_pass)
-    elif kvm_outcome == "not-reached":
-        _require(platform == platform_unobserved)
-    else:
-        favorable = platform["kvm_api"] == 12 and platform["qmp_present"] and platform["qmp_enabled"]
-        _require(platform["observation"] == "failure" and not favorable)
 
     lifecycle = value["lifecycle"]
     _keys(lifecycle, {"attempts", "outcome", "ssh_attempts", "ssh_outcome"})
@@ -238,7 +238,10 @@ def validate_result(value):
         _require(digests == [None, None, None] and lifecycle["attempts"] == lifecycle["ssh_attempts"] == 0)
         binding = None
     else:
-        _require(first_failure is None)
+        # A fully cleaned, retired operation may retain an exact admission or
+        # runtime-start failure.  Requiring admission success here made those
+        # truthful V2 failures structurally impossible; pass still requires all
+        # admission phases below.
         for digest in digests:
             _digest(digest)
         binding = _binding_digest(bindings, operation["operation_sha256"], operation["journal_sha256"])
@@ -255,8 +258,28 @@ def validate_result(value):
 
     work_started = any(not _not_reached(rows) for rows in timings.values())
     platform_succeeded = platform == platform_pass
+    retired_pre_platform_failure = (
+        operation["status"] in ("not-created", "retired")
+        and lifecycle["ssh_attempts"] == 0
+        and not work_started
+        and lifecycle["outcome"] in ("failure", "not-reached")
+    )
+    if kvm_outcome == "pass":
+        _require(platform_succeeded or
+                 (platform == platform_unobserved and retired_pre_platform_failure))
+    elif kvm_outcome == "not-reached":
+        _require(platform == platform_unobserved)
+    else:
+        favorable = (platform["kvm_api"] == 12 and platform["qmp_present"]
+                     and platform["qmp_enabled"])
+        _require(platform["observation"] == "failure"
+                 and (not favorable or operation["status"] == "retired"))
     if lifecycle["attempts"]:
-        _require(operation["status"] != "not-created" and first_failure is None and platform_succeeded)
+        _require(operation["status"] != "not-created" and first_failure is None)
+        if lifecycle["outcome"] == "pass":
+            _require(platform_succeeded)
+        else:
+            _require(platform_succeeded or retired_pre_platform_failure)
     if lifecycle["ssh_attempts"]:
         _require(lifecycle["attempts"] == 1 and lifecycle["outcome"] == "pass" and platform_succeeded)
     _require(lifecycle["ssh_attempts"] <= lifecycle["attempts"])

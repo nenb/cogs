@@ -245,6 +245,7 @@ def _routes():
             mapping["live_mapping_sha256"],
             hashlib.sha256(operation._canonical(fact)).hexdigest(),
             12, qmp["kvm_present"], qmp["kvm_enabled"])
+        lifecycle.operation.record_platform_observation("platform-pass")
         current["runtime_observation"] = typed
         return typed
 

@@ -1778,12 +1778,18 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             body["leader_reaped"], tuple(body["errors"]),
         ), durable
     except BaseException as primary:
-        errors.append(f"primary:{type(primary).__name__}")
+        # The initiating failure is the certain command result, not cleanup
+        # uncertainty. Keep it diagnostic-only; only failed settlement facts
+        # enter the durable uncertainty vector.
+        diagnostics = [*errors, f"primary:{type(primary).__name__}"]
+        settlement_errors = list(errors)
+        pipes_eof = True
         for descriptor in tuple(pipes):
             try:
                 os.close(descriptor)
             except OSError as error:
-                errors.append(f"close:{error.errno}")
+                pipes_eof = False
+                settlement_errors.append(f"close:{error.errno}")
         if pid is not None and wait_status is None:
             try:
                 if pidfd is not None:
@@ -1795,43 +1801,50 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                         break
                     time.sleep(0.005)
                 if wait_status is None:
-                    errors.append("leader-cleanup:unreaped")
+                    settlement_errors.append("leader-cleanup:unreaped")
             except BaseException as error:
-                errors.append(f"leader-cleanup:{type(error).__name__}")
-        cleanup = (owner is None, owner is None, owner is None, wait_status is not None)
+                settlement_errors.append(f"leader-cleanup:{type(error).__name__}")
+        cleanup = (owner is None, owner is None, owner is None,
+                   pid is None or wait_status is not None)
         killed_cgroup = False
         if owner is not None:
             try:
                 _kill_cgroup(owner)
-                killed_cgroup = True
-                cleanup = _settle_cgroup(owner, pid, deadline, errors, daemon_profile)
+                killed_cgroup = pid is not None
+                cleanup = _settle_cgroup(
+                    owner, pid, deadline, settlement_errors, daemon_profile)
+                if pid is None:
+                    cleanup = (*cleanup[:3], True)
             except BaseException as error:
-                errors.append(f"cgroup-cleanup:{type(error).__name__}")
+                settlement_errors.append(f"cgroup-cleanup:{type(error).__name__}")
         if previous_subreaper is not None and not subreaper_restored:
             try:
                 _set_subreaper(previous_subreaper)
             except BaseException as error:
-                errors.append(f"subreaper-restore:{type(error).__name__}")
+                settlement_errors.append(f"subreaper-restore:{type(error).__name__}")
             subreaper_restored = True
         if pidfd is not None:
             retained_pidfd = pidfd
             pidfd = None
-            _close_and_prove_absent(retained_pidfd, "leader-pidfd", errors)
+            _close_and_prove_absent(retained_pidfd, "leader-pidfd", settlement_errors)
+        known_not_started = pid is None and not preexec_recorded
+        if not known_not_started and not settlement_errors:
+            settlement_errors.append("launch-boundary-uncertain")
         failure_state = {"term": False, "kill": killed_cgroup}
         failure_body = _outcome_body(
-            intent, "uncertain" if preexec_recorded else "not-started", None, None,
+            intent, "not-started" if known_not_started else "uncertain", None, None,
             b"", b"", {"stdout": False, "stderr": False}, wait_status,
-            False, cleanup, failure_state, errors,
+            pipes_eof, cleanup, failure_state, settlement_errors,
             release_count if preexec_recorded else 0,
         )
         if _cleanup_closed(cleanup, pid, wait_status):
             try:
                 kata_operation._record_command_outcome(journal, failure_body)
             except BaseException as journal_error:
-                errors.append(f"outcome:{type(journal_error).__name__}")
+                settlement_errors.append(f"outcome:{type(journal_error).__name__}")
         else:
-            errors.append("cleanup-continuation-pending")
-        raise ProcessError(";".join(errors)) from primary
+            settlement_errors.append("cleanup-continuation-pending")
+        raise ProcessError(";".join((*diagnostics, *settlement_errors))) from primary
     finally:
         if network_fd is not None:
             try: os.close(network_fd)
@@ -2186,8 +2199,11 @@ def _recover_pending_fixed(journal):
             terminal["command_serial"], terminal["command_id"],
             terminal["binding_sha256"], terminal,
         )
+    # Absence of PREEXEC after a crash does not prove fork absence. Recovery
+    # therefore records uncertainty, unlike the live before-fork path which can
+    # prove every pipe end closed and no child ever existed.
     body = _outcome_body(
-        intent, "not-started" if preexec is None else "uncertain", None, None,
+        intent, "uncertain", None, None,
         b"", b"", {"stdout": False, "stderr": False}, None, False,
         closure, state, errors, 0,
     )

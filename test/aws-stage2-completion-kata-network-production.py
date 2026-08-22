@@ -431,7 +431,10 @@ durable_history = {"operation_token": "a" * 64, "phase": "RUNTIME_READY", "tip":
     "outcomes": (run_outcome, *observer_outcomes), "outputs": observer_outputs,
     "daemon_retained": (), "daemon_outcomes": (), "runtime_resumes": ()}
 class ReopenedObservationJournal:
+    def __init__(self): self.platform_observations = []
     def runtime_recovery_history(self): return copy.deepcopy(durable_history)
+    def record_platform_observation(self, observation):
+        self.platform_observations.append(observation)
 nonlocals = inspect.getclosurevars(runtime._observe_fixed_runtime).nonlocals
 owners = nonlocals["owners"]
 attestations = inspect.getclosurevars(nonlocals["verify_attestation"]).nonlocals["attestations"]

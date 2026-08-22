@@ -66,6 +66,25 @@ with patch.object(process.os, "close", side_effect=OSError(errno.EINTR, "uncerta
     assert not process._close_and_prove_absent(proof_w, "portable-fd", proof_errors)
 real_close(proof_w)
 assert proof_errors == [f"portable-fd-close:{errno.EINTR}"]
+# A live failure proven before fork is a certain not-started terminal: no leader
+# exists and closing every local pipe end proves EOF. Crash recovery without a
+# PREEXEC record remains uncertain because fork absence is unknowable.
+portable_intent = {"operation_token": "a" * 64, "command_serial": 0,
+                   "command_id": "CTR_RUN", "binding_sha256": "b" * 64}
+with patch.object(process.kata_operation, "_validate_body"):
+    before_fork = process._outcome_body(
+        portable_intent, "not-started", None, None, b"", b"",
+        {"stdout": False, "stderr": False}, None, True,
+        (True, True, True, True), {"term": False, "kill": False}, [], 0)
+    crash_unknown = process._outcome_body(
+        portable_intent, "uncertain", None, None, b"", b"",
+        {"stdout": False, "stderr": False}, None, False,
+        (True, False, True, False), {"term": False, "kill": False},
+        ["crash-continuation"], 0)
+assert before_fork["outcome"] == "not-started" and not before_fork["uncertain"] \
+       and before_fork["pipes_eof"] and before_fork["leader_reaped"]
+assert crash_unknown["outcome"] == "uncertain" and crash_unknown["uncertain"] \
+       and not crash_unknown["pipes_eof"]
 process_source = (REMOTE / "completion_kata_process.py").read_text()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
@@ -121,9 +140,10 @@ class ExpiredJournal:
     def recovery_lifecycle_deadline(self): return BOOT_A, 90
     def record_command_outcome(self, body): self.recorded = body; return body
 expired_capture = {}
-def expired_body(_intent, _outcome, _status, _errno, _stdout, _stderr, _overflow,
+def expired_body(_intent, outcome, _status, _errno, _stdout, _stderr, _overflow,
                  _wait, _eof, cleanup, state, errors, _release):
-    expired_capture.update({"cleanup": cleanup, "state": dict(state), "errors": tuple(errors)})
+    expired_capture.update({"outcome": outcome, "cleanup": cleanup,
+                            "state": dict(state), "errors": tuple(errors)})
     return {"uncertain": True}
 expected_generation = tuple(range(len(process.kata_operation.GEN_KEYS)))
 expired_journal = ExpiredJournal(expected_generation)
@@ -135,7 +155,8 @@ with patch.object(process, "_boottime_ns", return_value=100), \
 recover.assert_called_once_with(
     process.CGROUP_BASE + "/" + "d" * 64 + "-7", expected_generation,
     2_000_000_100, {"term": False, "kill": False}, ["crash-continuation", "lifecycle-deadline-expired"])
-assert expired_capture == {"cleanup": (True, False, True, False),
+assert expired_capture == {"outcome": "uncertain",
+                           "cleanup": (True, False, True, False),
                            "state": {"term": False, "kill": False},
                            "errors": ("crash-continuation", "lifecycle-deadline-expired")}
 
