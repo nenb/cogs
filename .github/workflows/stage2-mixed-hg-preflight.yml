@@ -33,16 +33,21 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_CONTROL_HEAD" = 625a40c5ba490178f366f79e9337ee3a0f4adea7
           test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
           test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
-          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
-          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
-          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$EXACT_CONTROL_HEAD"
-          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
-          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXACT_CONTROL_HEAD"
-          test -z "$(/usr/bin/git -C "$GITHUB_WORKSPACE" status --porcelain)"
+          exact_git() {
+            path=$1 revision=$2
+            "${clean[@]}" /usr/bin/git init --quiet "$path"
+            "${clean[@]}" /usr/bin/git -C "$path" remote add origin https://github.com/nenb/cogs.git
+            "${clean[@]}" /usr/bin/git -C "$path" fetch --quiet --no-tags --depth=1 origin "$revision"
+            "${clean[@]}" /usr/bin/git -C "$path" checkout --quiet --detach FETCH_HEAD
+            test "$(/usr/bin/git -C "$path" rev-parse HEAD)" = "$revision"
+            test -z "$(/usr/bin/git -C "$path" status --porcelain)"
+          }
+          exact_git "$GITHUB_WORKSPACE/control" "$EXACT_CONTROL_HEAD"
+          exact_git "$GITHUB_WORKSPACE/driver" "$GITHUB_SHA"
       - name: Execute exact mixed H-G preparation and mandatory settlement without KVM
         timeout-minutes: 46
         run: |
@@ -51,11 +56,11 @@ jobs:
             GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REF="$GITHUB_REF" \
             GITHUB_REF_PROTECTED="$GITHUB_REF_PROTECTED" GITHUB_SHA="$GITHUB_SHA" \
             EXACT_IMPLEMENTATION_HEAD="$EXACT_IMPLEMENTATION_HEAD" EXACT_CONTROL_HEAD="$EXACT_CONTROL_HEAD" \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 2690s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" run
+            /usr/bin/timeout --signal=TERM --kill-after=10s 2690s /bin/bash "$GITHUB_WORKSPACE/driver/scripts/stage2-mixed-hg-preflight.sh" run
       - name: Independently repeat mandatory settlement after every outcome
         if: always()
         timeout-minutes: 11
         run: |
           env -i BASH_ENV=/dev/null ENV=/dev/null HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" settle
+            /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/driver/scripts/stage2-mixed-hg-preflight.sh" settle

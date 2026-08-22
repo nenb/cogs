@@ -61,6 +61,7 @@ test("mixed H-G preflight runs exact preparation and settlement but never KVM", 
   assert.doesNotMatch(preflightWorkflow, /actions\/checkout|upload-artifact|id-token|write/u);
   assert.match(preflightWorkflow, /if: always\(\)/u);
   assert.match(preflight, /H=1eaec52dd4e2f1222548362e92adc780a2169025/u);
+  assert.match(preflight, /G=625a40c5ba490178f366f79e9337ee3a0f4adea7/u);
   assert.match(preflight, /MANIFEST=ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768/u);
   assert.match(preflight, /CONTROL=d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d/u);
   assert.match(preflight, /prepare-stage2-fixed-source\.py/u);
@@ -71,6 +72,8 @@ test("mixed H-G preflight runs exact preparation and settlement but never KVM", 
   assert.match(preflight, /cogs-stage2-mixed-hg-source-v1/u);
   assert.match(preflight, /TF_TOKEN_app_terraform_io[\s\S]*GOOGLE_APPLICATION_CREDENTIALS[\s\S]*PYTHONOPTIMIZE/u);
   assert.match(preflightWorkflow, /env -i BASH_ENV=\/dev\/null ENV=\/dev\/null/u);
+  assert.match(preflightWorkflow, /exact_git "\$GITHUB_WORKSPACE\/control" "\$EXACT_CONTROL_HEAD"/u);
+  assert.match(preflightWorkflow, /exact_git "\$GITHUB_WORKSPACE\/driver" "\$GITHUB_SHA"/u);
   assert.equal(preflight.match(/stage2-local-settlement\.py" supervise-(?:cleanup|residue)/gu)?.length, 2);
   assert.doesNotMatch(preflight, /completion_local_full|\/dev\/kvm|containerd-shim-kata-v2[^\n]*--/u);
   const syntax = spawnSync("bash", ["-n", preflightPath], { encoding: "utf8" });
