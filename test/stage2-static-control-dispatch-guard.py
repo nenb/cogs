@@ -147,7 +147,7 @@ assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
 # Response order does not confer authority; the exact current ID is still the sole earliest ID.
 GUARD.guard(environment(), urlopen=opener(list(reversed(BASE_HISTORY))))
 
-# All five consumed attempt-one failures are exact required predecessors.
+# All six consumed attempt-one failures are exact required predecessors.
 for predecessor_id in GUARD.PREDECESSORS:
     other_predecessors = [
         predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id

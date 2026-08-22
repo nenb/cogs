@@ -251,6 +251,15 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError("foreign cache material was ignored")
     assert foreign.read_bytes() == b"foreign"
 
+with tempfile.TemporaryDirectory() as temporary:
+    source_root = Path(temporary) / "source"
+    (source_root / "deploy/aws-feasibility").mkdir(parents=True)
+    module.SOURCE_ROOT = source_root
+    module.COMPLETION_ROOT = source_root / "deploy/aws-feasibility/.state/completion-v1"
+    module._prepare_state_parents()
+    assert module.COMPLETION_ROOT.is_dir()
+    assert not module.COMPLETION_ROOT.stat().st_mode & 0o022
+
 isolated = subprocess.run(
     (sys.executable, "-I", "-B", "-c",
      "import runpy,sys;runpy.run_path(sys.argv[1],run_name='isolated_import')",

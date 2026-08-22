@@ -197,6 +197,20 @@ def _load_ownership():
     return raw, value
 
 
+def _prepare_state_parents():
+    """Create only the fixed private state parents omitted from source archives."""
+    state_root = COMPLETION_ROOT.parent
+    _require(state_root == SOURCE_ROOT / "deploy/aws-feasibility/.state")
+    for path in (state_root, COMPLETION_ROOT):
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        seen = path.lstat()
+        _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == os.geteuid()
+                 and not stat.S_IMODE(seen.st_mode) & 0o022)
+
+
 def _reject_ambient_authority():
     _require(os.geteuid() == 0 and sys.argv == [sys.argv[0]])
     _require(sys.platform.startswith("linux") and os.uname().machine == "x86_64")
@@ -710,7 +724,9 @@ def recover_failed_preparation():
 
 def prepare():
     _reject_ambient_authority()
-    _require(SOURCE_ROOT.is_dir() and not PREPARATION_ROOT.exists()
+    _require(SOURCE_ROOT.is_dir())
+    _prepare_state_parents()
+    _require(not PREPARATION_ROOT.exists()
              and not IMMUTABLE_STAGING.exists()
              and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     contract = _fixed_contract()
