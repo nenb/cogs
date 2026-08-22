@@ -1431,7 +1431,19 @@ def _legal(records):
                 _fail(not snapshots or snapshots[-1]["snapshot_kind"] == "firewall-restored" and
                       body["proof_sha256"] == snapshots[-1]["proof_sha256"])
             elif kind == "INPUT_REMOVED":
-                _fail(phase == "FIREWALL_ABSENT")
+                steps = [item.body for item in records[:index]
+                         if item.record_type == "INPUT_STEP"]
+                by_path = {}
+                for step in steps: by_path[step["path"]] = step
+                early = (phase in {"ROOTFS_LEASED", "FS_SETTLED"}
+                         and not network_state["snapshots"]
+                         and not network_state["effects"]
+                         and runtime_staged is None
+                         and all(item.body["command_id"] in command_policy.KEY_COMMANDS
+                                 for item in records[:index]
+                                 if item.record_type == "COMMAND_INTENT_V2")
+                         and all(step["action"] == "absent" for step in by_path.values()))
+                _fail(phase == "FIREWALL_ABSENT" or early)
             elif kind == "ROOTFS_RELEASE_READY":
                 _fail(phase == "INPUT_REMOVED")
                 leased = next(item for item in records if item.record_type == "ROOTFS_LEASED").body
@@ -1914,7 +1926,7 @@ def _make_authority():
         def __getattribute__(self, name):
             direct = {"record_command_intent", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
             if name in direct: return object.__getattribute__(self, name)
-            _fail(name in {"command_context", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
+            _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
@@ -2038,6 +2050,22 @@ def _make_authority():
                 genesis["operation_token"], genesis["journal_key"], genesis["host_boot_id"],
                 genesis["source_revision"], _legal(records), serial,
             )
+        def reconstruction_identity(self):
+            _io, records, status = reload(self, True)
+            _fail(status == "exact" and records)
+            genesis = records[0].body
+            leased = [row.body for row in records if row.record_type == "ROOTFS_LEASED"]
+            return {
+                "operation_token": genesis["operation_token"],
+                "rootfs_token": genesis["rootfs_token"],
+                "source_revision": genesis["source_revision"],
+                "source_manifest_sha256": genesis["source_manifest_sha256"],
+                "host_boot_id": genesis["host_boot_id"],
+                "journal_key": genesis["journal_key"],
+                "phase": _legal(records),
+                "tip": records[-1].record_type,
+                "rootfs_leased": None if not leased else leased[0],
+            }
         def has_recovery_command(self):
             _io, records, status = reload(self); _fail(status == "exact")
             return records[-1].record_type in {
@@ -2298,7 +2326,9 @@ def _make_authority():
                 "operation_token": context.operation_token})
         def record_input_removed(self, proof_sha256):
             context = self.command_context()
-            _fail(context.lifecycle_phase == "FIREWALL_ABSENT" and _hex(proof_sha256))
+            _fail(context.lifecycle_phase in {"ROOTFS_LEASED", "FS_SETTLED",
+                                               "FIREWALL_ABSENT"}
+                  and _hex(proof_sha256))
             write_validated(self, "INPUT_REMOVED", {"operation_token": context.operation_token,
                                                      "proof_sha256": proof_sha256})
         def record_uncertain(self, reason):
@@ -2446,6 +2476,29 @@ def _make_authority():
         write_validated(retained, "RETIRE_INTENT", body)
         write_validated(retained, "RETIRED", body)
         return retired_operation(retained)
+    def resume_retire_production(authority, final_snapshot=None):
+        capability = (claim_production_retired_operation(authority)
+                      if type(authority) is not CleanupAuthority
+                      and authority.reconstruction_identity()["phase"] == "RETIRED"
+                      else authority)
+        _fail(type(capability) is CleanupAuthority and capability in cleanup_owners)
+        retained = cleanup_owners[capability]
+        _io, records, status = reload(retained, True)
+        _fail(status == "exact")
+        phase = _legal(records)
+        if phase == "ROOTFS_ABSENT":
+            return retire_production(capability, final_snapshot)
+        _fail(phase in {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
+        final = next(row.body for row in records if row.record_type == "FINAL_BASELINES")
+        body = {"operation_token": records[0].body["operation_token"],
+                "journal_key": records[0].body["journal_key"],
+                "final_baselines_sha256": final["final_baselines_sha256"]}
+        if phase == "FINAL_BASELINES":
+            write_validated(retained, "RETIRE_INTENT", body)
+        _io, records, status = reload(retained, True)
+        if _legal(records) == "RETIRE_INTENT":
+            write_validated(retained, "RETIRED", body)
+        return retired_operation(capability)
     def remove_retired(authority):
         retained = cleanup_owners[authority] if type(authority) is CleanupAuthority else authority
         receipt = retired_operation(retained)
@@ -2630,12 +2683,37 @@ def _make_authority():
         _fail(status == "exact" and len(admissions) == len(deadlines) == 1)
         _require_live_production_deadline(records)
         return authority
-    def claim_production_cleanup_operation(authority):
-        if type(authority) is CleanupAuthority: _fail(authority in cleanup_owners); return authority
+    def cleanup_capability(authority, retired):
+        if type(authority) is CleanupAuthority:
+            _fail(authority in cleanup_owners)
+            phase = cleanup_owners[authority].durable_phase()
+            _fail(retired == (phase == "RETIRED"))
+            return authority
         _fail(type(authority) is OperationAuthority and authority in owners and authority not in closed)
         _io, records, status = reload(authority, True); kinds = [row.record_type for row in records]
-        _fail(status == "exact" and _legal(records) != "RETIRED" and kinds.count("PRODUCTION_ADMISSION_V2") == kinds.count("LIFECYCLE_DEADLINE_V1") == 1)
+        _fail(status == "exact" and (_legal(records) == "RETIRED") == retired
+              and kinds.count("PRODUCTION_ADMISSION_V2") == kinds.count("LIFECYCLE_DEADLINE_V1") == 1)
         capability = CleanupAuthority(seal); cleanup_owners[capability] = authority; return capability
+    def claim_production_cleanup_operation(authority):
+        return cleanup_capability(authority, False)
+    def claim_production_retired_operation(authority):
+        return cleanup_capability(authority, True)
+    def reconstruct_rootfs_permit(authority):
+        _fail(type(authority) is CleanupAuthority and authority in cleanup_owners)
+        retained = cleanup_owners[authority]
+        _io, records, status = reload(retained, True)
+        phase = _legal(records)
+        _fail(status == "exact" and phase not in {
+            "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
+            "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED", "UNCERTAIN",
+        } and (phase == "ROOTFS_ACQUIRE_INTENT"
+               or any(row.record_type == "ROOTFS_LEASED" for row in records)))
+        _fail(not any(value[0] is retained and not value[4] for value in permits.values()))
+        _fail(not any(value[0] is retained and not value[5] for value in grants.values()))
+        permit = RootfsPermit(seal)
+        permits[permit] = [retained, records[0].body["operation_token"],
+                           len(records) - 1, records[-1].record_type, False]
+        return permit
     def command_context(authority): return authority.command_context()
     def pending_command(authority): return authority.pending_command()
     def has_recovery_command(authority): return authority.has_recovery_command()
@@ -2689,7 +2767,9 @@ def _make_authority():
         _open_fixed_operation, create_fixed_operation_test_local, claim_rootfs_reopen,
         invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
         invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
-        admit_production_v2, claim_production_operation, claim_production_cleanup_operation, command_context, pending_command, has_recovery_command,
+        admit_production_v2, claim_production_operation, claim_production_cleanup_operation,
+        claim_production_retired_operation, reconstruct_rootfs_permit,
+        command_context, pending_command, has_recovery_command,
         recovery_command, recovery_lifecycle_deadline,
         record_command_intent,
         record_command_preexec, record_command_output, record_command_outcome, record_daemon_retained,
@@ -2700,13 +2780,16 @@ def _make_authority():
         record_fs_settled, record_ssh_result, record_ssh_ready, durable_phase,
         revoke_readiness, revoke_or_require_terminal, record_input_removed, record_uncertain,
         network_records, network_history, record_network, settle_network_phase,
-        begin_production, retire_production, retired_operation, remove_retired,
+        begin_production, retire_production, resume_retire_production,
+        retired_operation, remove_retired,
     )
 (
     _open_fixed_operation, _create_fixed_operation_test_local, _claim_rootfs_reopen,
     _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
     _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
-    _admit_production_v2, _claim_production_operation, _claim_production_cleanup_operation, _command_context, _pending_command, _has_recovery_command,
+    _admit_production_v2, _claim_production_operation, _claim_production_cleanup_operation,
+    _claim_production_retired_operation, _reconstruct_rootfs_permit,
+    _command_context, _pending_command, _has_recovery_command,
     _recovery_command, _recovery_lifecycle_deadline,
     _record_command_intent,
     _record_command_preexec, _record_command_output, _record_command_outcome, _record_daemon_retained,
@@ -2719,7 +2802,8 @@ def _make_authority():
     _record_input_removed, _record_uncertain,
     _network_records, _network_history, _record_network, _settle_network_phase,
     _begin_production_operation, _retire_production_operation,
-    _retired_production_operation, _remove_retired_operation,
+    _resume_retire_production_operation, _retired_production_operation,
+    _remove_retired_operation,
 ) = _make_authority()
 del _make_authority
 def _runtime_mount_issuance_routes(record_body):

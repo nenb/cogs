@@ -7,7 +7,9 @@ import time
 
 import completion_kata_inputs as inputs
 import completion_kata_network as network
+import completion_kata_nft_owner as nft_owner
 import completion_kata_operation as operation
+import completion_kata_preparation_bridge as preparation
 import completion_kata_process as process
 import completion_kata_runtime as runtime
 import completion_kata_ssh as ssh
@@ -56,6 +58,74 @@ def _routes():
             current["tools"] = tuple(process._claim_attested_executable(owner, role)
                                      for role in ("ip", "nft", "tc"))
         return current["tools"]
+
+    def reconstruct(bridge, lifecycle):
+        """Rebuild cleanup-only indexes from durable records and held identities."""
+        current = state(bridge, lifecycle)
+        journal = lifecycle.operation
+        phase = operation._durable_phase(journal)
+        _require(phase != "UNCERTAIN", "uncertain operation is preserved")
+        current["recovery"] = True
+        current["reconstructed_phase"] = phase
+        network_phases = {"ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED", "FS_INTENT",
+                          "FS_SETTLED", "BASELINES_CAPTURED", "NETWORK_READY",
+                          "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
+                          "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT",
+                          "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",
+                          "SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED",
+                          "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+                          "ROOTFS_ABSENT"}
+        runtime_phases = {"NETWORK_READY", "RUNTIME_READY", "SSH_READY",
+                          "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED",
+                          "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
+                          "RUNTIME_ABSENT", "SHARE_ABSENT"}
+        if phase not in network_phases:
+            return phase
+        lifecycle.executables = preparation._reconstruct_fixed_executable_owner(
+            lifecycle.static_custody, journal)
+        rows = operation._network_records(journal)
+        current["baselines"] = rows[0] if rows else None
+        current["tools"] = tuple(process._claim_attested_executable(
+            lifecycle.executables, role) for role in ("ip", "nft", "tc"))
+        current["nft_owner"] = (nft_owner.reopen_cleanup(journal)
+                                if phase not in {"ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED",
+                                                 "FS_INTENT", "INPUT_REMOVED",
+                                                 "ROOTFS_RELEASE_READY",
+                                                 "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"}
+                                else None)
+        if phase == "FS_SETTLED" and current["nft_owner"] is not None and not rows:
+            raise ExecutionBridgeError("incomplete baseline capture is preserved")
+        if rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}:
+            current["network_owner"] = network._reopen_runtime_network(journal)
+            lifecycle.network_owner = current["network_owner"]
+        if phase in runtime_phases:
+            ensure_runtime(current, lifecycle)
+        return phase
+
+    def ensure_runtime(current, lifecycle):
+        if current.get("runtime") is not None:
+            return current["runtime"]
+        _require(lifecycle.rootfs is not None, "durable rootfs cleanup owner absent")
+        completion = fixed_chain(current)
+        input_owner = inputs._reopen_runtime_inputs(
+            lifecycle.operation, completion, current["control"])
+        config, config_nodes = open_config(current["control"])
+        try:
+            owner = runtime._reconstruct_fixed_runtime(
+                lifecycle.operation, lifecycle.rootfs, input_owner,
+                current.get("network_owner"), lifecycle.executables,
+                completion, config, current["control"])
+        except BaseException as primary:
+            errors = [primary]
+            for node in reversed(config_nodes):
+                try: fs._close_node(node)
+                except BaseException as error: errors.append(error)
+            if len(errors) == 1: raise
+            raise BaseExceptionGroup("runtime descriptor reconstruction", errors)
+        current.update({"runtime": owner, "config_nodes": config_nodes,
+                        "runtime_inputs": input_owner})
+        lifecycle.staged_runtime = owner
+        return owner
 
     def capture(bridge, lifecycle):
         current = state(bridge, lifecycle)
@@ -193,13 +263,21 @@ def _routes():
 
     def revoke(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase == "UNCERTAIN": raise ExecutionBridgeError("uncertain readiness is preserved")
         owner = current.get("ssh")
         if owner is not None: owner.revoke()
-        return operation._revoke_or_require_terminal(lifecycle.operation)
+        if phase in {"BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "SSH_READY"}:
+            return operation._revoke_or_require_terminal(lifecycle.operation)
+        return phase
 
     def ownership(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        fact = runtime._record_fixed_runtime_ownership(current["runtime"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase != "READINESS_REVOKED": return phase
+        fact = runtime._record_fixed_runtime_ownership(ensure_runtime(current, lifecycle))
+        if current.get("recovery"):
+            return fact
         mapping = current.get("execution_mapping")
         causal = current.get("network_proof")
         _require(mapping is lifecycle.execution_mapping
@@ -215,40 +293,70 @@ def _routes():
             qmp["kvm_present"], qmp["kvm_enabled"])
         return fact
 
-    def runtime_cleanup(bridge, lifecycle, expected):
+    def runtime_cleanup(bridge, lifecycle, source, expected):
         current = state(bridge, lifecycle)
-        result = runtime._cleanup_fixed_runtime(current["runtime"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase != source: return phase
+        result = runtime._cleanup_fixed_runtime(ensure_runtime(current, lifecycle))
         _require(operation._durable_phase(lifecycle.operation) == expected,
                  "runtime cleanup phase differs")
         return result
 
-    def stop_task(bridge, lifecycle): return runtime_cleanup(bridge, lifecycle, "TASK_STOPPED")
-    def remove_task(bridge, lifecycle): return runtime_cleanup(bridge, lifecycle, "TASK_ABSENT")
-    def remove_container(bridge, lifecycle): return runtime_cleanup(bridge, lifecycle, "CONTAINER_ABSENT")
-    def remove_runtime(bridge, lifecycle): return runtime_cleanup(bridge, lifecycle, "RUNTIME_ABSENT")
-    def remove_share(bridge, lifecycle): return runtime_cleanup(bridge, lifecycle, "SHARE_ABSENT")
+    def stop_task(bridge, lifecycle):
+        return runtime_cleanup(bridge, lifecycle, "OWNERSHIP_OBSERVED", "TASK_STOPPED")
+    def remove_task(bridge, lifecycle):
+        return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "TASK_ABSENT")
+    def remove_container(bridge, lifecycle):
+        return runtime_cleanup(bridge, lifecycle, "TASK_ABSENT", "CONTAINER_ABSENT")
+    def remove_runtime(bridge, lifecycle):
+        return runtime_cleanup(bridge, lifecycle, "CONTAINER_ABSENT", "RUNTIME_ABSENT")
+    def remove_share(bridge, lifecycle):
+        return runtime_cleanup(bridge, lifecycle, "RUNTIME_ABSENT", "SHARE_ABSENT")
 
     def remove_network(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        return network._remove_fixed_network(lifecycle.operation, *current["tools"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase == "BASELINES_CAPTURED":
+            return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
+        if phase in {"TASK_STOPPED", "OWNERSHIP_OBSERVED"}:
+            return network._remove_fixed_network(lifecycle.operation, *current["tools"])
+        return phase
 
     def stop_containerd(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        result = runtime._cleanup_fixed_runtime(current["runtime"])
-        runtime._close_fixed_runtime(current["runtime"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase != "SHARE_ABSENT": return phase
+        owner = ensure_runtime(current, lifecycle)
+        result = runtime._cleanup_fixed_runtime(owner)
+        runtime._close_fixed_runtime(owner)
+        current["runtime"] = None
         for node in reversed(current.pop("config_nodes", ())): fs._close_node(node)
         return result
 
     def remove_firewall(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        return network._remove_fixed_firewall(lifecycle.operation, *current["tools"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase == "SHARE_ABSENT":
+            return network._remove_fixed_firewall(lifecycle.operation, *current["tools"])
+        return phase
 
     def final_baselines(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        result = network._observe_final_network_absence(
-            lifecycle.operation, *current["tools"])
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase == "ROOTFS_ABSENT":
+            rows = operation._network_records(lifecycle.operation)
+            result = (network._observe_final_network_absence(
+                lifecycle.operation, *current["tools"]) if rows else
+                network._observe_unstarted_final_absence(
+                    lifecycle.operation, *current["tools"]))
+        elif phase in {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+            rows = operation._network_records(lifecycle.operation)
+            _require(rows and rows[-1]["snapshot_kind"] == "final-absent")
+            result = rows[-1]
+        else:
+            return phase
         errors = []
-        for executable in reversed(current.pop("tools")):
+        for executable in reversed(current.pop("tools", ())):
             try: process._release_attested_executable(executable)
             except BaseException as error: errors.append(error)
         chain, current["chain"] = current.get("chain"), None
@@ -373,14 +481,15 @@ def _routes():
         value = _Bridge(seal); states[value] = {"lifecycle": None, "chain": None}
         return value
 
-    return (issue, claim_tools, capture, create_network, prove_network, stage,
+    return (issue, reconstruct, claim_tools, capture, create_network, prove_network, stage,
             bind_mapping, launch, prove_runtime, authenticate, revoke, ownership,
             stop_task, remove_network, remove_task, remove_container,
             remove_runtime, remove_share, stop_containerd, remove_firewall,
             final_baselines, independent_residue)
 
 
-(_take_execution_bridge, _claim_network_tools, _capture_baselines, _create_network,
+(_take_execution_bridge, _reconstruct_execution_cleanup,
+ _claim_network_tools, _capture_baselines, _create_network,
  _prove_network_causality, _stage_runtime, _bind_execution_mapping, _launch_task,
  _prove_runtime, _authenticate_ssh, _revoke_readiness, _observe_ownership,
  _stop_task, _remove_network, _remove_task, _remove_container, _remove_runtime,

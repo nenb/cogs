@@ -113,8 +113,8 @@ def _duplicate_role(description, expected):
         raise BaseExceptionGroup("retained executable duplication failed", errors)
 
 
-def _claim_fixed_executable_owner(custody):
-    """Issue one existing process owner containing all ten role-associated claims."""
+def _issue_fixed_executable_owner(custody):
+    """Issue one owner from descriptors retained by exact static custody."""
     state = _states.get(custody)
     _require(state is not None and state["executables"] is None)
     retained = []
@@ -138,6 +138,29 @@ def _claim_fixed_executable_owner(custody):
         if len(errors) == 1:
             raise
         raise BaseExceptionGroup("fixed executable owner issuance failed", errors)
+
+
+def _claim_fixed_executable_owner(custody):
+    """Forward-only executable handoff after live rootfs mapping custody."""
+    state = _states.get(custody)
+    _require(state is not None and state["mapping_consumed"])
+    return _issue_fixed_executable_owner(custody)
+
+
+def _reconstruct_fixed_executable_owner(custody, journal):
+    """Reopen host tools only when static identity equals the durable genesis."""
+    import completion_kata_operation as operation
+    state = _states.get(custody)
+    _require(state is not None and state["lease"] is None
+             and state["mapping"] is None and state["executables"] is None)
+    approval = _fixed_source_approval(custody)
+    identity = journal.reconstruction_identity()
+    _require(identity["source_revision"] == approval.revision
+             and identity["source_manifest_sha256"] == approval.manifest_sha256
+             and identity["phase"] != "UNCERTAIN")
+    # Role custody duplicates only already-authenticated retained descriptors;
+    # it does not execute, materialize, acquire, or launch any object.
+    return _issue_fixed_executable_owner(custody)
 
 
 def _abandon_fixed_rootfs(custody, lease):

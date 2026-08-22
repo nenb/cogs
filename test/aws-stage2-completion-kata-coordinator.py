@@ -121,6 +121,9 @@ class FakeOwners:
     def recover_pending(self, _lifecycle):
         return self.step("PENDING_OWNER_RECOVERED")
 
+    def reconstruct_cleanup(self, _lifecycle):
+        return self.step("DURABLE_OWNERS_RECONSTRUCTED")
+
     def owner_evidence(self, lifecycle):
         name = "RECOVERY_EVIDENCE" if lifecycle.recovery else "OWNER_EVIDENCE"
         if lifecycle.operation is None:
@@ -219,7 +222,8 @@ for side in ("before", "after"):
 
 # Recovery has only immutable custody, exact existing-state opening, pending
 # child settlement, cleanup, and custody close. It cannot issue evidence/receipt.
-recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED")
+recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED",
+                   "DURABLE_OWNERS_RECONSTRUCTED")
 fake = FakeOwners()
 assert invoke(coordinator._recover_fixed_local_qualification, fake)
 assert tuple(fake.events) == (*recovery_prefix, *coordinator.CLEANUP_ORDER,

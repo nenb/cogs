@@ -504,6 +504,68 @@ def _require_owner(journal):
     return owner
 
 
+def reopen_cleanup(journal):
+    """Reconstruct only the exact durable ACTIVE writer for historical cleanup.
+
+    Taking the same OFD lock proves the crashed writer no longer retains it.
+    FREE is accepted only when the journal has no network history or already
+    contains the matching cleanup settlement. RELEASING and every mismatch are
+    deliberately preserved; close-pending state never regains writer authority.
+    """
+    context, history, binding, genesis = _journal_bindings(journal)
+    if context.operation_token in _OWNERS:
+        return _require_owner(journal)
+    descriptors, parent, parent_identity = _open_parent()
+    lock_fd = None
+    try:
+        lock_fd, lock_identity = _open_lock(parent)
+        durable = _read_state(parent)
+        locked_context, locked_history, locked_binding, locked_genesis = _journal_bindings(journal)
+        if (locked_context != context or locked_binding != binding
+                or locked_genesis != genesis
+                or locked_history["terminal_sha256"] != history["terminal_sha256"]):
+            raise NftOwnerError("operation changed during NFT cleanup reconstruction")
+        network_rows = journal.network_history()
+        if durable["phase"] == "FREE":
+            terminal_free = history["phase"] in {"NETWORK_ABSENT", "FIREWALL_ABSENT",
+                                                  "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+                                                  "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
+                                                  "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}
+            if network_rows and not terminal_free:
+                raise NftOwnerError("FREE NFT owner contradicts live network journal")
+            _close_proven(lock_fd, "FREE NFT cleanup probe")
+            lock_fd = None
+            for descriptor in reversed(descriptors):
+                _close_proven(descriptor, "FREE NFT parent descriptor")
+            return None
+        if durable["phase"] != "ACTIVE":
+            raise NftOwnerError("close-pending NFT authority is preserved")
+        if (durable["operation_token"] != context.operation_token
+                or durable["journal_binding_sha256"] != binding
+                or durable["journal_genesis_sha256"] != genesis
+                or durable["host_boot_id"] != _boot_id()
+                or durable["host_netns"] != _host_netns()):
+            raise NftOwnerError("durable NFT cleanup identity mismatch")
+        owner = _OwnerState(journal, descriptors, parent, parent_identity,
+                            lock_fd, lock_identity, durable)
+        _OWNERS[context.operation_token] = owner
+        try:
+            result = _require_owner(journal)
+            lock_fd = None
+            return result
+        except BaseException:
+            _OWNERS.pop(context.operation_token, None)
+            raise
+    except BaseException:
+        if lock_fd is not None:
+            try: os.close(lock_fd)
+            except OSError: pass
+        for descriptor in reversed(descriptors):
+            try: os.close(descriptor)
+            except OSError: pass
+        raise
+
+
 def acquire(journal):
     context, history, binding, genesis = _journal_bindings(journal)
     if context.operation_token in _OWNERS:

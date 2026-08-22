@@ -85,4 +85,19 @@ except network.NetworkError:
 else:
     raise AssertionError("caller created GuestNetworkProof")
 
+# A second isolated interpreter exercises the real production OFD owner and
+# reconstructs its cleanup authority after all retained owner descriptors are
+# closed. The same matrix proves RELEASING and close uncertainty never regain
+# authority. No KVM or fake NFT owner is involved.
+nft_recovery = subprocess.run(
+    (sys.executable, "-I", "-B", str(ROOT / "test/aws-stage2-completion-kata-nft-owner.py")),
+    cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    env={"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
+         "PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "TZ": "UTC"},
+    timeout=30, check=False)
+require(nft_recovery.returncode == 0 and
+        b"persistent NFT owner hostile-cut matrix passed" in nft_recovery.stdout,
+        "fresh-process durable NFT recovery failed: "
+        + repr((nft_recovery.returncode, nft_recovery.stdout, nft_recovery.stderr)))
+
 print("pinned Linux no-KVM final integration and missing-G refusal passed")

@@ -569,7 +569,10 @@ def setup_abort_complete(state):
     count = 0
     while count < len(actions) and count < len(SETUP) and actions[count] == SETUP[count]:
         count += 1
-    if count == 0: return False
+    if count == 0:
+        return (len(state["snapshots"]) == 1
+                and state["snapshots"][0]["snapshot_kind"] == "baseline"
+                and not state["effects"] and state["pending"] is None)
     expected = [*SETUP[:count], "IP_NETNS_REMOVE"]
     if count > SETUP.index("NFT_INSTALL_OWNED"): expected.append("NFT_REMOVE_ATOMIC")
     return actions == expected and state["pending"] is None and state["quarantine"] is not None and state["quarantine"][0] == "NETWORK_DETACHED_V2"
@@ -589,7 +592,8 @@ def successful_trace(command_ids, phase, replay_indices=(), policy_version=POLIC
     setup_abort_traces = (SETUP_ABORT_TRACES if policy_version in {POLICY_VERSION, NFT_GATE_POLICY_VERSION}
                           else LEGACY_SETUP_ABORT_TRACES)
     valid = (observed in variants if variants is not None else
-             phase == "BASELINES_CAPTURED" and observed in setup_abort_traces or
+             phase == "BASELINES_CAPTURED" and (observed in setup_abort_traces
+                 or observed == SUCCESS_PHASE_TRACES["FS_SETTLED"]) or
              phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
     if not valid:
         raise ValueError(f"network journal trace:{phase}:{observed!r}")

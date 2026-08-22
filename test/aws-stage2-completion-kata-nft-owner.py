@@ -109,6 +109,9 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
             }
         def runtime_recovery_history(self):
             return self.history
+        def network_history(self):
+            return (() if self.history["phase"] == "FS_SETTLED" else
+                    (("NETWORK_SNAPSHOT_V2", {}),))
 
     original_context = operation._command_context
 
@@ -135,7 +138,8 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
 
         # A deletion child holding the inherited exact OFD prevents an
         # independent contender after the owner dies. Child death releases the
-        # lock, but ACTIVE still blocks recovery/retry and requires disposal.
+        # lock; only cleanup reconstruction of the same durable identity may
+        # regain it, and that route can settle historical absence without work.
         journal = Journal()
         live = owner.acquire(journal)
         claimed = owner.claim_child_binding(journal)
@@ -166,11 +170,14 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
             for descriptor in reversed(opened): os.close(descriptor)
         rejected(lambda: owner.acquire(Journal()))
         assert owner._parse_state((path / owner.STATE_NAME).read_bytes())["phase"] == "ACTIVE"
+        recovered = owner.reopen_cleanup(journal)
+        assert recovered.active["operation_token"] == context.operation_token
+        journal.history.update({"phase": "NETWORK_ABSENT",
+            "tip": "NETWORK_CLEANUP_SETTLED_V2", "terminal_sha256": "7" * 64,
+            "intents": (), "preexecs": (), "outcomes": ()})
+        assert owner.settle_free(journal, "network")["phase"] == "FREE"
 
-        # Explicit test disposal restores the preprovisioned FREE fixture. An
-        # uninterrupted unique command then performs ACTIVE->RELEASING->FREE.
-        (path / owner.STATE_NAME).write_bytes(owner.initial_free_for_tests(fence))
-        os.chmod(path / owner.STATE_NAME, 0o600)
+        # An uninterrupted unique command then performs ACTIVE->RELEASING->FREE.
         journal = Journal(); live = owner.acquire(journal)
         binding = {
             "role": owner.LOCK_ROLE, "target_fd": owner.LOCK_TARGET_FD,
@@ -199,7 +206,7 @@ if sys.platform.startswith("linux") and os.geteuid() == 0:
             "preexecs": (preexec,), "outcomes": (outcome,),
         })
         settled = owner.settle_free(journal, "firewall")
-        assert settled["phase"] == "FREE" and settled["sequence"] == 3
+        assert settled["phase"] == "FREE" and settled["sequence"] == 6
 
         # A setup abort before NFT installation has no deletion child to reap,
         # but its durable network absence still releases the baseline owner.

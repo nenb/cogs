@@ -44,6 +44,8 @@ test("pinned Linux Docker without KVM refuses missing G before mutation", { time
         "/tmp:rw,nosuid,nodev,noexec,mode=1777",
         "--tmpfs",
         "/run:rw,nosuid,nodev,mode=755",
+        "--tmpfs",
+        "/var/lib:rw,nosuid,nodev,noexec,mode=755",
         "--mount",
         `type=volume,src=${volume},dst=/workspace,readonly`,
         "--workdir",

@@ -2809,6 +2809,23 @@ def _prove_causal_guest_network(journal, ip, nft, tc, guest):
     return body
 
 
+def _observe_unstarted_final_absence(journal, ip, nft, tc):
+    """Prove final host absence when no network mutation was ever journaled."""
+    import completion_kata_operation as operation
+    history = operation._network_history(journal)
+    if (any(kind in operation.network_journal.RECORDS for kind, _body in history)
+            or operation._network_records(journal)):
+        raise NetworkError("unstarted network history differs")
+    raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
+    if _netns_identity(journal, mountinfo) is not None:
+        raise NetworkError("unstarted namespace exists")
+    body = {"operation_token": operation._command_context(journal).operation_token,
+            "unstarted": True, "baselines": fresh,
+            "sources_sha256": hashlib.sha256(b"".join(raws) + mountinfo).hexdigest()}
+    body["proof_sha256"] = hashlib.sha256(operation._canonical(body)).hexdigest()
+    return body
+
+
 def _observe_final_network_absence(journal, ip, nft, tc):
     """Fresh final read-only network baseline after every mutable owner closed."""
     import completion_kata_operation as operation
@@ -3249,8 +3266,20 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         for expected, body in zip(_SETUP_ACTIONS, settled, strict=False):
             if body["action"] != expected.value: break
             setup.append(body)
-        if not setup or len(setup) > len(_SETUP_ACTIONS):
-            raise NetworkError("settled setup prefix absent")
+        if len(setup) > len(_SETUP_ACTIONS):
+            raise NetworkError("settled setup prefix invalid")
+        if not setup:
+            if effect_rows:
+                raise NetworkError("identity-free setup effect")
+            journal.begin_network_cleanup("network")
+            raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
+            if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
+                raise NetworkError("zero-prefix setup baseline changed")
+            body = _snapshot(journal, "network-absent", baselines, _empty_identity(),
+                             _sources(journal, "NETWORK_SNAPSHOT_V2"))
+            _settle_cleanup(journal, "network", "NETWORK_ABSENT")
+            nft_owner.settle_free(journal, "network")
+            return body
         suffix = [body["action"] for body in settled[len(setup):]]
         expected_suffix = [Action.IP_NETNS_REMOVE.value]
         if setup[-1]["identity"]["nft"] is not None:

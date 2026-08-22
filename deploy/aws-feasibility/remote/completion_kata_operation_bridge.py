@@ -97,12 +97,17 @@ def _routes():
             raise BaseExceptionGroup("operation begin preservation failure", errors)
 
     def open_existing(bridge, lifecycle):
+        """Reconstruct the exact journal writer; never admit a forward owner."""
         current = state(bridge, lifecycle)
         _require(current.get("authority") is None)
         authority = operation._open_fixed_operation()
         try:
-            cleanup = operation._claim_production_cleanup_operation(authority)
-            current.update({"authority": authority, "cleanup": cleanup})
+            phase = authority.reconstruction_identity()["phase"]
+            cleanup = (operation._claim_production_retired_operation(authority)
+                       if phase == "RETIRED" else
+                       operation._claim_production_cleanup_operation(authority))
+            current.update({"authority": authority, "cleanup": cleanup,
+                            "reconstructed_phase": phase})
             open_chain(current)
             return cleanup
         except BaseException as error:
@@ -120,6 +125,27 @@ def _routes():
             current["authority"] = None
             raise error
 
+    def reconstruct_rootfs(bridge, lifecycle):
+        """Reopen only the lease named by both exact durable ledgers."""
+        current = state(bridge, lifecycle)
+        cleanup = current.get("cleanup")
+        _require(cleanup is lifecycle.operation)
+        identity = cleanup.reconstruction_identity()
+        phase = identity["phase"]
+        if phase == "UNCERTAIN":
+            raise OperationBridgeError("uncertain operation is preserved")
+        if (identity["rootfs_leased"] is None and phase != "ROOTFS_ACQUIRE_INTENT"
+                or phase in {
+                "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+                "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}):
+            return None
+        permit = operation._reconstruct_rootfs_permit(cleanup)
+        held = rootfs._reopen_kata_reserved(permit, current["control"])
+        _require(held.reference.token == identity["rootfs_token"]
+                 and held.disposition == "held")
+        current["lease"] = held
+        return held
+
     def create_inputs(bridge, lifecycle):
         current = state(bridge, lifecycle)
         completion = open_chain(current)
@@ -131,6 +157,10 @@ def _routes():
 
     def remove_inputs(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        phase = operation._durable_phase(lifecycle.operation)
+        if phase in {"INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+                     "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+            return phase
         owner = current.get("inputs")
         if owner is not None:
             return owner.remove()
@@ -145,10 +175,16 @@ def _routes():
         if cleanup is None:
             cleanup = operation._claim_production_cleanup_operation(current["authority"])
             current["cleanup"] = cleanup
+        phase = operation._durable_phase(cleanup)
+        if phase in {"ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED"}:
+            return cleanup.prepare_rootfs_release()
+        if phase != "INPUT_REMOVED": return phase
         return cleanup.prepare_rootfs_release()
 
     def authorize_release(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        phase = operation._durable_phase(current["cleanup"])
+        if phase != "ROOTFS_RELEASE_READY": return phase
         held = current.get("lease") or lifecycle.rootfs
         if held is None:
             held = rootfs._reopen_kata_reserved(
@@ -162,6 +198,8 @@ def _routes():
 
     def remove_rootfs(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        phase = operation._durable_phase(current["cleanup"])
+        if phase != "ROOTFS_RELEASE_AUTHORIZED": return phase
         held, authorization = rootfs._recover_kata_release(
             current["cleanup"], current["control"])
         current["released"] = held
@@ -169,7 +207,10 @@ def _routes():
 
     def retire(bridge, lifecycle):
         current = state(bridge, lifecycle)
-        retired = operation._retire_production_operation(
+        phase = operation._durable_phase(current["cleanup"])
+        if phase not in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+            return phase
+        retired = operation._resume_retire_production_operation(
             current["cleanup"], lifecycle.final_baselines)
         import completion_local_evidence as evidence
         typed = evidence._RetiredJournalOwnerResult(retired.raw)
@@ -179,6 +220,8 @@ def _routes():
 
     def remove_operation(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        if operation._durable_phase(current["cleanup"]) != "RETIRED":
+            return operation._durable_phase(current["cleanup"])
         retired = operation._remove_retired_operation(current["cleanup"])
         _require(retired.raw == current["retired"].raw
                  == current["typed_retired"].raw)
@@ -229,13 +272,13 @@ def _routes():
         states[value] = {"lifecycle": None, "authority": None, "chain": None}
         return value
 
-    return (issue, acquire, open_operation, open_existing, create_inputs,
-            remove_inputs, prepare_release, authorize_release, remove_rootfs,
+    return (issue, acquire, open_operation, open_existing, reconstruct_rootfs,
+            create_inputs, remove_inputs, prepare_release, authorize_release, remove_rootfs,
             retire, remove_operation, abandon, recover_pending)
 
 
 (_take_operation_bridge, _acquire_rootfs, _open_operation, _open_existing_operation,
- _create_inputs, _remove_inputs, _prepare_rootfs_release, _authorize_rootfs_release,
+ _reconstruct_rootfs, _create_inputs, _remove_inputs, _prepare_rootfs_release, _authorize_rootfs_release,
  _remove_rootfs, _retire_operation, _remove_operation, _abandon_prepared_rootfs,
  _recover_pending) = _routes()
 del _routes

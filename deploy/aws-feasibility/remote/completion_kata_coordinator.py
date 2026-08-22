@@ -257,6 +257,12 @@ class _PackagePrivateOwners:
     def recover_pending(self, lifecycle):
         return operation_bridge._recover_pending(self.operation, lifecycle)
 
+    def reconstruct_cleanup(self, lifecycle):
+        lifecycle.rootfs = operation_bridge._reconstruct_rootfs(
+            self.operation, lifecycle)
+        return execution_bridge._reconstruct_execution_cleanup(
+            self.execution, lifecycle)
+
     def revoke_readiness(self, lifecycle):
         return execution_bridge._revoke_readiness(self.execution, lifecycle)
 
@@ -368,6 +374,11 @@ def _cleanup_operation(lifecycle):
 
 
 def _cleanup(lifecycle):
+    # A failed fresh reconstruction has no authority to reinterpret an exact
+    # retained identity. Preserve every object rather than cascading into
+    # path-, PID-, or descriptor-based teardown with an incomplete index.
+    if lifecycle.recovery and lifecycle.primary_failure is not None:
+        return []
     if lifecycle.operation is not None:
         return _cleanup_operation(lifecycle)
     if lifecycle.rootfs is not None:
@@ -451,6 +462,7 @@ def _recover_fixed_local_qualification():
         lifecycle.operation = _owners.open_existing_operation(lifecycle)
         if lifecycle.operation is not None:
             _owners.recover_pending(lifecycle)
+            _owners.reconstruct_cleanup(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
 
