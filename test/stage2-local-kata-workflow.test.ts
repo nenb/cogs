@@ -67,6 +67,10 @@ test("mixed H-G preflight runs exact preparation and settlement but never KVM", 
   assert.match(preflight, /stage2-stage-reviewed-control\.py/u);
   assert.match(preflight, /completion_kata_immutable_preparation\.py/u);
   assert.match(preflight, /recover-stage2-completion-remote\.sh/u);
+  assert.match(preflight, /cogs-stage2-mixed-hg-owner-v1/u);
+  assert.match(preflight, /cogs-stage2-mixed-hg-source-v1/u);
+  assert.match(preflight, /TF_TOKEN_app_terraform_io[\s\S]*GOOGLE_APPLICATION_CREDENTIALS[\s\S]*PYTHONOPTIMIZE/u);
+  assert.match(preflightWorkflow, /env -i BASH_ENV=\/dev\/null ENV=\/dev\/null/u);
   assert.equal(preflight.match(/stage2-local-settlement\.py" supervise-(?:cleanup|residue)/gu)?.length, 2);
   assert.doesNotMatch(preflight, /completion_local_full|\/dev\/kvm|containerd-shim-kata-v2[^\n]*--/u);
   const syntax = spawnSync("bash", ["-n", preflightPath], { encoding: "utf8" });

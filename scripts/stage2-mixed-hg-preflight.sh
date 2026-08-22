@@ -10,8 +10,33 @@ H_CHECKOUT=$GITHUB_WORKSPACE/preflight-H
 REPORT=/var/tmp/cogs-stage2-local-result-$GITHUB_RUN_ID-1
 READBACK=/var/tmp/cogs-stage2-local-result-upload-$GITHUB_RUN_ID-1
 RECEIPT=/var/tmp/cogs-stage2-local-receipt-upload-$GITHUB_RUN_ID-1
+OWNER=/run/cogs-stage2-mixed-hg-owner-v1
+SOURCE=/run/cogs-stage2-mixed-hg-source-v1
+OWNER_VALUE="cogs-stage2-mixed-hg-owner-v1:$GITHUB_RUN_ID:1"
+SOURCE_VALUE="cogs-stage2-mixed-hg-source-v1:$GITHUB_RUN_ID:1:$H:$MANIFEST"
 
 phase() { /usr/bin/printf 'COGS_MIXED_HG_PHASE:%s\n' "$1"; }
+
+root_marker() {
+  value=$1 path=$2
+  /usr/bin/printf '%s\n' "$value" | sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B -c \
+    'import os,sys
+p=sys.argv[1]; raw=sys.stdin.buffer.read(513)
+if not raw or len(raw)>512: raise RuntimeError()
+fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW,0o400)
+try:
+ n=0
+ while n<len(raw): n+=os.write(fd,raw[n:])
+ os.fchown(fd,0,0); os.fchmod(fd,0o400); os.fsync(fd)
+finally: os.close(fd)
+d=os.open("/run",os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC); os.fsync(d); os.close(d)' "$path"
+}
+
+marker_matches() {
+  expected=$(/usr/bin/printf '%s\n' "$1" | /usr/bin/sha256sum | /usr/bin/cut -d' ' -f1) || return
+  observed=$(sudo -n /usr/bin/sha256sum "$2" 2>/dev/null | /usr/bin/cut -d' ' -f1) || return
+  test "$observed" = "$expected"
+}
 
 admit() {
   phase admission
@@ -21,9 +46,12 @@ admit() {
   test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true || return
   test "$EXACT_IMPLEMENTATION_HEAD" = "$H" || return
   test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA" || return
-  for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE \
-    AWS_WEB_IDENTITY_TOKEN_FILE ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL \
-    GITHUB_TOKEN GH_TOKEN HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY PYTHONPATH PYTHONHOME; do
+  for name in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE \
+    AWS_WEB_IDENTITY_TOKEN_FILE TF_TOKEN_app_terraform_io TF_VAR_credentials GOOGLE_APPLICATION_CREDENTIALS \
+    ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_READ_TOKEN \
+    HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy \
+    PYTHONPATH PYTHONHOME PYTHONOPTIMIZE; do
     test -z "${!name+x}" || return
   done
 }
@@ -43,7 +71,8 @@ acquire_h() {
 
 prepare() {
   phase baseline
-  test ! -e /var/lib/cogs && test ! -e /opt/kata || return
+  test ! -e /var/lib/cogs && test ! -e /opt/kata && test ! -e "$OWNER" && test ! -e "$SOURCE" || return
+  root_marker "$OWNER_VALUE" "$OWNER" || return
   phase source
   prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
     env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
@@ -51,6 +80,7 @@ prepare() {
   /usr/bin/python3 -I -c 'import json,sys
 v=json.loads(sys.stdin.buffer.read()); assert (v["revision"],v["manifest_sha256"]) == tuple(sys.argv[1:])' \
     "$H" "$MANIFEST" <<<"$prepared" || return
+  root_marker "$SOURCE_VALUE" "$SOURCE" || return
   phase control
   staged=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
     env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
@@ -76,11 +106,16 @@ v=json.loads(sys.stdin.buffer.read()); assert v == {"version":"cogs.stage2-local
 settle() {
   phase recovery
   recovery=failure
-  if sudo -n /usr/bin/test -x "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh"; then
-    sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 300s \
-      env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
-      "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" && recovery=success
-  elif test ! -e /var/lib/cogs && test ! -e /opt/kata; then recovery=success; fi
+  if marker_matches "$OWNER_VALUE" "$OWNER"; then
+    if marker_matches "$SOURCE_VALUE" "$SOURCE"; then
+      sudo -n /usr/bin/test -x "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" || return
+      sudo -n /usr/bin/timeout --signal=TERM --kill-after=10s 300s \
+        env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+        "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" && recovery=success
+    else recovery=success; fi
+  elif test ! -e /var/lib/cogs && test ! -e /opt/kata && test ! -e "$OWNER" && test ! -e "$SOURCE"; then
+    recovery=success
+  fi
   test "$recovery" = success || return
   phase cleanup
   /usr/bin/printf '%s\n' "$GITHUB_RUN_ID" 1 "$REPORT" "$READBACK" "$RECEIPT" success | \

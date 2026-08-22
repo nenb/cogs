@@ -22,8 +22,10 @@ concurrency:
 jobs:
   preflight:
     runs-on: ubuntu-24.04
-    timeout-minutes: 48
+    timeout-minutes: 70
     env:
+      BASH_ENV: /dev/null
+      ENV: /dev/null
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.control_head }}
     steps:
@@ -39,10 +41,21 @@ jobs:
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$EXACT_CONTROL_HEAD"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXACT_CONTROL_HEAD"
+          test -z "$(/usr/bin/git -C "$GITHUB_WORKSPACE" status --porcelain)"
       - name: Execute exact mixed H-G preparation and mandatory settlement without KVM
-        timeout-minutes: 40
-        run: /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 2390s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" run
+        timeout-minutes: 46
+        run: |
+          env -i BASH_ENV=/dev/null ENV=/dev/null HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REF="$GITHUB_REF" \
+            GITHUB_REF_PROTECTED="$GITHUB_REF_PROTECTED" GITHUB_SHA="$GITHUB_SHA" \
+            EXACT_IMPLEMENTATION_HEAD="$EXACT_IMPLEMENTATION_HEAD" EXACT_CONTROL_HEAD="$EXACT_CONTROL_HEAD" \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 2690s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" run
       - name: Independently repeat mandatory settlement after every outcome
         if: always()
-        timeout-minutes: 7
-        run: /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 410s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" settle
+        timeout-minutes: 11
+        run: |
+          env -i BASH_ENV=/dev/null ENV=/dev/null HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/scripts/stage2-mixed-hg-preflight.sh" settle

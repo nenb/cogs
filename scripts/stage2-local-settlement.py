@@ -21,6 +21,8 @@ FIXED_ROOTS = (
     "/run/cogs-stage2-local-private-v2",
     "/run/cogs-stage2-native-preflight-source-v1",
     "/run/cogs-stage2-native-private-v1",
+    "/run/cogs-stage2-mixed-hg-owner-v1",
+    "/run/cogs-stage2-mixed-hg-source-v1",
 )
 PROCESS_MARKERS = (
     b"completion_local_full.py", b"completion_kata_coordinator.py",
