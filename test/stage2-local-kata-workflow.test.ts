@@ -62,12 +62,12 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
   assert.match(workflow, /STAGE2_LOCAL_CONTROL_HEAD/u);
   assert.match(workflow, /STAGE2_LOCAL_AUTHORIZED_ACTOR/u);
   assert.match(guard, /REPOSITORY = "nenb\/cogs"/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "a2c25f34c35d778965ab7b125fd3b8b4460b0617"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "1eaec52dd4e2f1222548362e92adc780a2169025"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "0b2600579ff88d29f6670d75cd354ea8bfb03fed7697f19e7552bfc0083cc094"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "c20534f05f4bc1a4a31965ef5fc220bda20263024ad06b6f798f3f13bbfdbdf9"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d"/u);
   assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "b9e4b406740ea7800e7bab0810ebdcb8af6cdf6470520c4923672fc6bc251465"/u);
   assert.match(
     guard,
