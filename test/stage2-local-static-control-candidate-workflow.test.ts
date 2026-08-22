@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -144,7 +144,7 @@ test("reviewed H itself binds corrected immutable and producer sources in the ru
     encoding: "utf8",
   });
   assert.equal(boundaryAtH.status, 0, boundaryAtH.stderr);
-  for (const [path, expected] of [
+  const policySources: ReadonlyArray<readonly [string, string]> = [
     [
       "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py",
       "cf1757832fdfd443dcb8265c32dec68e7a7e7c4d3c28e4246f00c27120a554c9",
@@ -153,10 +153,10 @@ test("reviewed H itself binds corrected immutable and producer sources in the ru
       "deploy/aws-feasibility/remote/completion_kata_preparation.py",
       "be7743e0d06f63e1b184c4c7e29267dd7a81cf6374d9de28797bdd4b8103cedc",
     ],
-  ]) {
-    const sourceAtH = spawnSync("git", ["show", `${reviewed}:${path}`], { encoding: null });
-    assert.equal(sourceAtH.status, 0, sourceAtH.stderr.toString());
-    const digest = createHash("sha256").update(sourceAtH.stdout).digest("hex");
+  ];
+  for (const [sourcePath, expected] of policySources) {
+    const sourceAtH: Uint8Array = execFileSync("git", ["show", `${reviewed}:${sourcePath}`]);
+    const digest: string = createHash("sha256").update(sourceAtH).digest("hex");
     assert.equal(digest, expected);
     assert.match(boundaryAtH.stdout, new RegExp(`"sha256": "${digest}"`, "u"));
   }
