@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
@@ -106,7 +107,7 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
   assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "fdb09e4beae9eeae0f2715d8869858385b6fd5e6"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "33314a9999cbe1e0eb927ba4a1e6f1ee10fcd5df"/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.match(dispatchGuard, /_read_event\(_required\(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"\)\)/u);
   assert.match(dispatchGuard, /"EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED"/u);
@@ -125,6 +126,24 @@ test("static dispatch guard hostile suite covers event parsing, predecessors, re
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /authenticated static-control dispatch guard hostile tests passed/u);
+});
+
+test("reviewed H itself binds its corrected immutable source in the runtime boundary", () => {
+  const reviewed = /REVIEWED_IMPLEMENTATION_HEAD = "([0-9a-f]{40})"/u.exec(dispatchGuard)?.[1];
+  assert.ok(reviewed);
+  const preparationAtH = spawnSync(
+    "git",
+    ["show", `${reviewed}:deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py`],
+    { encoding: null },
+  );
+  const boundaryAtH = spawnSync("git", ["show", `${reviewed}:scripts/stage2-static-control-runtime-boundary.py`], {
+    encoding: "utf8",
+  });
+  assert.equal(preparationAtH.status, 0, preparationAtH.stderr.toString());
+  assert.equal(boundaryAtH.status, 0, boundaryAtH.stderr);
+  const digest = createHash("sha256").update(preparationAtH.stdout).digest("hex");
+  assert.equal(digest, "cf1757832fdfd443dcb8265c32dec68e7a7e7c4d3c28e4246f00c27120a554c9");
+  assert.match(boundaryAtH.stdout, new RegExp(`"sha256": "${digest}"`, "u"));
 });
 
 test("static-only cleanup uses reviewed source policy and owned process-fd censuses", () => {
