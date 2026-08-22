@@ -89,7 +89,7 @@ def valid_values():
                 "rootfs_sha256": rootfs, "artifact_sha256": identity["deb_sha256"],
                 "candidate_sha256": package["candidate_result_sha256"],
                 "final_pin_sha256": package["final_pin_sha256"],
-                "guest_program_sha256": by_path["deploy/aws-feasibility/remote/completion_guest_workloads_v2.py"]["sha256"],
+                "guest_program_sha256": admission.final_guest.GUEST_PROGRAM_SHA256,
                 "owner_implementation_sha256": by_path["deploy/aws-feasibility/remote/completion_kata_coordinator.py"]["sha256"]}
     envelope = {"version": admission.VERSION, "authority": admission.AUTHORITY,
                 "source": {"root": str(admission.FIXED_ROOT), "head": bindings["source_head"],

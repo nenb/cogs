@@ -15,6 +15,7 @@ import stat
 import struct
 import time
 
+import completion_guest_workloads_v3 as final_guest
 import completion_kata_preparation as preparation
 
 # Historical V1 public meanings and blocked reviewed constants are retained.
@@ -343,7 +344,9 @@ def validate_envelope_value(value):
     _require(bindings["artifact_sha256"] == package["artifact"]["sha256"])
     _require(bindings["candidate_sha256"] == package["candidate_result_sha256"])
     _require(bindings["final_pin_sha256"] == package["final_pin_sha256"])
-    _require(bindings["guest_program_sha256"] == _source_digest(value["source"], "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py"))
+    guest_program = final_guest.guest_program_bytes()
+    _require(bindings["guest_program_sha256"] == hashlib.sha256(guest_program).hexdigest()
+             == final_guest.GUEST_PROGRAM_SHA256)
     _require(bindings["owner_implementation_sha256"] == _source_digest(value["source"], "deploy/aws-feasibility/remote/completion_kata_coordinator.py"))
     _require(value["receipt"] == {"version": RECEIPT_VERSION, "domain": RECEIPT_DOMAIN})
     return value

@@ -10,11 +10,13 @@ import subprocess
 import tarfile
 import tempfile
 import sys
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_preparation as preparation
+import completion_local_evidence as evidence
 
 
 def canonical(value):
@@ -140,6 +142,30 @@ control = preparation.load_control(first_control)
 envelope, runtime_description, loaded_contracts = preparation.validate_control_members(control, first_members)
 assert set(loaded_contracts) == {row[0] for row in preparation.EXECUTABLES}
 assert envelope.value["implementation"]["revision"] == "1" * 40
+assert envelope.value["programs"]["guest_program_sha256"] == preparation.final_guest.GUEST_PROGRAM_SHA256
+assert envelope.value["result_binding_base"]["guest_program_sha256"] == preparation.final_guest.GUEST_PROGRAM_SHA256
+# Feed the exact producer-generated binding into the terminal evidence boundary.
+# This prevents source-file digests from being substituted for the V3 stdin identity.
+runtime_owner = evidence._RuntimeOwnerResult(
+    operation_token="a" * 64,
+    runtime_mount_record_sha256="b" * 64,
+    network_causal_proof_sha256="c" * 64,
+    live_mapping_sha256="d" * 64,
+    qemu_process_sha256="e" * 64,
+    kvm_api=12,
+    qmp_present=True,
+    qmp_enabled=True,
+)
+terminal_bindings = dict(envelope.value["result_binding_base"])
+terminal_bindings["host_attestation_sha256"] = "f" * 64
+terminal_bindings["runtime_attestation_sha256"] = evidence._runtime_attestation_sha256(runtime_owner)
+owner_bindings = evidence._BindingOwnerResult(**terminal_bindings)
+genesis = SimpleNamespace(body={
+    "source_revision": terminal_bindings["source_head"],
+    "source_manifest_sha256": terminal_bindings["source_manifest_sha256"],
+    "rootfs_pin": {"ustar_sha256": terminal_bindings["rootfs_sha256"]},
+})
+evidence._validate_bindings(terminal_bindings, owner_bindings, genesis, runtime_owner)
 assert preparation.CONTROL_ROOT != preparation.SOURCE_ROOT
 assert not str(preparation.CONTROL_ROOT).startswith(str(preparation.SOURCE_ROOT) + "/")
 assert runtime_description.value["rootfs"]["static_closure"]["object_count"] == 35

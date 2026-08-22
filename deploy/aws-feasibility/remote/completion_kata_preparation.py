@@ -27,6 +27,8 @@ if not _REMOTE_MODULE_ROOT.is_dir():
     raise ImportError("fixed remote module root is unavailable")
 sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 
+import completion_guest_workloads_v3 as final_guest
+
 CONTROL_VERSION = "cogs.stage2-local-static-control-package/v1"
 ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v2"
 RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v2"
@@ -937,7 +939,11 @@ def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256
     _exact_keys(final, ("candidate_contract_sha256", "candidate_result_sha256", "final_pin_sha256", "identity"))
     _package_identity(final["identity"])
     owner_rows = [row for row in implementation["selected_sources"] if row["path"].startswith("deploy/aws-feasibility/remote/completion_kata_")]
-    programs = {"guest_program_sha256": _source_digest(implementation, "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py"),
+    guest_program = final_guest.guest_program_bytes()
+    guest_program_sha256 = _sha(guest_program)
+    _require(guest_program_sha256 == final_guest.GUEST_PROGRAM_SHA256,
+             "final guest program digest differs")
+    programs = {"guest_program_sha256": guest_program_sha256,
                 "coordinator_sha256": _source_digest(implementation, "deploy/aws-feasibility/remote/completion_kata_coordinator.py"),
                 "owner_source_set_sha256": _sha(canonical_bytes(owner_rows))}
     envelope = {"version": ENVELOPE_VERSION, "authority": AUTHORITY,
