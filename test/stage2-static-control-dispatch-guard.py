@@ -147,7 +147,7 @@ assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
 # Response order does not confer authority; the exact current ID is still the sole earliest ID.
 GUARD.guard(environment(), urlopen=opener(list(reversed(BASE_HISTORY))))
 
-# All eight consumed attempt-one failures are exact required predecessors.
+# All nine consumed attempt-one failures are exact required predecessors.
 for predecessor_id in GUARD.PREDECESSORS:
     other_predecessors = [
         predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id
@@ -322,7 +322,8 @@ for hostile, code in (
     diagnostic = GUARD._safe_diagnostic(error)
     assert diagnostic == f"{GUARD.GUARD_VERSION}: {code}\n"
     assert not hostile or hostile not in diagnostic
-    assert str(len(hostile.encode())) not in diagnostic
+    assert f"length={len(hostile.encode())}" not in diagnostic
+    assert f"bytes={len(hostile.encode())}" not in diagnostic
 
 error = rejection(lambda: GUARD.guard(
     environment(),

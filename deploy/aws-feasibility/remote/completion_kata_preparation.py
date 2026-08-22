@@ -42,6 +42,11 @@ RUNTIME_MEMBER = "stage2-local-runtime-manifest-v2.json"
 MAX_CONTROL_BYTES = 256 * 1024
 MAX_ENVELOPE_BYTES = 512 * 1024
 MAX_RUNTIME_BYTES = 32 * 1024 * 1024
+_OBSERVATION_STAGE = "entry"
+_OBSERVATION_STAGES = frozenset({
+    "entry", "source-manifest", "preparation-receipt", "runtime-closure",
+    "launch-assets", "executable-contracts", "control-bytes", "publication",
+})
 MAX_CONTRACT_BYTES = 512 * 1024
 MAX_SOURCE_MANIFEST_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 100_000
@@ -1022,7 +1027,9 @@ def _configured_launch_assets(kata_root):
 
 def collect_fixed_candidate():
     """Collect the sole fixed, source-external, no-KVM static candidate."""
+    global _OBSERVATION_STAGE
     _require(platform.system() == "Linux" and platform.machine() == "x86_64" and os.geteuid() == 0)
+    _OBSERVATION_STAGE = "source-manifest"
     source_raw = (SOURCE_ROOT / SOURCE_MANIFEST).read_bytes()
     source = parse_source_manifest(source_raw)
     implementation = {"revision": source["revision"],
@@ -1031,6 +1038,7 @@ def collect_fixed_candidate():
     implementation["selected_sources_sha256"] = _sha(canonical_bytes(implementation["selected_sources"]))
     _validate_implementation(implementation)
 
+    _OBSERVATION_STAGE = "preparation-receipt"
     receipt_path = (SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/"
                     "immutable-preparation-v1/receipt.json")
     receipt = decode_canonical(receipt_path.read_bytes(), MAX_RUNTIME_BYTES)
@@ -1047,6 +1055,7 @@ def collect_fixed_candidate():
         _archive(value, expected)
     actual_runtime = SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1"
 
+    _OBSERVATION_STAGE = "runtime-closure"
     import completion_kata_runtime as kata_runtime
     import completion_runtime_contract as runtime_contract
     from completion_rootfs_plan import load_verified_build_inputs
@@ -1056,6 +1065,7 @@ def collect_fixed_candidate():
     closure = fixed_runtime_closure(load_verified_build_inputs())
     static_objects = [json.loads(canonical_bytes(asdict(record))) for record in closure.records]
     static_closure = {**final.runtime_closure.value(), "objects": static_objects}
+    _OBSERVATION_STAGE = "launch-assets"
     config_raw, artifacts = _configured_launch_assets(Path("/"))
     artifacts.extend((
         _fixed_file("containerd", EXECUTABLES[5][2], actual_runtime / "bin/containerd"),
@@ -1063,6 +1073,7 @@ def collect_fixed_candidate():
     ))
     artifacts.sort(key=lambda row: row["role"])
 
+    _OBSERVATION_STAGE = "executable-contracts"
     contracts = {}
     executable_rows = []
     for role, source_class, declared in EXECUTABLES:
@@ -1098,6 +1109,7 @@ def collect_fixed_candidate():
                           "shared_filesystem": "virtio-fs", "hypervisor": "qemu", "fallback": "none",
                           "artifacts": artifacts, "artifacts_sha256": _sha(canonical_bytes(artifacts))},
                "executables": executable_rows}
+    _OBSERVATION_STAGE = "control-bytes"
     package = {"candidate_contract_sha256": final.candidate_contract_sha256,
                "candidate_result_sha256": final.candidate_result_sha256,
                "final_pin_sha256": final.final_pin_sha256,
@@ -1160,8 +1172,10 @@ def publish_fixed_candidate(control_raw, members):
 
 
 def main():
+    global _OBSERVATION_STAGE
     _require(len(os.sys.argv) == 1)
     control_raw, members = generate_implementation_h_candidate_control_bytes()
+    _OBSERVATION_STAGE = "publication"
     digest = publish_fixed_candidate(control_raw, members)
     result = canonical_bytes({"version": "cogs.stage2-local-static-observation/v1",
                               "authority": "non-authoritative-discovery-candidate",
@@ -1174,7 +1188,9 @@ if __name__ == "__main__":
         main()
     except BaseException:
         try:
-            os.sys.stderr.buffer.write(b"static no-KVM observation failed\n")
+            stage = _OBSERVATION_STAGE if _OBSERVATION_STAGE in _OBSERVATION_STAGES else "entry"
+            os.sys.stderr.buffer.write(
+                f"static no-KVM observation failed:{stage}\n".encode("ascii"))
         except BaseException:
             pass
         raise SystemExit(2)
