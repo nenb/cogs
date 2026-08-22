@@ -50,7 +50,7 @@ test("event-contract replacement guard is exact source and precedes every source
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v11"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v12"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
   assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
@@ -88,6 +88,9 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /TENTH_PREDECESSOR_RUN_ID = 32569932861/u);
   assert.match(dispatchGuard, /TENTH_PREDECESSOR_WORKFLOW_HEAD = "ee789aecc77319909186b4a7d769227896fb3c66"/u);
   assert.match(dispatchGuard, /TENTH_PREDECESSOR_REVIEWED_HEAD = "dd676027801370f7bf025539b8c2c14991689afa"/u);
+  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_RUN_ID = 32574273244/u);
+  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_WORKFLOW_HEAD = "c727b167cea2f470807588df913d815148fbb858"/u);
+  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_REVIEWED_HEAD = "7b1dcc045182616cf657bcf941ba8aee7108eb76"/u);
   assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
   assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
   assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
@@ -122,12 +125,15 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(workflow, /stage2-static-control-runtime-boundary\.py" pre/u);
   assert.match(workflow, /stage2-static-control-runtime-boundary\.py" post/u);
   assert.match(workflow, /Remove owned fixtures and verify the static-only runtime boundary/u);
+  assert.match(workflow, /chmod 0711 "\$root" "\$stage" "\$observation"/u);
+  assert.match(workflow, /stat -c '%U:%G:%a'.*root:root:711/u);
+  assert.match(workflow, /stat -c '%U:%G:%a'.*"\$stage\/source".*root:root:700/su);
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
   assert.match(runtimeBoundary, /MAX_PROCESSES = 32_768/u);
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "67014a3eb542e04dcb962b9ff565dd00eaff832dc68fb4b43903f0e3248faae8"/u,
+    /NORMALIZED_WORKFLOW_SHA256 = "33a174b468bbd1b6a02813bca66f7b07e9e9ab43ab8e3f4d06d8c3ad9af010a6"/u,
   );
   assert.match(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);

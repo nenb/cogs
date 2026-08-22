@@ -39,7 +39,7 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v11"
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v12"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -95,6 +95,11 @@ jobs:
           TENTH_PREDECESSOR_REVIEWED_HEAD = "dd676027801370f7bf025539b8c2c14991689afa"
           TENTH_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={TENTH_PREDECESSOR_REVIEWED_HEAD}")
+          ELEVENTH_PREDECESSOR_RUN_ID = 32574273244
+          ELEVENTH_PREDECESSOR_WORKFLOW_HEAD = "c727b167cea2f470807588df913d815148fbb858"
+          ELEVENTH_PREDECESSOR_REVIEWED_HEAD = "7b1dcc045182616cf657bcf941ba8aee7108eb76"
+          ELEVENTH_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={ELEVENTH_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -115,6 +120,8 @@ jobs:
                   NINTH_PREDECESSOR_WORKFLOW_HEAD, NINTH_PREDECESSOR_RUN_TITLE),
               TENTH_PREDECESSOR_RUN_ID: (
                   TENTH_PREDECESSOR_WORKFLOW_HEAD, TENTH_PREDECESSOR_RUN_TITLE),
+              ELEVENTH_PREDECESSOR_RUN_ID: (
+                  ELEVENTH_PREDECESSOR_WORKFLOW_HEAD, ELEVENTH_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
@@ -480,6 +487,23 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py \
             > /tmp/cogs-stage2-static-candidate.json
           test ! -e /run/vc
+
+      - name: Expose only immutable candidate traversal to the artifact reader
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          root=/var/lib/cogs
+          stage=$root/stage2-completion-v1
+          observation=$stage/control-observation-v1
+          candidate=$observation/candidate
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$candidate")" = root:root:555
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$stage/source")" = root:root:700
+          sudo -n /bin/chmod 0711 "$root" "$stage" "$observation"
+          for parent in "$root" "$stage" "$observation"; do
+            test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$parent")" = root:root:711
+          done
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' "$stage/source")" = root:root:700
+          test -r "$candidate/stage2-local-static-control.json"
 
       - name: Upload non-authoritative candidate package only
         timeout-minutes: 1
