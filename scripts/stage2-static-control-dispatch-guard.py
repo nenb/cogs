@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v2"
+GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v3"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
@@ -18,6 +18,16 @@ PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
 PREDECESSOR_REVIEWED_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"
 PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={PREDECESSOR_REVIEWED_HEAD}")
+SECOND_PREDECESSOR_RUN_ID = 32560385792
+SECOND_PREDECESSOR_WORKFLOW_HEAD = "7ccb35d14d749a0ef14602889ce2b52934c03d4d"
+SECOND_PREDECESSOR_REVIEWED_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"
+SECOND_PREDECESSOR_RUN_TITLE = (
+    f"Non-authoritative Stage 2 static control H={SECOND_PREDECESSOR_REVIEWED_HEAD}")
+PREDECESSORS = {
+    PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
+    SECOND_PREDECESSOR_RUN_ID: (
+        SECOND_PREDECESSOR_WORKFLOW_HEAD, SECOND_PREDECESSOR_RUN_TITLE),
+}
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 MAX_RUNS = 100
@@ -25,7 +35,7 @@ MIN_TOKEN_CHARS = 20
 MAX_TOKEN_CHARS = 256
 SHA1 = re.compile(r"[0-9a-f]{40}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
-TOKEN = re.compile(r"[A-Za-z0-9_]+")
+TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=?")
 DENIED_ENVIRONMENT = frozenset((
     "GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -163,14 +173,15 @@ def _common_run_identity(run):
     return run_id
 
 
-def _is_predecessor(run):
-    return run.get("id") == PREDECESSOR_RUN_ID
+def _predecessor_binding(run):
+    return PREDECESSORS.get(run.get("id"))
 
 
-def _validate_predecessor(run):
-    _require(run.get("head_sha") == PREDECESSOR_WORKFLOW_HEAD,
+def _validate_predecessor(run, binding):
+    workflow_head, run_title = binding
+    _require(run.get("head_sha") == workflow_head,
              "PREDECESSOR_REJECTED")
-    _require(run.get("display_title") == PREDECESSOR_RUN_TITLE,
+    _require(run.get("display_title") == run_title,
              "PREDECESSOR_REJECTED")
     _require(run.get("status") == "completed" and run.get("conclusion") == "failure",
              "PREDECESSOR_REJECTED")
@@ -188,7 +199,7 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
     request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
-        "User-Agent": "cogs-stage2-static-replacement-guard-v2",
+        "User-Agent": "cogs-stage2-static-replacement-guard-v3",
         "X-GitHub-Api-Version": "2022-11-28",
     })
     response = _open_history(request, urlopen)
@@ -204,20 +215,21 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
              "HISTORY_INCOMPLETE")
     _require(len(runs) == total, "HISTORY_INCOMPLETE")
     run_ids = []
-    predecessor_count = 0
+    predecessor_ids = set()
     current_ids = []
     for run in runs:
         run_id = _common_run_identity(run)
         run_ids.append(run_id)
-        if _is_predecessor(run):
-            _validate_predecessor(run)
-            predecessor_count += 1
+        binding = _predecessor_binding(run)
+        if binding is not None:
+            _validate_predecessor(run, binding)
+            predecessor_ids.add(run_id)
         elif _is_current_generation(run, workflow_head):
             current_ids.append(run_id)
         else:
             raise GuardError("UNKNOWN_HISTORY_REJECTED")
     _require(len(run_ids) == len(set(run_ids)), "HISTORY_RUN_REJECTED")
-    _require(predecessor_count == 1, "PREDECESSOR_REJECTED")
+    _require(predecessor_ids == set(PREDECESSORS), "PREDECESSOR_REJECTED")
     _require(current_ids, "CURRENT_GENERATION_MISSING")
     _require(current_run_id == min(current_ids), "CURRENT_RUN_NOT_EARLIEST")
     _require(len(current_ids) == 1, "CURRENT_SECOND_RUN")
@@ -242,7 +254,8 @@ def guard(environ=os.environ, event=None, urlopen=_authenticated_open):
     _require(POSITIVE.fullmatch(run_id_text) is not None, "IDENTITY_REJECTED")
     workflow_head = _required(environ, "GITHUB_SHA")
     _require(SHA1.fullmatch(workflow_head) is not None, "IDENTITY_REJECTED")
-    _require(workflow_head != PREDECESSOR_WORKFLOW_HEAD, "IDENTITY_REJECTED")
+    _require(workflow_head not in {value[0] for value in PREDECESSORS.values()},
+             "IDENTITY_REJECTED")
     workflow_ref = f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"
     _require(_required(environ, "GITHUB_WORKFLOW_REF") == workflow_ref,
              "IDENTITY_REJECTED")

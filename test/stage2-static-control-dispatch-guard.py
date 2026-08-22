@@ -71,11 +71,12 @@ def run(run_id, *, head=G, title=None, **changes):
     return value
 
 
-def predecessor(**changes):
+def predecessor(run_id=GUARD.PREDECESSOR_RUN_ID, **changes):
+    workflow_head, title = GUARD.PREDECESSORS[run_id]
     value = run(
-        GUARD.PREDECESSOR_RUN_ID,
-        head=GUARD.PREDECESSOR_WORKFLOW_HEAD,
-        title=GUARD.PREDECESSOR_RUN_TITLE,
+        run_id,
+        head=workflow_head,
+        title=title,
         status="completed",
         conclusion="failure",
     )
@@ -99,7 +100,8 @@ class Response:
         pass
 
 
-def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None):
+def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None,
+           token=TOKEN_VALUE):
     def open_request(request, timeout):
         assert timeout == 20
         assert request.full_url.startswith(
@@ -108,8 +110,8 @@ def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None):
         assert "event=workflow_dispatch" in request.full_url
         assert "per_page=100" in request.full_url and "page=1" in request.full_url
         headers = {name.lower(): value for name, value in request.header_items()}
-        assert headers["authorization"] == f"Bearer {TOKEN_VALUE}"
-        assert TOKEN_VALUE not in request.full_url
+        assert headers["authorization"] == f"Bearer {token}"
+        assert token not in request.full_url
         if observe is not None:
             observe(request, headers)
         value = {
@@ -120,7 +122,9 @@ def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None):
     return open_request
 
 
-BASE_HISTORY = [predecessor(), run(CURRENT_RUN_ID)]
+BASE_HISTORY = [
+    predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID), run(CURRENT_RUN_ID),
+]
 auth_observations = []
 GUARD.guard(
     environment(), event=EVENT,
@@ -130,30 +134,38 @@ assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
 # Response order does not confer authority; the exact current ID is still the sole earliest ID.
 GUARD.guard(environment(), event=EVENT, urlopen=opener(list(reversed(BASE_HISTORY))))
 
-# The consumed attempt-one failure is the only accepted predecessor generation.
-for hostile_predecessor in (
-    predecessor(run_attempt=2),
-    predecessor(head_sha="c" * 40),
-    predecessor(head_branch="foreign"),
-    predecessor(display_title="foreign"),
-    predecessor(status="completed", conclusion="cancelled"),
-    predecessor(repository={"full_name": "attacker/cogs"}),
-):
-    rejection(lambda value=hostile_predecessor: GUARD.guard(
-        environment(), event=EVENT, urlopen=opener([value, run(CURRENT_RUN_ID)])))
-rejection(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener([run(CURRENT_RUN_ID)])),
-    "PREDECESSOR_REJECTED")
+# Both consumed attempt-one failures are exact required predecessors.
+for predecessor_id in GUARD.PREDECESSORS:
+    other_predecessors = [
+        predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id
+    ]
+    for hostile_predecessor in (
+        predecessor(predecessor_id, run_attempt=2),
+        predecessor(predecessor_id, head_sha="c" * 40),
+        predecessor(predecessor_id, head_branch="foreign"),
+        predecessor(predecessor_id, display_title="foreign"),
+        predecessor(predecessor_id, status="completed", conclusion="cancelled"),
+        predecessor(predecessor_id, repository={"full_name": "attacker/cogs"}),
+    ):
+        rejection(lambda value=hostile_predecessor, others=other_predecessors: GUARD.guard(
+            environment(), event=EVENT, urlopen=opener(others + [value, run(CURRENT_RUN_ID)])))
+    rejection(lambda missing=other_predecessors: GUARD.guard(
+        environment(), event=EVENT, urlopen=opener(missing + [run(CURRENT_RUN_ID)])),
+        "PREDECESSOR_REJECTED")
 rejection(lambda: GUARD.guard(
     environment(), event=EVENT,
-    urlopen=opener([predecessor(), run(32550000000, head="d" * 40), run(CURRENT_RUN_ID)])),
-    "UNKNOWN_HISTORY_REJECTED")
+    urlopen=opener([
+        predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID),
+        run(32550000000, head="d" * 40), run(CURRENT_RUN_ID),
+    ])), "UNKNOWN_HISTORY_REJECTED")
 rejection(lambda: GUARD.guard(
     environment(), event=EVENT,
-    urlopen=opener([predecessor(), run(GUARD.PREDECESSOR_RUN_ID + 1,
-                                      head=GUARD.PREDECESSOR_WORKFLOW_HEAD,
-                                      title=GUARD.PREDECESSOR_RUN_TITLE)])),
-    "UNKNOWN_HISTORY_REJECTED")
+    urlopen=opener([
+        predecessor(), predecessor(GUARD.SECOND_PREDECESSOR_RUN_ID),
+        run(GUARD.SECOND_PREDECESSOR_RUN_ID + 1,
+            head=GUARD.SECOND_PREDECESSOR_WORKFLOW_HEAD,
+            title=GUARD.SECOND_PREDECESSOR_RUN_TITLE),
+    ])), "UNKNOWN_HISTORY_REJECTED")
 
 # A second corrected-generation creation consumes no authority, regardless of which ID is current.
 second = run(CURRENT_RUN_ID + 1)
@@ -167,13 +179,35 @@ rejection(lambda: GUARD.guard(
 rejection(lambda: GUARD.guard(
     environment(GITHUB_RUN_ATTEMPT="2"), event=EVENT, urlopen=opener(BASE_HISTORY)))
 
+# The bounded token68-style subset accepts every permitted visible character and
+# one optional terminal padding marker, while rejecting separators and injection.
+for accepted_token in (
+    "A" * GUARD.MIN_TOKEN_CHARS,
+    "Aa0-._~+/" * 3,
+    ("z" * (GUARD.MIN_TOKEN_CHARS - 1)) + "=",
+    "x" * GUARD.MAX_TOKEN_CHARS,
+):
+    GUARD.guard(
+        environment(ACTIONS_READ_TOKEN=accepted_token), event=EVENT,
+        urlopen=opener(BASE_HISTORY, token=accepted_token))
+
 for name, hostile in (
     ("GITHUB_EVENT_NAME", "push"),
     ("GITHUB_REPOSITORY", "attacker/cogs"),
     ("GITHUB_SHA", GUARD.PREDECESSOR_WORKFLOW_HEAD),
+    ("GITHUB_SHA", GUARD.SECOND_PREDECESSOR_WORKFLOW_HEAD),
     ("EXACT_IMPLEMENTATION_HEAD", "c" * 40),
     ("ACTIONS_READ_TOKEN", "short"),
     ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\n"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\r\nX-Injected: yes"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\t"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + " "),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\x00"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\x7f"),
+    ("ACTIONS_READ_TOKEN", "=" + TOKEN_VALUE),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "=tail"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "=="),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "é"),
     ("ACTIONS_READ_TOKEN", "x" * (GUARD.MAX_TOKEN_CHARS + 1)),
 ):
     rejection(lambda name=name, hostile=hostile: GUARD.guard(
