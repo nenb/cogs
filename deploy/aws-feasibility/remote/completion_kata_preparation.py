@@ -569,8 +569,15 @@ def _tar_rows(stream, mode):
     total = 0
     try:
         with tarfile.open(fileobj=stream, mode=mode, encoding="utf-8", errors="strict") as archive:
+            root_seen = False
             for member in archive:
                 _require(len(rows) < MAX_ARCHIVE_ENTRIES)
+                if member.name in {".", "./"}:
+                    _require(not root_seen and member.isdir() and member.size == 0
+                             and member.mode == 0o755 and member.uid == member.gid == 0
+                             and not member.linkname)
+                    root_seen = True
+                    continue
                 path = _safe_archive_path(member.name)
                 kind = ("file" if member.isfile() else "directory" if member.isdir() else
                         "symlink" if member.issym() else "hardlink" if member.islnk() else None)
@@ -658,14 +665,15 @@ def extracted_postwalk(root):
                 hasher = hashlib.sha256()
                 descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
                 try:
-                    _require(os.fstat(descriptor) == seen)
+                    _require(_same_file_generation(os.fstat(descriptor), seen))
                     offset = 0
                     while offset < size:
                         chunk = os.read(descriptor, min(1024 * 1024, size - offset))
                         _require(chunk)
                         hasher.update(chunk)
                         offset += len(chunk)
-                    _require(not os.read(descriptor, 1) and os.fstat(descriptor) == seen)
+                    _require(not os.read(descriptor, 1)
+                             and _same_file_generation(os.fstat(descriptor), seen))
                 finally:
                     os.close(descriptor)
                 digest = hasher.hexdigest()
@@ -685,7 +693,9 @@ def extracted_postwalk(root):
             _require(len(rows) <= MAX_ARCHIVE_ENTRIES)
     rows.sort(key=lambda row: row["path"].encode("utf-8"))
     _file_rows(rows, MAX_ARCHIVE_ENTRIES)
-    _require(os.stat(root, follow_symlinks=False) == observed_root, "extracted runtime changed during postwalk")
+    _require(_same_file_generation(
+        os.stat(root, follow_symlinks=False), observed_root),
+        "extracted runtime changed during postwalk")
     return rows
 
 

@@ -269,6 +269,12 @@ with tempfile.TemporaryDirectory() as directory:
     archive = root / "synthetic.tar.gz"
     payload = b"static-asset\n"
     with tarfile.open(archive, "w:gz", format=tarfile.USTAR_FORMAT) as output:
+        archive_root = tarfile.TarInfo("./")
+        archive_root.type = tarfile.DIRTYPE
+        archive_root.mode = 0o755
+        archive_root.uid = archive_root.gid = 0
+        archive_root.mtime = 0
+        output.addfile(archive_root)
         info = tarfile.TarInfo("runtime/asset")
         info.size = len(payload)
         info.mode = 0o444
