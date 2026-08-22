@@ -8,11 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v13"
+GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v14"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-REVIEWED_IMPLEMENTATION_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"
+REVIEWED_IMPLEMENTATION_HEAD = "fdb09e4beae9eeae0f2715d8869858385b6fd5e6"
 RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
 PREDECESSOR_RUN_ID = 32558263561
 PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
@@ -74,6 +74,11 @@ TWELFTH_PREDECESSOR_WORKFLOW_HEAD = "8dd6d58f4f9e24a2f1bcccbd4719fbf03e72bbb2"
 TWELFTH_PREDECESSOR_REVIEWED_HEAD = "4a3beae8683309f3fef30cecce3187262efc4b23"
 TWELFTH_PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={TWELFTH_PREDECESSOR_REVIEWED_HEAD}")
+SUCCESSFUL_PREDECESSOR_RUN_ID = 32577727971
+SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c2540af5cb85e2845de1eebfad3475d28c0483e5"
+SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"
+SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
+    f"Non-authoritative Stage 2 static control H={SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
 PREDECESSORS = {
     PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
     SECOND_PREDECESSOR_RUN_ID: (
@@ -278,16 +283,21 @@ def _common_run_identity(run):
 
 
 def _predecessor_binding(run):
-    return PREDECESSORS.get(run.get("id"))
+    binding = PREDECESSORS.get(run.get("id"))
+    if binding is not None:
+        return (*binding, "failure")
+    if run.get("id") == SUCCESSFUL_PREDECESSOR_RUN_ID:
+        return (SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD, SUCCESSFUL_PREDECESSOR_RUN_TITLE, "success")
+    return None
 
 
 def _validate_predecessor(run, binding):
-    workflow_head, run_title = binding
+    workflow_head, run_title, conclusion = binding
     _require(run.get("head_sha") == workflow_head,
              "PREDECESSOR_REJECTED")
     _require(run.get("display_title") == run_title,
              "PREDECESSOR_REJECTED")
-    _require(run.get("status") == "completed" and run.get("conclusion") == "failure",
+    _require(run.get("status") == "completed" and run.get("conclusion") == conclusion,
              "PREDECESSOR_REJECTED")
 
 
@@ -333,7 +343,8 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
         else:
             raise GuardError("UNKNOWN_HISTORY_REJECTED")
     _require(len(run_ids) == len(set(run_ids)), "HISTORY_RUN_REJECTED")
-    _require(predecessor_ids == set(PREDECESSORS), "PREDECESSOR_REJECTED")
+    _require(predecessor_ids == set(PREDECESSORS) | {SUCCESSFUL_PREDECESSOR_RUN_ID},
+             "PREDECESSOR_REJECTED")
     _require(current_ids, "CURRENT_GENERATION_MISSING")
     _require(current_run_id == min(current_ids), "CURRENT_RUN_NOT_EARLIEST")
     _require(len(current_ids) == 1, "CURRENT_SECOND_RUN")
@@ -355,7 +366,8 @@ def guard(environ=os.environ, urlopen=_authenticated_open):
     _require(POSITIVE.fullmatch(run_id_text) is not None, "IDENTITY_REJECTED")
     workflow_head = _required(environ, "GITHUB_SHA")
     _require(SHA1.fullmatch(workflow_head) is not None, "IDENTITY_REJECTED")
-    _require(workflow_head not in {value[0] for value in PREDECESSORS.values()},
+    _require(workflow_head not in ({value[0] for value in PREDECESSORS.values()}
+                                   | {SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD}),
              "IDENTITY_REJECTED")
     workflow_ref = f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"
     _require(_required(environ, "GITHUB_WORKFLOW_REF") == workflow_ref,

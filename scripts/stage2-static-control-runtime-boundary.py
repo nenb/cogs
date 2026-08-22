@@ -22,7 +22,7 @@ MAX_FDS_PER_PROCESS = 4_096
 MAX_TOTAL_FDS = 131_072
 MAX_PROC_TEXT = 64 * 1024
 WORKFLOW_PATH = ".github/workflows/stage2-local-static-control-candidate.yml"
-NORMALIZED_WORKFLOW_SHA256 = "88750751880bccff64fd46e231eee91a2ae27f3a5d6825c4d1c7d522455b4626"
+NORMALIZED_WORKFLOW_SHA256 = "ce6a8a2594fef95a8c8e00b7d1cec067489dc136575247ff11a1ac4a60dc19f1"
 REVIEWED_HEAD_ASSIGNMENT = re.compile(
     rb'REVIEWED_IMPLEMENTATION_HEAD = "[0-9a-f]{40}"')
 POLICY = {
@@ -31,7 +31,7 @@ POLICY = {
         "effect": "fixed-source-materialization; reviewed child executable is isolated git cat-file only",
     },
     "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py": {
-        "sha256": "1e9b739662fcef46ccb218d02517aaf23087ed22f2ba8b3c9ee7fe17facd628f",
+        "sha256": "cf1757832fdfd443dcb8265c32dec68e7a7e7c4d3c28e4246f00c27120a554c9",
         "effect": "immutable HTTPS acquisition and archive extraction only; runtime launch surfaces forbidden",
     },
     "deploy/aws-feasibility/remote/completion_kata_preparation.py": {

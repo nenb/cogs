@@ -83,6 +83,18 @@ def run(run_id, *, head=G, title=None, **changes):
     return value
 
 
+def successful_predecessor(**changes):
+    value = run(
+        GUARD.SUCCESSFUL_PREDECESSOR_RUN_ID,
+        head=GUARD.SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
+        title=GUARD.SUCCESSFUL_PREDECESSOR_RUN_TITLE,
+        status="completed",
+        conclusion="success",
+    )
+    value.update(changes)
+    return value
+
+
 def predecessor(run_id=GUARD.PREDECESSOR_RUN_ID, **changes):
     workflow_head, title = GUARD.PREDECESSORS[run_id]
     value = run(
@@ -136,6 +148,7 @@ def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None,
 
 BASE_HISTORY = [
     *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+    successful_predecessor(),
     run(CURRENT_RUN_ID),
 ]
 auth_observations = []
@@ -147,10 +160,11 @@ assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
 # Response order does not confer authority; the exact current ID is still the sole earliest ID.
 GUARD.guard(environment(), urlopen=opener(list(reversed(BASE_HISTORY))))
 
-# All twelve consumed attempt-one failures are exact required predecessors.
+# All twelve failures and the successful old-H observation are exact predecessors.
 for predecessor_id in GUARD.PREDECESSORS:
     other_predecessors = [
-        predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id
+        *(predecessor(other_id) for other_id in GUARD.PREDECESSORS if other_id != predecessor_id),
+        successful_predecessor(),
     ]
     for hostile_predecessor in (
         predecessor(predecessor_id, run_attempt=2),
@@ -165,16 +179,29 @@ for predecessor_id in GUARD.PREDECESSORS:
     rejection(lambda missing=other_predecessors: GUARD.guard(
         environment(), urlopen=opener(missing + [run(CURRENT_RUN_ID)])),
         "PREDECESSOR_REJECTED")
+failure_predecessors = [predecessor(run_id) for run_id in GUARD.PREDECESSORS]
+for hostile_success, code in (
+    (successful_predecessor(run_attempt=2), "HISTORY_RUN_REJECTED"),
+    (successful_predecessor(head_sha="c" * 40), "PREDECESSOR_REJECTED"),
+    (successful_predecessor(display_title="foreign"), "PREDECESSOR_REJECTED"),
+    (successful_predecessor(conclusion="failure"), "PREDECESSOR_REJECTED"),
+):
+    rejection(lambda value=hostile_success: GUARD.guard(
+        environment(), urlopen=opener(failure_predecessors + [value, run(CURRENT_RUN_ID)])),
+        code)
+rejection(lambda: GUARD.guard(
+    environment(), urlopen=opener(failure_predecessors + [run(CURRENT_RUN_ID)])),
+    "PREDECESSOR_REJECTED")
 rejection(lambda: GUARD.guard(
     environment(),
     urlopen=opener([
-        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS), successful_predecessor(),
         run(32550000000, head="d" * 40), run(CURRENT_RUN_ID),
     ])), "UNKNOWN_HISTORY_REJECTED")
 rejection(lambda: GUARD.guard(
     environment(),
     urlopen=opener([
-        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+        *(predecessor(run_id) for run_id in GUARD.PREDECESSORS), successful_predecessor(),
         run(GUARD.THIRD_PREDECESSOR_RUN_ID + 1,
             head=GUARD.THIRD_PREDECESSOR_WORKFLOW_HEAD,
             title=GUARD.THIRD_PREDECESSOR_RUN_TITLE),
