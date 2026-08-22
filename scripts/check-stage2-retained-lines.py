@@ -30,6 +30,14 @@ DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
 DEPLOY_SUFFIXES = (".py", ".sh", ".tf")
+CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v2"
+CONTROL_DATA_MEMBERS = (
+    *(f"{CONTROL_DATA_ROOT}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
+        "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
+    f"{CONTROL_DATA_ROOT}/stage2-local-execution-envelope-v2.json",
+    f"{CONTROL_DATA_ROOT}/stage2-local-runtime-manifest-v2.json",
+    f"{CONTROL_DATA_ROOT}/stage2-local-static-control-v1.json",
+)
 MUTABLE_OWNER_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
@@ -142,8 +150,12 @@ def measure():
     _require(len(RETAINED_DEPLOY_FILES) == len(retained_deploy_names))
     tracked_names = set(_git(["ls-files", "--", *RETAINED_FILES]).splitlines())
     tracked_deploy_names = set(_git(["ls-files", "--", *RETAINED_DEPLOY_FILES]).splitlines())
+    control_data_names = set(CONTROL_DATA_MEMBERS)
+    tracked_control_data_names = set(_git(["ls-files", "--", CONTROL_DATA_ROOT]).splitlines())
     _require(tracked_names == retained_names)
     _require(tracked_deploy_names == retained_deploy_names)
+    _require(len(CONTROL_DATA_MEMBERS) == len(control_data_names)
+             and tracked_control_data_names == control_data_names)
     deploy_paths = _deploy_paths()
     _require(retained_deploy_names <= {str(path.relative_to(ROOT)) for path in deploy_paths})
     workflow_paths = _workflow_paths()
@@ -158,7 +170,8 @@ def measure():
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
     current = deploy + retained + workflows
     deploy_gross = _gross_slice((DEPLOY_ROOT,), lambda name: (
-        name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES)))
+        (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
+        or name in control_data_names))
     retained_gross = _gross_slice(RETAINED_FILES, lambda name: name in retained_names)
     workflow_gross = _gross_slice((WORKFLOW_ROOT,), lambda name: (
         name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)))

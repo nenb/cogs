@@ -9,7 +9,7 @@ const run = (args: string[], timeout = 60_000) =>
     timeout,
   });
 
-test("pinned Linux Docker without KVM refuses missing G before mutation", { timeout: 240_000 }, () => {
+test("pinned Linux Docker without KVM refuses unstaged reviewed G before mutation", { timeout: 240_000 }, () => {
   const available = run(["info", "--format", "{{.OSType}}"], 15_000);
   if (available.status !== 0 || available.stdout.trim() !== "linux") return;
   const volumeResult = run(["volume", "create"], 15_000);
@@ -63,7 +63,7 @@ test("pinned Linux Docker without KVM refuses missing G before mutation", { time
     container = created.stdout.trim();
     const result = run(["start", "--attach", container]);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /pinned Linux no-KVM final integration and missing-G refusal passed/u);
+    assert.match(result.stdout, /pinned Linux no-KVM reviewed-G admission refusal passed/u);
     const waited = run(["wait", container], 15_000);
     assert.equal(waited.status, 0, waited.stderr);
     assert.equal(waited.stdout.trim(), "0");
