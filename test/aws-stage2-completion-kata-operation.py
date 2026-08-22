@@ -2669,14 +2669,30 @@ def production_owner_test():
                     ssh_outcome, ssh_receipt = process._transact_fixed_ssh(
                         reopened_runtime, ssh_executable, bindings)
                     assert ssh_receipt.body["outcome"] == "exited"
+                    assert ssh_outcome.stdout.startswith(b"COGS_STAGE2_SSH_READY_V1\n")
+                    route_sha256 = "a" * 64
+                    network_rows = []
+                    for network_ordinal, marker in enumerate(
+                            operation.guest_workloads.GUEST_NETWORK_MARKERS, 1):
+                        suffix = (f"|route_sha256={route_sha256}"
+                                  if network_ordinal in {1, 8} else "")
+                        network_rows.append(
+                            f"COGS_STAGE2_NETWORK_V1|{network_ordinal:02d}|{marker}{suffix}\n")
+                    sample_rows = [
+                        f"COGS_STAGE2_RESULT_V2|{ordinal:02d}|{label}|1|{digest}|deleted=true\n"
+                        for ordinal, (label, digest) in enumerate(
+                            operation.guest_workloads.GUEST_WORKLOAD_PLAN, 1)]
+                    synthetic_v3_stdout = (
+                        operation.guest_workloads.GUEST_READY_MARKER
+                        + "".join((*network_rows, *sample_rows)).encode("ascii"))
                     parsed_result = operation.guest_workloads.parse_guest_workload_output(
-                        ssh_outcome.stdout)
+                        synthetic_v3_stdout)
                     canonical_result = operation.guest_workloads.canonical_guest_workload_result(
                         parsed_result)
                     operation._record_ssh_result(
                         reopened_runtime, ssh_receipt.command_serial,
                         ssh_receipt.binding_sha256, manifest_sha,
-                        ssh_outcome.stdout, canonical_result)
+                        synthetic_v3_stdout, canonical_result)
                     operation._record_ssh_ready(reopened_runtime)
                     operation._revoke_readiness(reopened_runtime)
                     production_inputs.release_ssh_bindings()

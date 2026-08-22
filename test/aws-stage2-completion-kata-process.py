@@ -532,7 +532,7 @@ def linux_supervisor_tests():
             for descriptor, _row in value.pidfds.values():
                 try: signal.pidfd_send_signal(descriptor, signal.SIGKILL)
                 except ProcessLookupError: pass
-        def settle(value, leader, deadline, _errors):
+        def settle(value, leader, deadline, _errors, _daemon_profile=None):
             for pid, (descriptor, _row) in tuple(value.pidfds.items()):
                 if pid != leader:
                     while time.monotonic_ns() < deadline:
