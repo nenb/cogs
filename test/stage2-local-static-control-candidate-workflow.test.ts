@@ -21,14 +21,14 @@ test("control candidate workflow is manual reviewed-H one-shot and expressly non
   assert.match(workflow, /non-authoritative-stage2-static-control/u);
   assert.match(workflow, /^ {4}timeout-minutes: 45$/mu);
   assert.match(workflow, /Step bounds total 42 minutes with a three-minute cleanup\/runner reserve/u);
-  assert.doesNotMatch(workflow, /secrets\.|github\.token|aws-actions|amazon|terraform|opentofu/u);
-  assert.doesNotMatch(workflow, /(?:GITHUB_TOKEN|GH_TOKEN)\s*[:=]|Authorization/u);
+  assert.doesNotMatch(workflow, /secrets\.|aws-actions|amazon|terraform|opentofu/u);
+  assert.doesNotMatch(workflow, /(?:GITHUB_TOKEN|GH_TOKEN)\s*[:=]/u);
   assert.match(workflow, /test ! -e \/run\/netns\/cogs-stage2-ssh/u);
   assert.doesNotMatch(workflow, /completion_local_full|ctr run|systemctl|containerd --/u);
 });
 
-test("bounded first-created guard is exact source and precedes every source effect", () => {
-  const guardAt = workflow.indexOf("Consume only the globally first-created reviewed-H dispatch");
+test("authenticated replacement guard is exact source and precedes every source effect", () => {
+  const guardAt = workflow.indexOf("Admit only the authorized authenticated replacement generation");
   const checkoutAt = workflow.indexOf("Check out exact reviewed implementation head");
   const materializeAt = workflow.indexOf("Materialize exact H source");
   const acquireAt = workflow.indexOf("Acquire verify and install immutable fixtures");
@@ -37,22 +37,39 @@ test("bounded first-created guard is exact source and precedes every source effe
   assert.ok(match?.[1]);
   const embedded = match[1].replace(/^ {10}/gmu, "");
   assert.equal(embedded, dispatchGuard);
-  assert.match(dispatchGuard, /MAX_RUNS = 100/u);
-  assert.match(dispatchGuard, /len\(runs\) == total/u);
-  assert.match(dispatchGuard, /_require\(not link, "Actions history is paginated"\)/u);
-  assert.match(dispatchGuard, /return min\(identities\)/u);
-  assert.match(dispatchGuard, /this is not the exact earliest created run ID/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
-  assert.match(dispatchGuard, /run\.get\("head_sha"\) == workflow_head/u);
-  assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
-  assert.doesNotMatch(dispatchGuard, /Authorization|GITHUB_TOKEN[^",]|secrets\./u);
+
+  const guardStep = workflow.slice(guardAt, checkoutAt);
+  const outsideGuard = workflow.slice(0, guardAt) + workflow.slice(checkoutAt);
+  assert.match(guardStep, /ACTIONS_READ_TOKEN: \$\{\{ github\.token \}\}/u);
+  assert.equal(workflow.match(/\$\{\{ github\.token \}\}/gu)?.length, 1);
+  assert.doesNotMatch(outsideGuard, /ACTIONS_READ_TOKEN|github\.token|Authorization/u);
   assert.doesNotMatch(
     workflow.slice(0, checkoutAt),
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
+
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v2"/u);
+  assert.match(dispatchGuard, /MAX_RUNS = 100/u);
+  assert.match(dispatchGuard, /MAX_TOKEN_CHARS = 256/u);
+  assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
+  assert.match(dispatchGuard, /ProxyHandler\(\{\}\)/u);
+  assert.match(dispatchGuard, /class _RejectRedirect/u);
+  assert.match(dispatchGuard, /len\(runs\) == total/u);
+  assert.match(dispatchGuard, /_require\(not link, "HISTORY_INCOMPLETE"\)/u);
+  assert.match(dispatchGuard, /PREDECESSOR_RUN_ID = 32558263561/u);
+  assert.match(dispatchGuard, /PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"/u);
+  assert.match(dispatchGuard, /PREDECESSOR_REVIEWED_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
+  assert.match(dispatchGuard, /run\.get\("status"\) == "completed"[\s\S]+"failure"/u);
+  assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
+  assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
+  assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
+  assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
+  assert.match(dispatchGuard, /message = f"\{GUARD_VERSION\}: \{code\}\\n"/u);
+  assert.doesNotMatch(dispatchGuard, /print\(|logging|response\.read\([^M]/u);
 });
 
-test("static dispatch guard hostile suite rejects retries, foreign history, and incompleteness", () => {
+test("static dispatch guard hostile suite covers auth, redaction, consumed history, and API failure", () => {
   const result = spawnSync("python3", ["-B", "test/stage2-static-control-dispatch-guard.py"], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -60,7 +77,7 @@ test("static dispatch guard hostile suite rejects retries, foreign history, and 
     timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /static-control dispatch guard hostile tests passed/u);
+  assert.match(result.stdout, /authenticated static-control dispatch guard hostile tests passed/u);
 });
 
 test("final G preparation is fixed, verifies 16+2, installs before custody, and cleans Kata", () => {

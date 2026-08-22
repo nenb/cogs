@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Hostile tests for the pre-checkout static-control dispatch guard."""
+"""Hostile tests for the authenticated pre-checkout static-control dispatch guard."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -12,25 +13,30 @@ GUARD = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = GUARD
 SPEC.loader.exec_module(GUARD)
 H = GUARD.REVIEWED_IMPLEMENTATION_HEAD
-G = "a" * 40
+G = "b" * 40
+TOKEN_VALUE = "ghs_" + "A" * 36
+CURRENT_RUN_ID = 32560000001
 
 
-def rejected(call):
+def rejection(call, code=None):
     try:
         call()
-    except GUARD.GuardError:
-        return
+    except GUARD.GuardError as error:
+        if code is not None:
+            assert error.code == code, (error.code, code)
+        return error
     raise AssertionError("hostile dispatch guard input was accepted")
 
 
 def environment(**changes):
     value = {
+        "ACTIONS_READ_TOKEN": TOKEN_VALUE,
         "GITHUB_EVENT_NAME": "workflow_dispatch",
         "GITHUB_REPOSITORY": GUARD.REPOSITORY,
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_REF_PROTECTED": "true",
         "GITHUB_RUN_ATTEMPT": "1",
-        "GITHUB_RUN_ID": "71",
+        "GITHUB_RUN_ID": str(CURRENT_RUN_ID),
         "GITHUB_SHA": G,
         "GITHUB_WORKFLOW_REF": (
             f"{GUARD.REPOSITORY}/{GUARD.WORKFLOW_PATH}@refs/heads/main"),
@@ -47,14 +53,17 @@ EVENT = {
 }
 
 
-def run(run_id, **changes):
+def run(run_id, *, head=G, title=None, **changes):
     value = {
         "id": run_id,
         "run_attempt": 1,
         "event": "workflow_dispatch",
-        "head_sha": G,
+        "head_branch": "main",
+        "head_sha": head,
         "path": GUARD.WORKFLOW_PATH,
-        "display_title": GUARD.RUN_TITLE,
+        "display_title": GUARD.RUN_TITLE if title is None else title,
+        "status": "in_progress",
+        "conclusion": None,
         "repository": {"full_name": GUARD.REPOSITORY},
         "head_repository": {"full_name": GUARD.REPOSITORY},
     }
@@ -62,8 +71,20 @@ def run(run_id, **changes):
     return value
 
 
+def predecessor(**changes):
+    value = run(
+        GUARD.PREDECESSOR_RUN_ID,
+        head=GUARD.PREDECESSOR_WORKFLOW_HEAD,
+        title=GUARD.PREDECESSOR_RUN_TITLE,
+        status="completed",
+        conclusion="failure",
+    )
+    value.update(changes)
+    return value
+
+
 class Response:
-    def __init__(self, value, *, status=200, link=None, raw=None):
+    def __init__(self, value=None, *, status=200, link=None, raw=None):
         self.status = status
         self.link = link
         self.raw = json.dumps(value).encode() if raw is None else raw
@@ -78,7 +99,7 @@ class Response:
         pass
 
 
-def opener(runs, *, total=None, link=None, status=200):
+def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None):
     def open_request(request, timeout):
         assert timeout == 20
         assert request.full_url.startswith(
@@ -86,59 +107,127 @@ def opener(runs, *, total=None, link=None, status=200):
             "stage2-local-static-control-candidate.yml/runs?")
         assert "event=workflow_dispatch" in request.full_url
         assert "per_page=100" in request.full_url and "page=1" in request.full_url
-        assert "authorization" not in {name.lower() for name in request.headers}
-        return Response({
+        headers = {name.lower(): value for name, value in request.header_items()}
+        assert headers["authorization"] == f"Bearer {TOKEN_VALUE}"
+        assert TOKEN_VALUE not in request.full_url
+        if observe is not None:
+            observe(request, headers)
+        value = {
             "total_count": len(runs) if total is None else total,
             "workflow_runs": runs,
-        }, status=status, link=link)
+        }
+        return Response(value, status=status, link=link, raw=raw)
     return open_request
 
 
-GUARD.guard(environment(), event=EVENT, urlopen=opener([run(71)]))
-# A concurrent second creation cannot gain authority; only exact earliest ID can.
-GUARD.guard(environment(), event=EVENT, urlopen=opener([run(80), run(71)]))
-rejected(lambda: GUARD.guard(
-    environment(GITHUB_RUN_ID="80"), event=EVENT, urlopen=opener([run(80), run(71)])))
-rejected(lambda: GUARD.guard(
-    environment(GITHUB_RUN_ATTEMPT="2"), event=EVENT, urlopen=opener([run(71, run_attempt=2)])))
-rejected(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener([run(71, run_attempt=2)])))
+BASE_HISTORY = [predecessor(), run(CURRENT_RUN_ID)]
+auth_observations = []
+GUARD.guard(
+    environment(), event=EVENT,
+    urlopen=opener(BASE_HISTORY, observe=lambda request, headers: auth_observations.append(
+        (request.host, headers["authorization"])))),
+assert auth_observations == [("api.github.com", f"Bearer {TOKEN_VALUE}")]
+# Response order does not confer authority; the exact current ID is still the sole earliest ID.
+GUARD.guard(environment(), event=EVENT, urlopen=opener(list(reversed(BASE_HISTORY))))
+
+# The consumed attempt-one failure is the only accepted predecessor generation.
+for hostile_predecessor in (
+    predecessor(run_attempt=2),
+    predecessor(head_sha="c" * 40),
+    predecessor(head_branch="foreign"),
+    predecessor(display_title="foreign"),
+    predecessor(status="completed", conclusion="cancelled"),
+    predecessor(repository={"full_name": "attacker/cogs"}),
+):
+    rejection(lambda value=hostile_predecessor: GUARD.guard(
+        environment(), event=EVENT, urlopen=opener([value, run(CURRENT_RUN_ID)])))
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT, urlopen=opener([run(CURRENT_RUN_ID)])),
+    "PREDECESSOR_REJECTED")
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT,
+    urlopen=opener([predecessor(), run(32550000000, head="d" * 40), run(CURRENT_RUN_ID)])),
+    "UNKNOWN_HISTORY_REJECTED")
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT,
+    urlopen=opener([predecessor(), run(GUARD.PREDECESSOR_RUN_ID + 1,
+                                      head=GUARD.PREDECESSOR_WORKFLOW_HEAD,
+                                      title=GUARD.PREDECESSOR_RUN_TITLE)])),
+    "UNKNOWN_HISTORY_REJECTED")
+
+# A second corrected-generation creation consumes no authority, regardless of which ID is current.
+second = run(CURRENT_RUN_ID + 1)
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT, urlopen=opener(BASE_HISTORY + [second])),
+    "CURRENT_SECOND_RUN")
+rejection(lambda: GUARD.guard(
+    environment(GITHUB_RUN_ID=str(CURRENT_RUN_ID + 1)), event=EVENT,
+    urlopen=opener(BASE_HISTORY + [second])),
+    "CURRENT_RUN_NOT_EARLIEST")
+rejection(lambda: GUARD.guard(
+    environment(GITHUB_RUN_ATTEMPT="2"), event=EVENT, urlopen=opener(BASE_HISTORY)))
 
 for name, hostile in (
     ("GITHUB_EVENT_NAME", "push"),
     ("GITHUB_REPOSITORY", "attacker/cogs"),
-    ("GITHUB_SHA", "b" * 40),
+    ("GITHUB_SHA", GUARD.PREDECESSOR_WORKFLOW_HEAD),
     ("EXACT_IMPLEMENTATION_HEAD", "c" * 40),
+    ("ACTIONS_READ_TOKEN", "short"),
+    ("ACTIONS_READ_TOKEN", TOKEN_VALUE + "\n"),
+    ("ACTIONS_READ_TOKEN", "x" * (GUARD.MAX_TOKEN_CHARS + 1)),
 ):
-    rejected(lambda name=name, hostile=hostile: GUARD.guard(
-        environment(**{name: hostile}), event=EVENT, urlopen=opener([run(71)])))
-rejected(lambda: GUARD.guard(
-    {**environment(), "GITHUB_TOKEN": "hostile"}, event=EVENT, urlopen=opener([run(71)])))
-rejected(lambda: GUARD.guard(environment(), event={**EVENT, "repository": {
-    "full_name": "attacker/cogs"}}, urlopen=opener([run(71)])))
-rejected(lambda: GUARD.guard(environment(), event={**EVENT, "inputs": {
-    "exact_implementation_head": "c" * 40}}, urlopen=opener([run(71)])))
+    rejection(lambda name=name, hostile=hostile: GUARD.guard(
+        environment(**{name: hostile}), event=EVENT, urlopen=opener(BASE_HISTORY)))
+for denied in GUARD.DENIED_ENVIRONMENT:
+    rejection(lambda denied=denied: GUARD.guard(
+        {**environment(), denied: "hostile"}, event=EVENT, urlopen=opener(BASE_HISTORY)),
+        "ENVIRONMENT_REJECTED")
+rejection(lambda: GUARD.guard(
+    environment(), event={**EVENT, "repository": {"full_name": "attacker/cogs"}},
+    urlopen=opener(BASE_HISTORY)))
+rejection(lambda: GUARD.guard(
+    environment(), event={**EVENT, "inputs": {"exact_implementation_head": "c" * 40}},
+    urlopen=opener(BASE_HISTORY)))
+rejection(lambda: GUARD.guard(
+    environment(), event=[], urlopen=opener(BASE_HISTORY)), "EVENT_REJECTED")
 
-for hostile_run in (
-    run(71, event="push"),
-    run(71, head_sha="b" * 40),
-    run(71, repository={"full_name": "attacker/cogs"}),
-    run(71, head_repository={"full_name": "attacker/cogs"}),
-    run(71, display_title="Non-authoritative Stage 2 static control H=" + "c" * 40),
-    run(71, path=".github/workflows/foreign.yml"),
+# Authenticated API failures and every malformed/incomplete history fail closed.
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=403)),
+    "API_FORBIDDEN_OR_RATE_LIMITED")
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=429)),
+    "API_FORBIDDEN_OR_RATE_LIMITED")
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT, urlopen=opener(BASE_HISTORY, status=302)),
+    "API_REDIRECT_REJECTED")
+rejection(lambda: GUARD.guard(
+    environment(), event=EVENT,
+    urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(TOKEN_VALUE))),
+    "API_UNAVAILABLE")
+for malformed in (
+    opener(BASE_HISTORY, link='<https://api.github.com/next>; rel="next"'),
+    opener(BASE_HISTORY, total=101),
+    opener(BASE_HISTORY, total=1),
+    opener(BASE_HISTORY, raw=b"{"),
+    opener(BASE_HISTORY, raw=b"x" * (GUARD.MAX_API_BYTES + 1)),
+    opener([predecessor(), run(CURRENT_RUN_ID, id="not-an-integer")]),
+    opener([predecessor(), run(CURRENT_RUN_ID, head_repository=None)]),
+    opener([predecessor(), run(CURRENT_RUN_ID), run(CURRENT_RUN_ID)]),
 ):
-    rejected(lambda hostile_run=hostile_run: GUARD.guard(
-        environment(), event=EVENT, urlopen=opener([hostile_run])))
+    rejection(lambda malformed=malformed: GUARD.guard(
+        environment(), event=EVENT, urlopen=malformed))
 
-rejected(lambda: GUARD.guard(environment(), event=EVENT, urlopen=opener(
-    [run(71)], link='<https://api.github.com/next>; rel="next"')))
-rejected(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener([run(71)], total=101)))
-rejected(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener([run(71)], total=2)))
-rejected(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError())))
-rejected(lambda: GUARD.guard(
-    environment(), event=EVENT, urlopen=opener([run(71)], status=500)))
+# Diagnostics are fixed, bounded classifications; exception text, response bytes, and token stay absent.
+error = rejection(lambda: GUARD.guard(
+    environment(), event=EVENT,
+    urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(TOKEN_VALUE))),
+    "API_UNAVAILABLE")
+diagnostic = GUARD._safe_diagnostic(error)
+assert diagnostic == f"{GUARD.GUARD_VERSION}: API_UNAVAILABLE\n"
+assert len(diagnostic) <= 96
+assert TOKEN_VALUE not in diagnostic
+assert "response" not in diagnostic.lower()
+assert TOKEN_VALUE not in GUARD._safe_diagnostic(OSError(TOKEN_VALUE))
 
-print("stage2 static-control dispatch guard hostile tests passed")
+print("stage2 authenticated static-control dispatch guard hostile tests passed")
