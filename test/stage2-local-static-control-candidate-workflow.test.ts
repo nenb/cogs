@@ -107,7 +107,10 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
   assert.match(runtimeBoundary, /MAX_PROCESSES = 32_768/u);
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
-  assert.match(runtimeBoundary, /NORMALIZED_WORKFLOW_SHA256 = "6376cbc20b5b1507dd33bf634bf7ccb60c4d56b6ef60d098c195ffc71d85ee3c"/u);
+  assert.match(
+    runtimeBoundary,
+    /NORMALIZED_WORKFLOW_SHA256 = "6376cbc20b5b1507dd33bf634bf7ccb60c4d56b6ef60d098c195ffc71d85ee3c"/u,
+  );
   assert.match(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
   assert.match(runtimeBoundary, /owned-qmp-or-runtime-socket/u);
