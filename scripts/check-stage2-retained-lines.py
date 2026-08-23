@@ -50,6 +50,7 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
 RETAINED_FILES = (
+    "schemas/aws-stage2-completion-private-evidence-v1.json",
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
     "scripts/render-aws-stage2-measurement-report.ts",
