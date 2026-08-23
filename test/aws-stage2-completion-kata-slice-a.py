@@ -231,9 +231,18 @@ daemon = intent(daemon_serial, "CONTAINERD_START", "BASELINES_CAPTURED")
 daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
-retained = {**daemon_preexec, "socket_generation": generation(95, "socket", 0o600)}
+retained = {**daemon_preexec, "socket_generations": {
+    "s": {"generation": generation(95, "socket", 0o600), "fd_inode": 195},
+    "s.ttrpc": {"generation": generation(96, "socket", 0o600), "fd_inode": 196}}}
 reject(lambda: operation._key(key(95, "socket")))
-operation._daemon_socket_generation(retained["socket_generation"])
+operation._daemon_socket_generations(retained["socket_generations"])
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", {**retained, "socket_generations": {"s": retained["socket_generations"]["s"]}}))
+nonroot = copy.deepcopy(retained); nonroot["socket_generations"]["s.ttrpc"]["generation"]["uid"] = 1
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", nonroot))
+bad_fd = copy.deepcopy(retained); bad_fd["socket_generations"]["s"]["fd_inode"] = 0
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", bad_fd))
+duplicate = copy.deepcopy(retained); duplicate["socket_generations"]["s.ttrpc"] = copy.deepcopy(duplicate["socket_generations"]["s"])
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", duplicate))
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
 retained_raw = daemon_raw
 daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2",

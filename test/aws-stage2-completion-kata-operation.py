@@ -1032,7 +1032,7 @@ def native_runtime_daemon_foundations(completion):
             deadline = time.monotonic() + 2
             while not os.path.exists(runtime_base + "/containerd-state/plugins/live/during") and time.monotonic() < deadline: time.sleep(0.01)
             assert Path(runtime_base + "/containerd-root/metadata/before").is_file() and Path(runtime_base + "/containerd-root/metadata/live/during").is_file()
-            assert runtime._verify_private_containerd(daemon)["socket_generation"] == authority.runtime_recovery_history()["daemon_retained"][-1]["socket_generation"]
+            assert runtime._verify_private_containerd(daemon)["socket_generations"] == authority.runtime_recovery_history()["daemon_retained"][-1]["socket_generations"]
             runtime._shutdown_private_containerd(daemon); outcome = authority.runtime_recovery_history()["daemon_outcomes"][-1]
             assert outcome["status"] == signal.SIGKILL and not outcome["uncertain"] and not os.path.lexists(socket_path)
             assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); authority.close(); fs._close_chain(chain); chain = None

@@ -482,8 +482,9 @@ check(hashlib.sha256(runtime.CONTAINERD_CONFIG_BYTES).hexdigest() == runtime.CON
       "fixed private config digest")
 check(runtime.private_containerd_spec_v2().argv == (runtime.STAGED_CONTAINERD, "--address", "/run/c42d/s", "--root", "/run/c42d/r", "--state", "/run/c42d/t", "--config", runtime.CONTAINERD_CONFIG), "private daemon short paths")
 check(all(len(path.encode("ascii")) <= runtime.MAX_UNIX_PATH for path in (
-      runtime.CONTAINERD_ADDRESS, runtime.CONTAINERD_ROOT, runtime.CONTAINERD_STATE,
-      runtime.CONTAINERD_SHIM_ENDPOINT)), "Linux AF_UNIX path bound")
+      runtime.CONTAINERD_ADDRESS, runtime.CONTAINERD_TTRPC_ADDRESS, runtime.CONTAINERD_ROOT,
+      runtime.CONTAINERD_STATE, runtime.CONTAINERD_SHIM_ENDPOINT)), "Linux AF_UNIX path bound")
+check(runtime.CONTAINERD_TTRPC_ADDRESS == "/run/c42d/s.ttrpc", "exact containerd companion endpoint")
 # The short alias is optional only before staging/after cleanup; any present
 # object must be the exact root-owned symlink to the retained runtime tree.
 alias_stat = SimpleNamespace(st_mode=__import__("stat").S_IFLNK | 0o777, st_uid=0, st_gid=0)
@@ -610,10 +611,11 @@ check("kill_permitted" not in runtime._cleanup_fixed_runtime.__code__.co_varname
 runtime_source = MODULE_PATH.read_text()
 check("rootfs_fs._optional_child" not in runtime_source,
       "removed optional-child API entered runtime owner")
-for required in ('state[9][1] == "s"', 'process._host_generation(fresh, "socket") == seen',
-                 'process._host_generation(fresh, "socket") == renamed', 'socket_identity(renamed, expected, quarantine)',
+for required in ('state[9][name][1] == name', 'process._host_generation(fresh, "socket") == seen',
+                 'process._host_generation(fresh, "socket") == renamed', 'socket_identity(renamed, expected, quarantine, active_name, quarantine)',
                  'os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)',
-                 'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '_shutdown_private_containerd',
+                 'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '"s.ttrpc", ".s.ttrpc.removing"',
+                 'retained["socket_generations"][active_name]', '"daemon_sockets":', '_shutdown_private_containerd',
                  'kata_operation.GEN_KEYS[:7]', 'state[10][name] = inventory(node)', 'remove_tree(node.operation_fd.number)',
                  'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)',
                  'rootfs_fs._enumerate_stable', 'node.generation == generation', '_set_runtime_alias(False)',
@@ -706,8 +708,41 @@ with patch.object(runtime.socket, "socket", return_value=fake_socket), \
 check(qmp["kvm_present"] and qmp["kvm_enabled"] and fake_socket.closed and fake_socket.stream.closed
       and any(b"query-kvm" in row for row in fake_socket.stream.writes), "QMP KVM proof not executed")
 
-# Exact fd-relative staging cleanup accepts owned no-follow residue kinds.
+# Linux socket fixture proves replacement is preserved before either mutation,
+# and fresh recovery completes a crash cut after only the primary was removed.
 import tempfile
+if sys.platform.startswith("linux"):
+    discard_socket = shutdown_nonlocals["discard_socket"]
+    def socket_fixture(parent, names=("s", "s.ttrpc")):
+        sockets = {}; held = {}; generations = {}
+        for name in names:
+            endpoint = str(Path(parent) / name); check(len(endpoint.encode()) <= runtime.MAX_UNIX_PATH, "fixture AF_UNIX path")
+            listener = __import__("socket").socket(__import__("socket").AF_UNIX); listener.bind(endpoint); listener.listen(1); sockets[name] = listener
+            descriptor = __import__("os").open(endpoint, __import__("os").O_PATH | __import__("os").O_CLOEXEC | __import__("os").O_NOFOLLOW)
+            generation = process_module._host_generation(descriptor, "socket"); held[name] = (descriptor, name); generations[name] = {"generation": generation, "fd_inode": 100 + len(generations)}
+        return sockets, held, generations
+    def socket_state(parent_fd, retained, held):
+        value = [None] * 11; value[4] = SimpleNamespace(operation_fd=SimpleNamespace(number=parent_fd)); value[8] = {"socket_generations": retained}; value[9] = held; return value
+    with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+        parent_fd = __import__("os").open(temporary, __import__("os").O_RDONLY | __import__("os").O_DIRECTORY)
+        listeners, held, generations = socket_fixture(temporary)
+        try:
+            old_ttrpc = held["s.ttrpc"]; __import__("os").unlink(Path(temporary) / "s.ttrpc")
+            replacement = __import__("socket").socket(__import__("socket").AF_UNIX); replacement.bind(str(Path(temporary) / "s.ttrpc")); replacement.listen(1)
+            rejected(lambda: discard_socket(socket_state(parent_fd, generations, held), True))
+            check(set(__import__("os").listdir(parent_fd)) == {"s", "s.ttrpc"}, "replacement check mutated primary")
+            replacement.close(); __import__("os").unlink(Path(temporary) / "s.ttrpc"); listeners["s"].close(); listeners["s.ttrpc"].close(); __import__("os").unlink(Path(temporary) / "s")
+            for descriptor, _name in held.values(): __import__("os").close(descriptor)
+        finally: __import__("os").close(parent_fd)
+    with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+        parent_fd = __import__("os").open(temporary, __import__("os").O_RDONLY | __import__("os").O_DIRECTORY)
+        listeners, held, generations = socket_fixture(temporary); __import__("os").unlink(Path(temporary) / "s"); listeners["s"].close(); __import__("os").close(held["s"][0]); held["s"] = None
+        try:
+            discard_socket(socket_state(parent_fd, generations, held), True)
+            check(__import__("os").listdir(parent_fd) == [], "partial socket-removal recovery left residue")
+        finally: listeners["s.ttrpc"].close(); __import__("os").close(parent_fd)
+
+# Exact fd-relative staging cleanup accepts owned no-follow residue kinds.
 with tempfile.TemporaryDirectory() as temporary:
     parent = __import__("os").open(temporary, __import__("os").O_RDONLY | __import__("os").O_DIRECTORY)
     try:

@@ -89,14 +89,26 @@ process_source = (REMOTE / "completion_kata_process.py").read_text()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
 rejected(lambda: process._start_fixed_daemon(object(), object()))
-socket_generation = __import__("inspect").getclosurevars(process._verify_fixed_daemon).nonlocals["socket_generation"]
+socket_generations = __import__("inspect").getclosurevars(process._verify_fixed_daemon).nonlocals["socket_generations"]
 if not hasattr(process.os, "O_PATH"): process.os.O_PATH = 0
-with patch.object(process.os, "open", return_value=10), patch.object(process.os, "close"), \
-     patch.object(process, "_host_generation", return_value={"uid": 0, "gid": 0}):
-    assert socket_generation() == {"uid": 0, "gid": 0}
-with patch.object(process.os, "open", return_value=10), patch.object(process.os, "close"), \
-     patch.object(process, "_host_generation", return_value={"uid": 1, "gid": 0}):
-    rejected(socket_generation)
+def socket_table(first=111, second=222):
+    return (b"Num RefCount Protocol Flags Type St Inode Path\n"
+            b"000: 00000002 00000000 00010000 0001 01 " + str(first).encode() + b" " + process.CONTAINERD_SOCKET.encode() + b"\n"
+            b"001: 00000002 00000000 00010000 0001 01 " + str(second).encode() + b" " + process.CONTAINERD_TTRPC_SOCKET.encode() + b"\n")
+root_socket = {"uid": 0, "gid": 0, "nlink": 1, "device": 7, "inode": 8}
+ttrpc_socket = {**root_socket, "inode": 9}
+with patch.object(process.os, "open", side_effect=[10, 11, 12]), patch.object(process.os, "read", side_effect=[socket_table(), b""]), \
+     patch.object(process.os, "close"), patch.object(process.os, "listdir", return_value=["3", "4"]), \
+     patch.object(process.os, "readlink", side_effect=["socket:[111]", "socket:[222]"]), \
+     patch.object(process, "_host_generation", side_effect=[root_socket, ttrpc_socket]):
+    assert socket_generations(41) == {"s": {"generation": root_socket, "fd_inode": 111},
+                                      "s.ttrpc": {"generation": ttrpc_socket, "fd_inode": 222}}
+# Deterministic process/socket readiness rejects a companion listener not held
+# by the exact daemon even though both root-owned pathnames exist.
+with patch.object(process.os, "open", side_effect=[10, 11, 12]), patch.object(process.os, "read", side_effect=[socket_table(), b""]), \
+     patch.object(process.os, "close"), patch.object(process.os, "listdir", return_value=["3"]), \
+     patch.object(process.os, "readlink", return_value="socket:[111]"), patch.object(process, "_host_generation", side_effect=[root_socket, ttrpc_socket]):
+    rejected(lambda: socket_generations(41))
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
@@ -263,18 +275,19 @@ int main(int argc, char **argv) {
 DAEMON = r'''#include <sys/socket.h>
 #include <sys/un.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-static const char *path; static int listener;
-static void stop(int signal_number) { (void)signal_number; close(listener); unlink(path); _exit(0); }
+static char paths[2][108]; static int listeners[2];
+static void stop(int signal_number) { (void)signal_number; for(int i=0;i<2;i++){close(listeners[i]);unlink(paths[i]);} _exit(0); }
 int main(int argc, char **argv) {
-  path = 0;
+  const char *path = 0;
   for (int i=1; i+1<argc; ++i) if (!strcmp(argv[i],"--address")) path=argv[i+1];
-  if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 90;
-  listener=socket(AF_UNIX,SOCK_STREAM,0);
-  struct sockaddr_un address={.sun_family=AF_UNIX};
-  memcpy(address.sun_path,path,strlen(path)+1); unlink(path);
-  if(listener<0||bind(listener,(void*)&address,sizeof(address))||listen(listener,1))return 91;
+  if (!path || strlen(path)+strlen(".ttrpc") >= sizeof(paths[0])) return 90;
+  size_t length=strlen(path); memcpy(paths[0],path,length+1); memcpy(paths[1],path,length); memcpy(paths[1]+length,".ttrpc",7);
+  for(int i=0;i<2;i++){ listeners[i]=socket(AF_UNIX,SOCK_STREAM,0); struct sockaddr_un address={.sun_family=AF_UNIX};
+    memcpy(address.sun_path,paths[i],strlen(paths[i])+1); unlink(paths[i]);
+    if(listeners[i]<0||bind(listeners[i],(void*)&address,sizeof(address))||listen(listeners[i],1))return 91; }
   signal(SIGTERM,stop);
   for(;;)pause();
 }
@@ -285,8 +298,8 @@ def authentic_daemon_transaction_profile():
     """Run real child/cgroup transactions beside one retained dummy daemon."""
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
         return False
-    saved = (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
-             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR)
+    saved = (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET, process.CONTAINERD_ROOT,
+             process.CONTAINERD_STATE, process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR)
     with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         root = Path(directory); daemon_path = root / "containerd"; source = root / "daemon.c"
         source.write_text(DAEMON, encoding="ascii")
@@ -294,6 +307,7 @@ def authentic_daemon_transaction_profile():
         runtime = root / "runtime"; runtime.mkdir(); (runtime / "root").mkdir(); (runtime / "state").mkdir()
         (runtime / "config").write_bytes(b"")
         process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT = str(runtime / "socket"), str(runtime / "root")
+        process.CONTAINERD_TTRPC_SOCKET = process.CONTAINERD_SOCKET + ".ttrpc"
         process.CONTAINERD_STATE, process.CONTAINERD_CONFIG = str(runtime / "state"), str(runtime / "config")
         process.STAGED_CONTAINERD, process.STAGED_CTR = str(daemon_path), str(root / "ctr")
         class Journal:
@@ -362,12 +376,13 @@ def authentic_daemon_transaction_profile():
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
                     process._stop_fixed_daemon(owner, journal)
-                assert not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
+                assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
+                        and not os.path.lexists(process.CONTAINERD_TTRPC_SOCKET))
             return True
         finally:
             os.close(daemon_fd); os.close(true_fd)
-            (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
-             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR) = saved
+            (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET, process.CONTAINERD_ROOT,
+             process.CONTAINERD_STATE, process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR) = saved
 
 
 def authentic_root_cgroup_recovery():

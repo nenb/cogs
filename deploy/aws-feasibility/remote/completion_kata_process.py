@@ -397,6 +397,7 @@ class ProcessOutcome:
 
 
 CONTAINERD_SOCKET, CONTAINERD_ROOT, CONTAINERD_STATE = command_policy.CONTAINERD_ADDRESS, command_policy.CONTAINERD_ROOT, command_policy.CONTAINERD_STATE
+CONTAINERD_TTRPC_SOCKET = CONTAINERD_SOCKET + ".ttrpc"
 CONTAINERD_CONFIG = kata_operation.BASE + "/kata-runtime-v1/containerd.toml"
 STAGED_CONTAINERD = kata_operation.BASE + "/kata-runtime-v1/bin/containerd"
 STAGED_CTR = kata_operation.BASE + "/kata-runtime-v1/bin/ctr"
@@ -1868,10 +1869,39 @@ def _daemon_routes():
         "_DaemonOwner", ProcessError, "private daemon owner",
         sealed_message="sealed daemon owner")
     _DaemonOwner = states.kind
-    def socket_generation():
-        descriptor = os.open(CONTAINERD_SOCKET, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try: value = _host_generation(descriptor, "socket"); return value if value["uid"] == value["gid"] == 0 else (_ for _ in ()).throw(ProcessError("private daemon socket ownership"))
+    def socket_generations(pid):
+        paths = {"s": CONTAINERD_SOCKET, "s.ttrpc": CONTAINERD_TTRPC_SOCKET}
+        descriptor = os.open("/proc/net/unix", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            raw = bytearray()
+            while len(raw) <= 1_048_576:
+                part = os.read(descriptor, min(65_536, 1_048_577 - len(raw)))
+                if not part: break
+                raw.extend(part)
+            if len(raw) > 1_048_576: raise ProcessError("private daemon unix table bound")
         finally: os.close(descriptor)
+        rows = [row.split() for row in bytes(raw).splitlines()]
+        fd_names = os.listdir(f"/proc/{pid}/fd")
+        if len(fd_names) > 4096: raise ProcessError("private daemon fd bound")
+        links = []
+        for name in fd_names:
+            if not name.isdigit(): raise ProcessError("private daemon fd name")
+            try: links.append(os.readlink(f"/proc/{pid}/fd/{name}").encode("ascii"))
+            except FileNotFoundError: pass
+        result = {}
+        for name, path in paths.items():
+            descriptor = os.open(path, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try: generation = _host_generation(descriptor, "socket")
+            finally: os.close(descriptor)
+            matches = [row for row in rows if len(row) == 8 and row[-1] == path.encode("ascii")]
+            if (generation["uid"] != 0 or generation["gid"] != 0 or generation["nlink"] != 1 or len(matches) != 1 or
+                    matches[0][3:6] != [b"00010000", b"0001", b"01"] or not matches[0][6].isdigit()):
+                raise ProcessError("private daemon socket ownership")
+            inode = int(matches[0][6]); link = f"socket:[{inode}]".encode("ascii")
+            if links.count(link) != 1: raise ProcessError("private daemon socket fd ownership")
+            result[name] = {"generation": generation, "fd_inode": inode}
+        if len({row["fd_inode"] for row in result.values()}) != 2 or len({(row["generation"]["device"], row["generation"]["inode"]) for row in result.values()}) != 2: raise ProcessError("private daemon socket identity collision")
+        return result
     def close_state(owner):
         try:
             state = states.pop(owner)
@@ -1898,7 +1928,7 @@ def _daemon_routes():
         retained = state[1]; row = _proc_row(retained["pid"])
         if (row[4] != retained["proc_start_time"] or _cgroup_generation(retained["cgroup_path"]) !=
                 tuple(retained["cgroup_generation"][name] for name in kata_operation.GEN_KEYS) or
-                socket_generation() != retained["socket_generation"]):
+                socket_generations(retained["pid"]) != retained["socket_generations"] or _proc_row(retained["pid"]) != row):
             raise ProcessError("private daemon replacement")
         return retained
     def transaction_profile(owner, journal):
@@ -1963,12 +1993,13 @@ def _daemon_routes():
             if status_raw: raise ProcessError("daemon exec failed")
             while _boottime_ns() < deadline:
                 try:
-                    observed = os.lstat(CONTAINERD_SOCKET)
-                    if stat.S_ISSOCK(observed.st_mode): break
+                    observed = (os.lstat(CONTAINERD_SOCKET), os.lstat(CONTAINERD_TTRPC_SOCKET))
+                    if not all(stat.S_ISSOCK(item.st_mode) for item in observed): raise ProcessError("daemon socket kind")
+                    break
                 except FileNotFoundError: pass
                 time.sleep(0.01)
             else: raise ProcessError("daemon socket timeout")
-            retained = {**preexec, "socket_generation": socket_generation()}
+            retained = {**preexec, "socket_generations": socket_generations(pid)}
             kata_operation._record_daemon_retained(journal, retained)
             return states.issue([journal, retained, pidfd, cgroup, previous])
         except BaseException as primary:

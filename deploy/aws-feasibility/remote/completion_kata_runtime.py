@@ -28,8 +28,8 @@ QUALIFICATION_CANDIDATE = "UNQUALIFIED_OFFLINE_FAKE_CONTAINERD_KATA_S4_V1"
 V2 = "cogs.stage2-kata-runtime-owner/v2"
 RUNTIME_ROOT = BASE + "/kata-runtime-v1"; RUNTIME_ALIAS = command_policy.RUNTIME_ALIAS; CONTAINERD_ADDRESS = command_policy.CONTAINERD_ADDRESS; CONTAINERD_ROOT = command_policy.CONTAINERD_ROOT; CONTAINERD_STATE = command_policy.CONTAINERD_STATE
 STAGED_CONTAINERD = RUNTIME_ROOT + "/bin/containerd"; STAGED_CTR = RUNTIME_ROOT + "/bin/ctr"
-CONTAINERD_CONFIG = RUNTIME_ROOT + "/containerd.toml"; MAX_UNIX_PATH = 107; CONTAINERD_SHIM_ENDPOINT = CONTAINERD_STATE + "/io.containerd.runtime.v2.task/" + NAMESPACE + "/" + CONTAINER_ID + "/shim.sock"
-if any(len(path.encode("ascii")) > MAX_UNIX_PATH for path in (CONTAINERD_ADDRESS, CONTAINERD_ROOT, CONTAINERD_STATE, CONTAINERD_SHIM_ENDPOINT)): raise RuntimeError("containerd AF_UNIX path")
+CONTAINERD_CONFIG = RUNTIME_ROOT + "/containerd.toml"; CONTAINERD_TTRPC_ADDRESS = CONTAINERD_ADDRESS + ".ttrpc"; MAX_UNIX_PATH = 107; CONTAINERD_SHIM_ENDPOINT = CONTAINERD_STATE + "/io.containerd.runtime.v2.task/" + NAMESPACE + "/" + CONTAINER_ID + "/shim.sock"
+if any(len(path.encode("ascii")) > MAX_UNIX_PATH for path in (CONTAINERD_ADDRESS, CONTAINERD_TTRPC_ADDRESS, CONTAINERD_ROOT, CONTAINERD_STATE, CONTAINERD_SHIM_ENDPOINT)): raise RuntimeError("containerd AF_UNIX path")
 QMP_SOCKET = "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock"
 CONTAINERD_CONFIG_BYTES = (f'''version = 3
 root = "{CONTAINERD_ROOT}"
@@ -1127,15 +1127,14 @@ def _activate_prepared_containerd(journal, completion, control, prepared_grant=N
         for node in nodes: rootfs_fs._close_node(node)
         if bin_node is not None: rootfs_fs._close_node(bin_node)
 def _runtime_owner_routes():
-    seal = object(); attestations = {}; daemons = {}; owners = {}
+    seal = object(); attestations = {}; daemons = {}; owners = {}; socket_contract = (("s", ".s.removing"), ("s.ttrpc", ".s.ttrpc.removing")); all_socket_names = {name for pair in socket_contract for name in pair}
     _Attestation = owner_helpers.sealed_type("_Attestation", seal, KataRuntimeError)
     _Daemon = owner_helpers.sealed_type("_Daemon", seal, KataRuntimeError)
     _Owner = owner_helpers.sealed_type("_Owner", seal, KataRuntimeError)
     def stable(left, right): return all(left[field] == right[field] for field in kata_operation.GEN_KEYS[:7])
-    def socket_identity(observed, expected, name):
-        if name == "s": return observed == expected
-        return name == ".s.removing" and all(
-            observed[field] == expected[field] for field in kata_operation.GEN_KEYS[:-1])
+    def socket_identity(observed, expected, name, active, quarantine):
+        if name == active: return observed == expected
+        return name == quarantine and all(observed[field] == expected[field] for field in kata_operation.GEN_KEYS[:-1])
     def snapshot_child(snapshot, name):
         for child_name, generation in snapshot.children:
             if child_name == name: return generation
@@ -1191,8 +1190,8 @@ def _runtime_owner_routes():
         else:
             runtime = open_snapshot_child(completion, completion_snapshot, runtime_name, "directory", control)
             runtime_snapshot = rootfs_fs._enumerate_stable(runtime, control)
-            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "r", "t"}; socket_names = names & {"s", ".s.removing"}; expected = base_names | socket_names
-            _fail(_runtime_alias() and names <= expected and len(socket_names) <= 1 and (not active or names == base_names | {"s"}), "private runtime names")
+            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "r", "t"}; socket_names = names & all_socket_names; expected = base_names | socket_names
+            _fail(_runtime_alias() and names <= expected and all(len(names & set(pair)) <= 1 for pair in socket_contract) and (not active or names == base_names | {pair[0] for pair in socket_contract}), "private runtime names")
             def optional(name, kind): return open_snapshot_child(
                 runtime, runtime_snapshot, rootfs_fs._name(name), kind, control)
             config = optional("containerd.toml", "file"); root = optional("r", "directory"); daemon_state = optional("t", "directory")
@@ -1203,21 +1202,20 @@ def _runtime_owner_routes():
                 current = kata_operation._generation_value(runtime.generation); _fail(all(staged["runtime_generation"][field] == current[field] for field in kata_operation.GEN_KEYS[:7]))
                 for field, node in (("config_generation", config), ("root_generation", root), ("state_generation", daemon_state)):
                     if node is not None: _fail(staged[field] == kata_operation._generation_value(node.generation) if field == "config_generation" else stable(staged[field], kata_operation._generation_value(node.generation)))
-        retained = None if inactive else history["daemon_retained"][-1]; socket = None
-        if socket_names:
-            name = socket_names.pop(); descriptor = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=runtime.operation_fd.number)
-            if retained is None or not socket_identity(process._host_generation(
-                    descriptor, "socket"), retained["socket_generation"], name):
-                os.close(descriptor); _fail(False, "foreign daemon socket")
-            socket = (descriptor, name)
-        _fail(not active or socket is not None); inventories = {name: inventory(node) for name, node in (("root", root), ("state", daemon_state)) if node is not None}
-        value = _Daemon(seal); daemons[value] = [journal, completion, process_owner, control, runtime, config, root, daemon_state, retained, socket, inventories]
+        retained = None if inactive else history["daemon_retained"][-1]; sockets = {active_name: None for active_name, _quarantine in socket_contract}
+        for active_name, quarantine in socket_contract:
+            matches = socket_names & {active_name, quarantine}
+            if not matches: continue
+            name = matches.pop(); descriptor = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=runtime.operation_fd.number)
+            expected_generation = None if retained is None else retained["socket_generations"][active_name]["generation"]
+            if expected_generation is None or not socket_identity(process._host_generation(descriptor, "socket"), expected_generation, name, active_name, quarantine): os.close(descriptor); _fail(False, "foreign daemon socket")
+            sockets[active_name] = (descriptor, name)
+        _fail(not active or all(sockets[name] is not None for name, _quarantine in socket_contract)); inventories = {name: inventory(node) for name, node in (("root", root), ("state", daemon_state)) if node is not None}
+        value = _Daemon(seal); daemons[value] = [journal, completion, process_owner, control, runtime, config, root, daemon_state, retained, sockets, inventories]
         return value
     def issue_attestation_core(executable_owner, config, control, roles):
         import completion_kata_process as process
-        _fail(type(config) is rootfs_fs.HeldNode
-              and type(control) is rootfs_fs.OperationControl,
-              "fixed runtime attestation inputs")
+        _fail(type(config) is rootfs_fs.HeldNode and type(control) is rootfs_fs.OperationControl, "fixed runtime attestation inputs")
         executables = []
         try:
             for role in roles: executables.append(process._claim_attested_executable(executable_owner, role))
@@ -1264,18 +1262,15 @@ def _runtime_owner_routes():
         state = daemons.get(value); _fail(state is not None and type(allow_unlinked) is bool); history = state[0].runtime_recovery_history(); retained = state[8]
         _fail(len(history["daemon_retained"]) in {len(history["daemon_outcomes"]), len(history["daemon_outcomes"]) + 1} and
               (retained is None and not history["daemon_retained"] or history["daemon_retained"][-1] == retained))
-        runtime_snapshot = (None if state[4] is None else
-                            rootfs_fs._enumerate_stable(state[4], state[3]))
+        runtime_snapshot = None if state[4] is None else rootfs_fs._enumerate_stable(state[4], state[3])
         if state[5] is not None:
             _fail(rootfs_fs._read_regular(state[5], len(CONTAINERD_CONFIG_BYTES), state[3]) == CONTAINERD_CONFIG_BYTES)
             named = snapshot_child(runtime_snapshot, rootfs_fs._name("containerd.toml")); _fail(named == state[5].generation, "containerd config pathname replacement")
         if state[4] is not None:
             observed = rootfs_fs._observe_node(state[4].identity_fd, state[4].operation_fd, state[3])
-            _fail(stable(kata_operation._generation_value(observed),
-                         kata_operation._generation_value(state[4].generation)))
+            _fail(stable(kata_operation._generation_value(observed), kata_operation._generation_value(state[4].generation)))
         if state[5] is not None:
-            _fail(rootfs_fs._observe_node(state[5].identity_fd, state[5].operation_fd,
-                                          state[3]) == state[5].generation)
+            _fail(rootfs_fs._observe_node(state[5].identity_fd, state[5].operation_fd, state[3]) == state[5].generation)
         _fail((state[4] is None) != _runtime_alias(), "runtime alias residue")
         for index, name in ((6, "r"), (7, "t")):
             node = state[index]
@@ -1283,15 +1278,19 @@ def _runtime_owner_routes():
                 observed = rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]); named = snapshot_child(runtime_snapshot, rootfs_fs._name(name))
                 _fail(stable(kata_operation._generation_value(observed), kata_operation._generation_value(node.generation)) and named is not None and stable(kata_operation._generation_value(named), kata_operation._generation_value(node.generation))); state[10][name] = inventory(node)
         import completion_kata_process as process
-        if state[9] is not None:
-            descriptor, name = state[9]; expected = retained["socket_generation"]; seen = process._host_generation(descriptor, "socket"); names = set(os.listdir(state[4].operation_fd.number))
-            if allow_unlinked and name not in names:
-                _fail(not names & {"s", ".s.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity")
-            else:
-                _fail(socket_identity(seen, expected, name)); fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=state[4].operation_fd.number)
-                try: _fail(process._host_generation(fresh, "socket") == seen, "containerd socket pathname replacement")
-                finally: os.close(fresh)
-        if len(history["daemon_retained"]) == len(history["daemon_outcomes"]) + 1: _fail(state[9] is not None and state[9][1] == "s" and process._verify_fixed_daemon(state[2], state[0]) == retained)
+        if state[4] is not None:
+            names = set(os.listdir(state[4].operation_fd.number))
+            for active_name, quarantine in socket_contract:
+                held = state[9][active_name]; expected = retained["socket_generations"][active_name]["generation"] if retained is not None else None
+                if held is None: _fail(not names & {active_name, quarantine} and len(history["daemon_retained"]) == len(history["daemon_outcomes"]), "daemon socket absent while active"); continue
+                descriptor, name = held; seen = process._host_generation(descriptor, "socket")
+                if allow_unlinked and name not in names:
+                    _fail(not names & {active_name, quarantine} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity")
+                else:
+                    _fail(socket_identity(seen, expected, name, active_name, quarantine)); fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=state[4].operation_fd.number)
+                    try: _fail(process._host_generation(fresh, "socket") == seen, "containerd socket pathname replacement")
+                    finally: os.close(fresh)
+        if len(history["daemon_retained"]) == len(history["daemon_outcomes"]) + 1: _fail(all(state[9][name] is not None and state[9][name][1] == name for name, _quarantine in socket_contract) and process._verify_fixed_daemon(state[2], state[0]) == retained)
         return retained
     def compose(journal, lease, inputs, network, attestation, daemon, control):
         history = journal.runtime_recovery_history(); _fail(history["phase"] in {"NETWORK_READY", "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
@@ -1365,7 +1364,7 @@ def _runtime_owner_routes():
             _fail(not durable.body["uncertain"], "uncertain CTR_RUN preserved")
             state[0].revoke_readiness(); raise KataRuntimeError("certain CTR_RUN failure")
         _fail(verify_daemon(state[6]) == retained, "retained daemon changed during launch")
-        fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_socket": _canonical_fact(retained["socket_generation"]), "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
+        fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_sockets": {name: _canonical_fact(retained["socket_generations"][name]) for name, _quarantine in socket_contract}, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact
     def saved_output(state, phase, index, command_id):
         history = state[0].runtime_recovery_history(); intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
@@ -1559,27 +1558,31 @@ def _runtime_owner_routes():
             os.fsync(descriptor)
     def discard_socket(state, allow_unlinked):
         import completion_kata_process as process
-        held = state[9]
-        if state[4] is None: _fail(held is None); return
-        parent = state[4].operation_fd.number; names = set(os.listdir(parent))
-        if held is None: _fail(not names & {"s", ".s.removing"}, "foreign daemon socket"); return
-        descriptor, name = held; expected = state[8]["socket_generation"]; seen = process._host_generation(descriptor, "socket")
-        if allow_unlinked and name not in names:
-            _fail(not names & {"s", ".s.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity"); os.close(descriptor); state[9] = None; return
-        _fail(socket_identity(seen, expected, name) and name in names)
-        fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
-        try: _fail(process._host_generation(fresh, "socket") == seen, "daemon socket replacement")
-        finally: os.close(fresh)
-        quarantine = ".s.removing"
-        if name != quarantine:
-            _fail(quarantine not in names); os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)
-            os.fsync(parent); state[9] = (descriptor, quarantine)
-        renamed = process._host_generation(descriptor, "socket")
-        _fail(socket_identity(renamed, expected, quarantine), "quarantined socket identity")
-        fresh = os.open(quarantine, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
-        try: _fail(process._host_generation(fresh, "socket") == renamed, "quarantined socket replacement")
-        finally: os.close(fresh)
-        os.unlink(quarantine, dir_fd=parent); os.fsync(parent); os.close(descriptor); state[9] = None
+        if state[4] is None: _fail(not any(state[9].values())); return
+        parent = state[4].operation_fd.number; names = set(os.listdir(parent)); verified = {}
+        for active_name, quarantine in socket_contract:
+            held = state[9][active_name]
+            if held is None: _fail(not names & {active_name, quarantine}, "foreign daemon socket"); continue
+            descriptor, name = held; expected = state[8]["socket_generations"][active_name]["generation"]; seen = process._host_generation(descriptor, "socket")
+            if allow_unlinked and name not in names:
+                _fail(not names & {active_name, quarantine} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity"); verified[active_name] = None; continue
+            _fail(name in names and socket_identity(seen, expected, name, active_name, quarantine)); fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+            try: _fail(process._host_generation(fresh, "socket") == seen, "daemon socket replacement")
+            finally: os.close(fresh)
+            verified[active_name] = seen
+        for active_name, quarantine in socket_contract:
+            held = state[9][active_name]
+            if held is None: continue
+            descriptor, name = held; expected = state[8]["socket_generations"][active_name]["generation"]
+            if verified[active_name] is None: os.close(descriptor); state[9][active_name] = None; continue
+            if name != quarantine:
+                _fail(quarantine not in names); os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); state[9][active_name] = (descriptor, quarantine); names.remove(name); names.add(quarantine)
+            renamed = process._host_generation(descriptor, "socket"); _fail(socket_identity(renamed, expected, quarantine, active_name, quarantine), "quarantined socket identity")
+            fresh = os.open(quarantine, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+            try: _fail(process._host_generation(fresh, "socket") == renamed, "quarantined socket replacement")
+            finally: os.close(fresh)
+            os.unlink(quarantine, dir_fd=parent); os.fsync(parent); unlinked = process._host_generation(descriptor, "socket"); _fail(unlinked["nlink"] == 0 and all(unlinked[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "daemon socket unlink proof"); os.close(descriptor); state[9][active_name] = None; names.remove(quarantine)
+        _fail(not set(os.listdir(parent)) & all_socket_names and not any(state[9].values()), "daemon sockets absence")
     def shutdown_daemon(daemon):
         import completion_kata_process as process
         state = daemons[daemon]; history = state[0].runtime_recovery_history()

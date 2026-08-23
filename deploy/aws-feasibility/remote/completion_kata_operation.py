@@ -265,6 +265,12 @@ def _daemon_socket_generation(value):
     for name in ("uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"):
         _uint(value[name])
     _uint(value["mode"], 0o7777)
+def _daemon_socket_generations(value):
+    _keys(value, ("s", "s.ttrpc"))
+    for row in value.values():
+        _keys(row, ("generation", "fd_inode")); _daemon_socket_generation(row["generation"])
+        _fail(row["generation"]["uid"] == row["generation"]["gid"] == 0 and row["generation"]["nlink"] == 1); _uint(row["fd_inode"], minimum=1)
+    _fail(len({row["fd_inode"] for row in value.values()}) == len({(row["generation"]["device"], row["generation"]["inode"]) for row in value.values()}) == 2)
 def _rootfs_pin(value):
     _keys(value, ROOTFS_PIN)
     for name in ("entry_count", "manifest_size", "ustar_size"):
@@ -686,17 +692,17 @@ def _validate_body(kind, body):
               (("directory", 0o700), ("file", 0o500), ("file", 0o500), ("file", 0o600),
                ("directory", 0o700), ("directory", 0o700)))
     elif kind == "DAEMON_RETAINED_V2":
-        extra = {"socket_generation"}
+        extra = {"socket_generations"}
         _keys(body, (
             "operation_token", "command_serial", "command_id", "binding_sha256",
             "host_boot_id", "pid", "ppid", "pgid", "sid", "proc_start_time",
             "pidfd_supported", "cgroup_path", "cgroup_generation",
             "executable_sha256", "tool_closure_sha256", "executable_generation",
-            "exec_status_pipe", "release_count", "socket_generation",
+            "exec_status_pipe", "release_count", "socket_generations",
         ))
         preexec = {name: value for name, value in body.items() if name not in extra}
         _validate_body("COMMAND_PREEXEC_V2", preexec)
-        _daemon_socket_generation(body["socket_generation"])
+        _daemon_socket_generations(body["socket_generations"])
     elif kind == "DAEMON_OUTCOME_V2":
         names = _command_v2_header(body)
         extra = (
