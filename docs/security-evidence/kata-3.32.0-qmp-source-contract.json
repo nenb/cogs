@@ -1,0 +1,32 @@
+{
+  "version": "cogs.kata-qmp-source-contract/v1",
+  "kata_version": "3.32.0",
+  "commit": "337b6002681479fb6a605ca8a7a1138e81b6098c",
+  "configuration": {
+    "path": "src/runtime/config/configuration-qemu.toml.in",
+    "lines": "346-365",
+    "git_blob": "0ed143c60fc20643efb34c774c54b675cd3793b4",
+    "sha256": "445d295cd514c2128d43aef2609412797a29b188bc1ce48b6dc15609440ea79d",
+    "url": "https://github.com/kata-containers/kata-containers/blob/337b6002681479fb6a605ca8a7a1138e81b6098c/src/runtime/config/configuration-qemu.toml.in#L346-L365"
+  },
+  "virtcontainers_qemu": {
+    "path": "src/runtime/virtcontainers/qemu.go",
+    "lines": ["761-824", "1574-1587", "1771-1790"],
+    "git_blob": "81e6a55d9029930cdc35e9429670430ee4a6b65b",
+    "sha256": "09689991e28fa74eed2be57670e2de968a599cf49d820ca85487f16b1444281d",
+    "url": "https://github.com/kata-containers/kata-containers/blob/337b6002681479fb6a605ca8a7a1138e81b6098c/src/runtime/virtcontainers/qemu.go#L761-L824"
+  },
+  "govmm_qemu": {
+    "path": "src/runtime/pkg/govmm/qemu/qemu.go",
+    "lines": ["3143-3171", "3485-3574"],
+    "git_blob": "c0b7d1022eb708170a8a3a219842681f16fc01e5",
+    "sha256": "aa46eac130cd46187fdaef1734e05c98f959cae29f6556e6ad6e7f08ed816f4a",
+    "url": "https://github.com/kata-containers/kata-containers/blob/337b6002681479fb6a605ca8a7a1138e81b6098c/src/runtime/pkg/govmm/qemu/qemu.go#L3143-L3171"
+  },
+  "contract": {
+    "private_frontend": "unix:fd=<inherited>,server=on,wait=off",
+    "observer_frontend": "unix:path=/run/vc/vm/cogs-stage2-ssh-v1/extra-monitor.sock,server=on,wait=off",
+    "observer_is_full_control": true,
+    "frontend_count": 2
+  }
+}

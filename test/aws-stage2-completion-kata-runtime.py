@@ -262,9 +262,7 @@ fixture = runtime.unqualified_stored_info_fixture_for_tests()
 check(fixture["qualification"] == runtime.QUALIFICATION_CANDIDATE, "fake was not labelled")
 info = fixture["value"]
 options = info["Runtime"]["Options"]
-expected_options_value = (
-    "EkAvb3B0L2thdGEvc2hhcmUvZGVmYXVsdHMva2F0YS1jb250YWluZXJzL2NvbmZpZ3VyYXRpb24tcWVtdS50b21s"
-)
+expected_options_value = options["value"]
 check(options == {"type_url": "runtimeoptions.v1.Options", "value": expected_options_value},
       "ctr 2.2.1 outer Any fixture drifted")
 check(runtime.validate_stored_info(copy.deepcopy(info)) == expected_digest, "stored info candidate")
@@ -302,7 +300,7 @@ def rejected_options(candidate):
     rejected(lambda: runtime.validate_stored_info(hostile))
 
 config = runtime.RUNTIME_CONFIG.encode("utf-8")
-canonical_wire = b"\x12" + bytes((len(config),)) + config
+canonical_wire = b"\x12" + bytes((0x80 | (len(config) & 0x7f), len(config) >> 7)) + config
 check(base64.b64decode(options["value"], validate=True) == canonical_wire, "runtime options wire fixture")
 for wrong_type in ("", "type.googleapis.com/runtimeoptions.v1.Options",
                    "io.containerd.kata.v2.options", "runtimeoptions.v1.Options/other"):
@@ -541,6 +539,7 @@ check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-
 policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
     "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction": [list(row) for row in policy.CONTAINERD_EXTRACTION],
     "staged_containerd": policy.STAGED_CONTAINERD, "staged_ctr": policy.STAGED_CTR,
+    "runtime_config": policy.RUNTIME_CONFIG,
     "alias": policy.RUNTIME_ALIAS, "address": policy.CONTAINERD_ADDRESS,
     "root": policy.CONTAINERD_ROOT, "state": policy.CONTAINERD_STATE,
     "mounts": list(policy.CTR_MOUNTS),
@@ -599,34 +598,42 @@ contracts = {name: SimpleNamespace(value={"objects": [{"path": str(
     prestage.admission.FIXED_ROOT.joinpath(*prestage._PATH, "bin", name)),
     "size": extraction[index][1], "sha256": extraction[index][2]}]})
     for index, name in enumerate(("containerd", "ctr"))}
+active_expected = {"path": runtime.RUNTIME_CONFIG, "size": 32_220,
+    "sha256": "e" * 64, "base_path": runtime.KATA_BASE_CONFIG,
+    "base_size": 32_218, "base_sha256": runtime.KATA_CONFIG_SHA256,
+    "substitutions": [{"from": "enable_debug = false", "to": "enable_debug = true"},
+                      {"from": 'extra_monitor_socket = ""',
+                       "to": 'extra_monitor_socket = "qmp"'}]}
 def host_generation(descriptor):
     kind = "directory" if descriptor in {105, 106} else "file"
-    mode = 0o700 if descriptor == 105 else 0o500
+    mode = 0o700 if descriptor == 105 else 0o400 if descriptor == 109 else 0o500
     nlink = 3 if descriptor == 105 else 2 if descriptor == 106 else 1
-    size = 0 if kind == "directory" else extraction[descriptor - 107][1]
+    size = 0 if kind == "directory" else 32_220 if descriptor == 109 else extraction[descriptor - 107][1]
     return {"mount_id": 1, "device": 2, "inode": descriptor, "kind": kind,
         "mode": mode, "uid": 0, "gid": 0, "nlink": nlink, "size": size,
         "mtime_ns": 3, "ctime_ns": 4}
 def claim_lists(descriptor):
-    return ["bin"] if descriptor == 105 else ["containerd", "ctr"]
+    return (["bin", "configuration-qemu-observer.toml"] if descriptor == 105
+            else ["containerd", "ctr"])
 def claim_open(name, *_args, **_kwargs):
     return {"deploy": 101, "aws-feasibility": 102, ".state": 103, "completion-v1": 104,
-            "kata-runtime-v1": 105, "bin": 106, "containerd": 107, "ctr": 108}[name]
+            "kata-runtime-v1": 105, "bin": 106, "containerd": 107, "ctr": 108,
+            "configuration-qemu-observer.toml": 109}[name]
 dir_stat = SimpleNamespace(st_uid=0, st_gid=0, st_mode=__import__("stat").S_IFDIR | 0o700)
 import completion_kata_process as process_module
 with patch.object(prestage.os, "dup", return_value=100), patch.object(prestage.os, "set_inheritable"), \
      patch.object(prestage.os, "open", side_effect=claim_open), patch.object(prestage.os, "fstat", return_value=dir_stat), \
      patch.object(prestage.os, "listdir", side_effect=claim_lists), patch.object(prestage.os, "listxattr", return_value=[], create=True), \
-     patch.object(prestage.os, "close") as close, patch.object(prestage, "_digest", side_effect=lambda _fd, size: extraction[0 if size == extraction[0][1] else 1][2]), \
+     patch.object(prestage.os, "close") as close, patch.object(prestage, "_digest", side_effect=lambda fd, size: active_expected["sha256"] if fd == 109 else extraction[0 if size == extraction[0][1] else 1][2]), \
      patch.object(process_module, "_host_generation", side_effect=host_generation), \
      patch.object(prestage.os, "unlink") as unlink, patch.object(prestage.os, "rmdir") as rmdir:
-    facts, held = prestage._claim_exact(contracts, 9)
+    facts, held = prestage._claim_exact(contracts, 9, active_expected)
     check(facts["runtime_generation"]["inode"] == 105 and facts["ctr_generation"]["inode"] == 108,
           "prepared identities were not retained")
     for descriptor in reversed(held): prestage.os.close(descriptor)
     check(not unlink.called and not rmdir.called, "claimant mutated a pathname")
     with patch.object(prestage.os, "listdir", side_effect=lambda fd: ["bin", "foreign"] if fd == 105 else claim_lists(fd)):
-        rejected(lambda: prestage._claim_exact(contracts, 9))
+        rejected(lambda: prestage._claim_exact(contracts, 9, active_expected))
 rejected(lambda: prestage.admission._verify_prepared_runtime_custody(object()))
 rejected(lambda: runtime.kata_inputs._claim_runtime_inputs(object(), object()))
 rejected(lambda: runtime.kata_network._claim_runtime_network(object(), object()))
@@ -698,41 +705,128 @@ with patch.object(runtime.os, "unlink") as unlink, patch.object(runtime.os, "rmd
     check(not unlink.called and not rmdir.called and not purge.called,
           "uncertain daemon cleanup mutated socket/runtime state")
 
-# Execute the direct QMP proof: query-kvm is mandatory and streams/fds close.
-class FakeStream:
-    def __init__(self):
-        self.rows = iter((b'{"QMP":{}}\n', b'{"return":{},"id":1}\n',
-                          b'{"return":{"status":"running"},"id":2}\n',
-                          b'{"return":{"enabled":true,"present":true},"id":3}\n')); self.writes = []
-    def __enter__(self): return self
-    def __exit__(self, *_args): self.closed = True
-    def readline(self, _limit): return next(self.rows)
-    def write(self, value): self.writes.append(value); return len(value)
-class FakeSocket:
-    def __init__(self, *_args): self.stream = FakeStream(); self.closed = False
-    def settimeout(self, _value): pass
-    def connect(self, path): check(path == runtime.QMP_SOCKET, "wrong QMP endpoint")
-    def makefile(self, *_args, **_kwargs): return self.stream
-    def close(self): self.closed = True
-fake_socket = FakeSocket(); qemu = runtime.ProcessRecord("qemu", 41, 40, 99,
-    "/opt/kata/bin/qemu-system-x86_64", 7, 8, (), (("net", "net:[1]"),))
-classification = runtime.ProcessClassification(runtime.Observation.EXACT, (qemu,), "exact")
-sockstat = SimpleNamespace(st_mode=__import__("stat").S_IFSOCK | 0o600, st_uid=0, st_gid=0,
-                           st_dev=11, st_ino=12, st_ctime_ns=13)
-kvmstat = SimpleNamespace(st_mode=__import__("stat").S_IFCHR | 0o600, st_rdev=14, st_dev=15, st_ino=16)
-with patch.object(runtime.socket, "socket", return_value=fake_socket), \
-     patch.object(runtime.os, "lstat", return_value=sockstat), \
-     patch.object(runtime, "_read_bounded", return_value=(b"Num Ref Protocol Flags Type St Inode Path\n"
-         b"000: 00000002 00000000 00010000 0001 01 123 " + runtime.QMP_SOCKET.encode() + b"\n")), \
-     patch.object(runtime.os, "listdir", side_effect=[["4"], ["9"]]), \
-     patch.object(runtime.os, "readlink", side_effect=["socket:[123]", "/dev/kvm"]), \
-     patch.object(runtime.os, "open", side_effect=[20, 21]), \
-     patch.object(runtime.os, "fstat", return_value=kvmstat), \
-     patch.object(runtime.os, "close"), patch.object(runtime.fcntl, "ioctl", return_value=12), \
-     patch.object(process_module, "_proc_row", return_value=(41, 40, 41, 41, 99)):
-    qmp = runtime._qmp_kvm(classification)
-check(qmp["kvm_present"] and qmp["kvm_enabled"] and fake_socket.closed and fake_socket.stream.closed
-      and any(b"query-kvm" in row for row in fake_socket.stream.writes), "QMP KVM proof not executed")
+def reject_runtime(call):
+    try: call()
+    except runtime.KataRuntimeError: return
+    raise AssertionError("hostile runtime observer was accepted")
+
+# Exact QEMU launch state has one fd-backed incumbent and one pathname observer.
+qemu_record = runtime.ProcessRecord(
+    "qemu", 41, 40, 99, "/opt/kata/bin/qemu-system-x86_64", 7, 8, (), ())
+observer_arg = ("unix:path=" + runtime.OBSERVER_QMP_SOCKET +
+                ",server=on,wait=off")
+exact_argv = (qemu_record.executable, "-name", "sandbox,debug-threads=on",
+              "-qmp", "unix:fd=3,server=on,wait=off",
+              "-qmp", observer_arg)
+exact_raw = b"\0".join(item.encode() for item in exact_argv) + b"\0"
+with patch.object(runtime, "_qemu_current"), \
+     patch.object(runtime, "_read_bounded", return_value=exact_raw):
+    framed, argv_digest, private_fd = runtime._qemu_argv(qemu_record)
+assert (framed == exact_raw and argv_digest == hashlib.sha256(exact_raw).hexdigest()
+        and private_fd == 3)
+for hostile_argv in (
+    exact_argv[:-2],
+    exact_argv + ("-qmp", observer_arg),
+    exact_argv[:-1] + ("unix:path=" + runtime.KATA_QMP_SOCKET + ",server=on,wait=off",),
+    exact_argv + ("-qmp-pretty",),
+):
+    hostile_raw = b"\0".join(item.encode() for item in hostile_argv) + b"\0"
+    with patch.object(runtime, "_qemu_current"), \
+         patch.object(runtime, "_read_bounded", return_value=hostile_raw):
+        reject_runtime(lambda: runtime._qemu_argv(qemu_record))
+unix_table = (b"Num RefCount Protocol Flags Type St Inode Path\n"
+              b"000: 00000002 00000000 00010000 0001 01 123 " +
+              runtime.KATA_QMP_SOCKET.encode() + b"\n"
+              b"001: 00000002 00000000 00010000 0001 01 456 " +
+              runtime.OBSERVER_QMP_SOCKET.encode() + b"\n")
+listeners = runtime._unix_listeners(unix_table)
+with patch.object(runtime.os, "listdir", return_value=["3", "4"]), \
+     patch.object(runtime.os, "readlink", side_effect=["socket:[123]", "socket:[456]"]):
+    bound_fds = runtime._qemu_socket_fds(qemu_record, listeners)
+assert bound_fds == {runtime.KATA_QMP_SOCKET: (123, 3),
+                     runtime.OBSERVER_QMP_SOCKET: (456, 4)}
+with patch.object(runtime, "_qemu_current"), \
+     patch.object(runtime, "_read_bounded", return_value=exact_raw.replace(
+         b"unix:fd=3", b"unix:fd=4")):
+    _raw, _digest_value, wrong_private_fd = runtime._qemu_argv(qemu_record)
+assert wrong_private_fd != bound_fds[runtime.KATA_QMP_SOCKET][1]
+with patch.object(runtime.os, "listdir", return_value=["3", "4"]), \
+     patch.object(runtime.os, "readlink", side_effect=["socket:[123]", "socket:[123]"]):
+    reject_runtime(lambda: runtime._qemu_socket_fds(qemu_record, listeners))
+
+# The independent observer parser accepts only fixed IDs/commands, bounded
+# events, one absolute deadline, and the pinned QEMU 11.0.1 greeting.
+def qmp_greeting():
+    return {"QMP": {"version": {"qemu": {"major": 11, "minor": 0, "micro": 1},
+                                 "package": ""}, "capabilities": []}}
+def qmp_event():
+    return {"event": "STOP", "data": {},
+            "timestamp": {"seconds": 1, "microseconds": 2}}
+def qmp_rows(event=False):
+    values = [qmp_greeting()]
+    for identifier, result in zip(runtime.QMP_IDS, (
+            {}, {"running": True, "singlestep": False, "status": "running"},
+            {"enabled": True, "present": True}), strict=True):
+        if event: values.append(qmp_event())
+        values.append({"return": result, "id": identifier})
+    return [json.dumps(value, separators=(",", ":")).encode() + b"\n" for value in values]
+class FakeQmpSocket:
+    def __init__(self, rows): self.rows = list(rows); self.writes = []; self.timeouts = []
+    def settimeout(self, value): self.timeouts.append(value)
+    def recv(self, _maximum): return self.rows.pop(0) if self.rows else b""
+    def sendall(self, value): self.writes.append(value)
+for interleaved in (False, True):
+    rows = qmp_rows(interleaved)
+    if interleaved:
+        rows[-1] += json.dumps(qmp_event(), separators=(",", ":")).encode() + b"\n"
+    client = FakeQmpSocket(rows)
+    status, kvm = runtime._qmp_exchange(client, __import__("time").monotonic() + 1)
+    check(status["status"] == "running" and kvm["enabled"]
+          and len(client.writes) == 3
+          and all(identifier.encode() in row
+                  for identifier, row in zip(runtime.QMP_IDS, client.writes, strict=True)),
+          "fixed QMP observer exchange")
+
+def reject_exchange(rows):
+    reject_runtime(lambda: runtime._qmp_exchange(
+        FakeQmpSocket(rows), __import__("time").monotonic() + 1))
+base_rows = qmp_rows()
+for hostile in (
+    [base_rows[0], b'{"return":{},"id":"wrong"}\n'],
+    [base_rows[0], b'{"error":{},"id":"cogs-capabilities-v1"}\n'],
+    [base_rows[0], b'{"return":{},"id":"cogs-capabilities-v1","id":"cogs-capabilities-v1"}\n'],
+    [base_rows[0], b'{"unexpected":true}\n'],
+    [base_rows[0], b""],
+    [base_rows[0], b"x" * (runtime.QMP_LINE_LIMIT + 1)],
+): reject_exchange(hostile)
+# Buffered terminal duplicates and partial trailing objects are both residue.
+reject_exchange([base_rows[0], base_rows[1] + base_rows[1]])
+reject_exchange(base_rows[:-1] + [base_rows[-1] + b'{"event"'])
+class TimeoutQmpSocket(FakeQmpSocket):
+    def recv(self, _maximum):
+        if self.rows: return self.rows.pop(0)
+        raise runtime.socket.timeout()
+timeout_client = TimeoutQmpSocket([base_rows[0]])
+reject_runtime(lambda: runtime._qmp_exchange(
+    timeout_client, __import__("time").monotonic() + 0.05))
+check(timeout_client.timeouts and max(timeout_client.timeouts) <= 0.1
+      and all(later <= earlier for earlier, later in zip(
+          timeout_client.timeouts, timeout_client.timeouts[1:])),
+      "QMP parser refreshed its absolute deadline")
+runtime_source = MODULE_PATH.read_text()
+check("client.connect(OBSERVER_QMP_SOCKET)" in runtime_source
+      and "client.connect(KATA_QMP_SOCKET)" not in runtime_source,
+      "production observer can connect incumbent qmp.sock")
+check(runtime.KATA_QMP_SOCKET.endswith("/qmp.sock")
+      and runtime.OBSERVER_QMP_SOCKET.endswith("/extra-monitor.sock"),
+      "dual QMP path constants")
+empty_unix = b"Num RefCount Protocol Flags Type St Inode Path\n"
+with patch.object(runtime.os.path, "lexists", return_value=False), \
+     patch.object(runtime, "_read_bounded", return_value=empty_unix):
+    check(runtime._qmp_absent()["observer_socket"] == "absent",
+          "dual QMP baseline absence")
+with patch.object(runtime.os.path, "lexists", side_effect=[False, True]):
+    reject_runtime(runtime._qmp_absent)
 
 # Linux socket fixture proves replacement is preserved before either mutation,
 # and fresh recovery completes a crash cut after only the primary was removed.

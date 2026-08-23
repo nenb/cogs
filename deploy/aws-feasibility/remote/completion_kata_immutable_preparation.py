@@ -60,7 +60,7 @@ _OBSERVATION_STAGE = "entry"
 _DIAGNOSTIC_STAGES = frozenset({
     "entry", "preflight", "expected-control", "ownership", "rootfs-acquisition",
     "runtime-acquisition", "extract-kata", "extract-containerd", "archive-values",
-    "receipt", "publication", "installed-verification", "package-verification",
+    "receipt", "active-configuration", "publication", "installed-verification", "package-verification",
 })
 ALLOWED_REDIRECT_HOSTS = frozenset({
     "release-assets.githubusercontent.com",
@@ -485,6 +485,7 @@ def _copy_fixed(source, destination, mode):
 
 
 def _publish_runtime(extracted):
+    global _OBSERVATION_STAGE
     _require(not STAGED_RUNTIME.exists() and not KATA_ROOT.exists()
              and not IMMUTABLE_STAGING.exists())
     IMMUTABLE_STAGING.mkdir(mode=0o700)
@@ -494,6 +495,14 @@ def _publish_runtime(extracted):
         _require(source.is_file() and source.stat().st_size == size
                  and hashlib.sha256(source.read_bytes()).hexdigest() == digest)
         _copy_fixed(source, IMMUTABLE_STAGING / relative, mode)
+    _OBSERVATION_STAGE = "active-configuration"
+    base_path = (extracted["kata"] /
+                 preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/"))
+    base = base_path.read_bytes()
+    active = preparation.derive_observer_configuration(base)
+    _write_owned_file(
+        IMMUTABLE_STAGING / Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).name,
+        active, 0o400)
     os.chmod(IMMUTABLE_STAGING / "bin", 0o500)
     os.rename(IMMUTABLE_STAGING, STAGED_RUNTIME)
     _sync_directory(COMPLETION_ROOT)
@@ -505,8 +514,19 @@ def _publish_runtime(extracted):
 
 def _verify_installed(expected_runtime):
     _require(STAGED_RUNTIME.is_dir() and KATA_ROOT.is_dir())
-    if expected_runtime is None:
-        return
+    # Historical narrow unit fixtures contain only launch-artifact rows. Real
+    # preparation either has no reviewed control yet or the exact new binding.
+    observer_bound = (expected_runtime is None or
+                      "active_configuration" in expected_runtime.get("launch", {}))
+    if observer_bound:
+        base = Path(preparation.KATA_BASE_CONFIGURATION_PATH).read_bytes()
+        active = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).read_bytes()
+        _require(active == preparation.derive_observer_configuration(base))
+        active_description = preparation.observer_configuration_description(base)
+        if expected_runtime is None:
+            return
+        _require(expected_runtime["launch"]["active_configuration"] == active_description,
+                 "reviewed active Kata configuration differs")
     for row in expected_runtime["launch"]["artifacts"]:
         path = Path(row["path"])
         seen = path.lstat()
@@ -581,6 +601,22 @@ def _static_runtime_rows():
         rows.append({"path": relative, "kind": "file", "mode": mode,
                      "uid": uid, "gid": gid, "size": size,
                      "link_target": None, "sha256": digest})
+    active_path = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH)
+    observed_active = next((path for path in (
+        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name)
+        if path.exists()), None)
+    if observed_active is not None:
+        base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
+        base_source = next((path for path in (
+            KATA_ROOT / preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/opt/kata/"),
+            EXTRACTED_ROOT / "kata" / base_relative)
+            if path.exists()), None)
+        _require(base_source is not None,
+                 "active configuration lacks pinned rollback base")
+        active = preparation.derive_observer_configuration(base_source.read_bytes())
+        rows.append({"path": active_path.name, "kind": "file", "mode": 0o400,
+                     "uid": uid, "gid": gid, "size": len(active),
+                     "link_target": None, "sha256": hashlib.sha256(active).hexdigest()})
     return sorted(rows, key=lambda row: row["path"].encode())
 
 
@@ -667,7 +703,11 @@ def _rollback_preparation(contract):
 
     values = None if receipt is None else receipt[1]["runtime_archives"]
     kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
-    if kata_moved:
+    # The staged observer derivative is authorized only by the still-present
+    # pinned base generation, so verify/remove it before the Kata tree.
+    cleanup(lambda: _remove_static_runtime(STAGED_RUNTIME, False), "staged runtime")
+    cleanup(lambda: _remove_static_runtime(IMMUTABLE_STAGING, True), "immutable staging")
+    if kata_moved and not errors:
         def remove_kata():
             _require(values is not None, "Kata staging lacks durable manifest")
             rows = next(row for row in values if row["role"] == "kata")["extracted"]["entries"]
@@ -676,8 +716,6 @@ def _rollback_preparation(contract):
                         if row["path"].startswith("opt/kata/")]
             _remove_verified_tree(KATA_ROOT, children, root_row)
         cleanup(remove_kata)
-    cleanup(lambda: _remove_static_runtime(STAGED_RUNTIME, False), "staged runtime")
-    cleanup(lambda: _remove_static_runtime(IMMUTABLE_STAGING, True), "immutable staging")
 
     if EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink():
         def remove_extracted():

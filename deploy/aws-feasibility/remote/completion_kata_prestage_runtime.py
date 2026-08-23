@@ -8,6 +8,8 @@ import completion_rootfs_fs as fs
 
 _RUNTIME = fs._name("kata-runtime-v1")
 _BIN = fs._name("bin")
+_ACTIVE_NAME = "configuration-qemu-observer.toml"
+_ACTIVE = fs._name(_ACTIVE_NAME)
 _PATH = ("deploy", "aws-feasibility", ".state", "completion-v1", "kata-runtime-v1")
 _seal = object()
 _states = {}
@@ -46,9 +48,16 @@ def _host_generation(descriptor):
     return _host_generation(descriptor)
 
 
-def _claim_exact(contracts, source_anchor):
+def _claim_exact(contracts, source_anchor, active_expected):
     """Open the sole fixed tree; the caller supplies reviewed contracts, not a path."""
-    _require(set(contracts) >= {"containerd", "ctr"} and type(source_anchor) is int)
+    _require(set(contracts) >= {"containerd", "ctr"} and type(source_anchor) is int
+             and type(active_expected) is dict
+             and set(active_expected) == {"path", "size", "sha256", "base_path",
+                                           "base_size", "base_sha256", "substitutions"}
+             and active_expected["path"].endswith("/" + _ACTIVE_NAME)
+             and active_expected["size"] == 32_220
+             and type(active_expected["sha256"]) is str
+             and len(active_expected["sha256"]) == 64)
     contracts = {name: value.value for name, value in contracts.items()}
     held = []
     try:
@@ -60,16 +69,26 @@ def _claim_exact(contracts, source_anchor):
             _require(seen.st_uid == seen.st_gid == 0 and not (seen.st_mode & 0o022))
             held.append(child); current = child
         runtime = current
-        _require(set(os.listdir(runtime)) == {"bin"})
+        _require(set(os.listdir(runtime)) == {"bin", _ACTIVE_NAME})
         bin_fd = os.open("bin", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                          dir_fd=runtime)
         held.append(bin_fd); _require(set(os.listdir(bin_fd)) == {"containerd", "ctr"})
-        generations = [_host_generation(runtime), _host_generation(bin_fd)]
-        _require((generations[0]["mode"], generations[1]["mode"],
-                  generations[0]["nlink"], generations[1]["nlink"]) == (0o700, 0o500, 3, 2)
+        active_fd = os.open(_ACTIVE_NAME, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                            dir_fd=runtime)
+        held.append(active_fd)
+        generations = [_host_generation(runtime), _host_generation(bin_fd),
+                       _host_generation(active_fd)]
+        _require((generations[0]["mode"], generations[1]["mode"], generations[2]["mode"],
+                  generations[0]["nlink"], generations[1]["nlink"],
+                  generations[2]["nlink"]) == (0o700, 0o500, 0o400, 3, 2, 1)
+                 and generations[2]["kind"] == "file"
+                 and generations[2]["size"] == active_expected["size"]
+                 and _digest(active_fd, generations[2]["size"]) == active_expected["sha256"]
                  and all(row["uid"] == row["gid"] == 0 for row in generations)
-                 and not os.listxattr(runtime) and not os.listxattr(bin_fd))
-        facts = {}
+                 and not os.listxattr(runtime) and not os.listxattr(bin_fd)
+                 and not os.listxattr(active_fd))
+        facts = {"observer_configuration_size": generations[2]["size"],
+                 "observer_configuration_sha256": active_expected["sha256"]}
         for index, name in enumerate(("containerd", "ctr")):
             contract = contracts[name]["objects"]
             expected_path = str(admission.FIXED_ROOT.joinpath(*_PATH, "bin", name))
@@ -83,10 +102,13 @@ def _claim_exact(contracts, source_anchor):
                      and _digest(descriptor, seen["size"]) == expected["sha256"])
             generations.append(seen); facts[name + "_size"] = seen["size"]
             facts[name + "_sha256"] = expected["sha256"]
-        _require(set(os.listdir(runtime)) == {"bin"} and set(os.listdir(bin_fd)) == {"containerd", "ctr"}
+        _require(set(os.listdir(runtime)) == {"bin", _ACTIVE_NAME}
+                 and set(os.listdir(bin_fd)) == {"containerd", "ctr"}
                  and _host_generation(runtime) == generations[0]
-                 and _host_generation(bin_fd) == generations[1])
-        facts.update(zip(("runtime_generation", "bin_generation", "containerd_generation",
+                 and _host_generation(bin_fd) == generations[1]
+                 and _host_generation(active_fd) == generations[2])
+        facts.update(zip(("runtime_generation", "bin_generation",
+                          "observer_configuration_generation", "containerd_generation",
                           "ctr_generation"), generations, strict=True))
         return facts, held
     except BaseException:
@@ -105,7 +127,16 @@ def _snapshot(completion, body, control):
     try:
         _require(runtime.generation == child and not os.listxattr(runtime.operation_fd.number))
         _require(_same_directory(operation._generation_value(runtime.generation), body["runtime_generation"]))
-        names = set(os.listdir(runtime.operation_fd.number)); _require(names <= {"bin"})
+        names = set(os.listdir(runtime.operation_fd.number)); _require(names <= {"bin", _ACTIVE_NAME})
+        if _ACTIVE_NAME in names:
+            active_node = fs._open_path_node(runtime, _ACTIVE, "file", control)
+            nodes["observer_configuration"] = active_node
+            current = operation._generation_value(active_node.generation)
+            raw = fs._read_regular(active_node, body["observer_configuration_size"], control)
+            _require(current == body["observer_configuration_generation"]
+                     and len(raw) == body["observer_configuration_size"]
+                     and hashlib.sha256(raw).hexdigest()
+                         == body["observer_configuration_sha256"])
         if "bin" not in names: return nodes
         bin_node = fs._open_path_node(runtime, _BIN, "directory", control); nodes["bin"] = bin_node
         _require(not os.listxattr(bin_node.operation_fd.number)
@@ -145,17 +176,26 @@ def cleanup(custody):
     while True:
         nodes = _snapshot(completion, body, control)
         try:
-            action = next((name for name in ("containerd", "ctr", "bin", "runtime") if name in nodes), None)
+            action = next((name for name in ("containerd", "ctr", "bin",
+                                                "observer_configuration", "runtime")
+                           if name in nodes), None)
             if action is None: break
-            node = nodes[action]; parent = nodes["bin"] if action in {"containerd", "ctr"} else nodes["runtime"] if action == "bin" else completion
-            name = fs._name(action if action != "runtime" else "kata-runtime-v1")
+            node = nodes[action]
+            parent = (nodes["bin"] if action in {"containerd", "ctr"}
+                      else nodes["runtime"] if action in {"bin", "observer_configuration"}
+                      else completion)
+            name = (_ACTIVE if action == "observer_configuration" else
+                    fs._name(action if action != "runtime" else "kata-runtime-v1"))
             confirmation = _snapshot(completion, body, control)
             try: _require(action in confirmation and confirmation[action].generation == node.generation)
             finally:
                 for held in reversed(tuple(confirmation.values())): fs._close_node(held)
             _require(fs._observe_child(parent, name, control) == node.generation)
-            if action in {"containerd", "ctr"}: os.unlink(name.raw, dir_fd=parent.operation_fd.number)
-            else: _require(not os.listdir(node.operation_fd.number)); os.rmdir(name.raw, dir_fd=parent.operation_fd.number)
+            if action in {"containerd", "ctr", "observer_configuration"}:
+                os.unlink(name.raw, dir_fd=parent.operation_fd.number)
+            else:
+                _require(not os.listdir(node.operation_fd.number))
+                os.rmdir(name.raw, dir_fd=parent.operation_fd.number)
             os.fsync(parent.operation_fd.number)
         finally:
             for node in reversed(tuple(nodes.values())): fs._close_node(node)

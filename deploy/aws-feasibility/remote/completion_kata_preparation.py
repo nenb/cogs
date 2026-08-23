@@ -7,6 +7,7 @@ These public bytes are comparison data: they cannot grant execution or KVM.
 """
 
 from dataclasses import asdict, dataclass
+import copy
 import hashlib
 import json
 import os
@@ -55,6 +56,17 @@ MAX_ARCHIVE_ENTRIES = 100_000
 MAX_ARCHIVE_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 HEX = frozenset("0123456789abcdef")
+KATA_BASE_CONFIGURATION_PATH = "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+KATA_BASE_CONFIGURATION_SIZE = 32_218
+KATA_BASE_CONFIGURATION_SHA256 = "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae"
+KATA_ACTIVE_CONFIGURATION_PATH = str(
+    SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/configuration-qemu-observer.toml")
+KATA_CONFIGURATION_SUBSTITUTIONS = (
+    (b"enable_debug = false", b"enable_debug = true"),
+    (b'extra_monitor_socket = ""', b'extra_monitor_socket = "qmp"'),
+)
+KATA_PRIVATE_QMP_SOCKET = "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock"
+KATA_OBSERVER_QMP_SOCKET = "/run/vc/vm/cogs-stage2-ssh-v1/extra-monitor.sock"
 
 EXECUTABLES = (
     ("ip", "host-path", "/usr/sbin/ip"),
@@ -119,6 +131,7 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_runtime_contract.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+    "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
     "schemas/stage2-local-execution-envelope-v2.json",
     "schemas/stage2-local-runtime-manifest-v2.json",
     "schemas/stage2-local-static-control-package-v1.json",
@@ -185,6 +198,121 @@ def canonical_bytes(value):
                           allow_nan=False).encode("ascii") + b"\n"
     except (TypeError, ValueError, UnicodeError, RecursionError) as error:
         raise PreparationError("static preparation value is not canonical JSON") from error
+
+
+def _toml_module():
+    try:
+        import tomllib
+        return tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli
+            return tomli
+        except ModuleNotFoundError as error:
+            raise PreparationError("TOML parser unavailable") from error
+
+
+def derive_observer_configuration(base, require_pinned=True):
+    """Return the sole canonical Kata observer derivative.
+
+    The release file remains untouched.  Exactly two values in the one
+    ``[hypervisor.qemu]`` section change; parsing and a recursive comparison
+    make comments, ordering, all paths, and every other scalar byte-bound.
+    """
+    _require(type(base) is bytes and b"\0" not in base
+             and len(base) <= 1_048_576, "invalid Kata base configuration")
+    if require_pinned:
+        _require(len(base) == KATA_BASE_CONFIGURATION_SIZE
+                 and _sha(base) == KATA_BASE_CONFIGURATION_SHA256,
+                 "pinned Kata base configuration differs")
+    toml = _toml_module()
+    try:
+        text = base.decode("utf-8", "strict")
+        parsed_base = toml.loads(text)
+    except (UnicodeError, toml.TOMLDecodeError) as error:
+        raise PreparationError("invalid Kata base TOML") from error
+    _require(text.count("[hypervisor.qemu]") == 1,
+             "duplicate or missing Kata qemu section")
+    start = text.index("[hypervisor.qemu]")
+    following = text.find("\n[", start + 1)
+    end = len(text) if following < 0 else following + 1
+    section = base[start:end]
+    derived_section = section
+    for old, new in KATA_CONFIGURATION_SUBSTITUTIONS:
+        _require(section.count(old) == 1 and base.count(old) >= 1,
+                 "duplicate, enabled, or missing Kata observer key")
+        derived_section = derived_section.replace(old, new, 1)
+    derived = base[:start] + derived_section + base[end:]
+    _require(derived != base and len(derived) == len(base) + 2,
+             "noncanonical Kata observer derivative")
+    try:
+        parsed_active = toml.loads(derived.decode("utf-8", "strict"))
+    except (UnicodeError, toml.TOMLDecodeError) as error:
+        raise PreparationError("invalid active Kata TOML") from error
+    _require(type(parsed_base) is dict and type(parsed_active) is dict)
+    base_qemu = parsed_base.get("hypervisor", {}).get("qemu")
+    active_qemu = parsed_active.get("hypervisor", {}).get("qemu")
+    _require(type(base_qemu) is dict and type(active_qemu) is dict
+             and base_qemu.get("path") == active_qemu.get("path")
+             == "/opt/kata/bin/qemu-system-x86_64"
+             and base_qemu.get("enable_debug") is False
+             and base_qemu.get("extra_monitor_socket") == ""
+             and active_qemu.get("enable_debug") is True
+             and active_qemu.get("extra_monitor_socket") == "qmp",
+             "Kata observer semantics differ")
+    expected = copy.deepcopy(parsed_base)
+    expected["hypervisor"]["qemu"]["enable_debug"] = True
+    expected["hypervisor"]["qemu"]["extra_monitor_socket"] = "qmp"
+    _require(parsed_active == expected,
+             "Kata observer derivative changed another scalar")
+    agents = parsed_active.get("agent")
+    runtime = parsed_active.get("runtime")
+    _require(parsed_active.get("agent") == parsed_base.get("agent")
+             and type(agents) is dict and agents
+             and all(type(value) is dict and value.get("enable_debug") is False
+                     for value in agents.values())
+             and parsed_active.get("runtime") == parsed_base.get("runtime")
+             and type(runtime) is dict and runtime.get("enable_debug") is False
+             and active_qemu.get("enable_annotations")
+                 == base_qemu.get("enable_annotations")
+                 == ["enable_iommu", "kernel_params", "kernel_verity_params"],
+             "Kata debug or annotation policy widened")
+    return derived
+
+
+def observer_configuration_description(base, require_pinned=True):
+    active = derive_observer_configuration(base, require_pinned)
+    return {
+        "path": KATA_ACTIVE_CONFIGURATION_PATH,
+        "size": len(active),
+        "sha256": _sha(active),
+        "base_path": KATA_BASE_CONFIGURATION_PATH,
+        "base_size": len(base),
+        "base_sha256": _sha(base),
+        "substitutions": [
+            {"from": old.decode("ascii"), "to": new.decode("ascii")}
+            for old, new in KATA_CONFIGURATION_SUBSTITUTIONS
+        ],
+    }
+
+
+def validate_observer_configuration_description(value, base=None):
+    _exact_keys(value, ("path", "size", "sha256", "base_path", "base_size",
+                        "base_sha256", "substitutions"))
+    _require(value["path"] == KATA_ACTIVE_CONFIGURATION_PATH
+             and value["base_path"] == KATA_BASE_CONFIGURATION_PATH
+             and value["base_size"] == KATA_BASE_CONFIGURATION_SIZE
+             and value["base_sha256"] == KATA_BASE_CONFIGURATION_SHA256
+             and value["size"] == KATA_BASE_CONFIGURATION_SIZE + 2)
+    _digest(value["sha256"])
+    _require(value["substitutions"] == [
+        {"from": old.decode("ascii"), "to": new.decode("ascii")}
+        for old, new in KATA_CONFIGURATION_SUBSTITUTIONS
+    ])
+    if base is not None:
+        _require(value == observer_configuration_description(base),
+                 "active Kata configuration binding differs")
+    return value
 
 
 def _pairs(rows):
@@ -423,7 +551,8 @@ def validate_runtime_value(value):
                                                    "path_basis": "rootfs-relative-no-symlink"})
     _static_closure(rootfs["static_closure"])
     launch = value["launch"]
-    _exact_keys(launch, ("runtime", "configuration", "containerd_configuration_sha256", "mount_list_sha256",
+    _exact_keys(launch, ("runtime", "configuration", "active_configuration", "observer",
+                         "containerd_configuration_sha256", "mount_list_sha256",
                          "shared_filesystem", "hypervisor", "fallback", "artifacts", "artifacts_sha256"))
     _require(launch["runtime"] == "io.containerd.kata.v2" and launch["shared_filesystem"] == "virtio-fs")
     _require(launch["hypervisor"] == "qemu" and launch["fallback"] == "none")
@@ -433,6 +562,22 @@ def validate_runtime_value(value):
     _exact_keys(config, ("path", "size", "sha256"))
     _absolute(config["path"])
     _digest(config["sha256"])
+    _require(config == {"path": KATA_BASE_CONFIGURATION_PATH,
+                        "size": KATA_BASE_CONFIGURATION_SIZE,
+                        "sha256": KATA_BASE_CONFIGURATION_SHA256},
+             "pinned Kata base configuration binding differs")
+    validate_observer_configuration_description(launch["active_configuration"])
+    observer = launch["observer"]
+    _exact_keys(observer, ("private_socket", "observer_socket", "qmp_frontends",
+                           "commands", "client_policy", "debug_effect"))
+    _require(observer == {
+        "private_socket": KATA_PRIVATE_QMP_SOCKET,
+        "observer_socket": KATA_OBSERVER_QMP_SOCKET,
+        "qmp_frontends": 2,
+        "commands": ["qmp_capabilities", "query-status", "query-kvm"],
+        "client_policy": "closed-query-only-full-control-endpoint",
+        "debug_effect": "hypervisor-debug-kernel-parameters-and-debug-threads",
+    }, "fixed Kata observer policy differs")
     artifacts = launch["artifacts"]
     _require(type(artifacts) is list and 6 <= len(artifacts) <= 64)
     roles = []
@@ -455,6 +600,18 @@ def validate_runtime_value(value):
              "launch artifact role map differs")
     _digest(launch["artifacts_sha256"])
     _require(launch["artifacts_sha256"] == _sha(canonical_bytes(artifacts)))
+    by_role = {row["role"]: row for row in artifacts}
+    _require(by_role.get("configuration") == {
+        "role": "configuration", "path": config["path"], "kind": "file",
+        "mode": 0o644, "size": config["size"], "sha256": config["sha256"],
+        "link_target": None,
+    } and by_role.get("active-configuration") == {
+        "role": "active-configuration",
+        "path": launch["active_configuration"]["path"], "kind": "file",
+        "mode": 0o400, "size": launch["active_configuration"]["size"],
+        "sha256": launch["active_configuration"]["sha256"],
+        "link_target": None,
+    }, "Kata base/active launch artifacts differ")
     executables = value["executables"]
     _require(type(executables) is list and len(executables) == 10)
     for row, expected in zip(executables, EXECUTABLES, strict=True):
@@ -1006,15 +1163,14 @@ def _fixed_file(role, logical_path, actual_path):
 
 
 def _configured_launch_assets(kata_root):
-    import tomllib
-
     config_path = "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
     actual_config = kata_root / config_path[1:]
     raw = actual_config.read_bytes()
     _require(0 < len(raw) <= 1024 * 1024)
+    toml = _toml_module()
     try:
-        config = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        config = toml.loads(raw.decode("utf-8"))
+    except (UnicodeError, toml.TOMLDecodeError) as error:
         raise PreparationError("Kata configuration is invalid") from error
     configured = {}
 
@@ -1094,7 +1250,15 @@ def collect_fixed_candidate():
     static_closure = {**final.runtime_closure.value(), "objects": static_objects}
     _OBSERVATION_STAGE = "launch-assets"
     config_raw, artifacts = _configured_launch_assets(Path("/"))
+    active_raw = (actual_runtime / Path(KATA_ACTIVE_CONFIGURATION_PATH).name).read_bytes()
+    active_description = observer_configuration_description(config_raw)
+    _require(active_raw == derive_observer_configuration(config_raw)
+             and len(active_raw) == active_description["size"]
+             and _sha(active_raw) == active_description["sha256"],
+             "active observer configuration artifact differs")
     artifacts.extend((
+        _fixed_file("active-configuration", KATA_ACTIVE_CONFIGURATION_PATH,
+                    actual_runtime / Path(KATA_ACTIVE_CONFIGURATION_PATH).name),
         _fixed_file("containerd", EXECUTABLES[5][2], actual_runtime / "bin/containerd"),
         _fixed_file("ctr", EXECUTABLES[6][2], actual_runtime / "bin/ctr"),
     ))
@@ -1129,8 +1293,17 @@ def collect_fixed_candidate():
                                                     "path_basis": "rootfs-relative-no-symlink"},
                           "static_closure": static_closure},
                "launch": {"runtime": "io.containerd.kata.v2",
-                          "configuration": {"path": kata_runtime.RUNTIME_CONFIG,
+                          "configuration": {"path": KATA_BASE_CONFIGURATION_PATH,
                                             "size": len(config_raw), "sha256": _sha(config_raw)},
+                          "active_configuration": active_description,
+                          "observer": {
+                              "private_socket": KATA_PRIVATE_QMP_SOCKET,
+                              "observer_socket": KATA_OBSERVER_QMP_SOCKET,
+                              "qmp_frontends": 2,
+                              "commands": ["qmp_capabilities", "query-status", "query-kvm"],
+                              "client_policy": "closed-query-only-full-control-endpoint",
+                              "debug_effect": "hypervisor-debug-kernel-parameters-and-debug-threads",
+                          },
                           "containerd_configuration_sha256": kata_runtime.CONTAINERD_CONFIG_SHA256,
                           "mount_list_sha256": kata_runtime.MOUNT_LIST_SHA256,
                           "shared_filesystem": "virtio-fs", "hypervisor": "qemu", "fallback": "none",

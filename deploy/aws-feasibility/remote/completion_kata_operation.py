@@ -159,7 +159,7 @@ FIXED = {
     "namespace": "cogs-stage2-completion-v1", "netns_name": "cogs-stage2-ssh",
     "netns_path": "/run/netns/cogs-stage2-ssh", "nft_table": "inet cogs_stage2_ssh_v1",
     "operation_state": BASE + "/kata-operation-v1", "runtime": "io.containerd.kata.v2",
-    "runtime_config": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml",
+    "runtime_config": command_policy.RUNTIME_CONFIG,
     "sandbox_id": "cogs-stage2-ssh-v1", "ssh_alias": "cogs-stage2-ssh-v1",
     "ssh_marker": "COGS_STAGE2_SSH_READY_V1\n", "ssh_port": 22, "ssh_user": "root",
     "state_base": BASE,
@@ -187,7 +187,8 @@ _RUNTIME_POLICY_OBJECTS = (command_policy.RUNTIME_POLICY_VERSION, command_policy
                            command_policy.RUNTIME_PHASES, command_policy.RUNTIME_MAX_OCCURRENCES,
                            command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION, command_policy.RUNTIME_OWNERSHIP_TRACES,
                            command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS,
-                           command_policy.RUNTIME_RETIREMENT_OBSERVATIONS, command_policy.RUNTIME_RETIREMENT_INTERVAL_NS)
+                           command_policy.RUNTIME_RETIREMENT_OBSERVATIONS, command_policy.RUNTIME_RETIREMENT_INTERVAL_NS,
+                           command_policy.RUNTIME_CONFIG)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 _ATTESTED_COMMANDS = command_policy.ATTESTED_COMMANDS
 _ATTESTED_EXECUTABLES = command_policy.ATTESTED_EXECUTABLES
@@ -664,13 +665,21 @@ def _validate_body(kind, body):
         _keys(body, ("operation_token", "target_phase", "uncertain_serial", "binding_sha256")); _hex(body["operation_token"])
         _text(body["target_phase"], True); _uint(body["uncertain_serial"], MAX_RECORDS - 1); _hex(body["binding_sha256"])
     elif kind == "RUNTIME_PREPARED_V1":
-        names = ("operation_token", "runtime_generation", "bin_generation", "containerd_generation",
-                 "ctr_generation", "containerd_size", "containerd_sha256", "ctr_size", "ctr_sha256",
-                 "manifest_sha256")
+        names = ("operation_token", "runtime_generation", "bin_generation",
+                 "observer_configuration_generation", "containerd_generation",
+                 "ctr_generation", "observer_configuration_size",
+                 "observer_configuration_sha256", "containerd_size", "containerd_sha256",
+                 "ctr_size", "ctr_sha256", "manifest_sha256")
         _keys(body, names); _hex(body["operation_token"])
-        for name in names[1:5]: _generation(body[name])
+        for name in names[1:6]: _generation(body[name])
         _fail(body["runtime_generation"]["kind"] == body["bin_generation"]["kind"] == "directory"
-              and body["containerd_generation"]["kind"] == body["ctr_generation"]["kind"] == "file")
+              and body["observer_configuration_generation"]["kind"]
+                  == body["containerd_generation"]["kind"]
+                  == body["ctr_generation"]["kind"] == "file"
+              and body["observer_configuration_generation"]["mode"] == 0o400)
+        _uint(body["observer_configuration_size"], 1_048_576, 1)
+        _hex(body["observer_configuration_sha256"])
+        _fail(body["observer_configuration_size"] == 32_220)
         expected = command_policy.CONTAINERD_EXTRACTION
         _fail((body["containerd_size"], body["containerd_sha256"], body["ctr_size"], body["ctr_sha256"]) ==
               (expected[0][1], expected[0][2], expected[1][1], expected[1][2]))
@@ -982,7 +991,9 @@ def _runtime_tables():
     values = (command_policy.RUNTIME_POLICY_VERSION, command_policy.RUNTIME_POLICY_SHA256,
               command_policy.RUNTIME_EXTENSION_COMMANDS, command_policy.RUNTIME_TRACES, command_policy.RUNTIME_OCCURRENCES, command_policy.RUNTIME_PHASES,
               command_policy.RUNTIME_MAX_OCCURRENCES, command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION, command_policy.RUNTIME_OWNERSHIP_TRACES,
-              command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
+              command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS,
+              command_policy.RUNTIME_RETIREMENT_OBSERVATIONS, command_policy.RUNTIME_RETIREMENT_INTERVAL_NS,
+              command_policy.RUNTIME_CONFIG)
     _fail(all(value is expected for value, expected in zip(values, _RUNTIME_POLICY_OBJECTS)) and
           all(type(value) is MappingProxyType for value in values[3:7]))
     _fail(set(values[2]) == set(values[4]) == set(values[5]) == set(values[6]) and

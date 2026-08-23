@@ -225,10 +225,15 @@ with patch.object(preparation, "_claim_fixed_executable_owner",
 
 # Linux no-KVM foundation: an absent QEMU proves QMP absence without opening
 # /dev/kvm. KVM-present success remains exclusively in the real QMP path.
-if sys.platform == "linux" and not Path(runtime.QMP_SOCKET).exists():
+if (sys.platform == "linux"
+        and not Path(runtime.KATA_QMP_SOCKET).exists()
+        and not Path(runtime.OBSERVER_QMP_SOCKET).exists()
+        and not Path(runtime.KATA_VM_DIRECTORY).exists()):
     absent = runtime.ProcessClassification(runtime.Observation.ABSENT, (), "no runtime")
     with patch.object(runtime.os, "open", wraps=runtime.os.open) as opened:
-        assert runtime._qmp_kvm(absent) == {"state": "absent"}
+        assert runtime._qmp_kvm(absent) == {
+            "state": "absent", "private_socket": "absent",
+            "observer_socket": "absent"}
     assert not any(call.args and call.args[0] == "/dev/kvm" for call in opened.call_args_list)
 
 # Narrow modules expose no public opener and contain no caller-controlled

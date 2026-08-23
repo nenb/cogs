@@ -750,8 +750,11 @@ def runtime_prepared_body(token="a" * 64):
     extraction = operation.command_policy.CONTAINERD_EXTRACTION
     body = {"operation_token": token, "runtime_generation": generation(90, nlink=3),
         "bin_generation": generation(91, mode=0o500),
+        "observer_configuration_generation": generation(94, "file", 0o400, 1, 32_220),
         "containerd_generation": generation(92, "file", 0o500, 1, extraction[0][1]),
         "ctr_generation": generation(93, "file", 0o500, 1, extraction[1][1]),
+        "observer_configuration_size": 32_220,
+        "observer_configuration_sha256": "e" * 64,
         "containerd_size": extraction[0][1], "containerd_sha256": extraction[0][2],
         "ctr_size": extraction[1][1], "ctr_sha256": extraction[1][2]}
     body["manifest_sha256"] = hashlib.sha256(operation.RUNTIME_PREPARED_DOMAIN + operation._canonical(body)).hexdigest()

@@ -18,7 +18,8 @@ ROOTFS_CANDIDATE = BASE + "/rootfs-v1/" + "b" * 64 + "/rootfs"
 NAMESPACE = "cogs-stage2-completion-v1"
 CONTAINER_ID = SANDBOX_ID = "cogs-stage2-ssh-v1"
 RUNTIME = "io.containerd.kata.v2"
-RUNTIME_CONFIG = "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+RUNTIME_CONFIG = command_policy.RUNTIME_CONFIG
+KATA_BASE_CONFIG = "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
 KATA_CONFIG_SHA256 = "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae"
 COMMITTED_EXECUTABLE_SHA256 = MappingProxyType({BASE + "/kata-runtime-v1/bin/containerd": "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", BASE + "/kata-runtime-v1/bin/ctr": "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", "/opt/kata/bin/qemu-system-x86_64": "1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d"})
 NETNS_PATH = "/run/netns/cogs-stage2-ssh"
@@ -30,7 +31,9 @@ RUNTIME_ROOT = BASE + "/kata-runtime-v1"; RUNTIME_ALIAS = command_policy.RUNTIME
 STAGED_CONTAINERD = RUNTIME_ROOT + "/bin/containerd"; STAGED_CTR = RUNTIME_ROOT + "/bin/ctr"
 CONTAINERD_CONFIG = RUNTIME_ROOT + "/containerd.toml"; CONTAINERD_TTRPC_ADDRESS = CONTAINERD_ADDRESS + ".ttrpc"; MAX_UNIX_PATH = 107; CONTAINERD_SHIM_ENDPOINT = CONTAINERD_STATE + "/io.containerd.runtime.v2.task/" + NAMESPACE + "/" + CONTAINER_ID + "/shim.sock"
 if any(len(path.encode("ascii")) > MAX_UNIX_PATH for path in (CONTAINERD_ADDRESS, CONTAINERD_TTRPC_ADDRESS, CONTAINERD_ROOT, CONTAINERD_STATE, CONTAINERD_SHIM_ENDPOINT)): raise RuntimeError("containerd AF_UNIX path")
-QMP_SOCKET = "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock"
+KATA_VM_DIRECTORY = "/run/vc/vm/cogs-stage2-ssh-v1"
+KATA_QMP_SOCKET = KATA_VM_DIRECTORY + "/qmp.sock"
+OBSERVER_QMP_SOCKET = KATA_VM_DIRECTORY + "/extra-monitor.sock"
 CONTAINERD_CONFIG_BYTES = (f'''version = 3
 root = "{CONTAINERD_ROOT}"
 state = "{CONTAINERD_STATE}"
@@ -581,7 +584,9 @@ def unqualified_stored_info_fixture_for_tests():
         "ID": CONTAINER_ID, "Labels": {}, "Image": "", "Runtime": {
             "Name": RUNTIME, "Options": {
                 "type_url": RUNTIME_OPTIONS_TYPE_URL,
-                "value": "EkAvb3B0L2thdGEvc2hhcmUvZGVmYXVsdHMva2F0YS1jb250YWluZXJzL2NvbmZpZ3VyYXRpb24tcWVtdS50b21s",
+                "value": base64.b64encode(b"\x12" + bytes((0x80 | (len(RUNTIME_CONFIG) & 0x7f),
+                                                      len(RUNTIME_CONFIG) >> 7))
+                              + RUNTIME_CONFIG.encode()).decode("ascii"),
             },
         },
         "SnapshotKey": "", "Snapshotter": "",
@@ -867,6 +872,21 @@ def _start_private_containerd(journal, executable):
 def _canonical_fact(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                         allow_nan=False).encode() + b"\n").hexdigest()
+def _file_identity(seen):
+    return tuple(getattr(seen, name) for name in (
+        "st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink",
+        "st_size", "st_mtime_ns", "st_ctime_ns"))
+
+def _read_held_file(descriptor, maximum):
+    before = os.fstat(descriptor); raw = bytearray(); offset = 0
+    while len(raw) <= maximum:
+        part = os.pread(descriptor, min(65_536, maximum + 1 - len(raw)), offset)
+        if not part: break
+        raw.extend(part); offset += len(part)
+    _fail(len(raw) <= maximum and _file_identity(os.fstat(descriptor)) == _file_identity(before),
+          "held file changed")
+    return bytes(raw), before
+
 def _read_bounded(path, maximum):
     descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -937,58 +957,312 @@ def _retirement_identity_rows(baseline, snapshot, disappeared):
         current[row.role] = row
     return current, disappeared | (set(baseline) - set(current))
 
-def _qmp_kvm(processes):
+QMP_LINE_LIMIT = 65_536
+QMP_TOTAL_LIMIT = 262_144
+QMP_MESSAGE_LIMIT = 64
+QMP_IDS = ("cogs-capabilities-v1", "cogs-status-v1", "cogs-kvm-v1")
+
+
+def _deadline_remaining(deadline):
+    remaining = deadline - time.monotonic()
+    _fail(remaining > 0, "QMP observation deadline")
+    return remaining
+
+
+def _qemu_current(qemu):
+    process = __import__("completion_kata_process")
+    row = process._proc_row(qemu.pid)
+    _fail(row[1] == qemu.ppid and row[4] == qemu.starttime
+          and os.readlink(f"/proc/{qemu.pid}/exe") == qemu.executable,
+          "QEMU identity changed")
+    executable = os.stat(f"/proc/{qemu.pid}/exe")
+    _fail((executable.st_dev, executable.st_ino) ==
+          (qemu.executable_device, qemu.executable_inode),
+          "QEMU executable generation changed")
+    return row
+
+
+def _qemu_argv(qemu):
+    _qemu_current(qemu)
+    raw = _read_bounded(f"/proc/{qemu.pid}/cmdline", MAX_CMDLINE)
+    _fail(raw.endswith(b"\0") and 1 < len(raw) <= MAX_CMDLINE,
+          "complete NUL-framed QEMU argv")
+    fields = raw[:-1].split(b"\0")
+    _fail(fields and all(fields), "empty QEMU argument")
+    try:
+        argv = tuple(item.decode("utf-8", "strict") for item in fields)
+    except UnicodeError as error:
+        raise KataRuntimeError("QEMU argv encoding") from error
+    _fail(argv[0] == qemu.executable and "-qmp-pretty" not in argv,
+          "QEMU argv executable/protocol")
+    positions = [index for index, item in enumerate(argv) if item == "-qmp"]
+    _fail(len(positions) == 2 and all(index + 1 < len(argv) for index in positions),
+          "exactly two QMP frontends required")
+    values = [argv[index + 1] for index in positions]
+    observer = "unix:path=" + OBSERVER_QMP_SOCKET + ",server=on,wait=off"
+    private = tuple(re.fullmatch(r"unix:fd=([1-9][0-9]*),server=on,wait=off", item)
+                    for item in values)
+    private = tuple(match for match in private if match is not None)
+    _fail(values.count(observer) == 1 and len(private) == 1
+          and sum(OBSERVER_QMP_SOCKET in item for item in argv) == 1,
+          "QMP frontend argv differs")
+    private_fd = int(private[0].group(1))
+    _fail(private_fd <= 1_048_576, "QMP inherited fd bound")
+    _qemu_current(qemu)
+    return raw, hashlib.sha256(raw).hexdigest(), private_fd
+
+
+def _unix_listeners(raw):
+    _fail(type(raw) is bytes and 0 < len(raw) <= 1_048_576
+          and raw.endswith(b"\n") and b"\0" not in raw,
+          "bounded /proc/net/unix")
+    lines = raw.splitlines()
+    _fail(1 <= len(lines) <= MAX_PROC_ROWS
+          and lines[0].split() == [b"Num", b"RefCount", b"Protocol", b"Flags",
+                                   b"Type", b"St", b"Inode", b"Path"],
+          "unix table header")
+    result = []
+    for line in lines[1:]:
+        fields = line.split()
+        _fail(7 <= len(fields) <= 8 and fields[0].endswith(b":"),
+              "unix table row")
+        if len(fields) == 8 and fields[7] in {
+                KATA_QMP_SOCKET.encode("ascii"), OBSERVER_QMP_SOCKET.encode("ascii")}:
+            _fail(fields[3] == b"00010000" and fields[4] == b"0001"
+                  and fields[5] == b"01" and fields[6].isdigit()
+                  and int(fields[6]) > 0, "QMP listener row")
+            result.append((fields[7].decode("ascii"), int(fields[6])))
+    return tuple(result)
+
+
+def _qemu_socket_fds(qemu, listeners):
+    names = os.listdir(f"/proc/{qemu.pid}/fd")
+    _fail(len(names) <= 65_536 and all(name.isdigit() for name in names),
+          "bounded QEMU fd listing")
+    links = []
+    for name in names:
+        try:
+            links.append((int(name), os.readlink(f"/proc/{qemu.pid}/fd/{name}")))
+        except FileNotFoundError:
+            continue
+    result = {}
+    for path, inode in listeners:
+        matches = tuple(fd for fd, target in links if target == f"socket:[{inode}]")
+        _fail(len(matches) == 1, "QMP listener must have one QEMU fd")
+        result[path] = (inode, matches[0])
+    _fail(len(result) == 2
+          and result[KATA_QMP_SOCKET][0] != result[OBSERVER_QMP_SOCKET][0]
+          and result[KATA_QMP_SOCKET][1] != result[OBSERVER_QMP_SOCKET][1],
+          "QMP frontends must be distinct")
+    return result
+
+
+def _qmp_socket_generation(path, observer=False):
+    seen = os.lstat(path)
+    _fail(stat.S_ISSOCK(seen.st_mode) and seen.st_uid == seen.st_gid == 0,
+          "root-owned QMP socket")
+    if observer:
+        mode = stat.S_IMODE(seen.st_mode)
+        _fail(bool(mode & stat.S_IWUSR) and not mode & (stat.S_IWGRP | stat.S_IWOTH),
+              "observer QMP socket write policy")
+    return tuple(getattr(seen, name) for name in (
+        "st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_ctime_ns"))
+
+
+def _observer_snapshot(qemu):
+    _qemu_current(qemu)
+    directory = os.lstat(KATA_VM_DIRECTORY)
+    _fail(stat.S_ISDIR(directory.st_mode) and not stat.S_ISLNK(directory.st_mode)
+          and directory.st_uid == directory.st_gid == 0
+          and stat.S_IMODE(directory.st_mode) == 0o750,
+          "Kata VM directory access policy")
+    argv_raw, argv_sha256, private_argv_fd = _qemu_argv(qemu)
+    private = _qmp_socket_generation(KATA_QMP_SOCKET)
+    observer = _qmp_socket_generation(OBSERVER_QMP_SOCKET, True)
+    rows = _unix_listeners(_read_bounded("/proc/net/unix", 1_048_576))
+    _fail(len(rows) == 2 and {path for path, _inode in rows} ==
+          {KATA_QMP_SOCKET, OBSERVER_QMP_SOCKET},
+          "exact dual QMP listeners")
+    fds = _qemu_socket_fds(qemu, rows)
+    _fail(set(fds) == {KATA_QMP_SOCKET, OBSERVER_QMP_SOCKET}
+          and fds[KATA_QMP_SOCKET][1] == private_argv_fd,
+          "QMP pathname/listener/fd binding")
+    _qemu_current(qemu)
+    return {
+        "directory": tuple(getattr(directory, name) for name in (
+            "st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_ctime_ns")),
+        "private": private, "observer": observer, "fds": fds,
+        "private_argv_fd": private_argv_fd,
+        "argv_sha256": argv_sha256, "argv_size": len(argv_raw),
+    }
+
+
+def _qmp_event(value):
+    _fail(type(value) is dict and set(value) in (
+        {"event", "timestamp"}, {"event", "data", "timestamp"}),
+        "malformed QMP event")
+    _fail(type(value["event"]) is str and 0 < len(value["event"]) <= 128
+          and value["event"].isascii() and value["event"].isprintable())
+    stamp = value["timestamp"]
+    _fail(type(stamp) is dict and set(stamp) == {"seconds", "microseconds"}
+          and type(stamp["seconds"]) is int and stamp["seconds"] >= 0
+          and type(stamp["microseconds"]) is int
+          and 0 <= stamp["microseconds"] < 1_000_000)
+    if "data" in value:
+        _fail(type(value["data"]) is dict, "QMP event data")
+    return True
+
+
+def _qmp_exchange(client, deadline):
+    """Run the only admitted QMP sequence with one deadline and strict IDs."""
+    buffer = bytearray(); total = 0; messages = 0; seen_ids = set()
+
+    def receive():
+        nonlocal total, messages
+        while b"\n" not in buffer:
+            _fail(len(buffer) <= QMP_LINE_LIMIT, "oversized QMP line")
+            client.settimeout(_deadline_remaining(deadline))
+            try:
+                chunk = client.recv(min(16_384, QMP_TOTAL_LIMIT + 1 - total))
+            except (TimeoutError, socket.timeout) as error:
+                raise KataRuntimeError("QMP observation timeout") from error
+            _fail(chunk, "QMP EOF")
+            total += len(chunk)
+            _fail(total <= QMP_TOTAL_LIMIT, "QMP total byte bound")
+            buffer.extend(chunk)
+        line, _, remainder = buffer.partition(b"\n")
+        buffer[:] = remainder
+        _fail(0 < len(line) <= QMP_LINE_LIMIT and b"\r" not in line,
+              "QMP line framing")
+        messages += 1
+        _fail(messages <= QMP_MESSAGE_LIMIT, "QMP message count")
+        return _load_json(bytes(line))
+
+    greeting = receive()
+    _fail(type(greeting) is dict and set(greeting) == {"QMP"}, "QMP greeting")
+    description = greeting["QMP"]
+    _fail(type(description) is dict and set(description) == {"version", "capabilities"}
+          and type(description["capabilities"]) is list
+          and len(description["capabilities"]) <= 32
+          and all(type(item) is str and 0 < len(item) <= 128
+                  for item in description["capabilities"]), "QMP greeting shape")
+    version = description["version"]
+    _fail(type(version) is dict and set(version) == {"qemu", "package"}
+          and type(version["package"]) is str and len(version["package"]) <= 256,
+          "QMP greeting version")
+    qemu_version = version["qemu"]
+    _fail(type(qemu_version) is dict and set(qemu_version) == {"major", "minor", "micro"}
+          and tuple(qemu_version[name] for name in ("major", "minor", "micro")) == (11, 0, 1),
+          "pinned QEMU greeting version")
+
+    answers = []
+    for command, request_id in zip(
+            ("qmp_capabilities", "query-status", "query-kvm"), QMP_IDS, strict=True):
+        request = json.dumps({"execute": command, "id": request_id},
+                             sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode("ascii") + b"\n"
+        client.settimeout(_deadline_remaining(deadline))
+        client.sendall(request)
+        while True:
+            value = receive()
+            if type(value) is dict and "event" in value:
+                _qmp_event(value)
+                continue
+            _fail(type(value) is dict and set(value) == {"return", "id"},
+                  "QMP terminal response shape/error")
+            response_id = value["id"]
+            _fail(type(response_id) is str and response_id in QMP_IDS
+                  and response_id not in seen_ids and response_id == request_id,
+                  "QMP response ID mismatch/duplicate")
+            seen_ids.add(response_id); answers.append(value["return"]); break
+    # Every byte already received is framed and classified. A terminal object
+    # cannot trail the fixed sequence, and an incomplete object is residue.
+    while buffer:
+        _fail(b"\n" in buffer, "partial trailing QMP message")
+        line, _, remainder = buffer.partition(b"\n"); buffer[:] = remainder
+        _fail(0 < len(line) <= QMP_LINE_LIMIT and b"\r" not in line,
+              "trailing QMP line framing")
+        messages += 1; _fail(messages <= QMP_MESSAGE_LIMIT, "QMP message count")
+        _qmp_event(_load_json(bytes(line)))
+    capabilities, status, kvm = answers
+    _fail(capabilities == {}, "QMP capabilities response")
+    _fail(type(status) is dict and set(status) == {"running", "singlestep", "status"}
+          and type(status["running"]) is bool and status["singlestep"] is False
+          and status["status"] in {"running", "paused"}
+          and status["running"] == (status["status"] == "running"),
+          "QMP status response")
+    _fail(kvm == {"enabled": True, "present": True}, "QMP KVM disabled")
+    return status, kvm
+
+
+def _qmp_absent():
+    _fail(not os.path.lexists(KATA_QMP_SOCKET)
+          and not os.path.lexists(OBSERVER_QMP_SOCKET)
+          and not os.path.lexists(KATA_VM_DIRECTORY),
+          "QMP/VM residue remains without QEMU")
+    rows = _unix_listeners(_read_bounded("/proc/net/unix", 1_048_576))
+    _fail(not rows, "QMP listener remains without QEMU")
+    return {"state": "absent", "private_socket": "absent",
+            "observer_socket": "absent"}
+
+
+def _qmp_kvm(processes, deadline=None):
     qemu = next((row for row in processes.records if row.role == "qemu"), None)
     if qemu is None:
-        _fail(not os.path.lexists(QMP_SOCKET), "QMP remains without QEMU"); return {"state": "absent"}
-    def current():
-        row = __import__("completion_kata_process")._proc_row(qemu.pid)
-        _fail(row[4] == qemu.starttime, "QEMU identity changed"); return row
-    current(); before = os.lstat(QMP_SOCKET)
-    _fail(stat.S_ISSOCK(before.st_mode) and before.st_uid == before.st_gid == 0, "exact QMP socket")
-    unix = _read_bounded("/proc/net/unix", 1_048_576); qmp_rows = [row.split() for row in unix.splitlines() if row.split() and row.split()[-1] == QMP_SOCKET.encode()]
-    _fail(len(qmp_rows) == 1 and len(qmp_rows[0]) == 8 and qmp_rows[0][6].isdigit(), "QMP unix owner")
-    socket_link = b"socket:[" + qmp_rows[0][6] + b"]"; links = []
-    for name in os.listdir(f"/proc/{qemu.pid}/fd"):
-        try: links.append(os.readlink(f"/proc/{qemu.pid}/fd/{name}").encode())
-        except FileNotFoundError: pass
-    _fail(links.count(socket_link) == 1, "QMP not owned by QEMU")
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0))
+        return _qmp_absent()
+    deadline = time.monotonic() + 2.0 if deadline is None else deadline
+    _deadline_remaining(deadline)
+    before = _observer_snapshot(qemu)
+    client = socket.socket(socket.AF_UNIX,
+                           socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0))
     try:
-        client.settimeout(2.0); client.connect(QMP_SOCKET)
-        with client.makefile("rwb", buffering=0) as stream:
-            greeting = json.loads(stream.readline(65537)); _fail(set(greeting) == {"QMP"}, "QMP greeting")
-            answers = []
-            for index, command in enumerate(("qmp_capabilities", "query-status", "query-kvm"), 1):
-                stream.write(json.dumps({"execute": command, "id": index}, separators=(",", ":")).encode() + b"\n")
-                answer = json.loads(stream.readline(65537)); _fail(answer.get("id") == index and set(answer) == {"return", "id"})
-                answers.append(answer["return"])
-    finally: client.close()
-    after = os.lstat(QMP_SOCKET); current()
-    _fail((before.st_dev, before.st_ino, before.st_ctime_ns) ==
-          (after.st_dev, after.st_ino, after.st_ctime_ns), "QMP socket changed")
-    status, kvm = answers[1:]; _fail(answers[0] == {} and status.get("status") in {"running", "paused"}
-                                    and kvm == {"enabled": True, "present": True}, "QMP KVM disabled")
-    device_fd = os.open("/dev/kvm", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW); matches = []
+        client.settimeout(_deadline_remaining(deadline))
+        # This literal is deliberately the only production connect target.
+        client.connect(OBSERVER_QMP_SOCKET)
+        status, _kvm = _qmp_exchange(client, deadline)
+    finally:
+        client.close()
+    after = _observer_snapshot(qemu)
+    _fail(after == before, "QMP socket/argv/process generation changed")
+
+    device_fd = os.open("/dev/kvm", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    matches = []
     try:
         device = os.fstat(device_fd); _fail(stat.S_ISCHR(device.st_mode), "KVM device kind")
         for name in os.listdir(f"/proc/{qemu.pid}/fd"):
             try:
-                if name.isdigit() and os.readlink(f"/proc/{qemu.pid}/fd/{name}") == "/dev/kvm": matches.append(name)
-            except FileNotFoundError: pass
+                if name.isdigit() and os.readlink(f"/proc/{qemu.pid}/fd/{name}") == "/dev/kvm":
+                    matches.append(name)
+            except FileNotFoundError:
+                pass
         _fail(len(matches) == 1, "one QEMU /dev/kvm fd")
-        descriptor = os.open(f"/proc/{qemu.pid}/fd/{matches[0]}", os.O_RDONLY | os.O_CLOEXEC)
+        descriptor = os.open(f"/proc/{qemu.pid}/fd/{matches[0]}",
+                             os.O_RDONLY | os.O_CLOEXEC)
         try:
-            duplicate = os.fstat(descriptor); current()
+            duplicate = os.fstat(descriptor); _qemu_current(qemu)
             _fail((duplicate.st_rdev, duplicate.st_dev, duplicate.st_ino) ==
-                  (device.st_rdev, device.st_dev, device.st_ino) and
-                  fcntl.ioctl(descriptor, 0xAE00, 0) == 12, "QEMU KVM API/device")
-        finally: os.close(descriptor)
-    finally: os.close(device_fd)
-    return {"state": status["status"], "qemu_pid": qemu.pid, "qemu_starttime": qemu.starttime,
-            "qmp_device": before.st_dev, "qmp_inode": before.st_ino,
-            "kvm_device": device.st_dev, "kvm_inode": device.st_ino, "kvm_rdev": device.st_rdev,
-            "kvm_present": True, "kvm_enabled": True}
+                  (device.st_rdev, device.st_dev, device.st_ino)
+                  and fcntl.ioctl(descriptor, 0xAE00, 0) == 12,
+                  "QEMU KVM API/device")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(device_fd)
+    _deadline_remaining(deadline)
+    _fail(_observer_snapshot(qemu) == before, "post-KVM QMP identity changed")
+    return {"state": status["status"], "qemu_pid": qemu.pid,
+            "qemu_starttime": qemu.starttime,
+            "qemu_executable_device": qemu.executable_device,
+            "qemu_executable_inode": qemu.executable_inode,
+            "qemu_argv_sha256": before["argv_sha256"],
+            "observer_qmp_device": before["observer"][0],
+            "observer_qmp_inode": before["observer"][1],
+            "private_qmp_device": before["private"][0],
+            "private_qmp_inode": before["private"][1],
+            "kvm_device": device.st_dev, "kvm_inode": device.st_ino,
+            "kvm_rdev": device.st_rdev, "kvm_api": 12,
+            "kvm_present": True, "kvm_enabled": True,
+            "status": status}
 def _share_generation(seen):
     return {"device": seen.st_dev, "inode": seen.st_ino, "mode": stat.S_IMODE(seen.st_mode),
             "uid": seen.st_uid, "gid": seen.st_gid, "ctime_ns": seen.st_ctime_ns}
@@ -998,6 +1272,7 @@ def _share_fact(retained=None):
     _fail(retained is None or type(retained) is dict, "retained share identity")
     mountinfo = _read_bounded("/proc/self/mountinfo", MAX_MOUNTINFO)
     digest = hashlib.sha256(mountinfo).hexdigest()
+    mounts = parse_mountinfo(mountinfo)
     if not os.path.lexists(SHARE_ROOT):
         classified = classify_share_snapshot({"root": SHARE_ROOT, "complete": True, "rows": [],
             "qualification": QUALIFICATION_CANDIDATE}, mountinfo)
@@ -1118,7 +1393,8 @@ def _activate_prepared_containerd(journal, completion, control, prepared_grant=N
     runtime_fd = os.open("kata-runtime-v1", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                          dir_fd=parent)
     try:
-        _fail(set(os.listdir(runtime_fd)) == {"bin"}, "prepared runtime is not static-only")
+        _fail(set(os.listdir(runtime_fd)) == {"bin", "configuration-qemu-observer.toml"},
+              "prepared runtime observer configuration differs")
         bin_fd = os.open("bin", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                          dir_fd=runtime_fd)
         try:
@@ -1249,7 +1525,7 @@ def _runtime_owner_routes():
         else:
             runtime = open_snapshot_child(completion, completion_snapshot, runtime_name, "directory", control)
             runtime_snapshot = rootfs_fs._enumerate_stable(runtime, control)
-            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "r", "t"}; socket_names = names & all_socket_names; expected = base_names | socket_names
+            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "configuration-qemu-observer.toml", "containerd.toml", "r", "t"}; socket_names = names & all_socket_names; expected = base_names | socket_names
             _fail(_runtime_alias() and names <= expected and all(len(names & set(pair)) <= 1 for pair in socket_contract) and (not active or names == base_names | {pair[0] for pair in socket_contract}), "private runtime names")
             def optional(name, kind): return open_snapshot_child(
                 runtime, runtime_snapshot, rootfs_fs._name(name), kind, control)
@@ -1274,8 +1550,11 @@ def _runtime_owner_routes():
         return value
     def issue_attestation_core(executable_owner, config, control, roles):
         import completion_kata_process as process
-        _fail(type(config) is rootfs_fs.HeldNode and type(control) is rootfs_fs.OperationControl, "fixed runtime attestation inputs")
-        executables = []
+        import completion_kata_preparation as preparation
+        _fail(type(config) is rootfs_fs.HeldNode
+              and type(control) is rootfs_fs.OperationControl,
+              "fixed runtime attestation inputs")
+        executables = []; base_fd = -1
         try:
             for role in roles: executables.append(process._claim_attested_executable(executable_owner, role))
             expected = (("containerd", STAGED_CONTAINERD), ("ctr", STAGED_CTR),
@@ -1284,13 +1563,29 @@ def _runtime_owner_routes():
             _fail(tuple((item.role, item.path) for item in executables) == expected,
                   "fixed runtime executable roles")
             raw = rootfs_fs._read_regular(config, 4_194_304, control)
+            base_fd = os.open(KATA_BASE_CONFIG, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            base, base_seen = _read_held_file(base_fd, 1_048_576)
+            _fail(hashlib.sha256(base).hexdigest() == KATA_CONFIG_SHA256
+                  and len(base) == preparation.KATA_BASE_CONFIGURATION_SIZE
+                  and _file_identity(os.stat(KATA_BASE_CONFIG, follow_symlinks=False))
+                      == _file_identity(base_seen), "fixed Kata base configuration")
+            derived = preparation.derive_observer_configuration(base)
             digest = hashlib.sha256(raw).hexdigest()
-            _fail(digest == KATA_CONFIG_SHA256, "fixed Kata configuration")
+            _fail(raw == derived and config.generation.key.kind == "file"
+                  and config.generation.mode == 0o400
+                  and config.generation.uid == config.generation.gid == 0,
+                  "fixed active Kata observer configuration")
             value = _Attestation(seal)
-            attestations[value] = [tuple(executables), config, control, digest]
+            attestations[value] = [tuple(executables), config, control, digest,
+                                   hashlib.sha256(base).hexdigest(), base_fd,
+                                   _file_identity(base_seen)]
+            base_fd = -1
             return value
         except BaseException as primary:
             errors = [primary]
+            if base_fd >= 0:
+                try: os.close(base_fd)
+                except BaseException as error: errors.append(error)
             for executable in reversed(executables):
                 try: process._release_attested_executable(executable)
                 except BaseException as error: errors.append(error)
@@ -1309,11 +1604,32 @@ def _runtime_owner_routes():
         for executable in reversed(state[0]):
             try: process._release_attested_executable(executable)
             except BaseException as error: errors.append(error)
+        if len(state) == 7:
+            try: os.close(state[5])
+            except BaseException as error: errors.append(error)
         if errors: raise BaseExceptionGroup("runtime attestation close", errors)
     def verify_attestation(value):
         import completion_kata_process as process
-        state = attestations.get(value); _fail(state is not None); executables, config, control, digest = state
-        raw = rootfs_fs._read_regular(config, 4_194_304, control); _fail(hashlib.sha256(raw).hexdigest() == digest)
+        state = attestations.get(value); _fail(state is not None)
+        if len(state) == 4:
+            # Historical offline fixtures inject a non-node sentinel directly
+            # into closure state; no production issuer can create this shape.
+            executables, config, control, digest = state
+            _fail(type(config) is not rootfs_fs.HeldNode)
+            raw = rootfs_fs._read_regular(config, 4_194_304, control)
+            _fail(hashlib.sha256(raw).hexdigest() == digest)
+            return executables
+        executables, config, control, digest, base_digest, base_fd, base_identity = state
+        raw = rootfs_fs._read_regular(config, 4_194_304, control)
+        import completion_kata_preparation as preparation
+        base, base_seen = _read_held_file(base_fd, 1_048_576)
+        _fail(hashlib.sha256(raw).hexdigest() == digest
+              and hashlib.sha256(base).hexdigest() == base_digest == KATA_CONFIG_SHA256
+              and _file_identity(base_seen) == base_identity
+              and _file_identity(os.stat(KATA_BASE_CONFIG, follow_symlinks=False)) == base_identity
+              and raw == preparation.derive_observer_configuration(base)
+              and rootfs_fs._observe_node(config.identity_fd, config.operation_fd,
+                                           control) == config.generation)
         for item in executables:
             identity = process.fdmap.identity(item.descriptor); _fail(process._host_generation(item.descriptor) == item.generation and process._digest_fd(item.descriptor, identity.size) == item.sha256)
         return executables

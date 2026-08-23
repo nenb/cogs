@@ -160,11 +160,12 @@ PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
 del _name, _OCCURRENCES
 
-RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v8-short-socket-coherent-teardown-1"; RUNTIME_POLICY_SHA256 = "69ce37dba0c9d203541d80708338ceed85aebaf3f35ddd6a236f10c93d1606a7"
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v9-coherent-teardown-independent-qmp-1"; RUNTIME_POLICY_SHA256 = "45870a704fcdebf2b212fb722f6e68d23b3efa19461f9cc4699f70af931e4992"
 RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
 RUNTIME_RETIREMENT_OBSERVATIONS = 16; RUNTIME_RETIREMENT_INTERVAL_NS = 250_000_000
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; RUNTIME_ALIAS = "/run/c42d"; CONTAINERD_ADDRESS = RUNTIME_ALIAS + "/s"; CONTAINERD_ROOT = RUNTIME_ALIAS + "/r"; CONTAINERD_STATE = RUNTIME_ALIAS + "/t"
 STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
+RUNTIME_CONFIG = BASE + "/kata-runtime-v1/configuration-qemu-observer.toml"
 CONTAINERD_ARCHIVE_SHA256 = "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"; CONTAINERD_ARCHIVE_SIZE = 33_645_699
 CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
     ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500))
@@ -194,7 +195,7 @@ def ctr_run_argv(rootfs_token):
     if type(rootfs_token) is not str or len(rootfs_token) != 64 or any(c not in "0123456789abcdef" for c in rootfs_token): raise ValueError("rootfs token")
     mounts = tuple(value for row in CTR_MOUNTS for value in ("--mount", row)); root = BASE + "/rootfs-v1/operation-" + rootfs_token + "/rootfs"
     return (STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, "run", "--runtime", "io.containerd.kata.v2",
-        "--runtime-config-path", "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml", "--rootfs", "--read-only",
+        "--runtime-config-path", RUNTIME_CONFIG, "--rootfs", "--read-only",
         "--detach", "--with-ns", "network:/proc/{ctr-child-pid}/fd/202", *mounts, root,
         "cogs-stage2-ssh-v1", "/bin/sh", "-c", BOOTSTRAP)
 def validate_runtime_policy(intent, genesis):

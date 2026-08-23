@@ -112,7 +112,7 @@ def _routes():
         input_owner = inputs._reopen_runtime_inputs(
             lifecycle.operation, completion, current["control"])
         config, config_nodes = open_config(current["control"])
-        history = journal.runtime_recovery_history(); prepared_grant = None
+        history = lifecycle.operation.runtime_recovery_history(); prepared_grant = None
         if not history["runtime_prepared"] and not history["runtime_stage_intents"]:
             prepared_grant = preparation._claim_fixed_prepared_runtime(lifecycle.static_custody)
         try:
@@ -270,10 +270,18 @@ def _routes():
                  "runtime observation mapping lineage differs")
         import completion_local_evidence as evidence
         typed = evidence._PlatformOwnerResult(
-            operation._command_context(lifecycle.operation).operation_token,
-            mapping["live_mapping_sha256"],
-            hashlib.sha256(operation._canonical(fact)).hexdigest(),
-            12, qmp["kvm_present"], qmp["kvm_enabled"])
+            operation_token=operation._command_context(lifecycle.operation).operation_token,
+            live_mapping_sha256=mapping["live_mapping_sha256"],
+            qemu_process_sha256=hashlib.sha256(operation._canonical(fact)).hexdigest(),
+            qemu_argv_sha256=qmp["qemu_argv_sha256"],
+            qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],
+            qemu_executable_device=qmp["qemu_executable_device"],
+            qemu_executable_inode=qmp["qemu_executable_inode"],
+            observer_qmp_device=qmp["observer_qmp_device"],
+            observer_qmp_inode=qmp["observer_qmp_inode"],
+            kvm_device=qmp["kvm_device"], kvm_inode=qmp["kvm_inode"],
+            kvm_rdev=qmp["kvm_rdev"], kvm_api=qmp["kvm_api"],
+            qmp_present=qmp["kvm_present"], qmp_enabled=qmp["kvm_enabled"])
         lifecycle.operation.record_platform_observation("platform-pass")
         current["runtime_observation"] = typed
         return typed
@@ -331,11 +339,29 @@ def _routes():
                      and operation._durable_phase(lifecycle.operation) == "OWNERSHIP_OBSERVED",
                      "causal network proof absent outside durable terminal cleanup")
             return fact
+        identity_fields = (
+            "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+            "qemu_executable_device", "qemu_executable_inode",
+            "observer_qmp_device", "observer_qmp_inode",
+            "kvm_device", "kvm_inode", "kvm_rdev")
+        _require(all(getattr(platform, name) == qmp[name]
+                     for name in identity_fields),
+                 "independent QMP observer identity changed through workload")
         lifecycle.runtime_proof = evidence._RuntimeOwnerResult(
-            operation._command_context(lifecycle.operation).operation_token,
-            mapping["runtime_mount_sha256"], causal["causal_proof_sha256"],
-            mapping["live_mapping_sha256"], qemu_sha256, 12,
-            qmp["kvm_present"], qmp["kvm_enabled"])
+            operation_token=operation._command_context(lifecycle.operation).operation_token,
+            runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
+            network_causal_proof_sha256=causal["causal_proof_sha256"],
+            live_mapping_sha256=mapping["live_mapping_sha256"],
+            qemu_process_sha256=qemu_sha256,
+            qemu_argv_sha256=qmp["qemu_argv_sha256"],
+            qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],
+            qemu_executable_device=qmp["qemu_executable_device"],
+            qemu_executable_inode=qmp["qemu_executable_inode"],
+            observer_qmp_device=qmp["observer_qmp_device"],
+            observer_qmp_inode=qmp["observer_qmp_inode"],
+            kvm_device=qmp["kvm_device"], kvm_inode=qmp["kvm_inode"],
+            kvm_rdev=qmp["kvm_rdev"], kvm_api=qmp["kvm_api"],
+            qmp_present=qmp["kvm_present"], qmp_enabled=qmp["kvm_enabled"])
         return fact
 
     def runtime_cleanup(bridge, lifecycle, source, expected):
@@ -545,6 +571,10 @@ def _routes():
         proc_passes = (proc_pass(), proc_pass())
         process_sets = {name: set().union(*(row[name] for row in proc_passes))
                         for name in proc_passes[0]}
+        qmp_absence = runtime._qmp_absent()
+        _require(qmp_absence == {"state": "absent", "private_socket": "absent",
+                                 "observer_socket": "absent"},
+                 "dual QMP residue differs")
         detached_netns_residue = bool(process_sets["netns"])
         interfaces = set(os.listdir("/sys/class/net"))
         link_residue = any(name in interfaces for name in (
@@ -580,7 +610,8 @@ def _routes():
         source_path = Path("/run/cogs-stage2-local-private-v2/source-identity")
         input_path = completion / "kata-input-v1"
         runtime_paths = (completion / "kata-runtime-v1", completion / ".kata-runtime-v1.staging",
-                         Path(runtime.RUNTIME_ALIAS))
+                         Path(runtime.RUNTIME_ALIAS), Path(runtime.KATA_QMP_SOCKET),
+                         Path(runtime.OBSERVER_QMP_SOCKET), Path(runtime.KATA_VM_DIRECTORY))
         share_path = Path(runtime.SHARE_ROOT)
         input_path_residue = input_path.exists() or input_path.is_symlink()
         runtime_path_residue = any(path.exists() or path.is_symlink() for path in runtime_paths)
@@ -592,7 +623,8 @@ def _routes():
             try:
                 target = os.readlink(entry).encode()
                 mutable_markers = (b"kata-input-v1", b"kata-runtime-v1", b"/run/c42d",
-                                   b"cogs-stage2-ssh", b"/run/netns/c42", runtime.SHARE_ROOT.encode())
+                                   b"cogs-stage2-ssh", b"/run/netns/c42",
+                                   runtime.SHARE_ROOT.encode(), runtime.KATA_VM_DIRECTORY.encode())
                 if target.decode("utf-8", "surrogateescape") == net_target or any(marker in target for marker in mutable_markers):
                     descriptor_residue = True
             except FileNotFoundError:

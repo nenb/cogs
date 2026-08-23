@@ -134,7 +134,8 @@ reject(lambda: operation._stage_candidates(
     set(operation.COMPLETION_NAMES) | {active_layout_name, active_layout_name + b".quarantine"}))
 reject(lambda: operation._stage_candidates(
     set(operation.COMPLETION_NAMES) | {b"kata-key-stage-v1-foreign"}))
-layout_names = tuple(sorted(set(operation.COMPLETION_NAMES) | {active_layout_name}))
+layout_names = tuple(sorted(set(operation.COMPLETION_NAMES) |
+                            {operation.RUNTIME_NAME.raw, active_layout_name}))
 layout_parent_key = {"mount_id": 1, "device": 2, "inode": 3, "kind": "directory"}
 layout_names_sha256 = hashlib.sha256(operation._canonical([
     name.decode() for name in layout_names if name != active_layout_name])).hexdigest()
@@ -203,7 +204,9 @@ root_settled = type("LayoutRecord", (), {"record_type": "INPUT_GRANT", "body": {
 root_published = type("LayoutRecord", (), {"record_type": "INPUT_WA", "body": {
     "path": ".", "action": "mkdir-settled"}})()
 root_records = [layout_records[0], root_intent]
-prepublication_names = tuple(operation.COMPLETION_NAMES - {operation.INPUT_NAME.raw})
+prepublication_names = tuple(
+    (operation.COMPLETION_NAMES - {operation.INPUT_NAME.raw}) |
+    {operation.RUNTIME_NAME.raw})
 operation._validate_stage_layout(
     prepublication_names + (root_temporary,), root_records, "FS_INTENT", layout_parent_key)
 operation._validate_stage_layout(

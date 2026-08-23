@@ -66,6 +66,7 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+    "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
 })
 BINDING_KEYS = frozenset({
     "source_head", "source_manifest_sha256", "host_attestation_sha256",
@@ -668,6 +669,55 @@ def _verify_complete_source(implementation, descriptors):
     return manifest
 
 
+def _retain_observer_configuration(runtime, descriptors):
+    """Retain and derive-check both exact configuration generations."""
+    launch = runtime.value["launch"]
+    base_row = launch["configuration"]
+    active_row = launch["active_configuration"]
+    _require(base_row == {
+        "path": preparation.KATA_BASE_CONFIGURATION_PATH,
+        "size": preparation.KATA_BASE_CONFIGURATION_SIZE,
+        "sha256": preparation.KATA_BASE_CONFIGURATION_SHA256,
+    })
+    base_fd, base_parent, base_status = _open_absolute_regular(
+        base_row["path"], base_row["size"])
+    descriptors.extend((base_parent, base_fd))
+    base = _read_held_raw(base_fd, base_status, base_row["size"])
+    relative = str(Path(active_row["path"]).relative_to(FIXED_ROOT))
+    active_fd, active_parent, active_status = _open_fixed_relative(
+        FIXED_ROOT, relative, active_row["size"])
+    descriptors.extend((active_parent, active_fd))
+    active = _read_held_raw(active_fd, active_status, active_row["size"])
+    _require(stat.S_IMODE(active_status.st_mode) == 0o400
+             and active_status.st_uid == active_status.st_gid == 0
+             and active_row == preparation.observer_configuration_description(base)
+             and active == preparation.derive_observer_configuration(base)
+             and _sha(active) == active_row["sha256"],
+             "active Kata observer configuration differs")
+    artifact = tuple(row for row in launch["artifacts"]
+                     if row["role"] == "active-configuration")
+    _require(len(artifact) == 1 and artifact[0] == {
+        "role": "active-configuration", "path": active_row["path"],
+        "kind": "file", "mode": 0o400, "size": active_row["size"],
+        "sha256": active_row["sha256"], "link_target": None,
+    }, "active Kata configuration launch artifact differs")
+    return {"base_fd": base_fd, "base_status": base_status,
+            "active_fd": active_fd, "active_status": active_status,
+            "active_sha256": active_row["sha256"]}
+
+
+def _verify_held_observer_configuration(value):
+    _require(type(value) is dict and set(value) == {
+        "base_fd", "base_status", "active_fd", "active_status", "active_sha256"})
+    base = _read_held_raw(value["base_fd"], value["base_status"],
+                          preparation.KATA_BASE_CONFIGURATION_SIZE)
+    active = _read_held_raw(value["active_fd"], value["active_status"],
+                            preparation.KATA_BASE_CONFIGURATION_SIZE + 2)
+    _require(active == preparation.derive_observer_configuration(base)
+             and _sha(active) == value["active_sha256"],
+             "held active Kata configuration changed")
+
+
 def _validate_final_and_rootfs(envelope, runtime):
     try:
         import completion_runtime_contract as workload_contract
@@ -744,6 +794,7 @@ def _static_routes():
             source_seen = os.fstat(source_anchor)
             _require(source_seen.st_uid == source_seen.st_gid == 0
                      and stat.S_IMODE(source_seen.st_mode) == 0o700)
+            configuration_identity = _retain_observer_configuration(runtime, descriptors)
             final = _validate_final_and_rootfs(envelope, runtime)
             custody = _StaticPreparationCustody(seal)
             custody_states[custody] = {
@@ -752,6 +803,7 @@ def _static_routes():
                 "runtime": runtime,
                 "contracts": contracts,
                 "final": final,
+                "configuration_identity": configuration_identity,
                 "descriptors": descriptors,
                 "source_anchor": source_anchor,
                 "roles": set(),
@@ -773,6 +825,7 @@ def _static_routes():
     def claim_role(custody, role):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         _require(type(role) is str and role in {row[0] for row in EXECUTABLES} and role not in state["roles"],
                  "executable role claim is not exact one-shot")
         contract = state["contracts"][role].value
@@ -885,7 +938,8 @@ def _static_routes():
         _require(type(custody) is _StaticPreparationCustody and state is not None
                  and not any(item["custody"] is custody for item in prepared_states.values()))
         import completion_kata_prestage_runtime as prepared
-        facts, held = prepared._claim_exact(state["contracts"], state["source_anchor"])
+        active = state["runtime"].value["launch"]["active_configuration"]
+        facts, held = prepared._claim_exact(state["contracts"], state["source_anchor"], active)
         state["descriptors"].extend(held)
         claim = _PreparedRuntimeCustody(seal)
         prepared_states[claim] = {"custody": custody, "facts": facts,
@@ -899,7 +953,8 @@ def _static_routes():
                  and (action != "verify" or item["consumed"] and not item["verified"]))
         state = custody_states.get(item["custody"]); _require(state is not None)
         import completion_kata_prestage_runtime as prepared
-        fresh, held = prepared._claim_exact(state["contracts"], state["source_anchor"])
+        active = state["runtime"].value["launch"]["active_configuration"]
+        fresh, held = prepared._claim_exact(state["contracts"], state["source_anchor"], active)
         try: _require(fresh == item["facts"], "prepared runtime pathname replacement")
         finally: _close_all(held)
         if action is not None: item[{"consume": "consumed", "verify": "verified"}[action]] = True
@@ -909,6 +964,7 @@ def _static_routes():
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None,
                  "live exact static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         implementation = state["envelope"].value["implementation"]
         import completion_rootfs_fs as rootfs_fs
         return rootfs_fs.SourceApproval(
@@ -917,6 +973,7 @@ def _static_routes():
     def binding(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live exact static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         return dict(state["envelope"].value["result_binding_base"])
 
     def abort(custody):
