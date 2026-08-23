@@ -31,9 +31,10 @@ class BuildError(Exception):
 
 
 class BuildAttemptError(BuildError):
-    def __init__(self, work_outcome):
-        _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"})
-        self.work_outcome = work_outcome
+    def __init__(self, work_outcome, work_stage="internal"):
+        _fail(work_outcome in {"cancelled", "deadline", "failed", "not-started", "success"}
+              and work_stage in materializer.MATERIALIZE_STAGES)
+        self.work_outcome, self.work_stage = work_outcome, work_stage
         super().__init__()
 
 
@@ -167,7 +168,8 @@ def _build_once_controlled(approval, token, retain, control, materialize, materi
             fs._close_chain(chain)
         except BaseException as close_error:
             error = fs.RootfsFsError(error, close_error)
-        raise BuildAttemptError(work_outcome) from error
+        stage = error.work_stage if type(error) is materializer.MaterializerWorkError else "internal"
+        raise BuildAttemptError(work_outcome, stage) from error
 
 
 def _build_once_unmasked(approval, token, outer_control, retain=False):

@@ -23,10 +23,17 @@ class MaterializerError(Exception):
     pass
 
 
+MATERIALIZE_STAGES = frozenset({
+    "internal", "plan", "dirs", "files", "hardlinks", "symlinks",
+    "dir-meta", "root-meta", "postwalk",
+})
+
+
 class MaterializerWorkError(MaterializerError):
-    def __init__(self, work_outcome):
-        _fail(work_outcome in {"cancelled", "deadline", "failed"})
-        self.work_outcome = work_outcome
+    def __init__(self, work_outcome, work_stage="internal"):
+        _fail(work_outcome in {"cancelled", "deadline", "failed"}
+              and work_stage in MATERIALIZE_STAGES)
+        self.work_outcome, self.work_stage = work_outcome, work_stage
         super().__init__()
 
 
@@ -677,7 +684,7 @@ def _native_package_cleanup_control(control, deadline_ns):
     return fs.OperationControl(deadline, control.cancelled)
 
 
-def _raise_work_failure(owned, control, primary, cleanup_deadline_ns=None):
+def _raise_work_failure(owned, control, primary, cleanup_deadline_ns=None, work_stage="internal"):
     work_outcome = _work_failure(control)
     cleanup_control = (_fresh_cleanup_control() if cleanup_deadline_ns is None
                        else _native_package_cleanup_control(control, cleanup_deadline_ns))
@@ -685,7 +692,7 @@ def _raise_work_failure(owned, control, primary, cleanup_deadline_ns=None):
         _reload_and_cleanup(owned, cleanup_control)
     except BaseException as cleanup_error:
         primary = fs.RootfsFsError(primary, cleanup_error)
-    raise MaterializerWorkError(work_outcome) from primary
+    raise MaterializerWorkError(work_outcome, work_stage) from primary
 
 
 def _reload_and_cleanup(owned, control):
@@ -713,6 +720,7 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
     _fail(cleanup_deadline_ns is None or type(cleanup_deadline_ns) is int)
     active = owned.active
     root = owned.root
+    stage = "plan"
     try:
         fresh = plan.revalidate_build_inputs(authority)
         _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
@@ -721,16 +729,22 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
         files = [entry for entry in entries if entry.record.kind == "file"]
         hardlinks = [entry for entry in entries if entry.record.kind == "hardlink"]
         symlinks = [entry for entry in entries if entry.record.kind == "symlink"]
+        stage = "dirs"
         for entry in sorted(directories, key=lambda item: (item.record.path.count("/"), item.record.path.encode("utf-8"))):
             active = _create_directory(active, owned, root, entry, control)
+        stage = "files"
         for entry in sorted(files, key=lambda item: item.record.path.encode("utf-8")):
             active = _create_file(active, owned, root, entry, control)
+        stage = "hardlinks"
         if hardlinks:
             active = _create_hardlinks(active, owned, root, fresh, control)
+        stage = "symlinks"
         for entry in sorted(symlinks, key=lambda item: item.record.path.encode("utf-8")):
             active = _create_symlink(active, owned, root, entry, control)
+        stage = "dir-meta"
         for entry in sorted(directories, key=lambda item: (-item.record.path.count("/"), item.record.path.encode("utf-8"))):
             active = _finalize_directory(active, owned, root, entry, control)
+        stage = "root-meta"
         root_entry = plan.PlannedEntry("root", None, plan.MaterialRecord("rootfs", "directory", fresh.plan.root.mode, fresh.plan.root.uid, fresh.plan.root.gid, fresh.plan.root.mtime, 0, None, None, None, None, -1))
         root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
         _fail(not root_opened and root_chain.components[-1].node.generation == _generation(root, control))
@@ -740,10 +754,11 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
         )
         root = replace(root, generation=root_generation)
         refreshed = replace(owned, active=active, root=root)
+        stage = "postwalk"
         count = _postwalk(refreshed, root, fresh, control)
         return MaterializedRoot(refreshed, active, count)
     except BaseException as error:
-        _raise_work_failure(owned, control, error, cleanup_deadline_ns)
+        _raise_work_failure(owned, control, error, cleanup_deadline_ns, stage)
 
 
 def _materialize_unmasked(authority, owned, outer_control):

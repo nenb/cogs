@@ -28,8 +28,12 @@ class LeaseError(Exception):
 
 
 ROOTFS_ACQUIRE_STAGES = frozenset({
-    "pins", "build-first", "build-second", "equality", "pin-check",
-    "topology", "lease-mark", "lease-verify",
+    "pins", "build-first", "build-second", "equality", "pin-check", "topology",
+    "lease-mark", "lease-verify", *(
+        f"{build_stage}-{materialize_stage}"
+        for build_stage in ("build-first", "build-second")
+        for materialize_stage in materializer.MATERIALIZE_STAGES
+    ),
 })
 
 
@@ -376,6 +380,8 @@ def _acquire(approval, outer):
         first = second = None
         return lease
     except BaseException as error:
+        if stage in {"build-first", "build-second"} and type(error) is build.BuildAttemptError:
+            stage = f"{stage}-{error.work_stage}"
         if retained is None:
             raise RootfsAcquireError(stage) from error
         try:

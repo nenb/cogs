@@ -91,9 +91,8 @@ BLOCKED_REASON = (
     "exact static admission/live-custody and private owner-evidence bridges required"
 )
 _FAILURE_STAGES = frozenset({
-    "entry", "rootfs-acquire", "rootfs-pins", "rootfs-build-first", "rootfs-build-second",
-    "rootfs-equality", "rootfs-pin-check", "rootfs-topology", "rootfs-lease-mark",
-    "rootfs-lease-verify", "operation-open", "operation-live", "internal-contract",
+    "entry", "rootfs-acquire", "operation-open", "operation-live", "internal-contract",
+    *("rootfs-" + stage for stage in rootfs_lease.ROOTFS_ACQUIRE_STAGES),
 })
 
 
