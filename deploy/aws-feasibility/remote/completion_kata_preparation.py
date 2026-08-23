@@ -1322,7 +1322,7 @@ def collect_fixed_candidate():
                "final_pin_sha256": final.final_pin_sha256,
                "identity": final.package_identity.value()}
     return build_control_bytes(implementation, runtime, package,
-                               runtime_contract.REVIEWED_ROOTFS_SHA256, contracts)
+                               "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506", contracts)
 
 
 def generate_implementation_h_candidate_control_bytes():

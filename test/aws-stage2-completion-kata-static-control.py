@@ -309,6 +309,8 @@ assert "/dev/kvm" not in source and "socket.connect" not in source
 assert "os.getpid" not in source and "import completion_kata_coordinator" not in source
 assert "subprocess.Popen" in source and '"/usr/bin/zstd"' in source
 assert "def generate_implementation_h_candidate_control_bytes():" in source
+assert "runtime_contract.REVIEWED_ROOTFS_SHA256" not in source
+assert '"8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506", contracts' in source
 assert "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py" in preparation.MANDATORY_SECURITY_SOURCES
 bridge_source = (REMOTE / "completion_kata_preparation_bridge.py").read_text()
 assert all(word not in bridge_source for word in ("getenv", "os.environ", "/dev/kvm", "QMP"))
