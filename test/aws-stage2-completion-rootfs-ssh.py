@@ -177,7 +177,7 @@ def linux_no_kvm():
     if (os.environ.get("COGS_REQUIRE_STAGE2_ROOTFS_SSH_LINUX") != "1"
             or sys.platform != "linux" or platform.machine() != "x86_64" or os.geteuid() != 0):
         raise RuntimeError("exact no-KVM rootfs SSH admission required")
-    pins = json.loads((REMOTE / "stage2-completion-rootfs-v1.json").read_bytes())
+    pins = json.loads((REMOTE / "stage2-completion-rootfs-v2.json").read_bytes())
     ssh = tool("ssh", ("/usr/bin/ssh",))
     keygen_executable = tool("ssh-keygen", ("/usr/bin/ssh-keygen",))
     chroot = tool("chroot", ("/usr/sbin/chroot", "/usr/bin/chroot"))

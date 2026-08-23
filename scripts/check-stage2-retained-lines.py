@@ -51,6 +51,7 @@ RETAINED_DEPLOY_FILES = (
 )
 RETAINED_FILES = (
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
+    "deploy/aws-feasibility/remote/stage2-completion-rootfs-v2.json",
     "schemas/aws-stage2-completion-private-evidence-v1.json",
     "schemas/aws-stage2-completion-evidence-v1.json",
     "scripts/validate-aws-stage2-completion-evidence.ts",

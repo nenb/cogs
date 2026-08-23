@@ -172,11 +172,11 @@ def values():
 implementation, runtime, package, contracts = values()
 first_control, first_members = preparation.build_control_bytes(
     implementation, runtime, package,
-    "4fd72857efd33781ad61578ff9f9f26863d1068fcb27902efd6211fee1bc8d83",
+    "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
     contracts)
 second_control, second_members = preparation.build_control_bytes(
     copy.deepcopy(implementation), copy.deepcopy(runtime), copy.deepcopy(package),
-    "4fd72857efd33781ad61578ff9f9f26863d1068fcb27902efd6211fee1bc8d83",
+    "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
     copy.deepcopy(contracts))
 assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)

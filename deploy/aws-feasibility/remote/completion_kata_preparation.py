@@ -651,7 +651,7 @@ def validate_envelope_value(value):
     _exact_keys(rootfs, ("contract_sha256", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"))
     for name in ("contract_sha256", "manifest_sha256", "ustar_sha256"):
         _digest(rootfs[name])
-    _require(rootfs["contract_sha256"] == "4fd72857efd33781ad61578ff9f9f26863d1068fcb27902efd6211fee1bc8d83")
+    _require(rootfs["contract_sha256"] == "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506")
     _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
     _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     _require((rootfs["manifest_size"], rootfs["ustar_size"], rootfs["entry_count"]) == (1_049_443, 136_905_728, 4_353))
