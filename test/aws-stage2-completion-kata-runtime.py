@@ -328,11 +328,18 @@ for malformed_options in (
 container_absent = b"CONTAINER    IMAGE    RUNTIME\n"
 container_exact = container_absent + b"cogs-stage2-ssh-v1    -    io.containerd.kata.v2\n"
 check(runtime.classify_container_list(container_absent) is runtime.Observation.ABSENT, "container absence")
+check(runtime.classify_container_list(
+    b"CONTAINER    IMAGE    RUNTIME    \n") is runtime.Observation.ABSENT,
+    "real padded container header")
+rejected(lambda: runtime.classify_container_list(b"CONTAINER\tIMAGE RUNTIME\n"))
 check(runtime.classify_container_list(container_exact) is runtime.Observation.EXACT, "container exact")
 check(runtime.classify_container_list(container_exact.replace(b"kata.v2", b"runc.v2")) is runtime.Observation.PRESERVE, "runtime drift")
 task_absent = b"TASK    PID    STATUS\n"
 task_exact = task_absent + b"cogs-stage2-ssh-v1    101    STOPPED\n"
 check(runtime.classify_task_list(task_absent, 101) == "absent", "task absence")
+check(runtime.classify_task_list(b"TASK    PID    STATUS    \n", 101) == "absent",
+      "real padded task header")
+rejected(lambda: runtime.classify_task_list(b"TASK\tPID STATUS\n", 101))
 check(runtime.classify_task_list(task_exact, 101) == "stopped", "task exact")
 check(runtime.classify_task_list(task_exact, 102) == "preserve", "task PID replacement")
 # A later complete list proves failed-launch absence even though ctr info uses

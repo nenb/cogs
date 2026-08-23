@@ -524,16 +524,23 @@ def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
     return validate_stored_spec(spec)
 
 
+def _ctr_table(raw, header):
+    _fail(type(raw) is bytes and 0 < len(raw) <= 65_536
+          and raw.endswith(b"\n") and b"\x00" not in raw)
+    try:
+        lines = raw.decode("ascii", "strict").splitlines()
+    except UnicodeError as error:
+        raise KataRuntimeError("ctr table encoding") from error
+    _fail(lines and tuple(lines[0].split()) == header
+          and all(line and "\t" not in line and all(char == " " or char.isprintable()
+                  and char.isascii() for char in line) for line in lines))
+    return lines[1:]
+
+
 def parse_container_list(raw):
     """Parse the complete fixed-width ctr 2.2.1 container list output."""
-    _fail(type(raw) is bytes and 0 < len(raw) <= 65_536 and raw.endswith(b"\n") and b"\x00" not in raw)
-    try:
-        lines = raw.decode("utf-8", "strict").splitlines()
-    except UnicodeError as error:
-        raise KataRuntimeError("container list encoding") from error
-    _fail(lines and re.fullmatch(r"CONTAINER\s+IMAGE\s+RUNTIME", lines[0]) is not None)
     rows = []
-    for line in lines[1:]:
+    for line in _ctr_table(raw, ("CONTAINER", "IMAGE", "RUNTIME")):
         fields = line.split()
         _fail(len(fields) == 3 and all(field.isascii() and field.isprintable() for field in fields))
         rows.append(tuple(fields))
@@ -549,14 +556,8 @@ def classify_container_list(raw):
     return Observation.EXACT
 def parse_task_list(raw):
     """Parse exact ctr task rows; PID and status alone never grant ownership."""
-    _fail(type(raw) is bytes and 0 < len(raw) <= 65_536 and raw.endswith(b"\n") and b"\x00" not in raw)
-    try:
-        lines = raw.decode("ascii", "strict").splitlines()
-    except UnicodeError as error:
-        raise KataRuntimeError("task list encoding") from error
-    _fail(lines and re.fullmatch(r"TASK\s+PID\s+STATUS", lines[0]) is not None)
     rows = []
-    for line in lines[1:]:
+    for line in _ctr_table(raw, ("TASK", "PID", "STATUS")):
         fields = line.split()
         _fail(len(fields) == 3 and fields[1].isdigit())
         pid = int(fields[1]); status = fields[2]
