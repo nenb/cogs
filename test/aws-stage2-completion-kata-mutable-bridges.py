@@ -153,6 +153,7 @@ routes = {
     "revoke_readiness": (execution, "_revoke_readiness", owners.execution),
     "observe_ownership": (execution, "_observe_ownership", owners.execution),
     "stop_task": (execution, "_stop_task", owners.execution),
+    "release_network_holds": (execution, "_release_network_holds", owners.execution),
     "remove_network": (execution, "_remove_network", owners.execution),
     "remove_task": (execution, "_remove_task", owners.execution),
     "remove_container": (execution, "_remove_container", owners.execution),
@@ -241,6 +242,13 @@ for name in ("completion_kata_operation_bridge.py", "completion_kata_execution_b
                                                          *node.args.kwonlyargs)]
             assert not set(parameters) & {"path", "command", "argv", "callback", "retry", "fallback"}
     assert "def open_fixed" not in source
+
+execution_source = (REMOTE / "completion_kata_execution_bridge.py").read_text()
+assert "proc_passes = (proc_pass(), proc_pass())" in execution_source
+assert 'netns_identity["inode_device"]' in execution_source
+assert 'os.listdir(f"/proc/{pid}/fd")' in execution_source
+assert 'Path(runtime.SHARE_ROOT)' in execution_source
+assert 'Path(runtime.RUNTIME_ALIAS)' in execution_source
 
 # The real zero-argument coordinator still refuses at static custody before any
 # mutable bridge call; owner evidence remains a separate unavailable bridge.

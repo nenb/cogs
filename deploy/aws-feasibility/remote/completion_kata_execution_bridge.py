@@ -70,15 +70,15 @@ def _routes():
         network_phases = {"ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED", "FS_INTENT",
                           "FS_SETTLED", "BASELINES_CAPTURED", "NETWORK_READY",
                           "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
-                          "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT",
-                          "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",
-                          "SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED",
+                          "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT",
+                          "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+                          "CONTAINERD_ABSENT", "INPUT_REMOVED",
                           "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
                           "ROOTFS_ABSENT"}
         runtime_phases = {"NETWORK_READY", "RUNTIME_READY", "SSH_READY",
                           "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED",
-                          "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
-                          "RUNTIME_ABSENT"}
+                          "TASK_ABSENT", "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT",
+                          "SHARE_ABSENT", "FIREWALL_ABSENT"}
         if phase not in network_phases:
             return phase
         lifecycle.executables = preparation._reconstruct_fixed_executable_owner(
@@ -95,7 +95,9 @@ def _routes():
                                 else None)
         if phase == "FS_SETTLED" and current["nft_owner"] is not None and not rows:
             raise ExecutionBridgeError("incomplete baseline capture is preserved")
-        if rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}:
+        history = journal.runtime_recovery_history() if phase in runtime_phases else None
+        if (rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}
+                and not (history and history["runtime_network_released"])):
             current["network_owner"] = network._reopen_runtime_network(journal)
             lifecycle.network_owner = current["network_owner"]
         if phase in runtime_phases:
@@ -346,35 +348,57 @@ def _routes():
         return result
 
     def stop_task(bridge, lifecycle):
+        current = state(bridge, lifecycle); phase = operation._durable_phase(lifecycle.operation)
+        if phase == "OWNERSHIP_OBSERVED":
+            rows = lifecycle.operation.runtime_recovery_history()["runtime_ownership"]
+            if rows and rows[0]["task"] == "absent": return phase
         return runtime_cleanup(bridge, lifecycle, "OWNERSHIP_OBSERVED", "TASK_STOPPED")
     def remove_task(bridge, lifecycle):
-        return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "TASK_ABSENT")
-    def remove_container(bridge, lifecycle):
-        return runtime_cleanup(bridge, lifecycle, "TASK_ABSENT", "CONTAINER_ABSENT")
+        return runtime_cleanup(bridge, lifecycle, "TASK_STOPPED", "TASK_ABSENT")
     def remove_runtime(bridge, lifecycle):
-        return runtime_cleanup(bridge, lifecycle, "CONTAINER_ABSENT", "RUNTIME_ABSENT")
+        phase = operation._durable_phase(lifecycle.operation)
+        source = "OWNERSHIP_OBSERVED" if phase == "OWNERSHIP_OBSERVED" else "TASK_ABSENT"
+        return runtime_cleanup(bridge, lifecycle, source, "RUNTIME_ABSENT")
+    def release_network_holds(bridge, lifecycle):
+        current = state(bridge, lifecycle); phase = operation._durable_phase(lifecycle.operation)
+        if phase != "RUNTIME_ABSENT": return phase
+        owner = ensure_runtime(current, lifecycle)
+        result = runtime._release_fixed_runtime_network(owner)
+        current["network_owner"] = None; lifecycle.network_owner = None
+        return result
+    def remove_container(bridge, lifecycle):
+        current = state(bridge, lifecycle); phase = operation._durable_phase(lifecycle.operation)
+        if phase == "NETWORK_ABSENT" and not lifecycle.operation.runtime_recovery_history()["runtime_ownership"]:
+            return phase
+        return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "CONTAINER_ABSENT")
     def remove_share(bridge, lifecycle):
-        return runtime_cleanup(bridge, lifecycle, "RUNTIME_ABSENT", "SHARE_ABSENT")
+        phase = operation._durable_phase(lifecycle.operation)
+        source = "NETWORK_ABSENT" if phase == "NETWORK_ABSENT" else "CONTAINER_ABSENT"
+        return runtime_cleanup(bridge, lifecycle, source, "SHARE_ABSENT")
 
     def remove_network(bridge, lifecycle):
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
         if phase == "BASELINES_CAPTURED":
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
-        if phase in {"TASK_STOPPED", "OWNERSHIP_OBSERVED"}:
+        if phase == "RUNTIME_ABSENT":
+            history = lifecycle.operation.runtime_recovery_history()
+            _require(history["runtime_network_released"], "runtime network release proof absent")
             return network._remove_fixed_network(lifecycle.operation, *current["tools"])
         return phase
 
     def stop_containerd(bridge, lifecycle):
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
-        if phase != "SHARE_ABSENT": return phase
+        if phase != "FIREWALL_ABSENT": return phase
         owner = current.get("runtime")
         if owner is not None:
             result = runtime._cleanup_fixed_runtime(owner)
             runtime._close_fixed_runtime(owner)
             current["runtime"] = None
             for node in reversed(current.pop("config_nodes", ())): fs._close_node(node)
+            _require(operation._durable_phase(lifecycle.operation) == "CONTAINERD_ABSENT",
+                     "containerd absence settlement differs")
             return result
         # A fresh process can arrive after shutdown durably recorded the daemon
         # outcome and removed kata-runtime-v1, but before firewall settlement.
@@ -383,7 +407,9 @@ def _routes():
         daemon = runtime._retain_private_containerd(
             lifecycle.operation, fixed_chain(current), None, current["control"])
         runtime._shutdown_private_containerd(daemon)
-        return {"containerd": "absent"}
+        fact = {"containerd": "absent"}
+        lifecycle.operation.settle_runtime_phase("CONTAINERD_ABSENT", runtime._canonical_fact(fact))
+        return fact
 
     def remove_firewall(bridge, lifecycle):
         current = state(bridge, lifecycle)
@@ -429,25 +455,97 @@ def _routes():
         token = records[0].body["operation_token"]
         final = next(row for row in records if row.record_type == "FINAL_BASELINES")
         phases = {row.record_type for row in records}
-        required = {"TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-                    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT",
-                    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
+        required = {"NETWORK_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+                    "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
                     "FINAL_BASELINES", "RETIRED"}
+        if "RUNTIME_ROLE_IDENTITIES_V1" in phases:
+            required |= {"TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1",
+                         "RUNTIME_ABSENT", "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}
+        elif "OWNERSHIP_OBSERVED" in phases:
+            required |= {"RUNTIME_ABSENT", "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}
         _require(required <= phases, "terminal journal domains absent")
 
-        proc_markers = (b"cogs-stage2-ssh-v1", b"c42t" + token[:10].encode(),
-                        b"kata-runtime-v1", b"completion-v1/rootfs-v1/operation-")
-        process_residue = False
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdigit() or int(entry.name) == os.getpid():
-                continue
-            try:
-                raw = (entry / "cmdline").read_bytes()[:262_145]
-                _require(len(raw) <= 262_144, "process observation bound")
-                if any(marker in raw for marker in proc_markers):
-                    process_residue = True
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                pass
+        active_snapshots = [row.body for row in records if row.record_type == "NETWORK_SNAPSHOT_V2"
+                            and row.body.get("snapshot_kind") in {"ready", "discovered", "runtime"}]
+        netns_identity = None if not active_snapshots else active_snapshots[-1]["identity"]["netns"]
+        _require(netns_identity is None or type(netns_identity) is dict and
+                 type(netns_identity.get("inode")) is int and
+                 type(netns_identity.get("inode_device")) is int,
+                 "retained operation netns identity malformed")
+        net_target = None if netns_identity is None else f"net:[{netns_identity['inode']}]"
+        exact_roles = {
+            "/opt/kata/bin/containerd-shim-kata-v2": "shim",
+            "/opt/kata/bin/qemu-system-x86_64": "qemu",
+            "/opt/kata/libexec/virtiofsd": "virtiofsd",
+            runtime.STAGED_CONTAINERD: "containerd",
+        }
+        sandbox_marker = b"cogs-stage2-ssh-v1"
+        operation_markers = (b"c42t" + token[:10].encode(), b"kata-runtime-v1",
+                             b"completion-v1/rootfs-v1/operation-")
+        def proc_pass():
+            names = os.listdir("/proc")
+            _require(len(names) <= 131_072 and all(type(name) is str for name in names),
+                     "complete proc census bound")
+            found = {name: set() for name in ("tasks", "containers", "shim", "qemu",
+                                              "virtiofsd", "containerd", "children", "netns")}
+            for name in sorted((item for item in names if item.isdigit()), key=int):
+                pid = int(name); candidate = False
+                try: before = process._proc_row(pid)
+                except (FileNotFoundError, ProcessLookupError): continue
+                try:
+                    executable = os.readlink(f"/proc/{pid}/exe")
+                    executable = executable.removesuffix(" (deleted)")
+                    descriptor = os.open(f"/proc/{pid}/cmdline", os.O_RDONLY | os.O_CLOEXEC)
+                    try:
+                        command = os.read(descriptor, 262_145)
+                        _require(len(command) <= 262_144, "process cmdline bound")
+                    finally: os.close(descriptor)
+                    role = exact_roles.get(executable)
+                    if role is not None: found[role].add(pid); candidate = True
+                    if any(marker in command for marker in operation_markers):
+                        found["children"].add(pid); candidate = True
+                    ns_link = os.readlink(f"/proc/{pid}/ns/net")
+                    _require(__import__("re").fullmatch(r"net:\[[1-9][0-9]*\]", ns_link) is not None,
+                             "malformed process netns link")
+                    if net_target is not None and ns_link == net_target:
+                        ns_fd = os.open(f"/proc/{pid}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+                        try:
+                            ns_stat = os.fstat(ns_fd)
+                            _require((ns_stat.st_dev, ns_stat.st_ino) ==
+                                     (netns_identity["inode_device"], netns_identity["inode"]),
+                                     "process netns inode/device differs")
+                        finally: os.close(ns_fd)
+                        found["netns"].add((pid, "ns")); candidate = True
+                    fd_names = os.listdir(f"/proc/{pid}/fd")
+                    _require(len(fd_names) <= 4096 and all(item.isdigit() for item in fd_names),
+                             "process fd census bound")
+                    for fd_name in fd_names:
+                        try: link = os.readlink(f"/proc/{pid}/fd/{fd_name}")
+                        except FileNotFoundError: continue
+                        if link.startswith("net:["):
+                            _require(__import__("re").fullmatch(r"net:\[[1-9][0-9]*\]", link) is not None,
+                                     "malformed nsfs fd link")
+                        if net_target is not None and link == net_target:
+                            held_fd = os.open(f"/proc/{pid}/fd/{fd_name}", os.O_RDONLY | os.O_CLOEXEC)
+                            try:
+                                held_stat = os.fstat(held_fd)
+                                _require((held_stat.st_dev, held_stat.st_ino) ==
+                                         (netns_identity["inode_device"], netns_identity["inode"]),
+                                         "nsfs descriptor inode/device differs")
+                            finally: os.close(held_fd)
+                            found["netns"].add((pid, int(fd_name))); candidate = True
+                    after = process._proc_row(pid)
+                    _require(before == after, "unstable candidate process" if candidate else
+                             "unstable process census")
+                except (FileNotFoundError, ProcessLookupError):
+                    _require(not candidate, "candidate process vanished during census")
+                except PermissionError as error:
+                    raise ExecutionBridgeError("process census permission uncertainty") from error
+            return found
+        proc_passes = (proc_pass(), proc_pass())
+        process_sets = {name: set().union(*(row[name] for row in proc_passes))
+                        for name in proc_passes[0]}
+        detached_netns_residue = bool(process_sets["netns"])
         interfaces = set(os.listdir("/sys/class/net"))
         link_residue = any(name in interfaces for name in (
             "c42h0", "c42g0", "c42h" + token[:10]))
@@ -462,7 +560,9 @@ def _routes():
                 break
         mountinfo = Path("/proc/self/mountinfo").read_bytes()
         _require(len(mountinfo) <= 8 * 1024 * 1024, "mount observation bound")
-        mount_residue = any(marker in mountinfo for marker in proc_markers)
+        mount_residue = any(marker in mountinfo for marker in (
+            sandbox_marker, runtime.SHARE_ROOT.encode(), b"kata-runtime-v1",
+            b"completion-v1/rootfs-v1/operation-"))
         nft_result = subprocess.run(
             ("/usr/sbin/nft", "-j", "list", "ruleset"),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -478,48 +578,54 @@ def _routes():
         rootfs_residue = any(completion.joinpath("rootfs-v1").glob("operation-*"))
         report_path = Path("/run/cogs-stage2-local-private-v2/report-staging")
         source_path = Path("/run/cogs-stage2-local-private-v2/source-identity")
-        private_paths = (
-            Path("/run/cogs-stage2-ssh"), Path("/run/vc/vm/cogs-stage2-ssh-v1"),
-            completion / "kata-input-v1", completion / "kata-runtime-v1",
-            completion / ".kata-runtime-v1.staging", report_path, source_path,
-        )
-        path_residue = any(path.exists() or path.is_symlink() for path in private_paths)
+        input_path = completion / "kata-input-v1"
+        runtime_paths = (completion / "kata-runtime-v1", completion / ".kata-runtime-v1.staging",
+                         Path(runtime.RUNTIME_ALIAS))
+        share_path = Path(runtime.SHARE_ROOT)
+        input_path_residue = input_path.exists() or input_path.is_symlink()
+        runtime_path_residue = any(path.exists() or path.is_symlink() for path in runtime_paths)
+        task_marker_residue = Path(runtime.CONTAINERD_STATE).exists()
+        container_marker_residue = Path(runtime.CONTAINERD_ROOT).exists()
+        share_path_residue = share_path.exists() or share_path.is_symlink()
         descriptor_residue = False
         for entry in Path("/proc/self/fd").iterdir():
             try:
                 target = os.readlink(entry).encode()
-                mutable_markers = (b"kata-input-v1", b"kata-runtime-v1",
-                                   b"cogs-stage2-ssh", b"/run/netns/c42")
-                if any(marker in target for marker in mutable_markers):
+                mutable_markers = (b"kata-input-v1", b"kata-runtime-v1", b"/run/c42d",
+                                   b"cogs-stage2-ssh", b"/run/netns/c42", runtime.SHARE_ROOT.encode())
+                if target.decode("utf-8", "surrogateescape") == net_target or any(marker in target for marker in mutable_markers):
                     descriptor_residue = True
             except FileNotFoundError:
                 pass
+        any_process_residue = any(process_sets[name] for name in (
+            "shim", "qemu", "virtiofsd", "containerd", "children"))
+        namespace_residue = netns_residue or detached_netns_residue
         absent = {
-            "tasks": not process_residue, "containers": not process_residue,
-            "shim_processes": not process_residue, "qemu_processes": not process_residue,
-            "virtiofsd_processes": not process_residue,
-            "containerd_processes": not process_residue,
-            "child_processes": not process_residue, "cgroups": not cgroup_residue,
-            "namespaces": not netns_residue, "veth_devices": not link_residue,
+            "tasks": not task_marker_residue, "containers": not container_marker_residue,
+            "shim_processes": not process_sets["shim"], "qemu_processes": not process_sets["qemu"],
+            "virtiofsd_processes": not process_sets["virtiofsd"],
+            "containerd_processes": not process_sets["containerd"],
+            "child_processes": not process_sets["children"], "cgroups": not cgroup_residue,
+            "namespaces": not namespace_residue, "veth_devices": not link_residue,
             "tap_devices": not link_residue, "traffic_control": not link_residue,
-            "firewall": not firewall_residue, "shares": not mount_residue,
-            "mounts": not mount_residue, "inputs": not path_residue,
+            "firewall": not firewall_residue, "shares": not mount_residue and not share_path_residue,
+            "mounts": not mount_residue, "inputs": not input_path_residue,
             "operation_state": not operation_residue,
-            "runtime_state": not path_residue, "runtime_cache": not path_residue,
+            "runtime_state": not runtime_path_residue, "runtime_cache": not runtime_path_residue,
             "rootfs_lease": not rootfs_residue, "rootfs_build": not rootfs_residue,
             "rootfs_publication": not rootfs_residue,
-            "unexpected_descriptors": not descriptor_residue,
-            "network_state": not link_residue and not netns_residue,
+            "unexpected_descriptors": not descriptor_residue and not detached_netns_residue,
+            "network_state": not link_residue and not namespace_residue,
             "network_routes": not link_residue, "network_addresses": not link_residue,
             "firewall_baseline": not firewall_residue,
-            "mount_baseline": not mount_residue, "source_identity": not path_residue,
-            "input_control": not path_residue, "share_paths": not path_residue,
-            "runtime_staging": not path_residue,
+            "mount_baseline": not mount_residue, "source_identity": not (source_path.exists() or source_path.is_symlink()),
+            "input_control": not input_path_residue, "share_paths": not share_path_residue,
+            "runtime_staging": not runtime_path_residue,
             "report_staging": not (report_path.exists() or report_path.is_symlink()),
-            "descriptor_baseline": not descriptor_residue,
-            "process_baseline": not process_residue,
+            "descriptor_baseline": not descriptor_residue and not detached_netns_residue,
+            "process_baseline": not any_process_residue,
             "cgroup_baseline": not cgroup_residue,
-            "namespace_baseline": not netns_residue,
+            "namespace_baseline": not namespace_residue,
         }
         _require(tuple(absent) == local.RESIDUE_FACTS and all(absent.values()),
                  "independent 37-domain residue differs")
@@ -535,8 +641,8 @@ def _routes():
 
     return (issue, reconstruct, claim_tools, capture, create_network, prove_network, stage,
             bind_mapping, launch, observe_runtime_network, prove_runtime, authenticate, revoke, ownership,
-            stop_task, remove_network, remove_task, remove_container,
-            remove_runtime, remove_share, stop_containerd, remove_firewall,
+            stop_task, remove_task, remove_runtime, release_network_holds, remove_network,
+            remove_container, remove_share, remove_firewall, stop_containerd,
             final_baselines, independent_residue)
 
 
@@ -544,7 +650,7 @@ def _routes():
  _claim_network_tools, _capture_baselines, _create_network,
  _prove_network_causality, _stage_runtime, _bind_execution_mapping, _launch_task,
  _observe_runtime_network, _prove_runtime, _authenticate_ssh, _revoke_readiness, _observe_ownership,
- _stop_task, _remove_network, _remove_task, _remove_container, _remove_runtime,
- _remove_share, _stop_containerd, _remove_firewall,
+ _stop_task, _remove_task, _remove_runtime, _release_network_holds, _remove_network,
+ _remove_container, _remove_share, _remove_firewall, _stop_containerd,
  _observe_final_baselines, _observe_independent_residue) = _routes()
 del _routes

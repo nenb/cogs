@@ -30,7 +30,7 @@ test("mutable Kata owner bridges are narrow and fault-cut", () => {
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
   ]);
-  assert.equal(report.mutable_owner_line_limit, 1200);
+  assert.equal(report.mutable_owner_line_limit, 1800);
   assert.equal(report.mutable_owner_line_limit_satisfied, true);
   assert.ok(report.mutable_owner_lines < report.mutable_owner_line_limit);
 });

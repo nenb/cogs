@@ -36,13 +36,14 @@ METHOD_EVENT = {
     "revoke_readiness": "READINESS_REVOKED",
     "observe_ownership": "OWNERSHIP_OBSERVED",
     "stop_task": "TASK_STOPPED",
-    "remove_network": "NETWORK_ABSENT",
     "remove_task": "TASK_ABSENT",
-    "remove_container": "CONTAINER_ABSENT",
     "remove_runtime": "RUNTIME_ABSENT",
+    "release_network_holds": "RUNTIME_NETWORK_RELEASED_V1",
+    "remove_network": "NETWORK_ABSENT",
+    "remove_container": "CONTAINER_ABSENT",
     "remove_share": "SHARE_ABSENT",
-    "stop_containerd": "CONTAINERD_ABSENT",
     "remove_firewall": "FIREWALL_ABSENT",
+    "stop_containerd": "CONTAINERD_ABSENT",
     "remove_inputs": "INPUT_REMOVED",
     "prepare_rootfs_release": "ROOTFS_RELEASE_READY",
     "authorize_rootfs_release": "ROOTFS_RELEASE_AUTHORIZED",
@@ -112,10 +113,11 @@ class FakeOwners:
     def revoke_readiness(self, _lifecycle): return self.step("revoke_readiness")
     def observe_ownership(self, _lifecycle): return self.step("observe_ownership")
     def stop_task(self, _lifecycle): return self.step("stop_task")
-    def remove_network(self, _lifecycle): return self.step("remove_network")
     def remove_task(self, _lifecycle): return self.step("remove_task")
-    def remove_container(self, _lifecycle): return self.step("remove_container")
     def remove_runtime(self, _lifecycle): return self.step("remove_runtime")
+    def release_network_holds(self, _lifecycle): return self.step("release_network_holds")
+    def remove_network(self, _lifecycle): return self.step("remove_network")
+    def remove_container(self, _lifecycle): return self.step("remove_container")
     def remove_share(self, _lifecycle): return self.step("remove_share")
     def stop_containerd(self, _lifecycle): return self.step("stop_containerd")
     def remove_firewall(self, _lifecycle): return self.step("remove_firewall")

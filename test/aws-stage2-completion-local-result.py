@@ -188,7 +188,7 @@ if sys.argv[1:] == ["--probe"]:
 check(not sys.argv[1:], "unexpected test selector")
 
 pass_value, fail_value = passing(), failing()
-for name, expected in (("local-result-v2-pass.json", pass_value), ("local-result-v2-failure.json", fail_value)):
+for name, expected in (("local-result-v3-pass.json", pass_value), ("local-result-v3-failure.json", fail_value)):
     raw = (FIXTURES / name).read_bytes()
     check(raw == local.canonical_result(expected), f"shared fixture {name}")
     check(local.load_result(raw) == expected and raw.isascii() and len(raw) <= 32768, f"load {name}")

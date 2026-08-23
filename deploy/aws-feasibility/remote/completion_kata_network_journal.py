@@ -52,7 +52,7 @@ CLEANUP_INTENTS = MappingProxyType({
     # starts from the already-unqualified BASELINES_CAPTURED phase.
     "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", None),
     "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", None),
-    "NETWORK_CLEANUP_INTENT_V2": ({"BASELINES_CAPTURED", "TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
+    "NETWORK_CLEANUP_INTENT_V2": ({"BASELINES_CAPTURED", "TASK_STOPPED", "RUNTIME_ABSENT"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
     "FIREWALL_CLEANUP_INTENT_V2": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", "FIREWALL_CLEANUP_SETTLED_V2"),
 })
 CLEANUP_SETTLED = frozenset(value[2] for value in CLEANUP_INTENTS.values() if value[2] is not None)
@@ -127,6 +127,7 @@ _DISCOVERED_NET = ("IP_HOST_LINKS", "IP_NS_LINKS", "IP_HOST_ADDRESSES", "IP_NS_A
 SUCCESS_PHASE_TRACES = MappingProxyType({
     "FS_SETTLED": _BASELINE_TRACE, "BASELINES_CAPTURED": _SETUP_TRACE,
     "TASK_STOPPED": (*_RUNTIME_NET, "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
+    "RUNTIME_ABSENT": (*_RUNTIME_NET, "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
     "SHARE_ABSENT": ("NFT_RULESET", "NFT_TABLE", "NFT_REMOVE_ATOMIC",
                      "NFT_RULESET", "IP_ALL_LINKS", *_BASELINE_TRACE),
     "OWNERSHIP_OBSERVED": _BASELINE_TRACE,
@@ -141,6 +142,11 @@ SUCCESS_PHASE_TRACE_VARIANTS = MappingProxyType({
         (*_DISCOVERED_NET, "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
         ("IP_HOST_ROUTES4", "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
         _BASELINE_TRACE),
+    "RUNTIME_ABSENT": (SUCCESS_PHASE_TRACES["RUNTIME_ABSENT"],
+        (*_READY_NET, "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
+        (*_DISCOVERED_NET, "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
+        ("IP_HOST_ROUTES4", "IP_ALL_LINKS", "NFT_TABLE", *_BASELINE_TRACE),
+        _BASELINE_TRACE),
     "SHARE_ABSENT": (
         SUCCESS_PHASE_TRACES["SHARE_ABSENT"],
         ("NFT_RULESET", "NFT_TABLE", "NFT_REMOVE_ATOMIC", "IP_ALL_LINKS",
@@ -150,7 +156,7 @@ SUCCESS_PHASE_TRACE_VARIANTS = MappingProxyType({
 })
 LIFECYCLE_REQUIREMENTS = MappingProxyType({
     "BASELINES_CAPTURED": "FS_SETTLED", "NETWORK_READY": "BASELINES_CAPTURED",
-    "NETWORK_ABSENT": "TASK_STOPPED", "FIREWALL_ABSENT": "SHARE_ABSENT",
+    "NETWORK_ABSENT": "RUNTIME_ABSENT", "FIREWALL_ABSENT": "SHARE_ABSENT",
 })
 del _BASELINE_TRACE, _PARTIAL, _SETUP_TRACE, _SETUP_ABORT_TRACES, _prefix, _has_nft, _last, _verify, _remove, _count, _OWNED, _RUNTIME_NET, _READY_NET, _DISCOVERED_NET, _setup_effect_trace, _EFFECT_COMMAND_TRACES
 HEX = frozenset("0123456789abcdef")
@@ -471,7 +477,7 @@ def advance(state, kind, body, phase):
         allowed_phase = {"baseline": {"ROOTFS_LEASED", "FS_SETTLED"},
             "ready": {"BASELINES_CAPTURED"}, "discovered": {"NETWORK_READY", "RUNTIME_READY"},
             "runtime": {"NETWORK_READY", "RUNTIME_READY"},
-            "network-absent": {"BASELINES_CAPTURED", "TASK_STOPPED", "OWNERSHIP_OBSERVED"},
+            "network-absent": {"BASELINES_CAPTURED", "RUNTIME_ABSENT"},
             "firewall-restored": {"SHARE_ABSENT"}, "final-absent": {"ROOTFS_ABSENT"}}
         _fail(phase in allowed_phase[body["snapshot_kind"]])
         expected = {None: "baseline", "baseline": "ready", "ready": "discovered",
@@ -510,7 +516,7 @@ def advance(state, kind, body, phase):
         state["snapshots"].append(body); state["current"] = body["identity"]; return state
     if kind == "NETWORK_EFFECT_INTENT_V2":
         phases = ({"BASELINES_CAPTURED"} if body["action"] in SETUP else
-                  {"BASELINES_CAPTURED", "NETWORK_READY", "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED"}
+                  {"BASELINES_CAPTURED", "NETWORK_READY", "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT"}
                   if body["action"] == "IP_NETNS_REMOVE" else
                   {"BASELINES_CAPTURED", "NETWORK_READY", "SHARE_ABSENT"})
         _fail(phase in phases)

@@ -179,8 +179,10 @@ runtime_intent = type("LayoutRecord", (), {
     "record_type": "RUNTIME_STAGE_INTENT_V4", "body": {}})()
 runtime_staged = type("LayoutRecord", (), {
     "record_type": "RUNTIME_STAGED_V3", "body": {}})()
-for runtime_name in operation.RUNTIME_NAMES:
-    operation._validate_runtime_layout({runtime_name}, [runtime_intent], "NETWORK_READY")
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, [runtime_intent], "NETWORK_READY")
+reject(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_STAGING_NAME.raw}, [runtime_intent], "NETWORK_READY"))
 reject(lambda: operation._validate_runtime_layout(
     set(operation.RUNTIME_NAMES), [runtime_intent], "NETWORK_READY"))
 operation._validate_runtime_layout(

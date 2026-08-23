@@ -23,7 +23,8 @@ suffix = secrets.token_hex(5)
 netns, quarantine, host, table = "c42n" + suffix, "c42q" + suffix, "c42h" + suffix, "c42t" + suffix
 tap_name = "tap" + suffix[:8]
 created = {"parent_mount": False, "netns": False, "quarantine": False,
-           "replacement": False, "nft": False, "tap_fd": None}
+           "replacement": False, "nft": False, "tap_fd": None,
+           "runtime_owner_fd": None, "launch_fd": None, "namespace_child": None}
 
 def run(argv, stdin=None, allow=False):
     result = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -96,6 +97,15 @@ def move_to_quarantine(expected):
     if not same_moved_identity(ns_identity(quarantine), expected):
         raise AssertionError("quarantined nsfs identity changed")
 
+def netns_references(pid, target):
+    references = []
+    if os.readlink(f"/proc/{pid}/ns/net") == target: references.append((pid, "ns"))
+    for name in os.listdir(f"/proc/{pid}/fd"):
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{name}") == target: references.append((pid, int(name)))
+        except FileNotFoundError: pass
+    return references
+
 def nft_input():
     return network.NFT_OWNED_TRANSACTION.replace(network.TABLE.encode(), table.encode()).replace(network.HOST_IF.encode(), host.encode())
 
@@ -105,6 +115,11 @@ try:
     ip("netns", "add", netns); created["netns"] = True
     network._prepare_netns_parent()
     retained_ns = ns_identity(netns)
+    created["runtime_owner_fd"] = os.open("/run/netns/" + netns, os.O_RDONLY | os.O_CLOEXEC)
+    created["launch_fd"] = os.dup(created["runtime_owner_fd"])
+    created["namespace_child"] = subprocess.Popen(
+        ("/usr/sbin/ip", "netns", "exec", netns, "/bin/sleep", "30"),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ip("link", "add", "name", host, "address", network.HOST_MAC, "type", "veth",
        "peer", "name", network.GUEST_IF, "address", network.GUEST_MAC, "netns", netns)
     run(("/usr/sbin/nft", "-f", "-"), nft_input()); created["nft"] = True
@@ -172,8 +187,8 @@ try:
         if (name in expected) != (delta > 0):
             raise AssertionError(f"unexpected nft sensor delta:{name}:{delta}")
 
-    # Production order closes the TAP fd and exact namespace/tc/veth before firewall removal.
-    os.close(tun); created["tap_fd"] = None
+    # Name detachment is not absence: runtime-owner, launch-duplicate, TAP,
+    # and a role process all retain the exact nsfs inode until retirement.
     move_to_quarantine(retained_ns)
     # Crash/reopen cut: only the quarantined name survives and retains exact nsfs identity.
     if (not same_moved_identity(ns_identity(quarantine), retained_ns)
@@ -184,8 +199,22 @@ try:
     replacement = ns_identity(netns)
     if same_moved_identity(replacement, retained_ns):
         raise AssertionError("replacement nsfs not distinct")
+    target = f"net:[{retained_ns.inode}]"
+    if not netns_references(os.getpid(), target):
+        raise AssertionError("detached runtime/launch nsfs fds escaped census")
+    if not netns_references(created["namespace_child"].pid, target):
+        raise AssertionError("detached role process netns escaped census")
     ip("netns", "delete", quarantine); created["quarantine"] = False
+    if not Path("/sys/class/net/" + host).exists():
+        raise AssertionError("detached namespace was declared absent while holds remained")
     if ns_identity(netns) != replacement: raise AssertionError("quarantine cleanup deleted replacement")
+    # Simulated task/process retirement precedes every runtime network close.
+    created["namespace_child"].terminate(); created["namespace_child"].wait(timeout=5)
+    created["namespace_child"] = None
+    for key in ("launch_fd", "runtime_owner_fd", "tap_fd"):
+        os.close(created[key]); created[key] = None
+    if netns_references(os.getpid(), target):
+        raise AssertionError("nsfs fd census remained after final close")
     ip("netns", "delete", netns); created["replacement"] = False
     if Path("/sys/class/net/" + host).exists():
         deleted = run(("/usr/sbin/ip", "link", "delete", "dev", host), allow=True)
@@ -215,9 +244,13 @@ try:
         if retained.identity != nft_state.identity: raise AssertionError("unsupported conditional delete changed replacement")
         run(("/usr/sbin/nft", "delete", "table", "inet", table)); created["nft"] = False
 finally:
-    if created["tap_fd"] is not None:
-        try: os.close(created["tap_fd"])
-        except OSError: pass
+    if created["namespace_child"] is not None:
+        try: created["namespace_child"].terminate(); created["namespace_child"].wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired): created["namespace_child"].kill()
+    for key in ("tap_fd", "launch_fd", "runtime_owner_fd"):
+        if created[key] is not None:
+            try: os.close(created[key])
+            except OSError: pass
     for name in (quarantine, netns): run(("/usr/sbin/ip", "netns", "delete", name), allow=True)
     run(("/usr/sbin/ip", "link", "delete", "dev", host), allow=True)
     run(("/usr/sbin/nft", "delete", "table", "inet", table), allow=True)

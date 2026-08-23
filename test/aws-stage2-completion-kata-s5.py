@@ -407,7 +407,12 @@ authorization2 = operation._invoke_rootfs_release(grant2, lambda context: operat
 operation._settle_rootfs_release(grant2, authorization2)
 resumed.rootfs_absent(next(proofs)); resumed.retire(next(proofs))
 records = operation._parse(resumed.journal_bytes())
-expected_suffix = (*operation.LIFECYCLE, "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED")
+expected_suffix = (
+    "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "SSH_READY",
+    "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT",
+    "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT",
+    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+    "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED")
 assert tuple(item.record_type for item in records[-len(expected_suffix):]) == expected_suffix
 assert not hasattr(resumed, "append") and not hasattr(resumed, "record")
 reject(lambda: operation._make_fake_lifecycle_for_tests(ready_bytes[:-1]))

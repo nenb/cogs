@@ -1582,7 +1582,7 @@ def _owner_routes():
             identity = self.verify()
             _fail(state["handles"] is None)
             context = state["journal"].command_context()
-            _fail(context.lifecycle_phase == "FIREWALL_ABSENT")
+            _fail(context.lifecycle_phase == "CONTAINERD_ABSENT")
             detach = _ProductionDetachGrant(seal)
             detaches[detach] = {"operation": state["grant"], "status": "detached", "uncertain": None}
             try:
@@ -1798,7 +1798,7 @@ def _owner_routes():
                         state["journal"].record_input_removed(proof)
                     else:
                         state["journal"].record_uncertain("incomplete")
-                elif phase == "FIREWALL_ABSENT":
+                elif phase == "CONTAINERD_ABSENT":
                     state["journal"].record_input_removed(proof)
                 return proof
             finally:
@@ -1827,7 +1827,7 @@ def _owner_routes():
         journal = operation._claim_production_cleanup_operation(journal)
         _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
         _fail(operation._durable_phase(journal) in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
-              "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+              "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
         value = _ProductionInputCleanup(seal)
         production[value] = {
             "journal": journal, "completion": completion, "control": control,

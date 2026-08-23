@@ -62,7 +62,10 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   assert.match(source, /def _proc_snapshot\(attested, netns, host_netns\):/u);
   assert.match(source, /"shim": host_netns[\s\S]*"qemu":[\s\S]*"virtiofsd":/u);
   assert.match(source, /def _qmp_kvm\(processes\):/u);
-  assert.match(source, /def _share_fact\(\):/u);
+  assert.match(source, /def _share_fact\(retained=None\):/u);
+  assert.match(source, /def _remove_owned_empty_share\(retained\):/u);
+  assert.match(source, /def await_runtime_roles_absent\(state\):/u);
+  assert.match(source, /def release_network\(owner\):/u);
   assert.doesNotMatch(
     source,
     /subprocess|requests|urllib|boto|AWS|terraform|tofu|argparse|sys\.argv|pathlib|if __name__|ctr run --config|callable\(/u,

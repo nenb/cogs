@@ -3416,12 +3416,16 @@ def _runtime_network_routes():
     def descriptor(grant):
         verify(grant)
         return os.dup(owners.require(grants.require(grant)[0])[1])
-    def close(owner):
-        state = owners.pop(owner)
-        os.close(state[1])
-        for grant, row in grants.items():
-            if row[0] is owner:
-                grants.pop(grant)
+    def close(owner, expected_grant=None):
+        state = owners.require(owner)
+        associated = tuple((grant, row) for grant, row in grants.items() if row[0] is owner)
+        if expected_grant is not None and (len(associated) != 1 or associated[0][0] is not expected_grant):
+            raise NetworkError("runtime network grant closure differs")
+        owners.pop(owner); os.close(state[1])
+        for grant, _row in associated: grants.pop(grant)
+        registry_empty = not tuple(owners.items()) and not tuple(grants.items())
+        return {"owner_closed": True, "grants_closed": True,
+                "registry_empty": registry_empty, "closed_grants": len(associated)}
     return reopen, claim, verify, consume, descriptor, close
 
 (_reopen_runtime_network, _claim_runtime_network, _verify_runtime_network,

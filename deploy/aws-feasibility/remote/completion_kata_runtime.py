@@ -918,6 +918,25 @@ def _proc_snapshot(attested, netns, host_netns):
     value = {"complete": True, "early_exit": False, "rows": rows,
              "qualification": QUALIFICATION_CANDIDATE}
     return classify_process_snapshot(value, host_netns=host_netns, operation_netns=None if netns is None else netns.root)
+def _retirement_identity_rows(baseline, snapshot, disappeared):
+    """Validate one complete role-retirement observation without mutation."""
+    _fail(type(baseline) is dict and set(baseline) == {"shim", "qemu", "virtiofsd"}
+          and type(snapshot) is ProcessClassification and type(disappeared) is set,
+          "runtime retirement observation")
+    current = {}
+    for row in snapshot.records:
+        _fail(row.role not in current and row.role in baseline, "duplicate/foreign runtime role")
+        expected = baseline[row.role]
+        identity = {"role": row.role, "pid": row.pid, "starttime": row.starttime,
+                    "executable": row.executable, "executable_device": row.executable_device,
+                    "executable_inode": row.executable_inode,
+                    "namespaces": [list(item) for item in row.namespaces]}
+        retained = {name: expected[name] for name in identity}
+        _fail(identity == retained, "runtime role identity replacement")
+        _fail(row.role not in disappeared, "runtime role reappeared")
+        current[row.role] = row
+    return current, disappeared | (set(baseline) - set(current))
+
 def _qmp_kvm(processes):
     qemu = next((row for row in processes.records if row.role == "qemu"), None)
     if qemu is None:
@@ -970,9 +989,15 @@ def _qmp_kvm(processes):
             "qmp_device": before.st_dev, "qmp_inode": before.st_ino,
             "kvm_device": device.st_dev, "kvm_inode": device.st_ino, "kvm_rdev": device.st_rdev,
             "kvm_present": True, "kvm_enabled": True}
-def _share_fact():
-    mountinfo = _read_bounded("/proc/self/mountinfo", MAX_MOUNTINFO); digest = hashlib.sha256(mountinfo).hexdigest()
-    mounts = parse_mountinfo(mountinfo)
+def _share_generation(seen):
+    return {"device": seen.st_dev, "inode": seen.st_ino, "mode": stat.S_IMODE(seen.st_mode),
+            "uid": seen.st_uid, "gid": seen.st_gid, "ctime_ns": seen.st_ctime_ns}
+
+def _share_fact(retained=None):
+    """Classify the exact share without turning pathname presence into authority."""
+    _fail(retained is None or type(retained) is dict, "retained share identity")
+    mountinfo = _read_bounded("/proc/self/mountinfo", MAX_MOUNTINFO)
+    digest = hashlib.sha256(mountinfo).hexdigest()
     if not os.path.lexists(SHARE_ROOT):
         classified = classify_share_snapshot({"root": SHARE_ROOT, "complete": True, "rows": [],
             "qualification": QUALIFICATION_CANDIDATE}, mountinfo)
@@ -1006,12 +1031,46 @@ def _share_fact():
         walk(".", root_fd, 0)
         classified = classify_share_snapshot({"root": SHARE_ROOT, "complete": True, "rows": rows,
             "qualification": QUALIFICATION_CANDIDATE}, mountinfo)
-        _fail(classified.disposition is Observation.EXACT and SHARE_ROOT in classified.mountpoints,
-              "exact share mount")
-        return {"state": "exact", "entries": [(item.path, item.device, item.inode, item.mode)
-                for item in classified.entries], "mountpoints": classified.mountpoints, "mount_sha256": digest}
+        _fail(classified.disposition is Observation.EXACT, "exact share census")
+        generation = _share_generation(os.fstat(root_fd))
+        parent = os.open(os.path.dirname(SHARE_ROOT), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try: parent_generation = _share_generation(os.fstat(parent))
+        finally: os.close(parent)
+        entries = [(item.path, item.device, item.inode, item.mode) for item in classified.entries]
+        layout = hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
+        base = {"entries": entries, "mountpoints": classified.mountpoints,
+                "mount_sha256": digest, "root_generation": generation,
+                "parent_generation": parent_generation, "layout_sha256": layout}
+        if classified.mountpoints:
+            return {"state": "active-exact", **base}
+        if (len(classified.entries) == 1 and retained is not None
+                and generation == retained.get("root_generation")
+                and parent_generation == retained.get("parent_generation")):
+            return {"state": "owned-empty-residue", **base}
+        return {"state": "preserve", **base}
     finally:
         for descriptor in reversed(held): os.close(descriptor)
+
+def _remove_owned_empty_share(retained):
+    parent_path, name = os.path.split(SHARE_ROOT)
+    parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        _fail(_share_generation(os.fstat(parent)) == retained["parent_generation"], "share parent replacement")
+        root = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            _fail(_share_generation(os.fstat(root)) == retained["root_generation"] and not os.listdir(root),
+                  "share residue replacement/nonempty")
+            mountinfo = _read_bounded("/proc/self/mountinfo", MAX_MOUNTINFO)
+            _fail(not any(row[5] == SHARE_ROOT or row[5].startswith(SHARE_ROOT + "/")
+                          for row in parse_mountinfo(mountinfo)), "share residue mounted")
+        finally: os.close(root)
+        observed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        _fail(_share_generation(observed) == retained["root_generation"], "share residue changed before rmdir")
+        os.rmdir(name, dir_fd=parent); os.fsync(parent)
+        try: os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError: pass
+        else: _fail(False, "share residue remains")
+    finally: os.close(parent)
 def _purge_owned_tree(parent_fd, name, depth=0):
     _fail(depth <= 8 and type(name) is str and name not in {"", ".", ".."} and "/" not in name)
     observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -1294,14 +1353,17 @@ def _runtime_owner_routes():
         return retained
     def compose(journal, lease, inputs, network, attestation, daemon, control):
         history = journal.runtime_recovery_history(); _fail(history["phase"] in {"NETWORK_READY", "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
-              "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"})
+              "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"})
         _fail(type(lease) is rootfs_lease.RetainedRootfsLease and lease.disposition == "held"); reference = rootfs_lease._verify(lease, control)
-        input_grant = kata_inputs._claim_runtime_inputs(inputs, journal); network_grant = (None if history["phase"] in {"NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
-            "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"} else kata_network._claim_runtime_network(network, journal))
+        input_grant = kata_inputs._claim_runtime_inputs(inputs, journal); network_grant = (None if history["runtime_network_released"] or history["phase"] in {"NETWORK_ABSENT", "CONTAINER_ABSENT",
+            "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "RUNTIME_CLEANUP_ONLY"} else kata_network._claim_runtime_network(network, journal))
         input_binding = kata_inputs._consume_runtime_inputs(input_grant)
         netns = None if network_grant is None else kata_network._verify_runtime_network(network_grant); host_netns = os.readlink("/proc/self/ns/net"); _fail(re.fullmatch(r"net:\[[1-9][0-9]*\]", host_netns) is not None, "host netns baseline")
         verify_attestation(attestation); verify_daemon(daemon); owner = _Owner(seal); owners[owner] = [journal, lease, reference, input_binding, netns,
-            attestation, daemon, control, input_grant, network_grant, inputs, network, host_netns]
+            attestation, daemon, control, input_grant, network_grant, inputs, network, host_netns,
+            None if not history["runtime_role_identities"] else tuple(history["runtime_role_identities"][0]["roles"]),
+            None if not history["runtime_share_identities"] else {name: history["runtime_share_identities"][0][name]
+                for name in ("root_generation", "parent_generation", "layout_sha256")}]
         return owner
     def recover_pending(state, stop=True):
         history = state[0].runtime_recovery_history()
@@ -1424,14 +1486,37 @@ def _runtime_owner_routes():
     def settle_inactive(state, phase, field=None):
         fact = inactive_fact(state); value = fact if field is None else fact[field]
         state[0].settle_runtime_phase(phase, _canonical_fact(value)); return value
+    def role_identity(row, generation):
+        return {"role": row.role, "pid": row.pid, "starttime": row.starttime,
+                "executable": row.executable, "executable_device": row.executable_device,
+                "executable_inode": row.executable_inode, "executable_generation": generation,
+                "namespaces": [list(item) for item in row.namespaces]}
     def ownership(owner):
         state = owners[owner]
         fact = (inactive_fact(state) if daemons[state[6]][8] is None else observe(owner))
         values = {"task": "exact-owned" if fact["task"] in {"running", "stopped"} else fact["task"],
             "container": "exact-owned" if fact["container"] == "exact" else fact["container"],
             "runtime": "exact-owned" if fact["processes"] == "exact" else fact["processes"],
-            "share": "exact-owned" if fact["share"]["state"] == "exact" else fact["share"]["state"]}
+            "share": "exact-owned" if fact["share"]["state"] == "active-exact" else fact["share"]["state"]}
         _fail(set(values.values()) <= {"exact-owned", "absent"})
+        history = state[0].runtime_recovery_history()
+        if values["runtime"] == "exact-owned":
+            executables = verify_attestation(state[5]); attested = {item.role: item.generation for item in executables}
+            processes = _proc_snapshot(executables, state[4], state[12])
+            _fail(processes.disposition is Observation.EXACT, "runtime role ownership changed")
+            roles = tuple(sorted((role_identity(row, attested[row.role]) for row in processes.records),
+                                 key=lambda row: ("shim", "qemu", "virtiofsd").index(row["role"])))
+            body = {"operation_token": history["operation_token"], "roles": list(roles)}
+            if not history["runtime_role_identities"]: state[0].record_runtime_role_identities(body)
+            else: _fail(history["runtime_role_identities"] == (body,), "runtime role identity replacement")
+            state[13] = roles
+        if values["share"] == "exact-owned":
+            share_body = {"operation_token": history["operation_token"], **{name: fact["share"][name]
+                          for name in ("root_generation", "parent_generation", "layout_sha256")}}
+            if not history["runtime_share_identities"]: state[0].record_runtime_share_identity(share_body)
+            else: _fail(history["runtime_share_identities"] == (share_body,), "share identity replacement")
+            state[14] = {name: share_body[name] for name in
+                         ("root_generation", "parent_generation", "layout_sha256")}
         state[0].settle_runtime_phase("OWNERSHIP_OBSERVED", _canonical_fact(fact), values); return fact
     def phase_progress(state, phase):
         history = state[0].runtime_history()
@@ -1444,10 +1529,59 @@ def _runtime_owner_routes():
         state = owners[owner]; raw = step(owner, phase, index, actions.CommandId.CTR_TASK_LIST)[0]; processes = _proc_snapshot(verify_attestation(state[5]), state[4], state[12])
         shim = next((row for row in processes.records if row.role == "shim"), None); pid = (None if shim is None else shim.pid) if expected_pid is None else expected_pid
         task = classify_task_list(raw, pid); return {"task": task, "task_pid": pid, "processes": processes.disposition.value}, shim
+    def await_runtime_roles_absent(state):
+        """Observation-only, identity-stable retirement under one boottime deadline."""
+        import completion_kata_process as process
+        history = state[0].runtime_recovery_history()
+        _fail(len(history["runtime_role_identities"]) == 1, "durable runtime role identities absent")
+        baseline = {row["role"]: row for row in history["runtime_role_identities"][0]["roles"]}
+        _fail(set(baseline) == {"shim", "qemu", "virtiofsd"})
+        disappeared = set(); consecutive = 0; observations = 0
+        count = command_policy.RUNTIME_RETIREMENT_OBSERVATIONS
+        interval = command_policy.RUNTIME_RETIREMENT_INTERVAL_NS
+        start = process._boottime_ns(); deadline = start + count * interval
+        for ordinal in range(count):
+            target = start + ordinal * interval
+            remaining = target - process._boottime_ns()
+            if remaining > 0: time.sleep(remaining / 1_000_000_000)
+            executables = verify_attestation(state[5]); attested = {item.role: item.generation for item in executables}
+            snapshot = _proc_snapshot(executables, state[4], state[12])
+            observations += 1
+            current, disappeared = _retirement_identity_rows(baseline, snapshot, disappeared)
+            for role, row in current.items():
+                _fail(role_identity(row, attested[role]) == baseline[role],
+                      "runtime executable generation replacement")
+            qmp = _qmp_kvm(snapshot)
+            all_absent = not current and qmp.get("state") == "absent"
+            consecutive = consecutive + 1 if all_absent else 0
+            if consecutive == 2:
+                return {"operation_token": history["operation_token"], "observations": observations,
+                        "roles": {role: "absent" for role in ("shim", "qemu", "virtiofsd")},
+                        "qmp": "absent"}
+            if process._boottime_ns() >= deadline: break
+        raise KataRuntimeError("bounded runtime role retirement not observed")
+    def release_network(owner):
+        state = owners[owner]; history = state[0].runtime_recovery_history()
+        _fail(history["phase"] == "RUNTIME_ABSENT", "runtime network release order")
+        if history["runtime_network_released"]:
+            _fail(state[9] is None and state[11] is None, "released runtime network reopened")
+            return history["runtime_network_released"][0]
+        _fail(state[11] is not None and state[9] is not None, "runtime network owner absent")
+        released = kata_network._close_runtime_network(state[11], state[9])
+        state[9] = state[11] = None
+        _fail(released == {"owner_closed": True, "grants_closed": True,
+                           "registry_empty": True, "closed_grants": 1},
+              "runtime network registry not empty")
+        body = {"operation_token": history["operation_token"], "owner_closed": True,
+                "grants_closed": True, "registry_empty": True, "proof_sha256": "0" * 64}
+        body["proof_sha256"] = _canonical_fact({name: value for name, value in body.items()
+                                                  if name != "proof_sha256"})
+        state[0].record_runtime_network_released(body); return body
     def cleanup(owner):
         state = owners[owner]; recover_pending(state, False); history = state[0].runtime_recovery_history(); phase = history["phase"]
-        _fail(phase in {"NETWORK_READY", "OWNERSHIP_OBSERVED", "NETWORK_ABSENT", "TASK_ABSENT",
-                        "CONTAINER_ABSENT", "RUNTIME_ABSENT", "FIREWALL_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"})
+        _fail(phase in {"NETWORK_READY", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT",
+                        "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT", "FIREWALL_ABSENT",
+                        "CONTAINERD_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"})
         if phase == "RUNTIME_CLEANUP_ONLY":
             try: shutdown_daemon(state[6])
             finally: close(owner)
@@ -1464,7 +1598,12 @@ def _runtime_owner_routes():
             finally: close(owner)
             return {"runtime": "cleanup-only-absent"}
         if phase == "OWNERSHIP_OBSERVED":
-            if daemons[state[6]][8] is None: return settle_inactive(state, "TASK_STOPPED")
+            ownership_rows = history["runtime_ownership"]; _fail(len(ownership_rows) == 1)
+            if ownership_rows[0]["task"] == "absent":
+                _fail(ownership_rows[0]["runtime"] == "absent", "task-absent runtime still owned")
+                fact = {"runtime": "absent", "roles": {role: "absent" for role in ("shim", "qemu", "virtiofsd")}}
+                state[0].settle_runtime_phase("RUNTIME_ABSENT", _canonical_fact(fact)); return fact
+            _fail(daemons[state[6]][8] is not None)
             progress = phase_progress(state, phase); identities = history["runtime_identities"]
             if not identities:
                 before, shim = task_fact(owner, phase, 0, None)
@@ -1507,8 +1646,8 @@ def _runtime_owner_routes():
                 _fail(stopped["task"] == "running")
                 if process._boottime_ns() >= final: break
             raise KataRuntimeError("post-KILL final observation remained running")
-        if phase == "NETWORK_ABSENT":
-            if daemons[state[6]][8] is None: return settle_inactive(state, "TASK_ABSENT")
+        if phase == "TASK_STOPPED":
+            _fail(daemons[state[6]][8] is not None)
             progress = phase_progress(state, phase); ownership = history["runtime_ownership"]; _fail(len(ownership) == 1)
             proven = ownership[0]["task"] == "absent"
             if not proven and "CTR_TASK_REMOVE" not in progress: command(owner, actions.CommandId.CTR_TASK_REMOVE)
@@ -1516,7 +1655,22 @@ def _runtime_owner_routes():
             _fail(classify_task_list(raw, None) == "absent"); fact = {"task": "absent"}
             state[0].settle_runtime_phase("TASK_ABSENT", _canonical_fact(fact)); return fact
         if phase == "TASK_ABSENT":
-            if daemons[state[6]][8] is None: return settle_inactive(state, "CONTAINER_ABSENT")
+            if history["runtime_role_absence"]:
+                _fail(len(history["runtime_role_absence"]) == 1)
+                fact = history["runtime_role_absence"][0]
+            elif history["runtime_ownership"][0]["runtime"] == "absent":
+                fact = {"runtime": "absent"}
+            else:
+                fact = await_runtime_roles_absent(state)
+                state[0].record_runtime_role_absence(fact)
+            state[0].settle_runtime_phase("RUNTIME_ABSENT", _canonical_fact(fact)); return fact
+        if phase == "RUNTIME_ABSENT":
+            return phase
+        if phase == "NETWORK_ABSENT":
+            if not history["runtime_ownership"]:
+                share = inactive_fact(state)["share"]
+                state[0].settle_runtime_phase("SHARE_ABSENT", _canonical_fact(share)); return share
+            _fail(daemons[state[6]][8] is not None)
             progress = phase_progress(state, phase); ownership = history["runtime_ownership"]; _fail(len(ownership) == 1)
             proven = ownership[0]["container"] == "absent"
             if not proven and "CTR_CONTAINER_REMOVE" not in progress: command(owner, actions.CommandId.CTR_CONTAINER_REMOVE)
@@ -1524,23 +1678,15 @@ def _runtime_owner_routes():
             _fail(classify_container_list(raw) is Observation.ABSENT)
             fact = {"container": "absent"}; state[0].settle_runtime_phase("CONTAINER_ABSENT", _canonical_fact(fact)); return fact
         if phase == "CONTAINER_ABSENT":
-            if daemons[state[6]][8] is None: return settle_inactive(state, "RUNTIME_ABSENT")
-            raw = step(owner, phase, 0, actions.CommandId.CTR_CONTAINER_LIST)[0]
-            _fail(classify_container_list(raw) is Observation.ABSENT)
-            processes = _proc_snapshot(verify_attestation(state[5]), None, state[12])
-            _fail(processes.disposition is Observation.ABSENT and _qmp_kvm(processes)["state"] == "absent")
-            fact = {"runtime": "absent"}; state[0].settle_runtime_phase("RUNTIME_ABSENT", _canonical_fact(fact)); return fact
-        if phase == "RUNTIME_ABSENT":
-            if daemons[state[6]][8] is None: return settle_inactive(state, "SHARE_ABSENT", "share")
-            share = _share_fact()
-            if share["state"] == "residue":
-                descriptor = os.open(SHARE_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
-                try: remove_tree(descriptor)
-                finally: os.close(descriptor)
-                os.rmdir(SHARE_ROOT); share = _share_fact()
+            share = _share_fact(state[14])
+            if share["state"] == "owned-empty-residue":
+                _remove_owned_empty_share(state[14]); share = _share_fact(state[14])
             _fail(share["state"] == "absent", "share/mount residue")
             state[0].settle_runtime_phase("SHARE_ABSENT", _canonical_fact(share)); return share
-        shutdown_daemon(state[6]); return {"containerd": "absent"}
+        if phase == "FIREWALL_ABSENT":
+            shutdown_daemon(state[6]); fact = {"containerd": "absent"}
+            state[0].settle_runtime_phase("CONTAINERD_ABSENT", _canonical_fact(fact)); return fact
+        return {"containerd": "absent"}
     def remove_tree(descriptor, depth=0):
         _fail(depth <= 8, "private runtime depth")
         names = os.listdir(descriptor); _fail(len(names) <= 256, "private runtime entry bound")
@@ -1641,14 +1787,14 @@ def _runtime_owner_routes():
     def cleanup_staged(daemon):
         state = daemons.get(daemon); _fail(type(daemon) is _Daemon and state is not None and state[8] is None); shutdown_daemon(daemon); return {"runtime": "staged-absent"}
     return (issue_attestation, discard_attestation, retain_daemon, compose,
-            reconstruct, start_composed, bind_mount, launch, observe, ownership, cleanup, close,
+            reconstruct, start_composed, bind_mount, launch, observe, ownership, cleanup, release_network, close,
             cleanup_staged, verify_consumption, shutdown_daemon, verify_daemon)
 (_issue_fixed_runtime_attestation, _discard_fixed_runtime_attestation,
  _retain_private_containerd, _compose_fixed_runtime, _reconstruct_fixed_runtime,
  _start_composed_runtime,
  _bind_fixed_runtime_mount, _launch_fixed_runtime,
  _observe_fixed_runtime,
- _record_fixed_runtime_ownership, _cleanup_fixed_runtime, _close_fixed_runtime,
+ _record_fixed_runtime_ownership, _cleanup_fixed_runtime, _release_fixed_runtime_network, _close_fixed_runtime,
  _cleanup_staged_runtime, _verify_runtime_consumption, _shutdown_private_containerd,
  _verify_private_containerd) = _runtime_owner_routes()
 del _runtime_owner_routes

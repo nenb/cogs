@@ -16,16 +16,17 @@ guest = ssh.guest
 RUNTIME_ATTESTATION_VERSION = "cogs.stage2-local-private-runtime-attestation/v1"
 OPERATION_BINDING_VERSION = "cogs.stage2-local-private-operation-binding/v1"
 JOURNAL_TEARDOWN_ORDER = (
-    "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-    "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+    "READINESS_REVOKED", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_SHARE_IDENTITY_V1",
+    "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT",
+    "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT", "CONTAINER_ABSENT",
+    "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
     "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED",
 )
 REPORT_TEARDOWN_SOURCES = (
-    ("READINESS_REVOKED",), ("TASK_STOPPED",), ("NETWORK_ABSENT",),
-    ("TASK_ABSENT",), ("CONTAINER_ABSENT",), ("RUNTIME_ABSENT",),
-    ("SHARE_ABSENT",), ("FIREWALL_ABSENT",),
-    ("RESIDUE:containerd_processes",), ("INPUT_REMOVED",),
+    ("READINESS_REVOKED",), ("TASK_STOPPED",), ("TASK_ABSENT",),
+    ("RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT"),
+    ("RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT"), ("CONTAINER_ABSENT",),
+    ("SHARE_ABSENT",), ("FIREWALL_ABSENT",), ("CONTAINERD_ABSENT",), ("INPUT_REMOVED",),
     ("ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"),
     ("FINAL_BASELINES",), ("RETIRED",),
 )
@@ -475,15 +476,20 @@ def _durable_first_failure(records):
 
 def _report_teardown(records, residue, binding):
     rows = []
+    active_runtime = bool(_records_of(records, "RUNTIME_ROLE_IDENTITIES_V1"))
+    runtime_only = {"TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_IDENTITIES_V1",
+                    "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT",
+                    "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}
     _require(len(REPORT_TEARDOWN_SOURCES) == len(local.TEARDOWN_PHASES))
     for phase, sources in zip(local.TEARDOWN_PHASES, REPORT_TEARDOWN_SOURCES, strict=True):
         for source in sources:
             if source.startswith("RESIDUE:"):
                 _require(source.removeprefix("RESIDUE:") in residue.absent_facts)
             elif not _records_of(records, source):
-                # Inapplicable runtime teardown is not a vacuous journal pass:
-                # every report domain is independently observed absent below.
-                _require(residue.absent_facts == local.RESIDUE_FACTS)
+                # Only genuinely inapplicable runtime work may omit its owner
+                # event. Applicable events can never be replaced by residue.
+                _require(not active_runtime and source in runtime_only
+                         and residue.absent_facts == local.RESIDUE_FACTS)
             else:
                 _one(records, source)
         rows.append({"phase": phase, "outcome": "pass", "binding_sha256": binding})

@@ -43,12 +43,13 @@ FORWARD_ORDER = (
 TEARDOWN_ORDER = (
     "READINESS_REVOKED",
     "TASK_STOPPED",
-    "NETWORK_ABSENT",
     "TASK_ABSENT",
-    "CONTAINER_ABSENT",
     "RUNTIME_ABSENT",
+    "NETWORK_ABSENT",
+    "CONTAINER_ABSENT",
     "SHARE_ABSENT",
     "FIREWALL_ABSENT",
+    "CONTAINERD_ABSENT",
     "INPUT_REMOVED",
     "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED",
@@ -60,13 +61,14 @@ CLEANUP_ORDER = (
     "READINESS_REVOKED",
     "OWNERSHIP_OBSERVED",
     "TASK_STOPPED",
-    "NETWORK_ABSENT",
     "TASK_ABSENT",
-    "CONTAINER_ABSENT",
     "RUNTIME_ABSENT",
+    "RUNTIME_NETWORK_RELEASED_V1",
+    "NETWORK_ABSENT",
+    "CONTAINER_ABSENT",
     "SHARE_ABSENT",
-    "CONTAINERD_ABSENT",
     "FIREWALL_ABSENT",
+    "CONTAINERD_ABSENT",
     "INPUT_REMOVED",
     "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED",
@@ -308,6 +310,9 @@ class _PackagePrivateOwners:
     def stop_task(self, lifecycle):
         return execution_bridge._stop_task(self.execution, lifecycle)
 
+    def release_network_holds(self, lifecycle):
+        return execution_bridge._release_network_holds(self.execution, lifecycle)
+
     def remove_network(self, lifecycle):
         return execution_bridge._remove_network(self.execution, lifecycle)
 
@@ -389,13 +394,14 @@ def _cleanup_operation(lifecycle):
     lifecycle.ownership_proof = _collect(
         errors, lambda: _owners.observe_ownership(lifecycle))
     _collect(errors, lambda: _owners.stop_task(lifecycle))
-    _collect(errors, lambda: _owners.remove_network(lifecycle))
     _collect(errors, lambda: _owners.remove_task(lifecycle))
-    _collect(errors, lambda: _owners.remove_container(lifecycle))
     _collect(errors, lambda: _owners.remove_runtime(lifecycle))
+    _collect(errors, lambda: _owners.release_network_holds(lifecycle))
+    _collect(errors, lambda: _owners.remove_network(lifecycle))
+    _collect(errors, lambda: _owners.remove_container(lifecycle))
     _collect(errors, lambda: _owners.remove_share(lifecycle))
-    _collect(errors, lambda: _owners.stop_containerd(lifecycle))
     _collect(errors, lambda: _owners.remove_firewall(lifecycle))
+    _collect(errors, lambda: _owners.stop_containerd(lifecycle))
     _collect(errors, lambda: _owners.remove_inputs(lifecycle))
     _collect(errors, lambda: _owners.prepare_rootfs_release(lifecycle))
     _collect(errors, lambda: _owners.authorize_rootfs_release(lifecycle))

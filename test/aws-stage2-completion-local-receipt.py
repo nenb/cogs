@@ -197,12 +197,31 @@ try:
           "guest durations were not represented as exact nanoseconds")
     check([row["phase"] for row in report["teardown"]] == list(local.TEARDOWN_PHASES),
           "journal-to-report teardown mapping differs")
-    check(evidence.REPORT_TEARDOWN_SOURCES[5] == ("RUNTIME_ABSENT",)
+    check(evidence.REPORT_TEARDOWN_SOURCES[3] == (
+              "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT")
+          and evidence.REPORT_TEARDOWN_SOURCES[4] == (
+              "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT")
           and evidence.REPORT_TEARDOWN_SOURCES[6] == ("SHARE_ABSENT",)
-          and evidence.REPORT_TEARDOWN_SOURCES[8] == ("RESIDUE:containerd_processes",)
+          and evidence.REPORT_TEARDOWN_SOURCES[8] == ("CONTAINERD_ABSENT",)
           and evidence.REPORT_TEARDOWN_SOURCES[10] == (
               "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"),
-          "historical journal phase mapping was implicit")
+          "truthful owner-derived journal phase mapping differs")
+    active_binding = report["operation"]["binding_sha256"]
+    for mandatory in ("RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_NETWORK_RELEASED_V1",
+                      "CONTAINERD_ABSENT"):
+        missing = tuple(row for row in records if row.record_type != mandatory)
+        rejected(lambda missing=missing: evidence._report_teardown(
+            missing, residue, active_binding), evidence.LocalEvidenceError,
+            f"residue substituted for applicable {mandatory}")
+    ordered = list(records)
+    left = next(index for index, row in enumerate(ordered)
+                if row.record_type == "RUNTIME_ABSENT")
+    right = next(index for index, row in enumerate(ordered)
+                 if row.record_type == "RUNTIME_NETWORK_RELEASED_V1")
+    ordered[left] = replace(ordered[left], sequence=ordered[right].sequence)
+    ordered[right] = replace(ordered[right], sequence=records[left].sequence)
+    rejected(lambda: evidence._ordered_phases(tuple(ordered)), evidence.LocalEvidenceError,
+             "adjacent runtime release reorder accepted")
     rejected(lambda: consume(private_receipt), receipt_model.LocalReceiptError,
              "private receipt replay succeeded")
 

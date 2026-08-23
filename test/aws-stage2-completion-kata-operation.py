@@ -816,27 +816,46 @@ observer_resume = {"operation_token": token, "target_phase": "READINESS_REVOKED"
 rejected(lambda: append(observer_raw, "RUNTIME_RESUME_V4", observer_resume))
 rejected(lambda: append_runtime_command(observer_raw, process.CommandId.CTR_TASK_LIST))
 
-# Proven-absent ownership has observation-only cleanup traces: the parser
-# rejects both remove mutations while retaining their original exact-path order.
+# Proven-absent failed launch skips inapplicable task/role events, but still
+# closes its runtime network owner before network removal and observes the
+# exact absent container at the corrected NETWORK_ABSENT command phase.
 proven = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
 for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO,
                    process.CommandId.CTR_CONTAINER_LIST):
     proven, _unused = append_runtime_command(
         proven, command_id, status=1 if command_id is process.CommandId.CTR_CONTAINER_INFO else 0)
 proven_owner = {**proof("2"), "task": "absent", "container": "absent", "runtime": "absent", "share": "absent"}
-proven = append(proven, "OWNERSHIP_OBSERVED", proven_owner); proven = append(proven, "NETWORK_ABSENT", proof("3"))
+proven = append(proven, "OWNERSHIP_OBSERVED", proven_owner)
+proven = append(proven, "RUNTIME_ABSENT", proof("3"))
+release = {"operation_token": token, "owner_closed": True, "grants_closed": True,
+           "registry_empty": True, "proof_sha256": "4" * 64}
+proven = append(proven, "RUNTIME_NETWORK_RELEASED_V1", release)
+proven = append(proven, "NETWORK_ABSENT", proof("5"))
 rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_TASK_REMOVE))
-proven, _unused = append_runtime_command(proven, process.CommandId.CTR_TASK_LIST)
-proven = append(proven, "TASK_ABSENT", proof("4"))
 rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_CONTAINER_REMOVE))
 proven, _unused = append_runtime_command(proven, process.CommandId.CTR_CONTAINER_LIST)
-proven = append(proven, "CONTAINER_ABSENT", proof("5"))
+proven = append(proven, "CONTAINER_ABSENT", proof("6"))
 assert operation._legal(operation._parse(proven)) == "CONTAINER_ABSENT"
 
 sticky = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
 for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO, process.CommandId.CTR_CONTAINER_LIST):
     sticky, _unused = append_runtime_command(sticky, command_id)
 ownership = {**proof("3"), "task": "exact-owned", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}
+role_paths = (("shim", "/opt/kata/bin/containerd-shim-kata-v2"),
+              ("qemu", "/opt/kata/bin/qemu-system-x86_64"),
+              ("virtiofsd", "/opt/kata/libexec/virtiofsd"))
+role_body = {"operation_token": token, "roles": [
+    {"role": role, "pid": 100 + index, "starttime": 200 + index,
+     "executable": path, "executable_device": 1, "executable_inode": 300 + index,
+     "executable_generation": generation(400 + index, "file", 0o500),
+     "namespaces": [[name, f"{name}:[{500 + index}]"] for name in ("ipc", "mnt", "net", "pid", "user", "uts")]}
+    for index, (role, path) in enumerate(role_paths)]}
+sticky = append(sticky, "RUNTIME_ROLE_IDENTITIES_V1", role_body)
+share_generation = {"device": 1, "inode": 900, "mode": 0o700,
+                    "uid": 0, "gid": 0, "ctime_ns": 1000}
+sticky = append(sticky, "RUNTIME_SHARE_IDENTITY_V1", {
+    "operation_token": token, "root_generation": share_generation,
+    "parent_generation": {**share_generation, "inode": 901}, "layout_sha256": "2" * 64})
 sticky = append(sticky, "OWNERSHIP_OBSERVED", ownership)
 sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
 sticky, term_intent = append_runtime_command(sticky, process.CommandId.CTR_TASK_TERM, True)
@@ -845,15 +864,28 @@ term_resume = {"operation_token": token, "target_phase": "OWNERSHIP_OBSERVED",
 sticky = append(sticky, "RUNTIME_RESUME_V4", term_resume)
 assert operation._legal(operation._parse(sticky)) == "OWNERSHIP_OBSERVED"
 sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
-sticky = append(sticky, "TASK_STOPPED", proof("4")); sticky = append(sticky, "NETWORK_ABSENT", proof("5"))
-for phase, commands, next_phase in (
-    ("NETWORK_ABSENT", (process.CommandId.CTR_TASK_REMOVE, process.CommandId.CTR_TASK_LIST), "TASK_ABSENT"),
-    ("TASK_ABSENT", (process.CommandId.CTR_CONTAINER_REMOVE, process.CommandId.CTR_CONTAINER_LIST), "CONTAINER_ABSENT"),
-    ("CONTAINER_ABSENT", (process.CommandId.CTR_CONTAINER_LIST,), "RUNTIME_ABSENT")):
-    assert operation._legal(operation._parse(sticky)) == phase
-    for command_id in commands: sticky, _unused = append_runtime_command(sticky, command_id)
-    sticky = append(sticky, next_phase, proof("6"))
-for kind in ("SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED"): sticky = append(sticky, kind, proof("7"))
+sticky = append(sticky, "TASK_STOPPED", proof("4"))
+rejected(lambda: append(sticky, "RUNTIME_ABSENT", proof("f")))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+for command_id in (process.CommandId.CTR_TASK_REMOVE, process.CommandId.CTR_TASK_LIST):
+    sticky, _unused = append_runtime_command(sticky, command_id)
+sticky = append(sticky, "TASK_ABSENT", proof("5"))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+role_absence = {"operation_token": token, "observations": 2,
+                "roles": {role: "absent" for role, _path in role_paths}, "qmp": "absent"}
+sticky = append(sticky, "RUNTIME_ROLE_ABSENCE_V1", role_absence)
+sticky = append(sticky, "RUNTIME_ABSENT", proof("6"))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+sticky = append(sticky, "RUNTIME_NETWORK_RELEASED_V1", {
+    "operation_token": token, "owner_closed": True, "grants_closed": True,
+    "registry_empty": True, "proof_sha256": "7" * 64})
+rejected(lambda: append(sticky, "CONTAINER_ABSENT", proof("f")))
+sticky = append(sticky, "NETWORK_ABSENT", proof("8"))
+for command_id in (process.CommandId.CTR_CONTAINER_REMOVE, process.CommandId.CTR_CONTAINER_LIST):
+    sticky, _unused = append_runtime_command(sticky, command_id)
+sticky = append(sticky, "CONTAINER_ABSENT", proof("9"))
+for kind in ("SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED"):
+    sticky = append(sticky, kind, proof("a"))
 leased_body = next(row.body for row in operation._parse(sticky) if row.record_type == "ROOTFS_LEASED")
 ready = {"operation_token": token, "rootfs_token": "b" * 64, "rootfs_ledger_key": leased_body["rootfs_ledger_key"],
     "leased_sequence": leased_body["leased_sequence"], "leased_offset": leased_body["leased_offset"],

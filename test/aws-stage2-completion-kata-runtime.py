@@ -409,6 +409,31 @@ check(classify_process(hostile).reason == "namespace-correlation", "virtiofsd mo
 empty_proc = {**proc_fixture, "rows": []}
 check(runtime.classify_process_snapshot(empty_proc).disposition is runtime.Observation.ABSENT, "process absence")
 
+# Retirement observations accept only monotonic subsets of the durable closed
+# role map; they never mutate or reinterpret replacement identities.
+baseline_roles = {row.role: {
+    "role": row.role, "pid": row.pid, "starttime": row.starttime,
+    "executable": row.executable, "executable_device": row.executable_device,
+    "executable_inode": row.executable_inode, "executable_generation": {"retained": row.role},
+    "namespaces": [list(item) for item in row.namespaces],
+} for row in classified.records}
+disappeared = set()
+partial = runtime.ProcessClassification(runtime.Observation.PRESERVE, classified.records[:2], "retiring")
+current, disappeared = runtime._retirement_identity_rows(baseline_roles, partial, disappeared)
+check(set(current) == {"shim", "qemu"} and disappeared == {"virtiofsd"}, "delayed role retirement")
+absent_class = runtime.ProcessClassification(runtime.Observation.ABSENT, (), "complete-absence")
+current, disappeared = runtime._retirement_identity_rows(baseline_roles, absent_class, disappeared)
+check(not current and disappeared == set(baseline_roles), "complete retirement observation")
+current, disappeared = runtime._retirement_identity_rows(baseline_roles, absent_class, disappeared)
+check(not current, "stable second all-absent observation")
+rejected(lambda: runtime._retirement_identity_rows(baseline_roles, partial, disappeared))
+replacement = dataclasses.replace(classified.records[0], starttime=classified.records[0].starttime + 1)
+rejected(lambda: runtime._retirement_identity_rows(
+    baseline_roles, runtime.ProcessClassification(runtime.Observation.PRESERVE, (replacement,), "replacement"), set()))
+rejected(lambda: runtime._retirement_identity_rows(
+    baseline_roles, runtime.ProcessClassification(runtime.Observation.PRESERVE,
+        (classified.records[0], classified.records[0]), "duplicate"), set()))
+
 # Random Kata leaves are observed, not selected or removed. Complete mountinfo
 # correlates every row while 64/depth-4/total-256 limits fail closed.
 def linux_device(major, minor):
@@ -524,6 +549,8 @@ policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": poli
     "ownership_traces": [list(row) for row in policy.RUNTIME_OWNERSHIP_TRACES],
     "post_kill_observations": policy.RUNTIME_POST_KILL_OBSERVATIONS,
     "post_kill_interval_ns": policy.RUNTIME_POST_KILL_INTERVAL_NS,
+    "retirement_observations": policy.RUNTIME_RETIREMENT_OBSERVATIONS,
+    "retirement_interval_ns": policy.RUNTIME_RETIREMENT_INTERVAL_NS,
     "proven_absent_traces": {name: list(row) for name, row in policy.RUNTIME_PROVEN_ABSENT_TRACES.items()}}
 policy_raw = json.dumps(policy_value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 check(hashlib.sha256(policy_raw).hexdigest() == policy.RUNTIME_POLICY_SHA256,
@@ -534,12 +561,11 @@ check(dict(policy.RUNTIME_TRACES) == {
     "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") +
         ("CTR_TASK_LIST",) * policy.RUNTIME_POST_KILL_OBSERVATIONS,
-    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
-    "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
-    "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",),
+    "TASK_STOPPED": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
+    "NETWORK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),
 }, "runtime owner trace drift")
 check(dict(policy.RUNTIME_PROVEN_ABSENT_TRACES) == {
-    "NETWORK_ABSENT": ("CTR_TASK_LIST",), "TASK_ABSENT": ("CTR_CONTAINER_LIST",),
+    "TASK_STOPPED": ("CTR_TASK_LIST",), "NETWORK_ABSENT": ("CTR_CONTAINER_LIST",),
 }, "proven-absence trace drift")
 runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CONTAINERD_START")
 rejected(lambda: runtime.kata_operation._runtime_trace((), 0, "NETWORK_READY", candidate="CTR_RUN"))

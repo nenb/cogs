@@ -61,12 +61,12 @@ MOUNT_SHA = "22157f258386d8d4be07ec6eb086a582936c23037be403caa829b644bf4e058e"
 KEY_INPUT_PHASES = frozenset({"ROOTFS_LEASED", "FS_INTENT", "UNCERTAIN"})
 RUNTIME_RESIDUE_PHASES = frozenset({
     "NETWORK_READY", "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
-    "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-    "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
+    "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT",
+    "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+    "CONTAINERD_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
 })
 RUNTIME_ABSENT_PHASES = frozenset({
-    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+    "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT", "FINAL_BASELINES",
     "RETIRE_INTENT", "RETIRED",
 })
@@ -92,8 +92,14 @@ def _validate_runtime_layout(names, records, phase):
     runtime_present = RUNTIME_NAME.raw in present
     if phase in RUNTIME_ABSENT_PHASES:
         _fail(not runtime_present)
-    elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
-        _fail(runtime_present or intent and not staged or prepared and not intent)
+    elif phase == "FIREWALL_ABSENT":
+        _fail(runtime_present == staged)
+    elif staged and phase not in {"UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
+        _fail(runtime_present)
+    elif intent and not staged:
+        _fail(runtime_present)
+    elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY", *KEY_INPUT_PHASES}:
+        _fail(runtime_present or prepared and not intent)
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
     _validate_runtime_layout(names, records, phase)
@@ -170,15 +176,18 @@ COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = command_policy.LEGACY_COMMANDS
 _V1_COMMAND_RECORDS = frozenset({"COMMAND_INTENT", "COMMAND_PREEXEC", "COMMAND_OUTCOME"})
 _V2_COMMAND_RECORDS = (frozenset({
-    "COMMAND_OUTCOME_V2", "DAEMON_RETAINED_V2", "DAEMON_OUTCOME_V2", "RUNTIME_PREPARED_V1", "RUNTIME_STAGE_INTENT_V4",
-    "NETWORK_SNAPSHOT_V2"}) | network_journal.ALL_RECORDS)
+    "COMMAND_OUTCOME_V2", "DAEMON_RETAINED_V2", "DAEMON_OUTCOME_V2", "RUNTIME_PREPARED_V1",
+    "RUNTIME_STAGE_INTENT_V4", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
+    "RUNTIME_SHARE_IDENTITY_V1", "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_SNAPSHOT_V2",
+}) | network_journal.ALL_RECORDS)
 _POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
                 command_policy.PHASES, command_policy.MAX_OCCURRENCES)
 _RUNTIME_POLICY_OBJECTS = (command_policy.RUNTIME_POLICY_VERSION, command_policy.RUNTIME_POLICY_SHA256,
                            command_policy.RUNTIME_EXTENSION_COMMANDS, command_policy.RUNTIME_TRACES, command_policy.RUNTIME_OCCURRENCES,
                            command_policy.RUNTIME_PHASES, command_policy.RUNTIME_MAX_OCCURRENCES,
                            command_policy.CTR_TAILS, command_policy.CONTAINERD_EXTRACTION, command_policy.RUNTIME_OWNERSHIP_TRACES,
-                           command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS)
+                           command_policy.RUNTIME_PROVEN_ABSENT_TRACES, command_policy.RUNTIME_POST_KILL_OBSERVATIONS, command_policy.RUNTIME_POST_KILL_INTERVAL_NS,
+                           command_policy.RUNTIME_RETIREMENT_OBSERVATIONS, command_policy.RUNTIME_RETIREMENT_INTERVAL_NS)
 _DEFERRED_COMMANDS = command_policy.DEFERRED_COMMANDS
 _ATTESTED_COMMANDS = command_policy.ATTESTED_COMMANDS
 _ATTESTED_EXECUTABLES = command_policy.ATTESTED_EXECUTABLES
@@ -202,9 +211,9 @@ OUTPUT_GRAMMARS = frozenset({"empty", "json", "json-lines", "ssh-plan", "text"})
 NETWORK_BASELINES = network_journal.BASELINES
 LIFECYCLE = (
     "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "SSH_READY",
-    "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "NETWORK_ABSENT",
-    "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT",
-    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+    "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT",
+    "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT",
+    "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
 )
 PRODUCTION_ADMISSION_VERSION = "cogs.stage2-kata-operation-production/v2"
@@ -213,8 +222,8 @@ SSH_PARSER_ID = "completion_guest_workloads_v3.parse_guest_workload_output/v3"
 SSH_PARSER_SHA256 = "1d94ba3a17a8b76a3b326359d89a140f0d02c4c8341d61fb94fff5cd98ccd2db"
 PROOF_LIFECYCLE = frozenset({
     "BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY", "TASK_STOPPED",
-    "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT",
-    "SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
+    "TASK_ABSENT", "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT",
+    "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
 })
 class OperationError(Exception):
     pass
@@ -678,6 +687,37 @@ def _validate_body(kind, body):
         _uint(body["executable_device"]); _uint(body["executable_inode"], minimum=1)
         _fail(type(body["namespaces"]) is list and len(body["namespaces"]) == 6 and
               all(type(row) is list and len(row) == 2 and type(row[0]) is type(row[1]) is str for row in body["namespaces"]))
+    elif kind == "RUNTIME_ROLE_IDENTITIES_V1":
+        _keys(body, ("operation_token", "roles")); _hex(body["operation_token"])
+        roles = body["roles"]
+        _fail(type(roles) is list and len(roles) == 3 and
+              [row.get("role") for row in roles] == ["shim", "qemu", "virtiofsd"])
+        for row in roles:
+            _keys(row, ("role", "pid", "starttime", "executable", "executable_device",
+                        "executable_inode", "executable_generation", "namespaces"))
+            _uint(row["pid"], minimum=1); _uint(row["starttime"], minimum=1)
+            _text(row["executable"], True); _fail(row["executable"].startswith("/"))
+            _uint(row["executable_device"]); _uint(row["executable_inode"], minimum=1)
+            _generation(row["executable_generation"])
+            _fail(type(row["namespaces"]) is list and len(row["namespaces"]) == 6 and
+                  all(type(ns) is list and len(ns) == 2 and type(ns[0]) is type(ns[1]) is str for ns in row["namespaces"]))
+    elif kind == "RUNTIME_ROLE_ABSENCE_V1":
+        _keys(body, ("operation_token", "observations", "roles", "qmp")); _hex(body["operation_token"])
+        _uint(body["observations"], command_policy.RUNTIME_RETIREMENT_OBSERVATIONS, minimum=2)
+        _fail(body["roles"] == {"shim": "absent", "qemu": "absent", "virtiofsd": "absent"}
+              and body["qmp"] == "absent")
+    elif kind == "RUNTIME_SHARE_IDENTITY_V1":
+        _keys(body, ("operation_token", "root_generation", "parent_generation", "layout_sha256"))
+        _hex(body["operation_token"]); _hex(body["layout_sha256"])
+        for generation in (body["root_generation"], body["parent_generation"]):
+            _keys(generation, ("device", "inode", "mode", "uid", "gid", "ctime_ns"))
+            _uint(generation["device"]); _uint(generation["inode"], minimum=1)
+            _uint(generation["mode"], 0o7777); _uint(generation["uid"]); _uint(generation["gid"])
+            _uint(generation["ctime_ns"], minimum=1)
+    elif kind == "RUNTIME_NETWORK_RELEASED_V1":
+        _keys(body, ("operation_token", "owner_closed", "grants_closed", "registry_empty", "proof_sha256"))
+        _hex(body["operation_token"]); _hex(body["proof_sha256"])
+        _fail(body["owner_closed"] is body["grants_closed"] is body["registry_empty"] is True)
     elif kind == "RUNTIME_STAGED_V3":
         names = ("operation_token", "policy_version", "policy_sha256", "archive_sha256", "archive_size", "extraction_sha256", "runtime_generation",
                  "containerd_generation", "ctr_generation", "config_generation", "root_generation", "state_generation")
@@ -1027,7 +1067,8 @@ def _b1_phase_trace(records, index, phase, network_state):
 
 def _runtime_trace(records, index, phase, ownership=None, candidate=None, complete=False):
     key = phase if phase != "OWNERSHIP_OBSERVED" else f"{phase}:task-{ownership['task'].split('-', 1)[0]}"
-    proven = (ownership is not None and ((phase == "NETWORK_ABSENT" and ownership["task"] == "absent") or (phase == "TASK_ABSENT" and ownership["container"] == "absent")))
+    proven = (ownership is not None and ((phase == "TASK_STOPPED" and ownership["task"] == "absent")
+              or (phase == "NETWORK_ABSENT" and ownership["container"] == "absent")))
     trace = command_policy.RUNTIME_PROVEN_ABSENT_TRACES[phase] if proven else command_policy.RUNTIME_TRACES.get(key, ())
     intents = [item for item in records[:index]
                if item.record_type == "COMMAND_INTENT_V2"
@@ -1082,6 +1123,7 @@ def _legal(records):
     runtime_staged = None
     command_generation = None
     ownership = None
+    role_identities = role_absence = share_identity = network_release = None
     ssh_result = None
     runtime_mount = None
     platform_observation = None
@@ -1098,7 +1140,11 @@ def _legal(records):
         body = record.body
         _fail(body["operation_token"] == token)
         cleanup_mode, cleanup_intent = network_journal.cleanup_step(cleanup_mode, kind, phase, _fail)
-        if cleanup_intent: continue
+        if cleanup_intent:
+            if kind == "NETWORK_CLEANUP_INTENT_V2" and runtime_staged is not None:
+                _fail(phase in {"BASELINES_CAPTURED", "RUNTIME_ABSENT"}
+                      and (phase == "BASELINES_CAPTURED" or network_release is not None))
+            continue
         if phase == "UNCERTAIN" and kind == "RUNTIME_RESUME_V4":
             prior = records[index - 1]; serial = body["uncertain_serial"]
             intent = next(item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == serial)
@@ -1148,7 +1194,7 @@ def _legal(records):
             continue
         if kind == "INPUT_GRANT":
             _fail(command_phase is None and phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
-                  "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+                  "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
             prior = [item.body for item in records[:index] if item.record_type == "INPUT_GRANT"
                      and item.body["grant_id"] == body["grant_id"]]
             if body["action"] == "intent": _fail(not prior)
@@ -1162,7 +1208,7 @@ def _legal(records):
             continue
         if kind == "INPUT_WA":
             _fail(command_phase is None and phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
-                  "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+                  "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
             prior = [item.body for item in records[:index] if item.record_type == "INPUT_WA"
                      and (item.body["action"], item.body["path"]) == (body["action"], body["path"])]
             _fail(not prior)
@@ -1177,7 +1223,7 @@ def _legal(records):
             continue
         if kind == "INPUT_STEP":
             _fail(command_phase is None and phase in {"FS_INTENT", "FS_SETTLED", "RUNTIME_READY",
-                  "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+                  "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
             prior = [item.body for item in records[:index] if item.record_type == "INPUT_STEP"
                      and item.body["path"] == body["path"]]
             if body["action"] == "create-intent": _fail(not prior)
@@ -1210,6 +1256,20 @@ def _legal(records):
             runtime_staged = body; continue
         if kind == "RUNTIME_IDENTITY_V4":
             _fail(command_phase is None and phase == "OWNERSHIP_OBSERVED" and not any(item.record_type == kind for item in records[:index])); continue
+        if kind == "RUNTIME_ROLE_IDENTITIES_V1":
+            _fail(command_phase is None and phase == "READINESS_REVOKED" and role_identities is None)
+            role_identities = body; continue
+        if kind == "RUNTIME_ROLE_ABSENCE_V1":
+            _fail(command_phase is None and phase == "TASK_ABSENT" and role_identities is not None
+                  and role_absence is None)
+            role_absence = body; continue
+        if kind == "RUNTIME_SHARE_IDENTITY_V1":
+            _fail(command_phase is None and phase == "READINESS_REVOKED" and share_identity is None)
+            share_identity = body; continue
+        if kind == "RUNTIME_NETWORK_RELEASED_V1":
+            _fail(command_phase is None and phase == "RUNTIME_ABSENT" and network_release is None
+                  and (role_absence is not None or ownership is not None and ownership["runtime"] == "absent"))
+            network_release = body; continue
         if kind == "NETWORK_SNAPSHOT_V2" or kind in network_journal.ALL_RECORDS:
             _fail(command_generation in {None, "v2"}); command_generation = "v2"
             _fail(rootfs and command_phase is None)
@@ -1379,7 +1439,8 @@ def _legal(records):
             phase = "SSH_READY"
             continue
         if retained_daemon is not None:
-            _fail(kind not in set(LIFECYCLE[13:]) | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
+            _fail(kind not in set(LIFECYCLE[LIFECYCLE.index("CONTAINERD_ABSENT"):]) |
+                  {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"})
         if phase == "GENESIS":
             _fail(index == 1 and kind == "GENESIS_SETTLED" and body["journal_key"] == key)
             phase = kind
@@ -1417,10 +1478,11 @@ def _legal(records):
             pending = None
         elif kind in LIFECYCLE:
             _fail(rootfs)
-            seen = {item.record_type for item in records[:index]}; setup_abort = bool(network_state["snapshots"] and kind == "NETWORK_ABSENT" and network_journal.setup_abort_complete(network_state))
+            seen = {item.record_type for item in records[:index]}; setup_abort = bool(
+                network_state["snapshots"] and network_journal.setup_abort_complete(network_state))
             if network_state["snapshots"]:
-                requirement = (phase if setup_abort or kind == "NETWORK_ABSENT" and phase == "OWNERSHIP_OBSERVED" and
-                               ownership is not None and ownership["task"] == "absent" else network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
+                requirement = (phase if setup_abort else
+                               network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
                 if requirement is not None:
                     _fail(requirement == phase)
                     try: network_journal.successful_phase_trace(records, index, phase, network_state, _settled_v2)
@@ -1455,31 +1517,42 @@ def _legal(records):
             elif kind == "OWNERSHIP_OBSERVED":
                 _fail(phase == "READINESS_REVOKED" and ownership is None)
                 if runtime_staged is not None: _runtime_trace(records, index, phase, body, complete=True)
+                _fail(runtime_staged is None or body["runtime"] != "exact-owned" or role_identities is not None)
+                _fail(runtime_staged is None or body["share"] != "exact-owned" or share_identity is not None)
                 ownership = body
             elif kind == "TASK_STOPPED":
                 _fail(phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "exact-owned")
                 if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
+            elif kind == "TASK_ABSENT":
+                _fail(phase == "TASK_STOPPED" or runtime_staged is None and phase == "NETWORK_ABSENT"
+                      or phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "absent")
+                if runtime_staged is not None and phase == "TASK_STOPPED":
+                    _runtime_trace(records, index, phase, ownership, complete=True)
+            elif kind == "RUNTIME_ABSENT":
+                _fail((phase == "TASK_ABSENT" or runtime_staged is None and phase == "CONTAINER_ABSENT"
+                       or phase == "OWNERSHIP_OBSERVED" and ownership["task"] == ownership["runtime"] == "absent")
+                      and (runtime_staged is None or ownership["runtime"] == "absent" or role_absence is not None))
             elif kind == "NETWORK_ABSENT":
-                _fail(setup_abort or ownership is not None and (phase == "TASK_STOPPED" or phase == "OWNERSHIP_OBSERVED" and ownership["task"] == "absent"))
+                active = phase == "RUNTIME_ABSENT"
+                _fail(setup_abort or active and (runtime_staged is None or network_release is not None)
+                      or runtime_staged is None and phase in {"TASK_STOPPED", "OWNERSHIP_OBSERVED"})
                 snapshots = network_state["snapshots"]
                 _fail(not snapshots or snapshots[-1]["snapshot_kind"] == "network-absent" and
                       body["proof_sha256"] == snapshots[-1]["proof_sha256"])
-            elif kind == "TASK_ABSENT":
-                _fail(phase == "NETWORK_ABSENT")
-                if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
             elif kind == "CONTAINER_ABSENT":
-                _fail(phase == "TASK_ABSENT")
-                if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
-            elif kind == "RUNTIME_ABSENT":
-                _fail(phase == "CONTAINER_ABSENT")
-                if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
+                _fail(phase == "NETWORK_ABSENT" or runtime_staged is None and phase == "TASK_ABSENT")
+                if runtime_staged is not None and ownership is not None:
+                    _runtime_trace(records, index, phase, ownership, complete=True)
             elif kind == "SHARE_ABSENT":
-                _fail(phase == "RUNTIME_ABSENT")
+                _fail(phase == "CONTAINER_ABSENT" or runtime_staged is None and phase == "RUNTIME_ABSENT"
+                      or setup_abort and phase == "NETWORK_ABSENT")
             elif kind == "FIREWALL_ABSENT":
                 _fail(phase == "SHARE_ABSENT")
                 snapshots = network_state["snapshots"]
                 _fail(not snapshots or snapshots[-1]["snapshot_kind"] == "firewall-restored" and
                       body["proof_sha256"] == snapshots[-1]["proof_sha256"])
+            elif kind == "CONTAINERD_ABSENT":
+                _fail(phase == "FIREWALL_ABSENT" and retained_daemon is None)
             elif kind == "INPUT_REMOVED":
                 steps = [item.body for item in records[:index]
                          if item.record_type == "INPUT_STEP"]
@@ -1493,7 +1566,7 @@ def _legal(records):
                                  for item in records[:index]
                                  if item.record_type == "COMMAND_INTENT_V2")
                          and all(step["action"] == "absent" for step in by_path.values()))
-                _fail(phase == "FIREWALL_ABSENT" or early)
+                _fail(phase == "CONTAINERD_ABSENT" or runtime_staged is None and phase == "FIREWALL_ABSENT" or early)
             elif kind == "ROOTFS_RELEASE_READY":
                 _fail(phase == "INPUT_REMOVED")
                 leased = next(item for item in records if item.record_type == "ROOTFS_LEASED").body
@@ -1735,7 +1808,7 @@ def _make_authority():
                     _fail(ROOTFS_NAME.raw in names)
                 input_required = {"FS_OBSERVED", "COMMAND_INTENT", "COMMAND_PREEXEC",
                                   "COMMAND_OUTCOME", "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
-                                  "DAEMON_RETAINED_V2", *LIFECYCLE[:13]}
+                                  "DAEMON_RETAINED_V2", *LIFECYCLE[:LIFECYCLE.index("INPUT_REMOVED")]}
                 settlements = [index for index, item in enumerate(records)
                                if item.record_type == "FS_SETTLED"]
                 absent_settlement = (phase == "FS_SETTLED" and settlements
@@ -1743,10 +1816,10 @@ def _make_authority():
                                      and records[settlements[-1] - 1].record_type == "FS_ABSENT")
                 if phase == "FS_SETTLED" and not absent_settlement:
                     input_required.add("FS_SETTLED")
-                if phase in input_required and phase not in {"FIREWALL_ABSENT", "FS_INTENT"}:
+                if phase in input_required and phase != "FS_INTENT":
                     _fail(INPUT_NAME.raw in names)
                 if (phase == "FS_ABSENT" or absent_settlement
-                        or phase in set(LIFECYCLE[13:])
+                        or phase in set(LIFECYCLE[LIFECYCLE.index("INPUT_REMOVED"):])
                         | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}):
                     _fail(INPUT_NAME.raw not in names)
                 if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
@@ -1977,11 +2050,11 @@ def _make_authority():
         def __getattribute__(self, name):
             direct = {"record_command_intent", "record_runtime_prepared", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
             if name in direct: return object.__getattribute__(self, name)
-            _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
+            _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "record_runtime_role_identities", "record_runtime_role_absence", "record_runtime_share_identity", "record_runtime_network_released", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
         def record_runtime_prepared(self, grant): return cleanup_owners[self].record_runtime_prepared(grant)
         def settle_runtime_phase(self, kind, proof, ownership=None):
-            _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
+            _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "CONTAINERD_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
         def settle_network_cleanup(self, target): return cleanup_owners[self].settle_network_cleanup(target)
         def prepare_rootfs_release(self): return prepare_cleanup_rootfs(self)
         def settle_rootfs_absent(self, proof):
@@ -2046,7 +2119,9 @@ def _make_authority():
         validate = getattr(io, "validate_layout", None)
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
-        cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4", "RUNTIME_PREPARED_V1",
+        cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
+            "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
+            "RUNTIME_SHARE_IDENTITY_V1", "RUNTIME_NETWORK_RELEASED_V1",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
             kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
@@ -2130,8 +2205,13 @@ def _make_authority():
                       "terminal_sha256": records[-1].line_sha256, "tip": records[-1].record_type}
             for name, kind in (("intents", "COMMAND_INTENT_V2"), ("preexecs", "COMMAND_PREEXEC_V2"), ("outcomes", "COMMAND_OUTCOME_V2"),
                     ("daemon_retained", "DAEMON_RETAINED_V2"), ("daemon_outcomes", "DAEMON_OUTCOME_V2"),
-                    ("runtime_staged", "RUNTIME_STAGED_V3"), ("runtime_prepared", "RUNTIME_PREPARED_V1"), ("outputs", "COMMAND_OUTPUT_V3"),
-                    ("runtime_identities", "RUNTIME_IDENTITY_V4"), ("runtime_stage_intents", "RUNTIME_STAGE_INTENT_V4"),
+                    ("runtime_staged", "RUNTIME_STAGED_V3"), ("runtime_prepared", "RUNTIME_PREPARED_V1"),
+                    ("outputs", "COMMAND_OUTPUT_V3"), ("runtime_identities", "RUNTIME_IDENTITY_V4"),
+                    ("runtime_role_identities", "RUNTIME_ROLE_IDENTITIES_V1"),
+                    ("runtime_role_absence", "RUNTIME_ROLE_ABSENCE_V1"),
+                    ("runtime_share_identities", "RUNTIME_SHARE_IDENTITY_V1"),
+                    ("runtime_network_released", "RUNTIME_NETWORK_RELEASED_V1"),
+                    ("runtime_stage_intents", "RUNTIME_STAGE_INTENT_V4"),
                     ("runtime_resumes", "RUNTIME_RESUME_V4"), ("runtime_ownership", "OWNERSHIP_OBSERVED")):
                 result[name] = tuple(item.body for item in records if item.record_type == kind)
             return result
@@ -2142,7 +2222,7 @@ def _make_authority():
             return result
         def settle_runtime_phase(self, kind, proof_sha256, ownership=None):
             _fail(kind in {"RUNTIME_READY", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT",
-                           "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); _hex(proof_sha256)
+                           "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "CONTAINERD_ABSENT"}); _hex(proof_sha256)
             _io, records, status = reload(self); _fail(status == "exact")
             body = {"operation_token": records[0].body["operation_token"], "proof_sha256": proof_sha256}
             if kind == "OWNERSHIP_OBSERVED": body.update({"task": "exact-owned", "container": "exact-owned",
@@ -2223,6 +2303,22 @@ def _make_authority():
             _io, records, status = reload(self); _fail(status == "exact" and not any(
                 item.record_type == "RUNTIME_IDENTITY_V4" for item in records))
             write_validated(self, "RUNTIME_IDENTITY_V4", body)
+        def record_runtime_role_identities(self, body):
+            _io, records, status = reload(self); _fail(status == "exact" and not any(
+                item.record_type == "RUNTIME_ROLE_IDENTITIES_V1" for item in records))
+            write_validated(self, "RUNTIME_ROLE_IDENTITIES_V1", body)
+        def record_runtime_role_absence(self, body):
+            _io, records, status = reload(self); _fail(status == "exact" and not any(
+                item.record_type == "RUNTIME_ROLE_ABSENCE_V1" for item in records))
+            write_validated(self, "RUNTIME_ROLE_ABSENCE_V1", body)
+        def record_runtime_share_identity(self, body):
+            _io, records, status = reload(self); _fail(status == "exact" and not any(
+                item.record_type == "RUNTIME_SHARE_IDENTITY_V1" for item in records))
+            write_validated(self, "RUNTIME_SHARE_IDENTITY_V1", body)
+        def record_runtime_network_released(self, body):
+            _io, records, status = reload(self); _fail(status == "exact" and not any(
+                item.record_type == "RUNTIME_NETWORK_RELEASED_V1" for item in records))
+            write_validated(self, "RUNTIME_NETWORK_RELEASED_V1", body)
         def record_runtime_staged(self, body):
             _io, records, status = reload(self)
             _fail(status == "exact" and not any(item.record_type == "RUNTIME_STAGED_V3" for item in records))
@@ -2331,7 +2427,7 @@ def _make_authority():
             _io, records, status = reload(self, True)
             _fail(status == "exact" and records and _legal(records) in {
                 "ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED", "RUNTIME_READY",
-                "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN",
+                "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN",
             })
             return records[0].body["operation_token"]
         def record_fs_intent(self, body):
@@ -2392,7 +2488,7 @@ def _make_authority():
         def record_input_removed(self, proof_sha256):
             context = self.command_context()
             _fail(context.lifecycle_phase in {"ROOTFS_LEASED", "FS_SETTLED",
-                                               "FIREWALL_ABSENT"}
+                                               "FIREWALL_ABSENT", "CONTAINERD_ABSENT"}
                   and _hex(proof_sha256))
             write_validated(self, "INPUT_REMOVED", {"operation_token": context.operation_token,
                                                      "proof_sha256": proof_sha256})
