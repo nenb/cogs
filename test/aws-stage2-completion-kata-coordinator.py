@@ -220,6 +220,24 @@ for event, stage in (("ROOTFS_ACQUIRED", "rootfs-acquire"),
         check("OWNER_EVIDENCE" not in fake.events and fake.events.count("CUSTODY_ABORTED") == 1,
               "assignment cut entered evidence or changed custody cardinality")
 
+# Exact rootfs acquisition substages remain bounded and failure-bound.
+class RootfsStageOwners(FakeOwners):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+    def acquire_rootfs(self, _lifecycle):
+        raise coordinator.rootfs_lease.RootfsAcquireError(self.stage)
+for stage in coordinator.rootfs_lease.ROOTFS_ACQUIRE_STAGES:
+    fake = RootfsStageOwners(stage)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._run_fixed_local_qualification()
+        except coordinator.CoordinatorTerminal as error:
+            check(error.stage == "rootfs-" + stage, "rootfs substage mapping differs")
+            check(coordinator._safe_failure_diagnostic(error) ==
+                  f"cogs local qualification failed at rootfs-{stage}\n",
+                  "rootfs substage diagnostic differs")
+        else: raise AssertionError("rootfs substage failure was accepted")
+
 # A malformed successful None owner and grouped terminal causes cannot enter evidence or raw stderr.
 class NoneOperationOwners(FakeOwners):
     evidence_attempts = 0

@@ -27,6 +27,20 @@ class LeaseError(Exception):
     pass
 
 
+ROOTFS_ACQUIRE_STAGES = frozenset({
+    "pins", "build-first", "build-second", "equality", "pin-check",
+    "topology", "lease-mark", "lease-verify",
+})
+
+
+class RootfsAcquireError(LeaseError):
+    def __init__(self, stage):
+        if stage not in ROOTFS_ACQUIRE_STAGES:
+            raise LeaseError()
+        super().__init__("fixed rootfs acquisition failed")
+        self.stage = stage
+
+
 def _fail(condition):
     if not condition:
         raise LeaseError()
@@ -324,22 +338,30 @@ def _reference(owned, active):
 
 def _acquire(approval, outer):
     _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
-    pins = publication._load_pins()
-    _fail(type(pins) is publication.RootfsPins)
-    first_token = secrets.token_hex(32)
-    first = build._build_once(approval, first_token, outer)
-    second_token = secrets.token_hex(32)
-    _fail(second_token != first_token)
-    second, retained = build._build_once_retained(approval, second_token, outer)
+    retained = None
     boundary = False
+    stage = "pins"
     try:
+        pins = publication._load_pins()
+        _fail(type(pins) is publication.RootfsPins)
+        stage = "build-first"
+        first_token = secrets.token_hex(32)
+        first = build._build_once(approval, first_token, outer)
+        stage = "build-second"
+        second_token = secrets.token_hex(32)
+        _fail(second_token != first_token)
+        second, retained = build._build_once_retained(approval, second_token, outer)
+        stage = "equality"
         build._require_equal_builds(first, second)
+        stage = "pin-check"
         build._require_pinned(first, pins)
         build._require_pinned(second, pins)
+        stage = "topology"
         _topology(retained)
         _stable_graph(retained, None, outer, "active")
         boundary = True
         retained.disposition = "uncertain"
+        stage = "lease-mark"
         refreshed = builder._mark_leased(
             retained.owned, pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256,
             pins.ustar_size, pins.entry_count, outer,
@@ -349,13 +371,20 @@ def _acquire(approval, outer):
         reference = _reference(refreshed, refreshed.active)
         retained.disposition = "transferred"
         lease = RetainedRootfsLease(reference, retained)
+        stage = "lease-verify"
         _stable_lease_pass(lease, outer)
         first = second = None
         return lease
     except BaseException as error:
-        if boundary:
-            _close_preserving(retained, error)
-        _abandon_active(retained, error)
+        if retained is None:
+            raise RootfsAcquireError(stage) from error
+        try:
+            if boundary:
+                _close_preserving(retained, error)
+            _abandon_active(retained, error)
+        except BaseException as settled:
+            raise RootfsAcquireError(stage) from settled
+        raise RootfsAcquireError(stage) from error
 
 
 def _abandon(lease, control):

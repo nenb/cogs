@@ -16,6 +16,7 @@ import completion_kata_process as process
 import completion_kata_qualification as qualification
 import completion_kata_runtime as runtime
 import completion_kata_ssh as ssh
+import completion_rootfs_lease as rootfs_lease
 import completion_local_evidence as local_evidence
 import completion_local_receipt as local_receipt
 
@@ -90,7 +91,9 @@ BLOCKED_REASON = (
     "exact static admission/live-custody and private owner-evidence bridges required"
 )
 _FAILURE_STAGES = frozenset({
-    "entry", "rootfs-acquire", "operation-open", "operation-live", "internal-contract",
+    "entry", "rootfs-acquire", "rootfs-pins", "rootfs-build-first", "rootfs-build-second",
+    "rootfs-equality", "rootfs-pin-check", "rootfs-topology", "rootfs-lease-mark",
+    "rootfs-lease-verify", "operation-open", "operation-live", "internal-contract",
 })
 
 
@@ -467,6 +470,8 @@ def _run_fixed_local_qualification():
         lifecycle.session = _owners.authenticate_ssh(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
+        if type(error) is rootfs_lease.RootfsAcquireError:
+            lifecycle.failure_stage = "rootfs-" + error.stage
 
     errors = _cleanup(lifecycle)
     if lifecycle.static_custody is None and lifecycle.primary_failure is not None:
