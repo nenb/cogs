@@ -3,7 +3,7 @@
 set -uo pipefail
 
 H=1eaec52dd4e2f1222548362e92adc780a2169025
-G=15d5a34ec823183517f82fb216003169b9dee9ac
+G=e8775fe2fb07170b1b5c9d17b356aaa8c1b93ce4
 MANIFEST=ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768
 CONTROL=d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d
 ROOT=/var/lib/cogs/stage2-completion-v1/source
