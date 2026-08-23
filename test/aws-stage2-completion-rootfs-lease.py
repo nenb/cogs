@@ -706,18 +706,22 @@ def acquisition_boundary_tests():
         def build_one(*_args):
             events.append(("build-one",))
             if fault == "build-first": inject(fault)
-            if fault == "build-first-setup":
-                error = build.BuildAttemptError("not-started")
-                primaries[fault] = error
-                raise error
-            if fault == "build-first-post":
-                error = build.BuildAttemptError("success")
+            if type(fault) is str and fault.startswith("build-first-outcome-"):
+                outcome = fault.removeprefix("build-first-outcome-")
+                stage = "files" if outcome == "failed-files" else "internal"
+                outcome = "failed" if outcome == "failed-files" else outcome
+                error = build.BuildAttemptError(outcome, stage)
                 primaries[fault] = error
                 raise error
             return candidate
         def build_two(*_args):
             events.append(("build-two",))
             if fault == "build-second": inject(fault)
+            if type(fault) is str and fault.startswith("build-second-outcome-"):
+                outcome = fault.removeprefix("build-second-outcome-")
+                error = build.BuildAttemptError(outcome)
+                primaries[fault] = error
+                raise error
             return candidate, retained
         def pinned(*_args):
             events.append(("pin", retained.disposition))
@@ -746,7 +750,12 @@ def acquisition_boundary_tests():
                 except lease.RootfsAcquireError as error:
                     expected = {
                         "pins": "pins", "build-first": "build-first", "build-second": "build-second",
-                        "build-first-setup": "build-first-setup", "build-first-post": "build-first-post",
+                        **{
+                            f"build-{ordinal}-outcome-{outcome}": f"build-{ordinal}-{detail}"
+                            for ordinal in ("first", "second")
+                            for outcome, detail in lease.ROOTFS_BUILD_OUTCOMES.items()
+                        },
+                        "build-first-outcome-failed-files": "build-first-files",
                         "equal": "equality", "pin-check": "pin-check", "active-stable": "topology",
                         "mark-prevalidation": "lease-mark", "mark-append": "lease-mark",
                         "mark-readback": "lease-mark", "post-mark-topology": "lease-mark",
@@ -765,7 +774,11 @@ def acquisition_boundary_tests():
                 else: raise AssertionError("rootfs acquisition fault was accepted")
         return events, retained
 
-    for fault in ("pins", "build-first", "build-first-setup", "build-first-post", "build-second"):
+    outcome_faults = tuple(
+        f"build-{ordinal}-outcome-{outcome}"
+        for ordinal in ("first", "second") for outcome in lease.ROOTFS_BUILD_OUTCOMES)
+    for fault in ("pins", "build-first", "build-second", *outcome_faults,
+                  "build-first-outcome-failed-files"):
         events, retained = run(fault)
         matrix_case()
         assert not any(event[0] in {"abandon", "preserve"} for event in events)
