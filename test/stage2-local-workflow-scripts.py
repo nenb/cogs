@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
@@ -209,6 +210,11 @@ def settlement_tests():
              settlement.LocalSettlementError)
     rejected(lambda: settlement.cleanup({**environment, "RECOVERY_OUTCOME": "failure"}),
              settlement.LocalSettlementError)
+    identity = type("Identity", (), {"st_mode": stat.S_IFREG | 0o400,
+                                      "st_uid": 0, "st_gid": 0, "st_nlink": 1})()
+    assert settlement._valid_cleanup_root(settlement.MARKER_ROOTS[0], identity)
+    identity.st_mode = stat.S_IFDIR | 0o700
+    assert not settlement._valid_cleanup_root(settlement.MARKER_ROOTS[0], identity)
 
     payload = ("\n".join((*environment.values(), "success")) + "\n").encode()
     reads, executed = [payload, b""], []

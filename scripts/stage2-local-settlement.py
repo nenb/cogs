@@ -15,14 +15,17 @@ spec = importlib.util.spec_from_file_location("stage2_native_settlement_for_loca
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
 
+MARKER_ROOTS = (
+    "/run/cogs-stage2-mixed-hg-owner-v1",
+    "/run/cogs-stage2-mixed-hg-source-v1",
+)
 FIXED_ROOTS = (
     "/var/lib/cogs",
     "/opt/kata",
     "/run/cogs-stage2-local-private-v2",
     "/run/cogs-stage2-native-preflight-source-v1",
     "/run/cogs-stage2-native-private-v1",
-    "/run/cogs-stage2-mixed-hg-owner-v1",
-    "/run/cogs-stage2-mixed-hg-source-v1",
+    *MARKER_ROOTS,
 )
 PROCESS_MARKERS = (
     b"completion_local_full.py", b"completion_kata_coordinator.py",
@@ -269,6 +272,13 @@ def residue(environ=os.environ, final=False):
         _require(not any(os.path.lexists(path) for path in staging), "output staging remains")
 
 
+def _valid_cleanup_root(path, observed):
+    if path in MARKER_ROOTS:
+        return (stat.S_ISREG(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o400
+                and observed.st_uid == observed.st_gid == 0 and observed.st_nlink == 1)
+    return stat.S_ISDIR(observed.st_mode) and not stat.S_ISLNK(observed.st_mode)
+
+
 def cleanup(environ=os.environ):
     _run_paths(environ)
     _require(environ.get("RECOVERY_OUTCOME") == "success", "recovery success is required before deletion")
@@ -280,8 +290,7 @@ def cleanup(environ=os.environ):
             observed = os.lstat(path)
         except FileNotFoundError:
             continue
-        _require(stat.S_ISDIR(observed.st_mode) and not stat.S_ISLNK(observed.st_mode),
-                 "fixed cleanup root type differs")
+        _require(_valid_cleanup_root(path, observed), "fixed cleanup root type differs")
     command = ("/bin/rm", "-rf", "--one-file-system", "--", *FIXED_ROOTS)
     result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, check=False, timeout=120)
