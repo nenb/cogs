@@ -402,8 +402,7 @@ STAGED_CONTAINERD = kata_operation.BASE + "/kata-runtime-v1/bin/containerd"
 STAGED_CTR = kata_operation.BASE + "/kata-runtime-v1/bin/ctr"
 LONG_LIVED_CONTAINERD = LongLivedCommand(
     CommandId.CONTAINERD_START, "containerd", "/usr/bin/containerd",
-    ("/usr/bin/containerd", "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
-     "--state", CONTAINERD_STATE, "--config", CONTAINERD_CONFIG),
+    ("/usr/bin/containerd", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", "--root", kata_operation.BASE + "/kata-runtime-v1/containerd-root", "--state", kata_operation.BASE + "/kata-runtime-v1/containerd-state", "--config", CONTAINERD_CONFIG),
 )
 
 
@@ -424,7 +423,7 @@ def _compose_fixed_commands():
             10_000_000_000, output_grammar="json" if "json" in source.tool_contract else "text",
         )
     for source in kata_runtime.fixed_command_specs_for_tests():
-        argv = ("/usr/bin/ctr", "--address", CONTAINERD_SOCKET, *source.argv[1:])
+        argv = ("/usr/bin/ctr", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", *source.argv[1:])
         rows[source.command_id] = FixedCommand(
             source.command_id, "ctr", "/usr/bin/ctr", argv, source.stdin,
             int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000),
