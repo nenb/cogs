@@ -96,7 +96,7 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 5)
+                  and len(runs) == 6)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
@@ -108,6 +108,8 @@ jobs:
                   " G=06a1d5124c68a34f80b932ed02173afa1bad365c")
               fourth_predecessor_title = ("Stage 2 local Kata qualification H=1eaec52dd4e2f1222548362e92adc780a2169025"
                   " G=83ed917ea7df3df7d7af66f7a810b26b4e27667a")
+              fifth_predecessor_title = ("Stage 2 local Kata qualification H=1eaec52dd4e2f1222548362e92adc780a2169025"
+                  " G=e733f8c0d02225bcbff30d5484e1276421ce22b6")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -125,12 +127,16 @@ jobs:
                   elif item["id"] == 32602439014:
                       need(row[2:] == ("completed", "failure", "83ed917ea7df3df7d7af66f7a810b26b4e27667a",
                                       fourth_predecessor_title))
+                  elif item["id"] == 32613383776:
+                      need(row[2:] == ("completed", "failure", "e733f8c0d02225bcbff30d5484e1276421ce22b6",
+                                      fifth_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
                   else: raise SystemExit(2)
               rows = tuple(sorted(rows)); need(len(rows) == len(set(rows)))
-              need({row[0] for row in rows} == {32584575939, 32586393441, 32596053811, 32602439014, int(run_id)})
+              need({row[0] for row in rows} == {
+                  32584575939, 32586393441, 32596053811, 32602439014, 32613383776, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows
@@ -260,7 +266,6 @@ jobs:
           test ! -e "$REPORT_STAGING"
           /bin/mkdir -m 0700 -- "$REPORT_STAGING"
           umask 077
-          cd /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 3470s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \

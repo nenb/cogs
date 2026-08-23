@@ -98,7 +98,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "6c41bf6306e7255298d2dab889404754a27f2763d0d3d8e4160ec95f9a75a978"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "2a5bcd6e6515329893f4385d300446d4e6f0c396620ff5a3611ef4ce03aa456d"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -155,7 +155,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32586393441/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32596053811/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32602439014/u);
-  assert.match(workflow.slice(admission, control), /len\(runs\) == 5/u);
+  assert.match(workflow.slice(admission, control), /item\["id"\] == 32613383776/u);
+  assert.match(workflow.slice(admission, control), /len\(runs\) == 6/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
   assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
   assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
@@ -182,6 +183,7 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
     /\/dev\/kvm|qmp|systemctl|containerd-start|ctr (?:run|task)|completion_local_full\.py/u,
   );
   assert.equal(workflow.match(/completion_local_full\.py/gu)?.length, 1);
+  assert.doesNotMatch(workflow, /^\s*cd \/var\/lib\/cogs/mu);
 });
 
 test("fixed phase bounds preserve recovery, independent residue, and publication reserve", () => {
