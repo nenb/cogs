@@ -50,6 +50,7 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
 RETAINED_FILES = (
+    "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
     "schemas/aws-stage2-completion-private-evidence-v1.json",
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
@@ -172,7 +173,7 @@ def measure():
     current = deploy + retained + workflows
     deploy_gross = _gross_slice((DEPLOY_ROOT,), lambda name: (
         (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
-        or name in control_data_names))
+        or name in control_data_names or name in retained_names))
     retained_gross = _gross_slice(RETAINED_FILES, lambda name: name in retained_names)
     workflow_gross = _gross_slice((WORKFLOW_ROOT,), lambda name: (
         name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)))
