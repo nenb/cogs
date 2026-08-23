@@ -92,13 +92,13 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
   assert.match(workflow, /STAGE2_LOCAL_CONTROL_HEAD/u);
   assert.match(workflow, /STAGE2_LOCAL_AUTHORIZED_ACTOR/u);
   assert.match(guard, /REPOSITORY = "nenb\/cogs"/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "1eaec52dd4e2f1222548362e92adc780a2169025"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "4bced3fb4b768f5dc67f919ae8d579059739b126"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "1eb24a226bb209fe4d6a9522841eb45881d1331452a905b57edf91e9f58c16a8"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "2a5bcd6e6515329893f4385d300446d4e6f0c396620ff5a3611ef4ce03aa456d"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "56faec4da50f46570394c2d19b5fb50a6227652e10df7fcb3c4994433a24abb8"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "8b1e97b52353c9e2a181cbad7adb92c22ef13912e5f981e04a06ca0c4772099c"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -156,7 +156,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32596053811/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32602439014/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32613383776/u);
-  assert.match(workflow.slice(admission, control), /len\(runs\) == 6/u);
+  assert.match(workflow.slice(admission, control), /item\["id"\] == 32614828572/u);
+  assert.match(workflow.slice(admission, control), /len\(runs\) == 7/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
   assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
   assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
