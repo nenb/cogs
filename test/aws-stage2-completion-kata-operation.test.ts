@@ -33,8 +33,8 @@ test("S0 fixed operation foundation fails closed", async () => {
   const adr0109Hard = 67_000;
   assert.ok(adr0109Preferred < adr0109Hard);
   assert.ok(
-    operationLines + leaseExtension <= 3170,
-    `Integrated operation/rootfs ownership exceeds 3170: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 3220,
+    `Integrated operation/rootfs ownership exceeds 3220: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,

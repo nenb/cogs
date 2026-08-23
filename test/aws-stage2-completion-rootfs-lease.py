@@ -689,14 +689,28 @@ def acquisition_boundary_tests():
             if fault == "equal":
                 raise RuntimeError(fault)
 
+        def load_pins():
+            if fault == "pins": raise RuntimeError(fault)
+            return pins
+        def build_one(*_args):
+            events.append(("build-one",))
+            if fault == "build-first": raise RuntimeError(fault)
+            return candidate
+        def build_two(*_args):
+            events.append(("build-two",))
+            if fault == "build-second": raise RuntimeError(fault)
+            return candidate, retained
+        def pinned(*_args):
+            events.append(("pin", retained.disposition))
+            if fault == "pin-check": raise RuntimeError(fault)
         token_values = iter(("6" * 64, "7" * 64))
         with patched(
-            (publication, "_load_pins", lambda: pins),
+            (publication, "_load_pins", load_pins),
             (lease.secrets, "token_hex", lambda _size: next(token_values)),
-            (build, "_build_once", lambda *_args: (events.append(("build-one",)) or candidate)),
-            (build, "_build_once_retained", lambda *_args: (events.append(("build-two",)) or (candidate, retained))),
+            (build, "_build_once", build_one),
+            (build, "_build_once_retained", build_two),
             (build, "_require_equal_builds", equal),
-            (build, "_require_pinned", lambda *_args: events.append(("pin", retained.disposition))),
+            (build, "_require_pinned", pinned),
             (lease, "_topology", topology),
             (lease, "_stable_graph", stable),
             (builder, "_mark_leased", mark),
@@ -709,10 +723,24 @@ def acquisition_boundary_tests():
                 result = lease._acquire(approval, control)
                 assert result.reference is reference and result.retained is retained
             else:
-                rejected(lambda: lease._acquire(approval, control))
+                try: lease._acquire(approval, control)
+                except lease.RootfsAcquireError as error:
+                    expected = {
+                        "pins": "pins", "build-first": "build-first", "build-second": "build-second",
+                        "equal": "equality", "pin-check": "pin-check", "active-stable": "topology",
+                        "mark-prevalidation": "lease-mark", "mark-append": "lease-mark",
+                        "mark-readback": "lease-mark", "post-mark-topology": "lease-mark",
+                        "post-mark-pass": "lease-verify",
+                    }
+                    assert error.stage == expected[fault] and error.__cause__ is not None
+                else: raise AssertionError("rootfs acquisition fault was accepted")
         return events, retained
 
-    for fault in ("equal", "active-stable"):
+    for fault in ("pins", "build-first", "build-second"):
+        events, retained = run(fault)
+        matrix_case()
+        assert not any(event[0] in {"abandon", "preserve"} for event in events)
+    for fault in ("equal", "pin-check", "active-stable"):
         events, retained = run(fault)
         matrix_case()
         assert sum(event[0] == "abandon" and event[1] == "owned" for event in events) == 1, (fault, events)
