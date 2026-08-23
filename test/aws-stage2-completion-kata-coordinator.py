@@ -222,12 +222,40 @@ for event, stage in (("ROOTFS_ACQUIRED", "rootfs-acquire"),
 
 # A malformed successful None owner and grouped terminal causes cannot enter evidence or raw stderr.
 class NoneOperationOwners(FakeOwners):
+    evidence_attempts = 0
     def open_operation(self, _lifecycle):
         self.events.append("OPERATION_ADMITTED")
         return None
+    def owner_evidence(self, lifecycle):
+        self.evidence_attempts += 1
+        return super().owner_evidence(lifecycle)
 fake = NoneOperationOwners()
 check(not invoke(coordinator._run_fixed_local_qualification, fake), "None operation was accepted")
-check("OWNER_EVIDENCE" not in fake.events, "None operation entered evidence")
+check(fake.evidence_attempts == 0, "None operation entered evidence")
+
+class PreOperationSecondaryOwners(FakeOwners):
+    def __init__(self, abort_failure=False):
+        super().__init__()
+        self.abort_failure = abort_failure
+    def open_operation(self, _lifecycle):
+        self.events.append("OPERATION_ADMITTED")
+        raise Cut("primary")
+    def abandon_prepared_rootfs(self, _lifecycle):
+        self.events.append("ABANDON_PREPARED_ROOTFS")
+        raise Cut("abandon")
+    def abort_custody(self, lifecycle):
+        self.events.append("CUSTODY_ABORTED")
+        if self.abort_failure: raise Cut("abort")
+for abort_failure, count in ((False, 2), (True, 3)):
+    fake = PreOperationSecondaryOwners(abort_failure)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._run_fixed_local_qualification()
+        except coordinator.CoordinatorTerminal as error:
+            check(error.stage == "operation-open" and len(error.errors) == count,
+                  "grouped pre-operation terminal lost stage or ordered causes")
+            check(error.errors[0] is error.__cause__, "grouped primary was not terminal cause")
+        else: raise AssertionError("grouped pre-operation failure was accepted")
+
 for error, expected in (
         (coordinator.CoordinatorBlocked(), ""),
         (coordinator.CoordinatorTerminal("operation-open", (Cut("primary"), Cut("abort"))),

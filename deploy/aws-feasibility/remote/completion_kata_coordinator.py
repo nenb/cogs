@@ -473,17 +473,17 @@ def _run_fixed_local_qualification():
         if isinstance(lifecycle.primary_failure, CoordinatorBlocked):
             raise lifecycle.primary_failure
         raise CoordinatorBlocked(BLOCKED_REASON) from lifecycle.primary_failure
+    if lifecycle.operation is None:
+        errors.insert(0, lifecycle.primary_failure or CoordinatorBlocked(
+            "exact operation owner was not established"))
+        _abort_custody(lifecycle, errors)
+        terminal = CoordinatorTerminal(lifecycle.failure_stage, errors)
+        raise terminal from errors[0]
     if errors:
         if lifecycle.primary_failure is not None:
             errors.insert(0, lifecycle.primary_failure)
         _abort_custody(lifecycle, errors)
         _raise_failures("fixed lifecycle cleanup was not exact", errors)
-    if lifecycle.operation is None:
-        errors = [lifecycle.primary_failure or CoordinatorBlocked(
-            "exact operation owner was not established")]
-        _abort_custody(lifecycle, errors)
-        terminal = CoordinatorTerminal(lifecycle.failure_stage, errors)
-        raise terminal from errors[0]
 
     try:
         return _finish(lifecycle)
