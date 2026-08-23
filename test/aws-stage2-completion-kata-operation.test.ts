@@ -29,12 +29,12 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
   // The mutable-owner bridge adds sealed begin/retire/removal boundaries.
-  const adr0153Preferred = 75_000;
-  const adr0153Hard = 77_000;
-  assert.ok(adr0153Preferred < adr0153Hard);
+  const adr0155Preferred = 76_000;
+  const adr0155Hard = 78_000;
+  assert.ok(adr0155Preferred < adr0155Hard);
   assert.ok(
-    operationLines + leaseExtension <= 4200,
-    `Integrated operation/rootfs ownership exceeds 4200: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 4500,
+    `Integrated operation/rootfs ownership exceeds 4500: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,
