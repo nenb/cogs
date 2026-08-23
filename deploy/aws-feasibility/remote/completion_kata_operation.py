@@ -1557,7 +1557,9 @@ def _legal(records):
                   or network_state["sensor_proof"] is not None)
             outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
                         and item.body["command_id"] == "SSH_READY"]
-            _fail(len(outcomes) == 1 and records[index - 1] is outcomes[0])
+            # The full route journals its after-sensor and causal proof between
+            # exact SSH process settlement and this parsed workload result.
+            _fail(len(outcomes) == 1)
             outcome = outcomes[0].body
             _fail(outcome["outcome"] == "exited" and outcome["status"] == 0
                   and outcome["errno"] is None and not outcome["uncertain"]
@@ -2557,6 +2559,7 @@ def _make_authority():
             _io, records, status = reload(self); _fail(status == "exact")
             return records[-1].record_type in {
                 "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3",
+                "SSH_MARKER_OBSERVED_V1",
             } or (
                 records[-1].record_type == "COMMAND_OUTCOME_V2" and records[-1].body["uncertain"])
         def runtime_recovery_history(self):
@@ -2591,10 +2594,14 @@ def _make_authority():
         def recovery_command(self):
             _io, records, status = reload(self); _fail(status == "exact")
             terminal = None
-            if records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3"}:
-                output = records[-1].record_type == "COMMAND_OUTPUT_V3"
-                preexec = records[-2] if output else records[-1] if records[-1].record_type == "COMMAND_PREEXEC_V2" else None
-                intent = records[-3] if output else records[-2] if preexec is not None else records[-1]
+            if records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
+                                           "COMMAND_OUTPUT_V3", "SSH_MARKER_OBSERVED_V1"}:
+                serial = records[-1].body["command_serial"]
+                intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
+                              and item.body["command_serial"] == serial)
+                matches = [item for item in records if item.record_type == "COMMAND_PREEXEC_V2"
+                           and item.body["command_serial"] == serial]
+                preexec = matches[0] if matches else None
             else:
                 terminal = records[-1]
                 _fail(terminal.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"}
