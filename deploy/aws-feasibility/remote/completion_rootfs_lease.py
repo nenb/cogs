@@ -21,12 +21,8 @@ import completion_rootfs_plan as plan
 import completion_rootfs_publish as publication
 
 FIXED_PREFIX = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/rootfs-v1/"
-
-
 class LeaseError(Exception):
     pass
-
-
 ROOTFS_BUILD_OUTCOMES = {
     "cancelled": "cancel", "deadline": "deadline", "failed": "work",
     "not-started": "setup", "success": "post",
@@ -34,22 +30,19 @@ ROOTFS_BUILD_OUTCOMES = {
 ROOTFS_BUILD_DETAILS = (materializer.MATERIALIZE_STAGES - {"internal"}) | set(
     ROOTFS_BUILD_OUTCOMES.values())
 ROOTFS_ACQUIRE_STAGES = frozenset({
-    "pins", "build-first", "build-second", "equality", "pin-check", "topology",
+    "bootstrap", "pins", "build-first", "build-second", "equality", "pin-check", "topology",
     "lease-mark", "lease-verify", *(
         f"{build_stage}-{detail}"
         for build_stage in ("build-first", "build-second")
         for detail in ROOTFS_BUILD_DETAILS
     ),
 })
-
-
 class RootfsAcquireError(LeaseError):
     def __init__(self, stage):
         if stage not in ROOTFS_ACQUIRE_STAGES:
             raise LeaseError()
         super().__init__("fixed rootfs acquisition failed")
         self.stage = stage
-
 
 def _fail(condition):
     if not condition:
@@ -113,7 +106,9 @@ def _topology(retained, reference=None):
     locked_chain = owned.locked.chain
     _fail(type(locked_chain) is fs.HeldChain and locked_chain.anchor is base.anchor)
     _fail(len(locked_chain.components) == len(base.components) + 1)
-    _fail(all(locked_chain.components[index] is component for index, component in enumerate(base.components)))
+    _fail(all(locked_chain.components[index].name == component.name
+              and locked_chain.components[index].node is component.node
+              for index, component in enumerate(base.components)))
     _fail(locked_chain.components[-1].name == builder.STATE_NAME and locked_chain.components[-1].node is owned.locked.state)
     active = owned.active
     _fail(active.node is active.writer.node)
@@ -135,6 +130,22 @@ def _topology(retained, reference=None):
 
 def _merge(error, addition):
     return addition if error is None else fs.RootfsFsError(error, addition)
+
+
+def _bootstrap_state(approval, control):
+    chain = builder._open_base_chain(control)
+    try:
+        state = builder._bootstrap(chain, approval, control)
+        try:
+            fs._close_node(state)
+        except BaseException as error:
+            fs._close_chain(chain, error)
+        fs._close_chain(chain)
+    except BaseException as error:
+        if chain.anchor.identity_fd.disposition == "open":
+            fs._close_chain(chain, error)
+        raise
+
 
 def _close_preserving(retained, primary=None):
     error = primary
@@ -350,8 +361,10 @@ def _acquire(approval, outer):
     _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
     retained = None
     boundary = False
-    stage = "pins"
+    stage = "bootstrap"
     try:
+        _bootstrap_state(approval, outer)
+        stage = "pins"
         pins = publication._load_pins()
         _fail(type(pins) is publication.RootfsPins)
         stage = "build-first"
@@ -418,10 +431,42 @@ def _abandon(lease, control):
         raise
 
 
+def _admit_operation_parent_transition(held, control):
+    """Refresh only the exact completion-parent change made by operation open."""
+    retained, index = held.retained, builder.COMPLETION_INDEX
+    owned, base = retained.owned, retained.base_chain
+    locked = owned.locked
+    _fail(locked.chain.anchor is base.anchor
+          and locked.chain.components[index].node is base.components[index].node)
+    before = base.components[index].node.generation
+    snapshot = fs._enumerate_stable(base.components[index].node, control)
+    expected = tuple(sorted(name.raw for name in (
+        kata_operation.ARTIFACTS_NAME, kata_operation.ROOTFS_NAME,
+        kata_operation.IMMUTABLE_PREPARATION_NAME, kata_operation.RUNTIME_NAME,
+        kata_operation.STATE_NAME,
+    )))
+    after = snapshot.generation
+    _fail(snapshot.raw_names == expected and after.key == before.key
+          and (after.mode, after.uid, after.gid) == (before.mode, before.uid, before.gid)
+          and after.nlink == before.nlink + 1
+          and after.mtime_ns >= before.mtime_ns and after.ctime_ns >= before.ctime_ns)
+    locked_chain = builder._chain_after_parent(locked.chain, before, after)
+    base = fs.HeldChain(base.anchor, locked_chain.components[:len(base.components)])
+    state = locked_chain.components[-1].node
+    _fail(state is locked.state)
+    refreshed_locked = builder.LockedState(locked_chain, state, locked.lock)
+    retained.base_chain = base
+    retained.owned = builder.OwnedOperation(
+        refreshed_locked, owned.active, owned.operation, owned.root, owned.operation_name)
+    fs._revalidate_chain(base, control)
+    fs._revalidate_chain(locked_chain, control)
+
+
 def _begin_kata_operation(authority, held, approval, control):
     """Derive genesis/lease facts here, then seal them in the operation owner."""
     _fail(type(held) is RetainedRootfsLease and held.disposition == "held"
           and type(approval) is fs.SourceApproval and type(control) is fs.OperationControl)
+    _admit_operation_parent_transition(held, control)
     reference = _verify(held, control)
     baseline = hashlib.sha256(kata_operation._canonical({
         "entry_count": reference.entry_count,

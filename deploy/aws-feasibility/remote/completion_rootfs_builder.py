@@ -1127,7 +1127,10 @@ def _append_capabilities():
         )
         reconciled = ledger._reconcile_ledger(_records(active), observations)
         _fail(reconciled.status == "leased" and reconciled.lease_seen and not reconciled.cleanup_allowed)
-        return OwnedOperation(owned.locked, active, owned.operation, owned.root, owned.operation_name)
+        locked = _rebound_locked_state(
+            owned.locked, owned.locked.chain, owned.locked.state.generation,
+            observations.state_parent.generation)
+        return OwnedOperation(locked, active, owned.operation, owned.root, owned.operation_name)
 
     return _append, _append_candidate, _mark_leased
 

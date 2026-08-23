@@ -293,7 +293,8 @@ def successful_behavior_tests():
         )
         writer = ledger.LedgerWriterState(node, ledger_generation.key, settled, ledger_generation)
         active = builder.ActiveLedger(node, history, writer)
-        locked = SimpleNamespace(state=object())
+        locked = SimpleNamespace(state=SimpleNamespace(generation=generation(39)), chain=object())
+        refreshed_locked = object()
         operation = SimpleNamespace(identity_fd=object(), operation_fd=object())
         root = SimpleNamespace(identity_fd=object(), operation_fd=object())
         owned = builder.OwnedOperation(locked, active, operation, root, operation_name)
@@ -331,12 +332,14 @@ def successful_behavior_tests():
             (builder, "_walk_entries", lambda *_args: (((builder.ROOT_NAME.text, root_generation),), ())),
             (builder, "_parent", lambda *_args: state_parent),
             (builder, "_current_ledger", lambda *_args: ledger_generation),
+            (builder, "_rebound_locked_state", lambda *_args: refreshed_locked),
             (fs, "_observe_node", observe),
             (ledger, "_reconcile_ledger", lambda *_args: next(reconciliations)),
             (ledger, "_append_leased_record", append_leased),
         ):
             marked = builder._mark_leased(owned, "5" * 64, 7, "7" * 64, 512, 1, control)
         matrix_case()
+        assert marked.locked is refreshed_locked
         assert builder._terminal_record(marked.active).record_type == "leased" and len(appended) == 1
         assert appended[0] == (
             token, operation_name, state_parent, operation_generation, root_generation,
@@ -568,7 +571,55 @@ def stable_terminal_replacement_test():
     assert terminal == {"reconciled": True, "revalidated": True, "closed": True}
 
 
+def operation_parent_transition_tests():
+    control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+    retained, reference, _parent = graph_fixture()
+    held = lease.RetainedRootfsLease(reference, retained)
+    old_prefix = retained.base_chain.components[0].node
+    nodes = tuple(held_node(200 + index, f"prefix-{index}") for index in range(9))
+    base = fs.HeldChain(retained.base_chain.anchor, tuple(
+        fs.ChainComponent(fs._name(f"p{index}"), node) for index, node in enumerate(nodes)))
+    owned = retained.owned
+    locked_chain = fs.HeldChain(base.anchor, base.components + (
+        fs.ChainComponent(builder.STATE_NAME, owned.locked.state),))
+    retained.base_chain = base
+    retained.owned = builder.OwnedOperation(
+        builder.LockedState(locked_chain, owned.locked.state, owned.locked.lock),
+        owned.active, owned.operation, owned.root, owned.operation_name)
+    fs._close_node(old_prefix)
+    before = nodes[builder.COMPLETION_INDEX].generation
+    expected_names = tuple(sorted(name.raw for name in (
+        lease.kata_operation.ARTIFACTS_NAME, lease.kata_operation.ROOTFS_NAME,
+        lease.kata_operation.IMMUTABLE_PREPARATION_NAME,
+        lease.kata_operation.RUNTIME_NAME, lease.kata_operation.STATE_NAME)))
+    def snapshot(nlink):
+        return SimpleNamespace(raw_names=expected_names, generation=fs.HostGeneration(
+            before.key, before.mode, before.uid, before.gid, nlink,
+            before.size, before.mtime_ns, before.ctime_ns + 1))
+    with patched((fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink))):
+        rejected(lambda: lease._admit_operation_parent_transition(held, control))
+    with patched(
+        (fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink + 1)),
+        (fs, "_revalidate_chain", lambda *_args: None),
+    ):
+        lease._admit_operation_parent_transition(held, control)
+    assert retained.base_chain.components[builder.COMPLETION_INDEX].node.generation.nlink == before.nlink + 1
+    assert retained.owned.locked.chain.components[-1].node is retained.owned.locked.state
+    close_graph_nodes(retained)
+    matrix_case(2)
+
+
 def alias_and_close_tests():
+    retained, reference, _state_parent = graph_fixture()
+    refreshed_base = fs.HeldChain(retained.base_chain.anchor, tuple(
+        fs.ChainComponent(component.name, component.node)
+        for component in retained.base_chain.components))
+    refreshed = build.RetainedBuild(retained.owned, refreshed_base)
+    refreshed.disposition = retained.disposition
+    assert lease._topology(refreshed, reference) is retained.owned
+    close_graph_nodes(refreshed)
+    matrix_case()
+
     retained, reference, _state_parent = graph_fixture()
     owned = retained.owned
     duplicate_node = held_node(140, "duplicate-ledger", "file", 0o600, 1, owned.active.writer.settled.offset)
@@ -700,6 +751,9 @@ def acquisition_boundary_tests():
             events.append(("equal", retained.disposition))
             if fault in {"equal", "abandon-secondary", "abandon-return"}: inject(fault)
 
+        def bootstrap(*_args):
+            events.append(("bootstrap",))
+            if fault == "bootstrap": inject(fault)
         def load_pins():
             if fault == "pins": inject(fault)
             return pins
@@ -728,6 +782,7 @@ def acquisition_boundary_tests():
             if fault == "pin-check": inject(fault)
         token_values = iter(("6" * 64, "7" * 64))
         with patched(
+            (lease, "_bootstrap_state", bootstrap),
             (publication, "_load_pins", load_pins),
             (lease.secrets, "token_hex", lambda _size: next(token_values)),
             (build, "_build_once", build_one),
@@ -749,7 +804,8 @@ def acquisition_boundary_tests():
                 try: lease._acquire(approval, control)
                 except lease.RootfsAcquireError as error:
                     expected = {
-                        "pins": "pins", "build-first": "build-first", "build-second": "build-second",
+                        "bootstrap": "bootstrap", "pins": "pins",
+                        "build-first": "build-first", "build-second": "build-second",
                         **{
                             f"build-{ordinal}-outcome-{outcome}": f"build-{ordinal}-{detail}"
                             for ordinal in ("first", "second")
@@ -777,7 +833,7 @@ def acquisition_boundary_tests():
     outcome_faults = tuple(
         f"build-{ordinal}-outcome-{outcome}"
         for ordinal in ("first", "second") for outcome in lease.ROOTFS_BUILD_OUTCOMES)
-    for fault in ("pins", "build-first", "build-second", *outcome_faults,
+    for fault in ("bootstrap", "pins", "build-first", "build-second", *outcome_faults,
                   "build-first-outcome-failed-files"):
         events, retained = run(fault)
         matrix_case()
@@ -1842,11 +1898,6 @@ def docker_real_lease_test():
 
     approval = fs_module.SourceApproval(revision, source_digest)
     control = fs_module.OperationControl(time.monotonic_ns() + 3600 * 1_000_000_000, lambda: False)
-    chain = builder_module._open_base_chain(control)
-    state = builder_module._bootstrap(chain, approval, control)
-    fs_module._close_node(state)
-    fs_module._close_chain(chain)
-
     held = lease_module._acquire(approval, control)
     reference = held.reference
     pins = publication_module._load_pins()
@@ -2060,6 +2111,7 @@ def main(argv):
         probe_outcome_tests()
         stable_graph_success_test()
         stable_terminal_replacement_test()
+        operation_parent_transition_tests()
         alias_and_close_tests()
         acquisition_boundary_tests()
         verify_order_and_drift_tests()

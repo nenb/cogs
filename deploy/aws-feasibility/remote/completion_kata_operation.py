@@ -27,12 +27,14 @@ LOCK_NAME = fs._name(".cogs-stage2-kata-operation-lock-v1")
 JOURNAL_NAME = fs._name("operation-v1.jsonl")
 ARTIFACTS_NAME = fs._name("artifacts")
 ROOTFS_NAME = fs._name("rootfs-v1")
+IMMUTABLE_PREPARATION_NAME = fs._name("immutable-preparation-v1")
 INPUT_NAME = fs._name("kata-input-v1")
 RUNTIME_NAME = fs._name("kata-runtime-v1")
 RUNTIME_STAGING_NAME = fs._name(".kata-runtime-v1.staging")
 KEY_STAGE_PREFIX = b"kata-key-stage-v1-"
 COMPLETION_NAMES = frozenset({
-    STATE_NAME.raw, ARTIFACTS_NAME.raw, ROOTFS_NAME.raw, INPUT_NAME.raw,
+    STATE_NAME.raw, ARTIFACTS_NAME.raw, ROOTFS_NAME.raw,
+    IMMUTABLE_PREPARATION_NAME.raw, INPUT_NAME.raw,
 })
 RUNTIME_NAMES = frozenset({RUNTIME_NAME.raw, RUNTIME_STAGING_NAME.raw})
 MAX_LINE = 300_000
@@ -63,6 +65,11 @@ RUNTIME_RESIDUE_PHASES = frozenset({
     "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
     "UNCERTAIN", "RUNTIME_CLEANUP_ONLY",
 })
+RUNTIME_ABSENT_PHASES = frozenset({
+    "FIREWALL_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+    "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT", "FINAL_BASELINES",
+    "RETIRE_INTENT", "RETIRED",
+})
 JOURNAL_SETUP_MARGIN_NS = 4_200_000_000_000
 JOURNAL_SETTLEMENT_MARGIN_NS = command_policy.SSH_CLEANUP_RESERVE_NS
 JOURNAL_TOTAL_NS = (JOURNAL_SETUP_MARGIN_NS + command_policy.SSH_TOTAL_NS
@@ -80,12 +87,12 @@ def _validate_runtime_layout(names, records, phase):
     _fail(len(present) <= 1)
     intent = any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records)
     staged = any(item.record_type == "RUNTIME_STAGED_V3" for item in records)
-    allowed = set()
-    if intent and phase in RUNTIME_RESIDUE_PHASES:
-        allowed.add(RUNTIME_NAME.raw)
-        if not staged:
-            allowed.add(RUNTIME_STAGING_NAME.raw)
-    _fail(present <= allowed)
+    _fail(RUNTIME_STAGING_NAME.raw not in present)
+    runtime_present = RUNTIME_NAME.raw in present
+    if phase in RUNTIME_ABSENT_PHASES:
+        _fail(not runtime_present)
+    elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
+        _fail(runtime_present or intent and not staged)
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
     _validate_runtime_layout(names, records, phase)
@@ -1718,7 +1725,7 @@ def _make_authority():
                     _fail(ROOTFS_NAME.raw not in names)
             else:
                 candidates = _stage_candidates(names)
-                _fail(not candidates and not names & RUNTIME_NAMES
+                _fail(not candidates and names & RUNTIME_NAMES == {RUNTIME_NAME.raw}
                       and names <= COMPLETION_NAMES | RUNTIME_NAMES)
             observed_completion = fs._observe_node(
                 self.completion.identity_fd, self.completion.operation_fd, self.control)

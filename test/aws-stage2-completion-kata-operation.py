@@ -244,6 +244,20 @@ def zero_outcome(command, outcome="not_started"):
 # Every line boundary is a legal prefix. Every partial suffix is rejected.
 raw, rootfs_intent, leased = leased_prefix()
 observed_names = ["artifacts", "rootfs-v1"]
+assert operation._stage_candidates({
+    operation.ARTIFACTS_NAME.raw, operation.ROOTFS_NAME.raw,
+    operation.IMMUTABLE_PREPARATION_NAME.raw, operation.RUNTIME_NAME.raw,
+}) == set()
+rejected(lambda: operation._stage_candidates({b"immutable-preparation-v1-unreviewed"}))
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "GENESIS")
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "RUNTIME_ABSENT")
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "SHARE_ABSENT")
+operation._validate_runtime_layout(set(), (), "SHARE_ABSENT")
+operation._validate_runtime_layout(set(), (), "FIREWALL_ABSENT")
+rejected(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, (), "FIREWALL_ABSENT"))
+rejected(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_STAGING_NAME.raw}, (), "NETWORK_READY"))
 fs_intent = {
     "operation_token": "a" * 64,
     "resource_id": "input-root",
