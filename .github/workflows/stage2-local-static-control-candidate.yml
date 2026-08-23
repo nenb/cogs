@@ -39,11 +39,11 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v19"
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v20"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-          REVIEWED_IMPLEMENTATION_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+          REVIEWED_IMPLEMENTATION_HEAD = "6d8bf80c09cf5c6112ca99f30d866892c4347b2a"
           RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
           PREDECESSOR_RUN_ID = 32558263561
           PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
@@ -135,6 +135,11 @@ jobs:
           SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"
           SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
+          SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32633570406
+          SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c16f3168a2b14ed0b88acf5753ef106940af1b73"
+          SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+          SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -178,6 +183,9 @@ jobs:
               SIXTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
                   SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
                   SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
+              SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
+                  SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
+                  SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
