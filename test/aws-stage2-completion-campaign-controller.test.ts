@@ -10,16 +10,7 @@ const root = resolve(process.cwd());
 test("fake-only Slice B exhaustive controller matrix touches no executable sentinel", () => {
   const temporary = mkdtempSync(join(tmpdir(), "cogs-fake-controller-b-"));
   const log = join(temporary, "sentinel.log");
-  for (const name of [
-    "aws",
-    "tofu",
-    "terraform",
-    "opentofu",
-    "curl",
-    "wget",
-    "provider",
-    "plugin",
-  ]) {
+  for (const name of ["aws", "tofu", "terraform", "opentofu", "curl", "wget", "provider", "plugin"]) {
     const path = join(temporary, name);
     writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${name}' >> '${log}'\nexit 97\n`, { mode: 0o700 });
   }
@@ -45,10 +36,7 @@ test("fake-only Slice B exhaustive controller matrix touches no executable senti
 });
 
 test("Slice B source is fake-only and has no executable cloud or public-success surface", () => {
-  const source = readFileSync(
-    resolve(root, "deploy/aws-feasibility/completion_campaign_controller.py"),
-    "utf8",
-  );
+  const source = readFileSync(resolve(root, "deploy/aws-feasibility/completion_campaign_controller.py"), "utf8");
   assert.doesNotMatch(source, /\b(?:subprocess|socket|boto3|requests|paramiko)\b/u);
   assert.doesNotMatch(source, /\b(?:terraform|opentofu|access_key|secret_key)\b/iu);
   assert.doesNotMatch(source, /production_publication_authorized["']?\s*:\s*True/u);
