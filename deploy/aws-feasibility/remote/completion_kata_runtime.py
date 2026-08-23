@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-import copy, fcntl, hashlib, json, os, re, socket, stat, time
+import base64, copy, fcntl, hashlib, json, os, re, socket, stat, time
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_inputs as kata_inputs
@@ -48,6 +48,9 @@ CONTAINERD_CONFIG_SHA256 = hashlib.sha256(CONTAINERD_CONFIG_BYTES).hexdigest()
 MAX_JSON = 1_048_576
 MAX_JSON_DEPTH = 24
 MAX_JSON_ITEMS = 512
+RUNTIME_OPTIONS_TYPE_URL = "runtimeoptions.v1.Options"
+MAX_RUNTIME_OPTIONS_WIRE = 512
+MAX_RUNTIME_OPTIONS_BASE64 = 4 * ((MAX_RUNTIME_OPTIONS_WIRE + 2) // 3)
 MAX_PROC_ROWS = 4096
 MAX_CMDLINE = 16_384
 CTR_NS_FD = 202
@@ -466,6 +469,36 @@ def _durable_ctr_launch_path(history):
     return preexec["namespace_path"] if outcome["outcome"] == "exited" and outcome["status"] == 0 and not outcome["uncertain"] else None
 
 
+def _runtime_config_path(options):
+    """Decode ctr 2.2.1's JSON rendering of the runtimeoptions protobuf Any."""
+    _keys(options, ("type_url", "value"))
+    _fail(options["type_url"] == RUNTIME_OPTIONS_TYPE_URL, "runtime options type URL")
+    encoded = options["value"]
+    _fail(type(encoded) is str and 0 < len(encoded) <= MAX_RUNTIME_OPTIONS_BASE64, "runtime options base64 bound")
+    try:
+        encoded_ascii = encoded.encode("ascii", "strict")
+        wire = base64.b64decode(encoded_ascii, validate=True)
+    except (UnicodeError, ValueError) as error:
+        raise KataRuntimeError("invalid runtime options base64") from error
+    _fail(0 < len(wire) <= MAX_RUNTIME_OPTIONS_WIRE and base64.b64encode(wire) == encoded_ascii,
+          "non-canonical runtime options base64")
+    # runtimeoptions.v1.Options field 2 is config_path. This invocation sets no
+    # other field, so accepting anything else would widen stored ownership.
+    _fail(wire[0] == 0x12, "runtime options config_path field")
+    length = 0; offset = 1
+    for index in range(2):
+        _fail(offset < len(wire), "runtime options length")
+        octet = wire[offset]; offset += 1; length |= (octet & 0x7f) << (7 * index)
+        if octet < 0x80: break
+    else: _fail(False, "runtime options length bound")
+    _fail((index == 0 or length >= 128) and offset + length == len(wire),
+          "runtime options malformed/duplicate field")
+    try: config_path = wire[offset:].decode("utf-8", "strict")
+    except UnicodeError as error: raise KataRuntimeError("runtime options config_path encoding") from error
+    _fail(config_path == RUNTIME_CONFIG, "runtime options config_path")
+    return config_path
+
+
 def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
     """Validate stored info against the historical alias or an exact live owner grant."""
     value = _load_json(raw_or_value) if type(raw_or_value) is bytes else raw_or_value
@@ -478,10 +511,7 @@ def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
     runtime = value["Runtime"]
     _keys(runtime, ("Name", "Options"))
     _fail(runtime["Name"] == RUNTIME)
-    _fail(runtime["Options"] == {
-        "type_url": "io.containerd.kata.v2.options",
-        "config_path": RUNTIME_CONFIG,
-    }, "runtime options/config")
+    _runtime_config_path(runtime["Options"])
     spec = value["Spec"]
     if network_grant is None:
         expected_spec = expected_oci_spec()
@@ -562,7 +592,8 @@ def unqualified_stored_info_fixture_for_tests():
     value = {
         "ID": CONTAINER_ID, "Labels": {}, "Image": "", "Runtime": {
             "Name": RUNTIME, "Options": {
-                "type_url": "io.containerd.kata.v2.options", "config_path": RUNTIME_CONFIG,
+                "type_url": RUNTIME_OPTIONS_TYPE_URL,
+                "value": "EkAvb3B0L2thdGEvc2hhcmUvZGVmYXVsdHMva2F0YS1jb250YWluZXJzL2NvbmZpZ3VyYXRpb24tcWVtdS50b21s",
             },
         },
         "SnapshotKey": "", "Snapshotter": "",

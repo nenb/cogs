@@ -40,6 +40,9 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   );
   assert.match(source, /mounts = \(/u);
   assert.match(source, /def validate_stored_spec\(stored_spec\):/u);
+  assert.match(source, /def _runtime_config_path\(options\):/u);
+  assert.match(source, /base64\.b64decode\(encoded_ascii, validate=True\)/u);
+  assert.match(source, /RUNTIME_OPTIONS_TYPE_URL = "runtimeoptions\.v1\.Options"/u);
   assert.match(source, /def custom_mount_argv\(\):/u);
   assert.match(source, /mounts\[7:\]/u);
   assert.match(source, /hashlib\.sha256\(canonical_mount_json\(\)\)\.hexdigest\(\)/u);

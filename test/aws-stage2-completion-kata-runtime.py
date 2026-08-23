@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Portable hostile tests for the immutable ADR 0043 mount contract."""
 
+import base64
 import copy
 import dataclasses
 import hashlib
@@ -260,10 +261,17 @@ check(runtime.source_invariants_for_tests()["no_force"], "force command exposed"
 fixture = runtime.unqualified_stored_info_fixture_for_tests()
 check(fixture["qualification"] == runtime.QUALIFICATION_CANDIDATE, "fake was not labelled")
 info = fixture["value"]
+options = info["Runtime"]["Options"]
+expected_options_value = (
+    "EkAvb3B0L2thdGEvc2hhcmUvZGVmYXVsdHMva2F0YS1jb250YWluZXJzL2NvbmZpZ3VyYXRpb24tcWVtdS50b21s"
+)
+check(options == {"type_url": "runtimeoptions.v1.Options", "value": expected_options_value},
+      "ctr 2.2.1 outer Any fixture drifted")
 check(runtime.validate_stored_info(copy.deepcopy(info)) == expected_digest, "stored info candidate")
+realistic_info = (json.dumps(info, indent=4) + "\n").encode("utf-8")
+check(runtime.validate_stored_info(realistic_info) == expected_digest, "realistic ctr info JSON")
 for path, replacement in (
     (("Runtime", "Name"), "runc"),
-    (("Runtime", "Options", "config_path"), "/other"),
     (("Spec", "root", "readonly"), False),
     (("Spec", "process", "terminal"), True),
     (("Spec", "process", "cwd"), "/tmp"),
@@ -279,8 +287,44 @@ hostile = copy.deepcopy(info)
 hostile["Spec"]["extra"] = None
 rejected(lambda: runtime.validate_stored_info(hostile))
 hostile_raw = json.dumps(info, separators=(",", ":")).encode()
-hostile_raw = hostile_raw.replace(b'{"ID"', b'{"ID":"duplicate","ID"', 1)
-rejected(lambda: runtime.validate_stored_info(hostile_raw))
+for duplicate in (
+    hostile_raw.replace(b'{"ID"', b'{"ID":"duplicate","ID"', 1),
+    hostile_raw.replace(b'{"type_url"', b'{"type_url":"duplicate","type_url"', 1),
+    hostile_raw.replace(b',"value"', b',"value":"duplicate","value"', 1),
+):
+    rejected(lambda duplicate=duplicate: runtime.validate_stored_info(duplicate))
+
+def runtime_options_wire(wire, type_url=runtime.RUNTIME_OPTIONS_TYPE_URL):
+    return {"type_url": type_url, "value": base64.b64encode(wire).decode("ascii")}
+
+def rejected_options(candidate):
+    hostile = copy.deepcopy(info); hostile["Runtime"]["Options"] = candidate
+    rejected(lambda: runtime.validate_stored_info(hostile))
+
+config = runtime.RUNTIME_CONFIG.encode("utf-8")
+canonical_wire = b"\x12" + bytes((len(config),)) + config
+check(base64.b64decode(options["value"], validate=True) == canonical_wire, "runtime options wire fixture")
+for wrong_type in ("", "type.googleapis.com/runtimeoptions.v1.Options",
+                   "io.containerd.kata.v2.options", "runtimeoptions.v1.Options/other"):
+    rejected_options(runtime_options_wire(canonical_wire, wrong_type))
+for malformed_base64 in ("", "*", options["value"] + "\n", options["value"] + "=", "é",
+                         "A" * (runtime.MAX_RUNTIME_OPTIONS_BASE64 + 4)):
+    rejected_options({"type_url": runtime.RUNTIME_OPTIONS_TYPE_URL, "value": malformed_base64})
+for malformed_wire in (
+    b"", b"\x12", b"\x12\x40" + config[:-1], b"\x12\xc0\x00" + config,
+    b"\x92\x00" + bytes((len(config),)) + config, b"\x0a\x01x", b"\x1a\x00", b"\x22\x00",
+    canonical_wire + canonical_wire, canonical_wire + b"\x22\x00", b"\x12\x01\xff",
+    b"\x12\x06/other", b"\x12\x00", b"\x12\x80\x01" + b"x" * 128,
+    b"\x12\x84\x04" + b"x" * runtime.MAX_RUNTIME_OPTIONS_WIRE,
+):
+    rejected_options(runtime_options_wire(malformed_wire))
+for malformed_options in (
+    {"type_url": runtime.RUNTIME_OPTIONS_TYPE_URL},
+    {"type_url": runtime.RUNTIME_OPTIONS_TYPE_URL, "value": options["value"], "unknown": None},
+    {"type_url": runtime.RUNTIME_OPTIONS_TYPE_URL, "value": 7},
+    {"TypeUrl": runtime.RUNTIME_OPTIONS_TYPE_URL, "Value": options["value"]},
+):
+    rejected_options(malformed_options)
 container_absent = b"CONTAINER    IMAGE    RUNTIME\n"
 container_exact = container_absent + b"cogs-stage2-ssh-v1    -    io.containerd.kata.v2\n"
 check(runtime.classify_container_list(container_absent) is runtime.Observation.ABSENT, "container absence")

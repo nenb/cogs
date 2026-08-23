@@ -391,10 +391,11 @@ with patch.object(network, "_consume_runtime_network", return_value=retained_net
     run_spec = runtime.ctr_run_spec(runtime_permit)
     runtime._preexec_launch_network(runtime_permit, 1234); runtime._release_launch_preexec(runtime_permit)
     stored = {"ID": runtime.CONTAINER_ID, "Labels": {}, "Image": "",
-        "Runtime": {"Name": runtime.RUNTIME, "Options": {"type_url": "io.containerd.kata.v2.options",
-                    "config_path": runtime.RUNTIME_CONFIG}}, "SnapshotKey": "", "Snapshotter": "",
-        "CreatedAt": "2026-01-01T00:00:00Z", "UpdatedAt": "2026-01-01T00:00:00Z",
-        "Extensions": {}, "Spec": runtime._expected_operation_oci_spec("a" * 64, "/proc/1234/fd/202")}
+        "Runtime": {"Name": runtime.RUNTIME, "Options": copy.deepcopy(
+                    runtime.unqualified_stored_info_fixture_for_tests()["value"]["Runtime"]["Options"])},
+        "SnapshotKey": "", "Snapshotter": "", "CreatedAt": "2026-01-01T00:00:00Z",
+        "UpdatedAt": "2026-01-01T00:00:00Z", "Extensions": {},
+        "Spec": runtime._expected_operation_oci_spec("a" * 64, "/proc/1234/fd/202")}
     runtime.validate_stored_info(
         stored, runtime._stored_launch_network_grant(runtime_permit),
         runtime._resolved_launch_network_path(runtime_permit))
