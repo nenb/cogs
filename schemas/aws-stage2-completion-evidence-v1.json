@@ -378,10 +378,10 @@
       "prefixItems": [
         { "$ref": "#/$defs/teardownReadiness" },
         { "$ref": "#/$defs/teardownTaskStopped" },
-        { "$ref": "#/$defs/teardownNetwork" },
         { "$ref": "#/$defs/teardownTask" },
-        { "$ref": "#/$defs/teardownContainer" },
         { "$ref": "#/$defs/teardownRuntime" },
+        { "$ref": "#/$defs/teardownNetwork" },
+        { "$ref": "#/$defs/teardownContainer" },
         { "$ref": "#/$defs/teardownShare" },
         { "$ref": "#/$defs/teardownFirewall" },
         { "$ref": "#/$defs/teardownContainerd" },

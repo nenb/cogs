@@ -21,6 +21,9 @@ from completion_campaign_controller import (
     FakeCampaignPorts,
     InjectedCrash,
     RecoveryDenied,
+    InjectedFailure,
+    _SyntheticFullRemoteReceipt,
+    _SyntheticReadinessRemoteReceipt,
 )
 from completion_campaign_state import HAPPY_PATH, CampaignStateError, reduce_campaign
 
@@ -88,7 +91,8 @@ def happy_matrix():
     require(result.status == "sealed" and result.terminal)
     require(result.uncertainty is Uncertainty.CLEAR)
     require(result.verdict is not None)
-    require(result.verdict["version"] == "cogs.stage2-completion-fake-verdict/v1")
+    require(result.verdict["version"] ==
+            "cogs.stage2-completion-synthetic-custody-verdict/v1")
     require(result.verdict["production_publication_authorized"] is False)
     require(result.verdict["cycle_modes"] == [mode.value for mode in CYCLE_MODES])
     require(len(ports.records) == len(HAPPY_PATH) == 103)
@@ -101,7 +105,7 @@ def happy_matrix():
         "remote": 7,
         "destroy": 7,
         "inventory": 8,
-        "validate": 1,
+        "validate": 0,
     })
     assert_one_shot_effects(ports)
     modes = [mode for action, _, mode in ports.calls if action == "remote"]
@@ -112,6 +116,22 @@ def happy_matrix():
     require(len({row.payload_sha256 for row in [*zero_records, *final_zero]}) == 8)
     expect(ApprovalDenied, CompletionCampaignController(ports).run)
     expect(RecoveryDenied, CompletionCampaignController(ports).recover)
+
+
+def sealed_remote_receipt_matrix():
+    ports = FakeCampaignPorts(FakeApproval.valid("typed-remote"))
+    full = ports.action("remote", 1, CYCLE_MODES[0])
+    readiness = ports.action("remote", 2, CYCLE_MODES[1])
+    require(type(full) is _SyntheticFullRemoteReceipt and full.workload_count == 21)
+    require(type(readiness) is _SyntheticReadinessRemoteReceipt
+            and not hasattr(readiness, "workload_count"))
+    full_commitment = ports.verify_receipt(full, "remote", 1, CYCLE_MODES[0])
+    readiness_commitment = ports.verify_receipt(
+        readiness, "remote", 2, CYCLE_MODES[1])
+    require(full_commitment != readiness_commitment)
+    expect(InjectedFailure, ports.verify_receipt, full, "remote", 1, CYCLE_MODES[0])
+    swapped = ports.action("remote", 1, CYCLE_MODES[0])
+    expect(InjectedFailure, ports.verify_receipt, swapped, "remote", 2, CYCLE_MODES[1])
 
 
 def admission_matrix():
@@ -161,7 +181,7 @@ def action_failure_signal_matrix():
     points = []
     for ordinal in range(1, 8):
         points.extend((kind, ordinal) for kind in ("plan", "apply", "running", "remote", "destroy", "inventory"))
-    points.extend((("inventory", None), ("validate", None)))
+    points.extend((("inventory", None),))
     for fault in ("failure", "uncertain", "INT", "TERM"):
         for kind, ordinal in points:
             suffix = "final" if ordinal is None else f"{ordinal:02d}"
@@ -227,7 +247,7 @@ def crash_recovery_matrix():
     points = []
     for ordinal in range(1, 8):
         points.extend((kind, ordinal) for kind in ("plan", "apply", "running", "remote", "destroy", "inventory"))
-    points.extend((("inventory", None), ("validate", None)))
+    points.extend((("inventory", None),))
     for kind, ordinal in points:
         suffix = "final" if ordinal is None else f"{ordinal:02d}"
         ports = FakeCampaignPorts(
@@ -344,6 +364,7 @@ def static_isolation_matrix():
 
 def main():
     happy_matrix()
+    sealed_remote_receipt_matrix()
     admission_matrix()
     action_failure_signal_matrix()
     event_failure_signal_matrix()

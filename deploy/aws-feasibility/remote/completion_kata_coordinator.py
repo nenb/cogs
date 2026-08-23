@@ -19,6 +19,7 @@ import completion_kata_ssh as ssh
 import completion_rootfs_lease as rootfs_lease
 import completion_local_evidence as local_evidence
 import completion_local_receipt as local_receipt
+import completion_cycle_evidence as cycle_evidence
 
 _produce_owner_evidence = local_receipt._take_owner_evidence_producer()
 _issue_owner_receipt = local_receipt._take_local_receipt_issuer()
@@ -124,6 +125,7 @@ def _safe_failure_diagnostic(error):
 @dataclass
 class _Lifecycle:
     recovery: bool = False
+    cycle_route: object = None
     static_custody: object = None
     static_gate: object = None
     source_approval: object = None
@@ -259,6 +261,12 @@ class _PackagePrivateOwners:
     def claim_executables(self, lifecycle):
         return self.admission.claim_executables(lifecycle)
 
+    def bind_cycle_route(self, lifecycle):
+        if lifecycle.cycle_route is None:
+            return None
+        return cycle_evidence._bind_operation_route(
+            lifecycle.cycle_route, lifecycle.operation)
+
     def create_inputs(self, lifecycle):
         return operation_bridge._create_inputs(self.operation, lifecycle)
 
@@ -288,6 +296,10 @@ class _PackagePrivateOwners:
 
     def authenticate_ssh(self, lifecycle):
         return execution_bridge._authenticate_ssh(self.execution, lifecycle)
+
+    def authenticate_readiness_ssh(self, lifecycle):
+        return execution_bridge._authenticate_readiness_ssh(
+            self.execution, lifecycle)
 
     def open_existing_operation(self, lifecycle):
         return operation_bridge._open_existing_operation(self.operation, lifecycle)
@@ -449,6 +461,11 @@ def _raise_failures(message, errors):
 
 
 def _finish(lifecycle):
+    if lifecycle.cycle_route is not None:
+        if lifecycle.primary_failure is not None:
+            raise CoordinatorBlocked("failed cycle cannot mint a receipt")
+        lifecycle.custody_settled = True
+        return cycle_evidence._issue_cycle_receipt(lifecycle.cycle_route, lifecycle)
     evidence = _owners.owner_evidence(lifecycle)
     # From this call onward the receipt transaction exclusively owns custody
     # close, including every no-mint failure. The coordinator must never retry
@@ -457,9 +474,14 @@ def _finish(lifecycle):
     return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
-def _run_fixed_local_qualification():
-    """Compose exactly one fixed lifecycle, then settle it exactly once."""
-    lifecycle = _Lifecycle()
+def _run_cycle(route=None):
+    """Compose one lifecycle; only closure-issued route capabilities are accepted."""
+    if route is not None:
+        cycle_evidence._describe_route(route)
+        if not cycle_evidence._cycle_launch_authorized(route):
+            raise CoordinatorBlocked(
+                "cycle batch/ordinal authority is not implemented; no effects admitted")
+    lifecycle = _Lifecycle(cycle_route=route)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -469,6 +491,8 @@ def _run_fixed_local_qualification():
         lifecycle.operation = _owners.open_operation(lifecycle)
         if lifecycle.operation is None:
             raise CoordinatorBlocked("exact operation owner was not established")
+        if route is not None:
+            _owners.bind_cycle_route(lifecycle)
         lifecycle.failure_stage = "operation-live"
         lifecycle.live_custody = _owners.claim_live_custody(lifecycle)
         lifecycle.executables = _owners.claim_executables(lifecycle)
@@ -480,8 +504,11 @@ def _run_fixed_local_qualification():
         lifecycle.task = _owners.launch_task(lifecycle)
         lifecycle.runtime_network = _owners.observe_runtime_network(lifecycle)
         lifecycle.runtime_observation = _owners.prove_runtime(lifecycle)
-        lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
-        lifecycle.session = _owners.authenticate_ssh(lifecycle)
+        if route is None or type(route) is cycle_evidence._FullRoute:
+            lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
+            lifecycle.session = _owners.authenticate_ssh(lifecycle)
+        else:
+            lifecycle.session = _owners.authenticate_readiness_ssh(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
         if type(error) is rootfs_lease.RootfsAcquireError:
@@ -510,6 +537,21 @@ def _run_fixed_local_qualification():
         errors = [error]
         _abort_custody(lifecycle, errors)
         _raise_failures("fixed lifecycle owner evidence was not exact", errors)
+
+
+def _run_fixed_local_qualification():
+    """Preserve the existing local V3 owner and receipt semantics."""
+    return _run_cycle()
+
+
+def _run_fixed_full_cycle():
+    """Zero-argument sealed full owner route."""
+    return _run_cycle(cycle_evidence._fixed_full_route())
+
+
+def _run_fixed_readiness_cycle():
+    """Zero-argument sealed marker-only readiness owner route."""
+    return _run_cycle(cycle_evidence._fixed_readiness_route())
 
 
 def _recover_fixed_local_qualification():

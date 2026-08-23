@@ -446,6 +446,18 @@ assert argument.returncode == 2 and argument.stdout == argument.stderr == b""
 shell_argument = subprocess.run([str(REMOTE / "run-stage2-completion-remote.sh"), "unexpected"],
                                 capture_output=True, check=False, timeout=5)
 assert shell_argument.returncode == 64
+for fixed_entry in ("run-stage2-completion-full.sh",
+                    "run-stage2-completion-readiness.sh"):
+    path = REMOTE / fixed_entry
+    source = path.read_text()
+    assert "mode" not in source.lower() and "env -i" in source
+    rejected_argument = subprocess.run(
+        [str(path), "unexpected"], capture_output=True, check=False, timeout=5)
+    assert rejected_argument.returncode == 64
+assert (REMOTE / "run-stage2-completion-full.sh").read_bytes() != (
+       REMOTE / "run-stage2-completion-readiness.sh").read_bytes()
 assert coordinator.preflight_report() == actual
+reject(coordinator._run_fixed_full_cycle)
+reject(coordinator._run_fixed_readiness_cycle)
 reject(coordinator.open_fixed_coordinator)
 print("completion Kata S5 offline qualification/lifecycle matrix passed")

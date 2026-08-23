@@ -17,7 +17,8 @@ KEY_COMMANDS = MappingProxyType({
     "SSH_PUBLIC_SERVER": ("/usr/bin/ssh-keygen", "-y", "-f", KEY_STAGE + "/server"),
 })
 KEY_COMMAND_ORDER = tuple(KEY_COMMANDS)
-ATTESTED_COMMANDS = frozenset({"SSH_READY", *KEY_COMMANDS})
+SSH_COMMANDS = ("SSH_READY", "SSH_READINESS")
+ATTESTED_COMMANDS = frozenset({*SSH_COMMANDS, *KEY_COMMANDS})
 # Exact final contract descriptors are inserted only by a later reviewed host
 # contract commit. The real issuer consumes this object by identity and cannot
 # issue while it is empty.
@@ -143,6 +144,7 @@ _POLICY_SHA256 = {
     "NFT_REMOVE": "e05578f9ddf2bd48b9e8dd4fab15450121204cb312224c47337bd54992a46afa",
     "NFT_TABLE": "c81d934f138b8c4e89faff3d51620eab944a100e92e077242c9ce02e37f93b0d",
     "SSH_READY": "fc798706a66c9a9676311bf2f43483c147b672aebb4c89869618975c29de7497",
+    "SSH_READINESS": "a7fff074ab3d551e9140ac3e3b261f3f937224261c1b12b4da5860d2734ee9ef",
     "SSH_KEYGEN_CLIENT": _IDENTITY_CREATE_DIGESTS[0],
     "SSH_PUBLIC_CLIENT": "1f68af8c1dde18e50dc62e3c2a6f5d2bf2d9518056df9955577f35a0ca2e2526",
     "SSH_KEYGEN_SERVER": _IDENTITY_CREATE_DIGESTS[1],
@@ -154,7 +156,7 @@ del _IDENTITY_CREATE_DIGESTS, _POLICY_SHA256
 
 _OCCURRENCES = {name: ("BASELINES_CAPTURED",) for name in POLICY_SHA256}
 for _name in KEY_COMMANDS: _OCCURRENCES[_name] = ("ROOTFS_LEASED",)
-_OCCURRENCES["SSH_READY"] = ("RUNTIME_READY",)
+for _name in SSH_COMMANDS: _OCCURRENCES[_name] = ("RUNTIME_READY",)
 OCCURRENCES = MappingProxyType(_OCCURRENCES)
 PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})

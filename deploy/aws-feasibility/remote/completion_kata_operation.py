@@ -13,6 +13,7 @@ import secrets
 import time
 import unicodedata
 import completion_guest_workloads_v3 as guest_workloads
+import completion_guest_readiness_v1 as guest_readiness
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_network_journal as network_journal
@@ -444,6 +445,46 @@ def _validate_body(kind, body):
         _fail(body["admission_version"] == PRODUCTION_ADMISSION_VERSION
               and body["policy_version"] == command_policy.POLICY_VERSION
               and body["parser_source_sha256"] == SSH_PARSER_SHA256)
+    elif kind == "CYCLE_ROUTE_V1":
+        _keys(body, ("operation_token", "route", "cycle_capability_sha256",
+                     "program_sha256", "marker_sha256"))
+        _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
+        _hex(body["cycle_capability_sha256"]); _hex(body["program_sha256"])
+        _hex(body["marker_sha256"])
+        expected = ((guest_workloads.GUEST_PROGRAM_SHA256,
+                     hashlib.sha256(guest_workloads.GUEST_READY_MARKER).hexdigest())
+                    if body["route"] == "full" else
+                    (guest_readiness.GUEST_PROGRAM_SHA256, guest_readiness.MARKER_SHA256))
+        _fail((body["program_sha256"], body["marker_sha256"]) == expected)
+    elif kind == "CTR_LAUNCH_ISSUED_V1":
+        _keys(body, ("operation_token", "route", "command_serial", "binding_sha256",
+                     "host_boot_id", "kata_launch_started_boottime_ns"))
+        _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
+        _uint(body["command_serial"], MAX_RECORDS - 1); _hex(body["binding_sha256"])
+        _text(body["host_boot_id"], True)
+        _uint(body["kata_launch_started_boottime_ns"], minimum=1)
+    elif kind == "SSH_MARKER_OBSERVED_V1":
+        _keys(body, ("operation_token", "route", "command_id", "command_serial",
+                     "binding_sha256", "marker_sha256", "host_boot_id",
+                     "ssh_marker_observed_boottime_ns"))
+        _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
+        _choice(body["command_id"], set(command_policy.SSH_COMMANDS))
+        _uint(body["command_serial"], MAX_RECORDS - 1); _hex(body["binding_sha256"])
+        _hex(body["marker_sha256"]); _text(body["host_boot_id"], True)
+        _uint(body["ssh_marker_observed_boottime_ns"], minimum=1)
+    elif kind == "SSH_COMMAND_SETTLED_V1":
+        _keys(body, ("operation_token", "route", "command_id", "command_serial",
+                     "binding_sha256", "marker_record_sha256", "result_record_sha256",
+                     "stdout_sha256", "parser_sha256", "host_boot_id",
+                     "ssh_command_settled_boottime_ns"))
+        _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
+        _choice(body["command_id"], set(command_policy.SSH_COMMANDS))
+        _uint(body["command_serial"], MAX_RECORDS - 1)
+        for name in ("binding_sha256", "marker_record_sha256", "result_record_sha256",
+                     "stdout_sha256", "parser_sha256"):
+            _hex(body[name])
+        _text(body["host_boot_id"], True)
+        _uint(body["ssh_command_settled_boottime_ns"], minimum=1)
     elif kind == "PLATFORM_OBSERVATION_V1":
         _keys(body, ("operation_token", "observation")); _hex(body["operation_token"])
         _choice(body["observation"], {"qmp-intent", "qmp-failure", "qmp-pass", "platform-pass"})
@@ -846,6 +887,23 @@ def _validate_body(kind, body):
     elif kind == "SSH_READY_V2":
         _keys(body, ("operation_token", "result_record_sha256", "proof_sha256"))
         _hex(body["operation_token"]); _hex(body["result_record_sha256"]); _hex(body["proof_sha256"])
+    elif kind == "SSH_READINESS_RESULT_V1":
+        names = ("operation_token", "command_serial", "binding_sha256", "program_sha256",
+                 "parser_sha256", "stdout_sha256", "marker_sha256", "proof_sha256")
+        _keys(body, names); _hex(body["operation_token"])
+        _uint(body["command_serial"], MAX_RECORDS - 1)
+        for name in names[2:]: _hex(body[name])
+        _fail(body["program_sha256"] == guest_readiness.GUEST_PROGRAM_SHA256
+              and body["parser_sha256"] == guest_readiness.PARSER_SHA256
+              and body["marker_sha256"] == guest_readiness.MARKER_SHA256
+              and body["stdout_sha256"] == guest_readiness.MARKER_SHA256)
+        expected = hashlib.sha256(_canonical({name: body[name] for name in names
+                                              if name != "proof_sha256"})).hexdigest()
+        _fail(body["proof_sha256"] == expected)
+    elif kind == "SSH_READINESS_READY_V1":
+        _keys(body, ("operation_token", "result_record_sha256", "settlement_record_sha256",
+                     "proof_sha256"))
+        for name in body: _hex(body[name])
     elif kind == "SSH_READY":
         _keys(body, ("operation_token", "proof_sha256", "marker_sha256", "authentication_attempts"))
         _hex(body["operation_token"])
@@ -925,6 +983,17 @@ class CommandIntentReceipt:
 class DurableCommandOutcome:
     command_serial: int; command_id: str; binding_sha256: str; body: dict
 @dataclass(frozen=True)
+class CycleTimingLineage:
+    route: str; host_boot_id: str
+    launch_serial: int; launch_binding_sha256: str; launch_started_boottime_ns: int
+    ssh_command_id: str; ssh_serial: int; ssh_binding_sha256: str
+    marker_record_sha256: str; marker_observed_boottime_ns: int
+    settlement_record_sha256: str; command_settled_boottime_ns: int
+
+    @property
+    def ssh_ready_ns(self):
+        return self.marker_observed_boottime_ns - self.launch_started_boottime_ns
+@dataclass(frozen=True)
 class RootfsReleaseContext:
     operation_token: str; rootfs_token: str; rootfs_ledger_key: dict
     leased_sequence: int; leased_offset: int; leased_sha256: str
@@ -983,7 +1052,7 @@ def _policy_tables():
     _fail(all(type(rows) is tuple and rows and maps[2][name] == tuple(dict.fromkeys(rows))
               and maps[3][name] == len(rows) for name, rows in maps[1].items()))
     expected_phases = {name: (("ROOTFS_LEASED",) if name in command_policy.KEY_COMMANDS else
-                              ("RUNTIME_READY",) if name == "SSH_READY" else
+                              ("RUNTIME_READY",) if name in command_policy.SSH_COMMANDS else
                               ("BASELINES_CAPTURED",)) for name in maps[0]}
     _fail(dict(maps[1]) == expected_phases and all(value == 1 for value in maps[3].values()))
     return maps
@@ -1112,9 +1181,10 @@ def _v2_occurrence(records, index, phase, body, ownership=None):
                   for predecessor in order[:position]))
         _fail(all(_settled_v2(records, item, index) for item in prior
                   if item.body["command_id"] in command_policy.KEY_COMMANDS))
-    elif command_id == "SSH_READY":
+    elif command_id in command_policy.SSH_COMMANDS:
         _fail(phase == "RUNTIME_READY"
-              and not any(item.body["command_id"] == command_id for item in prior))
+              and not any(item.body["command_id"] in command_policy.SSH_COMMANDS
+                          for item in prior))
     else:
         _fail(phase == "BASELINES_CAPTURED"
               and not any(item.body["command_id"] == command_id for item in prior))
@@ -1138,6 +1208,8 @@ def _legal(records):
     ssh_result = None
     runtime_mount = None
     platform_observation = None
+    cycle_route = launch_observation = marker_observation = settlement_observation = None
+    readiness_result = None
     production_admitted = False
     lifecycle_deadline = None
     ever_uncertain = False
@@ -1186,6 +1258,62 @@ def _legal(records):
         if kind == "PRODUCTION_ADMISSION_V2":
             _fail(phase == "ROOTFS_LEASED" and not production_admitted and command_phase is None)
             production_admitted = True
+            continue
+        if kind == "CYCLE_ROUTE_V1":
+            _fail(production_admitted and cycle_route is None and command_phase is None
+                  and phase in {"ROOTFS_LEASED", "FS_SETTLED"}
+                  and not any(item.record_type in {"COMMAND_INTENT", "COMMAND_INTENT_V2"}
+                              and item.body["command_id"] == "CTR_RUN"
+                              for item in records[:index]))
+            cycle_route = record
+            continue
+        if kind == "CTR_LAUNCH_ISSUED_V1":
+            _fail(cycle_route is not None and launch_observation is None
+                  and command_phase is None and phase == "NETWORK_READY"
+                  and body["route"] == cycle_route.body["route"]
+                  and body["host_boot_id"] == genesis["host_boot_id"])
+            runs = [item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2"
+                    and item.body["command_id"] == "CTR_RUN"]
+            outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
+                        and item.body["command_id"] == "CTR_RUN"]
+            _fail(len(runs) == len(outcomes) == 1 and records[index - 1] is outcomes[0]
+                  and all(body[name] == runs[0].body[name] for name in
+                          ("command_serial", "binding_sha256"))
+                  and outcomes[0].body["outcome"] == "exited"
+                  and outcomes[0].body["status"] == 0 and not outcomes[0].body["uncertain"])
+            launch_observation = record
+            continue
+        if kind == "SSH_MARKER_OBSERVED_V1":
+            _fail(cycle_route is not None and marker_observation is None
+                  and command_phase == "COMMAND_PREEXEC_V2"
+                  and command_intent_v2 is not None and command_preexec_v2 is not None
+                  and body["route"] == cycle_route.body["route"]
+                  and body["marker_sha256"] == cycle_route.body["marker_sha256"]
+                  and body["host_boot_id"] == genesis["host_boot_id"]
+                  and all(body[name] == command_intent_v2.body[name] for name in
+                          ("command_id", "command_serial", "binding_sha256")))
+            expected_command = "SSH_READY" if body["route"] == "full" else "SSH_READINESS"
+            _fail(body["command_id"] == expected_command and launch_observation is not None
+                  and launch_observation.body["kata_launch_started_boottime_ns"]
+                      < body["ssh_marker_observed_boottime_ns"])
+            marker_observation = record
+            continue
+        if kind == "SSH_COMMAND_SETTLED_V1":
+            _fail(cycle_route is not None and marker_observation is not None
+                  and settlement_observation is None and command_phase is None
+                  and body["route"] == cycle_route.body["route"]
+                  and body["host_boot_id"] == genesis["host_boot_id"]
+                  and body["marker_record_sha256"] == marker_observation.line_sha256
+                  and all(body[name] == marker_observation.body[name] for name in
+                          ("command_id", "command_serial", "binding_sha256"))
+                  and marker_observation.body["ssh_marker_observed_boottime_ns"]
+                      <= body["ssh_command_settled_boottime_ns"])
+            result = ssh_result if body["route"] == "full" else readiness_result
+            parser = SSH_PARSER_SHA256 if body["route"] == "full" else guest_readiness.PARSER_SHA256
+            _fail(result is not None and body["result_record_sha256"] == result.line_sha256
+                  and body["parser_sha256"] == parser
+                  and body["stdout_sha256"] == result.body["stdout_sha256"])
+            settlement_observation = record
             continue
         if kind == "PLATFORM_OBSERVATION_V1":
             _fail(production_admitted and phase == "RUNTIME_READY" and command_phase is None)
@@ -1311,6 +1439,10 @@ def _legal(records):
                 except ValueError as error:
                     raise OperationError() from error
             _v2_lineage(genesis, phase, body, b1_network=b1_network)
+            if cycle_route is not None and body["command_id"] in command_policy.SSH_COMMANDS:
+                expected_ssh = ("SSH_READY" if cycle_route.body["route"] == "full"
+                                else "SSH_READINESS")
+                _fail(body["command_id"] == expected_ssh and launch_observation is not None)
             if body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION:
                 artifact = 0 if body["command_id"] == "CONTAINERD_START" else 1
                 _fail(runtime_staged is not None and body["executable_generation"] ==
@@ -1443,10 +1575,42 @@ def _legal(records):
             ssh_result = record
             continue
         if kind == "SSH_READY_V2":
-            _fail(phase == "RUNTIME_READY" and ssh_result is not None
-                  and records[index - 1] is ssh_result)
-            _fail(body["result_record_sha256"] == ssh_result.line_sha256
-                  and body["proof_sha256"] == ssh_result.body["proof_sha256"])
+            _fail(phase == "RUNTIME_READY" and ssh_result is not None)
+            previous = settlement_observation if cycle_route is not None else ssh_result
+            _fail(records[index - 1] is previous
+                  and body["result_record_sha256"] == ssh_result.line_sha256
+                  and body["proof_sha256"] == ssh_result.body["proof_sha256"]
+                  and (cycle_route is None or cycle_route.body["route"] == "full"
+                       and settlement_observation is not None))
+            phase = "SSH_READY"
+            continue
+        if kind == "SSH_READINESS_RESULT_V1":
+            _fail(cycle_route is not None and cycle_route.body["route"] == "readiness"
+                  and phase == "RUNTIME_READY" and readiness_result is None
+                  and marker_observation is not None)
+            outcomes = [item for item in records[:index] if item.record_type == "COMMAND_OUTCOME_V2"
+                        and item.body["command_id"] == "SSH_READINESS"]
+            _fail(len(outcomes) == 1 and records[index - 1] is outcomes[0])
+            outcome = outcomes[0].body
+            _fail(outcome["outcome"] == "exited" and outcome["status"] == 0
+                  and not outcome["uncertain"] and outcome["stderr_length"] == 0
+                  and not outcome["stdout_truncated"] and not outcome["stderr_truncated"]
+                  and outcome["leader_reaped"] and outcome["descendants_reaped"]
+                  and outcome["cgroup_empty"] and outcome["cgroup_removed"]
+                  and outcome["pipes_eof"] and outcome["errors"] == []
+                  and body["command_serial"] == outcome["command_serial"]
+                  and body["binding_sha256"] == outcome["binding_sha256"]
+                  and body["stdout_sha256"] == outcome["stdout_sha256"])
+            readiness_result = record
+            continue
+        if kind == "SSH_READINESS_READY_V1":
+            _fail(cycle_route is not None and cycle_route.body["route"] == "readiness"
+                  and phase == "RUNTIME_READY" and readiness_result is not None
+                  and settlement_observation is not None
+                  and records[index - 1] is settlement_observation
+                  and body["result_record_sha256"] == readiness_result.line_sha256
+                  and body["settlement_record_sha256"] == settlement_observation.line_sha256
+                  and body["proof_sha256"] == readiness_result.body["proof_sha256"])
             phase = "SSH_READY"
             continue
         if retained_daemon is not None:
@@ -1613,6 +1777,12 @@ def _legal(records):
             raise OperationError()
     if phase in {"INPUT_REMOVED", *LIFECYCLE[14:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
         _fail(retained_daemon is None)
+    if cycle_route is not None and phase == "RETIRED":
+        _fail(launch_observation is not None and marker_observation is not None
+              and settlement_observation is not None
+              and (ssh_result is not None) == (cycle_route.body["route"] == "full")
+              and (readiness_result is not None) ==
+                  (cycle_route.body["route"] == "readiness"))
     return phase
 def _parse_untrusted(raw):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)
@@ -2568,6 +2738,37 @@ def _make_authority():
                     "admission_version": PRODUCTION_ADMISSION_VERSION,
                     "policy_version": command_policy.POLICY_VERSION,
                     "parser_source_sha256": SSH_PARSER_SHA256})
+        def cycle_route(self):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            rows = [item.body for item in records if item.record_type == "CYCLE_ROUTE_V1"]
+            _fail(len(rows) <= 1)
+            return None if not rows else dict(rows[0])
+        def record_cycle_route(self, route, capability_sha256, program_sha256,
+                               marker_sha256):
+            context = self.command_context()
+            write_validated(self, "CYCLE_ROUTE_V1", {
+                "operation_token": context.operation_token, "route": route,
+                "cycle_capability_sha256": capability_sha256,
+                "program_sha256": program_sha256, "marker_sha256": marker_sha256})
+        def record_launch_issued(self, serial, binding, started_ns):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            route = next(item for item in records if item.record_type == "CYCLE_ROUTE_V1")
+            write_validated(self, "CTR_LAUNCH_ISSUED_V1", {
+                "operation_token": records[0].body["operation_token"],
+                "route": route.body["route"], "command_serial": serial,
+                "binding_sha256": binding, "host_boot_id": records[0].body["host_boot_id"],
+                "kata_launch_started_boottime_ns": started_ns})
+        def record_ssh_marker(self, serial, command_id, binding, marker_sha256,
+                              observed_ns):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            route = next(item for item in records if item.record_type == "CYCLE_ROUTE_V1")
+            write_validated(self, "SSH_MARKER_OBSERVED_V1", {
+                "operation_token": records[0].body["operation_token"],
+                "route": route.body["route"], "command_id": command_id,
+                "command_serial": serial, "binding_sha256": binding,
+                "marker_sha256": marker_sha256,
+                "host_boot_id": records[0].body["host_boot_id"],
+                "ssh_marker_observed_boottime_ns": observed_ns})
         def record_platform_observation(self, observation):
             context = self.command_context(); _fail(context.lifecycle_phase == "RUNTIME_READY")
             write_validated(self, "PLATFORM_OBSERVATION_V1", {
@@ -2655,14 +2856,73 @@ def _make_authority():
             body["proof_sha256"] = _ssh_result_proof(body)
             write_validated(self, "SSH_RESULT_V2", body)
             return body["proof_sha256"]
+        def record_ssh_settled(self, command_id, serial, binding, stdout_sha256,
+                               parser_sha256, settled_ns):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            route = next(item for item in records if item.record_type == "CYCLE_ROUTE_V1")
+            marker = next(item for item in records if item.record_type == "SSH_MARKER_OBSERVED_V1")
+            result_kind = ("SSH_RESULT_V2" if route.body["route"] == "full"
+                           else "SSH_READINESS_RESULT_V1")
+            result = next(item for item in reversed(records)
+                          if item.record_type == result_kind)
+            write_validated(self, "SSH_COMMAND_SETTLED_V1", {
+                "operation_token": records[0].body["operation_token"],
+                "route": route.body["route"], "command_id": command_id,
+                "command_serial": serial, "binding_sha256": binding,
+                "marker_record_sha256": marker.line_sha256,
+                "result_record_sha256": result.line_sha256,
+                "stdout_sha256": stdout_sha256, "parser_sha256": parser_sha256,
+                "host_boot_id": records[0].body["host_boot_id"],
+                "ssh_command_settled_boottime_ns": settled_ns})
+        def record_ssh_readiness_result(self, serial, binding, stdout):
+            _fail(type(stdout) is bytes and
+                  guest_readiness.parse_guest_readiness_output(stdout) ==
+                  guest_readiness.GUEST_READY_MARKER)
+            context = self.command_context()
+            body = {"operation_token": context.operation_token,
+                    "command_serial": serial, "binding_sha256": binding,
+                    "program_sha256": guest_readiness.GUEST_PROGRAM_SHA256,
+                    "parser_sha256": guest_readiness.PARSER_SHA256,
+                    "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+                    "marker_sha256": guest_readiness.MARKER_SHA256}
+            body["proof_sha256"] = hashlib.sha256(_canonical(body)).hexdigest()
+            write_validated(self, "SSH_READINESS_RESULT_V1", body)
+            return body["proof_sha256"]
         def record_ssh_ready(self):
             _io, records, status = reload(self)
-            _fail(status == "exact" and records[-1].record_type == "SSH_RESULT_V2")
-            result = records[-1]
+            results = [item for item in records if item.record_type == "SSH_RESULT_V2"]
+            _fail(status == "exact" and results)
+            result = results[-1]
+            cycle = any(item.record_type == "CYCLE_ROUTE_V1" for item in records)
+            _fail(records[-1].record_type ==
+                  ("SSH_COMMAND_SETTLED_V1" if cycle else "SSH_RESULT_V2"))
             write_validated(self, "SSH_READY_V2", {
                 "operation_token": records[0].body["operation_token"],
                 "result_record_sha256": result.line_sha256,
                 "proof_sha256": result.body["proof_sha256"]})
+        def record_ssh_readiness_ready(self):
+            _io, records, status = reload(self); _fail(status == "exact")
+            result = next(item for item in records if item.record_type == "SSH_READINESS_RESULT_V1")
+            settled = records[-1]; _fail(settled.record_type == "SSH_COMMAND_SETTLED_V1")
+            write_validated(self, "SSH_READINESS_READY_V1", {
+                "operation_token": records[0].body["operation_token"],
+                "result_record_sha256": result.line_sha256,
+                "settlement_record_sha256": settled.line_sha256,
+                "proof_sha256": result.body["proof_sha256"]})
+        def cycle_timing_lineage(self):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            route = next(item for item in records if item.record_type == "CYCLE_ROUTE_V1")
+            launch = next(item for item in records if item.record_type == "CTR_LAUNCH_ISSUED_V1")
+            marker = next(item for item in records if item.record_type == "SSH_MARKER_OBSERVED_V1")
+            settled = next(item for item in records if item.record_type == "SSH_COMMAND_SETTLED_V1")
+            return CycleTimingLineage(
+                route.body["route"], launch.body["host_boot_id"],
+                launch.body["command_serial"], launch.body["binding_sha256"],
+                launch.body["kata_launch_started_boottime_ns"],
+                marker.body["command_id"], marker.body["command_serial"],
+                marker.body["binding_sha256"], marker.line_sha256,
+                marker.body["ssh_marker_observed_boottime_ns"], settled.line_sha256,
+                settled.body["ssh_command_settled_boottime_ns"])
         def durable_phase(self):
             _io, records, status = reload(self, True)
             _fail(status == "exact" and records)
@@ -2771,7 +3031,8 @@ def _make_authority():
             else:
                 _fail(now < deadline["journal_deadline_boottime_ns"] and body["deadline_boottime_ns"]
                       + body["cleanup_reserve_ns"] <= deadline["journal_deadline_boottime_ns"])
-                if body["command_id"] == "SSH_READY": _fail(now < deadline["ssh_start_deadline_boottime_ns"])
+                if body["command_id"] in command_policy.SSH_COMMANDS:
+                    _fail(now < deadline["ssh_start_deadline_boottime_ns"])
         _fail(body["operation_token"] == context.operation_token and body["journal_key"] == context.journal_key)
         _fail(body["host_boot_id"] == context.host_boot_id and body["source_revision"] == context.source_revision)
         _fail(body["lifecycle_phase"] == context.lifecycle_phase and body["command_serial"] == context.command_serial)
@@ -3184,9 +3445,25 @@ def _make_authority():
     def record_fs_intent(authority, body): return production(authority).record_fs_intent(body)
     def record_fs_observed(authority, body): return production(authority).record_fs_observed(body)
     def record_fs_settled(authority, body): return production(authority).record_fs_settled(body)
+    def cycle_route(authority): return production(authority).cycle_route()
+    def record_cycle_route(authority, route, capability, program, marker):
+        return production(authority).record_cycle_route(route, capability, program, marker)
+    def record_launch_issued(authority, serial, binding, started):
+        return production(authority).record_launch_issued(serial, binding, started)
+    def record_ssh_marker(authority, serial, command_id, binding, marker, observed):
+        return production(authority).record_ssh_marker(
+            serial, command_id, binding, marker, observed)
     def record_ssh_result(authority, serial, binding, manifest, stdout, canonical_result):
         return production(authority).record_ssh_result(serial, binding, manifest, stdout, canonical_result)
+    def record_ssh_readiness_result(authority, serial, binding, stdout):
+        return production(authority).record_ssh_readiness_result(serial, binding, stdout)
+    def record_ssh_settled(authority, command_id, serial, binding, stdout, parser, settled):
+        return production(authority).record_ssh_settled(
+            command_id, serial, binding, stdout, parser, settled)
     def record_ssh_ready(authority): return production(authority).record_ssh_ready()
+    def record_ssh_readiness_ready(authority):
+        return production(authority).record_ssh_readiness_ready()
+    def cycle_timing_lineage(authority): return production(authority).cycle_timing_lineage()
     def durable_phase(authority): return production(authority).durable_phase()
     def revoke_readiness(authority): return production(authority).revoke_readiness()
     def revoke_or_require_terminal(authority):
@@ -3218,7 +3495,9 @@ def _make_authority():
         record_runtime_mount_v2, pending_fs_intent, record_fs_absent,
         record_input_grant, input_grants, record_input_wa, input_wa, record_input_step, input_steps,
         input_cleanup_token, record_fs_intent, record_fs_observed,
-        record_fs_settled, record_ssh_result, record_ssh_ready, durable_phase,
+        record_fs_settled, cycle_route, record_cycle_route, record_launch_issued, record_ssh_marker,
+        record_ssh_result, record_ssh_readiness_result, record_ssh_settled,
+        record_ssh_ready, record_ssh_readiness_ready, cycle_timing_lineage, durable_phase,
         revoke_readiness, revoke_or_require_terminal, record_input_removed, record_uncertain,
         network_records, network_history, record_network, settle_network_phase,
         begin_production, retire_production, resume_retire_production,
@@ -3243,8 +3522,10 @@ def _make_authority():
     _record_runtime_mount_body_v2, _pending_fs_intent, _record_fs_absent,
     _record_input_grant, _input_grants, _record_input_wa, _input_wa, _record_input_step, _input_steps,
     _input_cleanup_token, _record_fs_intent, _record_fs_observed,
-    _record_fs_settled, _record_ssh_result,
-    _record_ssh_ready, _durable_phase, _revoke_readiness, _revoke_or_require_terminal,
+    _record_fs_settled, _cycle_route, _record_cycle_route, _record_launch_issued, _record_ssh_marker,
+    _record_ssh_result, _record_ssh_readiness_result, _record_ssh_settled,
+    _record_ssh_ready, _record_ssh_readiness_ready, _cycle_timing_lineage,
+    _durable_phase, _revoke_readiness, _revoke_or_require_terminal,
     _record_input_removed, _record_uncertain,
     _network_records, _network_history, _record_network, _settle_network_phase,
     _begin_production_operation, _retire_production_operation,

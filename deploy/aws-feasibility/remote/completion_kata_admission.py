@@ -39,6 +39,10 @@ EXECUTABLES = preparation.EXECUTABLES
 MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
+    "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
+    "deploy/aws-feasibility/remote/completion_cycle_evidence.py",
+    "deploy/aws-feasibility/remote/completion_cycle_full.py",
+    "deploy/aws-feasibility/remote/completion_cycle_readiness.py",
     "deploy/aws-feasibility/remote/completion_kata_actions.py",
     "deploy/aws-feasibility/remote/completion_kata_admission.py",
     "deploy/aws-feasibility/remote/completion_kata_command_policy.py",
@@ -66,6 +70,9 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+    "config/stage2-completion-ssh-readiness-v1.json",
     "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
 })
 BINDING_KEYS = frozenset({

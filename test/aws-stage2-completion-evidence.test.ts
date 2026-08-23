@@ -14,10 +14,10 @@ const digest = (label: string) => createHash("sha256").update(`completion-eviden
 const phases = [
   "READINESS_REVOKED",
   "TASK_STOPPED",
-  "NETWORK_ABSENT",
   "TASK_ABSENT",
-  "CONTAINER_ABSENT",
   "RUNTIME_PROCESSES_ABSENT",
+  "NETWORK_ABSENT",
+  "CONTAINER_ABSENT",
   "SHARE_AND_MOUNTS_ABSENT",
   "FIREWALL_ABSENT",
   "CONTAINERD_ABSENT",

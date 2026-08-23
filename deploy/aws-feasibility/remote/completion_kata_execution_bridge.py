@@ -302,6 +302,19 @@ def _routes():
         lifecycle.network_proof = current["network_proof"]
         return owner.finalize_authenticated(session)
 
+    def authenticate_readiness(bridge, lifecycle):
+        current = state(bridge, lifecycle)
+        _require(current.get("runtime_network") is lifecycle.runtime_network
+                 and current.get("runtime_observation") is lifecycle.runtime_observation
+                 and current.get("sensor_before") is None,
+                 "readiness binds runtime snapshot and QMP without causal guest proof")
+        owner = ssh._compose_production_readiness_ssh(
+            lifecycle.operation, lifecycle.inputs, lifecycle.executables)
+        current["ssh"] = owner
+        session = owner.authenticate()
+        _require(type(session) is ssh.ReadinessAuthenticatedSession)
+        return owner.finalize_authenticated(session)
+
     def revoke(bridge, lifecycle):
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
@@ -334,11 +347,6 @@ def _routes():
         _require(type(platform) is evidence._PlatformOwnerResult
                  and platform.live_mapping_sha256 == mapping["live_mapping_sha256"],
                  "pre-workload runtime mapping changed during cleanup")
-        if causal is None:
-            _require(lifecycle.session is None
-                     and operation._durable_phase(lifecycle.operation) == "OWNERSHIP_OBSERVED",
-                     "causal network proof absent outside durable terminal cleanup")
-            return fact
         identity_fields = (
             "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
             "qemu_executable_device", "qemu_executable_inode",
@@ -346,7 +354,28 @@ def _routes():
             "kvm_device", "kvm_inode", "kvm_rdev")
         _require(all(getattr(platform, name) == qmp[name]
                      for name in identity_fields),
-                 "independent QMP observer identity changed through workload")
+                 "independent QMP observer identity changed through SSH")
+        if causal is None:
+            if type(lifecycle.session) is ssh.ReadinessAuthenticatedSession:
+                cycle = __import__("completion_cycle_evidence")
+                _require(operation._cycle_route(lifecycle.operation)["route"] == "readiness",
+                         "readiness route lineage absent")
+                lifecycle.runtime_proof = cycle._issue_runtime_readiness_owner_result(
+                    operation_token=operation._command_context(lifecycle.operation).operation_token,
+                    runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
+                    runtime_network_sha256=current["runtime_network"]["proof_sha256"],
+                    live_mapping_sha256=mapping["live_mapping_sha256"],
+                    qemu_process_sha256=qemu_sha256,
+                    qmp_identity=(qmp["qemu_pid"], qmp["qemu_starttime"],
+                        qmp["qemu_executable_device"], qmp["qemu_executable_inode"],
+                        qmp["observer_qmp_device"], qmp["observer_qmp_inode"],
+                        qmp["kvm_device"], qmp["kvm_inode"], qmp["kvm_rdev"],
+                        qmp["kvm_api"]))
+                return fact
+            _require(lifecycle.session is None
+                     and operation._durable_phase(lifecycle.operation) == "OWNERSHIP_OBSERVED",
+                     "causal network proof absent outside durable terminal cleanup")
+            return fact
         lifecycle.runtime_proof = evidence._RuntimeOwnerResult(
             operation_token=operation._command_context(lifecycle.operation).operation_token,
             runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
@@ -672,7 +701,8 @@ def _routes():
         return value
 
     return (issue, reconstruct, claim_tools, capture, create_network, prove_network, stage,
-            bind_mapping, launch, observe_runtime_network, prove_runtime, authenticate, revoke, ownership,
+            bind_mapping, launch, observe_runtime_network, prove_runtime, authenticate,
+            authenticate_readiness, revoke, ownership,
             stop_task, remove_task, remove_runtime, release_network_holds, remove_network,
             remove_container, remove_share, remove_firewall, stop_containerd,
             final_baselines, independent_residue)
@@ -681,7 +711,8 @@ def _routes():
 (_take_execution_bridge, _reconstruct_execution_cleanup,
  _claim_network_tools, _capture_baselines, _create_network,
  _prove_network_causality, _stage_runtime, _bind_execution_mapping, _launch_task,
- _observe_runtime_network, _prove_runtime, _authenticate_ssh, _revoke_readiness, _observe_ownership,
+ _observe_runtime_network, _prove_runtime, _authenticate_ssh,
+ _authenticate_readiness_ssh, _revoke_readiness, _observe_ownership,
  _stop_task, _remove_task, _remove_runtime, _release_network_holds, _remove_network,
  _remove_container, _remove_share, _remove_firewall, _stop_containerd,
  _observe_final_baselines, _observe_independent_residue) = _routes()

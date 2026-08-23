@@ -32,6 +32,7 @@ import completion_kata_operation as kata_operation
 import completion_kata_owner as owner_helpers
 import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
+import completion_guest_readiness_v1 as guest_readiness
 
 _install_attested_policy = command_policy._take_attested_policy_inserter()
 _install_v2_attested_policy = command_policy._take_v2_attested_policy_inserter()
@@ -193,7 +194,7 @@ def _attested_executable_routes(install_policy):
                 role, executable.path, descriptors[0], executable.sha256, closure,
                 _host_generation(descriptors[0]), tuple(descriptors[1:]))
             if role in {"ssh", "ssh-keygen"}:
-                command_ids = (("SSH_READY",) if role == "ssh" else command_policy.KEY_COMMAND_ORDER)
+                command_ids = (command_policy.SSH_COMMANDS if role == "ssh" else command_policy.KEY_COMMAND_ORDER)
                 install_policy(command_ids, {
                     "executable_sha256": retained.sha256,
                     "tool_closure_sha256": retained.closure_sha256,
@@ -240,7 +241,7 @@ def _attested_executable_routes(install_policy):
         values, policies, owned = {}, {}, []
         try:
             for role, expected_ids, path in (
-                ("ssh", ("SSH_READY",), "/usr/bin/ssh"),
+                ("ssh", command_policy.SSH_COMMANDS, "/usr/bin/ssh"),
                 ("ssh-keygen", command_policy.KEY_COMMAND_ORDER, "/usr/bin/ssh-keygen"),
             ):
                 descriptor = reviewed.get(role)
@@ -305,7 +306,7 @@ def _attested_executable_routes(install_policy):
                     or fdmap.identity(value.descriptor) != observed):
                 raise ProcessError("retained executable changed before ownership")
             values[role] = [value, False]
-            command_ids = (("SSH_READY",) if role == "ssh" else
+            command_ids = (command_policy.SSH_COMMANDS if role == "ssh" else
                            command_policy.KEY_COMMAND_ORDER if role == "ssh-keygen" else ())
             if command_ids:
                 policies.append((command_ids, {
@@ -441,6 +442,11 @@ def _compose_fixed_commands():
         CommandId.SSH_READY, "ssh", "/usr/bin/ssh", source.argv, source.stdin,
         command_policy.SSH_TOTAL_NS, 4096, 4096, "ssh-plan", source.inherited_fds,
     )
+    rows[CommandId.SSH_READINESS] = FixedCommand(
+        CommandId.SSH_READINESS, "ssh", "/usr/bin/ssh", source.argv,
+        guest_readiness.guest_program_bytes(), command_policy.SSH_TOTAL_NS,
+        guest_readiness.GUEST_OUTPUT_LIMIT, 4096, "ssh-plan", source.inherited_fds,
+    )
     return rows
 
 
@@ -488,7 +494,7 @@ def _spec(command_id):
     if source is None:
         raise ProcessError("fixed action belongs to its lifecycle owner")
     seconds = source.duration_ns / 1_000_000_000
-    if command_id is CommandId.SSH_READY:
+    if command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS}:
         deadline_class = "ssh"
     elif command_id in {CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
                         CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}:
@@ -1031,7 +1037,8 @@ def _digest_fd(descriptor, size):
 
 def _cleanup_reserve_ns(fixed):
     reviewed = (command_policy.SSH_CLEANUP_RESERVE_NS
-                if fixed.command_id is CommandId.SSH_READY else command_policy.CLEANUP_RESERVE_NS)
+                if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS}
+                else command_policy.CLEANUP_RESERVE_NS)
     return min(reviewed, fixed.duration_ns // 2)
 
 
@@ -1077,7 +1084,8 @@ def _internally_fixed(fixed):
 
 
 def _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed=False):
-    if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_KEYGEN_CLIENT,
+    if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS,
+                            CommandId.SSH_KEYGEN_CLIENT,
                             CommandId.SSH_KEYGEN_SERVER, CommandId.SSH_PUBLIC_CLIENT,
                             CommandId.SSH_PUBLIC_SERVER}:
         _require_attested_executable(executable)
@@ -1368,7 +1376,8 @@ def _read_setup_boottime(descriptor, deadline):
         descriptor, lambda: (deadline - _boottime_ns()) / 1_000_000_000)
 
 
-def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at):
+def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at,
+                       marker_observer=None):
     selector = selectors.DefaultSelector()
     buffers = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
     overflow = {"stdout": False, "stderr": False}
@@ -1377,6 +1386,7 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
     errors = []
     wait_status = None
     stdin_offset = 0
+    first_line_settled = False
     try:
         for name, descriptor in descriptors.items():
             os.set_blocking(descriptor, False)
@@ -1413,6 +1423,12 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
                 limit = STATUS_SIZE if name == "status" else limits[name]
                 room = max(0, limit - len(buffers[name]))
                 buffers[name].extend(part[:room])
+                if name == "stdout" and not first_line_settled:
+                    newline = buffers["stdout"].find(b"\n")
+                    if newline >= 0:
+                        first_line_settled = True
+                        if marker_observer is not None:
+                            marker_observer(bytes(buffers["stdout"][:newline + 1]))
                 if len(part) > room:
                     if name == "status":
                         errors.append("invalid-exec-status")
@@ -1654,6 +1670,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     errors = []
     wait_status = None
     preexec_recorded = False
+    launch_started_boottime_ns = None
     try:
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
         if runtime_extension or runtime_fixed:
@@ -1724,6 +1741,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                 raise ProcessError("runtime network opener binding")
         if bindings:
             _prove_child_inherited_fds(pid, bindings)
+        if fixed.command_id is CommandId.CTR_RUN:
+            launch_started_boottime_ns = _boottime_ns()
         if os.write(release_w, b"R") != 1:
             raise ProcessError("short release")
         release_count = 1
@@ -1735,11 +1754,23 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         work_span = max(1, fixed.duration_ns - _cleanup_reserve_ns(fixed))
         term_at = work_cutoff - min(1_500_000_000, work_span // 4)
         kill_at = work_cutoff - min(250_000_000, work_span // 8)
+        route = kata_operation._cycle_route(journal)
+        marker_bytes = (kata_ssh.MARKER if fixed.command_id is CommandId.SSH_READY else
+                        guest_readiness.GUEST_READY_MARKER
+                        if fixed.command_id is CommandId.SSH_READINESS else None)
+        marker_observer = None
+        if route is not None and marker_bytes is not None:
+            def marker_observer(first_line):
+                if first_line == marker_bytes:
+                    kata_operation._record_ssh_marker(
+                        journal, intent["command_serial"], intent["command_id"],
+                        intent["binding_sha256"], hashlib.sha256(marker_bytes).hexdigest(),
+                        _boottime_ns())
         buffers, overflow, wait_status, pipes_eof, state, drain_errors = _drain_transaction(
             pid, {"status": status_r, "stdout": stdout_r, "stderr": stderr_r,
                   "stdin": stdin_w, "stdout_limit": fixed.stdout_limit,
                   "stderr_limit": fixed.stderr_limit},
-            fixed.stdin, owner, work_cutoff, term_at, kill_at,
+            fixed.stdin, owner, work_cutoff, term_at, kill_at, marker_observer,
         )
         errors.extend(drain_errors)
         status_raw = bytes(buffers["status"])
@@ -1774,6 +1805,14 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                 "command_serial": intent["command_serial"], "command_id": intent["command_id"],
                 "binding_sha256": intent["binding_sha256"], "stdout_hex": stdout.hex(), "stderr_hex": stderr.hex()})
         durable = kata_operation._record_command_outcome(journal, body)
+        if (route is not None and fixed.command_id is CommandId.CTR_RUN
+                and body["outcome"] == "exited" and body["status"] == 0
+                and not body["uncertain"]):
+            if launch_started_boottime_ns is None:
+                raise ProcessError("launch release observation absent")
+            kata_operation._record_launch_issued(
+                journal, intent["command_serial"], intent["binding_sha256"],
+                launch_started_boottime_ns)
         return ProcessOutcome(
             fixed.command_id.value, identity, body["outcome"], body["status"], body["errno"],
             stdout, stderr, body["stdout_sha256"], body["stderr_sha256"],
@@ -2179,6 +2218,13 @@ def _transact_fixed_ssh(journal, executable, inherited):
     return _transact_fixed(journal, _FIXED_COMMANDS[CommandId.SSH_READY], executable, inherited)
 
 
+def _transact_fixed_ssh_readiness(journal, executable, inherited):
+    journal = kata_operation._claim_production_operation(journal)
+    _require_attested_executable(executable)
+    return _transact_fixed(
+        journal, _FIXED_COMMANDS[CommandId.SSH_READINESS], executable, inherited)
+
+
 def _transact_key(journal, executable, command_id):
     journal = kata_operation._claim_production_operation(journal)
     _require_attested_executable(executable)
@@ -2297,6 +2343,7 @@ def _fixed_spec_snapshots_for_tests():
                  CommandId.CTR_TASK_LIST, CommandId.CTR_TASK_TERM,
                  CommandId.CTR_TASK_KILL, CommandId.CTR_TASK_REMOVE,
                  CommandId.CTR_CONTAINER_REMOVE, CommandId.SSH_READY,
+                 CommandId.SSH_READINESS,
                  CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
                  CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}
     return tuple((item.value, _spec(item).argv, _spec(item).stdin,

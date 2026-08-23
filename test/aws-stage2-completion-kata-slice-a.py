@@ -111,7 +111,7 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
         "inherited_fds": inherited, "policy_version": operation.command_policy.POLICY_VERSION,
         "deadline_class": deadline_class, "duration_ns": duration,
         "cleanup_reserve_ns": (operation.command_policy.SSH_CLEANUP_RESERVE_NS
-                               if command_id == "SSH_READY" else
+                               if command_id in operation.command_policy.SSH_COMMANDS else
                                operation.command_policy.CLEANUP_RESERVE_NS),
         "deadline_boottime_ns": 99_000_000_000, "output_grammar": grammar,
         "stdout_limit": stdout_limit, "stderr_limit": stderr_limit,
@@ -305,13 +305,13 @@ EXPECTED_IMPLEMENTED = {
     "IP_LINK_MOVE", "IP_LOOPBACK_UP", "IP_NETNS_ADD", "IP_NETNS_REMOVE",
     "IP_NS_ADDRESSES", "IP_NS_LINKS", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
     "IP_PEER_ADDRGEN_NONE", "IP_PEER_RENAME", "NFT_INSTALL", "NFT_REMOVE",
-    "NFT_TABLE", "SSH_READY", "SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT",
+    "NFT_TABLE", "SSH_READY", "SSH_READINESS", "SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT",
     "SSH_KEYGEN_SERVER", "SSH_PUBLIC_SERVER", "CONTAINERD_START",
 }
 check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1",      "process-only policy version drift")
 check(set(policy.POLICY_SHA256) == EXPECTED_IMPLEMENTED, "implemented process policy drift")
 expected_occurrences = {name: (("ROOTFS_LEASED",) if name in policy.KEY_COMMANDS else
-                               ("RUNTIME_READY",) if name == "SSH_READY" else
+                               ("RUNTIME_READY",) if name in policy.SSH_COMMANDS else
                                ("BASELINES_CAPTURED",)) for name in policy.POLICY_SHA256}
 check(dict(policy.OCCURRENCES) == expected_occurrences
       and dict(policy.PHASES) == dict(policy.OCCURRENCES)

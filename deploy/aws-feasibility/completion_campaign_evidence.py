@@ -22,8 +22,8 @@ PRODUCTION_AUTHORITY = "aws-stage2-completion"
 NORMAL_DEADLINE_NS = 5_400_000_000_000
 BILLING_HOUR_NS = 3_600_000_000_000
 TEARDOWN_PHASES = (
-    "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-    "CONTAINER_ABSENT", "RUNTIME_PROCESSES_ABSENT", "SHARE_AND_MOUNTS_ABSENT",
+    "READINESS_REVOKED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_PROCESSES_ABSENT",
+    "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_AND_MOUNTS_ABSENT",
     "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUTS_ABSENT", "ROOTFS_ABSENT",
     "FINAL_BASELINES", "RETIRED",
 )
@@ -382,6 +382,7 @@ class SyntheticPrivateCustodyChain:
             "production_evidence_version": None,
             "production_authority": None,
             "production_publication_authorized": False,
+            "provider_execution_observed": False,
         }
         _require(PRODUCTION_EVIDENCE_VERSION not in codec.canonical_bytes(verdict).decode("ascii")
                  and PRODUCTION_AUTHORITY not in codec.canonical_bytes(verdict).decode("ascii"),

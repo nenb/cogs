@@ -98,7 +98,8 @@ for left in range(len(policy.KEY_COMMAND_ORDER)):
 for omitted in range(len(policy.KEY_COMMAND_ORDER)):
     check(policy.KEY_COMMAND_ORDER[:omitted] + policy.KEY_COMMAND_ORDER[omitted + 1:]
           != policy.KEY_COMMAND_ORDER, "key omission accepted")
-check(policy.ATTESTED_COMMANDS == {"SSH_READY", *policy.KEY_COMMANDS}
+check(policy.ATTESTED_COMMANDS == {"SSH_READY", "SSH_READINESS", *policy.KEY_COMMANDS}
+      and policy.SSH_COMMANDS == ("SSH_READY", "SSH_READINESS")
       and not policy.ATTESTED_EXECUTABLES, "unattested SSH execution was enabled")
 for name, argv in policy.KEY_COMMANDS.items():
     fixed = process._FIXED_COMMANDS[process.CommandId[name]]

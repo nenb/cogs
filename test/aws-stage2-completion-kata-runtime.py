@@ -534,7 +534,7 @@ check(runtime.KATA_CONFIG_SHA256 == "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0
 policy = runtime.command_policy
 check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1"
       and not hasattr(policy, "PHASE_COMMAND_TRACES")
-      and policy.ATTESTED_COMMANDS == frozenset({"SSH_READY", *policy.KEY_COMMANDS}),
+      and policy.ATTESTED_COMMANDS == frozenset({"SSH_READY", "SSH_READINESS", *policy.KEY_COMMANDS}),
       "SSH-stable main process policy was replaced")
 policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
     "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction": [list(row) for row in policy.CONTAINERD_EXTRACTION],

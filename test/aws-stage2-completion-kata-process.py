@@ -122,7 +122,10 @@ assert unissued["NFT_INSTALL"].argv_tail == ("-f", "-")
 assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
 assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "/bin/sh -s")
 assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
-assert len(snapshots) == 12
+assert snapshots["SSH_READINESS"][0] == snapshots["SSH_READY"][0]
+assert snapshots["SSH_READINESS"][1] != snapshots["SSH_READY"][1]
+assert snapshots["SSH_READINESS"][2:] == ("ssh", (200, 201))
+assert len(snapshots) == 13
 rejected(lambda: process._spec("IP_NETNS_ADD"))
 rejected(lambda: process._test_spec("ok"))
 BOOT_A = "12345678-1234-1234-1234-123456789abc"

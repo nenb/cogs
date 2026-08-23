@@ -20,6 +20,7 @@ from completion_campaign_contracts import (
     new_record,
 )
 from completion_campaign_state import CampaignStateError, append_record, reduce_campaign
+import completion_campaign_evidence as private_evidence
 
 FAKE_APPROVAL_VERSION = "cogs.stage2-completion-fake-approval/v1"
 FAKE_PAYLOAD_VERSION = "cogs.stage2-completion-fake-payload/v1"
@@ -90,6 +91,55 @@ _FAULTS = {
 }
 _ACTIONS = {"plan", "apply", "running", "remote", "destroy", "inventory", "validate"}
 
+
+def _remote_receipt_realm():
+    seal, issued = object(), {}
+    class _SyntheticFullRemoteReceipt:
+        __slots__ = ("batch_commitment", "ordinal", "mode", "commitment", "workload_count")
+        def __new__(cls, key=None, **value):
+            if key is not seal: raise ControllerError("sealed full remote receipt")
+            result = super().__new__(cls)
+            for name in cls.__slots__: setattr(result, name, value[name])
+            return result
+    class _SyntheticReadinessRemoteReceipt:
+        __slots__ = ("batch_commitment", "ordinal", "mode", "commitment")
+        def __new__(cls, key=None, **value):
+            if key is not seal: raise ControllerError("sealed readiness remote receipt")
+            result = super().__new__(cls)
+            for name in cls.__slots__: setattr(result, name, value[name])
+            return result
+    def issue(batch, ordinal, mode, nonce):
+        source = {"batch_commitment": batch, "ordinal": ordinal,
+                  "mode": mode.value, "nonce": nonce,
+                  "production_publication_authorized": False,
+                  "provider_execution_observed": False}
+        commitment = codec.commitment_sha256(
+            "cogs.stage2-completion/synthetic-remote-owner/v1", source,
+            bytes.fromhex(batch))
+        values = {"batch_commitment": batch, "ordinal": ordinal,
+                  "mode": mode, "commitment": commitment}
+        receipt = (_SyntheticFullRemoteReceipt(seal, **values, workload_count=21)
+                   if mode is CycleMode.FULL else
+                   _SyntheticReadinessRemoteReceipt(seal, **values))
+        issued[id(receipt)] = receipt
+        return receipt
+    def consume(receipt, batch, ordinal, mode):
+        expected = (_SyntheticFullRemoteReceipt if mode is CycleMode.FULL
+                    else _SyntheticReadinessRemoteReceipt)
+        if (type(receipt) is not expected or issued.get(id(receipt)) is not receipt
+                or receipt.batch_commitment != batch or receipt.ordinal != ordinal
+                or receipt.mode is not mode):
+            raise InjectedFailure("fake remote receipt binding rejected")
+        issued.pop(id(receipt))
+        return receipt.commitment
+    return _SyntheticFullRemoteReceipt, _SyntheticReadinessRemoteReceipt, issue, consume
+
+
+(_SyntheticFullRemoteReceipt, _SyntheticReadinessRemoteReceipt,
+ _issue_synthetic_remote_receipt, _consume_synthetic_remote_receipt) = _remote_receipt_realm()
+del _remote_receipt_realm
+
+
 class FakeCampaignPorts:
     """Final in-memory fake. It has no command, filesystem, or network adapter."""
 
@@ -118,6 +168,16 @@ class FakeCampaignPorts:
         self.maximum_active = 0
         self.calls: list[tuple[str, int | None, str | None]] = []
         self.action_counts = {name: 0 for name in _ACTIONS}
+        self._accepted: dict[tuple[str, int], str] = {}
+        self._pre_destroy: dict[int, str] = {}
+        self._private_issuer = private_evidence.SyntheticPrivateReceiptIssuer(
+            approval.batch_commitment, "2030-01-01T00:00:00Z",
+            hashlib.sha256(b"fake-deadline-binding-v1").hexdigest(),
+            (100, 200, 300, 400))
+        self._private_custody = private_evidence.SyntheticPrivateCustodyChain(
+            approval.batch_commitment, "2030-01-01T00:00:00Z",
+            hashlib.sha256(b"fake-deadline-binding-v1").hexdigest())
+        self._custody_verdict: dict[str, Any] | None = None
     @property
     def records(self) -> tuple[ControllerEventRecord, ...]:
         with self._lock:
@@ -237,6 +297,12 @@ class FakeCampaignPorts:
         if kind == "inventory" and self._active:
             raise InjectedUncertainty("fake inventory is nonzero")
         source = self.receipt_replays.get((kind, ordinal or 0), ordinal or 0)
+        if kind == "remote":
+            if source < 1 or source > 7:
+                raise ControllerError("fake remote receipt source")
+            return _issue_synthetic_remote_receipt(
+                self.approval.batch_commitment, source, CYCLE_MODES[source - 1],
+                self.action_counts[kind])
         return {
             "kind": kind,
             "batch_commitment": self.approval.batch_commitment,
@@ -246,7 +312,13 @@ class FakeCampaignPorts:
             "certain": True,
         }
 
-    def verify_receipt(self, receipt: dict[str, Any], kind: str, ordinal: int | None, mode: CycleMode | None) -> None:
+    def verify_receipt(self, receipt: Any, kind: str, ordinal: int | None,
+                       mode: CycleMode | None) -> str:
+        if kind == "remote":
+            if ordinal is None or mode is None:
+                raise InjectedFailure("unbound fake remote receipt")
+            return _consume_synthetic_remote_receipt(
+                receipt, self.approval.batch_commitment, ordinal, mode)
         if not (
             type(receipt) is dict
             and set(receipt) == {"kind", "batch_commitment", "cycle_ordinal", "cycle_mode", "identity", "certain"}
@@ -259,16 +331,12 @@ class FakeCampaignPorts:
             and receipt["certain"] is True
         ):
             raise InjectedFailure("fake receipt binding rejected")
+        return receipt["identity"]
 
     def fake_verdict(self) -> dict[str, Any]:
-        return {
-            "version": FAKE_VERDICT_VERSION,
-            "result": "pass",
-            "cycle_modes": [mode.value for mode in CYCLE_MODES],
-            "record_count": len(self.records),
-            "last_record_sha256": self.records[-1].sha256(),
-            "production_publication_authorized": False,
-        }
+        if self._custody_verdict is None:
+            raise ControllerError("synthetic private custody is not sealed")
+        return dict(self._custody_verdict)
 
 class CompletionCampaignController:
     """One normal attempt or cleanup-only recovery; never a selectable route."""
@@ -284,11 +352,74 @@ class CompletionCampaignController:
         self._ports.publish(event, ordinal, mode, outcome, fact)
         self._ports.checkpoint(f"after:{point}")
 
-    def _effect(self, intent: Event, settled: Event, kind: str, ordinal: int | None, mode: CycleMode | None, outcome: Outcome = Outcome.ACCEPTED) -> None:
+    def _effect(self, intent: Event, settled: Event, kind: str, ordinal: int | None, mode: CycleMode | None, outcome: Outcome = Outcome.ACCEPTED) -> str:
         self._emit(intent, ordinal, mode, Outcome.INTENDED, {"action": kind})
         receipt = self._ports.action(kind, ordinal, mode)
-        self._ports.verify_receipt(receipt, kind, ordinal, mode)
-        self._emit(settled, ordinal, mode, outcome, {"receipt": receipt})
+        commitment = self._ports.verify_receipt(receipt, kind, ordinal, mode)
+        fact = ({"remote_receipt_commitment": commitment}
+                if kind == "remote" else {"receipt": receipt})
+        self._emit(settled, ordinal, mode, outcome, fact)
+        if ordinal is not None:
+            self._ports._accepted[(kind, ordinal)] = commitment
+        elif kind == "inventory":
+            self._ports._accepted[(kind, 0)] = commitment
+        return commitment
+
+    def _seal_private_cycle(self, ordinal: int, mode: CycleMode) -> str:
+        ports = self._ports
+        required = {name: ports._accepted[(name, ordinal)]
+                    for name in ("plan", "apply", "running", "remote", "destroy", "inventory")}
+        remote = required["remote"]
+        pre_destroy = ports._pre_destroy[ordinal]
+        receipt_commitment = codec.commitment_sha256(
+            "cogs.stage2-completion/synthetic-cycle-owner/v1",
+            {"ordinal": ordinal, "mode": mode.value, "remote": remote,
+             "pre_destroy": pre_destroy, "destroy": required["destroy"],
+             "zero": required["inventory"]}, bytes.fromhex(ports.approval.batch_commitment))
+        workloads = ()
+        if mode is CycleMode.FULL:
+            workloads = tuple(private_evidence.SyntheticWorkloadSample(
+                category, sample, 1000 + sample,
+                hashlib.sha256(f"fake-workload:{category}:{sample}".encode()).hexdigest(),
+                True, receipt_commitment)
+                for category in ("git", "build", "install")
+                for sample in range(1, 8))
+        start = (ordinal - 1) * 1000
+        duration = 900
+        costs = tuple((duration * rate + private_evidence.BILLING_HOUR_NS - 1)
+                      // private_evidence.BILLING_HOUR_NS
+                      for rate in ports._private_issuer.rates)
+        freshness = tuple(hashlib.sha256(
+            f"fake-freshness:{ordinal}:{name}".encode()).hexdigest()
+            for name in private_evidence.FRESHNESS_NAMES)
+        cycle = ports._private_issuer.issue_cycle(
+            previous_custody_sha256=ports._private_custody.custody_root,
+            ordinal=ordinal, mode=mode, effect_started_offset_ns=start,
+            effect_ended_offset_ns=start + duration, apply_to_running_ns=100,
+            kata_launch_to_ssh_ready_ns=200,
+            receipt_commitment=receipt_commitment,
+            freshness_commitments=freshness, workloads=workloads,
+            teardown_phases=private_evidence.TEARDOWN_PHASES,
+            destroy_commitment=required["destroy"], costs_micro_usd=costs)
+        ports._private_custody.accept_cycle(cycle)
+        zero = ports._private_issuer.issue_zero(
+            previous_custody_sha256=ports._private_custody.custody_root,
+            observation_sequence=ordinal, cycle_ordinal=ordinal,
+            zero_commitment=required["inventory"])
+        ports._private_custody.accept_zero(zero)
+        return receipt_commitment
+
+    def _seal_terminal_custody(self) -> dict[str, Any]:
+        ports = self._ports
+        final_commitment = ports._accepted[("inventory", 0)]
+        zero = ports._private_issuer.issue_zero(
+            previous_custody_sha256=ports._private_custody.custody_root,
+            observation_sequence=8, cycle_ordinal=None,
+            zero_commitment=final_commitment)
+        ports._private_custody.accept_zero(zero)
+        verdict = ports._private_custody.seal_fake_verdict()
+        ports._custody_verdict = verdict
+        return verdict
 
     def _step(self) -> None:
         state = reduce_campaign(self._ports.records)
@@ -307,14 +438,36 @@ class CompletionCampaignController:
             self._effect(event, Event.FINAL_ZERO_ACCEPTED, "inventory", None, None, Outcome.ZERO)
         elif event is Event.RUNNING_OBSERVED:
             receipt = self._ports.action("running", ordinal, mode)
-            self._ports.verify_receipt(receipt, "running", ordinal, mode)
+            commitment = self._ports.verify_receipt(receipt, "running", ordinal, mode)
+            self._ports._accepted[("running", ordinal)] = commitment
             self._emit(event, ordinal, mode, Outcome.OBSERVED, {"receipt": receipt})
+        elif event is Event.PRE_DESTROY_SEALED:
+            remote = self._ports._accepted[("remote", ordinal)]
+            pre_destroy = codec.commitment_sha256(
+                "cogs.stage2-completion/synthetic-pre-destroy/v1",
+                {"ordinal": ordinal, "mode": mode.value,
+                 "remote_receipt_commitment": remote,
+                 "running_receipt_commitment": self._ports._accepted[("running", ordinal)]},
+                bytes.fromhex(self._ports.approval.batch_commitment))
+            self._ports._pre_destroy[ordinal] = pre_destroy
+            self._emit(event, ordinal, mode, Outcome.SEALED, {
+                "remote_receipt_commitment": remote,
+                "pre_destroy_receipt_commitment": pre_destroy})
+        elif event is Event.CYCLE_SEALED:
+            commitment = self._seal_private_cycle(ordinal, mode)
+            self._emit(event, ordinal, mode, Outcome.SEALED, {
+                "remote_receipt_commitment": self._ports._accepted[("remote", ordinal)],
+                "pre_destroy_receipt_commitment": self._ports._pre_destroy[ordinal],
+                "private_cycle_receipt_commitment": commitment})
         elif event is Event.TERMINAL_CANDIDATE_VALIDATED:
-            receipt = self._ports.action("validate", None, None)
-            self._ports.verify_receipt(receipt, "validate", None, None)
-            self._emit(event, None, None, Outcome.SEALED, {"receipt": receipt})
+            verdict = self._seal_terminal_custody()
+            self._emit(event, None, None, Outcome.SEALED, {
+                "synthetic_custody_root": verdict["custody_root"],
+                "synthetic_custody_version": verdict["version"]})
         elif event is not None:
-            self._emit(event, ordinal, mode, Outcome.ACCEPTED if event is Event.CYCLE_OPENED else Outcome.SEALED, {"internal": True})
+            self._emit(event, ordinal, mode,
+                       Outcome.ACCEPTED if event is Event.CYCLE_OPENED else Outcome.SEALED,
+                       {"internal": True})
 
     def _record_failure(self, error: BaseException, force_uncertain: bool = False) -> None:
         state = reduce_campaign(self._ports.records)
