@@ -51,7 +51,7 @@ test("event-contract replacement guard is exact source and precedes every source
     /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
   );
 
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v18"/u);
+  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v19"/u);
   assert.match(dispatchGuard, /MAX_RUNS = 100/u);
   assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
   assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
@@ -134,6 +134,15 @@ test("event-contract replacement guard is exact source and precedes every source
     dispatchGuard,
     /FIFTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "4bced3fb4b768f5dc67f919ae8d579059739b126"/u,
   );
+  assert.match(dispatchGuard, /SIXTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32627151171/u);
+  assert.match(
+    dispatchGuard,
+    /SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "aee6966c2977258d310affa0c3b63d0863d090fd"/u,
+  );
+  assert.match(
+    dispatchGuard,
+    /SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"/u,
+  );
   assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
   assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
   assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
@@ -143,7 +152,7 @@ test("event-contract replacement guard is exact source and precedes every source
   assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
   assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
   assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"/u);
+  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"/u);
   assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
   assert.match(dispatchGuard, /_read_event\(_required\(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"\)\)/u);
   assert.match(dispatchGuard, /"EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED"/u);
@@ -195,7 +204,7 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "51360f1867901c5ea565da43cbf5189e74e35073eb31e09d02464444dc26587f"/u,
+    /NORMALIZED_WORKFLOW_SHA256 = "790984535150dffc9369883eb4dad8a0120e8eadaffe89d0a0ac3cbadbee978d"/u,
   );
   assert.match(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
