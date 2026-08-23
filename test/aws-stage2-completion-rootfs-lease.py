@@ -644,35 +644,48 @@ def acquisition_boundary_tests():
         retained = build.RetainedBuild(SimpleNamespace(name="owned-before"), SimpleNamespace(name="base"))
         refreshed = SimpleNamespace(name="owned-after", active=object())
         events = []
+        primaries = {}
+
+        def inject(name):
+            error = RuntimeError(name)
+            primaries[name] = error
+            raise error
 
         def abandon(bundle, primary):
             events.append(("abandon", bundle.disposition, primary.args[0]))
+            if fault in {"abandon-return", "preserve-return"}: return None
+            if fault == "abandon-secondary":
+                secondary = RuntimeError("abandon-secondary")
+                secondary.__cause__ = primary
+                raise secondary
             raise primary
 
         def preserve(bundle, primary=None):
             events.append(("preserve", bundle.disposition, primary.args[0]))
             bundle.disposition = "uncertain"
+            if fault == "preserve-return": return None
+            if fault == "preserve-secondary":
+                secondary = RuntimeError("preserve-secondary")
+                secondary.__cause__ = primary
+                raise secondary
             raise primary
 
         def topology(bundle, _reference=None):
             events.append(("topology", bundle.disposition, bundle.owned.name))
-            if fault == "active-stable" and bundle.disposition == "owned":
-                raise RuntimeError(fault)
-            if fault == "post-mark-topology" and bundle.owned is refreshed:
-                raise RuntimeError(fault)
+            if fault == "active-stable" and bundle.disposition == "owned": inject(fault)
+            if fault == "post-mark-topology" and bundle.owned is refreshed: inject(fault)
             return bundle.owned
 
         def stable(bundle, _reference, _control, status):
             events.append(("stable", bundle.disposition, status))
-            if fault == "active-stable":
-                raise RuntimeError(fault)
+            if fault == "active-stable": inject(fault)
             return None
 
         def mark(owned, *args):
             events.append(("mark", retained.disposition, owned.name, args))
             assert retained.disposition == "uncertain"
-            if fault is not None and fault.startswith("mark-"):
-                raise RuntimeError(fault)
+            if fault is not None and (fault.startswith("mark-") or fault.startswith("preserve-")):
+                inject(fault)
             return refreshed
 
         stable_passes = {"count": 0}
@@ -680,29 +693,27 @@ def acquisition_boundary_tests():
         def stable_pass(value, _control):
             stable_passes["count"] += 1
             events.append(("lease-pass", value.retained.disposition))
-            if fault == "post-mark-pass":
-                raise RuntimeError(fault)
+            if fault == "post-mark-pass": inject(fault)
             return value.reference
 
         def equal(_first, _second):
             events.append(("equal", retained.disposition))
-            if fault == "equal":
-                raise RuntimeError(fault)
+            if fault in {"equal", "abandon-secondary", "abandon-return"}: inject(fault)
 
         def load_pins():
-            if fault == "pins": raise RuntimeError(fault)
+            if fault == "pins": inject(fault)
             return pins
         def build_one(*_args):
             events.append(("build-one",))
-            if fault == "build-first": raise RuntimeError(fault)
+            if fault == "build-first": inject(fault)
             return candidate
         def build_two(*_args):
             events.append(("build-two",))
-            if fault == "build-second": raise RuntimeError(fault)
+            if fault == "build-second": inject(fault)
             return candidate, retained
         def pinned(*_args):
             events.append(("pin", retained.disposition))
-            if fault == "pin-check": raise RuntimeError(fault)
+            if fault == "pin-check": inject(fault)
         token_values = iter(("6" * 64, "7" * 64))
         with patched(
             (publication, "_load_pins", load_pins),
@@ -730,9 +741,18 @@ def acquisition_boundary_tests():
                         "equal": "equality", "pin-check": "pin-check", "active-stable": "topology",
                         "mark-prevalidation": "lease-mark", "mark-append": "lease-mark",
                         "mark-readback": "lease-mark", "post-mark-topology": "lease-mark",
-                        "post-mark-pass": "lease-verify",
+                        "post-mark-pass": "lease-verify", "abandon-secondary": "equality",
+                        "abandon-return": "equality", "preserve-secondary": "lease-mark",
+                        "preserve-return": "lease-mark",
                     }
                     assert error.stage == expected[fault] and error.__cause__ is not None
+                    if fault.endswith(("secondary", "return")):
+                        if fault.endswith("secondary"):
+                            assert error.__cause__.__cause__ is primaries[fault]
+                        else:
+                            assert error.__cause__ is primaries[fault]
+                    else:
+                        assert error.__cause__ is primaries[fault]
                 else: raise AssertionError("rootfs acquisition fault was accepted")
         return events, retained
 
@@ -740,19 +760,20 @@ def acquisition_boundary_tests():
         events, retained = run(fault)
         matrix_case()
         assert not any(event[0] in {"abandon", "preserve"} for event in events)
-    for fault in ("equal", "pin-check", "active-stable"):
+    for fault in ("equal", "pin-check", "active-stable", "abandon-secondary", "abandon-return"):
         events, retained = run(fault)
         matrix_case()
         assert sum(event[0] == "abandon" and event[1] == "owned" for event in events) == 1, (fault, events)
         assert not any(event[0] == "preserve" for event in events)
         assert retained.disposition == "owned"
-    for fault in ("mark-prevalidation", "mark-append", "mark-readback", "post-mark-topology", "post-mark-pass"):
+    for fault in ("mark-prevalidation", "mark-append", "mark-readback", "post-mark-topology",
+                  "post-mark-pass", "preserve-secondary", "preserve-return"):
         events, retained = run(fault)
         matrix_case()
         mark_index = next(index for index, event in enumerate(events) if event[0] == "mark")
         assert events[mark_index][1] == "uncertain"
         assert sum(event[0] == "preserve" and event[1] in {"uncertain", "transferred"} for event in events) == 1, (fault, events)
-        assert not any(event[0] == "abandon" for event in events)
+        assert sum(event[0] == "abandon" for event in events) == (fault == "preserve-return")
         assert retained.disposition == "uncertain"
     events, retained = run(None)
     matrix_case()
