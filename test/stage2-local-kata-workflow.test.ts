@@ -222,7 +222,8 @@ test("recovery and independent settlement always run without turning cancellatio
   assert.match(settlement, /\/sys\/class\/net/u);
   assert.match(settlement, /\/sys\/fs\/cgroup/u);
   assert.match(settlement, /\("\/usr\/sbin\/nft", "-j", "list", "ruleset"\)/u);
-  assert.match(settlement, /\("\/usr\/sbin\/ip", "-j", "netns", "list"\)/u);
+  assert.doesNotMatch(settlement, /\("\/usr\/sbin\/ip", "-j", "netns", "list"\)/u);
+  assert.match(settlement, /_bounded_names\("\/run\/netns"\)/u);
   assert.match(settlement, /\("\/usr\/sbin\/tc", "-j", "qdisc", "show"\)/u);
   assert.match(settlement, /c42\[hnqt\]/u);
   assert.match(settlement, /cogs_stage2_ssh_v1/u);
