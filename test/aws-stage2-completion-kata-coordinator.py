@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exhaustive fake-owner cuts for fixed composition and cleanup-only recovery."""
 import ast
+import io
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -9,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_coordinator as coordinator
+import completion_local_full as local
+
+
+def check(condition, message):
+    if not condition:
+        raise AssertionError(message)
 
 METHOD_EVENT = {
     "claim_static_custody": "STATIC_CUSTODY",
@@ -53,6 +60,10 @@ assert tuple(METHOD_EVENT[name] for name in CLEANUP_METHODS) == coordinator.CLEA
 
 
 class Cut(Exception):
+    pass
+
+
+class GroupedFailure(BaseException):
     pass
 
 
@@ -196,12 +207,40 @@ for event, stage in (("ROOTFS_ACQUIRED", "rootfs-acquire"),
                      ("OPERATION_ADMITTED", "operation-open")):
     for side in ("before", "after"):
         fake = FakeOwners((side, event))
+        caught = None
         with patch.object(coordinator, "_owners", fake):
             try: coordinator._run_fixed_local_qualification()
-            except coordinator.CoordinatorError as error: assert isinstance(error.__cause__, Cut)
+            except coordinator.CoordinatorTerminal as error:
+                caught = error
+                check(isinstance(error.__cause__, Cut), "assignment primary was not retained")
+                check(error.errors[0] is error.__cause__, "terminal primary ordering changed")
             else: raise AssertionError("assignment-boundary primary was accepted")
-        assert coordinator._safe_failure_diagnostic() == f"cogs local qualification failed at {stage}\n"
-        assert "OWNER_EVIDENCE" not in fake.events and fake.events.count("CUSTODY_ABORTED") == 1
+        check(coordinator._safe_failure_diagnostic(caught) ==
+              f"cogs local qualification failed at {stage}\n", "bounded stage differs")
+        check("OWNER_EVIDENCE" not in fake.events and fake.events.count("CUSTODY_ABORTED") == 1,
+              "assignment cut entered evidence or changed custody cardinality")
+
+# A malformed successful None owner and grouped terminal causes cannot enter evidence or raw stderr.
+class NoneOperationOwners(FakeOwners):
+    def open_operation(self, _lifecycle):
+        self.events.append("OPERATION_ADMITTED")
+        return None
+fake = NoneOperationOwners()
+check(not invoke(coordinator._run_fixed_local_qualification, fake), "None operation was accepted")
+check("OWNER_EVIDENCE" not in fake.events, "None operation entered evidence")
+for error, expected in (
+        (coordinator.CoordinatorBlocked(), ""),
+        (coordinator.CoordinatorTerminal("operation-open", (Cut("primary"), Cut("abort"))),
+         "cogs local qualification failed at operation-open\n"),
+        (GroupedFailure("private grouped terminal"),
+         "cogs local qualification failed at internal-contract\n")):
+    stream = io.StringIO()
+    with patch.object(coordinator, "_run_fixed_local_qualification", side_effect=error), \
+         patch.object(sys, "stderr", stream):
+        try: local.main()
+        except local.LocalResultBlocked: pass
+        else: raise AssertionError("terminal error was accepted")
+    check(stream.getvalue() == expected, "terminal diagnostic was not exact and bounded")
 
 # Every cleanup cut is attempted once, later cleanup still runs in order, no
 # evidence is issued from uncertain cleanup, and custody is aborted once.

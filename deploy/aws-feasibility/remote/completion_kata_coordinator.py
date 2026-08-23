@@ -89,20 +89,9 @@ RECOVERY_FORBIDDEN = (
 BLOCKED_REASON = (
     "exact static admission/live-custody and private owner-evidence bridges required"
 )
-_FAILURE_STAGE = "entry"
-_FAILURE_STAGES = frozenset({"entry", "static-custody", "rootfs-acquire", "operation-open", "operation-live"})
-
-
-def _set_failure_stage(stage):
-    global _FAILURE_STAGE
-    if stage not in _FAILURE_STAGES:
-        raise CoordinatorError("invalid fixed failure stage")
-    _FAILURE_STAGE = stage
-
-
-def _safe_failure_diagnostic():
-    stage = _FAILURE_STAGE if _FAILURE_STAGE in _FAILURE_STAGES else "entry"
-    return f"cogs local qualification failed at {stage}\n"
+_FAILURE_STAGES = frozenset({
+    "entry", "rootfs-acquire", "operation-open", "operation-live", "internal-contract",
+})
 
 
 class CoordinatorError(Exception):
@@ -111,6 +100,20 @@ class CoordinatorError(Exception):
 
 class CoordinatorBlocked(CoordinatorError):
     """An immutable prerequisite or package-private integration refusal."""
+
+
+class CoordinatorTerminal(CoordinatorError):
+    """Bounded terminal class retaining private ordered causes without rendering them."""
+    def __init__(self, stage, errors):
+        if stage not in _FAILURE_STAGES or not errors:
+            raise CoordinatorError("invalid fixed terminal failure")
+        super().__init__("fixed local qualification terminal failure")
+        self.stage, self.errors = stage, tuple(errors)
+
+
+def _safe_failure_diagnostic(error):
+    stage = error.stage if type(error) is CoordinatorTerminal else "internal-contract"
+    return f"cogs local qualification failed at {stage}\n"
 
 
 @dataclass
@@ -139,6 +142,7 @@ class _Lifecycle:
     retired: object = None
     residue: object = None
     primary_failure: BaseException = None
+    failure_stage: str = "entry"
     custody_settled: bool = False
 
 
@@ -441,14 +445,15 @@ def _run_fixed_local_qualification():
     """Compose exactly one fixed lifecycle, then settle it exactly once."""
     lifecycle = _Lifecycle()
     try:
-        _set_failure_stage("static-custody")
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
-        _set_failure_stage("rootfs-acquire")
+        lifecycle.failure_stage = "rootfs-acquire"
         lifecycle.rootfs = _owners.acquire_rootfs(lifecycle)
-        _set_failure_stage("operation-open")
+        lifecycle.failure_stage = "operation-open"
         lifecycle.operation = _owners.open_operation(lifecycle)
-        _set_failure_stage("operation-live")
+        if lifecycle.operation is None:
+            raise CoordinatorBlocked("exact operation owner was not established")
+        lifecycle.failure_stage = "operation-live"
         lifecycle.live_custody = _owners.claim_live_custody(lifecycle)
         lifecycle.executables = _owners.claim_executables(lifecycle)
         lifecycle.inputs = _owners.create_inputs(lifecycle)
@@ -473,10 +478,12 @@ def _run_fixed_local_qualification():
             errors.insert(0, lifecycle.primary_failure)
         _abort_custody(lifecycle, errors)
         _raise_failures("fixed lifecycle cleanup was not exact", errors)
-    if lifecycle.operation is None and lifecycle.primary_failure is not None:
-        errors = [lifecycle.primary_failure]
+    if lifecycle.operation is None:
+        errors = [lifecycle.primary_failure or CoordinatorBlocked(
+            "exact operation owner was not established")]
         _abort_custody(lifecycle, errors)
-        _raise_failures("fixed lifecycle operation owner was not established", errors)
+        terminal = CoordinatorTerminal(lifecycle.failure_stage, errors)
+        raise terminal from errors[0]
 
     try:
         return _finish(lifecycle)

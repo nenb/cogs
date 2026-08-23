@@ -353,8 +353,10 @@ def main():
         # No report bytes can enter this route.  The coordinator may return only
         # the sealed receipt minted after typed evidence and custody settlement.
         receipt = coordinator._run_fixed_local_qualification()
-    except coordinator.CoordinatorError:
-        diagnostic = coordinator._safe_failure_diagnostic()
+    except coordinator.CoordinatorBlocked:
+        raise LocalResultBlocked() from None
+    except BaseException as error:
+        diagnostic = coordinator._safe_failure_diagnostic(error)
         _require(len(diagnostic) <= 64 and sys.stderr.write(diagnostic) == len(diagnostic))
         sys.stderr.flush()
         raise LocalResultBlocked() from None
