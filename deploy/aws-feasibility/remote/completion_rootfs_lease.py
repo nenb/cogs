@@ -27,12 +27,18 @@ class LeaseError(Exception):
     pass
 
 
+ROOTFS_BUILD_OUTCOMES = {
+    "cancelled": "cancel", "deadline": "deadline", "failed": "work",
+    "not-started": "setup", "success": "post",
+}
+ROOTFS_BUILD_DETAILS = (materializer.MATERIALIZE_STAGES - {"internal"}) | set(
+    ROOTFS_BUILD_OUTCOMES.values())
 ROOTFS_ACQUIRE_STAGES = frozenset({
     "pins", "build-first", "build-second", "equality", "pin-check", "topology",
     "lease-mark", "lease-verify", *(
-        f"{build_stage}-{materialize_stage}"
+        f"{build_stage}-{detail}"
         for build_stage in ("build-first", "build-second")
-        for materialize_stage in materializer.MATERIALIZE_STAGES
+        for detail in ROOTFS_BUILD_DETAILS
     ),
 })
 
@@ -381,7 +387,9 @@ def _acquire(approval, outer):
         return lease
     except BaseException as error:
         if stage in {"build-first", "build-second"} and type(error) is build.BuildAttemptError:
-            stage = f"{stage}-{error.work_stage}"
+            detail = (error.work_stage if error.work_stage != "internal"
+                      else ROOTFS_BUILD_OUTCOMES[error.work_outcome])
+            stage = f"{stage}-{detail}"
         if retained is None:
             raise RootfsAcquireError(stage) from error
         try:

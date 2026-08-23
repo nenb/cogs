@@ -706,6 +706,14 @@ def acquisition_boundary_tests():
         def build_one(*_args):
             events.append(("build-one",))
             if fault == "build-first": inject(fault)
+            if fault == "build-first-setup":
+                error = build.BuildAttemptError("not-started")
+                primaries[fault] = error
+                raise error
+            if fault == "build-first-post":
+                error = build.BuildAttemptError("success")
+                primaries[fault] = error
+                raise error
             return candidate
         def build_two(*_args):
             events.append(("build-two",))
@@ -738,6 +746,7 @@ def acquisition_boundary_tests():
                 except lease.RootfsAcquireError as error:
                     expected = {
                         "pins": "pins", "build-first": "build-first", "build-second": "build-second",
+                        "build-first-setup": "build-first-setup", "build-first-post": "build-first-post",
                         "equal": "equality", "pin-check": "pin-check", "active-stable": "topology",
                         "mark-prevalidation": "lease-mark", "mark-append": "lease-mark",
                         "mark-readback": "lease-mark", "post-mark-topology": "lease-mark",
@@ -756,7 +765,7 @@ def acquisition_boundary_tests():
                 else: raise AssertionError("rootfs acquisition fault was accepted")
         return events, retained
 
-    for fault in ("pins", "build-first", "build-second"):
+    for fault in ("pins", "build-first", "build-first-setup", "build-first-post", "build-second"):
         events, retained = run(fault)
         matrix_case()
         assert not any(event[0] in {"abandon", "preserve"} for event in events)
