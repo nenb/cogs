@@ -236,6 +236,9 @@ def settlement_tests():
     assert executed[0][2] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
                               **environment, "RECOVERY_OUTCOME": "success"}
     assert settlement.RESIDUE_NAME.search("cogs-stage2-net")
+    constants = settlement._network_state.__code__.co_consts
+    assert ("/usr/sbin/ip", "-j", "link", "show") in constants
+    assert ("/usr/sbin/ip", "-j", "-details", "link", "show") not in constants
 
     links = settlement._bounded_json(
         b'[{"ifindex":2,"ifname":"eth0"},{"ifindex":7,"ifname":"c42habcdef0123"}]')

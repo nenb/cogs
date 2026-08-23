@@ -11,4 +11,6 @@ Add bounded phase markers around qualification preparation and split settlement 
 
 Measured workflow gross additions rise from 1,124 to 1,196 lines. Raise only the workflow correction high from 1,150 to 1,250. Global correction remains 10,766, below 11,000, and conservative total remains below the 67,000 hard stop.
 
-This authorizes the diagnostic preflight and a later reviewed local replacement only. It grants no AWS/provider/OpenTofu/SSM/inventory/campaign, deployment, production, promotion, or release authority.
+The first exact preflight observation, run `32608075591`, completed immutable preparation and root cleanup but failed both residue observations at `network-ip-link`; it produced no artifact and grants no claim. Private custody SHA-256 is `5de1090c29b2b15e29cacf7dbabe47d04a531d90a12c6158b0ca7237484a1942`. The observer required detailed link metadata although residue uses only bounded interface names. Remove `-details` rather than accepting warning bytes, retaining strict zero-stderr JSON observation.
+
+This authorizes the corrected distinct diagnostic preflight and a later reviewed local replacement only. It grants no AWS/provider/OpenTofu/SSM/inventory/campaign, deployment, production, promotion, or release authority.
