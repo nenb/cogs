@@ -295,6 +295,9 @@ class _PackagePrivateOwners:
     def recover_pending(self, lifecycle):
         return operation_bridge._recover_pending(self.operation, lifecycle)
 
+    def recover_preproduction(self, lifecycle):
+        return operation_bridge._recover_preproduction(self.operation, lifecycle)
+
     def reconstruct_cleanup(self, lifecycle):
         lifecycle.rootfs = operation_bridge._reconstruct_rootfs(
             self.operation, lifecycle)
@@ -519,6 +522,8 @@ def _recover_fixed_local_qualification():
         if lifecycle.operation is not None:
             _owners.recover_pending(lifecycle)
             _owners.reconstruct_cleanup(lifecycle)
+        else:
+            _owners.recover_preproduction(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
 

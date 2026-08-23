@@ -149,6 +149,7 @@ routes = {
     "prove_runtime": (execution, "_prove_runtime", owners.execution),
     "authenticate_ssh": (execution, "_authenticate_ssh", owners.execution),
     "open_existing_operation": (operation, "_open_existing_operation", owners.operation),
+    "recover_preproduction": (operation, "_recover_preproduction", owners.operation),
     "recover_pending": (operation, "_recover_pending", owners.operation),
     "revoke_readiness": (execution, "_revoke_readiness", owners.execution),
     "observe_ownership": (execution, "_observe_ownership", owners.execution),

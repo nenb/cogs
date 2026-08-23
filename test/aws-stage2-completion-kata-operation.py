@@ -1430,12 +1430,94 @@ def production_owner_test():
             opened.close()
 
             fixture_journal(completion, malformed=b"malformed\n")
-            malformed = operation._open_fixed_operation()
+            malformed_before = fixture_journal_path(completion).read_bytes()
+            malformed = operation._open_fixed_operation_recovery()
             assert malformed.status() == "preserve"
             malformed.close()
+            assert fixture_journal_path(completion).read_bytes() == malformed_before
 
             intent = ("ROOTFS_ACQUIRE_INTENT", rootfs_intent)
             leased_records = (intent, ("ROOTFS_LEASED", leased))
+            approval = fs.SourceApproval("5" * 40, "6" * 64)
+
+            # Recovery observation is read-only and issues only sealed cleanup custody.
+            fixture_journal(completion)
+            genesis_only = fixture_journal_path(completion).read_bytes().splitlines(keepends=True)[0]
+            fixture_journal_path(completion).write_bytes(genesis_only)
+            recovery = operation._open_fixed_operation_recovery()
+            prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+            assert prestage.reconstruction_context()["phase"] == "GENESIS"
+            prestage.close()
+            unadmitted_prefixes = ((), (intent,), leased_records,
+                                   leased_records + (lifecycle_deadline(),))
+            for prefix in unadmitted_prefixes:
+                fixture_journal(completion, prefix)
+                before = fixture_journal_path(completion).read_bytes()
+                recovery = operation._open_fixed_operation_recovery()
+                assert recovery.status() == "exact"
+                prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+                assert prestage.reconstruction_context()["kind"] == "unadmitted-journal"
+                for forbidden in (
+                    "command_context", "admit_production_v2", "reserve_rootfs",
+                    "record_network", "record_runtime_prepared", "retire",
+                    "evidence", "receipt",
+                ):
+                    rejected(lambda forbidden=forbidden: getattr(prestage, forbidden))
+                permit = prestage.reserve_prestage_rootfs_release()
+                rejected(prestage.reserve_prestage_rootfs_release)
+                grant = operation._claim_prestage_rootfs(permit)
+                rejected(lambda: operation._claim_prestage_rootfs(permit))
+                binding = operation._prestage_rootfs_binding(grant)
+                assert (binding["tip_sequence"], binding["tip_offset"],
+                        binding["tip_sha256"]) == (
+                            operation._parse(before)[-1].sequence,
+                            operation._parse(before)[-1].next_offset,
+                            operation._parse(before)[-1].line_sha256)
+                coordinates = operation._prestage_rootfs_coordinates(grant)
+                assert coordinates["rootfs_token"] == "b" * 64
+                assert fixture_journal_path(completion).read_bytes() == before
+                prestage.close()
+            fixture_journal(completion, leased_records)
+            recovery = operation._open_fixed_operation_recovery()
+            mismatch_bytes = fixture_journal_path(completion).read_bytes()
+            rejected(lambda: operation._claim_pre_admission_cleanup(
+                recovery, fs.SourceApproval("4" * 40, "6" * 64)))
+            assert fixture_journal_path(completion).read_bytes() == mismatch_bytes
+            recovery.close()
+
+            # Exact journal-absent infrastructure subsets are observed, never repaired.
+            state_path = completion / operation.STATE_NAME.text
+            fixture_journal(completion)
+            fixture_journal_path(completion).unlink()
+            for retained_names, expected in (
+                ((), "infrastructure-subset"),
+                ((operation.SENTINEL_NAME.text,), "infrastructure-subset"),
+                ((operation.SENTINEL_NAME.text, operation.LOCK_NAME.text),
+                 "infrastructure-complete"),
+            ):
+                for name in (operation.SENTINEL_NAME.text, operation.LOCK_NAME.text):
+                    path = state_path / name
+                    if name not in retained_names and path.exists(): path.unlink()
+                    if name in retained_names and not path.exists():
+                        path.write_bytes(operation.SENTINEL if name == operation.SENTINEL_NAME.text else b"")
+                        os.chmod(path, 0o600)
+                before_names = tuple(sorted(path.name for path in state_path.iterdir()))
+                recovery = operation._open_fixed_operation_recovery()
+                assert recovery.status() == expected
+                prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+                assert prestage.reconstruction_context()["kind"] == "journal-absent"
+                assert tuple(sorted(path.name for path in state_path.iterdir())) == before_names
+                prestage.close()
+            for path in tuple(state_path.iterdir()): path.unlink()
+            state_path.rmdir()
+            recovery = operation._open_fixed_operation_recovery()
+            assert recovery.status() == "infrastructure-absent"
+            prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+            assert prestage.reconstruction_context()["kind"] == "journal-absent"
+            assert not state_path.exists()
+            prestage.close()
+            fixture_journal(completion)
+
             def reset_nft_owner_fixture():
                 nft = network.nft_owner
                 if (os.environ.get("COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION") != "1"
@@ -2228,10 +2310,14 @@ def production_owner_test():
                 rejected(lambda: admitted.record_command_intent(stale_intent))
             assert fixture_journal_path(completion).read_bytes() == admitted_bytes
             admitted.close()
-            reopened_admitted = operation._open_fixed_operation()
-            assert operation._claim_production_operation(reopened_admitted) is reopened_admitted
+            reopened_admitted = operation._open_fixed_operation_recovery()
+            rejected(lambda: operation._claim_pre_admission_cleanup(
+                reopened_admitted, approval))
+            recovered_cleanup = operation._claim_production_recovery_operation(
+                reopened_admitted)
+            assert operation._is_production_recovery_operation(recovered_cleanup)
             assert fixture_journal_path(completion).read_bytes() == admitted_bytes
-            reopened_admitted.close()
+            recovered_cleanup.close()
             input_root.rmdir()
 
             # Real FixedJournal layout derives the sole active/quarantine names

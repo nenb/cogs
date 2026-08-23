@@ -55,7 +55,7 @@ def portable_tests():
     assert "def _bootstrap(" in source and "_bootstrap(" not in source.split("def main", 1)[1]
     assert "alias_opened + target_opened" in source and "transferred or operation is None" in source
     assert "def _stable_active(" in source and "def _mark_leased(" in source
-    assert 'record_type not in {"leased", "release-authorized"}' in source
+    assert 'record_type not in {"leased", "release-authorized", "prestage-release-authorized"}' in source
     assert "_append_mechanical" not in source and source.count("ledger._append_record(") == 1
     assert source.count("ledger._append_leased_record(") == 1
     assert "active.records + (record,)" not in source

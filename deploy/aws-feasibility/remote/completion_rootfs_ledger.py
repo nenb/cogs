@@ -32,6 +32,8 @@ MAX_RECORDS = ROOTFS_LEDGER_MAX_RECORDS
 OFFSET_WIDTH = 16
 ZERO_SHA256 = "0" * 64
 TOKEN_LENGTH = 64
+KATA_OPERATION_MAX_RECORDS = 16_384
+KATA_OPERATION_MAX_BYTES = 16 * 1024 * 1024
 CANDIDATE_TAR_PATH = ".cogs-rootfs-candidate-v1.tar"
 CANDIDATE_TAR_SIZE = 136_905_728
 CANDIDATE_RECORD_TYPES = frozenset({
@@ -67,6 +69,7 @@ RECORD_TYPES = frozenset(
         "retired",
         "leased",
         "release-authorized",
+        "prestage-release-authorized",
         "uncertain",
     }
 )
@@ -603,7 +606,7 @@ class LedgerLegalState:
         }
         phases = entry_phases | {
             "genesis", "ready", "aborted", "retired", "operation-intent", "operation-observed",
-            "active", "leased", "release-authorized", "operation-remove", "operation-absent", "uncertain",
+            "active", "leased", "release-authorized", "prestage-release-authorized", "operation-remove", "operation-absent", "uncertain",
         }
         _fail(self.phase in phases)
         _fail(self.operation_name is None or self.operation_name == _operation_name(self.token))
@@ -612,7 +615,7 @@ class LedgerLegalState:
         _fail(type(self.state_parent) is LedgerParent)
         _fail(self.operation_parent is None or type(self.operation_parent) is LedgerParent)
         if self.phase in {
-            "operation-observed", "active", "leased", "release-authorized", "operation-remove",
+            "operation-observed", "active", "leased", "release-authorized", "prestage-release-authorized", "operation-remove",
             *entry_phases,
         }:
             _fail(type(self.operation_parent) is LedgerParent)
@@ -621,9 +624,9 @@ class LedgerLegalState:
         _fail(type(self.groups) is PersistentMap and type(self.parents) is PersistentMap)
         if self.phase in entry_phases:
             _fail(type(self.pending) is LedgerRecord and self.pending.record_type == self.phase)
-            _fail(self.return_phase in {"active", "release-authorized"})
+            _fail(self.return_phase in {"active", "release-authorized", "prestage-release-authorized"})
         elif self.phase == "operation-remove":
-            _fail(self.pending is None and self.return_phase in {"active", "release-authorized"})
+            _fail(self.pending is None and self.return_phase in {"active", "release-authorized", "prestage-release-authorized"})
         else:
             _fail(self.pending is None and self.return_phase is None)
         _fail(self.lease_snapshot is None or type(self.lease_snapshot) is LeaseSnapshot)
@@ -631,7 +634,7 @@ class LedgerLegalState:
             "genesis", "ready", "aborted", "operation-intent", "operation-observed", "active",
         } or self.return_phase == "active":
             _fail(self.lease_snapshot is None)
-        if self.phase in {"leased", "release-authorized"} or self.return_phase == "release-authorized":
+        if self.phase in {"leased", "release-authorized", "prestage-release-authorized"} or self.return_phase in {"release-authorized", "prestage-release-authorized"}:
             _fail(type(self.lease_snapshot) is LeaseSnapshot)
         _fail(type(self.previous) is LedgerRecord)
         _fail((self.previous.sequence, self.previous.next_offset, self.previous.line_sha256) ==
@@ -679,13 +682,14 @@ class LedgerState:
 
     def __post_init__(self):
         _fail(type(self.status) is str and type(self.cleanup_allowed) is bool)
-        _fail(type(self.cleanup_origin) is str and self.cleanup_origin in {"none", "prelease", "release-authorized"})
+        _fail(type(self.cleanup_origin) is str and self.cleanup_origin in {"none", "prelease", "release-authorized", "prestage-authorized"})
         _fail(type(self.lease_seen) is bool and type(self.release_authorized) is bool)
         _fail(self.lease_snapshot is None or type(self.lease_snapshot) is LeaseSnapshot)
         prelease = {"genesis-settleable", "genesis-abortable", "operation-abortable", "operation-create-settleable", "entry-absent", "create-settleable", "metadata-settleable", "hardlink-create-settleable", "candidate-tar-abortable", "candidate-tar-observeable", "candidate-tar-settleable", "active"}
         removal = {"remove-retry", "remove-absence-settleable", "hardlink-remove-absence-settleable", "remove-settleable", "operation-remove-retry", "operation-absence-settleable", "retirable", "retired"}
         valid = ((self.status in prelease or self.status in removal) and self.cleanup_origin == "prelease" and self.cleanup_allowed)
         valid = valid or ((self.status == "release-authorized" or self.status in removal) and self.cleanup_origin == "release-authorized" and self.cleanup_allowed)
+        valid = valid or ((self.status == "prestage-release-authorized" or self.status in removal) and self.cleanup_origin == "prestage-authorized" and self.cleanup_allowed)
         valid = valid or (self.status in {"leased", "preserve"} and self.cleanup_origin == "none" and not self.cleanup_allowed)
         _fail(valid and (not self.release_authorized or self.lease_seen))
         if self.status == "leased":
@@ -694,6 +698,8 @@ class LedgerState:
             _fail(not self.lease_seen and not self.release_authorized)
         if self.cleanup_origin == "release-authorized":
             _fail(self.lease_seen and self.release_authorized and type(self.lease_snapshot) is LeaseSnapshot)
+        if self.cleanup_origin == "prestage-authorized":
+            _fail(self.lease_seen and not self.release_authorized and type(self.lease_snapshot) is LeaseSnapshot)
 
 
 @dataclass(frozen=True)
@@ -851,6 +857,11 @@ def _validate_body(record_type, body):
         _token(body["kata_operation_token"])
         _parse_key(body["kata_ledger_key"], "file")
         _settled_record(body["kata_release_sequence"], body["kata_release_offset"], body["kata_release_sha256"], 1)
+    elif record_type == "prestage-release-authorized":
+        _exact_keys(body, ("token", "operation_name", "lease_sequence", "lease_offset", "lease_sha256", "operation_binding"))
+        _fail(body["operation_name"] == _operation_name(token))
+        _settled_record(body["lease_sequence"], body["lease_offset"], body["lease_sha256"])
+        _operation_binding(body["operation_binding"])
     elif record_type in {"operation-create-intent", "operation-abort", "operation-absent"}:
         _exact_keys(body, ("token", "operation_name", "state_parent"))
         _fail(body["operation_name"] == _operation_name(token))
@@ -943,6 +954,74 @@ def _parse_key(value, expected_kind):
     _exact_keys(value, ("mount_id", "device", "inode", "kind"))
     _fail(type(expected_kind) is str and value["kind"] == expected_kind)
     return HostKey(_integer(value["mount_id"], 1), _integer(value["device"]), _integer(value["inode"], 1), value["kind"])
+
+
+def _operation_infrastructure(value):
+    _exact_keys(value, ("completion_generation", "completion_names", "state_generation", "entries"))
+    completion = _parse_generation(value["completion_generation"])
+    _fail(completion.key.kind == "directory" and completion.mode == 0o700
+          and completion.uid == completion.gid == 0 and completion.nlink >= 2)
+    completion_names = value["completion_names"]
+    allowed_completion = {"artifacts", "immutable-preparation-v1", "kata-input-v1",
+                          "kata-operation-v1", "kata-runtime-v1", "rootfs-v1"}
+    _fail(type(completion_names) is list and
+          all(type(item) is str and item in allowed_completion for item in completion_names))
+    _fail(completion_names == sorted(set(completion_names), key=lambda item: item.encode("ascii")))
+    state = value["state_generation"]
+    if state is not None:
+        parsed_state = _parse_generation(state)
+        _fail(parsed_state.key.kind == "directory" and parsed_state.mode == 0o700
+              and parsed_state.uid == parsed_state.gid == 0 and parsed_state.nlink >= 2
+              and (parsed_state.key.mount_id, parsed_state.key.device) ==
+                  (completion.key.mount_id, completion.key.device))
+        _fail("kata-operation-v1" in completion_names)
+    else:
+        _fail("kata-operation-v1" not in completion_names)
+    entries = value["entries"]
+    _fail(type(entries) is list and len(entries) <= 2)
+    allowed = {".cogs-stage2-kata-operation-v1", ".cogs-stage2-kata-operation-lock-v1"}
+    names = []
+    for entry in entries:
+        _exact_keys(entry, ("name", "generation"))
+        _fail(type(entry["name"]) is str and entry["name"] in allowed)
+        generation = _parse_generation(entry["generation"])
+        expected_size = 0 if entry["name"].endswith("lock-v1") else len(b"cogs-stage2-kata-operation-v1\n")
+        _fail(generation.key.kind == "file" and generation.mode == 0o600
+              and generation.uid == generation.gid == 0 and generation.nlink == 1
+              and generation.size == expected_size)
+        if state is not None:
+            _fail((generation.key.mount_id, generation.key.device) ==
+                  (parsed_state.key.mount_id, parsed_state.key.device))
+        names.append(entry["name"])
+    _fail(names == sorted(set(names), key=lambda item: item.encode("ascii")))
+    _fail(state is not None or not entries)
+
+
+def _operation_binding(value):
+    _fail(type(value) is dict and value.get("kind") in {"unadmitted-journal", "journal-absent"})
+    if value["kind"] == "journal-absent":
+        _exact_keys(value, ("kind", "infrastructure"))
+        _operation_infrastructure(value["infrastructure"])
+        return
+    _exact_keys(value, (
+        "kind", "operation_token", "journal_key", "journal_generation",
+        "tip_sequence", "tip_offset", "tip_sha256", "phase", "infrastructure",
+    ))
+    _token(value["operation_token"])
+    journal_key = _parse_key(value["journal_key"], "file")
+    journal_generation = _parse_generation(value["journal_generation"])
+    _fail(journal_generation.key == journal_key and journal_generation.key.kind == "file"
+          and journal_generation.mode == 0o600 and journal_generation.uid == journal_generation.gid == 0
+          and journal_generation.nlink == 1)
+    _integer(value["tip_sequence"], 0, KATA_OPERATION_MAX_RECORDS - 1)
+    _integer(value["tip_offset"], 1, KATA_OPERATION_MAX_BYTES)
+    _fail(journal_generation.size == value["tip_offset"])
+    _digest(value["tip_sha256"])
+    _fail(value["phase"] in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED"})
+    _operation_infrastructure(value["infrastructure"])
+    state = value["infrastructure"]["state_generation"]
+    _fail(state is not None and (journal_generation.key.mount_id,
+          journal_generation.key.device) == (state["mount_id"], state["device"]))
 
 
 def _entry_common(body):
@@ -1056,9 +1135,12 @@ def _lease_from_record(records, record):
 def _lease_history(records):
     leased = next((record for record in records if record.record_type == "leased"), None)
     snapshot = None if leased is None else _lease_from_record(records, leased)
-    authorized = next((record for record in records if record.record_type == "release-authorized"), None)
+    release = next((record for record in records if record.record_type == "release-authorized"), None)
+    prestage = next((record for record in records if record.record_type == "prestage-release-authorized"), None)
+    _fail(release is None or prestage is None)
+    authorized = release if release is not None else prestage
     started = authorized is not None and any(record.sequence > authorized.sequence and record.record_type in {"remove-intent", "operation-remove-intent"} for record in records)
-    return snapshot, authorized is not None, started
+    return snapshot, release is not None, prestage is not None, started
 
 
 def _record_settled(record):
@@ -1201,7 +1283,7 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
         _fail(kind == "operation-create-settled" and body["operation_name"] == operation_name)
         _fail(body == previous_body)
         phase = "active"
-    elif phase in {"active", "release-authorized"}:
+    elif phase in {"active", "release-authorized", "prestage-release-authorized"}:
         if kind == "leased":
             _fail(phase == "active" and pending is None and lease_snapshot is None)
             _fail(_parse_parent(body["state_parent"]) == state_parent)
@@ -1228,7 +1310,7 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
             _fail(body["path"] not in operation_parent.names)
             pending, return_phase, phase = record, "active", "candidate-tar-intent"
         else:
-            allowed = {"remove-intent"} if phase == "release-authorized" else {
+            allowed = {"remove-intent"} if phase in {"release-authorized", "prestage-release-authorized"} else {
                 "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
             }
             _fail(kind in allowed)
@@ -1246,11 +1328,11 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
             pending, return_phase = record, phase
             phase = kind.removesuffix("-intent") + "-intent"
     elif phase == "leased":
-        _fail(kind == "release-authorized" and lease_snapshot is not None)
+        _fail(kind in {"release-authorized", "prestage-release-authorized"} and lease_snapshot is not None)
         actual = lease_snapshot.settled
         _fail((body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) ==
               (actual.sequence, actual.offset, actual.line_sha256))
-        phase = "release-authorized"
+        phase = kind
     elif phase == "candidate-tar-intent":
         _fail(pending is not None and kind in {"candidate-tar-abort", "candidate-tar-observed"})
         intent = _body(pending)
@@ -1376,7 +1458,7 @@ def _reconcile_ledger(records, observations):
     phase = _validate_legal_records(records)
     token = _body(records[0])["token"]
     operation_name = _operation_name(token)
-    lease_snapshot, release_authorized, authorized_removal_started = _lease_history(records)
+    lease_snapshot, release_authorized, prestage_authorized, authorized_removal_started = _lease_history(records)
     genesis_key = _parse_key(_body(records[0])["ledger_key"], "file")
     ledger_matches = observations.ledger_generation.key == genesis_key
     if lease_snapshot is not None:
@@ -1504,7 +1586,7 @@ def _reconcile_ledger(records, observations):
             exact_link = False
         if exact_link:
             status = "candidate-tar-observeable" if phase == "candidate-tar-intent" else "candidate-tar-settleable"
-    elif phase in {"active", "release-authorized", "leased"} and operations == {operation_name: operation_generation} and parent_matches:
+    elif phase in {"active", "release-authorized", "prestage-release-authorized", "leased"} and operations == {operation_name: operation_generation} and parent_matches:
         if entries == owned:
             status = phase
         if lease_snapshot is not None and not authorized_removal_started:
@@ -1620,11 +1702,13 @@ def _reconcile_ledger(records, observations):
         origin = "prelease"
     elif status == "release-authorized" or status in removal_statuses and release_authorized:
         origin = "release-authorized"
+    elif status == "prestage-release-authorized" or status in removal_statuses and prestage_authorized:
+        origin = "prestage-authorized"
     elif status in removal_statuses:
         origin = "prelease"
     else:
         origin = "none"
-    cleanup_allowed = origin != "none" and status in prelease_statuses | removal_statuses | {"release-authorized"}
+    cleanup_allowed = origin != "none" and status in prelease_statuses | removal_statuses | {"release-authorized", "prestage-release-authorized"}
     if phase == "uncertain" or status == "preserve":
         status, origin, cleanup_allowed = "preserve", "none", False
     return LedgerState(
@@ -1715,7 +1799,7 @@ def _append_capabilities():
 
     def _write_record(writer_state, proposal, control, route=None):
         _fail(route is route_seal)
-        _fail(type(proposal) is LedgerProposal and proposal.record_type != "release-authorized")
+        _fail(type(proposal) is LedgerProposal and proposal.record_type not in {"release-authorized", "prestage-release-authorized"})
         return write_core(writer_state, proposal, control, route_seal)
 
     def _append_record(writer_state, proposal, control):
@@ -1738,6 +1822,18 @@ def _append_capabilities():
         }
         return _write_record(writer_state, LedgerProposal.create("leased", body), control, route_seal)
 
+    def _append_prestage_authorized_record(writer_state, token, operation_name, lease,
+                                            operation_binding, control):
+        _fail(type(lease) is SettledBytes)
+        body = {
+            "token": token, "operation_name": operation_name,
+            "lease_sequence": lease.sequence, "lease_offset": lease.offset,
+            "lease_sha256": lease.line_sha256,
+            "operation_binding": operation_binding,
+        }
+        return write_core(writer_state, LedgerProposal.create("prestage-release-authorized", body),
+                          control, route_seal)
+
     def _append_release_authorized_record(writer_state, token, operation_name, lease,
                                            kata_operation_token, kata_ledger_key,
                                            kata_release, control):
@@ -1759,11 +1855,12 @@ def _append_capabilities():
         return write_core(writer_state, LedgerProposal.create("release-authorized", body),
                           control, route_seal)
 
-    return _append_record, _append_leased_record, _append_release_authorized_record
+    return (_append_record, _append_leased_record,
+            _append_release_authorized_record, _append_prestage_authorized_record)
 
 
 (_append_record, _append_leased_record,
- _append_release_authorized_record) = _append_capabilities()
+ _append_release_authorized_record, _append_prestage_authorized_record) = _append_capabilities()
 del _append_capabilities
 
 

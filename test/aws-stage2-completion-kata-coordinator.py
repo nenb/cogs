@@ -140,6 +140,9 @@ class FakeOwners:
     def recover_pending(self, _lifecycle):
         return self.step("PENDING_OWNER_RECOVERED")
 
+    def recover_preproduction(self, _lifecycle):
+        return self.step("PREPRODUCTION_RECOVERED")
+
     def reconstruct_cleanup(self, _lifecycle):
         return self.step("DURABLE_OWNERS_RECONSTRUCTED")
 
@@ -349,6 +352,31 @@ for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER):
             assert "RECEIPT_ISSUED" not in fake.events
         if event in {"STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"}:
             assert cleanup_projection(fake.events) == ()
+
+# A retained unadmitted prefix is routed exactly once to cleanup-only recovery.
+# No production reconstruction, 18-step cleanup, evidence, or receipt is reachable.
+class PrestageOwners(FakeOwners):
+    def open_existing_operation(self, _lifecycle):
+        self.step("RECOVERY_OPERATION_OPENED")
+        return None
+    def recover_pending(self, _lifecycle):
+        raise AssertionError("prestage entered pending-command recovery")
+    def reconstruct_cleanup(self, _lifecycle):
+        raise AssertionError("prestage entered production reconstruction")
+
+for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
+            ("after", "PREPRODUCTION_RECOVERED")):
+    fake = PrestageOwners(cut)
+    invoke(coordinator._recover_fixed_local_qualification, fake)
+    expected = ["STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"]
+    if cut is None or cut[0] == "after": expected.append("PREPRODUCTION_RECOVERED")
+    expected.append("CUSTODY_ABORTED")
+    assert fake.events == expected
+    assert cleanup_projection(fake.events) == ()
+    assert not any(item in fake.events for item in (
+        "PENDING_OWNER_RECOVERED", "DURABLE_OWNERS_RECONSTRUCTED",
+        "OWNER_EVIDENCE", "RECOVERY_EVIDENCE", "RECEIPT_ISSUED"))
+    assert fake.events.count("CUSTODY_ABORTED") == 1
 
 # Source shape keeps both production entries zero argument and recovery cannot
 # name any work-opening method. Public openers and arbitrary receipts stay shut.

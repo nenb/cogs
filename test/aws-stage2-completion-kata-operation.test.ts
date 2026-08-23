@@ -47,6 +47,11 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationTest = await readFile(testPath, "utf8");
   assert.match(operationTest, /production baseline route[\s\S]*network\._capture_fixed_baselines\(production_network/u);
   assert.match(operation, /def _make_authority\(\):[\s\S]*class OperationAuthority:/u);
+  assert.match(operation, /def _open_fixed_operation_recovery\(\):/u);
+  assert.match(operation, /class PreAdmissionCleanupAuthority:/u);
+  assert.match(operation, /class PrestageRootfsPermit:/u);
+  assert.match(operation, /def _probe\(self\):/u);
+  assert.match(operation, /"infrastructure-subset"/u);
   assert.doesNotMatch(operation, /^class (?:_FixedJournal|OperationAuthority):/mu);
   assert.doesNotMatch(operation, /^def _open_io\(\):/mu);
   assert.match(operation, /\) = _make_authority\(\)/u);

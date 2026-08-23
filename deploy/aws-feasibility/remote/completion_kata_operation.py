@@ -1723,17 +1723,21 @@ def _make_authority():
     owners, closed, poisoned, permits, grants, cleanup_owners = {}, set(), set(), {}, {}, {}
     recovery_cleanup_owners = set()
     release_permits, release_grants = {}, {}
+    prestage_owners, prestage_permits, prestage_grants = {}, {}, {}
+    recovery_probes = {}
     class _FixedJournal:
         """One idempotently-closeable owner for the fixed state, lock, and journal."""
-        def __init__(self):
-            _fail(os.geteuid() == 0)
+        def __init__(self, recovery=False):
+            _fail(os.geteuid() == 0 and type(recovery) is bool)
             self.control = fs.OperationControl(
                 time.monotonic_ns() + JOURNAL_TOTAL_NS, lambda: False)
             self.chain = None
             self.lock = None
             self.closed = False
+            self.classification = None
+            self._probe_inventory = None
             try:
-                self._initialize()
+                self._probe() if recovery else self._initialize()
             except BaseException as error:
                 self.close(error)
         def _initialize(self):
@@ -1793,14 +1797,102 @@ def _make_authority():
                 raise
             _fail(fs._observe_child(self.state, LOCK_NAME, self.control) == self.lock.generation)
             fs._revalidate_chain(self.chain, self.control)
+        def _inventory(self):
+            completion_snapshot = fs._enumerate_stable(self.completion, self.control)
+            if self.classification == "infrastructure-absent":
+                _fail(STATE_NAME.raw not in completion_snapshot.raw_names)
+                return {
+                    "completion_generation": _generation_value(completion_snapshot.generation),
+                    "completion_names": [os.fsdecode(name) for name in completion_snapshot.raw_names],
+                    "state_generation": None, "entries": [],
+                }
+            state_snapshot = fs._enumerate_stable(self.state, self.control)
+            current_names = set(state_snapshot.raw_names)
+            infrastructure = {SENTINEL_NAME.raw, LOCK_NAME.raw}
+            _fail(current_names <= infrastructure | {JOURNAL_NAME.raw})
+            if self.classification == "journal":
+                _fail(current_names == infrastructure | {JOURNAL_NAME.raw})
+            else:
+                _fail(JOURNAL_NAME.raw not in current_names)
+                _fail((self.classification == "infrastructure-complete") ==
+                      (current_names == infrastructure))
+            entries = []
+            for name in (LOCK_NAME, SENTINEL_NAME):
+                if name.raw in state_snapshot.raw_names:
+                    node = self._file(name, b"" if name == LOCK_NAME else SENTINEL)
+                    entries.append({"name": name.text,
+                                    "generation": _generation_value(node.generation)})
+                    fs._close_node(node)
+            entries.sort(key=lambda row: row["name"].encode("ascii"))
+            return {
+                "completion_generation": _generation_value(completion_snapshot.generation),
+                "completion_names": [os.fsdecode(name) for name in completion_snapshot.raw_names],
+                "state_generation": _generation_value(state_snapshot.generation),
+                "entries": entries,
+            }
+        def _probe(self):
+            self.chain = _open_base_chain(self.control)
+            completion = self.chain.components[-1].node
+            snapshot = fs._enumerate_stable(completion, self.control)
+            names = set(snapshot.raw_names)
+            try:
+                _fail(not _stage_candidates(names) and names <= COMPLETION_NAMES | RUNTIME_NAMES
+                      and RUNTIME_STAGING_NAME.raw not in names)
+                if STATE_NAME.raw not in names:
+                    self.classification = "infrastructure-absent"
+                    self._probe_inventory = self._inventory()
+                    return
+                detached = fs._open_path_node(completion, STATE_NAME, "directory", self.control)
+                self.chain = fs.HeldChain(
+                    self.chain.anchor,
+                    self.chain.components + (fs.ChainComponent(STATE_NAME, detached),),
+                )
+                self._state_policy(detached, completion)
+                state_names = fs._enumerate_stable(detached, self.control).raw_names
+                allowed = {SENTINEL_NAME.raw, LOCK_NAME.raw, JOURNAL_NAME.raw}
+                _fail(set(state_names) <= allowed)
+                if SENTINEL_NAME.raw in state_names:
+                    sentinel = self._file(SENTINEL_NAME, SENTINEL); fs._close_node(sentinel)
+                if LOCK_NAME.raw in state_names:
+                    self.lock = self._file(LOCK_NAME, b"")
+                    try:
+                        fcntl.flock(self.lock.operation_fd.number, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError as error:
+                        if error.errno in {errno.EAGAIN, errno.EACCES}:
+                            raise OperationError() from error
+                        raise
+                if JOURNAL_NAME.raw not in state_names:
+                    self.classification = ("infrastructure-complete" if set(state_names) ==
+                                           {SENTINEL_NAME.raw, LOCK_NAME.raw} else
+                                           "infrastructure-subset")
+                    self._probe_inventory = self._inventory()
+                    return
+                _fail(set(state_names) == {SENTINEL_NAME.raw, LOCK_NAME.raw, JOURNAL_NAME.raw}
+                      and self.lock is not None)
+                observed = self.read(); _fail(observed is not None)
+                records = _parse(observed[0])
+                self.validate_layout(records, observed[1])
+                self._loaded_generation = observed[1]
+                self.classification = "journal"
+                self._probe_inventory = self._inventory()
+            except BaseException:
+                self.classification = "preserve"
+                self._probe_inventory = None
+        def recovery_inventory(self):
+            _fail(self.classification in {"infrastructure-absent", "infrastructure-subset",
+                                          "infrastructure-complete", "journal"})
+            value = self._inventory()
+            _fail(value == self._probe_inventory)
+            return value
         @property
         def state(self):
-            _fail(self.chain is not None and len(self.chain.components) > 0)
+            _fail(self.chain is not None and self.chain.components[-1].name == STATE_NAME)
             return self.chain.components[-1].node
         @property
         def completion(self):
-            _fail(self.chain is not None and len(self.chain.components) > 1)
-            return self.chain.components[-2].node
+            _fail(self.chain is not None and self.chain.components)
+            index = -2 if self.chain.components[-1].name == STATE_NAME else -1
+            return self.chain.components[index].node
         def validate_layout(self, records, journal_generation):
             raw_names = fs._enumerate_stable(self.completion, self.control).raw_names
             names = set(raw_names)
@@ -2022,12 +2114,12 @@ def _make_authority():
             if error is not None:
                 raise error
             return records, generation
-        def unlink(self, key):
+        def unlink(self, expected):
             node = self._file(JOURNAL_NAME)
             error = None
             try:
-                _fail(_key_value(node.generation.key) == key)
-                _fail(_key_value(fs._observe_child(self.state, JOURNAL_NAME, self.control).key) == key)
+                _fail(_generation_value(node.generation) == expected)
+                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control) == node.generation)
                 os.unlink(JOURNAL_NAME.raw, dir_fd=self.state.operation_fd.number)
             except BaseException as caught:
                 error = caught
@@ -2053,8 +2145,18 @@ def _make_authority():
                 error = _collect(error, fs._close_chain, self.chain)
             if error is not None:
                 raise error
-    def _open_io():
-        return _FixedJournal()
+    def _open_io(recovery=False):
+        return _FixedJournal(recovery)
+    class RecoveryOperationProbe:
+        __slots__ = ()
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
+        def __getattribute__(self, name):
+            _fail(name in {"status", "reconstruction_identity", "close"})
+            return object.__getattribute__(self, name)
+        def status(self): return recovery_probes[self].status()
+        def reconstruction_identity(self):
+            return recovery_probes[self].reconstruction_identity()
+        def close(self): return recovery_probes[self].close()
     class CleanupAuthority:
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
@@ -2086,6 +2188,37 @@ def _make_authority():
     def cleanup_rootfs(capability, release):
         authority = cleanup_owners[capability]; prepare_cleanup_rootfs(capability)
         return authority.reserve_rootfs_release() if release else authority.reserve_rootfs()
+    class PreAdmissionCleanupAuthority:
+        """Sealed pre-admission custody: observation, one cleanup reservation, close."""
+        __slots__ = ()
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
+        def __getattribute__(self, name):
+            _fail(name in {"reconstruction_context", "reserve_prestage_rootfs_release",
+                           "remove_exact_unadmitted", "close", "status"})
+            return object.__getattribute__(self, name)
+        def reconstruction_context(self):
+            authority = prestage_owners[self]
+            return MappingProxyType(dict(prestage_binding(authority)))
+        def reserve_prestage_rootfs_release(self):
+            authority = prestage_owners[self]
+            binding = prestage_binding(authority)
+            _fail(not any(row[0] is self and not row[2] for row in prestage_permits.values()))
+            permit = PrestageRootfsPermit(seal)
+            prestage_permits[permit] = [self, binding, False]
+            return permit
+        def remove_exact_unadmitted(self):
+            raise OperationError()
+        def close(self):
+            authority = prestage_owners[self]
+            authority.close()
+        def status(self):
+            return prestage_owners[self].status()
+    class PrestageRootfsPermit:
+        __slots__ = ()
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
+    class PrestageRootfsGrant:
+        __slots__ = ()
+        def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
     class RootfsPermit:
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
@@ -2098,16 +2231,62 @@ def _make_authority():
     class RootfsReleaseGrant:
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
+    def prestage_binding(authority):
+        io, records, status = reload(authority, True)
+        _fail(status in {"exact", "infrastructure-absent", "infrastructure-subset",
+                         "infrastructure-complete"})
+        infrastructure = io.recovery_inventory()
+        if status != "exact":
+            return {"kind": "journal-absent", "infrastructure": infrastructure}
+        kinds = [record.record_type for record in records]
+        allowed_tips = {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ACQUIRE_INTENT",
+                        "ROOTFS_LEASED", "LIFECYCLE_DEADLINE_V1"}
+        _fail(records and records[-1].record_type in allowed_tips
+              and "PRODUCTION_ADMISSION_V2" not in kinds
+              and _legal(records) in {"GENESIS", "GENESIS_SETTLED",
+                                      "ROOTFS_ACQUIRE_INTENT", "ROOTFS_LEASED"}
+              and io._loaded_generation is not None)
+        tip, genesis = records[-1], records[0].body
+        return {
+            "kind": "unadmitted-journal",
+            "operation_token": genesis["operation_token"],
+            "journal_key": genesis["journal_key"],
+            "journal_generation": _generation_value(io._loaded_generation),
+            "tip_sequence": tip.sequence, "tip_offset": tip.next_offset,
+            "tip_sha256": tip.line_sha256, "phase": _legal(records),
+            "infrastructure": infrastructure,
+        }
+    def stable_infrastructure(left, right):
+        def stable_generation(a, b):
+            return (a is None and b is None) or (a is not None and b is not None and
+                    all(a[name] == b[name] for name in GEN_KEYS[:7]))
+        return (stable_generation(left["completion_generation"], right["completion_generation"])
+                and left["completion_names"] == right["completion_names"]
+                and stable_generation(left["state_generation"], right["state_generation"])
+                and left["entries"] == right["entries"])
+    def binding_compatible(authorized, current):
+        if authorized == current: return True
+        return (authorized["kind"] == "unadmitted-journal"
+                and current["kind"] == "journal-absent"
+                and stable_infrastructure(authorized["infrastructure"],
+                                          current["infrastructure"]))
     def owner(authority):
         state = owners.get(authority)
         _fail(state is not None and authority not in closed)
         return state
     def reload(authority, preserve=False):
         _fail(authority not in poisoned or preserve is None); state = owner(authority)
-        observed = state[0].read()
+        classification = getattr(state[0], "classification", None)
+        if classification == "preserve":
+            state[1:] = [(), "preserve"]
+            if preserve is False: raise OperationError()
+            return state
+        observed = state[0].read() if classification not in {
+            "infrastructure-absent", "infrastructure-subset", "infrastructure-complete"} else None
         state[0]._loaded_generation = None
         if observed is None:
-            state[1:] = [(), "absent"]
+            status = classification or "absent"
+            state[1:] = [(), status]
             return state
         try:
             raw, journal_generation = observed
@@ -2677,7 +2856,7 @@ def _make_authority():
         io, records, status = reload(retained, True)
         _fail(status == "exact" and records[-1].record_type == "RETIRED"
               and io._loaded_generation is not None)
-        io.unlink(_key_value(io._loaded_generation.key))
+        io.unlink(_generation_value(io._loaded_generation))
         _io, empty, absent = reload(retained, True)
         _fail(absent == "absent" and not empty)
         return receipt
@@ -2832,8 +3011,8 @@ def _make_authority():
                 record("RETIRE_INTENT", body); record("RETIRED", body)
             def journal_bytes(self): return bytes(state["raw"])
         return FakeLifecycle(seal)
-    def _open_fixed_operation():
-        io = _open_io()
+    def open_operation(recovery):
+        io = _open_io(recovery)
         authority = OperationAuthority(seal)
         owners[authority] = [io, (), "absent"]
         try:
@@ -2843,6 +3022,80 @@ def _make_authority():
             closed.add(authority)
             owners[authority][1:] = [(), "closed"]
             io.close(error)
+    def _open_fixed_operation():
+        return open_operation(False)
+    def _open_fixed_operation_recovery():
+        authority = open_operation(True)
+        probe = RecoveryOperationProbe(seal)
+        recovery_probes[probe] = authority
+        return probe
+    def claim_pre_admission_cleanup(authority, approval):
+        _fail(type(authority) is RecoveryOperationProbe and authority in recovery_probes
+              and type(approval) is fs.SourceApproval)
+        authority = recovery_probes[authority]
+        _fail(authority not in closed)
+        _io, records, status = reload(authority, True)
+        binding = prestage_binding(authority)
+        if status == "exact":
+            genesis = records[0].body
+            _fail((genesis["source_revision"], genesis["source_manifest_sha256"]) ==
+                  (approval.revision, approval.manifest_sha256))
+        capability = PreAdmissionCleanupAuthority(seal)
+        prestage_owners[capability] = authority
+        return capability
+    def claim_prestage_rootfs(permit):
+        state = prestage_permits.get(permit)
+        _fail(type(permit) is PrestageRootfsPermit and state is not None and not state[2])
+        capability, binding, _used = state
+        _fail(prestage_binding(prestage_owners[capability]) == binding)
+        state[2] = True
+        grant = PrestageRootfsGrant(seal)
+        prestage_grants[grant] = [capability, binding, False]
+        return grant
+    def prestage_rootfs_binding(grant):
+        state = prestage_grants.get(grant)
+        _fail(type(grant) is PrestageRootfsGrant and state is not None and not state[2])
+        capability, binding, _settled = state
+        _fail(prestage_binding(prestage_owners[capability]) == binding)
+        return binding
+    def prestage_rootfs_coordinates(grant):
+        state = prestage_grants.get(grant)
+        _fail(type(grant) is PrestageRootfsGrant and state is not None and not state[2])
+        capability, binding, _settled = state
+        authority = prestage_owners[capability]
+        io, records, status = reload(authority, True)
+        _fail(prestage_binding(authority) == binding)
+        if status != "exact": return None
+        genesis = records[0].body
+        leased = [record.body for record in records if record.record_type == "ROOTFS_LEASED"]
+        return MappingProxyType({
+            "rootfs_token": genesis["rootfs_token"],
+            "source_revision": genesis["source_revision"],
+            "source_manifest_sha256": genesis["source_manifest_sha256"],
+            "rootfs_leased": None if not leased else leased[0],
+        })
+    def validate_prestage_binding(grant, authorized_binding):
+        state = prestage_grants.get(grant)
+        _fail(type(grant) is PrestageRootfsGrant and state is not None and not state[2])
+        return binding_compatible(authorized_binding, state[1])
+    def settle_prestage_rootfs(grant, authorized_binding):
+        state = prestage_grants.get(grant)
+        _fail(type(grant) is PrestageRootfsGrant and state is not None and not state[2])
+        capability, current, _settled = state
+        authority = prestage_owners[capability]
+        _fail(binding_compatible(authorized_binding, current))
+        io, records, status = reload(authority, True)
+        if current["kind"] == "unadmitted-journal":
+            _fail(status == "exact" and records[-1].line_sha256 == current["tip_sha256"])
+            io.unlink(current["journal_generation"])
+            io.classification = "infrastructure-complete"
+            io._probe_inventory = io._inventory()
+            _io, empty, absent = reload(authority, True)
+            _fail(not empty and absent == "infrastructure-complete")
+        else:
+            _fail(status in {"infrastructure-absent", "infrastructure-subset",
+                             "infrastructure-complete"})
+        state[2] = True
     def admit_production_v2(authority):
         _fail(type(authority) is OperationAuthority and authority in owners and authority not in closed)
         authority.admit_production_v2()
@@ -2856,6 +3109,9 @@ def _make_authority():
         _require_live_production_deadline(records)
         return authority
     def cleanup_capability(authority, retired):
+        if type(authority) is RecoveryOperationProbe:
+            _fail(authority in recovery_probes)
+            authority = recovery_probes[authority]
         if type(authority) is CleanupAuthority:
             _fail(authority in cleanup_owners)
             phase = cleanup_owners[authority].durable_phase()
@@ -2944,7 +3200,11 @@ def _make_authority():
     def record_network(authority, kind, body): return authority.record_network(kind, body)
     def settle_network_phase(authority, kind): return authority.settle_network_phase(kind)
     return (
-        _open_fixed_operation, create_fixed_operation_test_local, claim_rootfs_reopen,
+        _open_fixed_operation, _open_fixed_operation_recovery,
+        claim_pre_admission_cleanup, claim_prestage_rootfs,
+        prestage_rootfs_binding, prestage_rootfs_coordinates,
+        validate_prestage_binding, settle_prestage_rootfs,
+        create_fixed_operation_test_local, claim_rootfs_reopen,
         invoke_rootfs_reopen_route, settle_rootfs_reopen, claim_rootfs_release,
         invoke_rootfs_release, settle_rootfs_release, make_fake_lifecycle,
         admit_production_v2, claim_production_operation, claim_production_cleanup_operation,
@@ -2965,7 +3225,11 @@ def _make_authority():
         retired_operation, remove_retired,
     )
 (
-    _open_fixed_operation, _create_fixed_operation_test_local, _claim_rootfs_reopen,
+    _open_fixed_operation, _open_fixed_operation_recovery,
+    _claim_pre_admission_cleanup, _claim_prestage_rootfs,
+    _prestage_rootfs_binding, _prestage_rootfs_coordinates,
+    _validate_prestage_binding, _settle_prestage_rootfs,
+    _create_fixed_operation_test_local, _claim_rootfs_reopen,
     _invoke_rootfs_reopen_route, _settle_rootfs_reopen, _claim_rootfs_release,
     _invoke_rootfs_release, _settle_rootfs_release, _make_fake_lifecycle_for_tests,
     _admit_production_v2, _claim_production_operation, _claim_production_cleanup_operation,
