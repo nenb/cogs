@@ -33,7 +33,7 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test "$EXACT_CONTROL_HEAD" = 6b72c33d2b5bdc23abbfa99725b27fa7e52ae7af
+          test "$EXACT_CONTROL_HEAD" = 15d5a34ec823183517f82fb216003169b9dee9ac
           test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
           test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
