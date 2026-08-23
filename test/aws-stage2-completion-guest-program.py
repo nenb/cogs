@@ -341,4 +341,4 @@ check(not hasattr(readiness, "GuestWorkloadResult")
       and b"COGS_STAGE2_RESULT" not in readiness_raw,
       "readiness cannot reach workload codec")
 
-print("completion guest workload/readiness program tests passed")
+print("completion guest workload program tests passed")
