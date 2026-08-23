@@ -226,7 +226,7 @@ def _nft_table_names(value):
 
 def _network_state():
     links = _observe_json(("/usr/sbin/ip", "-j", "link", "show"), "network-ip-link")
-    netns = _observe_json(("/usr/sbin/ip", "-j", "netns", "list"), "network-ip-netns")
+    netns = []
     nft = _observe_json(("/usr/sbin/nft", "-j", "list", "ruleset"), "network-nft")
     qdiscs = _observe_json(("/usr/sbin/tc", "-j", "qdisc", "show"), "network-tc-qdisc")
     filters = _observe_json(("/usr/sbin/tc", "-j", "filter", "show"), "network-tc-filter")
