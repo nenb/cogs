@@ -599,7 +599,7 @@ def _proc_record(row):
               re.fullmatch(rf"{name}:\[[1-9][0-9]*\]", identity) is not None, "namespace identity")
     return ProcessRecord(role, pid, ppid, starttime, executable, device, inode,
                          tuple(command), tuple(sorted(namespaces.items())))
-def classify_process_snapshot(snapshot, baseline=()):
+def classify_process_snapshot(snapshot, baseline=(), host_netns=None, operation_netns=None):
     """Classify a complete, bounded offline /proc enumeration.
     Early exit, duplicate roles, replacement, uncertain ancestry, or namespace
     drift is ``PRESERVE`` rather than absence.  ``baseline`` contains exact
@@ -643,7 +643,8 @@ def classify_process_snapshot(snapshot, baseline=()):
             shim.starttime <= qemu.starttime and shim.starttime <= virtiofsd.starttime):
         return ProcessClassification(Observation.PRESERVE, owned, "ancestry-or-starttime")
     ns = {item.role: dict(item.namespaces) for item in owned}
-    if ns["qemu"]["net"] != ns["shim"]["net"] or ns["virtiofsd"]["mnt"] != ns["shim"]["mnt"]:
+    if (ns["shim"]["net"] != host_netns or ns["qemu"]["net"] != operation_netns or
+            ns["virtiofsd"]["net"] != operation_netns or ns["virtiofsd"]["mnt"] != ns["shim"]["mnt"]):
         return ProcessClassification(Observation.PRESERVE, owned, "namespace-correlation")
     baseline_ids = {(item.pid, item.starttime, item.executable_device, item.executable_inode) for item in baseline}
     if any((item.pid, item.starttime, item.executable_device, item.executable_inode) in baseline_ids for item in owned):
@@ -859,7 +860,7 @@ def _read_bounded(path, maximum):
         return bytes(chunks)
     finally:
         os.close(descriptor)
-def _proc_snapshot(attested, netns):
+def _proc_snapshot(attested, netns, host_netns):
     import completion_kata_process as process
     expected = {item.path: item for item in attested}
     roles = {"/opt/kata/bin/containerd-shim-kata-v2": "shim",
@@ -887,8 +888,9 @@ def _proc_snapshot(attested, netns):
         command = _read_bounded(f"/proc/{pid}/cmdline", MAX_CMDLINE).rstrip(b"\0").split(b"\0")
         namespaces = {kind: os.readlink(f"/proc/{pid}/ns/{kind}")
                       for kind in ("ipc", "mnt", "net", "pid", "user", "uts")}
-        _fail(netns is not None and namespaces["net"] == netns.root and process._proc_row(pid) == row,
-              "runtime/netns correlation")
+        expected_netns = {"shim": host_netns, "qemu": None if netns is None else netns.root, "virtiofsd": None if netns is None else netns.root}
+        _fail(os.readlink("/proc/self/ns/net") == host_netns and namespaces["net"] == expected_netns[roles[executable]]
+              and process._proc_row(pid) == row, "Kata 3.32 role/netns correlation")
         rows.append({"role": roles[executable], "pid": pid, "ppid": row[1], "starttime": row[4],
                      "executable": executable, "executable_device": identity.device,
                      "executable_inode": identity.inode,
@@ -896,7 +898,7 @@ def _proc_snapshot(attested, netns):
                      "namespaces": namespaces})
     value = {"complete": True, "early_exit": False, "rows": rows,
              "qualification": QUALIFICATION_CANDIDATE}
-    return classify_process_snapshot(value)
+    return classify_process_snapshot(value, host_netns=host_netns, operation_netns=None if netns is None else netns.root)
 def _qmp_kvm(processes):
     qemu = next((row for row in processes.records if row.role == "qemu"), None)
     if qemu is None:
@@ -1269,9 +1271,9 @@ def _runtime_owner_routes():
         input_grant = kata_inputs._claim_runtime_inputs(inputs, journal); network_grant = (None if history["phase"] in {"NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
             "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"} else kata_network._claim_runtime_network(network, journal))
         input_binding = kata_inputs._consume_runtime_inputs(input_grant)
-        netns = None if network_grant is None else kata_network._verify_runtime_network(network_grant)
+        netns = None if network_grant is None else kata_network._verify_runtime_network(network_grant); host_netns = os.readlink("/proc/self/ns/net"); _fail(re.fullmatch(r"net:\[[1-9][0-9]*\]", host_netns) is not None, "host netns baseline")
         verify_attestation(attestation); verify_daemon(daemon); owner = _Owner(seal); owners[owner] = [journal, lease, reference, input_binding, netns,
-            attestation, daemon, control, input_grant, network_grant, inputs, network]
+            attestation, daemon, control, input_grant, network_grant, inputs, network, host_netns]
         return owner
     def recover_pending(state, stop=True):
         history = state[0].runtime_recovery_history()
@@ -1367,7 +1369,7 @@ def _runtime_owner_routes():
         values = [(row[2]["status"], row[0], row[1]) for row in results]
         if history["phase"] == "RUNTIME_READY": info, containers, tasks = values
         else: tasks, info, containers = values
-        processes = _proc_snapshot(verify_attestation(state[5]), netns); shim = next((row for row in processes.records if row.role == "shim"), None)
+        processes = _proc_snapshot(verify_attestation(state[5]), netns, state[12]); shim = next((row for row in processes.records if row.role == "shim"), None)
         ctr = classify_ctr_observation(info, containers, tasks, None if shim is None else shim.pid,
                                        state[9], _durable_ctr_launch_path(history)); container, task, mount = ctr["container"], ctr["task"], ctr["mount"]
         forward_observation = history["phase"] == "RUNTIME_READY"
@@ -1387,7 +1389,7 @@ def _runtime_owner_routes():
                 "processes": processes.disposition.value, "qmp": qmp, "share": share}
         return fact
     def inactive_fact(state):
-        history = state[0].runtime_recovery_history(); processes = _proc_snapshot(verify_attestation(state[5]), state[4]); qmp = _qmp_kvm(processes); share = _share_fact()
+        history = state[0].runtime_recovery_history(); processes = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); qmp = _qmp_kvm(processes); share = _share_fact()
         _fail(not history["daemon_retained"] and not history["daemon_outcomes"] and not any(row["command_id"] == "CTR_RUN" for row in history["intents"]), "unstarted runtime history differs")
         _fail(processes.disposition is Observation.ABSENT and qmp["state"] == "absent" and share["state"] == "absent", "unstarted runtime residue is foreign")
         return {"version": V2, "journal": history["terminal_sha256"], "mount": None, "container": "absent", "task": "absent", "task_pid": None, "processes": "absent", "qmp": qmp, "share": share}
@@ -1411,7 +1413,7 @@ def _runtime_owner_routes():
     def same_identity(shim, body):
         return shim is not None and (shim.pid, shim.starttime, shim.executable_device, shim.executable_inode, [list(row) for row in shim.namespaces]) == (body["pid"], body["starttime"], body["executable_device"], body["executable_inode"], body["namespaces"])
     def task_fact(owner, phase, index, expected_pid):
-        state = owners[owner]; raw = step(owner, phase, index, actions.CommandId.CTR_TASK_LIST)[0]; processes = _proc_snapshot(verify_attestation(state[5]), state[4])
+        state = owners[owner]; raw = step(owner, phase, index, actions.CommandId.CTR_TASK_LIST)[0]; processes = _proc_snapshot(verify_attestation(state[5]), state[4], state[12])
         shim = next((row for row in processes.records if row.role == "shim"), None); pid = (None if shim is None else shim.pid) if expected_pid is None else expected_pid
         task = classify_task_list(raw, pid); return {"task": task, "task_pid": pid, "processes": processes.disposition.value}, shim
     def cleanup(owner):
@@ -1443,7 +1445,7 @@ def _runtime_owner_routes():
             _fail(len(identities) == 1); baseline = identities[0]; pid = baseline["pid"]
             progress = phase_progress(state, phase)
             if "CTR_TASK_TERM" not in progress:
-                fresh = _proc_snapshot(verify_attestation(state[5]), state[4]); shim = next(
+                fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); shim = next(
                     (row for row in fresh.records if row.role == "shim"), None)
                 _fail(same_identity(shim, baseline), "full task identity before TERM")
                 _out, term = command(owner, actions.CommandId.CTR_TASK_TERM)
@@ -1453,7 +1455,7 @@ def _runtime_owner_routes():
             if progress.count("CTR_TASK_LIST") < 2:
                 limit = time.monotonic_ns() + 2_000_000_000
                 while time.monotonic_ns() < limit:
-                    fresh = _proc_snapshot(verify_attestation(state[5]), state[4]); shim = next(
+                    fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); shim = next(
                         (row for row in fresh.records if row.role == "shim"), None)
                     _fail(shim is None or same_identity(shim, baseline), "replacement after TERM")
                     if shim is None: break
@@ -1497,7 +1499,7 @@ def _runtime_owner_routes():
             if daemons[state[6]][8] is None: return settle_inactive(state, "RUNTIME_ABSENT")
             raw = step(owner, phase, 0, actions.CommandId.CTR_CONTAINER_LIST)[0]
             _fail(classify_container_list(raw) is Observation.ABSENT)
-            processes = _proc_snapshot(verify_attestation(state[5]), None)
+            processes = _proc_snapshot(verify_attestation(state[5]), None, state[12])
             _fail(processes.disposition is Observation.ABSENT and _qmp_kvm(processes)["state"] == "absent")
             fact = {"runtime": "absent"}; state[0].settle_runtime_phase("RUNTIME_ABSENT", _canonical_fact(fact)); return fact
         if phase == "RUNTIME_ABSENT":

@@ -146,6 +146,8 @@ def _routes():
         """Capture immediately before the sole authenticated SSH command."""
         current = state(bridge, lifecycle)
         _require(current.get("network_owner") is lifecycle.network_owner
+                 and current.get("runtime_network") is lifecycle.runtime_network
+                 and current.get("runtime_observation") is lifecycle.runtime_observation
                  and current.get("sensor_before") is None)
         before = network._capture_causal_sensor(
             lifecycle.operation, *current["tools"], "before")
@@ -230,9 +232,30 @@ def _routes():
     def launch(bridge, lifecycle):
         return runtime._launch_fixed_runtime(state(bridge, lifecycle)["runtime"])
 
+    def observe_runtime_network(bridge, lifecycle):
+        """Durably advance ready -> discovered -> runtime after CTR_RUN."""
+        current = state(bridge, lifecycle)
+        _require(current.get("network_owner") is lifecycle.network_owner
+                 and current.get("runtime_network") is None
+                 and lifecycle.task is not None, "launched runtime network lineage differs")
+        body = network._observe_fixed_runtime_network(
+            lifecycle.operation, *current["tools"])
+        context = operation._command_context(lifecycle.operation)
+        _require(body.get("snapshot_kind") == "runtime"
+                 and body.get("operation_token") == context.operation_token
+                 and type(body.get("proof_sha256")) is str
+                 and len(body["proof_sha256"]) == 64,
+                 "exact runtime network snapshot absent")
+        current["runtime_network"] = body
+        return body
+
     def prove_runtime(bridge, lifecycle):
         current = state(bridge, lifecycle)
+        network_snapshot = current.get("runtime_network")
+        _require(network_snapshot is lifecycle.runtime_network,
+                 "runtime network observation must precede QMP")
         fact = runtime._observe_fixed_runtime(current["runtime"])
+        fact = {**fact, "runtime_network_sha256": network_snapshot["proof_sha256"]}
         qmp = fact["qmp"]
         _require(qmp["kvm_present"] is True and qmp["kvm_enabled"] is True,
                  "QMP KVM proof absent")
@@ -282,10 +305,12 @@ def _routes():
         fact = runtime._record_fixed_runtime_ownership(ensure_runtime(current, lifecycle))
         if current.get("recovery"):
             return fact
+        if current.get("runtime_network") is not None: fact = {**fact, "runtime_network_sha256": current["runtime_network"]["proof_sha256"]}
         mapping = current.get("execution_mapping")
         causal = current.get("network_proof")
         platform = current.get("runtime_observation")
         _require(mapping is lifecycle.execution_mapping
+                 and current.get("runtime_network") is lifecycle.runtime_network
                  and causal is lifecycle.network_proof
                  and platform is lifecycle.runtime_observation,
                  "runtime/network/mapping lineage differs")
@@ -505,7 +530,7 @@ def _routes():
         return value
 
     return (issue, reconstruct, claim_tools, capture, create_network, prove_network, stage,
-            bind_mapping, launch, prove_runtime, authenticate, revoke, ownership,
+            bind_mapping, launch, observe_runtime_network, prove_runtime, authenticate, revoke, ownership,
             stop_task, remove_network, remove_task, remove_container,
             remove_runtime, remove_share, stop_containerd, remove_firewall,
             final_baselines, independent_residue)
@@ -514,7 +539,7 @@ def _routes():
 (_take_execution_bridge, _reconstruct_execution_cleanup,
  _claim_network_tools, _capture_baselines, _create_network,
  _prove_network_causality, _stage_runtime, _bind_execution_mapping, _launch_task,
- _prove_runtime, _authenticate_ssh, _revoke_readiness, _observe_ownership,
+ _observe_runtime_network, _prove_runtime, _authenticate_ssh, _revoke_readiness, _observe_ownership,
  _stop_task, _remove_network, _remove_task, _remove_container, _remove_runtime,
  _remove_share, _stop_containerd, _remove_firewall,
  _observe_final_baselines, _observe_independent_residue) = _routes()

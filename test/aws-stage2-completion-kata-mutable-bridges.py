@@ -145,6 +145,7 @@ routes = {
     "stage_runtime": (execution, "_stage_runtime", owners.execution),
     "bind_execution_mapping": (execution, "_bind_execution_mapping", owners.execution),
     "launch_task": (execution, "_launch_task", owners.execution),
+    "observe_runtime_network": (execution, "_observe_runtime_network", owners.execution),
     "prove_runtime": (execution, "_prove_runtime", owners.execution),
     "authenticate_ssh": (execution, "_authenticate_ssh", owners.execution),
     "open_existing_operation": (operation, "_open_existing_operation", owners.operation),
@@ -188,6 +189,29 @@ for method_name, (module, route_name, expected_bridge) in routes.items():
         except Cut: pass
         else: raise AssertionError(f"{method_name} swallowed fault")
     assert calls == [(expected_bridge, lifecycle)]
+
+# The production bridge consumes the retained network tools exactly once after
+# CTR_RUN and returns only the durable operation-bound runtime snapshot.
+tools = (object(), object(), object())
+runtime_network = {"snapshot_kind": "runtime", "operation_token": "a" * 64,
+                   "proof_sha256": "b" * 64}
+lifecycle.task = object()
+with patch.object(execution.process, "_claim_attested_executable",
+                  side_effect=tools), \
+     patch.object(execution.network, "_capture_fixed_baselines",
+                  return_value=lifecycle.baselines), \
+     patch.object(execution.network, "_setup_fixed_network", return_value=object()), \
+     patch.object(execution.network, "_reopen_runtime_network",
+                  return_value=lifecycle.network_owner), \
+     patch.object(execution.network, "_observe_fixed_runtime_network",
+                  return_value=runtime_network) as observed, \
+     patch.object(execution.operation, "_command_context",
+                  return_value=SimpleNamespace(operation_token="a" * 64)):
+    assert owners.capture_baselines(lifecycle) is lifecycle.baselines
+    assert owners.create_network(lifecycle) is lifecycle.network_owner
+    assert owners.observe_runtime_network(lifecycle) is runtime_network
+observed.assert_called_once_with(lifecycle.operation, *tools)
+lifecycle.runtime_network = runtime_network
 
 # Executable custody is the one static-to-mutable handoff. It consumes only the
 # exact static custody object and does not reinterpret the historical gate.

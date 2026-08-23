@@ -324,13 +324,16 @@ def proc_row(role, pid, ppid, start, executable, mnt, net):
 
 proc_rows = [
     proc_row("shim", 100, 1, 1000, "/opt/kata/bin/containerd-shim-kata-v2", 10, 20),
-    proc_row("qemu", 101, 100, 1001, "/opt/kata/bin/qemu-system-x86_64", 11, 20),
+    proc_row("qemu", 101, 100, 1001, "/opt/kata/bin/qemu-system-x86_64", 11, 21),
     proc_row("virtiofsd", 102, 100, 1002, "/opt/kata/libexec/virtiofsd", 10, 21),
 ]
 proc_fixture = {"complete": True, "early_exit": False, "rows": proc_rows,
                 "qualification": runtime.QUALIFICATION_CANDIDATE}
-classified = runtime.classify_process_snapshot(proc_fixture)
-check(classified.disposition is runtime.Observation.EXACT and len(classified.records) == 3, "process exact cardinality")
+def classify_process(value):
+    return runtime.classify_process_snapshot(
+        value, host_netns="net:[20]", operation_netns="net:[21]")
+classified = classify_process(proc_fixture)
+check(classified.disposition is runtime.Observation.EXACT and len(classified.records) == 3, "real Kata 3.32 role namespaces")
 for mutation in ("early", "duplicate", "ancestry", "namespace"):
     hostile = copy.deepcopy(proc_fixture)
     if mutation == "early":
@@ -342,8 +345,16 @@ for mutation in ("early", "duplicate", "ancestry", "namespace"):
         hostile["rows"][1]["ppid"] = 1
     else:
         hostile["rows"][1]["namespaces"]["net"] = "net:[99]"
-    check(runtime.classify_process_snapshot(hostile).disposition is runtime.Observation.PRESERVE,
+    check(classify_process(hostile).disposition is runtime.Observation.PRESERVE,
           f"process {mutation} did not preserve")
+for role, hostile_net in (("shim", "net:[21]"), ("qemu", "net:[20]"),
+                          ("virtiofsd", "net:[20]")):
+    hostile = copy.deepcopy(proc_fixture)
+    next(row for row in hostile["rows"] if row["role"] == role)["namespaces"]["net"] = hostile_net
+    check(classify_process(hostile).reason == "namespace-correlation",
+          f"Kata 3.32 {role} namespace role drift accepted")
+hostile = copy.deepcopy(proc_fixture); hostile["rows"][2]["namespaces"]["mnt"] = "mnt:[11]"
+check(classify_process(hostile).reason == "namespace-correlation", "virtiofsd mount role drift accepted")
 empty_proc = {**proc_fixture, "rows": []}
 check(runtime.classify_process_snapshot(empty_proc).disposition is runtime.Observation.ABSENT, "process absence")
 

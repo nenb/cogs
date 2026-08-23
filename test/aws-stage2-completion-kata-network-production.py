@@ -445,7 +445,7 @@ def observe_from_reopen():
     journal = ReopenedObservationJournal(); owner = object()
     daemons[daemon] = [journal, None, None, control, None, None, None, None, None, None, {}]
     owners[owner] = [journal, None, None, None, retained_network, attestation, daemon,
-                     control, None, retained_grant, None, None]
+                     control, None, retained_grant, None, None, "net:[4026531992]"]
     try: return runtime._observe_fixed_runtime(owner)
     finally: owners.pop(owner, None); daemons.pop(daemon, None)
 empty_processes = runtime.ProcessClassification(runtime.Observation.ABSENT, (), "absent")

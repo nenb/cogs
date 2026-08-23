@@ -29,6 +29,7 @@ METHOD_EVENT = {
     "stage_runtime": "RUNTIME_STAGED",
     "bind_execution_mapping": "EXECUTION_MAPPING_BOUND",
     "launch_task": "TASK_LAUNCHED",
+    "observe_runtime_network": "RUNTIME_NETWORK_OBSERVED",
     "prove_runtime": "RUNTIME_PROVED",
     "prove_network_causality": "NETWORK_CAUSAL_PROOF",
     "authenticate_ssh": "SSH_AUTHENTICATED",
@@ -100,7 +101,12 @@ class FakeOwners:
     def stage_runtime(self, _lifecycle): return self.step("stage_runtime")
     def bind_execution_mapping(self, _lifecycle): return self.step("bind_execution_mapping")
     def launch_task(self, _lifecycle): return self.step("launch_task")
-    def prove_runtime(self, _lifecycle): return self.step("prove_runtime")
+    def observe_runtime_network(self, lifecycle):
+        assert lifecycle.task == "TASK_LAUNCHED"
+        return self.step("observe_runtime_network")
+    def prove_runtime(self, lifecycle):
+        assert lifecycle.runtime_network == "RUNTIME_NETWORK_OBSERVED"
+        return self.step("prove_runtime")
     def authenticate_ssh(self, _lifecycle): return self.step("authenticate_ssh")
 
     def revoke_readiness(self, _lifecycle): return self.step("revoke_readiness")

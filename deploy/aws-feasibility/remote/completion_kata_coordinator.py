@@ -35,6 +35,7 @@ FORWARD_ORDER = (
     "RUNTIME_STAGED",
     "EXECUTION_MAPPING_BOUND",
     "TASK_LAUNCHED",
+    "RUNTIME_NETWORK_OBSERVED",
     "RUNTIME_PROVED",
     "NETWORK_CAUSAL_PROOF",
     "SSH_AUTHENTICATED",
@@ -136,6 +137,7 @@ class _Lifecycle:
     staged_runtime: object = None
     execution_mapping: object = None
     task: object = None
+    runtime_network: object = None
     runtime_observation: object = None
     runtime_proof: object = None
     session: object = None
@@ -275,6 +277,9 @@ class _PackagePrivateOwners:
 
     def launch_task(self, lifecycle):
         return execution_bridge._launch_task(self.execution, lifecycle)
+
+    def observe_runtime_network(self, lifecycle):
+        return execution_bridge._observe_runtime_network(self.execution, lifecycle)
 
     def prove_runtime(self, lifecycle):
         return execution_bridge._prove_runtime(self.execution, lifecycle)
@@ -464,6 +469,7 @@ def _run_fixed_local_qualification():
         lifecycle.staged_runtime = _owners.stage_runtime(lifecycle)
         lifecycle.execution_mapping = _owners.bind_execution_mapping(lifecycle)
         lifecycle.task = _owners.launch_task(lifecycle)
+        lifecycle.runtime_network = _owners.observe_runtime_network(lifecycle)
         lifecycle.runtime_observation = _owners.prove_runtime(lifecycle)
         lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
         lifecycle.session = _owners.authenticate_ssh(lifecycle)
