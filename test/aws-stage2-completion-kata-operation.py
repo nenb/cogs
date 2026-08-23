@@ -746,10 +746,23 @@ def runtime_outcome(intent, uncertain=False, status=0):
         "kill_attempted": False, "deadline_expired": False, "uncertain": uncertain, "errors": []}
 
 
+def runtime_prepared_body(token="a" * 64):
+    extraction = operation.command_policy.CONTAINERD_EXTRACTION
+    body = {"operation_token": token, "runtime_generation": generation(90, nlink=3),
+        "bin_generation": generation(91, mode=0o500),
+        "containerd_generation": generation(92, "file", 0o500, 1, extraction[0][1]),
+        "ctr_generation": generation(93, "file", 0o500, 1, extraction[1][1]),
+        "containerd_size": extraction[0][1], "containerd_sha256": extraction[0][2],
+        "ctr_size": extraction[1][1], "ctr_sha256": extraction[1][2]}
+    body["manifest_sha256"] = hashlib.sha256(operation.RUNTIME_PREPARED_DOMAIN + operation._canonical(body)).hexdigest()
+    return body
+
+
 def staged_runtime_prefix():
     raw, _intent, _leased = leased_prefix(); token = "a" * 64; policy = operation.command_policy
     raw = append(raw, "BASELINES_CAPTURED", {"operation_token": token, "proof_sha256": "1" * 64})
     raw = append(raw, "NETWORK_READY", {"operation_token": token, "proof_sha256": "2" * 64})
+    raw = append(raw, "RUNTIME_PREPARED_V1", runtime_prepared_body(token))
     raw = append(raw, "RUNTIME_STAGE_INTENT_V4", {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
         "policy_sha256": policy.RUNTIME_POLICY_SHA256, "temporary_name": ".kata-runtime-v1.staging"})
     stage = {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
@@ -775,6 +788,23 @@ def append_runtime_command(raw, command_id, uncertain=False, status=0):
         raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
     return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
+
+# Prepared custody is a non-phase event with exact bytes and strict one-shot ordering.
+prepared_prefix, _unused, _leased = leased_prefix()
+prepared_prefix = append(prepared_prefix, "BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "1" * 64})
+prepared_prefix = append(prepared_prefix, "NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "2" * 64})
+prepared = runtime_prepared_body()
+prepared_raw = append(prepared_prefix, "RUNTIME_PREPARED_V1", prepared)
+assert operation._legal(operation._parse(prepared_raw)) == "NETWORK_READY", "prepared event changed lifecycle"
+rejected(lambda: append(prepared_raw, "RUNTIME_PREPARED_V1", prepared))
+wrong = dict(prepared); wrong["ctr_sha256"] = "0" * 64
+rejected(lambda: append(prepared_prefix, "RUNTIME_PREPARED_V1", wrong))
+intent_body = {"operation_token": "a" * 64, "policy_version": operation.command_policy.RUNTIME_POLICY_VERSION,
+    "policy_sha256": operation.command_policy.RUNTIME_POLICY_SHA256, "temporary_name": ".kata-runtime-v1.staging"}
+legacy_intent = append(prepared_prefix, "RUNTIME_STAGE_INTENT_V4", intent_body)
+rejected(lambda: append(legacy_intent, "RUNTIME_PREPARED_V1", prepared))
+operation._validate_runtime_layout(set(), operation._parse(prepared_raw), "NETWORK_READY")
+rejected(lambda: operation._validate_runtime_layout(set(), operation._parse(prepared_prefix), "NETWORK_READY"))
 
 # Runtime uncertainty is historical and sticky: observers are never resumable
 # or retryable, while a consumed TERM uncertainty can finish teardown but never retire.

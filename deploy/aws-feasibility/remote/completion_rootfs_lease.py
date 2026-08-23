@@ -1,5 +1,4 @@
 """Private durable retained rootfs lease and verification for ADR 0040."""
-
 from dataclasses import dataclass, field
 import errno
 import fcntl
@@ -7,9 +6,7 @@ import hashlib
 import os
 import secrets
 import sys
-
 sys.dont_write_bytecode = True
-
 import completion_kata_operation as kata_operation
 import completion_rootfs_build as build
 import completion_rootfs_builder as builder
@@ -19,7 +16,6 @@ import completion_rootfs_ledger as ledger
 import completion_rootfs_materializer as materializer
 import completion_rootfs_plan as plan
 import completion_rootfs_publish as publication
-
 FIXED_PREFIX = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/rootfs-v1/"
 class LeaseError(Exception):
     pass
@@ -43,12 +39,9 @@ class RootfsAcquireError(LeaseError):
             raise LeaseError()
         super().__init__("fixed rootfs acquisition failed")
         self.stage = stage
-
 def _fail(condition):
     if not condition:
         raise LeaseError()
-
-
 @dataclass(frozen=True)
 class RuntimeRootfsReference:
     path: str
@@ -64,7 +57,6 @@ class RuntimeRootfsReference:
     ustar_sha256: str
     ustar_size: int
     entry_count: int
-
     def __post_init__(self):
         ledger._token(self.token)
         _fail(type(self.path) is str and type(self.operation_name) is str)
@@ -81,20 +73,17 @@ class RuntimeRootfsReference:
         _fail(type(self.ustar_size) is int and self.ustar_size > 0 and self.ustar_size % 512 == 0)
         _fail(type(self.entry_count) is int and self.entry_count > 0)
 
-
 @dataclass
 class RetainedRootfsLease:
     reference: RuntimeRootfsReference
     retained: build.RetainedBuild = field(repr=False)
     disposition: str = field(default="held", init=False)
 
-
 def _descriptors(node):
     _fail(type(node) is fs.HeldNode and type(node.identity_fd) is fs.CheckedFd)
     values = (node.identity_fd,) if node.operation_fd is None else (node.identity_fd, node.operation_fd)
     _fail(all(type(value) is fs.CheckedFd and value.disposition == "open" for value in values))
     return values
-
 
 def _topology(retained, reference=None):
     _fail(type(retained) is build.RetainedBuild and type(retained.base_chain) is fs.HeldChain)
@@ -127,10 +116,8 @@ def _topology(retained, reference=None):
         _fail((reference.token, reference.operation_name) == (token, owned.operation_name))
     return owned
 
-
 def _merge(error, addition):
     return addition if error is None else fs.RootfsFsError(error, addition)
-
 
 def _bootstrap_state(approval, control):
     chain = builder._open_base_chain(control)
@@ -145,7 +132,6 @@ def _bootstrap_state(approval, control):
         if chain.anchor.identity_fd.disposition == "open":
             fs._close_chain(chain, error)
         raise
-
 
 def _close_preserving(retained, primary=None):
     error = primary
@@ -184,7 +170,6 @@ def _abandon_active(retained, primary):
         error = _merge(error, caught)
     raise error
 
-
 def _probe_lock(state, expected, retained_descriptors, control):
     probe = None
     error = None
@@ -210,7 +195,6 @@ def _probe_lock(state, expected, retained_descriptors, control):
             error = _merge(error, caught)
     if error is not None:
         raise error
-
 
 def _fresh_fixed_chain(operation_name, control):
     chain = builder._open_base_chain(control)
@@ -238,7 +222,6 @@ def _fresh_fixed_chain(operation_name, control):
         except BaseException as close_error:
             error = _merge(error, close_error)
         raise error
-
 
 def _stable_graph(retained, reference, control, expected_status):
     owned = _topology(retained, reference)
@@ -335,14 +318,12 @@ def _stable_graph(retained, reference, control, expected_status):
         raise error
     return active, reconciled
 
-
 def _stable_lease_pass(lease, control):
     _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
     _fail(type(lease.reference) is RuntimeRootfsReference and type(lease.retained) is build.RetainedBuild)
     _fail(lease.retained.disposition == "transferred")
     _stable_graph(lease.retained, lease.reference, control, "leased")
     return lease.reference
-
 
 def _reference(owned, active):
     records = builder._records(active)
@@ -355,7 +336,6 @@ def _reference(owned, active):
         snapshot.ledger_key, snapshot.settled, snapshot.state_parent.generation, snapshot.operation, snapshot.root,
         body["manifest_sha256"], body["manifest_size"], body["ustar_sha256"], body["ustar_size"], body["entry_count"],
     )
-
 
 def _acquire(approval, outer):
     _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
@@ -413,7 +393,6 @@ def _acquire(approval, outer):
             raise RootfsAcquireError(stage) from settled
         raise RootfsAcquireError(stage) from error
 
-
 def _abandon(lease, control):
     """Drop live custody of a verified lease without deleting durable state."""
     _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
@@ -429,7 +408,6 @@ def _abandon(lease, control):
     except BaseException:
         lease.disposition = "uncertain"
         raise
-
 
 def _admit_operation_parent_transition(held, control):
     """Refresh only the exact completion-parent change made by operation open."""
@@ -461,7 +439,6 @@ def _admit_operation_parent_transition(held, control):
     fs._revalidate_chain(base, control)
     fs._revalidate_chain(locked_chain, control)
 
-
 def _begin_kata_operation(authority, held, approval, control):
     """Derive genesis/lease facts here, then seal them in the operation owner."""
     _fail(type(held) is RetainedRootfsLease and held.disposition == "held"
@@ -482,7 +459,6 @@ def _begin_kata_operation(authority, held, approval, control):
     _attach_kata_operation(authority.reserve_rootfs(), held, control)
     kata_operation._admit_production_v2(authority)
     return authority
-
 
 def _attach_kata_operation(permit, held, control):
     """Settle one fresh Kata intent against the already-held exact lease."""
@@ -579,7 +555,6 @@ def _reopen_kata_reserved(permit, control):
             _close_preserving(held.retained, error)
         raise
 
-
 def _classify_release_crash_for_tests(operation_raw, rootfs_raw):
     """Pure two-ledger crash matrix; malformed or mismatched suffixes preserve."""
     try:
@@ -620,7 +595,6 @@ def _classify_release_crash_for_tests(operation_raw, rootfs_raw):
         if type(error) is LeaseError:
             raise
         raise LeaseError() from error
-
 
 def _authorize_kata_release(permit, held, control):
     """Closure-routed Stage B append after the exact Kata release-ready suffix."""

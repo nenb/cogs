@@ -562,6 +562,45 @@ check(runtime.command_policy.CONTAINERD_EXTRACTION == (
     ("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
     ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500),
 ), "fixed extraction manifest")
+
+# The pathname-free claimant derives every identity from reviewed contracts and
+# retained source custody. Extra names, policy drift, and forged grants fail
+# before any namespace mutation API is reachable.
+prestage = runtime.prestage_runtime
+extraction = runtime.command_policy.CONTAINERD_EXTRACTION
+contracts = {name: SimpleNamespace(value={"objects": [{"path": str(
+    prestage.admission.FIXED_ROOT.joinpath(*prestage._PATH, "bin", name)),
+    "size": extraction[index][1], "sha256": extraction[index][2]}]})
+    for index, name in enumerate(("containerd", "ctr"))}
+def host_generation(descriptor):
+    kind = "directory" if descriptor in {105, 106} else "file"
+    mode = 0o700 if descriptor == 105 else 0o500
+    nlink = 3 if descriptor == 105 else 2 if descriptor == 106 else 1
+    size = 0 if kind == "directory" else extraction[descriptor - 107][1]
+    return {"mount_id": 1, "device": 2, "inode": descriptor, "kind": kind,
+        "mode": mode, "uid": 0, "gid": 0, "nlink": nlink, "size": size,
+        "mtime_ns": 3, "ctime_ns": 4}
+def claim_lists(descriptor):
+    return ["bin"] if descriptor == 105 else ["containerd", "ctr"]
+def claim_open(name, *_args, **_kwargs):
+    return {"deploy": 101, "aws-feasibility": 102, ".state": 103, "completion-v1": 104,
+            "kata-runtime-v1": 105, "bin": 106, "containerd": 107, "ctr": 108}[name]
+dir_stat = SimpleNamespace(st_uid=0, st_gid=0, st_mode=__import__("stat").S_IFDIR | 0o700)
+import completion_kata_process as process_module
+with patch.object(prestage.os, "dup", return_value=100), patch.object(prestage.os, "set_inheritable"), \
+     patch.object(prestage.os, "open", side_effect=claim_open), patch.object(prestage.os, "fstat", return_value=dir_stat), \
+     patch.object(prestage.os, "listdir", side_effect=claim_lists), patch.object(prestage.os, "listxattr", return_value=[], create=True), \
+     patch.object(prestage.os, "close") as close, patch.object(prestage, "_digest", side_effect=lambda _fd, size: extraction[0 if size == extraction[0][1] else 1][2]), \
+     patch.object(process_module, "_host_generation", side_effect=host_generation), \
+     patch.object(prestage.os, "unlink") as unlink, patch.object(prestage.os, "rmdir") as rmdir:
+    facts, held = prestage._claim_exact(contracts, 9)
+    check(facts["runtime_generation"]["inode"] == 105 and facts["ctr_generation"]["inode"] == 108,
+          "prepared identities were not retained")
+    for descriptor in reversed(held): prestage.os.close(descriptor)
+    check(not unlink.called and not rmdir.called, "claimant mutated a pathname")
+    with patch.object(prestage.os, "listdir", side_effect=lambda fd: ["bin", "foreign"] if fd == 105 else claim_lists(fd)):
+        rejected(lambda: prestage._claim_exact(contracts, 9))
+rejected(lambda: prestage.admission._verify_prepared_runtime_custody(object()))
 rejected(lambda: runtime.kata_inputs._claim_runtime_inputs(object(), object()))
 rejected(lambda: runtime.kata_network._claim_runtime_network(object(), object()))
 check("process_snapshot" not in runtime._observe_fixed_runtime.__code__.co_varnames,

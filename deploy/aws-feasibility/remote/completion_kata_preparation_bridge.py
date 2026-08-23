@@ -37,7 +37,7 @@ def _claim_fixed_static_preparation():
     custody = _claim_static()
     _states[custody] = {
         "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
-        "executables": None, "abandoned": False,
+        "executables": None, "prepared": None, "abandoned": False,
     }
     return custody
 
@@ -138,6 +138,14 @@ def _issue_fixed_executable_owner(custody):
         if len(errors) == 1:
             raise
         raise BaseExceptionGroup("fixed executable owner issuance failed", errors)
+
+
+def _claim_fixed_prepared_runtime(custody):
+    """Claim the sole exact static-only runtime without accepting a pathname."""
+    state = _states.get(custody)
+    _require(state is not None and state["prepared"] is None)
+    state["prepared"] = admission._claim_prepared_runtime_custody(custody)
+    return state["prepared"]
 
 
 def _claim_fixed_executable_owner(custody):

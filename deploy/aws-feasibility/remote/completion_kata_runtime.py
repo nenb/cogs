@@ -9,6 +9,7 @@ import completion_kata_inputs as kata_inputs
 import completion_kata_network as kata_network
 import completion_kata_operation as kata_operation
 import completion_kata_owner as owner_helpers
+import completion_kata_prestage_runtime as prestage_runtime
 import completion_rootfs_fs as rootfs_fs
 import completion_rootfs_lease as rootfs_lease
 BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"
@@ -192,7 +193,6 @@ def _permit_routes():
             "qualification": QUALIFICATION_CANDIDATE,
         }
         return permit
-
     def operation_candidate(network_grant):
         import completion_kata_network as network
         retained = network._consume_runtime_network(network_grant)
@@ -206,7 +206,6 @@ def _permit_routes():
             "qualification": QUALIFICATION_CANDIDATE, "operation_token": retained["operation_token"],
             "network_grant": network_grant}
         return permit
-
     def claim(permit):
         state = states.get(permit)
         _fail(type(permit) is _LaunchPermit and state is not None and not state["used"],
@@ -251,16 +250,13 @@ def _permit_routes():
         _fail(type(permit) is _LaunchPermit and state is not None and state["used"] and "network_grant" in state,
               "live network hold absent")
         return state["network_grant"]
-
     return candidate, operation_candidate, claim, preexec, release, descriptor, launch_path, held
-
 
 (_make_fake_launch_permit_for_tests, _make_operation_launch_permit,
  _claim_launch_permit, _preexec_launch_network, _release_launch_preexec,
  _retain_launch_network_descriptor, _resolved_launch_network_path,
  _stored_launch_network_grant) = _permit_routes()
 del _permit_routes
-
 
 def _runtime_mount_grant_routes():
     owners = owner_helpers.Registry(
@@ -294,28 +290,23 @@ def _runtime_mount_grant_routes():
         return state[1], state[2]
     return RuntimeMountOwner, RuntimeMountGrant, synthetic_owner, issue, claim
 
-
 (RuntimeMountOwner, RuntimeMountGrant, _make_synthetic_runtime_mount_owner_for_tests,
  _issue_runtime_mount_grant, _claim_runtime_mount_grant) = _runtime_mount_grant_routes()
 del _runtime_mount_grant_routes
 
-
 def _open_production_owner():
     """Fail closed until operation/root/input/network and tool issuers exist."""
     raise KataRuntimeError("production runtime owner is unavailable: issuers unqualified")
-
 
 def operation_netns_path(operation_token):
     """Return the sole operation-owned runtime namespace path."""
     _fail(type(operation_token) is str and re.fullmatch(r"[0-9a-f]{64}", operation_token), "operation token")
     return "/run/netns/c42n" + operation_token[:10]
 
-
 def _ctr_metadata_argv():
     return (STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE,
             "containers", "create", "--config", RUNTIME_ROOT + "/metadata-fixture.json",
             "--runtime", RUNTIME, "--runtime-config-path", RUNTIME_CONFIG, CONTAINER_ID)
-
 
 def ctr_run_spec(permit):
     """Consume the metadata fixture bundle; child PID resolves retained fd 202."""
@@ -324,7 +315,6 @@ def ctr_run_spec(permit):
           re.fullmatch(r"/run/netns/c42n[0-9a-f]{10}", state["network"])),
           "operation network path")
     return CommandSpec(actions.CommandId.CTR_RUN, _ctr_metadata_argv(), b"", "runtime-start")
-
 
 def _validate_ctr_launch_intent(intent):
     argv = tuple(intent["argv"]); metadata = argv == _ctr_metadata_argv()
@@ -336,7 +326,6 @@ def _validate_ctr_launch_intent(intent):
           and (metadata or production) and intent["command_id"] == "CTR_RUN"
           and intent["stdin_hex"] == "" and (metadata or "network:" + CTR_NS_TEMPLATE in argv),
           "fixed ctr fd launch intent")
-
 
 def fixed_command_specs_for_tests():
     """Exact observer and non-force teardown argv; specifications only."""
@@ -364,7 +353,6 @@ _MASKED = (
 _READONLY = (
     "/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger",
 )
-
 
 def _oci_spec(network_path):
     """Return a fresh reviewed OCI candidate for an internally derived nsfs path."""
@@ -396,7 +384,6 @@ def _oci_spec(network_path):
             "readonlyPaths": list(_READONLY),
         },
     }
-
 
 def expected_oci_spec():
     """Return the historically reviewed fixed-alias OCI candidate."""
@@ -1048,12 +1035,15 @@ def _set_runtime_alias(present):
     if present: _fail(not _runtime_alias()); os.symlink(RUNTIME_ROOT, RUNTIME_ALIAS); os.chown(RUNTIME_ALIAS, 0, 0, follow_symlinks=False)
     else: _fail(_runtime_alias()); os.unlink(RUNTIME_ALIAS)
     _fail(_runtime_alias() == present); os.fsync(descriptor); os.close(descriptor)
-def _activate_prepared_containerd(journal, completion, control):
+def _activate_prepared_containerd(journal, completion, control, prepared_grant=None):
     """Add mutable daemon state to the already verified static runtime root."""
     _fail(type(completion) is rootfs_fs.HeldNode
           and type(control) is rootfs_fs.OperationControl)
     parent = completion.operation_fd.number; temporary = ".kata-runtime-v1.staging"
     history = journal.runtime_recovery_history()
+    if not history["runtime_prepared"]:
+        kata_operation._record_runtime_prepared(journal, prepared_grant)
+        history = journal.runtime_recovery_history()
     if not history["runtime_stage_intents"]:
         journal.record_runtime_stage_intent({"operation_token": history["operation_token"],
             "policy_version": command_policy.RUNTIME_POLICY_VERSION,
@@ -1172,7 +1162,7 @@ def _runtime_owner_routes():
                         finally: os.close(child)
                 finally: os.close(descriptor)
         walk(node.operation_fd.number, 0); return tuple(rows)
-    def retain_daemon(journal, completion, process_owner, control):
+    def retain_daemon(journal, completion, process_owner, control, prepared_grant=None):
         import completion_kata_process as process
         history = journal.runtime_recovery_history()
         if history["tip"] in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3"}: process._recover_pending_fixed(journal); history = journal.runtime_recovery_history()
@@ -1181,6 +1171,10 @@ def _runtime_owner_routes():
         inactive = not history["daemon_retained"] and not history["daemon_outcomes"]
         staged_only = inactive and bool(history["runtime_stage_intents"])
         pristine = inactive and not history["runtime_stage_intents"] and not history["runtime_staged"]
+        if pristine:
+            prepared = prestage_runtime.retain(journal, completion, prepared_grant, control)
+            value = _Daemon(seal); daemons[value] = [journal, completion, None, control, None, None,
+                None, None, None, None, {}, prepared]; return value
         if active and process_owner is None: process_owner = process._reopen_fixed_daemon(journal)
         _fail(type(completion) is rootfs_fs.HeldNode and type(control) is rootfs_fs.OperationControl and ((stopped or staged_only or pristine) and process_owner is None or active and
                    process._verify_fixed_daemon(process_owner, journal) == history["daemon_retained"][-1]))
@@ -1219,19 +1213,17 @@ def _runtime_owner_routes():
         _fail(not active or socket is not None); inventories = {name: inventory(node) for name, node in (("root", root), ("state", daemon_state)) if node is not None}
         value = _Daemon(seal); daemons[value] = [journal, completion, process_owner, control, runtime, config, root, daemon_state, retained, socket, inventories]
         return value
-    def issue_attestation(executable_owner, config, control):
+    def issue_attestation_core(executable_owner, config, control, roles):
         import completion_kata_process as process
         _fail(type(config) is rootfs_fs.HeldNode
               and type(control) is rootfs_fs.OperationControl,
               "fixed runtime attestation inputs")
         executables = []
         try:
-            for role in ("containerd", "ctr", "shim", "qemu", "virtiofsd"):
-                executables.append(process._claim_attested_executable(executable_owner, role))
+            for role in roles: executables.append(process._claim_attested_executable(executable_owner, role))
             expected = (("containerd", STAGED_CONTAINERD), ("ctr", STAGED_CTR),
-                        ("shim", "/opt/kata/bin/containerd-shim-kata-v2"),
-                        ("qemu", "/opt/kata/bin/qemu-system-x86_64"),
-                        ("virtiofsd", "/opt/kata/libexec/virtiofsd"))
+                        ("shim", "/opt/kata/bin/containerd-shim-kata-v2"), ("qemu", "/opt/kata/bin/qemu-system-x86_64"),
+                        ("virtiofsd", "/opt/kata/libexec/virtiofsd"))[-len(roles):]
             _fail(tuple((item.role, item.path) for item in executables) == expected,
                   "fixed runtime executable roles")
             raw = rootfs_fs._read_regular(config, 4_194_304, control)
@@ -1247,6 +1239,11 @@ def _runtime_owner_routes():
                 except BaseException as error: errors.append(error)
             if len(errors) == 1: raise
             raise BaseExceptionGroup("runtime attestation issuance failure", errors)
+    def issue_attestation(executable_owner, config, control):
+        return issue_attestation_core(executable_owner, config, control,
+            ("containerd", "ctr", "shim", "qemu", "virtiofsd"))
+    def issue_cleanup_attestation(executable_owner, config, control):
+        return issue_attestation_core(executable_owner, config, control, ("shim", "qemu", "virtiofsd"))
     def discard_attestation(value):
         import completion_kata_process as process
         state = attestations.pop(value, None)
@@ -1586,6 +1583,8 @@ def _runtime_owner_routes():
     def shutdown_daemon(daemon):
         import completion_kata_process as process
         state = daemons[daemon]; history = state[0].runtime_recovery_history()
+        if len(state) > 11 and state[11] is not None:
+            prestage_runtime.cleanup(state[11]); daemons.pop(daemon); return
         def closed(value): return not value["uncertain"] and all(value[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
         starts = [intent for intent in history["intents"] if intent["command_id"] == "CONTAINERD_START" and any(kata_operation._same_command_v2(preexec, intent) for preexec in history["preexecs"]) and not any(kata_operation._same_command_v2(retained, intent) for retained in history["daemon_retained"])]
         unclosed = [outcome for intent in starts for outcome in history["outcomes"] if kata_operation._same_command_v2(outcome, intent) and (outcome["uncertain"] or not closed(outcome))]
@@ -1621,12 +1620,16 @@ def _runtime_owner_routes():
         try: discard_attestation(state[5])
         except BaseException as error: errors.append(error)
         if errors: raise BaseExceptionGroup("fixed runtime owner close", errors)
-    def reconstruct(journal, lease, input_owner, network_owner, executable_owner, completion, config, control):
+    def reconstruct(journal, lease, input_owner, network_owner, executable_owner, completion, config, control,
+                    prepared_grant=None):
         """Rebuild private cleanup indexes without issuing a start or launch."""
         _fail(journal.runtime_recovery_history()["phase"] != "UNCERTAIN")
-        attestation = issue_attestation(executable_owner, config, control)
+        history = journal.runtime_recovery_history()
+        issuance = (issue_cleanup_attestation if history["runtime_prepared"] and
+                    not history["runtime_stage_intents"] and not history["runtime_staged"] else issue_attestation)
+        attestation = issuance(executable_owner, config, control)
         try:
-            daemon = retain_daemon(journal, completion, None, control)
+            daemon = retain_daemon(journal, completion, None, control, prepared_grant)
             return compose(journal, lease, input_owner, network_owner, attestation, daemon, control)
         except BaseException as primary:
             try: discard_attestation(attestation)

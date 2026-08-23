@@ -106,6 +106,7 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
+    "deploy/aws-feasibility/remote/completion_kata_prestage_runtime.py",
     "deploy/aws-feasibility/remote/completion_kata_process.py",
     "deploy/aws-feasibility/remote/completion_kata_runtime.py",
     "deploy/aws-feasibility/remote/completion_kata_ssh.py",

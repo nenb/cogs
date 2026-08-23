@@ -85,6 +85,7 @@ def _stage_candidates(names, allowed=()):
 def _validate_runtime_layout(names, records, phase):
     present = names & RUNTIME_NAMES
     _fail(len(present) <= 1)
+    prepared = any(item.record_type == "RUNTIME_PREPARED_V1" for item in records)
     intent = any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records)
     staged = any(item.record_type == "RUNTIME_STAGED_V3" for item in records)
     _fail(RUNTIME_STAGING_NAME.raw not in present)
@@ -92,7 +93,7 @@ def _validate_runtime_layout(names, records, phase):
     if phase in RUNTIME_ABSENT_PHASES:
         _fail(not runtime_present)
     elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
-        _fail(runtime_present or intent and not staged)
+        _fail(runtime_present or intent and not staged or prepared and not intent)
 def _validate_stage_layout(raw_names, records, phase, completion_key):
     names = set(raw_names)
     _validate_runtime_layout(names, records, phase)
@@ -169,7 +170,7 @@ COMMANDS = actions.COMMAND_IDS
 LEGACY_COMMANDS = command_policy.LEGACY_COMMANDS
 _V1_COMMAND_RECORDS = frozenset({"COMMAND_INTENT", "COMMAND_PREEXEC", "COMMAND_OUTCOME"})
 _V2_COMMAND_RECORDS = (frozenset({
-    "COMMAND_OUTCOME_V2", "DAEMON_RETAINED_V2", "DAEMON_OUTCOME_V2", "RUNTIME_STAGE_INTENT_V4",
+    "COMMAND_OUTCOME_V2", "DAEMON_RETAINED_V2", "DAEMON_OUTCOME_V2", "RUNTIME_PREPARED_V1", "RUNTIME_STAGE_INTENT_V4",
     "NETWORK_SNAPSHOT_V2"}) | network_journal.ALL_RECORDS)
 _POLICY_MAPS = (command_policy.POLICY_SHA256, command_policy.OCCURRENCES,
                 command_policy.PHASES, command_policy.MAX_OCCURRENCES)
@@ -207,6 +208,7 @@ LIFECYCLE = (
     "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
 )
 PRODUCTION_ADMISSION_VERSION = "cogs.stage2-kata-operation-production/v2"
+RUNTIME_PREPARED_DOMAIN = b"cogs.stage2-kata-runtime-prepared/v1\0"
 SSH_PARSER_ID = "completion_guest_workloads_v3.parse_guest_workload_output/v3"
 SSH_PARSER_SHA256 = "1d94ba3a17a8b76a3b326359d89a140f0d02c4c8341d61fb94fff5cd98ccd2db"
 PROOF_LIFECYCLE = frozenset({
@@ -646,6 +648,19 @@ def _validate_body(kind, body):
     elif kind == "RUNTIME_RESUME_V4":
         _keys(body, ("operation_token", "target_phase", "uncertain_serial", "binding_sha256")); _hex(body["operation_token"])
         _text(body["target_phase"], True); _uint(body["uncertain_serial"], MAX_RECORDS - 1); _hex(body["binding_sha256"])
+    elif kind == "RUNTIME_PREPARED_V1":
+        names = ("operation_token", "runtime_generation", "bin_generation", "containerd_generation",
+                 "ctr_generation", "containerd_size", "containerd_sha256", "ctr_size", "ctr_sha256",
+                 "manifest_sha256")
+        _keys(body, names); _hex(body["operation_token"])
+        for name in names[1:5]: _generation(body[name])
+        _fail(body["runtime_generation"]["kind"] == body["bin_generation"]["kind"] == "directory"
+              and body["containerd_generation"]["kind"] == body["ctr_generation"]["kind"] == "file")
+        expected = command_policy.CONTAINERD_EXTRACTION
+        _fail((body["containerd_size"], body["containerd_sha256"], body["ctr_size"], body["ctr_sha256"]) ==
+              (expected[0][1], expected[0][2], expected[1][1], expected[1][2]))
+        _fail(body["manifest_sha256"] == hashlib.sha256(RUNTIME_PREPARED_DOMAIN + _canonical(
+              {name: body[name] for name in names if name != "manifest_sha256"})).hexdigest())
     elif kind == "RUNTIME_STAGE_INTENT_V4":
         _keys(body, ("operation_token", "policy_version", "policy_sha256", "temporary_name"))
         _hex(body["operation_token"]); _fail(body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION and
@@ -1069,6 +1084,7 @@ def _legal(records):
     ever_uncertain = False
     network_state = network_journal.initial()
     cleanup_mode = None
+    runtime_prepared = False
     rootfs = False
     next_serial = 0
     for index, record in enumerate(records[1:], 1):
@@ -1173,9 +1189,15 @@ def _legal(records):
             else:
                 _fail(prior and prior[-1]["action"] == "remove-intent")
             continue
+        if kind == "RUNTIME_PREPARED_V1":
+            _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY"
+                  and not runtime_prepared and not any(item.record_type in
+                  {"RUNTIME_STAGE_INTENT_V4", "RUNTIME_STAGED_V3"} for item in records[:index]))
+            runtime_prepared = True; continue
         if kind == "RUNTIME_STAGE_INTENT_V4":
-            _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY" and
-                  not any(item.record_type in {kind, "RUNTIME_STAGED_V3"} for item in records[:index])); continue
+            _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY"
+                  and not any(item.record_type in {kind, "RUNTIME_STAGED_V3"}
+                  for item in records[:index])); continue
         if kind == "RUNTIME_STAGED_V3":
             _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY" and runtime_staged is None and
                   any(item.record_type == "RUNTIME_STAGE_INTENT_V4" for item in records[:index]))
@@ -1947,10 +1969,11 @@ def _make_authority():
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
-            direct = {"record_command_intent", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
+            direct = {"record_command_intent", "record_runtime_prepared", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
             if name in direct: return object.__getattribute__(self, name)
             _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
+        def record_runtime_prepared(self, grant): return cleanup_owners[self].record_runtime_prepared(grant)
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
         def settle_network_cleanup(self, target): return cleanup_owners[self].settle_network_cleanup(target)
@@ -2017,7 +2040,7 @@ def _make_authority():
         validate = getattr(io, "validate_layout", None)
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
-        cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
+        cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4", "RUNTIME_PREPARED_V1",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
             kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
@@ -2101,7 +2124,7 @@ def _make_authority():
                       "terminal_sha256": records[-1].line_sha256, "tip": records[-1].record_type}
             for name, kind in (("intents", "COMMAND_INTENT_V2"), ("preexecs", "COMMAND_PREEXEC_V2"), ("outcomes", "COMMAND_OUTCOME_V2"),
                     ("daemon_retained", "DAEMON_RETAINED_V2"), ("daemon_outcomes", "DAEMON_OUTCOME_V2"),
-                    ("runtime_staged", "RUNTIME_STAGED_V3"), ("outputs", "COMMAND_OUTPUT_V3"),
+                    ("runtime_staged", "RUNTIME_STAGED_V3"), ("runtime_prepared", "RUNTIME_PREPARED_V1"), ("outputs", "COMMAND_OUTPUT_V3"),
                     ("runtime_identities", "RUNTIME_IDENTITY_V4"), ("runtime_stage_intents", "RUNTIME_STAGE_INTENT_V4"),
                     ("runtime_resumes", "RUNTIME_RESUME_V4"), ("runtime_ownership", "OWNERSHIP_OBSERVED")):
                 result[name] = tuple(item.body for item in records if item.record_type == kind)
@@ -2178,6 +2201,14 @@ def _make_authority():
             target = "RUNTIME_CLEANUP_ONLY" if records[-1].record_type == "DAEMON_OUTCOME_V2" else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
             write_validated(self, "RUNTIME_RESUME_V4", {"operation_token": records[0].body["operation_token"], "target_phase": target,
                 "uncertain_serial": terminal["command_serial"], "binding_sha256": terminal["binding_sha256"]}); return target
+        def record_runtime_prepared(self, grant):
+            import completion_kata_admission as admission
+            facts = admission._consume_prepared_runtime_custody(grant)
+            _io, records, status = reload(self); _fail(status == "exact" and not any(
+                item.record_type == "RUNTIME_PREPARED_V1" for item in records))
+            body = {"operation_token": records[0].body["operation_token"], **facts}
+            body["manifest_sha256"] = hashlib.sha256(RUNTIME_PREPARED_DOMAIN + _canonical(body)).hexdigest()
+            write_validated(self, "RUNTIME_PREPARED_V1", body)
         def record_runtime_stage_intent(self, body):
             _io, records, status = reload(self); _fail(status == "exact" and not any(
                 item.record_type in {"RUNTIME_STAGE_INTENT_V4", "RUNTIME_STAGED_V3"} for item in records))
@@ -2756,6 +2787,7 @@ def _make_authority():
     def recovery_lifecycle_deadline(authority):
         return authority.recovery_lifecycle_deadline()
     def record_command_intent(authority, body): return authority.record_command_intent(body)
+    def record_runtime_prepared(authority, grant): return authority.record_runtime_prepared(grant)
     def record_command_preexec(authority, body): return authority.record_command_preexec(body)
     def record_command_output(authority, body): return authority.record_command_output(body)
     def record_command_outcome(authority, body): return authority.record_command_outcome(body)
@@ -2807,7 +2839,7 @@ def _make_authority():
         claim_production_retired_operation, reconstruct_rootfs_permit,
         command_context, pending_command, has_recovery_command,
         recovery_command, recovery_lifecycle_deadline,
-        record_command_intent,
+        record_command_intent, record_runtime_prepared,
         record_command_preexec, record_command_output, record_command_outcome, record_daemon_retained,
         record_daemon_outcome, durable_command_outcome, durable_command_output,
         record_runtime_mount_v2, pending_fs_intent, record_fs_absent,
@@ -2828,7 +2860,7 @@ def _make_authority():
     _claim_production_retired_operation, _reconstruct_rootfs_permit,
     _command_context, _pending_command, _has_recovery_command,
     _recovery_command, _recovery_lifecycle_deadline,
-    _record_command_intent,
+    _record_command_intent, _record_runtime_prepared,
     _record_command_preexec, _record_command_output, _record_command_outcome, _record_daemon_retained,
     _record_daemon_outcome, _durable_command_outcome, _durable_command_output,
     _record_runtime_mount_body_v2, _pending_fs_intent, _record_fs_absent,

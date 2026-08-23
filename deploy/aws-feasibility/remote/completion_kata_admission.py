@@ -52,6 +52,7 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_operation.py",
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
+    "deploy/aws-feasibility/remote/completion_kata_prestage_runtime.py",
     "deploy/aws-feasibility/remote/completion_kata_process.py",
     "deploy/aws-feasibility/remote/completion_kata_qualification.py",
     "deploy/aws-feasibility/remote/completion_kata_runtime.py",
@@ -695,6 +696,7 @@ def _static_routes():
     custody_states = {}
     role_states = {}
     mapping_states = {}
+    prepared_states = {}
     issuance_started = False
     issuer_taken = False
 
@@ -719,6 +721,12 @@ def _static_routes():
             _require(key is seal, "sealed live mapping claim")
             return super().__new__(cls)
 
+    class _PreparedRuntimeCustody:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _require(key is seal, "sealed prepared runtime custody")
+            return super().__new__(cls)
+
     def claim_static():
         nonlocal issuance_started
         if issuance_started:
@@ -731,6 +739,11 @@ def _static_routes():
             control, envelope, runtime, contracts, held = _read_control_package()
             descriptors.extend(held)
             _verify_complete_source(envelope.value["implementation"], descriptors)
+            source_anchor = os.open(FIXED_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            descriptors.append(source_anchor)
+            source_seen = os.fstat(source_anchor)
+            _require(source_seen.st_uid == source_seen.st_gid == 0
+                     and stat.S_IMODE(source_seen.st_mode) == 0o700)
             final = _validate_final_and_rootfs(envelope, runtime)
             custody = _StaticPreparationCustody(seal)
             custody_states[custody] = {
@@ -740,6 +753,7 @@ def _static_routes():
                 "contracts": contracts,
                 "final": final,
                 "descriptors": descriptors,
+                "source_anchor": source_anchor,
                 "roles": set(),
                 "mapping": None,
             }
@@ -866,6 +880,31 @@ def _static_routes():
         state["consumed"] = True
         return state["description"]
 
+    def claim_prepared(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None
+                 and not any(item["custody"] is custody for item in prepared_states.values()))
+        import completion_kata_prestage_runtime as prepared
+        facts, held = prepared._claim_exact(state["contracts"], state["source_anchor"])
+        state["descriptors"].extend(held)
+        claim = _PreparedRuntimeCustody(seal)
+        prepared_states[claim] = {"custody": custody, "facts": facts,
+                                  "consumed": False, "verified": False}
+        return claim
+
+    def prepared_facts(claim, action=None):
+        item = prepared_states.get(claim)
+        _require(type(claim) is _PreparedRuntimeCustody and item is not None
+                 and (action != "consume" or not item["consumed"])
+                 and (action != "verify" or item["consumed"] and not item["verified"]))
+        state = custody_states.get(item["custody"]); _require(state is not None)
+        import completion_kata_prestage_runtime as prepared
+        fresh, held = prepared._claim_exact(state["contracts"], state["source_anchor"])
+        try: _require(fresh == item["facts"], "prepared runtime pathname replacement")
+        finally: _close_all(held)
+        if action is not None: item[{"consume": "consumed", "verify": "verified"}[action]] = True
+        return dict(item["facts"])
+
     def source_approval(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None,
@@ -887,17 +926,23 @@ def _static_routes():
             role_states.pop(claim)
         for claim in [claim for claim, item in mapping_states.items() if item["custody"] is custody]:
             mapping_states.pop(claim)
+        for claim in [claim for claim, item in prepared_states.items() if item["custody"] is custody]:
+            prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
     return (take_issuer, source_approval, claim_role, consume_role, claim_live_mapping,
-            consume_mapping, binding, abort)
+            consume_mapping, claim_prepared, prepared_facts, binding, abort)
 
 
 (_take_static_preparation_issuer, _fixed_source_approval,
  _claim_executable_role_custody, _consume_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
+ _claim_prepared_runtime_custody, _prepared_runtime_facts,
  _static_custody_binding, _abort_static_preparation) = _static_routes()
 del _static_routes
+
+def _consume_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "consume")
+def _verify_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "verify")
 
 
 # Historical coordinator imports remain blocked rather than reinterpreting V1.

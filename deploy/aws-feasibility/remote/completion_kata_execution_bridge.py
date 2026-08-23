@@ -110,11 +110,14 @@ def _routes():
         input_owner = inputs._reopen_runtime_inputs(
             lifecycle.operation, completion, current["control"])
         config, config_nodes = open_config(current["control"])
+        history = journal.runtime_recovery_history(); prepared_grant = None
+        if not history["runtime_prepared"] and not history["runtime_stage_intents"]:
+            prepared_grant = preparation._claim_fixed_prepared_runtime(lifecycle.static_custody)
         try:
             owner = runtime._reconstruct_fixed_runtime(
                 lifecycle.operation, lifecycle.rootfs, input_owner,
                 current.get("network_owner"), lifecycle.executables,
-                completion, config, current["control"])
+                completion, config, current["control"], prepared_grant)
         except BaseException as primary:
             errors = [primary]
             for node in reversed(config_nodes):
@@ -179,8 +182,9 @@ def _routes():
     def stage(bridge, lifecycle):
         current = state(bridge, lifecycle)
         completion = fixed_chain(current)
+        prepared_grant = preparation._claim_fixed_prepared_runtime(lifecycle.static_custody)
         staged = runtime._activate_prepared_containerd(
-            lifecycle.operation, completion, current["control"])
+            lifecycle.operation, completion, current["control"], prepared_grant)
         config, config_nodes = open_config(current["control"])
         attestation = None
         start_attempted = False
