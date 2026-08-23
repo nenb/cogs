@@ -1,0 +1,549 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-completion-evidence-v1.json",
+  "title": "Cogs closed AWS Stage 2 completion evidence v1",
+  "description": "Redacted pass-only projection. Schema conformance is not private receipt or production publication authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "result",
+    "batch",
+    "bindings",
+    "deadlines",
+    "cycles",
+    "launch_summary",
+    "ssh_ready_summary",
+    "workload_summary",
+    "cleanup",
+    "cost",
+    "limitations"
+  ],
+  "properties": {
+    "version": { "const": "cogs.aws-stage2-completion-evidence/v1" },
+    "authority": { "const": "aws-stage2-completion" },
+    "result": { "const": "pass" },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commitment", "source_revision", "expiry_at", "cycle_count", "modes"],
+      "properties": {
+        "commitment": { "$ref": "#/$defs/digest" },
+        "source_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "expiry_at": { "$ref": "#/$defs/timestamp" },
+        "cycle_count": { "const": 7 },
+        "modes": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            { "const": "full" },
+            { "const": "readiness" },
+            { "const": "readiness" },
+            { "const": "readiness" },
+            { "const": "readiness" },
+            { "const": "readiness" },
+            { "const": "readiness" }
+          ],
+          "items": false
+        }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_principals_commitment",
+        "ami_commitment",
+        "rootfs_commitment",
+        "runtime_archive_commitment",
+        "static_control_commitment",
+        "final_package_pin_commitment",
+        "fixture_commitment",
+        "full_guest_program_commitment",
+        "readiness_guest_program_commitment",
+        "owner_commitment",
+        "controller_commitment",
+        "schema_commitment",
+        "validator_commitment",
+        "renderer_commitment",
+        "plan_policy_commitment",
+        "rate_table_commitment"
+      ],
+      "properties": {
+        "account_principals_commitment": { "$ref": "#/$defs/digest" },
+        "ami_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_commitment": { "$ref": "#/$defs/digest" },
+        "runtime_archive_commitment": { "$ref": "#/$defs/digest" },
+        "static_control_commitment": { "$ref": "#/$defs/digest" },
+        "final_package_pin_commitment": { "$ref": "#/$defs/digest" },
+        "fixture_commitment": { "$ref": "#/$defs/digest" },
+        "full_guest_program_commitment": { "$ref": "#/$defs/digest" },
+        "readiness_guest_program_commitment": { "$ref": "#/$defs/digest" },
+        "owner_commitment": { "$ref": "#/$defs/digest" },
+        "controller_commitment": { "$ref": "#/$defs/digest" },
+        "schema_commitment": { "$ref": "#/$defs/digest" },
+        "validator_commitment": { "$ref": "#/$defs/digest" },
+        "renderer_commitment": { "$ref": "#/$defs/digest" },
+        "plan_policy_commitment": { "$ref": "#/$defs/digest" },
+        "rate_table_commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "deadlines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first_apply_started_at",
+        "effect_deadline_at",
+        "expiry_at",
+        "normal_effect_deadline_seconds",
+        "cleanup_reserve_seconds",
+        "binding_commitment"
+      ],
+      "properties": {
+        "first_apply_started_at": { "$ref": "#/$defs/timestamp" },
+        "effect_deadline_at": { "$ref": "#/$defs/timestamp" },
+        "expiry_at": { "$ref": "#/$defs/timestamp" },
+        "normal_effect_deadline_seconds": { "const": 5400 },
+        "cleanup_reserve_seconds": { "type": "integer", "minimum": 1, "maximum": 8999 },
+        "binding_commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "cycles": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            {
+              "type": "object",
+              "properties": { "ordinal": { "const": 1 }, "mode": { "const": "full" }, "workloads": {} },
+              "required": ["ordinal", "mode", "workloads"]
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 2 } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 3 } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 4 } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 5 } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 6 } } }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            { "$ref": "#/$defs/readinessCycle" },
+            { "type": "object", "properties": { "ordinal": { "const": 7 } } }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "launch_summary": { "$ref": "#/$defs/summary" },
+    "ssh_ready_summary": { "$ref": "#/$defs/summary" },
+    "workload_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle_ordinal", "receipt_commitment", "git", "build", "install"],
+      "properties": {
+        "cycle_ordinal": { "const": 1 },
+        "receipt_commitment": { "$ref": "#/$defs/digest" },
+        "git": { "$ref": "#/$defs/workloadSummary" },
+        "build": { "$ref": "#/$defs/workloadSummary" },
+        "install": { "$ref": "#/$defs/workloadSummary" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycle_zero_commitments",
+        "final_zero_commitment",
+        "zero_receipt_count",
+        "destroy_attempts",
+        "inventory_observations",
+        "teardown_phase_count"
+      ],
+      "properties": {
+        "cycle_zero_commitments": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "final_zero_commitment": { "$ref": "#/$defs/digest" },
+        "zero_receipt_count": { "const": 8 },
+        "destroy_attempts": { "const": 7 },
+        "inventory_observations": { "const": 8 },
+        "teardown_phase_count": { "const": 13 }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "rate_table_commitment",
+        "price_evidence_commitment",
+        "deadline_binding_commitment",
+        "rates_micro_usd_per_hour",
+        "expected_upper_bound_micro_usd",
+        "expected_limit_micro_usd",
+        "aggregate_duration_ns",
+        "aggregate_cost_micro_usd",
+        "publishable_limit_micro_usd"
+      ],
+      "properties": {
+        "currency": { "const": "micro-USD" },
+        "rate_table_commitment": { "$ref": "#/$defs/digest" },
+        "price_evidence_commitment": { "$ref": "#/$defs/digest" },
+        "deadline_binding_commitment": { "$ref": "#/$defs/digest" },
+        "rates_micro_usd_per_hour": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["compute", "public_ipv4", "gp3", "support_allowance"],
+          "properties": {
+            "compute": { "$ref": "#/$defs/rate" },
+            "public_ipv4": { "$ref": "#/$defs/rate" },
+            "gp3": { "$ref": "#/$defs/rate" },
+            "support_allowance": { "$ref": "#/$defs/rate" }
+          }
+        },
+        "expected_upper_bound_micro_usd": { "type": "integer", "minimum": 1, "maximum": 249999 },
+        "expected_limit_micro_usd": { "const": 250000 },
+        "aggregate_duration_ns": { "type": "integer", "minimum": 7, "maximum": 37800000000000 },
+        "aggregate_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "publishable_limit_micro_usd": { "const": 500000 }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "const": "standalone-stage-2-only" },
+        { "const": "not-eks-or-kubernetes" },
+        { "const": "not-production-release-or-general-availability" },
+        { "const": "not-stage-4-under-30-second-readiness" },
+        { "const": "not-general-capacity" },
+        { "const": "no-isolation-claim-beyond-measured-sandbox" },
+        { "const": "custody-is-local-tamper-evidence-not-external-worm" }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "positiveNs": { "type": "integer", "minimum": 1, "maximum": 5400000000000 },
+    "rate": { "type": "integer", "minimum": 1, "maximum": 1000000000 },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples_ns", "min_ns", "p50_ns", "p95_ns", "max_ns"],
+      "properties": {
+        "samples_ns": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/positiveNs" }
+        },
+        "min_ns": { "$ref": "#/$defs/positiveNs" },
+        "p50_ns": { "$ref": "#/$defs/positiveNs" },
+        "p95_ns": { "$ref": "#/$defs/positiveNs" },
+        "max_ns": { "$ref": "#/$defs/positiveNs" }
+      }
+    },
+    "workloadSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_commitment", "samples_ns", "min_ns", "p50_ns", "p95_ns", "max_ns"],
+      "properties": {
+        "output_commitment": { "$ref": "#/$defs/digest" },
+        "samples_ns": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/positiveNs" }
+        },
+        "min_ns": { "$ref": "#/$defs/positiveNs" },
+        "p50_ns": { "$ref": "#/$defs/positiveNs" },
+        "p95_ns": { "$ref": "#/$defs/positiveNs" },
+        "max_ns": { "$ref": "#/$defs/positiveNs" }
+      }
+    },
+    "attempts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apply", "remote_lifecycle", "kata_ctr_launch", "ssh", "destroy"],
+      "properties": {
+        "apply": { "const": 1 },
+        "remote_lifecycle": { "const": 1 },
+        "kata_ctr_launch": { "const": 1 },
+        "ssh": { "const": 1 },
+        "destroy": { "const": 1 }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_commitment",
+        "root_volume_commitment",
+        "launch_template_generation_commitment",
+        "host_boot_commitment",
+        "operation_commitment",
+        "client_key_commitment",
+        "host_key_commitment",
+        "pre_destroy_receipt_commitment"
+      ],
+      "properties": {
+        "instance_commitment": { "$ref": "#/$defs/digest" },
+        "root_volume_commitment": { "$ref": "#/$defs/digest" },
+        "launch_template_generation_commitment": { "$ref": "#/$defs/digest" },
+        "host_boot_commitment": { "$ref": "#/$defs/digest" },
+        "operation_commitment": { "$ref": "#/$defs/digest" },
+        "client_key_commitment": { "$ref": "#/$defs/digest" },
+        "host_key_commitment": { "$ref": "#/$defs/digest" },
+        "pre_destroy_receipt_commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "workloadRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "duration_ns", "output_commitment", "deleted", "cycle_receipt_commitment"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "duration_ns": { "$ref": "#/$defs/positiveNs" },
+        "output_commitment": { "$ref": "#/$defs/digest" },
+        "deleted": { "const": true },
+        "cycle_receipt_commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "workloadRows": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": { "$ref": "#/$defs/workloadRow" }
+    },
+    "workloads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git", "build", "install"],
+      "properties": {
+        "git": { "$ref": "#/$defs/workloadRows" },
+        "build": { "$ref": "#/$defs/workloadRows" },
+        "install": { "$ref": "#/$defs/workloadRows" }
+      }
+    },
+    "teardown": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        { "$ref": "#/$defs/teardownReadiness" },
+        { "$ref": "#/$defs/teardownTaskStopped" },
+        { "$ref": "#/$defs/teardownNetwork" },
+        { "$ref": "#/$defs/teardownTask" },
+        { "$ref": "#/$defs/teardownContainer" },
+        { "$ref": "#/$defs/teardownRuntime" },
+        { "$ref": "#/$defs/teardownShare" },
+        { "$ref": "#/$defs/teardownFirewall" },
+        { "$ref": "#/$defs/teardownContainerd" },
+        { "$ref": "#/$defs/teardownInputs" },
+        { "$ref": "#/$defs/teardownRootfs" },
+        { "$ref": "#/$defs/teardownBaselines" },
+        { "$ref": "#/$defs/teardownRetired" }
+      ],
+      "items": false
+    },
+    "teardownBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "passed"],
+      "properties": { "phase": { "type": "string" }, "passed": { "const": true } }
+    },
+    "teardownReadiness": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "READINESS_REVOKED" } } }
+      ]
+    },
+    "teardownTaskStopped": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "TASK_STOPPED" } } }
+      ]
+    },
+    "teardownNetwork": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "NETWORK_ABSENT" } } }
+      ]
+    },
+    "teardownTask": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "TASK_ABSENT" } } }
+      ]
+    },
+    "teardownContainer": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "CONTAINER_ABSENT" } } }
+      ]
+    },
+    "teardownRuntime": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "RUNTIME_PROCESSES_ABSENT" } } }
+      ]
+    },
+    "teardownShare": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "SHARE_AND_MOUNTS_ABSENT" } } }
+      ]
+    },
+    "teardownFirewall": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "FIREWALL_ABSENT" } } }
+      ]
+    },
+    "teardownContainerd": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "CONTAINERD_ABSENT" } } }
+      ]
+    },
+    "teardownInputs": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "INPUTS_ABSENT" } } }
+      ]
+    },
+    "teardownRootfs": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "ROOTFS_ABSENT" } } }
+      ]
+    },
+    "teardownBaselines": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "FINAL_BASELINES" } } }
+      ]
+    },
+    "teardownRetired": {
+      "allOf": [
+        { "$ref": "#/$defs/teardownBase" },
+        { "type": "object", "properties": { "phase": { "const": "RETIRED" } } }
+      ]
+    },
+    "cycleCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "billable_duration_ns",
+        "compute_micro_usd",
+        "public_ipv4_micro_usd",
+        "gp3_micro_usd",
+        "support_allowance_micro_usd",
+        "total_micro_usd"
+      ],
+      "properties": {
+        "billable_duration_ns": { "$ref": "#/$defs/positiveNs" },
+        "compute_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "public_ipv4_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "gp3_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "support_allowance_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "total_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 }
+      }
+    },
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "mode",
+        "cycle_commitment",
+        "receipt_commitment",
+        "expiry_at",
+        "deadline_binding_commitment",
+        "effect_started_offset_ns",
+        "effect_ended_offset_ns",
+        "duration_ns",
+        "apply_to_running_ns",
+        "kata_launch_to_ssh_ready_ns",
+        "attempts",
+        "freshness",
+        "teardown",
+        "destroy_commitment",
+        "zero_inventory_commitment",
+        "cost"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "mode": { "enum": ["full", "readiness"] },
+        "cycle_commitment": { "$ref": "#/$defs/digest" },
+        "receipt_commitment": { "$ref": "#/$defs/digest" },
+        "expiry_at": { "$ref": "#/$defs/timestamp" },
+        "deadline_binding_commitment": { "$ref": "#/$defs/digest" },
+        "effect_started_offset_ns": { "type": "integer", "minimum": 0, "maximum": 5399999999999 },
+        "effect_ended_offset_ns": { "type": "integer", "minimum": 1, "maximum": 5399999999999 },
+        "duration_ns": { "$ref": "#/$defs/positiveNs" },
+        "apply_to_running_ns": { "$ref": "#/$defs/positiveNs" },
+        "kata_launch_to_ssh_ready_ns": { "$ref": "#/$defs/positiveNs" },
+        "attempts": { "$ref": "#/$defs/attempts" },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "workloads": { "$ref": "#/$defs/workloads" },
+        "teardown": { "$ref": "#/$defs/teardown" },
+        "destroy_commitment": { "$ref": "#/$defs/digest" },
+        "zero_inventory_commitment": { "$ref": "#/$defs/digest" },
+        "cost": { "$ref": "#/$defs/cycleCost" }
+      }
+    },
+    "readinessCycle": {
+      "type": "object",
+      "properties": { "ordinal": { "type": "integer" }, "mode": { "const": "readiness" }, "workloads": {} },
+      "required": ["ordinal", "mode"],
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    }
+  }
+}
