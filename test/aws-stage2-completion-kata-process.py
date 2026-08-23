@@ -42,7 +42,7 @@ def contract_rejected(raw):
 # Historical process-only snapshots remain byte stable; V3 is separate.
 snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
 assert snapshots["CTR_TASK_TERM"] == ((
-    "/usr/bin/ctr", "--address", process.CONTAINERD_SOCKET,
+    "/usr/bin/ctr", "--address", process.kata_operation.BASE + "/kata-runtime-v1/containerd.sock",
     "--namespace", "cogs-stage2-completion-v1", "tasks", "kill",
     "--signal", "SIGTERM", "cogs-stage2-ssh-v1",
 ), b"", "task-term", ())
@@ -89,6 +89,14 @@ process_source = (REMOTE / "completion_kata_process.py").read_text()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
 rejected(lambda: process._start_fixed_daemon(object(), object()))
+socket_generation = __import__("inspect").getclosurevars(process._verify_fixed_daemon).nonlocals["socket_generation"]
+if not hasattr(process.os, "O_PATH"): process.os.O_PATH = 0
+with patch.object(process.os, "open", return_value=10), patch.object(process.os, "close"), \
+     patch.object(process, "_host_generation", return_value={"uid": 0, "gid": 0}):
+    assert socket_generation() == {"uid": 0, "gid": 0}
+with patch.object(process.os, "open", return_value=10), patch.object(process.os, "close"), \
+     patch.object(process, "_host_generation", return_value={"uid": 1, "gid": 0}):
+    rejected(socket_generation)
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"

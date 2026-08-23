@@ -418,8 +418,26 @@ check(runtime.ROOTFS_CANDIDATE not in run_v2.argv and "operation-" + "a" * 64 in
       "v2 retained root policy")
 check(hashlib.sha256(runtime.CONTAINERD_CONFIG_BYTES).hexdigest() == runtime.CONTAINERD_CONFIG_SHA256,
       "fixed private config digest")
-check(runtime.private_containerd_spec_v2().argv[:3] ==
-      (runtime.STAGED_CONTAINERD, "--address", runtime.CONTAINERD_ADDRESS), "private daemon staging/address")
+check(runtime.private_containerd_spec_v2().argv == (runtime.STAGED_CONTAINERD, "--address", "/run/d/s", "--root", "/run/d/r", "--state", "/run/d/t", "--config", runtime.CONTAINERD_CONFIG), "private daemon short paths")
+check(all(len(path.encode("ascii")) <= runtime.MAX_UNIX_PATH for path in (
+      runtime.CONTAINERD_ADDRESS, runtime.CONTAINERD_ROOT, runtime.CONTAINERD_STATE,
+      runtime.CONTAINERD_SHIM_ENDPOINT)), "Linux AF_UNIX path bound")
+# The short alias is optional only before staging/after cleanup; any present
+# object must be the exact root-owned symlink to the retained runtime tree.
+alias_stat = SimpleNamespace(st_mode=__import__("stat").S_IFLNK | 0o777, st_uid=0, st_gid=0)
+with patch.object(runtime.os, "lstat", side_effect=FileNotFoundError):
+    check(not runtime._runtime_alias(), "absent alias was residue")
+with patch.object(runtime.os, "lstat", return_value=alias_stat), \
+     patch.object(runtime.os, "readlink", return_value=runtime.RUNTIME_ROOT):
+    check(runtime._runtime_alias(), "exact root-owned alias rejected")
+for hostile in (SimpleNamespace(st_mode=__import__("stat").S_IFREG | 0o600, st_uid=0, st_gid=0),
+                SimpleNamespace(st_mode=__import__("stat").S_IFLNK | 0o777, st_uid=1, st_gid=0)):
+    with patch.object(runtime.os, "lstat", return_value=hostile), \
+         patch.object(runtime.os, "readlink", return_value=runtime.RUNTIME_ROOT):
+        rejected(runtime._runtime_alias)
+with patch.object(runtime.os, "lstat", return_value=alias_stat), \
+     patch.object(runtime.os, "readlink", return_value="/foreign"):
+    rejected(runtime._runtime_alias)
 check(runtime.command_policy.CONTAINERD_ARCHIVE_SHA256 ==
       "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"
       and runtime.command_policy.CONTAINERD_ARCHIVE_SIZE == 33_645_699, "containerd archive pin")
@@ -446,7 +464,7 @@ policy_raw = json.dumps(policy_value, sort_keys=True, separators=(",", ":")).enc
 check(hashlib.sha256(policy_raw).hexdigest() == policy.RUNTIME_POLICY_SHA256,
       "runtime owner policy hash drift")
 check(dict(policy.RUNTIME_TRACES) == {
-    "NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
+    "NETWORK_READY": ("CONTAINERD_START", "CTR_CONTAINER_LIST", "CTR_RUN"),
     "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"),
     "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") +
@@ -489,13 +507,16 @@ check("kill_permitted" not in runtime._cleanup_fixed_runtime.__code__.co_varname
 runtime_source = MODULE_PATH.read_text()
 check("rootfs_fs._optional_child" not in runtime_source,
       "removed optional-child API entered runtime owner")
-for required in ('state[9][1] == "containerd.sock"', 'process._host_generation(fresh, "socket") == seen',
+for required in ('state[9][1] == "s"', 'process._host_generation(fresh, "socket") == seen',
                  'process._host_generation(fresh, "socket") == renamed', 'socket_identity(renamed, expected, quarantine)',
                  'os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)',
                  'os.unlink(quarantine, dir_fd=parent); os.fsync(parent)', '_shutdown_private_containerd',
                  'kata_operation.GEN_KEYS[:7]', 'state[10][name] = inventory(node)', 'remove_tree(node.operation_fd.number)',
                  'seen["nlink"] == 0', 'kata_operation.GEN_KEYS[:4]', 'verify_daemon(daemon, certain)',
-                 'rootfs_fs._enumerate_stable', 'node.generation == generation'):
+                 'rootfs_fs._enumerate_stable', 'node.generation == generation', '_set_runtime_alias(False)',
+                 'probe = step(owner, "NETWORK_READY", 1, actions.CommandId.CTR_CONTAINER_LIST)',
+                 'verify_daemon(state[6]) == retained', 'os.fsync(descriptor)', 'os.fchown(descriptor, 0, 0)',
+                 'not _runtime_alias(), "private runtime absence"'):
     check(required in runtime_source, "exact retained socket cleanup route missing")
 
 # Incomplete retained and pre-retention daemon terminals remain fail-only; no

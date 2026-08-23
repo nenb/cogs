@@ -396,16 +396,13 @@ class ProcessOutcome:
     errors: tuple
 
 
-CONTAINERD_SOCKET = kata_operation.BASE + "/kata-runtime-v1/containerd.sock"
-CONTAINERD_ROOT = kata_operation.BASE + "/kata-runtime-v1/containerd-root"
-CONTAINERD_STATE = kata_operation.BASE + "/kata-runtime-v1/containerd-state"
+CONTAINERD_SOCKET, CONTAINERD_ROOT, CONTAINERD_STATE = command_policy.CONTAINERD_ADDRESS, command_policy.CONTAINERD_ROOT, command_policy.CONTAINERD_STATE
 CONTAINERD_CONFIG = kata_operation.BASE + "/kata-runtime-v1/containerd.toml"
 STAGED_CONTAINERD = kata_operation.BASE + "/kata-runtime-v1/bin/containerd"
 STAGED_CTR = kata_operation.BASE + "/kata-runtime-v1/bin/ctr"
 LONG_LIVED_CONTAINERD = LongLivedCommand(
     CommandId.CONTAINERD_START, "containerd", "/usr/bin/containerd",
-    ("/usr/bin/containerd", "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
-     "--state", CONTAINERD_STATE, "--config", CONTAINERD_CONFIG),
+    ("/usr/bin/containerd", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", "--root", kata_operation.BASE + "/kata-runtime-v1/containerd-root", "--state", kata_operation.BASE + "/kata-runtime-v1/containerd-state", "--config", CONTAINERD_CONFIG),
 )
 
 
@@ -426,7 +423,7 @@ def _compose_fixed_commands():
             10_000_000_000, output_grammar="json" if "json" in source.tool_contract else "text",
         )
     for source in kata_runtime.fixed_command_specs_for_tests():
-        argv = ("/usr/bin/ctr", "--address", CONTAINERD_SOCKET, *source.argv[1:])
+        argv = ("/usr/bin/ctr", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", *source.argv[1:])
         rows[source.command_id] = FixedCommand(
             source.command_id, "ctr", "/usr/bin/ctr", argv, source.stdin,
             int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000),
@@ -1873,7 +1870,7 @@ def _daemon_routes():
     _DaemonOwner = states.kind
     def socket_generation():
         descriptor = os.open(CONTAINERD_SOCKET, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try: return _host_generation(descriptor, "socket")
+        try: value = _host_generation(descriptor, "socket"); return value if value["uid"] == value["gid"] == 0 else (_ for _ in ()).throw(ProcessError("private daemon socket ownership"))
         finally: os.close(descriptor)
     def close_state(owner):
         try:

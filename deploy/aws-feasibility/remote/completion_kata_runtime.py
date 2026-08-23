@@ -25,9 +25,10 @@ SHARE_ROOT = "/run/kata-containers/shared/sandboxes/cogs-stage2-ssh-v1"
 CONTAINERD_VERSION = "2.2.1"; OCI_VERSION = "1.3.0"
 QUALIFICATION_CANDIDATE = "UNQUALIFIED_OFFLINE_FAKE_CONTAINERD_KATA_S4_V1"
 V2 = "cogs.stage2-kata-runtime-owner/v2"
-RUNTIME_ROOT = BASE + "/kata-runtime-v1"; CONTAINERD_ADDRESS = RUNTIME_ROOT + "/containerd.sock"
+RUNTIME_ROOT = BASE + "/kata-runtime-v1"; RUNTIME_ALIAS = command_policy.RUNTIME_ALIAS; CONTAINERD_ADDRESS = command_policy.CONTAINERD_ADDRESS; CONTAINERD_ROOT = command_policy.CONTAINERD_ROOT; CONTAINERD_STATE = command_policy.CONTAINERD_STATE
 STAGED_CONTAINERD = RUNTIME_ROOT + "/bin/containerd"; STAGED_CTR = RUNTIME_ROOT + "/bin/ctr"
-CONTAINERD_CONFIG = RUNTIME_ROOT + "/containerd.toml"; CONTAINERD_ROOT = RUNTIME_ROOT + "/containerd-root"; CONTAINERD_STATE = RUNTIME_ROOT + "/containerd-state"
+CONTAINERD_CONFIG = RUNTIME_ROOT + "/containerd.toml"; MAX_UNIX_PATH = 107; CONTAINERD_SHIM_ENDPOINT = CONTAINERD_STATE + "/io.containerd.runtime.v2.task/" + NAMESPACE + "/" + CONTAINER_ID + "/shim.sock"
+if any(len(path.encode("ascii")) > MAX_UNIX_PATH for path in (CONTAINERD_ADDRESS, CONTAINERD_ROOT, CONTAINERD_STATE, CONTAINERD_SHIM_ENDPOINT)): raise RuntimeError("containerd AF_UNIX path")
 QMP_SOCKET = "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock"
 CONTAINERD_CONFIG_BYTES = (f'''version = 3
 root = "{CONTAINERD_ROOT}"
@@ -1003,6 +1004,16 @@ def _purge_owned_tree(parent_fd, name, depth=0):
         os.rmdir(name, dir_fd=parent_fd)
     else: os.unlink(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
+def _runtime_alias():
+    try: seen = os.lstat(RUNTIME_ALIAS)
+    except FileNotFoundError: return False
+    _fail(stat.S_ISLNK(seen.st_mode) and seen.st_uid == seen.st_gid == 0 and os.readlink(RUNTIME_ALIAS) == RUNTIME_ROOT, "runtime alias ownership"); return True
+def _set_runtime_alias(present):
+    descriptor = os.open("/run", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW); seen = os.fstat(descriptor)
+    _fail(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == 0o755, "runtime alias parent")
+    if present: _fail(not _runtime_alias()); os.symlink(RUNTIME_ROOT, RUNTIME_ALIAS); os.chown(RUNTIME_ALIAS, 0, 0, follow_symlinks=False)
+    else: _fail(_runtime_alias()); os.unlink(RUNTIME_ALIAS)
+    _fail(_runtime_alias() == present); os.fsync(descriptor); os.close(descriptor)
 def _activate_prepared_containerd(journal, completion, control):
     """Add mutable daemon state to the already verified static runtime root."""
     _fail(type(completion) is rootfs_fs.HeldNode
@@ -1052,11 +1063,11 @@ def _activate_prepared_containerd(journal, completion, control):
                 count = os.write(config, CONTAINERD_CONFIG_BYTES[offset:]); _fail(count > 0); offset += count
             os.fchown(config, 0, 0); os.fchmod(config, 0o600); os.fsync(config)
         finally: os.close(config)
-        os.mkdir("containerd-root", 0o700, dir_fd=runtime_fd)
-        os.mkdir("containerd-state", 0o700, dir_fd=runtime_fd)
-        os.fsync(runtime_fd); os.fsync(parent)
+        for name in ("r", "t"): os.mkdir(name, 0o700, dir_fd=runtime_fd); descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=runtime_fd); os.fchown(descriptor, 0, 0); os.fchmod(descriptor, 0o700); os.close(descriptor)
+        os.fsync(runtime_fd); os.fsync(parent); _set_runtime_alias(True)
     except BaseException:
         os.close(runtime_fd)
+        if _runtime_alias(): _set_runtime_alias(False)
         if "kata-runtime-v1" in os.listdir(parent): _purge_owned_tree(parent, "kata-runtime-v1")
         raise
     else:
@@ -1066,8 +1077,8 @@ def _activate_prepared_containerd(journal, completion, control):
         runtime = rootfs_fs._open_path_node(completion, rootfs_fs._name("kata-runtime-v1"), "directory", control)
         bin_node = rootfs_fs._open_path_node(runtime, rootfs_fs._name("bin"), "directory", control)
         for parent_node, name, kind in ((bin_node, "containerd", "file"), (bin_node, "ctr", "file"),
-                (runtime, "containerd.toml", "file"), (runtime, "containerd-root", "directory"),
-                (runtime, "containerd-state", "directory")):
+                (runtime, "containerd.toml", "file"), (runtime, "r", "directory"),
+                (runtime, "t", "directory")):
             nodes.append(rootfs_fs._open_path_node(parent_node, rootfs_fs._name(name), kind, control))
         for node, manifest in zip(nodes[:2], command_policy.CONTAINERD_EXTRACTION, strict=True):
             _fail(hashlib.sha256(rootfs_fs._read_regular(node, manifest[1], control)).hexdigest() == manifest[2])
@@ -1085,6 +1096,7 @@ def _activate_prepared_containerd(journal, completion, control):
         journal.record_runtime_staged(body); return runtime
     except BaseException:
         if runtime is not None: rootfs_fs._close_node(runtime)
+        if _runtime_alias(): _set_runtime_alias(False)
         if "kata-runtime-v1" in os.listdir(parent): _purge_owned_tree(parent, "kata-runtime-v1")
         raise
     finally:
@@ -1097,8 +1109,8 @@ def _runtime_owner_routes():
     _Owner = owner_helpers.sealed_type("_Owner", seal, KataRuntimeError)
     def stable(left, right): return all(left[field] == right[field] for field in kata_operation.GEN_KEYS[:7])
     def socket_identity(observed, expected, name):
-        if name == "containerd.sock": return observed == expected
-        return name == ".containerd.sock.removing" and all(
+        if name == "s": return observed == expected
+        return name == ".s.removing" and all(
             observed[field] == expected[field] for field in kata_operation.GEN_KEYS[:-1])
     def snapshot_child(snapshot, name):
         for child_name, generation in snapshot.children:
@@ -1141,7 +1153,7 @@ def _runtime_owner_routes():
         completion_snapshot = rootfs_fs._enumerate_stable(completion, control)
         completion_names = {name.text for name in completion_snapshot.names}
         if (inactive and not history["runtime_staged"]
-                and completion_names & {".kata-runtime-v1.staging", "kata-runtime-v1"}):
+                and (completion_names & {".kata-runtime-v1.staging", "kata-runtime-v1"} or _runtime_alias())):
             journal.record_uncertain("identity-mismatch")
             raise KataRuntimeError("identity-free staged runtime residue")
         runtime_name = rootfs_fs._name("kata-runtime-v1")
@@ -1151,11 +1163,11 @@ def _runtime_owner_routes():
         else:
             runtime = open_snapshot_child(completion, completion_snapshot, runtime_name, "directory", control)
             runtime_snapshot = rootfs_fs._enumerate_stable(runtime, control)
-            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "containerd-root", "containerd-state"}; socket_names = names & {"containerd.sock", ".containerd.sock.removing"}; expected = base_names | socket_names
-            _fail(names <= expected and len(socket_names) <= 1 and (not active or names == base_names | {"containerd.sock"}), "private runtime names")
+            names = {name.text for name in runtime_snapshot.names}; base_names = {"bin", "containerd.toml", "r", "t"}; socket_names = names & {"s", ".s.removing"}; expected = base_names | socket_names
+            _fail(_runtime_alias() and names <= expected and len(socket_names) <= 1 and (not active or names == base_names | {"s"}), "private runtime names")
             def optional(name, kind): return open_snapshot_child(
                 runtime, runtime_snapshot, rootfs_fs._name(name), kind, control)
-            config = optional("containerd.toml", "file"); root = optional("containerd-root", "directory"); daemon_state = optional("containerd-state", "directory")
+            config = optional("containerd.toml", "file"); root = optional("r", "directory"); daemon_state = optional("t", "directory")
             _fail(stopped or staged_only or pristine or all(node is not None for node in (config, root, daemon_state)))
             if config is not None: _fail(rootfs_fs._read_regular(config, len(CONTAINERD_CONFIG_BYTES), control) == CONTAINERD_CONFIG_BYTES)
             if history["runtime_staged"]:
@@ -1233,7 +1245,8 @@ def _runtime_owner_routes():
         if state[5] is not None:
             _fail(rootfs_fs._observe_node(state[5].identity_fd, state[5].operation_fd,
                                           state[3]) == state[5].generation)
-        for index, name in ((6, "containerd-root"), (7, "containerd-state")):
+        _fail((state[4] is None) != _runtime_alias(), "runtime alias residue")
+        for index, name in ((6, "r"), (7, "t")):
             node = state[index]
             if node is not None:
                 observed = rootfs_fs._observe_node(node.identity_fd, node.operation_fd, state[3]); named = snapshot_child(runtime_snapshot, rootfs_fs._name(name))
@@ -1242,12 +1255,12 @@ def _runtime_owner_routes():
         if state[9] is not None:
             descriptor, name = state[9]; expected = retained["socket_generation"]; seen = process._host_generation(descriptor, "socket"); names = set(os.listdir(state[4].operation_fd.number))
             if allow_unlinked and name not in names:
-                _fail(not names & {"containerd.sock", ".containerd.sock.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity")
+                _fail(not names & {"s", ".s.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity")
             else:
                 _fail(socket_identity(seen, expected, name)); fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=state[4].operation_fd.number)
                 try: _fail(process._host_generation(fresh, "socket") == seen, "containerd socket pathname replacement")
                 finally: os.close(fresh)
-        if len(history["daemon_retained"]) == len(history["daemon_outcomes"]) + 1: _fail(state[9] is not None and state[9][1] == "containerd.sock" and process._verify_fixed_daemon(state[2], state[0]) == retained)
+        if len(history["daemon_retained"]) == len(history["daemon_outcomes"]) + 1: _fail(state[9] is not None and state[9][1] == "s" and process._verify_fixed_daemon(state[2], state[0]) == retained)
         return retained
     def compose(journal, lease, inputs, network, attestation, daemon, control):
         history = journal.runtime_recovery_history(); _fail(history["phase"] in {"NETWORK_READY", "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
@@ -1303,7 +1316,9 @@ def _runtime_owner_routes():
         history = state[0].runtime_recovery_history(); _fail(history["phase"] == "NETWORK_READY")
         runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]; _fail(len(runs) <= 1)
         root = rootfs_lease._verify(state[1], state[7]); _fail(root == state[2] and state[4] is not None); kata_inputs._verify_runtime_inputs(state[8]); netns = kata_network._verify_runtime_network(state[9])
-        _fail(netns == state[4]); verify_daemon(state[6]); executables = verify_attestation(state[5]); ctr = executables[1]
+        _fail(netns == state[4]); retained = verify_daemon(state[6]); executables = verify_attestation(state[5]); ctr = executables[1]
+        probe = step(owner, "NETWORK_READY", 1, actions.CommandId.CTR_CONTAINER_LIST); _fail(classify_container_list(probe[0]) is Observation.ABSENT and not probe[1] and verify_daemon(state[6]) == retained, "usable retained containerd before launch")
+        history = state[0].runtime_recovery_history(); runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]; _fail(len(runs) <= 1)
         if not runs:
             permit = _make_operation_launch_permit(state[9])
             outcome, durable = process._transact_fixed(
@@ -1318,7 +1333,8 @@ def _runtime_owner_routes():
         if not success:
             _fail(not durable.body["uncertain"], "uncertain CTR_RUN preserved")
             state[0].revoke_readiness(); raise KataRuntimeError("certain CTR_RUN failure")
-        fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
+        _fail(verify_daemon(state[6]) == retained, "retained daemon changed during launch")
+        fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_socket": _canonical_fact(retained["socket_generation"]), "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact
     def saved_output(state, phase, index, command_id):
         history = state[0].runtime_recovery_history(); intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
@@ -1515,15 +1531,15 @@ def _runtime_owner_routes():
         held = state[9]
         if state[4] is None: _fail(held is None); return
         parent = state[4].operation_fd.number; names = set(os.listdir(parent))
-        if held is None: _fail(not names & {"containerd.sock", ".containerd.sock.removing"}, "foreign daemon socket"); return
+        if held is None: _fail(not names & {"s", ".s.removing"}, "foreign daemon socket"); return
         descriptor, name = held; expected = state[8]["socket_generation"]; seen = process._host_generation(descriptor, "socket")
         if allow_unlinked and name not in names:
-            _fail(not names & {"containerd.sock", ".containerd.sock.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity"); os.close(descriptor); state[9] = None; return
+            _fail(not names & {"s", ".s.removing"} and seen["nlink"] == 0 and all(seen[field] == expected[field] for field in kata_operation.GEN_KEYS[:4]), "unlinked daemon socket identity"); os.close(descriptor); state[9] = None; return
         _fail(socket_identity(seen, expected, name) and name in names)
         fresh = os.open(name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
         try: _fail(process._host_generation(fresh, "socket") == seen, "daemon socket replacement")
         finally: os.close(fresh)
-        quarantine = ".containerd.sock.removing"
+        quarantine = ".s.removing"
         if name != quarantine:
             _fail(quarantine not in names); os.rename(name, quarantine, src_dir_fd=parent, dst_dir_fd=parent)
             os.fsync(parent); state[9] = (descriptor, quarantine)
@@ -1551,14 +1567,14 @@ def _runtime_owner_routes():
               "exact daemon closure required")
         verify_daemon(daemon, certain); discard_socket(state, certain) if certain else None
         if state[4] is not None:
-            for index, name in ((7, "containerd-state"), (6, "containerd-root")):
+            for index, name in ((7, "t"), (6, "r")):
                 node = state[index]
                 if node is not None: remove_tree(node.operation_fd.number); rootfs_fs._close_node(node); os.rmdir(name, dir_fd=state[4].operation_fd.number); os.fsync(state[4].operation_fd.number)
             if state[5] is not None: rootfs_fs._close_node(state[5])
-            remove_tree(state[4].operation_fd.number); rootfs_fs._close_node(state[4])
+            _set_runtime_alias(False); remove_tree(state[4].operation_fd.number); rootfs_fs._close_node(state[4])
             os.rmdir("kata-runtime-v1", dir_fd=state[1].operation_fd.number); os.fsync(state[1].operation_fd.number)
         if ".kata-runtime-v1.staging" in os.listdir(state[1].operation_fd.number): _purge_owned_tree(state[1].operation_fd.number, ".kata-runtime-v1.staging")
-        _fail("kata-runtime-v1" not in os.listdir(state[1].operation_fd.number), "private runtime absence"); daemons.pop(daemon, None)
+        _fail("kata-runtime-v1" not in os.listdir(state[1].operation_fd.number) and not _runtime_alias(), "private runtime absence"); daemons.pop(daemon, None)
     def close(owner):
         import completion_kata_process as process
         state = owners.pop(owner, None); _fail(type(owner) is _Owner and state is not None)

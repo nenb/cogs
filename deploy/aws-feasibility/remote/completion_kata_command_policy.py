@@ -160,9 +160,9 @@ PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
 del _name, _OCCURRENCES
 
-RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v6-proven-absence-1"; RUNTIME_POLICY_SHA256 = "be929fc5bdff58d3d1e10392ae2cb711981bc4efa7815480e8c7005a0ec23bc9"
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v7-short-socket-readiness-1"; RUNTIME_POLICY_SHA256 = "bea0403bf9804e510c23456f802b270d698e6674d7f475987f97cb1ad3130657"
 RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
-BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; CONTAINERD_ADDRESS = BASE + "/kata-runtime-v1/containerd.sock"
+BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; RUNTIME_ALIAS = "/run/d"; CONTAINERD_ADDRESS = RUNTIME_ALIAS + "/s"; CONTAINERD_ROOT = RUNTIME_ALIAS + "/r"; CONTAINERD_STATE = RUNTIME_ALIAS + "/t"
 STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
 CONTAINERD_ARCHIVE_SHA256 = "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"; CONTAINERD_ARCHIVE_SIZE = 33_645_699
 CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
@@ -200,8 +200,8 @@ def validate_runtime_policy(intent, genesis):
     command = intent.get("command_id")
     if command == "CTR_RUN": argv, deadline, duration, grammar = list(ctr_run_argv(genesis["rootfs_token"])), "runtime-start", 60_000_000_000, "text"
     elif command == "CONTAINERD_START":
-        argv = [STAGED_CONTAINERD, "--address", CONTAINERD_ADDRESS, "--root", BASE + "/kata-runtime-v1/containerd-root",
-                "--state", BASE + "/kata-runtime-v1/containerd-state", "--config", BASE + "/kata-runtime-v1/containerd.toml"]
+        argv = [STAGED_CONTAINERD, "--address", CONTAINERD_ADDRESS, "--root", CONTAINERD_ROOT,
+                "--state", CONTAINERD_STATE, "--config", BASE + "/kata-runtime-v1/containerd.toml"]
         deadline, duration, grammar = "runtime-start", 60_000_000_000, "empty"
     elif command in CTR_TAILS:
         argv = [STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, *CTR_TAILS[command]]
@@ -212,7 +212,7 @@ def validate_runtime_policy(intent, genesis):
         "stdin_hex": "", "policy_version": RUNTIME_POLICY_VERSION, "deadline_class": deadline, "duration_ns": duration,
         "cleanup_reserve_ns": min(CLEANUP_RESERVE_NS, duration // 2), "output_grammar": grammar, "stdout_limit": 65536, "stderr_limit": 65536, "inherited_fds": []}
     return all(intent.get(name) == value for name, value in expected.items())
-_RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
+_RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_CONTAINER_LIST", "CTR_RUN"),
     "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"), "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") + ("CTR_TASK_LIST",) * RUNTIME_POST_KILL_OBSERVATIONS,
     "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"), "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"), "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",)}
