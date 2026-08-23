@@ -52,9 +52,9 @@ ENVELOPE = (
 )
 ROOTFS_PIN = {
     "entry_count": 4353,
-    "manifest_sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691",
+    "manifest_sha256": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1",
     "manifest_size": 1049443,
-    "ustar_sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3",
+    "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
     "ustar_size": 136905728,
 }
 MOUNT_SHA = "22157f258386d8d4be07ec6eb086a582936c23037be403caa829b644bf4e058e"

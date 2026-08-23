@@ -101,9 +101,9 @@ def values():
                          "extracted": layout(expected["role"] + "-extracted")})
     runtime = {"version": preparation.RUNTIME_VERSION, "authority": preparation.AUTHORITY,
                "architecture": "x86_64", "archives": archives,
-               "rootfs": {"manifest_sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691",
+               "rootfs": {"manifest_sha256": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1",
                           "manifest_size": 1_049_443,
-                          "ustar_sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3",
+                          "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
                           "ustar_size": 136_905_728, "entry_count": 4_353,
                           "static_mapping_policy": {"uid": 0, "gid": 0, "nlink": 1,
                                                     "distinct_file_identities": True,
@@ -131,11 +131,11 @@ def values():
 implementation, runtime, package, contracts = values()
 first_control, first_members = preparation.build_control_bytes(
     implementation, runtime, package,
-    "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54",
+    "4fd72857efd33781ad61578ff9f9f26863d1068fcb27902efd6211fee1bc8d83",
     contracts)
 second_control, second_members = preparation.build_control_bytes(
     copy.deepcopy(implementation), copy.deepcopy(runtime), copy.deepcopy(package),
-    "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54",
+    "4fd72857efd33781ad61578ff9f9f26863d1068fcb27902efd6211fee1bc8d83",
     copy.deepcopy(contracts))
 assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)

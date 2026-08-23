@@ -33,8 +33,8 @@ PINNED_RAW = b'''{
   "version": "cogs.stage2-completion-rootfs.v1",
   "source_date_epoch": 1782172800,
   "entry_count": 4353,
-  "manifest": { "sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691", "size": 1049443 },
-  "ustar": { "sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3", "size": 136905728 },
+  "manifest": { "sha256": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1", "size": 1049443 },
+  "ustar": { "sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397", "size": 136905728 },
   "functional_test_image": "python@sha256:53d6284a40eae6b625f22870f5faba6c54f2a28db9027408f4dee111f1e885a2"
 }
 '''
@@ -42,8 +42,8 @@ PINNED_VALUE = {
     "version": "cogs.stage2-completion-rootfs.v1",
     "source_date_epoch": 1782172800,
     "entry_count": 4353,
-    "manifest": {"sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691", "size": 1049443},
-    "ustar": {"sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3", "size": 136905728},
+    "manifest": {"sha256": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1", "size": 1049443},
+    "ustar": {"sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397", "size": 136905728},
     "functional_test_image": "python@sha256:53d6284a40eae6b625f22870f5faba6c54f2a28db9027408f4dee111f1e885a2",
 }
 

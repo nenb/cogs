@@ -685,8 +685,8 @@ def _validate_final_and_rootfs(envelope, runtime):
     _require({name: static_closure[name] for name in pinned} == pinned)
     rootfs = envelope.value["rootfs"]
     _require(rootfs["contract_sha256"] == workload_contract.REVIEWED_ROOTFS_SHA256)
-    _require(rootfs["manifest_sha256"] == "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691")
-    _require(rootfs["ustar_sha256"] == "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3")
+    _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
+    _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     return final
 
 

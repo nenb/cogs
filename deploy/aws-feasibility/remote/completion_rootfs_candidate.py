@@ -16,7 +16,7 @@ import completion_rootfs_plan as plan
 CANDIDATE_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
 EXPECTED_ENTRIES = 4_353
 EXPECTED_SIZE = ledger.CANDIDATE_TAR_SIZE
-EXPECTED_SHA256 = "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3"
+EXPECTED_SHA256 = "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397"
 FAULT_BOUNDARIES = frozenset({"anonymous-open", "emission-complete", "intent", "linked", "observed"})
 
 
