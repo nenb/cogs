@@ -24,8 +24,8 @@ class MaterializerError(Exception):
 
 
 MATERIALIZE_STAGES = frozenset({
-    "internal", "plan", "dirs", "files", "hardlinks", "symlinks",
-    "dir-meta", "root-meta", "postwalk",
+    "internal", "plan", "dirs", "files", "hlinks", "symlinks",
+    "dir-meta", "rmeta", "postwalk",
 })
 
 
@@ -735,7 +735,7 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
         stage = "files"
         for entry in sorted(files, key=lambda item: item.record.path.encode("utf-8")):
             active = _create_file(active, owned, root, entry, control)
-        stage = "hardlinks"
+        stage = "hlinks"
         if hardlinks:
             active = _create_hardlinks(active, owned, root, fresh, control)
         stage = "symlinks"
@@ -744,7 +744,7 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
         stage = "dir-meta"
         for entry in sorted(directories, key=lambda item: (-item.record.path.count("/"), item.record.path.encode("utf-8"))):
             active = _finalize_directory(active, owned, root, entry, control)
-        stage = "root-meta"
+        stage = "rmeta"
         root_entry = plan.PlannedEntry("root", None, plan.MaterialRecord("rootfs", "directory", fresh.plan.root.mode, fresh.plan.root.uid, fresh.plan.root.gid, fresh.plan.root.mtime, 0, None, None, None, None, -1))
         root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
         _fail(not root_opened and root_chain.components[-1].node.generation == _generation(root, control))

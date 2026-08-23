@@ -1245,19 +1245,26 @@ try:
     actual_build.builder._open_base_chain = lambda _control: "chain"
     actual_build.builder._begin_operation = lambda *_args: owned
     actual_build.materializer._reload_and_cleanup = lambda *_args: build_events.append("cleanup")
-    actual_build.fs._close_chain = lambda _chain: build_events.append("close")
+    def failing_close(_chain):
+        build_events.append("close")
+        raise OSError("raw close")
+    actual_build.fs._close_chain = failing_close
     actual_build.materializer._materialize = lambda *_args: (_ for _ in ()).throw(
-        actual_materializer.MaterializerWorkError("deadline")
+        actual_materializer.MaterializerWorkError("deadline", "files")
     )
     try:
         actual_build._build_once_unmasked(approval, "1" * 64, outer_control)
     except actual_build.BuildAttemptError as error:
-        assert error.work_outcome == "deadline" and error.args == () and str(error) == ""
+        assert error.work_outcome == "deadline" and error.work_stage == "files"
+        assert type(error.__cause__) is actual_build.fs.RootfsFsError
+        assert type(error.__cause__.primary) is actual_materializer.MaterializerWorkError
+        assert error.args == () and str(error) == ""
     else:
         raise AssertionError("typed materializer failure escaped build boundary")
     assert build_events == ["close"]
 
     build_events.clear()
+    actual_build.fs._close_chain = lambda _chain: build_events.append("close")
     actual_build.materializer._materialize = lambda *_args: types.SimpleNamespace(owned=owned)
     actual_build.canonical._manifest = lambda _plan: (_ for _ in ()).throw(RuntimeError("raw postwork"))
     try:

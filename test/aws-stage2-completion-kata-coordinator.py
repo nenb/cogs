@@ -233,9 +233,10 @@ for stage in coordinator.rootfs_lease.ROOTFS_ACQUIRE_STAGES:
         try: coordinator._run_fixed_local_qualification()
         except coordinator.CoordinatorTerminal as error:
             check(error.stage == "rootfs-" + stage, "rootfs substage mapping differs")
-            check(coordinator._safe_failure_diagnostic(error) ==
-                  f"cogs local qualification failed at rootfs-{stage}\n",
+            diagnostic = coordinator._safe_failure_diagnostic(error)
+            check(diagnostic == f"cogs local qualification failed at rootfs-{stage}\n",
                   "rootfs substage diagnostic differs")
+            check(len(diagnostic.encode("ascii")) <= 64, "rootfs diagnostic exceeded byte bound")
         else: raise AssertionError("rootfs substage failure was accepted")
 
 # A malformed successful None owner and grouped terminal causes cannot enter evidence or raw stderr.

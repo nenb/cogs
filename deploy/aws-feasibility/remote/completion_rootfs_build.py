@@ -110,13 +110,14 @@ def _build_once_controlled(approval, token, retain, control, materialize, materi
     owned = None
     result = None
     work_outcome = "not-started"
+    work_stage = "internal"
     try:
         owned = builder._begin_operation(chain, approval, token, control)
         try:
             result = materialize(authority, owned, materialize_control)
             work_outcome = "success"
         except materializer.MaterializerWorkError as error:
-            work_outcome = error.work_outcome
+            work_outcome, work_stage = error.work_outcome, error.work_stage
             owned = None
             raise
         owned = result.owned
@@ -168,8 +169,7 @@ def _build_once_controlled(approval, token, retain, control, materialize, materi
             fs._close_chain(chain)
         except BaseException as close_error:
             error = fs.RootfsFsError(error, close_error)
-        stage = error.work_stage if type(error) is materializer.MaterializerWorkError else "internal"
-        raise BuildAttemptError(work_outcome, stage) from error
+        raise BuildAttemptError(work_outcome, work_stage) from error
 
 
 def _build_once_unmasked(approval, token, outer_control, retain=False):
