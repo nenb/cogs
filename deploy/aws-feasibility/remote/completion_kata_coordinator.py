@@ -89,6 +89,20 @@ RECOVERY_FORBIDDEN = (
 BLOCKED_REASON = (
     "exact static admission/live-custody and private owner-evidence bridges required"
 )
+_FAILURE_STAGE = "entry"
+_FAILURE_STAGES = frozenset({"entry", "static-custody", "rootfs-acquire", "operation-open", "operation-live"})
+
+
+def _set_failure_stage(stage):
+    global _FAILURE_STAGE
+    if stage not in _FAILURE_STAGES:
+        raise CoordinatorError("invalid fixed failure stage")
+    _FAILURE_STAGE = stage
+
+
+def _safe_failure_diagnostic():
+    stage = _FAILURE_STAGE if _FAILURE_STAGE in _FAILURE_STAGES else "entry"
+    return f"cogs local qualification failed at {stage}\n"
 
 
 class CoordinatorError(Exception):
@@ -427,10 +441,14 @@ def _run_fixed_local_qualification():
     """Compose exactly one fixed lifecycle, then settle it exactly once."""
     lifecycle = _Lifecycle()
     try:
+        _set_failure_stage("static-custody")
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
+        _set_failure_stage("rootfs-acquire")
         lifecycle.rootfs = _owners.acquire_rootfs(lifecycle)
+        _set_failure_stage("operation-open")
         lifecycle.operation = _owners.open_operation(lifecycle)
+        _set_failure_stage("operation-live")
         lifecycle.live_custody = _owners.claim_live_custody(lifecycle)
         lifecycle.executables = _owners.claim_executables(lifecycle)
         lifecycle.inputs = _owners.create_inputs(lifecycle)
@@ -455,6 +473,10 @@ def _run_fixed_local_qualification():
             errors.insert(0, lifecycle.primary_failure)
         _abort_custody(lifecycle, errors)
         _raise_failures("fixed lifecycle cleanup was not exact", errors)
+    if lifecycle.operation is None and lifecycle.primary_failure is not None:
+        errors = [lifecycle.primary_failure]
+        _abort_custody(lifecycle, errors)
+        _raise_failures("fixed lifecycle operation owner was not established", errors)
 
     try:
         return _finish(lifecycle)

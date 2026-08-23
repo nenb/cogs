@@ -191,6 +191,18 @@ for ordinal, event in enumerate(coordinator.FORWARD_ORDER):
         assert not any(item in fake.events for item in
                        coordinator.FORWARD_ORDER[ordinal + 1:])
 
+# Assignment-boundary primaries remain the exact cause and never enter normal evidence.
+for event, stage in (("ROOTFS_ACQUIRED", "rootfs-acquire"),
+                     ("OPERATION_ADMITTED", "operation-open")):
+    for side in ("before", "after"):
+        fake = FakeOwners((side, event))
+        with patch.object(coordinator, "_owners", fake):
+            try: coordinator._run_fixed_local_qualification()
+            except coordinator.CoordinatorError as error: assert isinstance(error.__cause__, Cut)
+            else: raise AssertionError("assignment-boundary primary was accepted")
+        assert coordinator._safe_failure_diagnostic() == f"cogs local qualification failed at {stage}\n"
+        assert "OWNER_EVIDENCE" not in fake.events and fake.events.count("CUSTODY_ABORTED") == 1
+
 # Every cleanup cut is attempted once, later cleanup still runs in order, no
 # evidence is issued from uncertain cleanup, and custody is aborted once.
 for event in coordinator.CLEANUP_ORDER:
