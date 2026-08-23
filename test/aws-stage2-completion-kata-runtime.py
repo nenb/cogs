@@ -418,7 +418,7 @@ check(runtime.ROOTFS_CANDIDATE not in run_v2.argv and "operation-" + "a" * 64 in
       "v2 retained root policy")
 check(hashlib.sha256(runtime.CONTAINERD_CONFIG_BYTES).hexdigest() == runtime.CONTAINERD_CONFIG_SHA256,
       "fixed private config digest")
-check(runtime.private_containerd_spec_v2().argv == (runtime.STAGED_CONTAINERD, "--address", "/run/d/s", "--root", "/run/d/r", "--state", "/run/d/t", "--config", runtime.CONTAINERD_CONFIG), "private daemon short paths")
+check(runtime.private_containerd_spec_v2().argv == (runtime.STAGED_CONTAINERD, "--address", "/run/c42d/s", "--root", "/run/c42d/r", "--state", "/run/c42d/t", "--config", runtime.CONTAINERD_CONFIG), "private daemon short paths")
 check(all(len(path.encode("ascii")) <= runtime.MAX_UNIX_PATH for path in (
       runtime.CONTAINERD_ADDRESS, runtime.CONTAINERD_ROOT, runtime.CONTAINERD_STATE,
       runtime.CONTAINERD_SHIM_ENDPOINT)), "Linux AF_UNIX path bound")
@@ -453,7 +453,9 @@ check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-
 policy_value = {"version": policy.RUNTIME_POLICY_VERSION, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
     "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction": [list(row) for row in policy.CONTAINERD_EXTRACTION],
     "staged_containerd": policy.STAGED_CONTAINERD, "staged_ctr": policy.STAGED_CTR,
-    "address": policy.CONTAINERD_ADDRESS, "mounts": list(policy.CTR_MOUNTS),
+    "alias": policy.RUNTIME_ALIAS, "address": policy.CONTAINERD_ADDRESS,
+    "root": policy.CONTAINERD_ROOT, "state": policy.CONTAINERD_STATE,
+    "mounts": list(policy.CTR_MOUNTS),
     "tails": {name: list(row) for name, row in policy.CTR_TAILS.items()},
     "traces": {name: list(row) for name, row in policy.RUNTIME_TRACES.items()},
     "ownership_traces": [list(row) for row in policy.RUNTIME_OWNERSHIP_TRACES],

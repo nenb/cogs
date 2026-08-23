@@ -160,9 +160,9 @@ PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
 del _name, _OCCURRENCES
 
-RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v7-short-socket-readiness-1"; RUNTIME_POLICY_SHA256 = "bea0403bf9804e510c23456f802b270d698e6674d7f475987f97cb1ad3130657"
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v7-short-socket-readiness-1"; RUNTIME_POLICY_SHA256 = "3b2a620c292cd3c2e3511493a25790226b0774570e7f78cdacb9b42f25b276bb"
 RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
-BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; RUNTIME_ALIAS = "/run/d"; CONTAINERD_ADDRESS = RUNTIME_ALIAS + "/s"; CONTAINERD_ROOT = RUNTIME_ALIAS + "/r"; CONTAINERD_STATE = RUNTIME_ALIAS + "/t"
+BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; RUNTIME_ALIAS = "/run/c42d"; CONTAINERD_ADDRESS = RUNTIME_ALIAS + "/s"; CONTAINERD_ROOT = RUNTIME_ALIAS + "/r"; CONTAINERD_STATE = RUNTIME_ALIAS + "/t"
 STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
 CONTAINERD_ARCHIVE_SHA256 = "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"; CONTAINERD_ARCHIVE_SIZE = 33_645_699
 CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
