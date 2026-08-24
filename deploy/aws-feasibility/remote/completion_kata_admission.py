@@ -24,6 +24,7 @@ RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v1"
 CONTRACT_VERSION = "cogs.stage2-local-executable-closure/v1"
 AUTHORITY = "non-authoritative-execution-input-description"
 FIXED_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
+COMPLETION_ROOTFS_SHA256 = "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"
 ENVELOPE_PATH = FIXED_ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-envelope-v1.json"
 RUNTIME_MANIFEST_PATH = FIXED_ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-runtime-v1.json"
 REVIEWED_ENVELOPE_SHA256 = None
@@ -742,7 +743,7 @@ def _validate_final_and_rootfs(envelope, runtime):
     static_closure = runtime.value["rootfs"]["static_closure"]
     _require({name: static_closure[name] for name in pinned} == pinned)
     rootfs = envelope.value["rootfs"]
-    _require(rootfs["contract_sha256"] == workload_contract.REVIEWED_ROOTFS_SHA256)
+    _require(rootfs["contract_sha256"] == COMPLETION_ROOTFS_SHA256)
     _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
     _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     return final

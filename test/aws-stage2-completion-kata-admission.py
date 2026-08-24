@@ -192,6 +192,8 @@ reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
 source = (REMOTE / "completion_kata_admission.py").read_text()
 assert "REVIEWED_ENVELOPE_SHA256 = None" in source and "REVIEWED_RUNTIME_MANIFEST_SHA256 = None" in source
 assert "candidate_contract_sha256" in source and "candidate_result_sha256" in source
+assert "workload_contract.REVIEWED_ROOTFS_SHA256" not in source
+assert 'COMPLETION_ROOTFS_SHA256 = "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"' in source
 assert "fixed_runtime_closure(load_verified_build_inputs())" in source
 assert "_derived_elf(raw)" in source
 print("corrected custody/private receipt hostile matrix passed")
