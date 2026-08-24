@@ -487,6 +487,83 @@ def _open_absolute_regular(path, maximum):
     return _open_fixed_relative("/", path[1:], maximum)
 
 
+def _open_trusted_absolute_regular(path, maximum, expected_uid=0, expected_gid=0, root="/"):
+    """Follow only bounded links below an administrator-owned absolute root."""
+    _require(type(path) is str and path.startswith("/") and path.isascii())
+    _require("//" not in path and "\\" not in path)
+    pending = path[1:].split("/")
+    _require(pending and all(part not in {"", ".", ".."} for part in pending))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    _require(type(root) is str)
+    anchor = os.open(root, flags)
+    parent = os.dup(anchor); os.set_inheritable(parent, False)
+    descriptor = -1
+    resolved = []
+    links = 0
+    try:
+        root_seen = os.fstat(anchor)
+        _require(stat.S_ISDIR(root_seen.st_mode) and root_seen.st_uid == expected_uid
+                 and root_seen.st_gid == expected_gid
+                 and not stat.S_IMODE(root_seen.st_mode) & 0o022,
+                 "untrusted executable root")
+        while pending:
+            component = pending.pop(0)
+            before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode):
+                links += 1
+                _require(links <= 40 and before.st_uid == expected_uid
+                         and before.st_gid == expected_gid and before.st_nlink == 1,
+                         "untrusted executable symlink")
+                target = os.readlink(component, dir_fd=parent)
+                _require(type(target) is str and 0 < len(target) <= 4096
+                         and target.isascii() and "\\" not in target)
+                parts = [] if target.startswith("/") else list(resolved)
+                for part in target.split("/"):
+                    if part in {"", "."}:
+                        continue
+                    if part == "..":
+                        _require(parts, "executable symlink escapes root")
+                        parts.pop()
+                    else:
+                        parts.append(part)
+                _require(parts and len(parts) + len(pending) <= 256)
+                pending = parts + pending
+                resolved = []
+                os.close(parent)
+                parent = os.dup(anchor); os.set_inheritable(parent, False)
+                continue
+            if pending:
+                child = os.open(component, flags, dir_fd=parent)
+                after = os.fstat(child)
+                _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                          after.st_gid, after.st_nlink) ==
+                         (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                          before.st_gid, before.st_nlink)
+                         and stat.S_ISDIR(after.st_mode)
+                         and after.st_uid == expected_uid and after.st_gid == expected_gid
+                         and not stat.S_IMODE(after.st_mode) & 0o022,
+                         "untrusted executable directory")
+                os.close(parent); parent = child; resolved.append(component)
+                continue
+            descriptor = os.open(component, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                 dir_fd=parent)
+            after = os.fstat(descriptor)
+            _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                      after.st_gid, after.st_nlink, after.st_size) ==
+                     (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                      before.st_gid, before.st_nlink, before.st_size))
+            _status(after, maximum, expected_uid, expected_gid)
+            return descriptor, parent, after
+        raise AdmissionError("trusted executable path is incomplete")
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent)
+        raise
+    finally:
+        os.close(anchor)
+
+
 def _read_held(descriptor, before, maximum):
     digest = hashlib.sha256()
     total = 0
@@ -550,7 +627,8 @@ def _retain_contract_objects(contract, descriptors, role=None):
     identities = set()
     retained = []
     for item in contract["objects"]:
-        descriptor, parent, status_value = _open_absolute_regular(item["path"], item["size"])
+        descriptor, parent, status_value = _open_trusted_absolute_regular(
+            item["path"], item["size"])
         descriptors.extend((parent, descriptor))
         raw = _read_held_raw(descriptor, status_value, item["size"])
         identity = (status_value.st_dev, status_value.st_ino)
@@ -559,7 +637,8 @@ def _retain_contract_objects(contract, descriptors, role=None):
         _require(status_value.st_size == item["size"] and _sha(raw) == item["sha256"],
                  "executable closure source differs")
         interpreter, soname, needed = _derived_elf(raw)
-        _require((interpreter, soname, list(needed)) ==
+        declared_interpreter = interpreter if item["kind"] == "executable" else None
+        _require((declared_interpreter, soname, sorted(needed)) ==
                  (item["interpreter"], item["soname"], item["needed"]),
                  "declared ELF metadata differs from retained bytes")
         retained.append(RetainedObject(
@@ -922,7 +1001,7 @@ def _static_routes():
             import completion_rootfs_fs as rootfs_fs
             import completion_rootfs_lease as rootfs_lease
             _require(type(lease) is rootfs_lease.RetainedRootfsLease and lease.disposition == "held")
-            control = rootfs_fs.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False)
+            control = rootfs_fs.OperationControl(time.monotonic_ns() + 300_000_000_000, lambda: False)
             reference = rootfs_lease._verify(lease, control)
             root = lease.retained.owned.root.operation_fd
             _require(root is not None and root.disposition == "open")
