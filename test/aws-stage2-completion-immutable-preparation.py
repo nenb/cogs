@@ -251,6 +251,44 @@ for cut in ("rootfs", "extract-kata", "extract-containerd", "publish"):
             assert not module.KATA_ROOT.exists()
             assert not module.ARTIFACT_ROOT.exists()
 
+# A SIGTERM-style interrupted runtime download leaves no Python finally path.
+# Recovery authenticates only the exact root-created partial or its crash-cut
+# quarantine generation; changed policy is preserved.
+for suffix in (".partial", ".partial.removing"):
+    with tempfile.TemporaryDirectory() as temporary:
+        configure(Path(temporary))
+        def interrupted(pin, _deadline, suffix=suffix):
+            path = module.RUNTIME_CACHE / ("." + pin["name"] + suffix)
+            path.write_bytes(b"interrupted")
+            path.chmod(0o600)
+            raise KeyboardInterrupt()
+        module._download_runtime = interrupted
+        try:
+            module.prepare()
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("interrupted runtime download unexpectedly succeeded")
+        assert not module.PREPARATION_ROOT.exists()
+        assert not module.ARTIFACT_ROOT.exists()
+
+with tempfile.TemporaryDirectory() as temporary:
+    configure(Path(temporary))
+    def changed_partial(pin, _deadline):
+        path = module.RUNTIME_CACHE / ("." + pin["name"] + ".partial")
+        path.write_bytes(b"changed-policy")
+        path.chmod(0o644)
+        raise KeyboardInterrupt()
+    module._download_runtime = changed_partial
+    try:
+        module.prepare()
+    except BaseException:
+        pass
+    else:
+        raise AssertionError("changed runtime partial unexpectedly succeeded")
+    changed = next(module.RUNTIME_CACHE.glob("*.partial"))
+    assert changed.read_bytes() == b"changed-policy"
+
 # A retained exact cache object remains while transaction-created siblings are
 # removed after failure.
 with tempfile.TemporaryDirectory() as temporary:

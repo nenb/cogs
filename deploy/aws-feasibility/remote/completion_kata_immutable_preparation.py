@@ -679,6 +679,41 @@ def _remove_artifact_cache(contract, custody):
     _sync_directory(ARTIFACT_ROOT.parent)
 
 
+def _remove_runtime_partial(path, quarantine, expected):
+    """Settle one root-created interrupted download without adopting its bytes."""
+    _require(not (path.exists() and quarantine.exists()),
+             "duplicate runtime partial generations")
+    active = quarantine if quarantine.exists() else path
+    before = os.stat(active, follow_symlinks=False)
+    _require(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+             and (os.geteuid() != 0 or before.st_gid == 0) and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o600
+             and 0 <= before.st_size <= expected["size"],
+             "runtime partial identity changed")
+    generation = lambda seen: (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
+                               seen.st_gid, seen.st_nlink, seen.st_size, seen.st_mtime_ns)
+    descriptor = os.open(active, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _require(generation(os.fstat(descriptor)) == generation(before),
+                 "runtime partial changed before custody")
+        if active == path:
+            os.rename(path, quarantine)
+            _sync_directory(RUNTIME_CACHE)
+            active = quarantine
+        _require(generation(os.stat(active, follow_symlinks=False)) == generation(before)
+                 and generation(os.fstat(descriptor)) == generation(before),
+                 "runtime partial changed before removal")
+        active.unlink()
+        _sync_directory(RUNTIME_CACHE)
+        settled = os.fstat(descriptor)
+        _require((settled.st_dev, settled.st_ino, settled.st_mode, settled.st_uid,
+                  settled.st_gid, settled.st_size) ==
+                 (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                  before.st_gid, before.st_size) and settled.st_nlink == 0,
+                 "runtime partial did not settle")
+    finally:
+        os.close(descriptor)
+
+
 def _rollback_preparation(contract):
     """Inspect every owned class and aggregate uncertainty; never report best effort."""
     if not PREPARATION_ROOT.exists():
@@ -740,15 +775,29 @@ def _rollback_preparation(contract):
 
     if RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink():
         def remove_runtime_cache():
-            _require(stat.S_ISDIR(RUNTIME_CACHE.lstat().st_mode))
+            _directory_identity(RUNTIME_CACHE)
             pins = {pin["name"]: pin for pin in preparation.ARCHIVES}
+            partials = {"." + name + ".partial": pin for name, pin in pins.items()}
+            quarantines = {name + ".removing": pin for name, pin in partials.items()}
             names = set(os.listdir(RUNTIME_CACHE))
-            _require(names <= set(pins), "foreign runtime cache entry")
-            for name in sorted(names):
-                _stable_file(RUNTIME_CACHE / name, pins[name])
+            _require(names <= set(pins) | set(partials) | set(quarantines),
+                     "foreign runtime cache entry")
+            for name, pin in pins.items():
+                present = {candidate for candidate in
+                           (name, "." + name + ".partial", "." + name + ".partial.removing")
+                           if candidate in names}
+                _require(len(present) <= 1, "duplicate runtime cache generations")
+                if name in present:
+                    _stable_file(RUNTIME_CACHE / name, pin)
+                elif present:
+                    partial = RUNTIME_CACHE / ("." + name + ".partial")
+                    quarantine = RUNTIME_CACHE / ("." + name + ".partial.removing")
+                    _remove_runtime_partial(partial, quarantine, pin)
             os.chmod(RUNTIME_CACHE, 0o700)
-            for name in sorted(names):
+            for name in sorted(set(os.listdir(RUNTIME_CACHE))):
+                _require(name in pins, "runtime partial settlement drift")
                 (RUNTIME_CACHE / name).unlink()
+            _sync_directory(RUNTIME_CACHE)
             RUNTIME_CACHE.rmdir()
         cleanup(remove_runtime_cache)
 
