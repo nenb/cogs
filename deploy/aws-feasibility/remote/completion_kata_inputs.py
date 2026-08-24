@@ -181,7 +181,7 @@ def _private_key(raw, expected_blob, expected_public, comment):
     padding = private_blob[inner:]
     _fail(check1 == check2 and key_type == b"ssh-ed25519")
     _fail(public == expected_public and len(private) == 64 and private[32:] == public)
-    _fail(private_comment == comment and 1 <= len(padding) <= 8)
+    _fail(private_comment == comment and 0 <= len(padding) <= 8)
     _fail(padding == bytes(range(1, len(padding) + 1)))
 
 def _validate_key_material(value):

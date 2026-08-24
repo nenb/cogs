@@ -36,7 +36,7 @@ def ssh_string(raw):
     return struct.pack(">I", len(raw)) + raw
 
 
-def synthetic_key(seed_hex, public_hex, comment):
+def synthetic_key(seed_hex, public_hex, comment, zero_padding=False):
     # Fixed RFC 8032 vectors: standard-library encoding, no external keygen.
     seed = bytes.fromhex(seed_hex)
     public = bytes.fromhex(public_hex)
@@ -45,7 +45,7 @@ def synthetic_key(seed_hex, public_hex, comment):
     row = b"ssh-ed25519 " + base64.b64encode(blob) + b" " + comment + b"\n"
     inner = struct.pack(">II", 0x12345678, 0x12345678)
     inner += ssh_string(b"ssh-ed25519") + ssh_string(public) + ssh_string(private) + ssh_string(comment)
-    padding = 8 - len(inner) % 8
+    padding = ((-len(inner)) % 8 if zero_padding else 8 - len(inner) % 8)
     inner += bytes(range(1, padding + 1))
     outer = b"openssh-key-v1\0" + ssh_string(b"none") + ssh_string(b"none") + ssh_string(b"")
     outer += struct.pack(">I", 1) + ssh_string(blob) + ssh_string(inner)
@@ -68,6 +68,13 @@ server_private, server_public, server_raw = synthetic_key(
 )
 material = inputs.KeyMaterial(client_private, client_public, server_private, server_public)
 assert inputs._validate_key_material(material) == material
+zero_client, zero_public, _zero_raw = synthetic_key(
+    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    inputs.CLIENT_COMMENT, True,
+)
+assert inputs._validate_key_material(inputs.KeyMaterial(
+    zero_client, zero_public, server_private, server_public))
 assert client_raw != server_raw
 
 # The test issuer accepts only these exact approved RFC vectors. A canonical
