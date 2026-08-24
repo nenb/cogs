@@ -1791,6 +1791,46 @@ def model_tests():
     rejected(lambda: build._require_pinned(first, dataclasses.replace(pins, entry_count=2)))
 
 
+def retired_prelease_recovery_test():
+    approval = fs.SourceApproval("a" * 40, "b" * 64)
+    control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+    binding, grant = {"kind": "journal-absent"}, object()
+    genesis = SimpleNamespace(record_type="genesis", body_value=lambda: {
+        "source_revision": approval.revision,
+        "source_manifest_sha256": approval.manifest_sha256,
+    })
+    retired = SimpleNamespace(record_type="retired")
+    records = (genesis, retired)
+    active = SimpleNamespace(records=SimpleNamespace(legal=SimpleNamespace(phase="retired")))
+    fixed_idle = tuple(sorted((builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw)))
+    names = tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw)))
+    events = []
+    patches = (
+        patch.object(lease.kata_operation, "_claim_prestage_rootfs", return_value=grant),
+        patch.object(lease.kata_operation, "_prestage_rootfs_binding", return_value=binding),
+        patch.object(lease.kata_operation, "_prestage_rootfs_coordinates", return_value=None),
+        patch.object(builder, "_open_base_chain", return_value=object()),
+        patch.object(builder, "_open_state", return_value=object()),
+        patch.object(fs, "_enumerate_stable", return_value=SimpleNamespace(raw_names=names)),
+        patch.object(builder, "_acquire_lock", return_value=object()),
+        patch.object(builder, "_read_active_ledger", return_value=active),
+        patch.object(builder, "_records", return_value=records),
+        patch.object(builder, "_source", return_value=object()),
+        patch.object(fs, "_verify_source_bundle", return_value=None),
+        patch.object(lease, "_close_prestage_nodes", side_effect=lambda *_args: events.append("closed")),
+        patch.object(builder, "_recover_fixed", side_effect=lambda _control: events.append("recovered")),
+        patch.object(lease.kata_operation, "_settle_prestage_rootfs",
+                     side_effect=lambda *_args: events.append("settled")),
+        patch.object(lease, "_prestage_rootfs_absent", return_value=True),
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+            patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], \
+            patches[12], patches[13], patches[14]:
+        receipt = lease._recover_unadmitted_kata_operation(object(), approval, control)
+    assert lease._is_prestage_cleanup_receipt(receipt)
+    assert events == ["closed", "recovered", "settled"]
+
+
 def source_tests():
     source = (REMOTE / "completion_rootfs_lease.py").read_text()
     builder_source = (REMOTE / "completion_rootfs_builder.py").read_text()
@@ -2163,6 +2203,7 @@ def main(argv):
         cleanup_phase_truth_table_tests()
         cleanup_session_entrance_tests()
         cleanup_complexity_tests()
+        retired_prelease_recovery_test()
         source_tests()
         assert MATRIX_CASES > 0
         print(f"completion rootfs lease portable behavioral matrix: {MATRIX_CASES} finite cases")

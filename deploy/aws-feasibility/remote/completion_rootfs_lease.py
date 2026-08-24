@@ -752,7 +752,20 @@ def _recover_unadmitted_kata_operation(prestage_permit, approval, control):
         ordinary = [record for record in records if record.record_type == "release-authorized"]
         prestage = [record for record in records
                     if record.record_type == "prestage-release-authorized"]
-        _fail(len(leased_rows) == 1 and not ordinary and len(prestage) <= 1)
+        _fail(not ordinary and len(prestage) <= 1)
+        if not leased_rows:
+            _fail(not prestage and coordinates is None
+                  and current_binding["kind"] == "journal-absent"
+                  and active.records.legal.phase == "retired"
+                  and records[-1].record_type == "retired"
+                  and names == tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw))))
+            _close_prestage_nodes(chain, state, locked, active, operation)
+            chain = state = locked = active = operation = None
+            builder._recover_fixed(control)
+            kata_operation._settle_prestage_rootfs(grant, current_binding)
+            _fail(_prestage_rootfs_absent(control))
+            return _issue_prestage_cleanup_receipt()
+        _fail(len(leased_rows) == 1)
         leased_record = leased_rows[0]
         leased_body = leased_record.body_value()
         observations, operation = builder._observations(

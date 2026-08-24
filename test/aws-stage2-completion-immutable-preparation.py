@@ -233,6 +233,31 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not module.STAGED_RUNTIME.exists() and not module.KATA_ROOT.exists()
     assert not module.ARTIFACT_ROOT.exists()
 
+# Immutable cleanup may proceed beside only an independently authenticated
+# idle rootfs owner. Active or uncertain rootfs state remains a hard stop.
+original_rootfs_idle = module._rootfs_state_idle
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    rootfs_state = module.COMPLETION_ROOT / "rootfs-v1"
+    rootfs_state.mkdir(mode=0o700)
+    module._rootfs_state_idle = lambda: True
+    module.recover_failed_preparation()
+    assert rootfs_state.is_dir() and not module.PREPARATION_ROOT.exists()
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    (module.COMPLETION_ROOT / "rootfs-v1").mkdir(mode=0o700)
+    module._rootfs_state_idle = lambda: False
+    try:
+        module.recover_failed_preparation()
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("active rootfs state did not block immutable recovery")
+    assert module.PREPARATION_ROOT.exists()
+module._rootfs_state_idle = original_rootfs_idle
+
 for cut in ("rootfs", "extract-kata", "extract-containerd", "publish"):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

@@ -833,17 +833,28 @@ def _forbidden_mutable_paths():
     return (
         COMPLETION_ROOT / "kata-operation-v1",
         COMPLETION_ROOT / "kata-input-v1",
-        COMPLETION_ROOT / "rootfs-v1",
         Path("/run/cogs-stage2-local-private-v2"),
         Path("/run/cogs-stage2-ssh"),
         Path("/run/vc/vm/cogs-stage2-ssh-v1"),
     )
 
 
+def _rootfs_state_idle():
+    import completion_rootfs_fs as rootfs_fs
+    import completion_rootfs_lease as rootfs_lease
+    control = rootfs_fs.OperationControl(time.monotonic_ns() + 30_000_000_000,
+                                         lambda: False)
+    return rootfs_lease._prestage_rootfs_absent(control)
+
+
 def recover_failed_preparation():
     """Inspect and settle only durable immutable transaction custody."""
     _require(not any(path.exists() or path.is_symlink()
                      for path in _forbidden_mutable_paths()))
+    rootfs_state = COMPLETION_ROOT / "rootfs-v1"
+    if rootfs_state.exists() or rootfs_state.is_symlink():
+        _require(_rootfs_state_idle(),
+                 "active rootfs state blocks immutable recovery")
     contract = _fixed_contract()
     _rollback_preparation(contract)
     _require(not PREPARATION_ROOT.exists() and not IMMUTABLE_STAGING.exists()
