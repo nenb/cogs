@@ -1829,9 +1829,9 @@ def _parse(raw):
     except (AttributeError, KeyError, OverflowError, RecursionError, TypeError,
             UnicodeError, ValueError) as error:
         raise OperationError() from error
-def _encode_untrusted(kind, body, records):
+def _encode_untrusted(kind, body, records, describe=False):
     _validate_body(kind, body)
-    _legal(tuple(records) + (Record(
+    phase = _legal(tuple(records) + (Record(
         len(records), 0, 0, ZERO, kind, body,
     ),))
     sequence = len(records)
@@ -1852,10 +1852,10 @@ def _encode_untrusted(kind, body, records):
             break
         envelope["next_offset"] = next_offset
     _fail(len(line) <= MAX_LINE and offset + len(line) <= MAX_BYTES and sequence < MAX_RECORDS)
-    return line
-def _encode(kind, body, records):
+    return (line, phase) if describe else line
+def _encode(kind, body, records, describe=False):
     try:
-        return _encode_untrusted(kind, body, records)
+        return _encode_untrusted(kind, body, records, describe)
     except OperationError:
         raise
     except (AttributeError, KeyError, OverflowError, RecursionError, TypeError,
@@ -2065,7 +2065,7 @@ def _make_authority():
             _fail(self.chain is not None and self.chain.components)
             index = -2 if self.chain.components[-1].name == STATE_NAME else -1
             return self.chain.components[index].node
-        def validate_layout(self, records, journal_generation):
+        def validate_layout(self, records, journal_generation, known_phase=None):
             raw_names = fs._enumerate_stable(self.completion, self.control).raw_names
             names = set(raw_names)
             _fail(STATE_NAME.raw in names)
@@ -2073,7 +2073,7 @@ def _make_authority():
             if records:
                 _fail(_key_value(journal_generation.key) == records[0].body["journal_key"])
                 _fail(not any(item.record_type in _V1_COMMAND_RECORDS for item in records))
-                phase = _legal(records)
+                phase = _legal(records) if known_phase is None else known_phase
                 _validate_stage_layout(
                     raw_names, records, phase, _key_value(self.completion.generation.key))
                 if len(records) > 1:
@@ -2254,10 +2254,10 @@ def _make_authority():
             held = self._file(JOURNAL_NAME)
             descriptor = None
             error = None
-            records = generation = None
+            generation = None
             try:
                 _fail(held.generation == expected_generation and held.generation.size == expected)
-                flags = os.O_WRONLY | os.O_APPEND | fs._O_NOFOLLOW | fs._O_CLOEXEC
+                flags = os.O_RDWR | os.O_APPEND | fs._O_NOFOLLOW | fs._O_CLOEXEC
                 descriptor = fs.CheckedFd(
                     os.open(JOURNAL_NAME.raw, flags, dir_fd=self.state.operation_fd.number),
                     "operation-journal-writer",
@@ -2269,23 +2269,27 @@ def _make_authority():
                 _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control) == held.generation)
                 _write_all(descriptor.number, line)
                 os.fsync(descriptor.number)
+                generation = fs._generation(
+                    descriptor, expected_generation.key.mount_id, self.control)
+                _fail(generation.key == expected_generation.key
+                      and (generation.mode, generation.uid, generation.gid,
+                           generation.nlink) ==
+                          (expected_generation.mode, expected_generation.uid,
+                           expected_generation.gid, expected_generation.nlink)
+                      and generation.size == expected + len(line)
+                      and generation.mtime_ns >= expected_generation.mtime_ns
+                      and generation.ctime_ns >= expected_generation.ctime_ns)
+                _fail(os.pread(descriptor.number, len(line) + 1, expected) == line)
+                _fail(fs._observe_child(self.state, JOURNAL_NAME, self.control) == generation)
             except BaseException as caught:
                 error = caught
             if descriptor is not None and descriptor.disposition == "open":
                 error = _collect(error, descriptor.close)
             if held.identity_fd.disposition == "open":
                 error = _collect(error, fs._close_node, held)
-            if error is None:
-                try:
-                    observed = self.read()
-                    _fail(observed is not None and len(observed[0]) == expected + len(line))
-                    records = _parse(observed[0]); generation = observed[1]
-                    _fail(_key_value(generation.key) == records[0].body["journal_key"])
-                except BaseException as caught:
-                    error = caught
             if error is not None:
                 raise error
-            return records, generation
+            return generation
         def unlink(self, expected):
             node = self._file(JOURNAL_NAME)
             error = None
@@ -2488,9 +2492,12 @@ def _make_authority():
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
             kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
         if (admitted or kind == "PRODUCTION_ADMISSION_V2") and not cleanup_record: _require_live_production_deadline(records)
-        line = _encode(kind, body, records)
-        fresh, generation = io.write_record(line, records[-1].next_offset, io._loaded_generation)
-        if validate is not None: validate(fresh, generation)
+        line, phase = _encode(kind, body, records, True)
+        expected = records[-1].next_offset
+        generation = io.write_record(line, expected, io._loaded_generation)
+        fresh = records + (Record(len(records), expected, expected + len(line),
+                                  hashlib.sha256(line).hexdigest(), kind, body),)
+        if validate is not None: validate(fresh, generation, phase)
         _fail(fresh[:-1] == records and fresh[-1].record_type == kind)
         io._loaded_generation = generation
         owner(authority)[1:] = [fresh, "exact"]

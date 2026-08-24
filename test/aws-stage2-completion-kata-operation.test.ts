@@ -62,7 +62,9 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_IDENTITY_FLAGS\)/u);
   assert.match(operation, /generation == original and generation\.key == original\.key/u);
   assert.match(operation, /def create_fixed_operation_test_local\(authority, body\):/u);
-  assert.match(operation, /validate_layout\(self, records, journal_generation\)/u);
+  assert.match(operation, /validate_layout\(self, records, journal_generation, known_phase=None\)/u);
+  assert.match(operation, /os\.O_RDWR \| os\.O_APPEND/u);
+  assert.match(operation, /os\.pread\(descriptor\.number, len\(line\) \+ 1, expected\) == line/u);
   assert.match(operation, /records\[1\]\.body\["state_parent"\]/u);
   assert.match(operation, /LOCK_EX \| fcntl\.LOCK_NB/u);
   assert.match(operation, /fs\._observe_child\(self\.state, LOCK_NAME/u);
