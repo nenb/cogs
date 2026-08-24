@@ -163,11 +163,11 @@ jobs:
   local-kata:
     needs: admission
     runs-on: ubuntu-24.04
-    # Fixed local-job post-admission bounds total 140 minutes inside one 8,700-second envelope.
+    # Fixed local-job post-admission bounds total 141 minutes inside one 8,760-second envelope.
     # Immutable acquisition has its own bound and completes before custody.
     # Recovery, cleanup, residue, and publication retain a non-borrowing
     # 21-minute reserve after the sole mutable entry bound.
-    timeout-minutes: 145
+    timeout-minutes: 146
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
@@ -271,6 +271,18 @@ jobs:
           sudo -n /usr/bin/test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr
           sudo -n /usr/bin/test -x /opt/kata/bin/containerd-shim-kata-v2
           test ! -e /run/cogs-stage2-local-private-v2
+
+      - name: Provision the fresh-host NFT writer owner
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test "${{ steps.preparation.outcome }}" = success
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
+          sudo -n /usr/bin/test -d /var/lib/cogs-stage2-nft-owner-v1
 
       - name: Execute the sole zero-argument local qualification entry
         id: local_entry

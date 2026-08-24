@@ -1485,8 +1485,15 @@ def _perform_fixed(journal, action, ip, nft, tc, target=None, endpoint=None):
 
 
 def _read_mountinfo():
+    chunks = []
+    total = 0
     with open("/proc/self/mountinfo", "rb", buffering=0) as source:
-        raw = source.read(MAX_MOUNTINFO_BYTES + 1)
+        while total <= MAX_MOUNTINFO_BYTES:
+            part = source.read(min(65_536, MAX_MOUNTINFO_BYTES + 1 - total))
+            if not part:
+                break
+            chunks.append(part); total += len(part)
+    raw = b"".join(chunks)
     if len(raw) > MAX_MOUNTINFO_BYTES or not raw.endswith(b"\n"):
         raise NetworkError("bounded complete mountinfo required")
     return raw

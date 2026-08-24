@@ -666,4 +666,7 @@ assert network.recover_nft(nft_remove, network.NftObservation(replaced_nft_snaps
 rejected(lambda: network.recover_nft(nft_remove, network.NftObservation(("cogs_stage2_ssh_v1",)), firewall_ready_proof))
 
 
+source = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()
+assert "while total <= MAX_MOUNTINFO_BYTES:" in source
+assert "chunks.append(part); total += len(part)" in source
 print("completion Kata network owner fixed-snapshot matrix passed")
