@@ -163,11 +163,11 @@ jobs:
   local-kata:
     needs: admission
     runs-on: ubuntu-24.04
-    # Fixed local-job step bounds total 115 minutes inside one 7,200-second envelope.
+    # Fixed local-job post-admission bounds total 120 minutes inside one 7,500-second envelope.
     # Immutable acquisition has its own bound and completes before custody.
     # Recovery, cleanup, residue, and publication retain a non-borrowing
     # 21-minute reserve after the sole mutable entry bound.
-    timeout-minutes: 120
+    timeout-minutes: 125
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
@@ -293,10 +293,10 @@ jobs:
         id: recovery
         if: always()
         continue-on-error: true
-        timeout-minutes: 6
+        timeout-minutes: 11
         run: |
           set -euo pipefail
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 300s \
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 600s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh

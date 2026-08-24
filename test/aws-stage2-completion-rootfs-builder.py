@@ -96,7 +96,9 @@ def portable_tests():
     assert cleanup_loop.count("_open_cleanup_session(") == 1
     assert all(name not in cleanup_loop for name in ("_stable_active", "_walk_entries", "_reconcile_ledger"))
     retirement = source.split("def _retire_absent(", 1)[1].split("\ndef ", 1)[0]
-    assert retirement.count("_open_cleanup_session(") == 2
+    assert retirement.count("_open_cleanup_session(") == 1
+    assert 'boundary.status = "retired"' in retirement
+    assert "return _unlink_ledger(boundary, control)" in retirement
     resumed = source.split("def _resume_observed(", 1)[1].split("\ndef ", 1)[0]
     assert resumed.count("_relative_parent_chain(") == resumed.count("_chain_with_child(") == 3
     final_zero = source.split("def _unlink_ledger(", 1)[1].split("\ndef ", 1)[0]

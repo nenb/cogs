@@ -193,16 +193,16 @@ test("fixed phase bounds preserve recovery, independent residue, and publication
   const total = steps.reduce((sum, name) => sum + stepTimeout(name), 0);
   const localJob = workflow.slice(workflow.indexOf("\n  local-kata:"));
   const job = Number(localJob.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
-  assert.equal(job, 120);
-  assert.equal(total, 116);
-  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 115);
+  assert.equal(job, 125);
+  assert.equal(total, 121);
+  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 120);
   assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 59);
   const postEntry = steps.slice(6).reduce((sum, name) => sum + stepTimeout(name), 0);
-  assert.equal(postEntry, 21);
+  assert.equal(postEntry, 26);
   assert.ok(postEntry * 60 >= 600);
   assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 3470s/u);
   assert.ok(3470 + 10 <= 59 * 60);
-  assert.match(workflow, /one 7,200-second envelope/u);
+  assert.match(workflow, /one 7,500-second envelope/u);
 });
 
 test("recovery and independent settlement always run without turning cancellation into success", () => {
@@ -217,6 +217,7 @@ test("recovery and independent settlement always run without turning cancellatio
     assert.match(workflow.slice(start, next), /if: always\(\)/u);
   }
   assert.match(workflow, /recover-stage2-completion-remote\.sh/u);
+  assert.match(workflow.slice(recovery, cleanup), /kill-after=10s 600s/u);
   assert.match(recoverySource, /_recover_fixed_local_qualification/u);
   assert.match(recoverySource, /result is None/u);
   assert.doesNotMatch(recoverySource, /_run_fixed_local_qualification|_consume_local_receipt|completion_local_full/u);

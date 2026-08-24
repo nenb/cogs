@@ -1726,11 +1726,10 @@ def _retire_absent(session, control):
     boundary = _open_cleanup_session(session.active, session.locked, None, session.origin, control)
     session.disposition = "finished"
     _fail(boundary.status == "retirable")
-    _session_append(boundary, "retired", {"token": _token(boundary.active), "state_parent": _p(boundary.state_parent)}, control)
-    final = _open_cleanup_session(boundary.active, boundary.locked, None, boundary.origin, control)
-    boundary.disposition = "finished"
-    _fail(final.status == "retired")
-    return _unlink_ledger(final, control)
+    _session_append(boundary, "retired", {"token": _token(boundary.active),
+                                           "state_parent": _p(boundary.state_parent)}, control)
+    boundary.status = "retired"
+    return _unlink_ledger(boundary, control)
 
 @_poisoned
 def _retire(session, control, intent_exists=False):
