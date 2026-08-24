@@ -1144,7 +1144,7 @@ if sys.platform.startswith("linux"):
                 if not publication["writer_close_attempted"]: os.close(writer)
                 os.close(directory)
 assert (actual_build.BUILD_SECONDS, actual_build.OUTER_SECONDS) == (900, 2400)
-assert (actual_materializer.MATERIALIZE_SECONDS, actual_materializer.CLEANUP_SECONDS) == (900, 600)
+assert (actual_materializer.MATERIALIZE_SECONDS, actual_materializer.CLEANUP_SECONDS) == (900, 720)
 assert actual_builder.RECOVER_SECONDS == 600
 build_phases = (
     "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",

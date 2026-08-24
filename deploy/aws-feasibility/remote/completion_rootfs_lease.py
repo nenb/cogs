@@ -754,11 +754,16 @@ def _recover_unadmitted_kata_operation(prestage_permit, approval, control):
                     if record.record_type == "prestage-release-authorized"]
         _fail(not ordinary and len(prestage) <= 1)
         if not leased_rows:
+            operation_name = builder._operation_name(builder._token(active)).raw
+            allowed_names = {
+                tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw))),
+                tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw, operation_name))),
+            }
             _fail(not prestage and coordinates is None
                   and current_binding["kind"] == "journal-absent"
-                  and active.records.legal.phase == "retired"
-                  and records[-1].record_type == "retired"
-                  and names == tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw))))
+                  and active.records.legal.phase not in
+                  {"leased", "release-authorized", "prestage-release-authorized"}
+                  and names in allowed_names)
             _close_prestage_nodes(chain, state, locked, active, operation)
             chain = state = locked = active = operation = None
             builder._recover_fixed(control)

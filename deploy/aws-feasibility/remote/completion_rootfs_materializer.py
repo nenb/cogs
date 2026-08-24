@@ -16,7 +16,7 @@ import completion_rootfs_plan as plan
 
 MATERIALIZE_SECONDS = 900
 NATIVE_PACKAGE_MATERIALIZE_SECONDS = 1_200
-CLEANUP_SECONDS = 600
+CLEANUP_SECONDS = 720
 
 
 class MaterializerError(Exception):

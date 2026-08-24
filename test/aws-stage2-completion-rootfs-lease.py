@@ -1809,6 +1809,8 @@ def retired_prelease_recovery_test():
         patch.object(lease.kata_operation, "_claim_prestage_rootfs", return_value=grant),
         patch.object(lease.kata_operation, "_prestage_rootfs_binding", return_value=binding),
         patch.object(lease.kata_operation, "_prestage_rootfs_coordinates", return_value=None),
+        patch.object(builder, "_token", return_value="c" * 64),
+        patch.object(builder, "_operation_name", return_value=fs._name(b"operation-c")),
         patch.object(builder, "_open_base_chain", return_value=object()),
         patch.object(builder, "_open_state", return_value=object()),
         patch.object(fs, "_enumerate_stable", return_value=SimpleNamespace(raw_names=names)),
@@ -1825,7 +1827,7 @@ def retired_prelease_recovery_test():
     )
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
             patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], \
-            patches[12], patches[13], patches[14]:
+            patches[12], patches[13], patches[14], patches[15], patches[16]:
         receipt = lease._recover_unadmitted_kata_operation(object(), approval, control)
     assert lease._is_prestage_cleanup_receipt(receipt)
     assert events == ["closed", "recovered", "settled"]
