@@ -625,5 +625,9 @@ def linux_functional():
 
 
 
+source = (REMOTE / "completion_kata_inputs.py").read_text()
+assert 'value.count(b" ") == 2' in source
+assert "public_derivations(client_public)" in source
+assert "public_derivations(server_public)" in source
 linux_functional()
 print("completion Kata input/control owner foundation matrix passed")

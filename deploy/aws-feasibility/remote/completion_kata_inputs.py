@@ -1197,6 +1197,10 @@ def _owner_routes():
 
     production = {}
 
+    def public_derivations(value):
+        _fail(type(value) is bytes and value.endswith(b"\n") and value.count(b" ") == 2)
+        return (value.rsplit(b" ", 1)[0] + b"\n", value)
+
     def fixed_key_material(state, first_serial):
         import completion_kata_process as process
         _fail(type(state["key_executable"]) is process.RetainedExecutable)
@@ -1237,7 +1241,13 @@ def _owner_routes():
                 _fail(type(outcome) is process.ProcessOutcome
                       and type(receipt) is operation.DurableCommandOutcome)
                 _fail(receipt.command_serial == serial and outcome.command_id == receipt.command_id)
-                if expected_stdout is not None: _fail(outcome.stdout == expected_stdout)
+                if expected_stdout is not None:
+                    accepted = ((expected_stdout,) if type(expected_stdout) is bytes
+                                else expected_stdout)
+                    _fail(type(accepted) is tuple and len(accepted) in {1, 2}
+                          and all(type(value) is bytes for value in accepted)
+                          and len(set(accepted)) == len(accepted)
+                          and outcome.stdout in accepted)
                 durable = operation._durable_command_output(
                     state["journal"], serial, receipt.command_id, receipt.binding_sha256,
                     outcome.stdout, outcome.stderr)
@@ -1270,8 +1280,8 @@ def _owner_routes():
             run(process.CommandId.SSH_KEYGEN_CLIENT, first_serial, b"")
             client_node, client_private = opened("client", 0o600, MAX_PRIVATE, client_grant)
             client_pub_node, client_public = opened("client.pub", 0o644, MAX_PUBLIC, client_pub_grant)
-            client_y = client_public.rsplit(b" ", 1)[0] + b"\n"
-            run(process.CommandId.SSH_PUBLIC_CLIENT, first_serial + 1, client_y)
+            run(process.CommandId.SSH_PUBLIC_CLIENT, first_serial + 1,
+                public_derivations(client_public))
             _fail(fs._observe_node(client_node.identity_fd, client_node.operation_fd, control)
                   == client_node.generation)
             server_grant = key_grant("server", 0o600, first_serial + 2)
@@ -1279,8 +1289,8 @@ def _owner_routes():
             run(process.CommandId.SSH_KEYGEN_SERVER, first_serial + 2, b"")
             server_node, server_private = opened("server", 0o600, MAX_PRIVATE, server_grant)
             server_pub_node, server_public = opened("server.pub", 0o644, MAX_PUBLIC, server_pub_grant)
-            server_y = server_public.rsplit(b" ", 1)[0] + b"\n"
-            run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3, server_y)
+            run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3,
+                public_derivations(server_public))
             for node in (client_node, client_pub_node, server_node, server_pub_node):
                 _fail(fs._observe_node(node.identity_fd, node.operation_fd, control) == node.generation)
             _fail(state["journal"].command_context().command_serial == first_serial + 4)
