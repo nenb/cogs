@@ -31,7 +31,7 @@ POLICY = {
         "effect": "fixed-source-materialization; reviewed child executable is isolated git cat-file only",
     },
     "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py": {
-        "sha256": "294855086adc8bfe3d6a4beab4e0a57c2f30a6160529a1260a5dbf12486ff4a2",
+        "sha256": "4e781b2a56f03d4be3dab81dbe2cd07386ae28a0845c67c1a2fec9b5f1a857a0",
         "effect": "immutable HTTPS acquisition and archive extraction only; runtime launch surfaces forbidden",
     },
     "deploy/aws-feasibility/remote/completion_kata_preparation.py": {

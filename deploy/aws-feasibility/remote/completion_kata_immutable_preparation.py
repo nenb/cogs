@@ -640,10 +640,24 @@ def _artifact_rows(contract):
 
 def _remove_artifact_cache(contract, custody):
     cache = ARTIFACT_ROOT / "cache"
-    for path, expected in ((ARTIFACT_ROOT, custody["artifact_root_identity"]),
-                           (cache, custody["artifact_cache_identity"])):
-        seen = _directory_identity(path)
-        _require(seen == expected, "transaction artifact cache identity changed")
+    owned_empty = (custody["artifact_cache_created"]
+                   and not custody["artifact_baseline"]
+                   and not custody["artifact_sentinel_existed"])
+    if not ARTIFACT_ROOT.exists() and not ARTIFACT_ROOT.is_symlink():
+        _require(owned_empty, "retained artifact root disappeared")
+        return
+    seen = _directory_identity(ARTIFACT_ROOT)
+    _require(seen == custody["artifact_root_identity"],
+             "transaction artifact root identity changed")
+    if not cache.exists() and not cache.is_symlink():
+        _require(owned_empty and not os.listdir(ARTIFACT_ROOT),
+                 "artifact cache disappeared before settlement")
+        ARTIFACT_ROOT.rmdir()
+        _sync_directory(ARTIFACT_ROOT.parent)
+        return
+    seen = _directory_identity(cache)
+    _require(seen == custody["artifact_cache_identity"],
+             "transaction artifact cache identity changed")
     rows = _artifact_rows(contract)
     by_name = {row["cache_name"]: row for row in rows}
     names = set(os.listdir(cache))

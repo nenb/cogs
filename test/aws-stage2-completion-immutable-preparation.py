@@ -288,6 +288,12 @@ with tempfile.TemporaryDirectory() as temporary:
         raise AssertionError("changed runtime partial unexpectedly succeeded")
     changed = next(module.RUNTIME_CACHE.glob("*.partial"))
     assert changed.read_bytes() == b"changed-policy"
+    # The failed rollback already settled later independent artifact custody.
+    # Correcting only the diagnostic fixture's policy exercises restart from
+    # an absent transaction-owned artifact root without hiding foreign state.
+    changed.chmod(0o600)
+    module.recover_failed_preparation()
+    assert not module.PREPARATION_ROOT.exists() and not module.ARTIFACT_ROOT.exists()
 
 # A retained exact cache object remains while transaction-created siblings are
 # removed after failure.
