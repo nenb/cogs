@@ -1218,6 +1218,11 @@ def _legal(records):
     runtime_prepared = False
     rootfs = False
     next_serial = 0
+    input_grants = {}
+    input_grant_paths = set()
+    input_settled_grants = {}
+    input_wa = {}
+    input_steps = {}
     for index, record in enumerate(records[1:], 1):
         kind = record.record_type
         body = record.body
@@ -1326,16 +1331,15 @@ def _legal(records):
         if kind == "RUNTIME_MOUNT_V2":
             _fail(production_admitted and phase == "RUNTIME_READY" and runtime_mount is None
                   and command_phase is None)
-            manifests = [item.body for item in records[:index] if item.record_type == "INPUT_STEP"
-                         and item.body["path"] == "@manifest" and item.body["action"] == "create"]
+            manifests = [item for item in input_steps.get("@manifest", ())
+                         if item["action"] == "create"]
             _fail(len(manifests) == 1 and manifests[0]["sha256"] == body["manifest_sha256"])
             runtime_mount = record
             continue
         if kind == "INPUT_GRANT":
             _fail(command_phase is None and phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
                   "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
-            prior = [item.body for item in records[:index] if item.record_type == "INPUT_GRANT"
-                     and item.body["grant_id"] == body["grant_id"]]
+            prior = input_grants.get(body["grant_id"], ())
             if body["action"] == "intent": _fail(not prior)
             else:
                 _fail(len(prior) == 1 and prior[0]["action"] == "intent"
@@ -1344,33 +1348,33 @@ def _legal(records):
                           "expected_kind", "expected_mode", "expected_uid", "expected_gid",
                           "command_serial", "birth_min_ns", "birth_max_ns", "mount_id",
                           "inode_version_min", "inode_version_max")))
+            input_grants.setdefault(body["grant_id"], []).append(body)
+            input_grant_paths.add((body["path"], body["action"]))
+            if body["action"] == "settled":
+                input_settled_grants.setdefault(body["path"], []).append(body)
             continue
         if kind == "INPUT_WA":
             _fail(command_phase is None and phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
                   "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
-            prior = [item.body for item in records[:index] if item.record_type == "INPUT_WA"
-                     and (item.body["action"], item.body["path"]) == (body["action"], body["path"])]
-            _fail(not prior)
+            key = (body["action"], body["path"])
+            _fail(key not in input_wa)
             if body["action"] == "mkdir-settled":
-                intents = [item.body for item in records[:index] if item.record_type == "INPUT_WA"
-                           and (item.body["action"], item.body["path"]) == ("mkdir", body["path"])]
+                intents = input_wa.get(("mkdir", body["path"]), ())
                 _fail(len(intents) == 1 and all(body[name] == intents[0][name]
                       for name in ("parent_key", "names_sha256", "target_mode")))
             elif body["action"] == "file-settled":
-                _fail(any(item.record_type == "INPUT_GRANT" and item.body["action"] == "settled"
-                          and item.body["path"] == body["path"] for item in records[:index]))
+                _fail((body["path"], "settled") in input_grant_paths)
+            input_wa.setdefault(key, []).append(body)
             continue
         if kind == "INPUT_STEP":
             _fail(command_phase is None and phase in {"FS_INTENT", "FS_SETTLED", "RUNTIME_READY",
                   "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
-            prior = [item.body for item in records[:index] if item.record_type == "INPUT_STEP"
-                     and item.body["path"] == body["path"]]
+            prior = input_steps.get(body["path"], ())
             if body["action"] == "create-intent": _fail(not prior)
             elif body["action"] == "create":
                 _fail(prior and prior[-1]["action"] == "create-intent")
                 if production_admitted and body["kind"] == "directory":
-                    grants = [item.body for item in records[:index] if item.record_type == "INPUT_GRANT"
-                              and item.body["path"] == body["path"] and item.body["action"] == "settled"]
+                    grants = input_settled_grants.get(body["path"], ())
                     _fail(len(grants) == 1 and grants[0]["child_generation"]["mount_id"] == body["key"]["mount_id"]
                           and grants[0]["child_generation"]["device"] == body["key"]["device"]
                           and grants[0]["child_generation"]["inode"] == body["key"]["inode"])
@@ -1379,6 +1383,7 @@ def _legal(records):
                       and not any(item["action"] == "remove-intent" for item in prior))
             else:
                 _fail(prior and prior[-1]["action"] == "remove-intent")
+            input_steps.setdefault(body["path"], []).append(body)
             continue
         if kind == "RUNTIME_PREPARED_V1":
             _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY"
@@ -1449,15 +1454,12 @@ def _legal(records):
                       runtime_staged["containerd_generation" if artifact == 0 else "ctr_generation"]
                       and body["executable_sha256"] == command_policy.CONTAINERD_EXTRACTION[artifact][2])
             elif body["command_id"] in command_policy.KEY_COMMANDS:
-                grants = [item.body for item in records[:index] if item.record_type == "INPUT_GRANT"]
-                _fail(any(item["path"] == "@key-stage" and item["action"] == "settled"
-                          for item in grants))
+                _fail(("@key-stage", "settled") in input_grant_paths)
                 pair = (("client", "client.pub") if "CLIENT" in body["command_id"]
                         else ("server", "server.pub"))
                 required_action = ("settled" if body["command_id"].startswith("SSH_PUBLIC_")
                                    else "intent")
-                _fail(all(any(item["path"] == "@key-stage/" + name
-                                  and item["action"] == required_action for item in grants)
+                _fail(all(("@key-stage/" + name, required_action) in input_grant_paths
                           for name in pair))
             if not b1_network:
                 _v2_occurrence(records, index, phase, body, ownership)
@@ -1731,10 +1733,7 @@ def _legal(records):
             elif kind == "CONTAINERD_ABSENT":
                 _fail(phase == "FIREWALL_ABSENT" and retained_daemon is None)
             elif kind == "INPUT_REMOVED":
-                steps = [item.body for item in records[:index]
-                         if item.record_type == "INPUT_STEP"]
-                by_path = {}
-                for step in steps: by_path[step["path"]] = step
+                by_path = {path: steps[-1] for path, steps in input_steps.items()}
                 early = (phase in {"ROOTFS_LEASED", "FS_SETTLED"}
                          and not network_state["snapshots"]
                          and not network_state["effects"]
