@@ -276,13 +276,14 @@ int main(int argc, char **argv) {
 
 
 DAEMON = r'''#include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/un.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-static char paths[2][108]; static int listeners[2];
-static void stop(int signal_number) { (void)signal_number; for(int i=0;i<2;i++){close(listeners[i]);unlink(paths[i]);} _exit(0); }
+static char paths[2][108]; static int listeners[2], accepted[64], accepted_count;
+static void stop(int signal_number) { (void)signal_number; for(int i=0;i<accepted_count;i++)close(accepted[i]); for(int i=0;i<2;i++){close(listeners[i]);unlink(paths[i]);} _exit(0); }
 int main(int argc, char **argv) {
   const char *path = 0;
   for (int i=1; i+1<argc; ++i) if (!strcmp(argv[i],"--address")) path=argv[i+1];
@@ -292,7 +293,9 @@ int main(int argc, char **argv) {
     memcpy(address.sun_path,paths[i],strlen(paths[i])+1); unlink(paths[i]);
     if(listeners[i]<0||bind(listeners[i],(void*)&address,sizeof(address))||listen(listeners[i],1))return 91; }
   signal(SIGTERM,stop);
-  for(;;)pause();
+  for(;;){ fd_set reads; FD_ZERO(&reads); int high=0; for(int i=0;i<2;i++){FD_SET(listeners[i],&reads);if(listeners[i]>high)high=listeners[i];}
+    if(select(high+1,&reads,0,0,0)>0)for(int i=0;i<2;i++)if(FD_ISSET(listeners[i],&reads)&&accepted_count<64){int fd=accept(listeners[i],0,0);if(fd>=0)accepted[accepted_count++]=fd;} }
+
 }
 '''
 
@@ -344,10 +347,11 @@ def authentic_daemon_transaction_profile():
         daemon_executable = retained("containerd", process.STAGED_CONTAINERD, daemon_fd)
         ctr_executable = retained("ctr", process.STAGED_CTR, true_fd)
         try:
-            for fault in (None, "slow-custody", "runtime-leaf", "foreign-child", "foreign-leaf", "post-fork"):
+            for fault in (None, "slow-custody", "accepted-socket", "runtime-leaf", "foreign-child", "foreign-leaf", "post-fork"):
                 journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
                 profile = process._fixed_daemon_transaction_profile(owner, journal)
-                foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
+                foreign_pid = None; accepted_socket = None
+                foreign_leaf = process.CGROUP_BASE + "/foreign"
                 runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
                 try:
                     assert process._child_census() == (profile.pid,)
@@ -357,6 +361,11 @@ def authentic_daemon_transaction_profile():
                         process._boottime_ns() + 1_000_000_000,
                         {"term": False, "kill": False}, recovery_errors) == (True, True)
                     assert not recovery_errors and os.path.isdir(profile.cgroup_path)
+                    if fault == "accepted-socket":
+                        socket_module = __import__("socket")
+                        accepted_socket = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+                        accepted_socket.connect(process.CONTAINERD_TTRPC_SOCKET); time.sleep(0.05)
+                        assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     if fault == "runtime-leaf":
                         os.mkdir(runtime_leaf, 0o700); journal.launched = True
                         profile = process._fixed_daemon_transaction_profile(owner, journal)
@@ -376,7 +385,7 @@ def authentic_daemon_transaction_profile():
                             process.kata_operation, "_cycle_route", return_value=None):
                         if len(patches) == 2: patches[1].start()
                         try:
-                            if fault in {None, "slow-custody", "runtime-leaf"}:
+                            if fault in {None, "slow-custody", "accepted-socket", "runtime-leaf"}:
                                 outcome, durable = process._transact_fixed(journal, fixed, ctr_executable,
                                     daemon_owner=owner, consumption_owner=object())
                                 assert (outcome.outcome, outcome.status, outcome.errors) == ("exited", 0, ()) and not durable.body["uncertain"]
@@ -386,6 +395,7 @@ def authentic_daemon_transaction_profile():
                             if len(patches) == 2: patches[1].stop()
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0); foreign_pid = None
+                    if accepted_socket is not None: accepted_socket.close(); accepted_socket = None
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
                     if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
                     assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
@@ -395,6 +405,7 @@ def authentic_daemon_transaction_profile():
                 finally:
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
+                    if accepted_socket is not None: accepted_socket.close()
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
                     if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)

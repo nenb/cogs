@@ -1954,12 +1954,17 @@ def _daemon_routes():
             try: generation = _host_generation(descriptor, "socket")
             finally: os.close(descriptor)
             matches = [row for row in rows if len(row) == 8 and row[-1] == path.encode("ascii")]
-            if (generation["uid"] != 0 or generation["gid"] != 0 or generation["nlink"] != 1 or len(matches) != 1 or
-                    matches[0][3:6] != [b"00010000", b"0001", b"01"] or not matches[0][6].isdigit()):
+            listeners = [row for row in matches if row[3:6] == [b"00010000", b"0001", b"01"]]
+            accepted = [row for row in matches if row[3:6] == [b"00000000", b"0001", b"03"]]
+            if (generation["uid"] != 0 or generation["gid"] != 0 or generation["nlink"] != 1
+                    or len(listeners) != 1 or len(matches) != 1 + len(accepted)
+                    or len(accepted) > 64 or any(not row[6].isdigit() for row in matches)):
                 raise ProcessError("private daemon socket ownership")
-            inode = int(matches[0][6]); link = f"socket:[{inode}]".encode("ascii")
-            if links.count(link) != 1: raise ProcessError("private daemon socket fd ownership")
-            result[name] = {"generation": generation, "fd_inode": inode}
+            inodes = [int(row[6]) for row in matches]
+            if len(inodes) != len(set(inodes)) or any(
+                    links.count(f"socket:[{inode}]".encode("ascii")) != 1 for inode in inodes):
+                raise ProcessError("private daemon socket fd ownership")
+            result[name] = {"generation": generation, "fd_inode": int(listeners[0][6])}
         if len({row["fd_inode"] for row in result.values()}) != 2 or len({(row["generation"]["device"], row["generation"]["inode"]) for row in result.values()}) != 2: raise ProcessError("private daemon socket identity collision")
         return result
     def close_state(owner):
