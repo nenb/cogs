@@ -342,7 +342,7 @@ def authentic_daemon_transaction_profile():
         daemon_executable = retained("containerd", process.STAGED_CONTAINERD, daemon_fd)
         ctr_executable = retained("ctr", process.STAGED_CTR, true_fd)
         try:
-            for fault in (None, "foreign-child", "foreign-leaf", "post-fork"):
+            for fault in (None, "slow-custody", "foreign-child", "foreign-leaf", "post-fork"):
                 journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
                 profile = process._fixed_daemon_transaction_profile(owner, journal)
                 foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
@@ -353,13 +353,17 @@ def authentic_daemon_transaction_profile():
                         if foreign_pid == 0: time.sleep(30); os._exit(0)
                     if fault == "foreign-leaf": os.mkdir(foreign_leaf, 0o700)
                     fixed = process._bind_ctr_extension(process.CommandId.CTR_TASK_LIST)
-                    patches = [patch.object(process.kata_runtime, "_verify_runtime_consumption", return_value=None)]
+                    custody_check = ((lambda *_args: time.sleep(3))
+                                     if fault == "slow-custody" else (lambda *_args: None))
+                    patches = [patch.object(process.kata_runtime, "_verify_runtime_consumption",
+                                            side_effect=custody_check)]
                     if fault == "post-fork": patches.append(patch.object(
                         process, "_identity", side_effect=process.ProcessError("fault after fork")))
-                    with patches[0]:
+                    with patches[0], patch.object(
+                            process.kata_operation, "_cycle_route", return_value=None):
                         if len(patches) == 2: patches[1].start()
                         try:
-                            if fault is None:
+                            if fault in {None, "slow-custody"}:
                                 outcome, durable = process._transact_fixed(journal, fixed, ctr_executable,
                                     daemon_owner=owner, consumption_owner=object())
                                 assert (outcome.outcome, outcome.status, outcome.errors) == ("exited", 0, ()) and not durable.body["uncertain"]
@@ -606,9 +610,16 @@ def linux_supervisor_tests():
             previous = process._FIXED_COMMANDS.get(command_id)
             process._FIXED_COMMANDS[command_id] = fixed
             identity = process._fd_identity(executable_fd)
+            original_host_generation = process._host_generation
+            def normalized_generation(descriptor, kind=None):
+                generation = original_host_generation(descriptor, kind)
+                if descriptor == executable_fd and generation["mount_id"] == 0:
+                    generation = {**generation, "mount_id": 1}
+                return generation
+            executable_generation = normalized_generation(executable_fd)
             retained = process.RetainedExecutable(
                 "test", process.TEST_PATH, executable_fd, contract.executable.sha256,
-                contract.closure_sha256, process._host_generation(executable_fd),
+                contract.closure_sha256, executable_generation,
             )
             journal = Journal()
             leaf_generation = (
@@ -617,7 +628,9 @@ def linux_supervisor_tests():
             owner = process._CgroupOwner("", leaf_generation, (), False, {})
             patches = cgroup_patches(owner)
             try:
-                with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                     patch.object(process, "_host_generation", side_effect=normalized_generation), \
+                     patch.object(process.kata_operation, "_cycle_route", return_value=None):
                     outcome, _durable = process._transact_fixed(
                         journal, fixed, retained, () if inherited is None else inherited,
                     )

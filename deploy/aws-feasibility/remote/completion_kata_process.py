@@ -1650,14 +1650,23 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         raise ProcessError("runtime path owners required")
     if not hasattr(signal, "pidfd_send_signal") or not hasattr(os, "pidfd_open"):
         raise ProcessError("usable pidfd signaling is required")
-    deadline = _boottime_ns() + fixed.duration_ns
-    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     spec = _Spec(
         fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
     )
     bindings = _claim_inherited_fds(spec, inherited); network_fd = None
     daemon_profile = None
+    # Expensive custody checks precede the command's absolute deadline.  They
+    # are read-only and must not consume the bounded execution/cleanup window.
+    if runtime_extension or runtime_fixed:
+        daemon_profile = _fixed_daemon_transaction_profile(daemon_owner, journal)
+        if runtime_extension:
+            kata_runtime._verify_runtime_consumption(
+                consumption_owner, journal, fixed.command_id.value)
+        _verify_fixed_daemon(daemon_owner, journal)
+        _require_no_children(daemon_profile)
+    deadline = _boottime_ns() + fixed.duration_ns
+    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
     kata_operation._record_command_intent(journal, intent)
     owner = None
@@ -1673,9 +1682,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     launch_started_boottime_ns = None
     try:
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
-        if runtime_extension or runtime_fixed:
-            daemon_profile = _fixed_daemon_transaction_profile(daemon_owner, journal)
-        _require_no_children(daemon_profile)
+        if daemon_profile is None:
+            _require_no_children()
         previous_subreaper = _set_subreaper(True)
         _within_work_cutoff(work_cutoff)
         owner = (_prepare_cgroup(context) if daemon_profile is None
@@ -1730,8 +1738,6 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         kata_operation._record_command_preexec(journal, preexec)
         preexec_recorded = True
         _within_work_cutoff(work_cutoff)
-        if runtime_extension:
-            kata_runtime._verify_runtime_consumption(consumption_owner, journal, fixed.command_id.value)
         if runtime_extension or runtime_fixed:
             _verify_fixed_daemon(daemon_owner, journal)
             _verify_daemon_transaction_census(daemon_profile, owner, pid)
