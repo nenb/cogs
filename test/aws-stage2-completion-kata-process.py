@@ -314,7 +314,7 @@ def authentic_daemon_transaction_profile():
         process.CONTAINERD_STATE, process.CONTAINERD_CONFIG = str(runtime / "state"), str(runtime / "config")
         process.STAGED_CONTAINERD, process.STAGED_CTR = str(daemon_path), str(root / "ctr")
         class Journal:
-            def __init__(self): self.serial = 0; self.daemon = None
+            def __init__(self): self.serial = 0; self.daemon = None; self.launched = False
             def command_context(self):
                 return process.kata_operation.CommandContext(
                     "b" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
@@ -333,6 +333,8 @@ def authentic_daemon_transaction_profile():
                 process.kata_operation._validate_body("DAEMON_RETAINED_V2", body); self.daemon = body; self.serial += 1; return body
             def record_daemon_outcome(self, body):
                 process.kata_operation._validate_body("DAEMON_OUTCOME_V2", body); return body
+            def runtime_recovery_history(self):
+                return {"launches": ({"command_id": "CTR_RUN"},) if self.launched else ()}
         daemon_fd = os.open(daemon_path, os.O_RDONLY | os.O_CLOEXEC)
         true_fd = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
         def retained(role, path, descriptor):
@@ -342,10 +344,11 @@ def authentic_daemon_transaction_profile():
         daemon_executable = retained("containerd", process.STAGED_CONTAINERD, daemon_fd)
         ctr_executable = retained("ctr", process.STAGED_CTR, true_fd)
         try:
-            for fault in (None, "slow-custody", "foreign-child", "foreign-leaf", "post-fork"):
+            for fault in (None, "slow-custody", "runtime-leaf", "foreign-child", "foreign-leaf", "post-fork"):
                 journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
                 profile = process._fixed_daemon_transaction_profile(owner, journal)
                 foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
+                runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
                 try:
                     assert process._child_census() == (profile.pid,)
                     recovery_errors = []
@@ -354,6 +357,10 @@ def authentic_daemon_transaction_profile():
                         process._boottime_ns() + 1_000_000_000,
                         {"term": False, "kill": False}, recovery_errors) == (True, True)
                     assert not recovery_errors and os.path.isdir(profile.cgroup_path)
+                    if fault == "runtime-leaf":
+                        os.mkdir(runtime_leaf, 0o700); journal.launched = True
+                        profile = process._fixed_daemon_transaction_profile(owner, journal)
+                        assert profile.runtime_leaf_name == "kata_" + process.kata_runtime.CONTAINER_ID
                     if fault == "foreign-child":
                         foreign_pid = os.fork()
                         if foreign_pid == 0: time.sleep(30); os._exit(0)
@@ -369,7 +376,7 @@ def authentic_daemon_transaction_profile():
                             process.kata_operation, "_cycle_route", return_value=None):
                         if len(patches) == 2: patches[1].start()
                         try:
-                            if fault in {None, "slow-custody"}:
+                            if fault in {None, "slow-custody", "runtime-leaf"}:
                                 outcome, durable = process._transact_fixed(journal, fixed, ctr_executable,
                                     daemon_owner=owner, consumption_owner=object())
                                 assert (outcome.outcome, outcome.status, outcome.errors) == ("exited", 0, ()) and not durable.body["uncertain"]
@@ -380,6 +387,7 @@ def authentic_daemon_transaction_profile():
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0); foreign_pid = None
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
                     assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     base_fd, _generation = process._directory_identity(process.CGROUP_BASE)
                     try: assert process._cgroup_leaf_names(base_fd) == {profile.leaf_name}
@@ -388,6 +396,7 @@ def authentic_daemon_transaction_profile():
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)
                 assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
                         and not os.path.lexists(process.CONTAINERD_TTRPC_SOCKET))

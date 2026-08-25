@@ -980,6 +980,7 @@ class _DaemonTransactionProfile:
     leaf_name: str
     leaf_generation: tuple
     base_generation: tuple
+    runtime_leaf_name: object = None
 
 
 def _boottime_ns():
@@ -1207,16 +1208,24 @@ def _prepare_cgroup(context, daemon_profile=None):
         if daemon_profile is None:
             if leaves:
                 raise ProcessError("cgroup base has an owned leaf")
-        elif (type(daemon_profile) is not _DaemonTransactionProfile
-              or _generation_tuple(base_generation) != daemon_profile.base_generation
-              or leaves != {daemon_profile.leaf_name}
-              or _cgroup_generation(daemon_profile.cgroup_path) != daemon_profile.leaf_generation):
-            raise ProcessError("daemon transaction cgroup baseline differs")
+        else:
+            expected_leaves = {daemon_profile.leaf_name}
+            if daemon_profile.runtime_leaf_name is not None:
+                expected_leaves.add(daemon_profile.runtime_leaf_name)
+            if (type(daemon_profile) is not _DaemonTransactionProfile
+                    or _generation_tuple(base_generation) != daemon_profile.base_generation
+                    or leaves != expected_leaves
+                    or _cgroup_generation(daemon_profile.cgroup_path) != daemon_profile.leaf_generation):
+                raise ProcessError("daemon transaction cgroup baseline differs")
         os.mkdir(leaf_name, 0o700, dir_fd=base_fd)
         leaf_created = True
         leaf_fd, leaf_generation = _directory_identity(CGROUP_BASE + "/" + leaf_name)
-        if daemon_profile is not None and _cgroup_leaf_names(base_fd) != {daemon_profile.leaf_name, leaf_name}:
-            raise ProcessError("daemon transaction cgroup set differs")
+        if daemon_profile is not None:
+            expected_leaves = {daemon_profile.leaf_name, leaf_name}
+            if daemon_profile.runtime_leaf_name is not None:
+                expected_leaves.add(daemon_profile.runtime_leaf_name)
+            if _cgroup_leaf_names(base_fd) != expected_leaves:
+                raise ProcessError("daemon transaction cgroup set differs")
     except BaseException as primary:
         try:
             if leaf_fd is not None:
@@ -1251,12 +1260,15 @@ def _owned_cgroup_generation(owner):
 
 
 def _verify_daemon_transaction_census(profile, owner, leader_pid):
+    expected_leaves = {profile.leaf_name, owner.leaf_name}
+    if profile.runtime_leaf_name is not None:
+        expected_leaves.add(profile.runtime_leaf_name)
     if (type(profile) is not _DaemonTransactionProfile
             or _child_census() != tuple(sorted((profile.pid, leader_pid)))
             or _proc_row(profile.pid) != profile.proc_row
             or _cgroup_generation(profile.cgroup_path) != profile.leaf_generation
             or _owned_cgroup_generation(owner) != owner.leaf_generation
-            or _cgroup_leaf_names(owner.base_fd) != {profile.leaf_name, owner.leaf_name}):
+            or _cgroup_leaf_names(owner.base_fd) != expected_leaves):
         raise ProcessError("daemon transaction shared ownership differs")
 
 
@@ -1684,7 +1696,10 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
         if daemon_profile is None:
             _require_no_children()
-        previous_subreaper = _set_subreaper(True)
+        # Kata's shim daemonizes during CTR_RUN.  It must reparent to PID 1,
+        # whose independent runtime owner inventories it, rather than becoming
+        # an unowned direct child of this command supervisor.
+        previous_subreaper = _set_subreaper(fixed.command_id is not CommandId.CTR_RUN)
         _within_work_cutoff(work_cutoff)
         owner = (_prepare_cgroup(context) if daemon_profile is None
                  else _prepare_cgroup(context, daemon_profile))
@@ -1989,9 +2004,12 @@ def _daemon_routes():
                 or cgroup.base_fd is None):
             raise ProcessError("private daemon transaction profile differs")
         base_generation = _generation_tuple(_host_generation(cgroup.base_fd, "directory"))
+        history = journal.runtime_recovery_history()
+        runtime_leaf = ("kata_" + kata_runtime.CONTAINER_ID
+                        if history.get("launches") else None)
         return _DaemonTransactionProfile(
             retained["pid"], row, cgroup.path, cgroup.leaf_name,
-            cgroup.leaf_generation, base_generation)
+            cgroup.leaf_generation, base_generation, runtime_leaf)
     def start(journal, executable):
         fixed = _bind_containerd_extension(); context = kata_operation._command_context(journal)
         deadline = _boottime_ns() + fixed.duration_ns
