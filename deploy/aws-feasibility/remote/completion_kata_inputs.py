@@ -397,9 +397,12 @@ def _parse_mountinfo(raw, source):
         mount_root = _mount_unescape(fields[3])
         mountpoint = _mount_unescape(fields[4])
         mount_source = _mount_unescape(fields[separator + 2])
+        namespace_prefix = next((prefix for prefix in (b"mnt:[", b"net:[")
+                                 if mount_root.startswith(prefix)), None)
         namespace_root = (fields[separator + 1] == mount_source == b"nsfs"
-                          and mount_root.startswith(b"mnt:[") and mount_root.endswith(b"]")
-                          and mount_root[5:-1].isdigit() and int(mount_root[5:-1]) > 0)
+                          and namespace_prefix is not None and mount_root.endswith(b"]")
+                          and mount_root[len(namespace_prefix):-1].isdigit()
+                          and int(mount_root[len(namespace_prefix):-1]) > 0)
         _fail(mountpoint.startswith(b"/")
               and (mount_root.startswith(b"/") or namespace_root))
         for candidate in (mount_root, mountpoint, mount_source):

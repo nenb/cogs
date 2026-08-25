@@ -186,9 +186,13 @@ assert inputs._parse_mountinfo(mountinfo, "/fixed/input") == 2
 assert inputs._parse_mountinfo(
     mountinfo + b"22 20 0:5 / /proc rw,nosuid - proc proc rw\n", "/fixed/input") == 3
 nsfs = b"23 20 0:4 mnt:[4026532807] /run/netns/example rw - nsfs nsfs rw\n"
+net_nsfs = b"24 20 0:4 net:[4026532681] /run/netns/c42nexact rw - nsfs nsfs rw\n"
 assert inputs._parse_mountinfo(mountinfo + nsfs, "/fixed/input") == 3
+assert inputs._parse_mountinfo(mountinfo + net_nsfs, "/fixed/input") == 3
 for hostile in (
     mountinfo + b"23 20 0:4 mnt:[x] /run/netns/example rw - nsfs nsfs rw\n",
+    mountinfo + b"23 20 0:4 net:[x] /run/netns/example rw - nsfs nsfs rw\n",
+    mountinfo + b"23 20 0:4 pid:[4026532681] /run/netns/example rw - nsfs nsfs rw\n",
     mountinfo + b"23 20 0:4 mnt:[4026532807] relative rw - nsfs nsfs rw\n",
     mountinfo + b"22 20 8:1 /x /fixed/input rw - ext4 /dev/root rw\n",
     mountinfo + b"22 20 8:1 /x /fixed/input/fixture rw - ext4 /dev/root rw\n",

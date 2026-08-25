@@ -604,8 +604,10 @@ active_expected = {"path": runtime.RUNTIME_CONFIG, "size": 32_220,
     "substitutions": [{"from": "enable_debug = false", "to": "enable_debug = true"},
                       {"from": 'extra_monitor_socket = ""',
                        "to": 'extra_monitor_socket = "qmp"'}]}
-def host_generation(descriptor):
-    kind = "directory" if descriptor in {105, 106} else "file"
+generation_requests = []
+def host_generation(descriptor, requested_kind=None):
+    generation_requests.append((descriptor, requested_kind))
+    kind = requested_kind or ("directory" if descriptor in {105, 106} else "file")
     mode = 0o700 if descriptor == 105 else 0o400 if descriptor == 109 else 0o500
     nlink = 3 if descriptor == 105 else 2 if descriptor == 106 else 1
     size = 0 if kind == "directory" else 32_220 if descriptor == 109 else extraction[descriptor - 107][1]
@@ -630,6 +632,9 @@ with patch.object(prestage.os, "dup", return_value=100), patch.object(prestage.o
     facts, held = prestage._claim_exact(contracts, 9, active_expected)
     check(facts["runtime_generation"]["inode"] == 105 and facts["ctr_generation"]["inode"] == 108,
           "prepared identities were not retained")
+    check((105, "directory") in generation_requests and (106, "directory") in generation_requests
+          and facts["runtime_generation"]["kind"] == facts["bin_generation"]["kind"] == "directory",
+          "prepared directory identities were not explicitly classified")
     for descriptor in reversed(held): prestage.os.close(descriptor)
     check(not unlink.called and not rmdir.called, "claimant mutated a pathname")
     with patch.object(prestage.os, "listdir", side_effect=lambda fd: ["bin", "foreign"] if fd == 105 else claim_lists(fd)):

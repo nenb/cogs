@@ -43,9 +43,9 @@ def _digest(descriptor, size):
     return value.hexdigest()
 
 
-def _host_generation(descriptor):
+def _host_generation(descriptor, kind=None):
     from completion_kata_process import _host_generation
-    return _host_generation(descriptor)
+    return _host_generation(descriptor, kind)
 
 
 def _claim_exact(contracts, source_anchor, active_expected):
@@ -76,7 +76,8 @@ def _claim_exact(contracts, source_anchor, active_expected):
         active_fd = os.open(_ACTIVE_NAME, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
                             dir_fd=runtime)
         held.append(active_fd)
-        generations = [_host_generation(runtime), _host_generation(bin_fd),
+        generations = [_host_generation(runtime, "directory"),
+                       _host_generation(bin_fd, "directory"),
                        _host_generation(active_fd)]
         _require((generations[0]["mode"], generations[1]["mode"], generations[2]["mode"],
                   generations[0]["nlink"], generations[1]["nlink"],
@@ -104,8 +105,8 @@ def _claim_exact(contracts, source_anchor, active_expected):
             facts[name + "_sha256"] = expected["sha256"]
         _require(set(os.listdir(runtime)) == {"bin", _ACTIVE_NAME}
                  and set(os.listdir(bin_fd)) == {"containerd", "ctr"}
-                 and _host_generation(runtime) == generations[0]
-                 and _host_generation(bin_fd) == generations[1]
+                 and _host_generation(runtime, "directory") == generations[0]
+                 and _host_generation(bin_fd, "directory") == generations[1]
                  and _host_generation(active_fd) == generations[2])
         facts.update(zip(("runtime_generation", "bin_generation",
                           "observer_configuration_generation", "containerd_generation",
