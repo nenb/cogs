@@ -1329,8 +1329,9 @@ def _legal(records):
             else: _fail(platform_observation == "qmp-intent")
             platform_observation = observation; continue
         if kind == "RUNTIME_MOUNT_V2":
-            _fail(production_admitted and phase == "RUNTIME_READY" and runtime_mount is None
-                  and command_phase is None)
+            _fail(production_admitted and phase == "NETWORK_READY" and runtime_mount is None
+                  and command_phase is None
+                  and (runtime_staged is None or retained_daemon is not None))
             manifests = [item for item in input_steps.get("@manifest", ())
                          if item["action"] == "create"]
             _fail(len(manifests) == 1 and manifests[0]["sha256"] == body["manifest_sha256"])

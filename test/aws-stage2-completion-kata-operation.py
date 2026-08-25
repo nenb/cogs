@@ -2711,7 +2711,7 @@ def production_owner_test():
                                     binding_owner, "a" * 64, identity.manifest_sha256)
                                 authority.close()
                                 raw = fixture_journal_path(transaction_completion).read_bytes()
-                                for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
+                                for kind in ("BASELINES_CAPTURED", "NETWORK_READY"):
                                     raw += operation._encode(kind, {"operation_token": "a" * 64,
                                         "proof_sha256": "9" * 64}, operation._parse(raw))
                                 descriptor = os.open(fixture_journal_path(transaction_completion),
@@ -2728,6 +2728,7 @@ def production_owner_test():
                                 runtime_grant = runtime._issue_runtime_mount_grant(runtime_owner)
                                 issuance = operation._issue_runtime_mount_v2(authority, runtime_grant)
                                 operation._record_runtime_mount_v2(authority, issuance)
+                                authority.settle_runtime_phase("RUNTIME_READY", "9" * 64)
                                 install_process_cut(cut, "SSH_READY")
                                 process._transact_fixed_ssh(authority, ssh_executable, bindings)
                         except BaseException:
@@ -2807,8 +2808,6 @@ def production_owner_test():
                     for kind, body in (("BASELINES_CAPTURED", {
                                            "operation_token": "a" * 64, "proof_sha256": "9" * 64}),
                                        ("NETWORK_READY", {
-                                           "operation_token": "a" * 64, "proof_sha256": "9" * 64}),
-                                       ("RUNTIME_READY", {
                                            "operation_token": "a" * 64, "proof_sha256": "9" * 64})):
                         current_raw += operation._encode(kind, body, operation._parse(current_raw))
                     journal_descriptor = os.open(
@@ -2832,11 +2831,14 @@ def production_owner_test():
                     issuance = operation._issue_runtime_mount_v2(runtime_authority, runtime_grant)
                     operation._record_runtime_mount_v2(runtime_authority, issuance)
                     rejected(lambda: operation._record_runtime_mount_v2(runtime_authority, issuance))
+                    runtime_authority.settle_runtime_phase("RUNTIME_READY", "9" * 64)
+                    rejected(lambda: operation._record_runtime_mount_v2(runtime_authority, issuance))
                     runtime_authority.close()
                     reopened_runtime = operation._open_fixed_operation()
-                    assert operation._parse(
-                        fixture_journal_path(transaction_completion).read_bytes())[-1].record_type == \
-                        "RUNTIME_MOUNT_V2"
+                    runtime_records = operation._parse(
+                        fixture_journal_path(transaction_completion).read_bytes())
+                    assert ([row.record_type for row in runtime_records[-2:]] ==
+                            ["RUNTIME_MOUNT_V2", "RUNTIME_READY"])
                     ssh_outcome, ssh_receipt = process._transact_fixed_ssh(
                         reopened_runtime, ssh_executable, bindings)
                     actual_v3_stdout = ssh_outcome.stdout
