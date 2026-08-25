@@ -31,6 +31,11 @@ def load(name, path):
 def portable():
     source = (REMOTE / "completion_rootfs_materializer.py").read_text()
     assert "def _materialize(" in source and "revalidate_build_inputs" in source and "def _postwalk(" in source
+    assert ("def _refresh_postwalk_base(" in source
+            and "observed.key == node.generation.key" in source
+            and "observed.mode == node.generation.mode" in source
+            and "observed.uid == node.generation.uid" in source
+            and "observed.gid == node.generation.gid" in source)
     assert "if __name__" not in source and "sys.argv" not in source
     assert "target_opened + (() if target is None" in source and "(active.node,) +" in source
     for forbidden in ("rmtree", "os.walk", "glob", "subprocess", "socket", "tarfile", "extractall", "rename"):
