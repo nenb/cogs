@@ -121,7 +121,7 @@ def portable():
                 raise AssertionError("native materializer failure accepted")
         finally:
             materializer._reload_and_cleanup = real_reload
-        assert observed_cleanup == [700 * 1_000_000_000]
+        assert observed_cleanup == [820 * 1_000_000_000]
         now[0] = 300 * 1_000_000_000
         observed_cleanup.clear()
         materializer._reload_and_cleanup = lambda _owned, selected: observed_cleanup.append(

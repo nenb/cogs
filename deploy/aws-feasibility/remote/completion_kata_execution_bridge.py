@@ -51,6 +51,10 @@ def _routes():
             current["chain"] = operation._open_base_chain(control)
         return current["chain"].components[-1].node
 
+    def runtime_stage_present(current):
+        snapshot = fs._enumerate_stable(fixed_chain(current), current["control"])
+        return b"kata-runtime-v1" in snapshot.raw_names
+
     def claim_tools(bridge, lifecycle):
         current = state(bridge, lifecycle)
         owner = lifecycle.executables
@@ -100,7 +104,8 @@ def _routes():
                 and not (history and history["runtime_network_released"])):
             current["network_owner"] = network._reopen_runtime_network(journal)
             lifecycle.network_owner = current["network_owner"]
-        if phase in runtime_phases:
+        if phase in runtime_phases and (phase != "FIREWALL_ABSENT"
+                                        or runtime_stage_present(current)):
             ensure_runtime(current, lifecycle)
         return phase
 
@@ -456,7 +461,7 @@ def _routes():
                      "containerd absence settlement differs")
             return result
         # A fresh process can arrive after shutdown durably recorded the daemon
-        # outcome and removed kata-runtime-v1, but before firewall settlement.
+        # outcome and removed kata-runtime-v1, after firewall settlement.
         # Reopen only the daemon cleanup identity: no containerd/ctr pathname or
         # complete runtime attestation is required at this phase.
         daemon = runtime._retain_private_containerd(

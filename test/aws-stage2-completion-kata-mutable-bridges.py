@@ -37,7 +37,7 @@ def runtime_removal_crash(root):
         target.rmdir()
         os._exit(93)
 
-    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+    with patch.object(execution.operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
          patch.object(execution.operation, "_open_base_chain", return_value=chain), \
          patch.object(execution.runtime, "_retain_private_containerd",
                       side_effect=lambda journal, node, process_owner, control: daemon
@@ -50,12 +50,17 @@ def runtime_removal_crash(root):
 
 
 def runtime_removal_recovery(root):
-    """Fresh recovery at durable SHARE_ABSENT claims no removed runtime tool."""
+    """Fresh recovery at durable FIREWALL_ABSENT claims no removed runtime tool."""
     root = Path(root)
     staged = root / "kata-runtime-v1"
-    assert (root / "phase").read_text() == "SHARE_ABSENT\n" and not staged.exists()
+    assert (root / "phase").read_text() == "FIREWALL_ABSENT\n" and not staged.exists()
+    settlements = []
+    journal = SimpleNamespace(
+        runtime_recovery_history=lambda: {"runtime_network_released": True},
+        settle_runtime_phase=lambda phase, fact: settlements.append((phase, fact)),
+    )
     lifecycle = coordinator._Lifecycle(
-        recovery=True, static_custody=object(), operation=object(), rootfs=object())
+        recovery=True, static_custody=object(), operation=journal, rootfs=object())
     lazy_owner = object()
     roles = []
     completion = object()
@@ -69,9 +74,11 @@ def runtime_removal_recovery(root):
             raise AssertionError("removed staged executable role was reclaimed")
         return SimpleNamespace(role=role)
 
-    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+    with patch.object(execution.operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
          patch.object(execution.operation, "_network_records", return_value=()), \
          patch.object(execution.operation, "_open_base_chain", return_value=chain), \
+         patch.object(execution.fs, "_enumerate_stable",
+                      return_value=SimpleNamespace(raw_names=())), \
          patch.object(execution.nft_owner, "reopen_cleanup", return_value=object()), \
          patch.object(execution.preparation, "_reconstruct_fixed_executable_owner",
                       return_value=lazy_owner), \
@@ -89,6 +96,7 @@ def runtime_removal_recovery(root):
             "containerd": "absent"}
         assert execution._remove_firewall(coordinator._owners.execution, lifecycle) == "FIREWALL_ABSENT"
     shutdown.assert_called_once_with(daemon)
+    assert len(settlements) == 1 and settlements[0][0] == "CONTAINERD_ABSENT"
     assert roles == ["ip", "nft", "tc"]
     (root / "firewall-transition").write_text("FIREWALL_ABSENT\n")
 
@@ -101,7 +109,7 @@ def runtime_removal_parent():
         (runtime_root / "bin").mkdir(parents=True)
         for name in ("containerd", "ctr"):
             (runtime_root / "bin" / name).write_bytes((name + "\n").encode())
-        (root / "phase").write_text("SHARE_ABSENT\n")
+        (root / "phase").write_text("FIREWALL_ABSENT\n")
         crashed = subprocess.run(
             (sys.executable, "-B", __file__, "--remove-runtime-crash", str(root)),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
