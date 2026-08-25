@@ -2173,8 +2173,10 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
             os.close(owner.directory_fd)
             owner.directory_fd = None
             os.rmdir(owner.leaf_name, dir_fd=owner.base_fd)
+            remaining = _cgroup_leaf_names(owner.base_fd)
             os.close(owner.base_fd); owner.base_fd = None
-            os.rmdir(CGROUP_BASE)
+            if not remaining:
+                os.rmdir(CGROUP_BASE)
             removed = True
         for attribute in ("directory_fd", "base_fd"):
             descriptor = getattr(owner, attribute)
@@ -2184,8 +2186,10 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
         return empty, removed
     except FileNotFoundError:
         if base_fd is not None:
+            remaining = _cgroup_leaf_names(base_fd)
             os.close(base_fd); base_fd = None
-            os.rmdir(CGROUP_BASE)
+            if not remaining:
+                os.rmdir(CGROUP_BASE)
         return True, True
     except BaseException as error:
         errors.append(f"recovery:{type(error).__name__}")

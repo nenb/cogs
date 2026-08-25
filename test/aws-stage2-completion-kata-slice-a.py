@@ -391,7 +391,8 @@ with patch.object(process, "_directory_identity", side_effect=[
         (base_fd, generation(80)), (leaf_fd, recovery_preexec["cgroup_generation"])]), \
      patch.object(process, "_kill_cgroup") as killed, \
      patch.object(process, "_cgroup_members", side_effect=[(777,), (), ()]), \
-     patch.object(process.os, "rmdir"):
+     patch.object(process, "_cgroup_leaf_names", return_value=set()), \
+     patch.object(process.os, "rmdir"): 
     check(process._recover_cgroup(recovery_preexec["cgroup_path"],
           process._generation_tuple(recovery_preexec["cgroup_generation"]),
           process._boottime_ns() + 1_000_000_000, state, errors) == (True, True),

@@ -348,6 +348,12 @@ def authentic_daemon_transaction_profile():
                 foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
                 try:
                     assert process._child_census() == (profile.pid,)
+                    recovery_errors = []
+                    assert process._recover_cgroup(
+                        process.CGROUP_BASE + "/absent-pending-command", None,
+                        process._boottime_ns() + 1_000_000_000,
+                        {"term": False, "kill": False}, recovery_errors) == (True, True)
+                    assert not recovery_errors and os.path.isdir(profile.cgroup_path)
                     if fault == "foreign-child":
                         foreign_pid = os.fork()
                         if foreign_pid == 0: time.sleep(30); os._exit(0)

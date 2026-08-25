@@ -1744,6 +1744,10 @@ def _runtime_owner_routes():
         history = state[0].runtime_recovery_history(); runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]; _fail(len(runs) <= 1)
         if not runs:
             permit = _make_operation_launch_permit(state[9])
+            launch = _claim_launch_permit(permit)
+            _fail(launch["operation_token"] == history["operation_token"]
+                  and launch["network"] == operation_netns_path(history["operation_token"])
+                  and launch["mount"] == MOUNT_LIST_SHA256)
             outcome, durable = process._transact_fixed(
                 state[0], process._bind_ctr_run_extension(root.token), ctr,
                 daemon_owner=daemons[state[6]][2], consumption_owner=owner,

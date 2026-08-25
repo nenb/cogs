@@ -253,6 +253,23 @@ check(run.argv == runtime._ctr_metadata_argv()
       and "run" not in run.argv and "tasks" not in run.argv,
       "metadata-only container create policy")
 rejected(lambda: runtime.ctr_run_spec(permit))
+operation_token = "a" * 64
+network_value = {"operation_token": operation_token,
+    "identity": {"mount_id": 1, "parent_id": 2, "device": "0:4",
+                 "inode_device": 4, "inode": 5,
+                 "name": "c42n" + operation_token[:10]},
+    "path": runtime.operation_netns_path(operation_token)}
+network_grant = object()
+with patch.object(runtime.kata_network, "_consume_runtime_network",
+                  return_value=network_value), \
+     patch.object(runtime.kata_network, "_verify_runtime_network",
+                  return_value=network_value):
+    operation_permit = runtime._make_operation_launch_permit(network_grant)
+    claimed_launch = runtime._claim_launch_permit(operation_permit)
+    check(claimed_launch["operation_token"] == operation_token
+          and claimed_launch["network"] == network_value["path"],
+          "operation launch permit was not claimed before descriptor use")
+    rejected(lambda: runtime._claim_launch_permit(operation_permit))
 rejected(runtime._open_production_owner)
 commands = {item.command_id.value: item for item in runtime.fixed_command_specs_for_tests()}
 check(len(commands) == 7, "fixed command count")
