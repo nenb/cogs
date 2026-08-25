@@ -155,6 +155,20 @@ def _claim_fixed_executable_owner(custody):
     return _issue_fixed_executable_owner(custody)
 
 
+def _claim_fixed_recovery_executable_owner(custody):
+    """Install reviewed host-tool policy before parsing an admitted journal.
+
+    The journal's command lineage contains the hashes that this immutable
+    policy validates, so recovery must establish the policy from static
+    custody first.  The owner grants cleanup tools only after the journal is
+    independently parsed and source-bound.
+    """
+    state = _states.get(custody)
+    _require(state is not None and state["lease"] is None
+             and state["mapping"] is None and state["executables"] is None)
+    return _issue_fixed_executable_owner(custody)
+
+
 def _reconstruct_fixed_executable_owner(custody, journal):
     """Issue lazy cleanup custody after matching the durable source identity.
 
@@ -165,14 +179,16 @@ def _reconstruct_fixed_executable_owner(custody, journal):
     """
     state = _states.get(custody)
     _require(state is not None and state["lease"] is None
-             and state["mapping"] is None and state["executables"] is None)
+             and state["mapping"] is None)
     approval = _fixed_source_approval(custody)
     identity = journal.reconstruction_identity()
     _require(identity["source_revision"] == approval.revision
              and identity["source_manifest_sha256"] == approval.manifest_sha256
              and identity["phase"] != "UNCERTAIN")
-    owner = process._open_static_attested_executable_owner(custody)
-    state["executables"] = owner
+    owner = state["executables"]
+    if owner is None:
+        owner = _issue_fixed_executable_owner(custody)
+    _require(type(owner) is process.AttestedExecutableOwner)
     return owner
 
 

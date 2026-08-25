@@ -23,6 +23,7 @@ METHOD_EVENT = {
     "open_operation": "OPERATION_ADMITTED",
     "claim_live_custody": "LIVE_CUSTODY",
     "claim_executables": "EXECUTABLES_RETAINED",
+    "claim_recovery_executables": "RECOVERY_EXECUTABLE_POLICY",
     "create_inputs": "INPUTS_CREATED",
     "capture_baselines": "BASELINES_CAPTURED",
     "create_network": "NETWORK_READY",
@@ -92,6 +93,8 @@ class FakeOwners:
     def claim_live_custody(self, _lifecycle):
         return self.step("claim_live_custody", ("custody", "live-gate"))
     def claim_executables(self, _lifecycle): return self.step("claim_executables")
+    def claim_recovery_executables(self, _lifecycle):
+        return self.step("claim_recovery_executables")
     def create_inputs(self, _lifecycle): return self.step("create_inputs")
     def capture_baselines(self, _lifecycle): return self.step("capture_baselines")
     def create_network(self, _lifecycle): return self.step("create_network")
@@ -331,7 +334,8 @@ for side in ("before", "after"):
 
 # Recovery has only immutable custody, exact existing-state opening, pending
 # child settlement, cleanup, and custody close. It cannot issue evidence/receipt.
-recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED",
+recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                   "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED",
                    "DURABLE_OWNERS_RECONSTRUCTED")
 fake = FakeOwners()
 assert invoke(coordinator._recover_fixed_local_qualification, fake)
@@ -350,7 +354,8 @@ for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER):
             assert observed == expected
             assert "RECOVERY_EVIDENCE" not in fake.events
             assert "RECEIPT_ISSUED" not in fake.events
-        if event in {"STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"}:
+        if event in {"STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                     "RECOVERY_OPERATION_OPENED"}:
             assert cleanup_projection(fake.events) == ()
 
 # A retained unadmitted prefix is routed exactly once to cleanup-only recovery.
@@ -368,7 +373,8 @@ for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
             ("after", "PREPRODUCTION_RECOVERED")):
     fake = PrestageOwners(cut)
     invoke(coordinator._recover_fixed_local_qualification, fake)
-    expected = ["STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"]
+    expected = ["STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                "RECOVERY_OPERATION_OPENED"]
     if cut is None or cut[0] == "after": expected.append("PREPRODUCTION_RECOVERED")
     expected.append("CUSTODY_ABORTED")
     assert fake.events == expected

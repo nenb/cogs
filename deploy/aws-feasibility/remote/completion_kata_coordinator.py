@@ -183,6 +183,12 @@ class _AdmissionBoundary:
         return preparation_bridge._claim_fixed_executable_owner(
             lifecycle.static_custody)
 
+    def claim_recovery_executables(self, lifecycle):
+        if not lifecycle.recovery or lifecycle.source_approval is not lifecycle.static_gate:
+            raise CoordinatorBlocked("cleanup-only executable policy admission differs")
+        return preparation_bridge._claim_fixed_recovery_executable_owner(
+            lifecycle.static_custody)
+
     def abort(self, lifecycle):
         preparation_bridge._abort_fixed_static_preparation(
             lifecycle.static_custody)
@@ -260,6 +266,9 @@ class _PackagePrivateOwners:
 
     def claim_executables(self, lifecycle):
         return self.admission.claim_executables(lifecycle)
+
+    def claim_recovery_executables(self, lifecycle):
+        return self.admission.claim_recovery_executables(lifecycle)
 
     def bind_cycle_route(self, lifecycle):
         if lifecycle.cycle_route is None:
@@ -560,6 +569,10 @@ def _recover_fixed_local_qualification():
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
+        # Command records are validated against an identity-sealed policy map.
+        # Establish that map from reviewed static custody before the first
+        # journal byte is parsed; no cleanup tool is claimed at this boundary.
+        lifecycle.executables = _owners.claim_recovery_executables(lifecycle)
         lifecycle.operation = _owners.open_existing_operation(lifecycle)
         if lifecycle.operation is not None:
             _owners.recover_pending(lifecycle)
