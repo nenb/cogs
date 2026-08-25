@@ -97,12 +97,16 @@ def move_to_quarantine(expected):
     if not same_moved_identity(ns_identity(quarantine), expected):
         raise AssertionError("quarantined nsfs identity changed")
 
-def netns_references(pid, target):
+def netns_references(pid, target, identity=None):
     references = []
     if os.readlink(f"/proc/{pid}/ns/net") == target: references.append((pid, "ns"))
     for name in os.listdir(f"/proc/{pid}/fd"):
+        path = f"/proc/{pid}/fd/{name}"
         try:
-            if os.readlink(f"/proc/{pid}/fd/{name}") == target: references.append((pid, int(name)))
+            link = os.readlink(path); seen = os.stat(path)
+            same = identity is not None and (seen.st_dev, seen.st_ino) == (
+                identity.inode_device, identity.inode)
+            if link == target or same: references.append((pid, int(name)))
         except FileNotFoundError: pass
     return references
 
@@ -200,9 +204,9 @@ try:
     if same_moved_identity(replacement, retained_ns):
         raise AssertionError("replacement nsfs not distinct")
     target = f"net:[{retained_ns.inode}]"
-    if not netns_references(os.getpid(), target):
+    if not netns_references(os.getpid(), target, retained_ns):
         raise AssertionError("detached runtime/launch nsfs fds escaped census")
-    if not netns_references(created["namespace_child"].pid, target):
+    if not netns_references(created["namespace_child"].pid, target, retained_ns):
         raise AssertionError("detached role process netns escaped census")
     ip("netns", "delete", quarantine); created["quarantine"] = False
     if not Path("/sys/class/net/" + host).exists():
@@ -213,7 +217,7 @@ try:
     created["namespace_child"] = None
     for key in ("launch_fd", "runtime_owner_fd", "tap_fd"):
         os.close(created[key]); created[key] = None
-    if netns_references(os.getpid(), target):
+    if netns_references(os.getpid(), target, retained_ns):
         raise AssertionError("nsfs fd census remained after final close")
     ip("netns", "delete", netns); created["replacement"] = False
     if Path("/sys/class/net/" + host).exists():

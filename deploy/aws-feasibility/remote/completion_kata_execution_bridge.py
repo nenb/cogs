@@ -580,15 +580,18 @@ def _routes():
                         if link.startswith("net:["):
                             _require(__import__("re").fullmatch(r"net:\[[1-9][0-9]*\]", link) is not None,
                                      "malformed nsfs fd link")
-                        if net_target is not None and link == net_target:
+                        named_nsfs = link.removesuffix(" (deleted)").startswith("/run/netns/")
+                        if net_target is not None and (link == net_target or named_nsfs):
                             held_fd = os.open(f"/proc/{pid}/fd/{fd_name}", os.O_RDONLY | os.O_CLOEXEC)
                             try:
                                 held_stat = os.fstat(held_fd)
-                                _require((held_stat.st_dev, held_stat.st_ino) ==
-                                         (netns_identity["inode_device"], netns_identity["inode"]),
+                                same = ((held_stat.st_dev, held_stat.st_ino) ==
+                                        (netns_identity["inode_device"], netns_identity["inode"]))
+                                _require(link != net_target or same,
                                          "nsfs descriptor inode/device differs")
                             finally: os.close(held_fd)
-                            found["netns"].add((pid, int(fd_name))); candidate = True
+                            if same:
+                                found["netns"].add((pid, int(fd_name))); candidate = True
                     after = process._proc_row(pid)
                     _require(before == after, "unstable candidate process" if candidate else
                              "unstable process census")

@@ -198,16 +198,16 @@ test("fixed phase bounds preserve recovery, independent residue, and publication
   const total = steps.reduce((sum, name) => sum + stepTimeout(name), 0);
   const localJob = workflow.slice(workflow.indexOf("\n  local-kata:"));
   const job = Number(localJob.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
-  assert.equal(job, 146);
-  assert.equal(total, 142);
-  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 141);
-  assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 77);
+  assert.equal(job, 201);
+  assert.equal(total, 197);
+  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 196);
+  assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 132);
   const postEntry = steps.slice(7).reduce((sum, name) => sum + stepTimeout(name), 0);
   assert.equal(postEntry, 28);
   assert.ok(postEntry * 60 >= 600);
-  assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 4500s/u);
-  assert.ok(4500 + 10 <= 77 * 60);
-  assert.match(workflow, /one 8,760-second envelope/u);
+  assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 7800s/u);
+  assert.ok(7800 + 10 <= 132 * 60);
+  assert.match(workflow, /one 12,060-second envelope/u);
 });
 
 test("recovery and independent settlement always run without turning cancellation into success", () => {

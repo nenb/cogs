@@ -465,6 +465,9 @@ if native_supported:
         raw = append_grant(raw, "@key-stage", "kata-key-stage-v1-" + "a" * 64,
                            "directory", 0o700, 0, True)
         serial = 0
+        journal_key_generation = {
+            **live_key.generation, "mount_id": max(1, live_key.generation["mount_id"]),
+        }
         for command_name in policy.KEY_COMMAND_ORDER:
             if "KEYGEN" in command_name:
                 names = ("client", "client.pub") if "CLIENT" in command_name else ("server", "server.pub")
@@ -475,7 +478,7 @@ if native_supported:
             command = make_intent(serial, command_name, "ROOTFS_LEASED")
             command = rebound({**command, "executable_sha256": live_key.sha256,
                                "tool_closure_sha256": live_key.closure_sha256,
-                               "executable_generation": live_key.generation})
+                               "executable_generation": journal_key_generation})
             raw = add(raw, "COMMAND_INTENT_V2", command); cuts[f"{command_name}-intent"] = raw
             before_exec = make_preexec(command)
             raw = add(raw, "COMMAND_PREEXEC_V2", before_exec); cuts[f"{command_name}-preexec"] = raw
@@ -534,7 +537,10 @@ if native_supported:
         ssh_command = make_intent(serial, "SSH_READY", "RUNTIME_READY")
         ssh_command = rebound({**ssh_command, "executable_sha256": live_ssh.sha256,
                                "tool_closure_sha256": live_ssh.closure_sha256,
-                               "executable_generation": live_ssh.generation})
+                               "executable_generation": {
+                                   **live_ssh.generation,
+                                   "mount_id": max(1, live_ssh.generation["mount_id"]),
+                               }})
         raw = add(raw, "COMMAND_INTENT_V2", ssh_command); cuts["ssh-intent"] = raw
         raw = add(raw, "COMMAND_PREEXEC_V2", make_preexec(ssh_command)); cuts["ssh-preexec"] = raw
         raw = add(raw, "COMMAND_OUTCOME_V2", make_outcome(ssh_command, stdout)); cuts["ssh-outcome"] = raw

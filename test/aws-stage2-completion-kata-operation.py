@@ -1407,7 +1407,7 @@ def production_owner_test():
         os.chmod(temporary, 0o700)
         completion = Path(temporary) / "completion"
         completion.mkdir(mode=0o700)
-        for sibling in ("artifacts", "rootfs-v1", "kata-input-v1"):
+        for sibling in ("artifacts", "rootfs-v1", "kata-input-v1", "kata-runtime-v1"):
             (completion / sibling).mkdir(mode=0o700)
 
         def factory(control):
@@ -2136,6 +2136,7 @@ def production_owner_test():
             # production authority and carry exact phase/cross-ledger pointers.
             input_root = completion / "kata-input-v1"
             input_root.rmdir()
+            (completion / "kata-runtime-v1").rmdir()
             for authorized in (False, True):
                 fixture_journal(completion, release_bodies(authorized))
                 release_owner = operation._open_fixed_operation()
@@ -2319,6 +2320,7 @@ def production_owner_test():
             assert fixture_journal_path(completion).read_bytes() == admitted_bytes
             recovered_cleanup.close()
             input_root.rmdir()
+            (completion / "kata-runtime-v1").mkdir(mode=0o700)
 
             # Real FixedJournal layout derives the sole active/quarantine names
             # from the admitted operation token and permits settlement writes
@@ -2525,6 +2527,7 @@ def production_owner_test():
                 # Build expired cleanup fixtures only after the exact production
                 # key-command policy has been issued, and advance through the
                 # required production FS_SETTLED phase before network setup.
+                (completion / "kata-runtime-v1").rmdir()
                 production_fixture(release_rows[:2] + (release_deadline, release_admission,
                     settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
                 expired_release_owner = operation._open_fixed_operation()

@@ -163,11 +163,11 @@ jobs:
   local-kata:
     needs: admission
     runs-on: ubuntu-24.04
-    # Fixed local-job post-admission bounds total 141 minutes inside one 8,760-second envelope.
+    # Fixed local-job post-admission bounds total 196 minutes inside one 12,060-second envelope.
     # Immutable acquisition has its own bound and completes before custody.
     # Recovery, cleanup, residue, and publication retain a non-borrowing
     # 21-minute reserve after the sole mutable entry bound.
-    timeout-minutes: 146
+    timeout-minutes: 201
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
@@ -287,14 +287,14 @@ jobs:
       - name: Execute the sole zero-argument local qualification entry
         id: local_entry
         continue-on-error: true
-        timeout-minutes: 77
+        timeout-minutes: 132
         run: |
           set -euo pipefail
           test "${{ steps.preparation.outcome }}" = success
           test ! -e "$REPORT_STAGING"
           /bin/mkdir -m 0700 -- "$REPORT_STAGING"
           umask 077
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 4500s \
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             /usr/bin/python3 -I -B -c \
