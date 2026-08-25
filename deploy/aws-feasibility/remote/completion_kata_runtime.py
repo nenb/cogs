@@ -899,9 +899,22 @@ def _read_bounded(path, maximum):
         return bytes(chunks)
     finally:
         os.close(descriptor)
+def _runtime_netns_root(netns):
+    if netns is None: return None
+    _fail(type(netns) is dict and set(netns) == {"operation_token", "identity", "path"})
+    identity = netns["identity"]
+    _fail(type(identity) is dict and set(identity) == {
+        "mount_id", "parent_id", "device", "inode_device", "inode", "name"}
+        and type(identity["inode"]) is int and identity["inode"] > 0
+        and re.fullmatch(r"c42n[0-9a-f]{10}", identity["name"]) is not None
+        and netns["path"] == "/run/netns/" + identity["name"])
+    return f"net:[{identity['inode']}]"
+
+
 def _proc_snapshot(attested, netns, host_netns):
     import completion_kata_process as process
     expected = {item.path: item for item in attested}
+    netns_root = _runtime_netns_root(netns)
     roles = {"/opt/kata/bin/containerd-shim-kata-v2": "shim",
              "/opt/kata/bin/qemu-system-x86_64": "qemu",
              "/opt/kata/libexec/virtiofsd": "virtiofsd"}
@@ -927,7 +940,8 @@ def _proc_snapshot(attested, netns, host_netns):
         command = _read_bounded(f"/proc/{pid}/cmdline", MAX_CMDLINE).rstrip(b"\0").split(b"\0")
         namespaces = {kind: os.readlink(f"/proc/{pid}/ns/{kind}")
                       for kind in ("ipc", "mnt", "net", "pid", "user", "uts")}
-        expected_netns = {"shim": host_netns, "qemu": None if netns is None else netns.root, "virtiofsd": None if netns is None else netns.root}
+        expected_netns = {"shim": host_netns, "qemu": netns_root,
+                          "virtiofsd": netns_root}
         _fail(os.readlink("/proc/self/ns/net") == host_netns and namespaces["net"] == expected_netns[roles[executable]]
               and process._proc_row(pid) == row, "Kata 3.32 role/netns correlation")
         rows.append({"role": roles[executable], "pid": pid, "ppid": row[1], "starttime": row[4],
@@ -937,7 +951,8 @@ def _proc_snapshot(attested, netns, host_netns):
                      "namespaces": namespaces})
     value = {"complete": True, "early_exit": False, "rows": rows,
              "qualification": QUALIFICATION_CANDIDATE}
-    return classify_process_snapshot(value, host_netns=host_netns, operation_netns=None if netns is None else netns.root)
+    return classify_process_snapshot(value, host_netns=host_netns,
+                                     operation_netns=netns_root)
 def _retirement_identity_rows(baseline, snapshot, disappeared):
     """Validate one complete role-retirement observation without mutation."""
     _fail(type(baseline) is dict and set(baseline) == {"shim", "qemu", "virtiofsd"}

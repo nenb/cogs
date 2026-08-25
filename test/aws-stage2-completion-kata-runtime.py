@@ -240,6 +240,11 @@ umask 077
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
 """
 check(runtime.BOOTSTRAP == bootstrap, "bootstrap bytes drifted")
+policy_bootstrap = runtime.command_policy.BOOTSTRAP
+check("\n" not in policy_bootstrap and "\r" not in policy_bootstrap
+      and policy_bootstrap.startswith("set -eu; umask 077;")
+      and policy_bootstrap.endswith("exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config"),
+      "journal-safe bootstrap command drifted")
 permit = runtime._make_fake_launch_permit_for_tests()
 run = runtime.ctr_run_spec(permit)
 check(run.command_id is runtime.actions.CommandId.CTR_RUN and run.stdin == b"", "run command envelope")
@@ -360,6 +365,18 @@ rejected(lambda: runtime.classify_ctr_observation(
 
 # Bounded complete fake /proc snapshots bind executable, cmdline, starttime,
 # ancestry, and namespace identity. Early exit and ambiguity preserve.
+runtime_netns = {"operation_token": "a" * 64,
+    "identity": {"mount_id": 1, "parent_id": 2, "device": "0:4",
+                 "inode_device": 4, "inode": 4026532625,
+                 "name": "c42n0123456789"},
+    "path": "/run/netns/c42n0123456789"}
+check(runtime._runtime_netns_root(runtime_netns) == "net:[4026532625]",
+      "runtime network grant was not converted to an exact procfs namespace")
+for hostile in ({**runtime_netns, "path": "/run/netns/foreign"},
+                {**runtime_netns, "identity": {**runtime_netns["identity"], "inode": 0}},
+                {**runtime_netns, "identity": {**runtime_netns["identity"], "name": "foreign"}}):
+    rejected(lambda hostile=hostile: runtime._runtime_netns_root(hostile))
+
 def proc_row(role, pid, ppid, start, executable, mnt, net):
     return {
         "role": role, "pid": pid, "ppid": ppid, "starttime": start,

@@ -173,17 +173,14 @@ CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379b
     ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500))
 CONTAINERD_EXTRACTION_SHA256 = "ffd892ec4ef2da92a824d78645b75e66972bbe44d664062026d324a58ab88512"
 INPUT_SHARE = BASE + "/kata-input-v1/share"; NETNS_PATH = "/run/netns/cogs-stage2-ssh"; NAMESPACE = "cogs-stage2-completion-v1"
-BOOTSTRAP = """set -eu
-umask 077
-/bin/mkdir -p /run/sshd /run/cogs-stage2-ssh/work
-/bin/chown 0:0 /run/sshd /run/cogs-stage2-ssh/work
-/bin/chmod 0755 /run/sshd
-/bin/chmod 0700 /run/cogs-stage2-ssh/work
-[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/sshd)\" = \"0:0:755:directory\" ]
-[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/cogs-stage2-ssh/work)\" = \"0:0:700:directory\" ]
-[ ! -e /run/cogs-stage2-ssh/sshd.pid ]
-exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
-"""
+BOOTSTRAP = ("set -eu; umask 077; "
+    "/bin/mkdir -p /run/sshd /run/cogs-stage2-ssh/work; "
+    "/bin/chown 0:0 /run/sshd /run/cogs-stage2-ssh/work; "
+    "/bin/chmod 0755 /run/sshd; /bin/chmod 0700 /run/cogs-stage2-ssh/work; "
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/sshd)\" = \"0:0:755:directory\" ]; "
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/cogs-stage2-ssh/work)\" = \"0:0:700:directory\" ]; "
+    "[ ! -e /run/cogs-stage2-ssh/sshd.pid ]; "
+    "exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config")
 CTR_MOUNTS = ("type=tmpfs,src=tmpfs,dst=/run/cogs-stage2-ssh,options=rw:nosuid:nodev:noexec:mode=0700:size=67108864:nr_inodes=16384",
     f"type=bind,src={INPUT_SHARE}/ssh_host_ed25519_key,dst=/run/cogs-stage2-ssh/ssh_host_ed25519_key,options=bind:ro:nosuid:nodev:noexec:private",
     f"type=bind,src={INPUT_SHARE}/authorized_keys,dst=/run/cogs-stage2-ssh/authorized_keys,options=bind:ro:nosuid:nodev:noexec:private",
