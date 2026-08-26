@@ -350,6 +350,8 @@ def authentic_daemon_transaction_profile():
             for fault in (None, "slow-custody", "accepted-socket", "runtime-leaf", "foreign-child", "foreign-leaf", "post-fork"):
                 journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
                 profile = process._fixed_daemon_transaction_profile(owner, journal)
+                assert process._active_fixed_daemon_profile(journal) == profile
+                assert process._active_fixed_daemon_profile(object()) is None
                 foreign_pid = None; accepted_socket = None
                 foreign_leaf = process.CGROUP_BASE + "/foreign"
                 runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
@@ -409,6 +411,7 @@ def authentic_daemon_transaction_profile():
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
                     if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)
+                assert process._active_fixed_daemon_profile(journal) is None
                 assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
                         and not os.path.lexists(process.CONTAINERD_TTRPC_SOCKET))
             return True

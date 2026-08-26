@@ -1638,6 +1638,10 @@ def _prove_child_inherited_fds(pid, bindings):
                 raise ProcessError("child does not retain the NFT OFD lock")
 
 
+def _active_fixed_daemon_profile(_journal):
+    return None
+
+
 def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None, consumption_owner=None, launch_permit=None):
     """Private T1 transaction over one registered fixed table identity."""
     context = kata_operation._command_context(journal)
@@ -1677,6 +1681,10 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                 consumption_owner, journal, fixed.command_id.value)
         _verify_fixed_daemon(daemon_owner, journal)
         _require_no_children(daemon_profile)
+    if daemon_profile is None:
+        daemon_profile = _active_fixed_daemon_profile(journal)
+        if daemon_profile is not None:
+            _require_no_children(daemon_profile)
     deadline = _boottime_ns() + fixed.duration_ns
     work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
@@ -1755,6 +1763,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         _within_work_cutoff(work_cutoff)
         if runtime_extension or runtime_fixed:
             _verify_fixed_daemon(daemon_owner, journal)
+        if daemon_profile is not None:
             _verify_daemon_transaction_census(daemon_profile, owner, pid)
         if launch_permit is not None:
             retained_network = kata_runtime._preexec_launch_network(launch_permit, pid)
@@ -1929,6 +1938,7 @@ def _daemon_routes():
         "_DaemonOwner", ProcessError, "private daemon owner",
         sealed_message="sealed daemon owner")
     _DaemonOwner = states.kind
+    active = {}
     def socket_generations(pid):
         paths = {"s": CONTAINERD_SOCKET, "s.ttrpc": CONTAINERD_TTRPC_SOCKET}
         descriptor = os.open("/proc/net/unix", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -1972,6 +1982,8 @@ def _daemon_routes():
             state = states.pop(owner)
         except ProcessError:
             return []
+        if active.get(id(state[0])) is owner:
+            del active[id(state[0])]
         errors = []
         descriptors = ([state[2]] if state[2] is not None else []) + [row[0] for row in state[3].pidfds.values()]; state[2] = None; state[3].pidfds.clear()
         for descriptor in descriptors:
@@ -2069,7 +2081,10 @@ def _daemon_routes():
             else: raise ProcessError("daemon socket timeout")
             retained = {**preexec, "socket_generations": socket_generations(pid)}
             kata_operation._record_daemon_retained(journal, retained)
-            return states.issue([journal, retained, pidfd, cgroup, previous])
+            owner = states.issue([journal, retained, pidfd, cgroup, previous])
+            if id(journal) in active: raise ProcessError("duplicate active daemon journal")
+            active[id(journal)] = owner
+            return owner
         except BaseException as primary:
             if pidfd is not None:
                 try: signal.pidfd_send_signal(pidfd, signal.SIGKILL)
@@ -2103,7 +2118,10 @@ def _daemon_routes():
             owner = states.issue([
                 journal, retained, pidfd, cgroup, _set_subreaper(True),
             ])
-            verify(owner, journal); return owner
+            verify(owner, journal)
+            if id(journal) in active: raise ProcessError("duplicate active daemon journal")
+            active[id(journal)] = owner
+            return owner
         except (FileNotFoundError, ProcessLookupError) as absent:
             errors = ["daemon-absent-on-reopen"]
             if owner is not None: errors.extend(close_state(owner)); owner = None
@@ -2159,10 +2177,16 @@ def _daemon_routes():
         kata_operation._record_daemon_outcome(journal, body)
         if body["uncertain"]: raise ProcessError("private daemon cleanup uncertain")
         return body
-    return start, reopen, verify, stop, transaction_profile
+    def active_profile(journal):
+        owner = active.get(id(journal))
+        if owner is None: return None
+        state = states.require(owner)
+        if state[0] is not journal: raise ProcessError("active daemon journal identity")
+        return transaction_profile(owner, journal)
+    return start, reopen, verify, stop, transaction_profile, active_profile
 
 (_start_fixed_daemon, _reopen_fixed_daemon, _verify_fixed_daemon, _stop_fixed_daemon,
- _fixed_daemon_transaction_profile) = _daemon_routes()
+ _fixed_daemon_transaction_profile, _active_fixed_daemon_profile) = _daemon_routes()
 del _daemon_routes
 
 
