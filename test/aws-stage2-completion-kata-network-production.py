@@ -398,7 +398,8 @@ with patch.object(network, "_consume_runtime_network", return_value=retained_net
         "Spec": runtime._expected_operation_oci_spec("a" * 64, "/proc/1234/fd/202")}
     runtime.validate_stored_info(
         stored, runtime._stored_launch_network_grant(runtime_permit),
-        runtime._resolved_launch_network_path(runtime_permit))
+        {"namespace_path": runtime._resolved_launch_network_path(runtime_permit),
+         "root_path": runtime.BASE + "/rootfs-v1/operation-" + "a" * 64 + "/rootfs"})
 check(operation_netns_path == "/run/netns/" + NETNS["name"] and
       run_spec.argv[5:7] == ("containers", "create") and "run" not in run_spec.argv and
       stored["Spec"]["linux"]["namespaces"][-1] == {"type": "network", "path": "/proc/1234/fd/202"},
@@ -407,7 +408,8 @@ check(operation_netns_path == "/run/netns/" + NETNS["name"] and
 # Production observation selects the exact durable CTR_RUN preexec after reopen;
 # it never falls back to the historical namespace alias.
 run_intent = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
-              "lifecycle_phase": "NETWORK_READY"}
+              "lifecycle_phase": "NETWORK_READY",
+              "argv": list(runtime.command_policy.ctr_run_argv("b" * 64))}
 run_preexec = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
                "pid": 1234, "namespace_fd": 202, "namespace_path": "/proc/1234/fd/202"}
 run_outcome = {"command_serial": 0, "command_id": "CTR_RUN", "binding_sha256": "1" * 64,
