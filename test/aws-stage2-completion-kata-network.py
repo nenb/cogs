@@ -577,6 +577,11 @@ after_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns + (t
 tc_binding = network.runtime_difference(before_runtime, after_runtime)
 assert tc_binding.netns_identity == netns_identity
 assert (tc_binding.host_veth.ifindex, tc_binding.guest_veth.ifindex, tc_binding.tap.ifindex) == (7, 8, 30)
+kata_after_runtime = network.RuntimeState(
+    netns_identity, parsed_host, parsed_ns + (kata_links[-1],),
+    guest_qdiscs + parsed_kata_qdiscs, guest_filter + tap_filter)
+check_kata_binding = network.runtime_difference(before_runtime, kata_after_runtime)
+assert tuple(item.kind for item in check_kata_binding.qdiscs).count("mq") == 1
 
 # Durable replay uses the same pure codecs over retained canonical observer bytes.
 def observation(source_id, raw): return {"source_id": source_id, "raw": raw}

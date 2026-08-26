@@ -1256,11 +1256,17 @@ def runtime_difference(before, after):
     tap = taps[0]
     guest_root = TcQdisc(guest.ifindex, guest.ifname, "noqueue", "0:", None, True, 2)
     guest_ingress = TcQdisc(guest.ifindex, guest.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
-    tap_root = TcQdisc(tap.ifindex, tap.ifname, tap.qdisc, "0:", None, True, 2)
+    tap_root = TcQdisc(tap.ifindex, tap.ifname, tap.qdisc, "0:", None, True,
+                       None if tap.qdisc == "mq" else 2)
     tap_ingress = TcQdisc(tap.ifindex, tap.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
+    tap_qdiscs = {tap_root, tap_ingress}
+    if tap.qdisc == "mq":
+        tap_qdiscs.add(TcQdisc(tap.ifindex, tap.ifname, "fq_codel", "0:",
+                               ":1", False, None))
     if before.qdiscs != (guest_root,) or before.filters:
         raise NetworkError("unexpected tc baseline")
-    if set(after.qdiscs) != {guest_root, guest_ingress, tap_root, tap_ingress} or len(after.qdiscs) != 4:
+    expected_qdiscs = {guest_root, guest_ingress, *tap_qdiscs}
+    if set(after.qdiscs) != expected_qdiscs or len(after.qdiscs) != len(expected_qdiscs):
         raise NetworkError("complete qdisc difference required")
     tables = tuple(item for item in after.filters if type(item) is TcFilterTable)
     filters = tuple(item for item in after.filters if type(item) is TcFilter)

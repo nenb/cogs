@@ -409,6 +409,8 @@ def _native_stored_oci_spec(operation_token, launch_path, root_path):
     for name in ("bounding", "effective", "permitted"):
         _fail(process["capabilities"][name].count("CAP_NET_ADMIN") == 1,
               "native NET_ADMIN capability")
+        process["capabilities"][name].remove("CAP_NET_ADMIN")
+        process["capabilities"][name].append("CAP_NET_ADMIN")
     value.pop("hostname"); value.pop("annotations")
     _fail(type(root_path) is str and re.fullmatch(
         re.escape(BASE) + r"/rootfs-v1/operation-[0-9a-f]{64}/rootfs",

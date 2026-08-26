@@ -176,6 +176,14 @@ observe_deb() {
   DEB_BUILD_COUNT=$((DEB_BUILD_COUNT+1))
   /bin/rm -f -- "$scratch.sha" "$scratch.size"
 }
+normalize_installed() {
+  root=$1 scratch=$2
+  metadata_rows "$root" 4 256 "$scratch"
+  while IFS= read -r entry; do /bin/chown 0:0 -- "$entry"; /bin/chmod 0755 -- "$entry"; /usr/bin/touch -d @1782172800 -- "$entry"; done < "$scratch.dirs"
+  while IFS= read -r entry; do /bin/chown 0:0 -- "$entry"; /bin/chmod 0644 -- "$entry"; /usr/bin/touch -d @1782172800 -- "$entry"; done < "$scratch.files"
+  verify_metadata "$root" 4 256 "$scratch" 755 644
+  /bin/rm -f -- "$scratch.dirs" "$scratch.files" "$scratch.other"
+}
 verify_installed_tree() {
   root=$1 scratch=$2
   manifest "$root" "$INSTALLED_MANIFEST" 256 "$scratch.manifest"
@@ -253,12 +261,13 @@ install_sample() {
   /usr/bin/dpkg-deb --build --root-owner-group --compression=xz --compression-level=6 --threads-max=1 "$p/source" "$p/package.deb" > "$p/build.out" 2> "$p/build.err"
   [ ! -s "$p/build.err" ]; observe_deb "$p/package.deb" "$p/deb"; verify_deb "$p/package.deb" "$p/check"
   /bin/mkdir -m 0700 -- "$p/admin" "$p/admin/updates"; : > "$p/admin/status"; /bin/mkdir -m 0755 -- "$p/installed"; /usr/bin/touch -d @1782172800 -- "$p/installed"
-  start=$(now); /usr/bin/dpkg --force-not-root --admindir "$p/admin" --instdir "$p/installed/" --install "$p/package.deb" > "$p/install.out" 2> "$p/install.err"; end=$(now); elapsed "$start" "$end"
+  start=$(now); /usr/bin/dpkg --force-not-root --log=/dev/null --admindir "$p/admin" --instdir "$p/installed/" --install "$p/package.deb" > "$p/install.out" 2> "$p/install.err"; end=$(now); elapsed "$start" "$end"
   [ ! -s "$p/install.err" ]
   [ "$(/usr/bin/grep -c '^Package: cogs-stage2-fixture$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Version: 1.0$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Architecture: all$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Status: install ok installed$' "$p/admin/status")" -eq 1 ]
+  normalize_installed "$p/installed" "$p/installed.metadata"
   verify_installed_tree "$p/installed" "$p/installed.tree"
   delete_sample "$p"
   emit "$ord" "INSTALL_$n" "$ELAPSED" "$FINAL_TREE_SHA"
