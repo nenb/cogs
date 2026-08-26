@@ -1979,8 +1979,8 @@ def _runtime_owner_routes():
         return shim is not None and (shim.pid, shim.starttime, shim.executable_device, shim.executable_inode, [list(row) for row in shim.namespaces]) == (body["pid"], body["starttime"], body["executable_device"], body["executable_inode"], body["namespaces"])
     def task_fact(owner, phase, index, expected_pid):
         state = owners[owner]; raw = step(owner, phase, index, actions.CommandId.CTR_TASK_LIST)[0]; processes = _proc_snapshot(verify_attestation(state[5]), state[4], state[12])
-        shim = next((row for row in processes.records if row.role == "shim"), None); pid = (None if shim is None else shim.pid) if expected_pid is None else expected_pid
-        task = classify_task_list(raw, pid); return {"task": task, "task_pid": pid, "processes": processes.disposition.value}, shim
+        qemu = next((row for row in processes.records if row.role == "qemu"), None); pid = (None if qemu is None else qemu.pid) if expected_pid is None else expected_pid
+        task = classify_task_list(raw, pid); return {"task": task, "task_pid": pid, "processes": processes.disposition.value}, qemu
     def await_runtime_roles_absent(state):
         """Observation-only, identity-stable retirement under one boottime deadline."""
         import completion_kata_process as process

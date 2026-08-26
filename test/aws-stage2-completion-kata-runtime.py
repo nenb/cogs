@@ -931,9 +931,10 @@ runtime_source = MODULE_PATH.read_text()
 check('row["command_id"] in observer_ids' in runtime_source
       and runtime_source.count('observer_ids = {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"}') == 1,
       "runtime observer replay did not exclude interleaved network commands")
-check('row.role == "qemu"' in runtime_source
-      and 'None if qemu is None else qemu.pid' in runtime_source,
-      "native Kata task PID is not bound to the exact QEMU role")
+check(runtime_source.count('row.role == "qemu"') >= 2
+      and 'None if qemu is None else qemu.pid' in runtime_source
+      and 'return {"task": task, "task_pid": pid, "processes": processes.disposition.value}, qemu' in runtime_source,
+      "native Kata task observation/cleanup is not bound to the exact QEMU role")
 check(process_module.DEADLINE_SECONDS["observer"] == 15,
       "measured native ctr observer deadline")
 check("client.connect(OBSERVER_QMP_SOCKET)" in runtime_source
