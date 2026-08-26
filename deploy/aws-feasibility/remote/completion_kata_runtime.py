@@ -1911,8 +1911,8 @@ def _runtime_owner_routes():
         values = [(row[2]["status"], row[0], row[1]) for row in results]
         if history["phase"] == "RUNTIME_READY": info, containers, tasks = values
         else: tasks, info, containers = values
-        processes = _proc_snapshot(verify_attestation(state[5]), netns, state[12]); shim = next((row for row in processes.records if row.role == "shim"), None)
-        ctr = classify_ctr_observation(info, containers, tasks, None if shim is None else shim.pid,
+        processes = _proc_snapshot(verify_attestation(state[5]), netns, state[12]); qemu = next((row for row in processes.records if row.role == "qemu"), None)
+        ctr = classify_ctr_observation(info, containers, tasks, None if qemu is None else qemu.pid,
                                        state[9], _durable_ctr_launch_path(history)); container, task, mount = ctr["container"], ctr["task"], ctr["mount"]
         forward_observation = history["phase"] == "RUNTIME_READY"
         if forward_observation: state[0].record_platform_observation("qmp-intent")
@@ -1927,7 +1927,7 @@ def _runtime_owner_routes():
             qmp_passed = qmp.get("kvm_present") is True and qmp.get("kvm_enabled") is True
             state[0].record_platform_observation("qmp-pass" if qmp_passed else "qmp-failure")
             history = state[0].runtime_recovery_history()
-        share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if shim is None else shim.pid,
+        share = _share_fact(); verify_daemon(state[6]); fact = {"version": V2, "journal": history["terminal_sha256"], "mount": mount, "container": container.value, "task": task, "task_pid": None if qemu is None else qemu.pid,
                 "processes": processes.disposition.value, "qmp": qmp, "share": share}
         return fact
     def inactive_fact(state):
