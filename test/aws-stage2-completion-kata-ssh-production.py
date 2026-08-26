@@ -67,6 +67,8 @@ native_supported = sys.platform == "linux" and platform.machine() == "x86_64" an
 ssh_parameters = tuple(inspect.signature(ssh._compose_production_ssh).parameters)
 input_parameters = tuple(inspect.signature(inputs._compose_production_inputs).parameters)
 check(ssh_parameters == ("journal", "input_owner", "executable_owner"), "SSH injection seam")
+check('lifecycle_phase == "RUNTIME_READY"' in (REMOTE / "completion_kata_ssh.py").read_text(),
+      "production SSH is not bound after exact runtime proof")
 check(input_parameters == ("journal", "completion", "control", "executable_owner"),
       "key injection seam")
 source = (REMOTE / "completion_kata_inputs.py").read_text()

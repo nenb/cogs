@@ -361,7 +361,7 @@ def _production_routes():
         ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
         _fail((ssh_executable.role, ssh_executable.path) == ("ssh", "/usr/bin/ssh"))
         _fail(guest.guest_program_bytes() == command_spec().stdin)
-        _fail(operation._command_context(journal).lifecycle_phase in {"ROOTFS_LEASED", "FS_SETTLED"})
+        _fail(operation._command_context(journal).lifecycle_phase == "RUNTIME_READY")
         value = _ProductionSsh(seal)
         states[value] = {"journal": journal, "inputs": input_owner,
                          "executable": ssh_executable, "executable_released": False,
