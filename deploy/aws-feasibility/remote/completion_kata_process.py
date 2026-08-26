@@ -757,6 +757,29 @@ def _claim_inherited_fds(spec, owner):
         raise ProcessError("invalid inherited descriptor map") from error
 
 
+def _retain_parent_ssh_inputs(bindings):
+    if tuple(row.role for row in bindings) != (fdmap.CLIENT_KEY, fdmap.KNOWN_HOSTS):
+        return ()
+    targets = (kata_ssh.PARENT_KEY_FD, kata_ssh.PARENT_KNOWN_HOSTS_FD)
+    opened = []
+    try:
+        for row, target in zip(bindings, targets, strict=True):
+            try:
+                fcntl.fcntl(target, fcntl.F_GETFD)
+            except OSError as error:
+                if error.errno != errno.EBADF: raise
+            else: raise OSError(errno.EBUSY, "parent SSH descriptor target occupied")
+            os.dup2(row.source_fd, target, inheritable=False); opened.append(target)
+            if _fd_identity(target) != row.identity or os.get_inheritable(target):
+                raise OSError(errno.ESTALE, "parent SSH descriptor target changed")
+        return tuple(opened)
+    except BaseException:
+        for descriptor in opened:
+            try: os.close(descriptor)
+            except OSError: pass
+        raise
+
+
 def _write_child_error(descriptor, value):
     try:
         os.write(descriptor, struct.pack("!I", min(max(int(value), 1), 65535)))
@@ -802,7 +825,7 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
-        argv = spec.argv
+        argv = tuple(item.replace("{command-parent-pid}", str(os.getppid())) for item in spec.argv)
         if network_fd is not None:
             if network_fd != kata_runtime.CTR_NS_FD:
                 os.dup2(network_fd, kata_runtime.CTR_NS_FD, inheritable=True); os.close(network_fd)
@@ -1671,6 +1694,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
     )
     bindings = _claim_inherited_fds(spec, inherited); network_fd = None
+    parent_ssh_fds = ()
     daemon_profile = None
     # Expensive custody checks precede the command's absolute deadline.  They
     # are read-only and must not consume the bounded execution/cleanup window.
@@ -1701,6 +1725,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     preexec_recorded = False
     launch_started_boottime_ns = None
     try:
+        parent_ssh_fds = _retain_parent_ssh_inputs(bindings)
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
         if daemon_profile is None:
             _require_no_children()
@@ -1921,6 +1946,9 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             settlement_errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join((*diagnostics, *settlement_errors))) from primary
     finally:
+        for descriptor in parent_ssh_fds:
+            try: os.close(descriptor)
+            except OSError: pass
         if network_fd is not None:
             try: os.close(network_fd)
             except OSError: pass

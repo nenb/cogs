@@ -16,6 +16,8 @@ MARKER = guest.GUEST_READY_MARKER
 MARKER_SHA256 = hashlib.sha256(MARKER).hexdigest()
 KEY_FD = 200
 KNOWN_HOSTS_FD = 201
+PARENT_KEY_FD = 1000
+PARENT_KNOWN_HOSTS_FD = 1001
 QUALIFICATION = "UNQUALIFIED_OFFLINE_FAKE_SSH_S5_V1"
 ARGV = (
     "/usr/bin/ssh", "-F", "/dev/null", "-T",
@@ -26,7 +28,7 @@ ARGV = (
     "-o", "HostbasedAuthentication=no", "-o", "GSSAPIAuthentication=no",
     "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
     "-o", "NumberOfPasswordPrompts=0", "-o", "StrictHostKeyChecking=yes",
-    "-o", "UserKnownHostsFile=/proc/self/fd/201", "-o", "UpdateHostKeys=no",
+    "-o", "UserKnownHostsFile=/proc/{command-parent-pid}/fd/1001", "-o", "UpdateHostKeys=no",
     "-o", "GlobalKnownHostsFile=/dev/null", "-o", "VerifyHostKeyDNS=no",
     "-o", "HostKeyAlgorithms=ssh-ed25519",
     "-o", "HostKeyAlias=cogs-stage2-ssh-v1", "-o", "CheckHostIP=no",
@@ -39,7 +41,7 @@ ARGV = (
     "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
     "-o", "ForwardX11Trusted=no", "-o", "Tunnel=no", "-o", "GatewayPorts=no",
     "-o", "RequestTTY=no", "-o", "EscapeChar=none", "-o", "LogLevel=ERROR",
-    "-p", "22", "-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s",
+    "-p", "22", "-i", "/proc/{command-parent-pid}/fd/1000", "root@192.0.2.2", "/bin/sh -s",
 )
 OUTPUT_LIMIT = 4096
 RESULT_LINES = 21

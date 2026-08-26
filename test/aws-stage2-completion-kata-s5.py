@@ -179,10 +179,10 @@ for command_id in sorted(operation.LEGACY_COMMANDS):
 spec = ssh.command_spec()
 assert spec.argv is ssh.ARGV and spec.inherited_fds == (200, 201)
 assert spec.argv[0:4] == ("/usr/bin/ssh", "-F", "/dev/null", "-T")
-assert spec.argv[-4:] == ("-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s")
+assert spec.argv[-4:] == ("-i", "/proc/{command-parent-pid}/fd/1000", "root@192.0.2.2", "/bin/sh -s")
 assert "-n" not in spec.argv and "StdinNull=no" in spec.argv
 assert spec.argv.count("ConnectionAttempts=1") == 1
-assert "UserKnownHostsFile=/proc/self/fd/201" in spec.argv
+assert "UserKnownHostsFile=/proc/{command-parent-pid}/fd/1001" in spec.argv
 assert not any("keyscan" in item or "StrictHostKeyChecking=no" in item for item in spec.argv)
 good = ssh.SshOutcome("SSH_READY", "exited", 0, ssh.MARKER, b"", False, False, False, True, ())
 identity = process.ProcessIdentity(1, 1, 1, 1, 1, "11111111-1111-1111-1111-111111111111", False)

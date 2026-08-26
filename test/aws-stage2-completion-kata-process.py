@@ -756,6 +756,32 @@ def linux_supervisor_tests():
         os.close(key_r); os.close(hosts_r)
         os.unlink(key_path); os.unlink(hosts_path)
 
+    # OpenSSH closes inherited descriptors before resolving identity paths. The
+    # fixed child template therefore opens exact non-inheritable duplicates
+    # retained by its already-recorded parent process.
+    key_r, key_path = tempfile.mkstemp(dir=directory)
+    hosts_r, hosts_path = tempfile.mkstemp(dir=directory)
+    os.write(key_r, b"K"); os.write(hosts_r, b"H")
+    rows = (
+        process.fdmap.InheritedBinding(process.fdmap.CLIENT_KEY, key_r, 200,
+                                       process._fd_identity(key_r), hashlib.sha256(b"K").hexdigest()),
+        process.fdmap.InheritedBinding(process.fdmap.KNOWN_HOSTS, hosts_r, 201,
+                                       process._fd_identity(hosts_r), hashlib.sha256(b"H").hexdigest()),
+    )
+    retained = process._retain_parent_ssh_inputs(rows)
+    try:
+        assert retained == (1000, 1001)
+        assert not os.get_inheritable(1000) and not os.get_inheritable(1001)
+        observed = subprocess.run(
+            ["/bin/cat", f"/proc/{os.getpid()}/fd/1000", f"/proc/{os.getpid()}/fd/1001"],
+            check=True, stdout=subprocess.PIPE,
+        )
+        assert observed.stdout == b"KH"
+    finally:
+        for descriptor in retained: os.close(descriptor)
+        os.close(key_r); os.close(hosts_r)
+        os.unlink(key_path); os.unlink(hosts_path)
+
     # close_range reaches inherited descriptors above a subsequently lowered limit.
     base = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
     old_limit = resource.getrlimit(resource.RLIMIT_NOFILE)

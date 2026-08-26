@@ -305,10 +305,10 @@ for hostile in (stdout[:-1], stdout + b"extra\n", stdout.replace(b"|01|GIT_01|",
 # SSH options remain one private authenticated /bin/sh stdin session.
 argv = ssh.ARGV
 check(argv[:4] == ("/usr/bin/ssh", "-F", "/dev/null", "-T"), "SSH prefix")
-check(argv[-4:] == ("-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s"), "SSH tail")
+check(argv[-4:] == ("-i", "/proc/{command-parent-pid}/fd/1000", "root@192.0.2.2", "/bin/sh -s"), "SSH tail")
 for option in ("BatchMode=yes", "StdinNull=no", "IdentitiesOnly=yes", "IdentityAgent=none",
                "PasswordAuthentication=no", "KbdInteractiveAuthentication=no",
-               "StrictHostKeyChecking=yes", "UserKnownHostsFile=/proc/self/fd/201",
+               "StrictHostKeyChecking=yes", "UserKnownHostsFile=/proc/{command-parent-pid}/fd/1001",
                "ConnectionAttempts=1", "ProxyCommand=none", "ProxyJump=none",
                "ControlMaster=no", "ClearAllForwardings=yes", "ForwardAgent=no"):
     check(argv.count(option) == 1, option)
