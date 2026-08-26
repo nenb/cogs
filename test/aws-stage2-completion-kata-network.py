@@ -473,6 +473,18 @@ hostile_native_tap["linkinfo"]["info_data"]["user"] = "other"
 rejected(lambda: network.parse_runtime_links(encoded(ns_links_json + [hostile_native_tap])))
 runtime_addresses = ns_addresses + [{"ifindex": 30, "ifname": "tap-dynamic", "addr_info": []}]
 assert len(network.parse_runtime_addresses(encoded(runtime_addresses), parsed_runtime)) == 3
+kata_links = network.parse_runtime_links(encoded(ns_links_json + [kata_native_tap]))
+kata_runtime_addresses = ns_addresses + [{
+    "ifindex": 30, "ifname": "tap-dynamic", "addr_info": [{
+        "family": "inet6", "local": "fe80::ff:fe00:30", "prefixlen": 64,
+        "scope": "link", "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295,
+    }],
+}]
+assert len(network.parse_runtime_addresses(encoded(kata_runtime_addresses), kata_links)) == 4
+hostile_kata_addresses = copy.deepcopy(kata_runtime_addresses)
+hostile_kata_addresses[-1]["addr_info"][0]["local"] = "fe80::31"
+rejected(lambda: network.parse_runtime_addresses(encoded(hostile_kata_addresses), kata_links))
 hostile_tap_addresses = copy.deepcopy(runtime_addresses)
 hostile_tap_addresses[-1]["addr_info"] = [
     {"family": "inet6", "local": "fe80::30", "prefixlen": 64, "scope": "link"},

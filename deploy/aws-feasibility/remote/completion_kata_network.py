@@ -481,8 +481,16 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     return tuple(result)
 
 
+def _eui64_link_local(mac):
+    if type(mac) is not str or _MAC.fullmatch(mac) is None:
+        raise NetworkError("TAP MAC for EUI-64")
+    octets = [int(item, 16) for item in mac.split(":")]
+    iid = bytes((octets[0] ^ 2, *octets[1:3], 0xff, 0xfe, *octets[3:]))
+    return str(ipaddress.IPv6Address((0xfe80 << 112) | int.from_bytes(iid, "big")))
+
+
 def parse_runtime_addresses(raw, links):
-    """Validate complete lo/veth/TAP rows and exact TAP address absence."""
+    """Validate complete lo/veth/TAP rows and exact derived TAP addresses."""
     value = _load(raw)
     if type(value) is not list or type(links) is not tuple:
         raise NetworkError("runtime address list")
@@ -505,6 +513,9 @@ def parse_runtime_addresses(raw, links):
     expected = {("lo", "inet", "127.0.0.1", 8, "host"),
                 ("lo", "inet6", "::1", 128, "host"),
                 (GUEST_IF, "inet", "192.0.2.2", 30, "global")}
+    expected.update((item.ifname, "inet6", _eui64_link_local(item.mac), 64, "link")
+                    for item in links
+                    if item.kind == "tap" and item.addrgenmode == "eui64")
     if seen != set(bound) or identities != expected:
         raise NetworkError("runtime TAP/address inventory drift")
     return tuple(sorted(identities))
