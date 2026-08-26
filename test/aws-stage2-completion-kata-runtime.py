@@ -532,8 +532,11 @@ mountinfo = (
 )
 native_mountinfo = mountinfo + (
     b"43 1 0:4 net:[4026532627] /run/netns/c42n0123456789 rw - nsfs nsfs rw\n"
-    b"44 1 0:4 mnt:[4026532698] /run/snapd/ns/example.mnt rw - nsfs nsfs rw\n")
-check(len(runtime.parse_mountinfo(native_mountinfo)) == 4, "exact native nsfs roots")
+    b"44 1 0:4 mnt:[4026532698] /run/snapd/ns/example.mnt rw - nsfs nsfs rw\n"
+    b"45 1 0:45 / /proc/sys/fs/binfmt_misc rw - binfmt_misc binfmt_misc rw\n")
+check(len(runtime.parse_mountinfo(native_mountinfo)) == 5, "exact native nsfs and stacked mount roots")
+rejected(lambda: runtime.parse_mountinfo(
+    native_mountinfo + b"45 1 0:46 / /other rw - tmpfs tmpfs rw\n"))
 for hostile_root in (b"pid:[4026532627]", b"net:[0]", b"net:4026532627"):
     rejected(lambda hostile_root=hostile_root: runtime.parse_mountinfo(
         mountinfo + b"43 1 0:4 " + hostile_root

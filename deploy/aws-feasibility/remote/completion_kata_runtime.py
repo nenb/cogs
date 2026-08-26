@@ -407,7 +407,8 @@ def _native_stored_oci_spec(operation_token, launch_path, root_path):
     for name in ("ambient", "inheritable"):
         process["capabilities"].pop(name)
     for name in ("bounding", "effective", "permitted"):
-        process["capabilities"][name].remove("CAP_NET_ADMIN")
+        _fail(process["capabilities"][name].count("CAP_NET_ADMIN") == 1,
+              "native NET_ADMIN capability")
     value.pop("hostname"); value.pop("annotations")
     _fail(type(root_path) is str and re.fullmatch(
         re.escape(BASE) + r"/rootfs-v1/operation-[0-9a-f]{64}/rootfs",
@@ -782,8 +783,7 @@ def parse_mountinfo(raw):
                 "nsfs mount root")
         result.append((mount_id, parent_id, int(major_minor[0]), int(major_minor[1]),
                        root, point, tuple(options), optional, fs_type, source))
-    _fail(len({row[0] for row in result}) == len(result) and
-          len({row[5] for row in result}) == len(result), "duplicate mount")
+    _fail(len({row[0] for row in result}) == len(result), "duplicate mount ID")
     return tuple(result)
 def _share_entry(row):
     _keys(row, ("path", "kind", "device", "inode", "mount_id", "mode", "uid", "gid", "nofollow"))
@@ -1413,7 +1413,9 @@ def _share_fact(retained=None):
     def row(relative, descriptor):
         seen = os.fstat(descriptor); directory = stat.S_ISDIR(seen.st_mode)
         _fail(directory or stat.S_ISREG(seen.st_mode), "share entry kind")
-        _fail(seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == (0o700 if directory else 0o600),
+        mode = stat.S_IMODE(seen.st_mode)
+        allowed = ({0o700, 0o750, 0o755} if directory else {0o600, 0o755})
+        _fail(seen.st_uid == seen.st_gid == 0 and mode in allowed,
               "share entry mode")
         return {"path": relative, "kind": "directory" if directory else "file", "device": seen.st_dev,
             "inode": seen.st_ino, "mount_id": mount_id(descriptor), "mode": stat.S_IMODE(seen.st_mode),
@@ -1443,7 +1445,7 @@ def _share_fact(retained=None):
         base = {"entries": entries, "mountpoints": classified.mountpoints,
                 "mount_sha256": digest, "root_generation": generation,
                 "parent_generation": parent_generation, "layout_sha256": layout}
-        if classified.mountpoints:
+        if classified.mountpoints or len(classified.entries) > 1:
             return {"state": "active-exact", **base}
         if (len(classified.entries) == 1 and retained is not None
                 and generation == retained.get("root_generation")

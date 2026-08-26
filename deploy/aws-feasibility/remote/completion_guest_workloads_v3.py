@@ -145,12 +145,13 @@ mount_invariant() {
   /usr/bin/awk '
   function has(values,want, n,a,i){n=split(values,a,",");for(i=1;i<=n;i++)if(a[i]==want)return 1;return 0}
   function safeleaf(root, value){if(index(root,"/mounts/")!=1)return "";value=substr(root,9);if(length(value)<1||length(value)>255||value=="."||value==".."||value!~/^[A-Za-z0-9][A-Za-z0-9._-]*$/)return "";return value}
+  function nativeleaf(root,role, prefix,suffix,value){prefix="/cogs-stage2-ssh-v1-";suffix="-" role;if(index(root,prefix)!=1||substr(root,length(root)-length(suffix)+1)!=suffix)return "";value=substr(root,length(prefix)+1,length(root)-length(prefix)-length(suffix));if(length(value)!=16||value!~/^[0-9a-f]+$/)return "";return root}
   BEGIN{bad=0;r=key=auth=input=0;keyleaf=authleaf=inputleaf=""}
   index($5,"/run/cogs-stage2-ssh/")==1 && $5!="/run/cogs-stage2-ssh/ssh_host_ed25519_key" && $5!="/run/cogs-stage2-ssh/authorized_keys" && $5!="/run/cogs-stage2-ssh/input" {bad=1}
   $5=="/run/cogs-stage2-ssh" {r++;if($4!="/"||$7!="-"||$8!="tmpfs"||$9!="tmpfs"||!has($6,"rw")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec")||!has($10,"rw")||!has($10,"size=65536k")||!has($10,"nr_inodes=16384")||!has($10,"mode=700"))bad=1}
-  $5=="/run/cogs-stage2-ssh/ssh_host_ed25519_key" {key++;keyleaf=safeleaf($4);if(keyleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
-  $5=="/run/cogs-stage2-ssh/authorized_keys" {auth++;authleaf=safeleaf($4);if(authleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
-  $5=="/run/cogs-stage2-ssh/input" {input++;inputleaf=safeleaf($4);if(inputleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/ssh_host_ed25519_key" {key++;keyleaf=safeleaf($4);if(keyleaf=="")keyleaf=nativeleaf($4,"ssh_host_ed25519_key");if(keyleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/authorized_keys" {auth++;authleaf=safeleaf($4);if(authleaf=="")authleaf=nativeleaf($4,"authorized_keys");if(authleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/input" {input++;inputnative=0;inputleaf=safeleaf($4);if(inputleaf==""&&$4=="/"&&$7=="-"&&$8=="virtiofs"&&$9=="none"){inputleaf="native-input";inputnative=1}if(inputleaf==""||$7!="-"||$8!="virtiofs"||(inputnative&&$9!="none")||(!inputnative&&$9!="kataShared")||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
   END{if(r!=1||key!=1||auth!=1||input!=1||keyleaf==authleaf||keyleaf==inputleaf||authleaf==inputleaf)bad=1;exit bad?1:0}
   ' /proc/self/mountinfo
 }
@@ -332,7 +333,7 @@ invariant
 empty_tree "$W" "$W-empty"
 '''.encode("ascii")
 # Regenerated only from the literal above after all program changes are final.
-GUEST_PROGRAM_SHA256 = "990f3a2cb57121a4aab2fb79b347bc3904082572ef8177f3c2d79c28d96e3db1"
+GUEST_PROGRAM_SHA256 = "64e47b459ad8716974e934478045a7a2729d6df44074573deb45e6ea090fb0b4"
 
 
 @dataclass(frozen=True)

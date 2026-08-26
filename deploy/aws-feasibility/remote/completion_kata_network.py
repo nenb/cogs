@@ -1131,11 +1131,14 @@ def parse_tc_filters(raw, source, target):
     native = len(value) == 3
     if native:
         header, table_row, row = value
-        _keys(header, ("protocol", "pref", "kind", "chain"))
+        native_parent = all(item.get("parent") == "ffff:" for item in value)
+        _keys(header, (("parent",) if native_parent else ())
+              + ("protocol", "pref", "kind", "chain"))
     else:
-        table_row, row = value
+        native_parent = False; table_row, row = value
     for item in (table_row, row):
-        _keys(item, ("protocol", "pref", "kind", "chain", "options"))
+        _keys(item, (("parent",) if native_parent else ())
+              + ("protocol", "pref", "kind", "chain", "options"))
     for item in value:
         if (item["protocol"], item["pref"], item["kind"], item["chain"]) != ("all", 49152, "u32", 0):
             raise NetworkError("tc filter header drift")

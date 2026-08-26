@@ -6,10 +6,10 @@
   "final_installed_bytes": 1048576,
   "final_installed_entries": 259,
   "final_installed_tree_sha256": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2",
-  "guest_program_sha256": "990f3a2cb57121a4aab2fb79b347bc3904082572ef8177f3c2d79c28d96e3db1",
+  "guest_program_sha256": "64e47b459ad8716974e934478045a7a2729d6df44074573deb45e6ea090fb0b4",
   "parser": "completion_guest_workloads_v3.parse_guest_workload_output",
   "source_path": "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
-  "source_sha256": "1d94ba3a17a8b76a3b326359d89a140f0d02c4c8341d61fb94fff5cd98ccd2db",
+  "source_sha256": "4720e0490e6cb96abf747deef3f5decbb4c6a9e3ed8fa1ce6c69350d09b679cb",
   "total_deadline_ns": 1200000000000,
   "version": "cogs.stage2-completion-ssh-workload/v3"
 }

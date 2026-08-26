@@ -143,7 +143,7 @@ _POLICY_SHA256 = {
     "NFT_INSTALL": "64bc4796579f9f7676baa58f927a4608e2a28b0dfccd569d93922458256226bc",
     "NFT_REMOVE": "e05578f9ddf2bd48b9e8dd4fab15450121204cb312224c47337bd54992a46afa",
     "NFT_TABLE": "c81d934f138b8c4e89faff3d51620eab944a100e92e077242c9ce02e37f93b0d",
-    "SSH_READY": "fc798706a66c9a9676311bf2f43483c147b672aebb4c89869618975c29de7497",
+    "SSH_READY": "a688da8139963f523d40984bdec5b4f766144d0a38b234ccb202b5acb5424b36",
     "SSH_READINESS": "a7fff074ab3d551e9140ac3e3b261f3f937224261c1b12b4da5860d2734ee9ef",
     "SSH_KEYGEN_CLIENT": _IDENTITY_CREATE_DIGESTS[0],
     "SSH_PUBLIC_CLIENT": "1f68af8c1dde18e50dc62e3c2a6f5d2bf2d9518056df9955577f35a0ca2e2526",
@@ -194,7 +194,8 @@ def ctr_run_argv(rootfs_token):
     if type(rootfs_token) is not str or len(rootfs_token) != 64 or any(c not in "0123456789abcdef" for c in rootfs_token): raise ValueError("rootfs token")
     mounts = tuple(value for row in CTR_MOUNTS for value in ("--mount", row)); root = BASE + "/rootfs-v1/operation-" + rootfs_token + "/rootfs"
     return (STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, "run", "--runtime", "io.containerd.kata.v2",
-        "--runtime-config-path", RUNTIME_CONFIG, "--rootfs", "--read-only",
+        "--runtime-config-path", RUNTIME_CONFIG, "--cap-add", "CAP_NET_ADMIN",
+        "--rootfs", "--read-only",
         "--detach", "--with-ns", "network:/proc/{ctr-child-pid}/fd/202", *mounts, root,
         "cogs-stage2-ssh-v1", "/bin/sh", "-c", BOOTSTRAP)
 def validate_runtime_policy(intent, genesis):

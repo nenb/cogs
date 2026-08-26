@@ -174,6 +174,23 @@ snapshot_v3 = (ROOT / "test/fixtures/stage2-completion/guest-workload-v3.sh").re
 check(program_v3 == snapshot_v3, "V3 guest stdin snapshot differs")
 check(hashlib.sha256(program_v3).hexdigest() == guest_v3.GUEST_PROGRAM_SHA256,
       "V3 guest stdin digest differs")
+text_v3 = program_v3.decode("ascii")
+mount_awk_v3 = text_v3.split("/usr/bin/awk '\n", 1)[1].split("\n  ' /proc/self/mountinfo", 1)[0]
+native_mounts = """114 113 0:41 / /run/cogs-stage2-ssh rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=65536k,nr_inodes=16384,mode=700
+115 114 0:34 /cogs-stage2-ssh-v1-4b987a1b02c2312d-ssh_host_ed25519_key /run/cogs-stage2-ssh/ssh_host_ed25519_key ro,nosuid,nodev,noexec,relatime - virtiofs kataShared rw
+116 114 0:34 /cogs-stage2-ssh-v1-47c903dd2bba27ba-authorized_keys /run/cogs-stage2-ssh/authorized_keys ro,nosuid,nodev,noexec,relatime - virtiofs kataShared rw
+118 114 0:42 / /run/cogs-stage2-ssh/input ro,nosuid,nodev,noexec,relatime - virtiofs none rw
+"""
+def awk_status_v3(raw):
+    return subprocess.run(("awk", mount_awk_v3), input=raw, text=True,
+                          capture_output=True, check=False).returncode
+check(awk_status_v3(native_mounts) == 0, "native Kata guest mounts rejected")
+for hostile in (
+    native_mounts.replace("47c903dd2bba27ba", "47c903dd2bba27bg"),
+    native_mounts.replace(" - virtiofs none rw", " - virtiofs kataShared rw"),
+    native_mounts.replace("/run/cogs-stage2-ssh/input ro,", "/run/cogs-stage2-ssh/input rw,"),
+):
+    check(awk_status_v3(hostile) != 0, "hostile native Kata guest mount accepted")
 source_v3 = (REMOTE / "completion_guest_workloads_v3.py").read_bytes()
 config_v3 = json.loads(
     (ROOT / "config/stage2-completion-ssh-workload-v3.json").read_bytes())

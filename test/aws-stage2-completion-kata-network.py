@@ -566,6 +566,11 @@ native_filter = [
     }},
 ]
 assert network.parse_tc_filters(encoded(native_filter), guest, tap)[-1].action.control == "stolen"
+native_parent_filter = [{"parent": "ffff:", **row} for row in native_filter]
+assert network.parse_tc_filters(encoded(native_parent_filter), guest, tap)[-1].action.control == "stolen"
+hostile_parent_filter = copy.deepcopy(native_parent_filter)
+hostile_parent_filter[1]["parent"] = "ffff:fff1"
+rejected(lambda: network.parse_tc_filters(encoded(hostile_parent_filter), guest, tap))
 before_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns, guest_root, ())
 after_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns + (tap,),
                                      guest_qdiscs + tap_qdiscs, guest_filter + tap_filter)
