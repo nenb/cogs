@@ -426,7 +426,8 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     if type(value) is not list or family not in (4, 6) or type(links) is not tuple:
         raise NetworkError("route list")
     bound = {item.ifname for item in links}
-    runtime_taps = {item.ifname for item in links if item.kind == "tap"}
+    runtime_tap_links = tuple(item for item in links if item.kind == "tap")
+    runtime_taps = {item.ifname for item in runtime_tap_links}
     namespace_bound = (bound == {"lo", GUEST_IF} | runtime_taps
                        and len(runtime_taps) <= 1)
     if bound != {host_if} and not namespace_bound:
@@ -476,6 +477,14 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
         if family == 6:
             expected.update(("multicast", "ff00::/8", tap, "local", "kernel", None,
                              None, 256, (), "medium") for tap in runtime_taps)
+            for tap in runtime_tap_links:
+                if tap.addrgenmode == "eui64":
+                    expected.update({
+                        ("unicast", "fe80::/64", tap.ifname, "main", "kernel",
+                         None, None, 256, (), "medium"),
+                        ("local", _eui64_link_local(tap.mac), tap.ifname, "local",
+                         "kernel", None, None, 0, (), "medium"),
+                    })
     if len(actual) != len(result) or actual != expected:
         raise NetworkError("complete route inventory drift")
     return tuple(result)

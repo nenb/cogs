@@ -290,6 +290,22 @@ check(options == {"type_url": "runtimeoptions.v1.Options", "value": expected_opt
 check(runtime.validate_stored_info(copy.deepcopy(info)) == expected_digest, "stored info candidate")
 realistic_info = (json.dumps(info, indent=4) + "\n").encode("utf-8")
 check(runtime.validate_stored_info(realistic_info) == expected_digest, "realistic ctr info JSON")
+native_info = copy.deepcopy(info); native_token = "a" * 64
+native_launch_path = "/proc/123/fd/202"
+native_root_path = runtime.BASE + "/rootfs-v1/operation-" + "b" * 64 + "/rootfs"
+native_launch = {"namespace_path": native_launch_path, "root_path": native_root_path}
+native_info.update({"Labels": None, "SandboxID": ""})
+native_info["Spec"] = runtime._native_stored_oci_spec(
+    native_token, native_launch_path, native_root_path)
+native_network = {"operation_token": native_token,
+                  "path": runtime.operation_netns_path(native_token)}
+with patch.object(runtime.kata_network, "_verify_runtime_network", return_value=native_network):
+    check(runtime.validate_stored_info(native_info, object(), native_launch) == expected_digest,
+          "native containerd 2.2.1 stored normalization")
+hostile_native_info = copy.deepcopy(native_info)
+hostile_native_info["Spec"]["linux"]["resources"]["cpu"]["shares"] = 2048
+with patch.object(runtime.kata_network, "_verify_runtime_network", return_value=native_network):
+    rejected(lambda: runtime.validate_stored_info(hostile_native_info, object(), native_launch))
 for path, replacement in (
     (("Runtime", "Name"), "runc"),
     (("Spec", "root", "readonly"), False),

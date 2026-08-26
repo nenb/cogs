@@ -482,6 +482,18 @@ kata_runtime_addresses = ns_addresses + [{
     }],
 }]
 assert len(network.parse_runtime_addresses(encoded(kata_runtime_addresses), kata_links)) == 4
+kata_routes6 = routes6 + [
+    {"dst": "fe80::/64", "dev": "tap-dynamic", "protocol": "kernel",
+     "metric": 256, "flags": [], "pref": "medium"},
+    {"type": "local", "dst": "fe80::ff:fe00:30", "dev": "tap-dynamic",
+     "table": "local", "protocol": "kernel", "metric": 0,
+     "flags": [], "pref": "medium"},
+    {"type": "multicast", "dst": "ff00::/8", "dev": "tap-dynamic",
+     "table": "local", "protocol": "kernel", "metric": 256,
+     "flags": [], "pref": "medium"},
+]
+assert len(network.parse_routes(encoded(kata_routes6), 6, kata_links)) == 5
+rejected(lambda: network.parse_routes(encoded(kata_routes6[:-1]), 6, kata_links))
 hostile_kata_addresses = copy.deepcopy(kata_runtime_addresses)
 hostile_kata_addresses[-1]["addr_info"][0]["local"] = "fe80::31"
 rejected(lambda: network.parse_runtime_addresses(encoded(hostile_kata_addresses), kata_links))

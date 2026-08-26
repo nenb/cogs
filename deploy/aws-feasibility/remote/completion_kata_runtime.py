@@ -397,6 +397,36 @@ def _expected_operation_oci_spec(operation_token, launch_path=None):
     return _oci_spec(operation_netns_path(operation_token) if launch_path is None else launch_path)
 
 
+def _native_stored_oci_spec(operation_token, launch_path, root_path):
+    """Return containerd 2.2.1's exact stored normalization of the candidate."""
+    value = _expected_operation_oci_spec(operation_token, launch_path)
+    process = value["process"]
+    process.pop("terminal"); process["user"].pop("additionalGids")
+    process.pop("env"); process["noNewPrivileges"] = True
+    process["args"][2] = "; ".join(BOOTSTRAP.decode("ascii").splitlines())
+    for name in ("ambient", "inheritable"):
+        process["capabilities"].pop(name)
+    for name in ("bounding", "effective", "permitted"):
+        process["capabilities"][name].remove("CAP_NET_ADMIN")
+    value.pop("hostname"); value.pop("annotations")
+    _fail(type(root_path) is str and re.fullmatch(
+        re.escape(BASE) + r"/rootfs-v1/operation-[0-9a-f]{64}/rootfs",
+        root_path) is not None, "native stored root path")
+    value["root"]["path"] = root_path
+    linux = value["linux"]
+    linux["cgroupsPath"] = "/" + NAMESPACE + "/" + CONTAINER_ID
+    linux["maskedPaths"].insert(-1, "/sys/devices/virtual/powercap")
+    devices = [{"allow": False, "access": "rwm"}]
+    for kind, major, minor in (("c", 1, 3), ("c", 1, 8), ("c", 1, 7),
+                               ("c", 5, 0), ("c", 1, 5), ("c", 1, 9),
+                               ("c", 5, 1), ("c", 136, None), ("c", 5, 2)):
+        row = {"allow": True, "type": kind, "major": major, "access": "rwm"}
+        if minor is not None: row["minor"] = minor
+        devices.append(row)
+    linux["resources"] = {"devices": devices, "cpu": {"shares": 1024}}
+    return value
+
+
 def _exact_scalar_tree(value, depth=0):
     _fail(depth <= MAX_JSON_DEPTH, "JSON depth")
     if type(value) is dict:
@@ -456,7 +486,13 @@ def _durable_ctr_launch_path(history):
     _fail(len(preexecs) == 1); preexec = preexecs[0]
     _fail(all(row["command_id"] == "CTR_RUN" and row["binding_sha256"] == intent["binding_sha256"] for row in (preexec, outcome))
           and preexec["namespace_fd"] == CTR_NS_FD and preexec["namespace_path"] == CTR_NS_TEMPLATE.replace("{ctr-child-pid}", str(preexec["pid"])), "durable ctr launch binding")
-    return preexec["namespace_path"] if outcome["outcome"] == "exited" and outcome["status"] == 0 and not outcome["uncertain"] else None
+    if outcome["outcome"] != "exited" or outcome["status"] != 0 or outcome["uncertain"]:
+        return None
+    root_path = intent["argv"][-5]
+    _fail(type(root_path) is str and re.fullmatch(
+        re.escape(BASE) + r"/rootfs-v1/operation-[0-9a-f]{64}/rootfs",
+        root_path) is not None, "durable ctr rootfs binding")
+    return {"namespace_path": preexec["namespace_path"], "root_path": root_path}
 
 
 def _runtime_config_path(options):
@@ -489,13 +525,16 @@ def _runtime_config_path(options):
     return config_path
 
 
-def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
+def validate_stored_info(raw_or_value, network_grant=None, launch_binding=None):
     """Validate stored info against the historical alias or an exact live owner grant."""
     value = _load_json(raw_or_value) if type(raw_or_value) is bytes else raw_or_value
     _exact_scalar_tree(value)
-    _keys(value, ("ID", "Labels", "Image", "Runtime", "SnapshotKey", "Snapshotter",
-                  "CreatedAt", "UpdatedAt", "Extensions", "Spec"))
-    _fail(value["ID"] == CONTAINER_ID and value["Image"] == "" and value["Labels"] == {})
+    stored_keys = {"ID", "Labels", "Image", "Runtime", "SnapshotKey", "Snapshotter",
+                   "CreatedAt", "UpdatedAt", "Extensions", "Spec"}
+    _fail(type(value) is dict and set(value) in (stored_keys, stored_keys | {"SandboxID"}),
+          "stored schema")
+    _fail(value["ID"] == CONTAINER_ID and value["Image"] == ""
+          and value["Labels"] in ({}, None) and value.get("SandboxID", "") == "")
     _fail(value["SnapshotKey"] == "" and value["Snapshotter"] == "" and value["Extensions"] == {})
     _timestamp(value["CreatedAt"]); _timestamp(value["UpdatedAt"])
     runtime = value["Runtime"]
@@ -508,9 +547,17 @@ def validate_stored_info(raw_or_value, network_grant=None, launch_path=None):
     else:
         import completion_kata_network as network
         retained = network._verify_runtime_network(network_grant)
+        _fail(type(launch_binding) is dict
+              and set(launch_binding) == {"namespace_path", "root_path"},
+              "stored launch binding")
+        launch_path = launch_binding["namespace_path"]
         expected_spec = _expected_operation_oci_spec(retained["operation_token"], launch_path)
+        native_spec = _native_stored_oci_spec(
+            retained["operation_token"], launch_path, launch_binding["root_path"])
         _fail(retained["path"] == operation_netns_path(retained["operation_token"]), "stored network grant")
-    _fail(type(spec) is dict and spec == expected_spec, "complete OCI spec drift")
+    _fail(type(spec) is dict and (spec == expected_spec
+          or network_grant is not None and spec == native_spec),
+          "complete OCI spec drift")
     return validate_stored_spec(spec)
 
 
