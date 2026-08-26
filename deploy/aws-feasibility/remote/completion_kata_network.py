@@ -607,7 +607,8 @@ _NFT_SENSOR_NAMES = {
 }
 CAUSAL_POSITIVE_SENSORS = ("ssh-request-allowed", "ssh-return-allowed", "direct-tcp-denied",
                            "direct-udp-denied", "route-tcp-denied", "route-udp-denied")
-CAUSAL_ZERO_SENSORS = ("input-other-drop", "output-other-drop", "forward-guest-other-drop",
+CAUSAL_MONOTONIC_SENSORS = ("output-other-drop",)
+CAUSAL_ZERO_SENSORS = ("input-other-drop", "forward-guest-other-drop",
                        "forward-host-other-drop")
 CAUSAL_GUEST_MARKERS = ("route-baseline-no-default", "direct-tcp-denied", "direct-udp-denied",
                         "default-route-added", "route-tcp-denied", "route-udp-denied",
@@ -845,7 +846,8 @@ def bind_causal_sensor(operation_token, stage, snapshot, observation_sha256):
 def _counter_map(snapshot):
     rows = snapshot.nft.counters
     result = {row.sensor: row for row in rows}
-    if len(result) != len(rows) or set(result) != set(CAUSAL_POSITIVE_SENSORS) | set(CAUSAL_ZERO_SENSORS):
+    expected = set(CAUSAL_POSITIVE_SENSORS) | set(CAUSAL_MONOTONIC_SENSORS) | set(CAUSAL_ZERO_SENSORS)
+    if len(result) != len(rows) or set(result) != expected:
         raise NetworkError("causal sensor inventory")
     return result
 
@@ -863,7 +865,7 @@ def _prove_causal_values(before, after, markers, route_before, route_after):
         raise NetworkError("guest route restoration proof")
     first, second = _counter_map(before), _counter_map(after)
     deltas = []
-    for name in (*CAUSAL_POSITIVE_SENSORS, *CAUSAL_ZERO_SENSORS):
+    for name in (*CAUSAL_POSITIVE_SENSORS, *CAUSAL_MONOTONIC_SENSORS, *CAUSAL_ZERO_SENSORS):
         left, right = first[name], second[name]
         if ((left.chain, left.ordinal, left.handle) != (right.chain, right.ordinal, right.handle)
                 or right.packets < left.packets or right.bytes < left.bytes):
@@ -873,6 +875,8 @@ def _prove_causal_values(before, after, markers, route_before, route_after):
             if packet_delta <= 0 or byte_delta <= 0:
                 raise NetworkError("required causal sensor did not increase")
             category = "positive"
+        elif name in CAUSAL_MONOTONIC_SENSORS:
+            category = "denied-sibling"
         else:
             if packet_delta != 0 or byte_delta != 0:
                 raise NetworkError("unexpected sibling sensor increase")

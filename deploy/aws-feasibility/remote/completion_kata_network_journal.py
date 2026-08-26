@@ -306,8 +306,11 @@ def validate(kind, body, canonical):
         _fail(type(body["deltas"]) is list and len(body["deltas"]) == 10)
         for row in body["deltas"]:
             _fail(type(row) is list and len(row) == 4 and type(row[0]) is str
-                  and row[1] in {"positive", "zero"}
-                  and type(row[2]) is type(row[3]) is int and row[2] >= 0 and row[3] >= 0)
+                  and row[1] in {"positive", "denied-sibling", "zero"}
+                  and type(row[2]) is type(row[3]) is int and row[2] >= 0 and row[3] >= 0
+                  and (row[1] != "positive" or row[2] > 0 and row[3] > 0)
+                  and (row[1] != "zero" or row[2] == row[3] == 0)
+                  and (row[1] != "denied-sibling" or row[0] == "output-other-drop"))
 def _source_outputs(state, sources):
     selected = []
     for source in sources:

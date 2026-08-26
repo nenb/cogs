@@ -366,7 +366,8 @@ operation_token = "a" * 64
 causal_before = network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 changed = []
 for row in causal_before.counters:
-    increase = 1 if row.sensor in network.CAUSAL_POSITIVE_SENSORS else 0
+    increase = 1 if row.sensor in (*network.CAUSAL_POSITIVE_SENSORS,
+                                   *network.CAUSAL_MONOTONIC_SENSORS) else 0
     changed.append(network.NftCounter(row.sensor, row.chain, row.ordinal, row.handle,
                                       row.packets + increase, row.bytes + increase * 64))
 causal_after = network.NftSnapshot(causal_before.content, causal_before.identity, tuple(changed))
@@ -376,7 +377,10 @@ rejected(lambda: network.GuestNetworkProof(
     network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64))
 causal_proof = network._replay_causal_network(before_sensor, after_sensor, "3" * 64)
 assert tuple(row[0] for row in causal_proof.deltas) == (*network.CAUSAL_POSITIVE_SENSORS,
+                                                        *network.CAUSAL_MONOTONIC_SENSORS,
                                                         *network.CAUSAL_ZERO_SENSORS)
+assert next(row for row in causal_proof.deltas
+            if row[0] == "output-other-drop")[1:] == ("denied-sibling", 1, 64)
 for hostile in (
     network.CausalSensorSnapshot("b" * 64, "after", causal_after, "2" * 64),
     network.CausalSensorSnapshot(operation_token, "after", causal_after, "1" * 64),
