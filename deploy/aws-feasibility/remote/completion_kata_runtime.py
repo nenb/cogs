@@ -1880,7 +1880,8 @@ def _runtime_owner_routes():
         fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_sockets": {name: _canonical_fact(retained["socket_generations"][name]) for name, _quarantine in socket_contract}, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact
     def saved_output(state, phase, index, command_id):
-        history = state[0].runtime_recovery_history(); intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase]
+        history = state[0].runtime_recovery_history(); observer_ids = {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"}
+        intents = [row for row in history["intents"] if row["lifecycle_phase"] == phase and row["command_id"] in observer_ids]
         if len(intents) <= index: return None
         intent = intents[index]; _fail(intent["command_id"] == command_id.value)
         outcomes = [row for row in history["outcomes"] if row["command_serial"] == intent["command_serial"]]; outputs = [row for row in history["outputs"] if row["command_serial"] == intent["command_serial"]]

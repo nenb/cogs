@@ -928,6 +928,11 @@ check(timeout_client.timeouts and max(timeout_client.timeouts) <= 0.1
           timeout_client.timeouts, timeout_client.timeouts[1:])),
       "QMP parser refreshed its absolute deadline")
 runtime_source = MODULE_PATH.read_text()
+check('row["command_id"] in observer_ids' in runtime_source
+      and runtime_source.count('observer_ids = {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"}') == 1,
+      "runtime observer replay did not exclude interleaved network commands")
+check(process_module.DEADLINE_SECONDS["observer"] == 15,
+      "measured native ctr observer deadline")
 check("client.connect(OBSERVER_QMP_SOCKET)" in runtime_source
       and "client.connect(KATA_QMP_SOCKET)" not in runtime_source,
       "production observer can connect incumbent qmp.sock")

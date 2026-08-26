@@ -717,7 +717,7 @@ def runtime_v2_intent(raw, command_id):
     command = command_id.value; policy = operation.command_policy
     argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS, "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
     deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-    duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+    duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
     environment = [list(row) for row in operation.FIXED_ENV]
     body = {"operation_token": genesis["operation_token"], "command_serial": serial, "command_id": command,
         "binding_sha256": operation.ZERO, "journal_key": genesis["journal_key"], "host_boot_id": genesis["host_boot_id"],

@@ -114,11 +114,11 @@ _IDENTITY_CREATE_DIGESTS = (
     "2e2f373d5154ddbfbeea4ae24799ddbbc321f272a0a44474ef4fa9feda7706cf",
 )
 _POLICY_SHA256 = {
-    "CTR_CONTAINER_INFO": "2815a5d4b7e306c3eee1030f3328bef1a4b7dab914cadc79aea4b215bd0977aa",
-    "CTR_CONTAINER_LIST": "ba75e006cbdf34f5e6fdd2006b14bf9273a8e3ce7d6951bc30cd2aa9d54be2a9",
+    "CTR_CONTAINER_INFO": "76e49d7961bb727c6fa3fdd39c608cd147517d0b63c1b5f5c6020a35ec8cb826",
+    "CTR_CONTAINER_LIST": "7de312907f75ac0ff6b8e39f12aa6fc15066ff448d7e3a4bfcafb9dbe37ee5fe",
     "CTR_CONTAINER_REMOVE": "6707260cbfdd20df52e020160490f4e0ed28be1f8e3f46f0183c54e4b54b854e",
     "CTR_TASK_KILL": "0265c47f6f0edab4caf082451b926f7d07da4b1fda52f8e81bd6771fcc4139e6",
-    "CTR_TASK_LIST": "2208b3c2544259064211be7c0ca934e7f817a4cdb13eb25fd076baf260c67447",
+    "CTR_TASK_LIST": "f92f8122f8b604267537b51ef483052671baa802a5781d3a6fbe2d3447e25699",
     "CTR_TASK_REMOVE": "7d38e7ee2c13f5d6c19bf7b2c1dd44244c3100de1ea621c92724900542625548",
     "CTR_TASK_TERM": "a834973f3c29b2ecafe99919da4c461c3e08042946991675d7890cef29567ef0",
     "IP_GUEST_ADDRESS_ADD": "83428606b3855e2b2f9178968cd9ed6a374ee6cc4be7f69c75bb5a6aaf737ee9",
@@ -208,7 +208,7 @@ def validate_runtime_policy(intent, genesis):
     elif command in CTR_TAILS:
         argv = [STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, *CTR_TAILS[command]]
         deadline = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-        duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline] * 1_000_000_000; grammar = "text"
+        duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline] * 1_000_000_000; grammar = "text"
     else: return False
     expected = {"executable_role": "containerd" if command == "CONTAINERD_START" else "ctr", "executable_path": argv[0], "argv": argv,
         "stdin_hex": "", "policy_version": RUNTIME_POLICY_VERSION, "deadline_class": deadline, "duration_ns": duration,

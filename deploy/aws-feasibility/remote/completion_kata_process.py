@@ -48,7 +48,7 @@ HEX = frozenset("0123456789abcdef")
 SONAME = re.compile(r"(?:lib[A-Za-z0-9_+.-]+|ld-[A-Za-z0-9_+.-]+)\.so(?:\.[0-9]+)*")
 FORBIDDEN_TAGS = frozenset({"RPATH", "RUNPATH", "AUDIT", "DEPAUDIT", "FILTER", "AUXILIARY", "CONFIG"})
 DEADLINE_SECONDS = {
-    "observer": 5, "network": 10, "keygen": 15, "runtime-start": 60,
+    "observer": 15, "network": 10, "keygen": 15, "runtime-start": 60,
     "task-term": 15, "task-kill": 10, "remove": 20, "listener": 60,
     "ssh": command_policy.SSH_TOTAL_NS / 1_000_000_000, "runtime-absence": 30,
 }
