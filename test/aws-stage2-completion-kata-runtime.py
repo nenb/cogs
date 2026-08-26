@@ -417,6 +417,21 @@ def classify_process(value):
         value, host_netns="net:[20]", operation_netns="net:[21]")
 classified = classify_process(proc_fixture)
 check(classified.disposition is runtime.Observation.EXACT and len(classified.records) == 3, "real Kata 3.32 role namespaces")
+generation = {"mount_id": 30, "device": 8, "inode": 9, "kind": "file",
+              "mode": 0o755, "uid": 0, "gid": 0, "nlink": 1, "size": 10,
+              "mtime_ns": 11, "ctime_ns": 12}
+check(runtime._same_executable_backing({**generation, "mount_id": 5526}, generation),
+      "process mount-namespace executable was not bound to exact backing file")
+check(not runtime._same_executable_backing({**generation, "mount_id": 5526, "inode": 10}, generation),
+      "different executable backing inode was accepted")
+worker_rows = copy.deepcopy(proc_rows)
+worker = copy.deepcopy(worker_rows[2]); worker.update({"pid": 103, "ppid": 102, "starttime": 1003})
+worker["namespaces"]["pid"] = "pid:[7]"; worker_rows.append(worker)
+collapsed = runtime._collapse_virtiofsd_worker(worker_rows)
+check([row["pid"] for row in collapsed] == [100, 101, 102],
+      "exact nested virtiofsd worker was not collapsed to its owned launcher")
+hostile_worker = copy.deepcopy(worker_rows); hostile_worker[-1]["namespaces"]["net"] = "net:[99]"
+rejected(lambda: runtime._collapse_virtiofsd_worker(hostile_worker))
 for mutation in ("early", "duplicate", "ancestry", "namespace"):
     hostile = copy.deepcopy(proc_fixture)
     if mutation == "early":

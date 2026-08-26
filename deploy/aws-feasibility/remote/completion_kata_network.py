@@ -272,9 +272,12 @@ def _parse_link_row(row, runtime=False):
             raise NetworkError("synthetic TAP kind")
         if runtime and kind == "tun":
             data = info.get("info_data")
-            _keys(data, ("type", "pi", "vnet_hdr", "multi_queue", "persist"))
-            if data != {"type": "tap", "pi": False, "vnet_hdr": True,
-                        "multi_queue": False, "persist": False}:
+            legacy = {"type": "tap", "pi": False, "vnet_hdr": True,
+                      "multi_queue": False, "persist": False}
+            native = {"type": "tap", "pi": False, "vnet_hdr": True,
+                      "multi_queue": True, "numqueues": 1, "numdisabled": 0,
+                      "persist": True, "user": "root", "group": "root"}
+            if data not in (legacy, native):
                 raise NetworkError("TAP detail drift")
             kind = "tap"
     if type(kind) is not str or type(row["qdisc"]) is not str or type(row["operstate"]) is not str:

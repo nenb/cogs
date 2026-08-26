@@ -911,6 +911,37 @@ def _runtime_netns_root(netns):
     return f"net:[{identity['inode']}]"
 
 
+def _same_executable_backing(observed, attested):
+    fields = {"device", "inode", "kind", "mode", "uid", "gid", "nlink",
+              "size", "mtime_ns", "ctime_ns"}
+    return (type(observed) is dict and type(attested) is dict
+            and set(observed) == set(attested) == fields | {"mount_id"}
+            and all(observed[name] == attested[name] for name in fields))
+
+
+def _collapse_virtiofsd_worker(rows):
+    _fail(type(rows) is list and all(type(row) is dict for row in rows))
+    virtiofsd = [row for row in rows if row.get("role") == "virtiofsd"]
+    shim_pids = {row.get("pid") for row in rows if row.get("role") == "shim"}
+    if len(virtiofsd) != 2:
+        return rows
+    launchers = [row for row in virtiofsd if row.get("ppid") in shim_pids]
+    _fail(len(launchers) == 1, "virtiofsd launcher ancestry")
+    launcher = launchers[0]
+    workers = [row for row in virtiofsd if row.get("ppid") == launcher.get("pid")]
+    _fail(len(workers) == 1, "virtiofsd worker ancestry")
+    worker = workers[0]
+    launcher_ns, worker_ns = launcher.get("namespaces"), worker.get("namespaces")
+    _fail(type(launcher_ns) is dict and type(worker_ns) is dict
+          and worker.get("starttime", -1) >= launcher.get("starttime", 0)
+          and worker.get("cmdline") == launcher.get("cmdline")
+          and all(worker_ns.get(name) == launcher_ns.get(name)
+                  for name in ("ipc", "mnt", "net", "user", "uts"))
+          and worker_ns.get("pid") != launcher_ns.get("pid"),
+          "virtiofsd worker identity")
+    return [row for row in rows if row is not worker]
+
+
 def _proc_snapshot(attested, netns, host_netns):
     import completion_kata_process as process
     expected = {item.path: item for item in attested}
@@ -933,7 +964,8 @@ def _proc_snapshot(attested, netns, host_netns):
             identity = process.fdmap.identity(descriptor)
             generation = process._host_generation(descriptor)
             item = expected[executable]
-            _fail(generation == item.generation and process._digest_fd(descriptor, identity.size) == item.sha256,
+            _fail(_same_executable_backing(generation, item.generation)
+                  and process._digest_fd(descriptor, identity.size) == item.sha256,
                   "runtime executable generation/digest")
         finally: os.close(descriptor)
         row = process._proc_row(pid); _fail(row == before, "runtime process changed")
@@ -949,6 +981,7 @@ def _proc_snapshot(attested, netns, host_netns):
                      "executable_inode": identity.inode,
                      "cmdline": [part.decode("utf-8", "strict") for part in command],
                      "namespaces": namespaces})
+    rows = _collapse_virtiofsd_worker(rows)
     value = {"complete": True, "early_exit": False, "rows": rows,
              "qualification": QUALIFICATION_CANDIDATE}
     return classify_process_snapshot(value, host_netns=host_netns,
