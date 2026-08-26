@@ -2058,15 +2058,15 @@ def _runtime_owner_routes():
             _fail(daemons[state[6]][8] is not None)
             progress = phase_progress(state, phase); identities = history["runtime_identities"]
             if not identities:
-                before, shim = task_fact(owner, phase, 0, None)
-                _fail(before["task"] in {"running", "stopped"} and shim is not None)
-                state[0].record_runtime_identity(identity_body(state, shim)); identities = state[0].runtime_recovery_history()["runtime_identities"]
+                before, task_process = task_fact(owner, phase, 0, None)
+                _fail(before["task"] in {"running", "stopped"} and task_process is not None)
+                state[0].record_runtime_identity(identity_body(state, task_process)); identities = state[0].runtime_recovery_history()["runtime_identities"]
             _fail(len(identities) == 1); baseline = identities[0]; pid = baseline["pid"]
             progress = phase_progress(state, phase)
             if "CTR_TASK_TERM" not in progress:
-                fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); shim = next(
-                    (row for row in fresh.records if row.role == "shim"), None)
-                _fail(same_identity(shim, baseline), "full task identity before TERM")
+                fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); task_process = next(
+                    (row for row in fresh.records if row.role == "qemu"), None)
+                _fail(same_identity(task_process, baseline), "full task identity before TERM")
                 _out, term = command(owner, actions.CommandId.CTR_TASK_TERM)
                 _fail(term["release_count"] == 1 and term["outcome"] == "exited" and term["status"] == 0
                       and not term["uncertain"], "successful released TERM")
@@ -2074,16 +2074,16 @@ def _runtime_owner_routes():
             if progress.count("CTR_TASK_LIST") < 2:
                 limit = time.monotonic_ns() + 2_000_000_000
                 while time.monotonic_ns() < limit:
-                    fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); shim = next(
-                        (row for row in fresh.records if row.role == "shim"), None)
-                    _fail(shim is None or same_identity(shim, baseline), "replacement after TERM")
-                    if shim is None: break
+                    fresh = _proc_snapshot(verify_attestation(state[5]), state[4], state[12]); task_process = next(
+                        (row for row in fresh.records if row.role == "qemu"), None)
+                    _fail(task_process is None or same_identity(task_process, baseline), "replacement after TERM")
+                    if task_process is None: break
                     time.sleep(0.01)
-            after, shim = task_fact(owner, phase, 2, pid)
-            _fail(shim is None or same_identity(shim, baseline), "full task identity after TERM")
+            after, task_process = task_fact(owner, phase, 2, pid)
+            _fail(task_process is None or same_identity(task_process, baseline), "full task identity after TERM")
             if after["task"] in {"stopped", "absent"}:
                 state[0].settle_runtime_phase("TASK_STOPPED", _canonical_fact(after)); return after
-            _fail(after["task"] == "running" and same_identity(shim, baseline))
+            _fail(after["task"] == "running" and same_identity(task_process, baseline))
             progress = phase_progress(state, phase)
             if "CTR_TASK_KILL" not in progress: command(owner, actions.CommandId.CTR_TASK_KILL)
             import completion_kata_process as process
@@ -2093,7 +2093,7 @@ def _runtime_owner_routes():
             for ordinal in range(max(0, phase_progress(state, phase).count("CTR_TASK_LIST") - 2), count):
                 remaining = start + (ordinal + 1) * interval - process._boottime_ns()
                 if remaining > 0: time.sleep(remaining / 1_000_000_000)
-                stopped, shim = task_fact(owner, phase, 4 + ordinal, pid); _fail(shim is None or same_identity(shim, baseline), "replacement after KILL")
+                stopped, task_process = task_fact(owner, phase, 4 + ordinal, pid); _fail(task_process is None or same_identity(task_process, baseline), "replacement after KILL")
                 if stopped["task"] in {"stopped", "absent"}: state[0].settle_runtime_phase("TASK_STOPPED", _canonical_fact(stopped)); return stopped
                 _fail(stopped["task"] == "running")
                 if process._boottime_ns() >= final: break
