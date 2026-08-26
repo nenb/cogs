@@ -417,6 +417,30 @@ def classify_process(value):
         value, host_netns="net:[20]", operation_netns="net:[21]")
 classified = classify_process(proc_fixture)
 check(classified.disposition is runtime.Observation.EXACT and len(classified.records) == 3, "real Kata 3.32 role namespaces")
+native_proc_fixture = copy.deepcopy(proc_fixture)
+native_proc_fixture["rows"][0]["cmdline"] = [
+    "/opt/kata/bin/containerd-shim-kata-v2", "-namespace", runtime.NAMESPACE,
+    "-publish-binary", "", "-id", runtime.SANDBOX_ID,
+]
+native_proc_fixture["rows"][1]["cmdline"] = [
+    "/opt/kata/bin/qemu-system-x86_64",
+    "-name", "sandbox-" + runtime.SANDBOX_ID + ",debug-threads=on",
+]
+native_proc_fixture["rows"][1]["namespaces"]["mnt"] = "mnt:[10]"
+native_proc_fixture["rows"][2]["cmdline"] = [
+    "/opt/kata/libexec/virtiofsd",
+    "--shared-dir=/run/kata-containers/shared/sandboxes/" + runtime.SANDBOX_ID + "/shared",
+]
+native_proc_fixture["rows"][2]["namespaces"].update({"mnt": "mnt:[12]", "net": "net:[22]"})
+check(classify_process(native_proc_fixture).disposition is runtime.Observation.EXACT,
+      "native private virtiofsd mount/network namespaces")
+hostile_empty_argv = copy.deepcopy(native_proc_fixture)
+hostile_empty_argv["rows"][1]["cmdline"].insert(1, "")
+rejected(lambda: classify_process(hostile_empty_argv))
+hostile_native_proc = copy.deepcopy(native_proc_fixture)
+hostile_native_proc["rows"][2]["namespaces"]["net"] = "net:[20]"
+check(classify_process(hostile_native_proc).disposition is runtime.Observation.PRESERVE,
+      "virtiofsd private namespace collision accepted")
 generation = {"mount_id": 30, "device": 8, "inode": 9, "kind": "file",
               "mode": 0o755, "uid": 0, "gid": 0, "nlink": 1, "size": 10,
               "mtime_ns": 11, "ctime_ns": 12}
@@ -823,7 +847,7 @@ def qmp_rows(event=False):
             {"enabled": True, "present": True}), strict=True):
         if event: values.append(qmp_event())
         values.append({"return": result, "id": identifier})
-    return [json.dumps(value, separators=(",", ":")).encode() + b"\n" for value in values]
+    return [json.dumps(value, separators=(",", ":")).encode() + b"\r\n" for value in values]
 class FakeQmpSocket:
     def __init__(self, rows): self.rows = list(rows); self.writes = []; self.timeouts = []
     def settimeout(self, value): self.timeouts.append(value)
@@ -840,16 +864,25 @@ for interleaved in (False, True):
           and all(identifier.encode() in row
                   for identifier, row in zip(runtime.QMP_IDS, client.writes, strict=True)),
           "fixed QMP observer exchange")
+native_status_rows = qmp_rows()
+native_status_rows[2] = json.dumps(
+    {"return": {"running": True, "status": "running"}, "id": runtime.QMP_IDS[1]},
+    separators=(",", ":")).encode() + b"\r\n"
+native_client = FakeQmpSocket(native_status_rows)
+check(runtime._qmp_exchange(native_client, __import__("time").monotonic() + 1)[0]
+      == {"running": True, "status": "running"},
+      "native QEMU 11 status shape")
 
 def reject_exchange(rows):
     reject_runtime(lambda: runtime._qmp_exchange(
         FakeQmpSocket(rows), __import__("time").monotonic() + 1))
 base_rows = qmp_rows()
 for hostile in (
-    [base_rows[0], b'{"return":{},"id":"wrong"}\n'],
-    [base_rows[0], b'{"error":{},"id":"cogs-capabilities-v1"}\n'],
-    [base_rows[0], b'{"return":{},"id":"cogs-capabilities-v1","id":"cogs-capabilities-v1"}\n'],
-    [base_rows[0], b'{"unexpected":true}\n'],
+    [base_rows[0], b'{"return":{},"id":"wrong"}\r\n'],
+    [json.dumps(qmp_greeting(), separators=(",", ":")).encode() + b"\n"],
+    [base_rows[0], b'{"error":{},"id":"cogs-capabilities-v1"}\r\n'],
+    [base_rows[0], b'{"return":{},"id":"cogs-capabilities-v1","id":"cogs-capabilities-v1"}\r\n'],
+    [base_rows[0], b'{"unexpected":true}\r\n'],
     [base_rows[0], b""],
     [base_rows[0], b"x" * (runtime.QMP_LINE_LIMIT + 1)],
 ): reject_exchange(hostile)

@@ -1166,10 +1166,12 @@ def parse_runtime_links(raw):
             or guest.operstate != "UP" or not guest.up or guest.qdisc != "noqueue"):
         raise NetworkError("runtime veth drift")
     for tap in taps:
-        tap_state = (tap.qdisc, tap.operstate)
+        tap_state = (tap.qdisc, tap.operstate, tap.addrgenmode)
         if (tap.peer_ifindex is not None or not tap.up
-                or tap_state not in {("noqueue", "UP"), ("fq_codel", "UNKNOWN")}
-                or tap.addrgenmode not in ("none", 1)
+                or tap_state not in {("noqueue", "UP", "none"), ("noqueue", "UP", 1),
+                                     ("fq_codel", "UNKNOWN", "none"),
+                                     ("fq_codel", "UNKNOWN", 1),
+                                     ("mq", "UNKNOWN", "eui64")}
                 or tap.mac == "00:00:00:00:00:00"
                 or set(tap.flags) != {"BROADCAST", "MULTICAST", "UP", "LOWER_UP"}):
             raise NetworkError(f"runtime TAP identity drift:{tap!r}")

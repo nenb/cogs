@@ -461,6 +461,13 @@ native_tap_json["linkinfo"]["info_data"] = {
     "user": "root", "group": "root",
 }
 assert network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1].kind == "tap"
+kata_native_tap = copy.deepcopy(native_tap_json)
+kata_native_tap.pop("addrgenmode")
+kata_native_tap.update({"qdisc": "mq", "inet6_addr_gen_mode": "eui64"})
+assert network.parse_runtime_links(encoded(ns_links_json + [kata_native_tap]))[-1].kind == "tap"
+hostile_kata_tap = copy.deepcopy(kata_native_tap)
+hostile_kata_tap["inet6_addr_gen_mode"] = "none"
+rejected(lambda: network.parse_runtime_links(encoded(ns_links_json + [hostile_kata_tap])))
 hostile_native_tap = copy.deepcopy(native_tap_json)
 hostile_native_tap["linkinfo"]["info_data"]["user"] = "other"
 rejected(lambda: network.parse_runtime_links(encoded(ns_links_json + [hostile_native_tap])))

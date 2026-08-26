@@ -612,8 +612,11 @@ def _proc_record(row):
     executable = _path(row["executable"])
     device = _uint(row["executable_device"]); inode = _uint(row["executable_inode"], 1)
     command = row["cmdline"]
-    _fail(type(command) is list and 1 <= len(command) <= 256 and
-          all(type(item) is str and item and "\x00" not in item and len(item.encode()) <= MAX_CMDLINE for item in command))
+    _fail(type(command) is list and 1 <= len(command) <= 256 and all(
+          type(item) is str and "\x00" not in item and len(item.encode()) <= MAX_CMDLINE
+          and (bool(item) or (role == "shim" and index > 0
+                              and command[index - 1] == "-publish-binary"))
+          for index, item in enumerate(command)))
     _fail(sum(len(item.encode()) + 1 for item in command) <= MAX_CMDLINE)
     namespaces = row["namespaces"]
     expected_ns = ("ipc", "mnt", "net", "pid", "user", "uts")
@@ -623,6 +626,16 @@ def _proc_record(row):
               re.fullmatch(rf"{name}:\[[1-9][0-9]*\]", identity) is not None, "namespace identity")
     return ProcessRecord(role, pid, ppid, starttime, executable, device, inode,
                          tuple(command), tuple(sorted(namespaces.items())))
+def _sandbox_cmdline_bound(record):
+    native = {
+        "shim": SANDBOX_ID,
+        "qemu": "sandbox-" + SANDBOX_ID + ",debug-threads=on",
+        "virtiofsd": ("--shared-dir=/run/kata-containers/shared/sandboxes/"
+                      + SANDBOX_ID + "/shared"),
+    }
+    return SANDBOX_ID in record.cmdline or native.get(record.role) in record.cmdline
+
+
 def classify_process_snapshot(snapshot, baseline=(), host_netns=None, operation_netns=None):
     """Classify a complete, bounded offline /proc enumeration.
     Early exit, duplicate roles, replacement, uncertain ancestry, or namespace
@@ -661,14 +674,19 @@ def classify_process_snapshot(snapshot, baseline=(), host_netns=None, operation_
         return ProcessClassification(Observation.PRESERVE, owned, "role-cardinality")
     shim, qemu, virtiofsd = by_role["shim"][0], by_role["qemu"][0], by_role["virtiofsd"][0]
     if any(item.executable != exact_exec[item.role] or item.cmdline[0] != item.executable
-           or SANDBOX_ID not in item.cmdline for item in owned):
+           or not _sandbox_cmdline_bound(item) for item in owned):
         return ProcessClassification(Observation.PRESERVE, owned, "executable-or-cmdline")
     if qemu.ppid != shim.pid or virtiofsd.ppid != shim.pid or not (
             shim.starttime <= qemu.starttime and shim.starttime <= virtiofsd.starttime):
         return ProcessClassification(Observation.PRESERVE, owned, "ancestry-or-starttime")
     ns = {item.role: dict(item.namespaces) for item in owned}
-    if (ns["shim"]["net"] != host_netns or ns["qemu"]["net"] != operation_netns or
-            ns["virtiofsd"]["net"] != operation_netns or ns["virtiofsd"]["mnt"] != ns["shim"]["mnt"]):
+    legacy_virtiofsd = (ns["virtiofsd"]["net"] == operation_netns
+                        and ns["virtiofsd"]["mnt"] == ns["shim"]["mnt"])
+    native_virtiofsd = (ns["qemu"]["mnt"] == ns["shim"]["mnt"]
+                        and ns["virtiofsd"]["net"] not in {host_netns, operation_netns}
+                        and ns["virtiofsd"]["mnt"] != ns["shim"]["mnt"])
+    if (ns["shim"]["net"] != host_netns or ns["qemu"]["net"] != operation_netns
+            or not (legacy_virtiofsd or native_virtiofsd)):
         return ProcessClassification(Observation.PRESERVE, owned, "namespace-correlation")
     baseline_ids = {(item.pid, item.starttime, item.executable_device, item.executable_inode) for item in baseline}
     if any((item.pid, item.starttime, item.executable_device, item.executable_inode) in baseline_ids for item in owned):
@@ -972,9 +990,12 @@ def _proc_snapshot(attested, netns, host_netns):
         command = _read_bounded(f"/proc/{pid}/cmdline", MAX_CMDLINE).rstrip(b"\0").split(b"\0")
         namespaces = {kind: os.readlink(f"/proc/{pid}/ns/{kind}")
                       for kind in ("ipc", "mnt", "net", "pid", "user", "uts")}
-        expected_netns = {"shim": host_netns, "qemu": netns_root,
-                          "virtiofsd": netns_root}
-        _fail(os.readlink("/proc/self/ns/net") == host_netns and namespaces["net"] == expected_netns[roles[executable]]
+        role = roles[executable]
+        expected_netns = {"shim": host_netns, "qemu": netns_root}
+        net_matches = (namespaces["net"] == expected_netns[role]
+                       if role in expected_netns else
+                       namespaces["net"] not in {host_netns, netns_root})
+        _fail(os.readlink("/proc/self/ns/net") == host_netns and net_matches
               and process._proc_row(pid) == row, "Kata 3.32 role/netns correlation")
         rows.append({"role": roles[executable], "pid": pid, "ppid": row[1], "starttime": row[4],
                      "executable": executable, "executable_device": identity.device,
@@ -1127,7 +1148,8 @@ def _observer_snapshot(qemu):
     argv_raw, argv_sha256, private_argv_fd = _qemu_argv(qemu)
     private = _qmp_socket_generation(KATA_QMP_SOCKET)
     observer = _qmp_socket_generation(OBSERVER_QMP_SOCKET, True)
-    rows = _unix_listeners(_read_bounded("/proc/net/unix", 1_048_576))
+    rows = _unix_listeners(_read_bounded(
+        f"/proc/{qemu.pid}/net/unix", 1_048_576))
     _fail(len(rows) == 2 and {path for path, _inode in rows} ==
           {KATA_QMP_SOCKET, OBSERVER_QMP_SOCKET},
           "exact dual QMP listeners")
@@ -1180,8 +1202,9 @@ def _qmp_exchange(client, deadline):
             buffer.extend(chunk)
         line, _, remainder = buffer.partition(b"\n")
         buffer[:] = remainder
-        _fail(0 < len(line) <= QMP_LINE_LIMIT and b"\r" not in line,
-              "QMP line framing")
+        _fail(1 < len(line) <= QMP_LINE_LIMIT and line.endswith(b"\r")
+              and b"\r" not in line[:-1], "QMP line framing")
+        line = line[:-1]
         messages += 1
         _fail(messages <= QMP_MESSAGE_LIMIT, "QMP message count")
         return _load_json(bytes(line))
@@ -1234,8 +1257,11 @@ def _qmp_exchange(client, deadline):
         _qmp_event(_load_json(bytes(line)))
     capabilities, status, kvm = answers
     _fail(capabilities == {}, "QMP capabilities response")
-    _fail(type(status) is dict and set(status) == {"running", "singlestep", "status"}
-          and type(status["running"]) is bool and status["singlestep"] is False
+    _fail(type(status) is dict
+          and set(status) in ({"running", "status"},
+                              {"running", "singlestep", "status"})
+          and type(status["running"]) is bool
+          and ("singlestep" not in status or status["singlestep"] is False)
           and status["status"] in {"running", "paused"}
           and status["running"] == (status["status"] == "running"),
           "QMP status response")
