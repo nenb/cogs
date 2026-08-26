@@ -530,6 +530,14 @@ mountinfo = (
     b"1 1 8:1 / / rw - ext4 /dev/root rw\n"
     b"42 1 0:42 / /run/kata-containers/shared/sandboxes/cogs-stage2-ssh-v1 rw - tmpfs tmpfs rw\n"
 )
+native_mountinfo = mountinfo + (
+    b"43 1 0:4 net:[4026532627] /run/netns/c42n0123456789 rw - nsfs nsfs rw\n"
+    b"44 1 0:4 mnt:[4026532698] /run/snapd/ns/example.mnt rw - nsfs nsfs rw\n")
+check(len(runtime.parse_mountinfo(native_mountinfo)) == 4, "exact native nsfs roots")
+for hostile_root in (b"pid:[4026532627]", b"net:[0]", b"net:4026532627"):
+    rejected(lambda hostile_root=hostile_root: runtime.parse_mountinfo(
+        mountinfo + b"43 1 0:4 " + hostile_root
+        + b" /run/netns/c42n0123456789 rw - nsfs nsfs rw\n"))
 share_rows = [
     {"path": ".", "kind": "directory", "device": linux_device(0, 42), "inode": 10,
      "mount_id": 42, "mode": 0o700, "uid": 0, "gid": 0, "nofollow": True},

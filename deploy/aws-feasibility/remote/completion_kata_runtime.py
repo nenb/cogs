@@ -768,12 +768,18 @@ def parse_mountinfo(raw):
         major_minor = fields[2].split(b":")
         _fail(mount_id > 0 and parent_id > 0 and len(major_minor) == 2 and all(item.isdigit() for item in major_minor))
         root = _mount_unescape(fields[3]); point = _mount_unescape(fields[4])
-        _path(root); _path(point)
+        _path(point)
         options = fields[5].decode("ascii", "strict").split(",")
         _fail(options and len(options) == len(set(options)) and all(options))
         optional = tuple(field.decode("ascii", "strict") for field in fields[6:separator])
         fs_type = fields[separator + 1].decode("ascii", "strict")
         source = _mount_unescape(fields[separator + 2])
+        if root.startswith("/"):
+            _path(root)
+        else:
+            _fail(fs_type == source == "nsfs" and re.fullmatch(
+                r"(?:mnt|net):\[[1-9][0-9]*\]", root) is not None,
+                "nsfs mount root")
         result.append((mount_id, parent_id, int(major_minor[0]), int(major_minor[1]),
                        root, point, tuple(options), optional, fs_type, source))
     _fail(len({row[0] for row in result}) == len(result) and

@@ -540,6 +540,17 @@ native_tap_qdiscs = network.parse_tc_qdiscs(encoded([
     {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
 ]), native_tap)
 assert native_tap_qdiscs[0].kind == "fq_codel"
+kata_mq_qdiscs = [
+    {"kind": "mq", "handle": "0:", "root": True, "options": {}},
+    {"kind": "fq_codel", "handle": "0:", "parent": ":1",
+     "options": network._NATIVE_FQ_CODEL_OPTIONS},
+    {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
+]
+parsed_kata_qdiscs = network.parse_tc_qdiscs(encoded(kata_mq_qdiscs), kata_links[-1])
+assert tuple(item.kind for item in parsed_kata_qdiscs) == ("mq", "fq_codel", "ingress")
+hostile_kata_qdiscs = copy.deepcopy(kata_mq_qdiscs)
+hostile_kata_qdiscs[1]["parent"] = ":2"
+rejected(lambda: network.parse_tc_qdiscs(encoded(hostile_kata_qdiscs), kata_links[-1]))
 guest_filter = network.parse_tc_filters(encoded(filter_fixture("tap-dynamic", 11)), guest, tap)
 tap_filter = network.parse_tc_filters(encoded(filter_fixture("eth0", 12)), tap, guest)
 native_filter = [

@@ -1078,8 +1078,21 @@ _NATIVE_FQ_CODEL_OPTIONS = {
 def parse_tc_qdiscs(raw, endpoint):
     endpoint = _tc_endpoint(endpoint)
     value = _load(raw)
-    if type(value) is not list or len(value) not in (1, 2):
+    native_mq = endpoint.kind == "tap" and endpoint.qdisc == "mq"
+    if type(value) is not list or len(value) not in ((1, 2, 3) if native_mq else (1, 2)):
         raise NetworkError("tc qdisc list")
+    if len(value) == 3:
+        root, child, ingress = value
+        if (root != {"kind": "mq", "handle": "0:", "root": True, "options": {}}
+                or child != {"kind": "fq_codel", "handle": "0:", "parent": ":1",
+                             "options": _NATIVE_FQ_CODEL_OPTIONS}
+                or ingress != {"kind": "ingress", "handle": "ffff:",
+                               "parent": "ffff:fff1", "options": {}}):
+            raise NetworkError("native mq qdisc drift")
+        return (TcQdisc(endpoint.ifindex, endpoint.ifname, "mq", "0:", None, True, None),
+                TcQdisc(endpoint.ifindex, endpoint.ifname, "fq_codel", "0:", ":1", False, None),
+                TcQdisc(endpoint.ifindex, endpoint.ifname, "ingress", "ffff:",
+                         "ffff:fff1", False, None))
     result = []
     for index, row in enumerate(value):
         if index == 0:
