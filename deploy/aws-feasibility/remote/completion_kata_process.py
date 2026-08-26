@@ -2022,8 +2022,16 @@ def _daemon_routes():
             raise ProcessError("private daemon transaction profile differs")
         base_generation = _generation_tuple(_host_generation(cgroup.base_fd, "directory"))
         history = journal.runtime_recovery_history()
+        runs = [item for item in history.get("intents", ())
+                if item.get("command_id") == "CTR_RUN"]
+        successful = (len(runs) == 1 and len([
+            item for item in history.get("outcomes", ())
+            if item.get("command_serial") == runs[0].get("command_serial")
+            and item.get("binding_sha256") == runs[0].get("binding_sha256")
+            and item.get("outcome") == "exited" and item.get("status") == 0
+            and item.get("uncertain") is False]) == 1)
         runtime_leaf = ("kata_" + kata_runtime.CONTAINER_ID
-                        if history.get("launches") else None)
+                        if history.get("launches") or successful else None)
         return _DaemonTransactionProfile(
             retained["pid"], row, cgroup.path, cgroup.leaf_name,
             cgroup.leaf_generation, base_generation, runtime_leaf)

@@ -317,7 +317,7 @@ def authentic_daemon_transaction_profile():
         process.CONTAINERD_STATE, process.CONTAINERD_CONFIG = str(runtime / "state"), str(runtime / "config")
         process.STAGED_CONTAINERD, process.STAGED_CTR = str(daemon_path), str(root / "ctr")
         class Journal:
-            def __init__(self): self.serial = 0; self.daemon = None; self.launched = False
+            def __init__(self): self.serial = 0; self.daemon = None; self.launched = False; self.runtime_succeeded = False
             def command_context(self):
                 return process.kata_operation.CommandContext(
                     "b" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
@@ -337,7 +337,13 @@ def authentic_daemon_transaction_profile():
             def record_daemon_outcome(self, body):
                 process.kata_operation._validate_body("DAEMON_OUTCOME_V2", body); return body
             def runtime_recovery_history(self):
-                return {"launches": ({"command_id": "CTR_RUN"},) if self.launched else ()}
+                run = {"command_id": "CTR_RUN", "command_serial": 91,
+                       "binding_sha256": "9" * 64}
+                outcome = {**run, "outcome": "exited", "status": 0,
+                           "uncertain": False}
+                return {"launches": ({"command_id": "CTR_RUN"},) if self.launched else (),
+                        "intents": (run,) if self.runtime_succeeded else (),
+                        "outcomes": (outcome,) if self.runtime_succeeded else ()}
         daemon_fd = os.open(daemon_path, os.O_RDONLY | os.O_CLOEXEC)
         true_fd = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
         def retained(role, path, descriptor):
@@ -369,7 +375,7 @@ def authentic_daemon_transaction_profile():
                         accepted_socket.connect(process.CONTAINERD_TTRPC_SOCKET); time.sleep(0.05)
                         assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     if fault == "runtime-leaf":
-                        os.mkdir(runtime_leaf, 0o700); journal.launched = True
+                        os.mkdir(runtime_leaf, 0o700); journal.runtime_succeeded = True
                         profile = process._fixed_daemon_transaction_profile(owner, journal)
                         assert profile.runtime_leaf_name == "kata_" + process.kata_runtime.CONTAINER_ID
                     if fault == "foreign-child":
