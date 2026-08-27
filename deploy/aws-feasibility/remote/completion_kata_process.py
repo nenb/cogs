@@ -1295,6 +1295,33 @@ def _verify_daemon_transaction_census(profile, owner, leader_pid):
         raise ProcessError("daemon transaction shared ownership differs")
 
 
+def _remove_retired_runtime_leaf(profile, daemon_cgroup):
+    name = profile.runtime_leaf_name
+    if name is None:
+        return
+    if type(profile) is not _DaemonTransactionProfile or daemon_cgroup.base_fd is None:
+        raise ProcessError("retired runtime cgroup profile")
+    if _owned_cgroup_generation(daemon_cgroup) != profile.leaf_generation:
+        raise ProcessError("retired runtime daemon cgroup changed")
+    if _cgroup_leaf_names(daemon_cgroup.base_fd) != {profile.leaf_name, name}:
+        raise ProcessError("retired runtime cgroup census")
+    path = CGROUP_BASE + "/" + name
+    descriptor, generation = _directory_identity(path)
+    runtime = _CgroupOwner(path, _generation_tuple(generation), profile.base_generation,
+                           False, {}, descriptor, None, name)
+    try:
+        if _cgroup_members(runtime) or _cgroup_members(runtime):
+            raise ProcessError("retired runtime cgroup remains populated")
+        if _owned_cgroup_generation(runtime) != runtime.leaf_generation:
+            raise ProcessError("retired runtime cgroup changed")
+    finally:
+        if runtime.directory_fd is not None:
+            os.close(runtime.directory_fd); runtime.directory_fd = None
+    os.rmdir(name, dir_fd=daemon_cgroup.base_fd)
+    if _cgroup_leaf_names(daemon_cgroup.base_fd) != {profile.leaf_name}:
+        raise ProcessError("retired runtime cgroup removal differs")
+
+
 def _cgroup_file(owner, name, flags):
     if _owned_cgroup_generation(owner) != owner.leaf_generation:
         raise ProcessError("cgroup leaf replaced")
@@ -2184,6 +2211,7 @@ def _daemon_routes():
             raise
     def stop(owner, journal):
         retained = verify(owner, journal); state = states.require(owner); errors = []
+        profile = transaction_profile(owner, journal)
         final = _boottime_ns() + 10_000_000_000; term_limit = min(final, _boottime_ns() + 5_000_000_000); status = None
         signal.pidfd_send_signal(state[2], signal.SIGTERM); poller = select.poll(); poller.register(state[2], select.POLLIN)
         wait_ms = max(1, (term_limit - _boottime_ns()) // 1_000_000)
@@ -2199,6 +2227,10 @@ def _daemon_routes():
                     if _proc_row(retained["pid"])[4] == retained["proc_start_time"]: errors.append("daemon-not-absent")
                 except FileNotFoundError: pass
         else: errors.append("daemon-final-deadline")
+        try: _remove_retired_runtime_leaf(profile, state[3])
+        except (OSError, ProcessError) as error:
+            detail = getattr(error, "errno", None) if isinstance(error, OSError) else str(error)
+            errors.append(f"runtime-cgroup-remove:{detail}")
         empty, descendants, removed, leader = _settle_cgroup(state[3], retained["pid"], final, errors)
         errors.extend(close_state(owner))
         absent = False

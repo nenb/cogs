@@ -405,17 +405,19 @@ def authentic_daemon_transaction_profile():
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0); foreign_pid = None
                     if accepted_socket is not None: accepted_socket.close(); accepted_socket = None
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
-                    if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
+                    if os.path.isdir(runtime_leaf) and fault != "runtime-leaf": os.rmdir(runtime_leaf)
                     assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     base_fd, _generation = process._directory_identity(process.CGROUP_BASE)
-                    try: assert process._cgroup_leaf_names(base_fd) == {profile.leaf_name}
+                    expected = {profile.leaf_name}
+                    if profile.runtime_leaf_name is not None: expected.add(profile.runtime_leaf_name)
+                    try: assert process._cgroup_leaf_names(base_fd) == expected
                     finally: os.close(base_fd)
                 finally:
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
                     if accepted_socket is not None: accepted_socket.close()
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
-                    if os.path.isdir(runtime_leaf): os.rmdir(runtime_leaf)
+                    if os.path.isdir(runtime_leaf) and fault != "runtime-leaf": os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)
                 assert process._active_fixed_daemon_profile(journal) is None
                 assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
