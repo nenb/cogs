@@ -94,7 +94,12 @@ def _validate_runtime_layout(names, records, phase):
     if phase in RUNTIME_ABSENT_PHASES:
         _fail(not runtime_present)
     elif phase == "FIREWALL_ABSENT":
-        _fail(runtime_present == staged)
+        terminal = records[-1] if records else None
+        daemon_closed = (terminal is not None and terminal.record_type == "DAEMON_OUTCOME_V2"
+                         and terminal.body["uncertain"] is False
+                         and all(terminal.body[name] for name in (
+                             "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+        _fail(runtime_present == staged or staged and not runtime_present and daemon_closed)
     elif staged and phase not in {"UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
         _fail(runtime_present)
     elif intent and not staged:

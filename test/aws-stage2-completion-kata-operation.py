@@ -256,6 +256,19 @@ operation._validate_runtime_layout(set(), (), "SHARE_ABSENT")
 operation._validate_runtime_layout(set(), (), "FIREWALL_ABSENT")
 rejected(lambda: operation._validate_runtime_layout(
     {operation.RUNTIME_NAME.raw}, (), "FIREWALL_ABSENT"))
+staged_runtime = SimpleNamespace(record_type="RUNTIME_STAGED_V3", body={})
+closed_daemon = SimpleNamespace(record_type="DAEMON_OUTCOME_V2", body={
+    "uncertain": False, "leader_reaped": True, "descendants_reaped": True,
+    "cgroup_empty": True, "cgroup_removed": True,
+})
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, (staged_runtime, closed_daemon), "FIREWALL_ABSENT")
+operation._validate_runtime_layout(set(), (staged_runtime, closed_daemon), "FIREWALL_ABSENT")
+uncertain_daemon = SimpleNamespace(record_type="DAEMON_OUTCOME_V2", body={
+    **closed_daemon.body, "uncertain": True,
+})
+rejected(lambda: operation._validate_runtime_layout(
+    set(), (staged_runtime, uncertain_daemon), "FIREWALL_ABSENT"))
 rejected(lambda: operation._validate_runtime_layout(
     {operation.RUNTIME_STAGING_NAME.raw}, (), "NETWORK_READY"))
 fs_intent = {
