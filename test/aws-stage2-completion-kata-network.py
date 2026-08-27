@@ -497,6 +497,12 @@ kata_routes6 = routes6 + [
      "flags": [], "pref": "medium"},
 ]
 assert len(network.parse_routes(encoded(kata_routes6), 6, kata_links)) == 5
+linkdown_routes6 = copy.deepcopy(kata_routes6)
+linkdown_routes6[-3]["flags"] = ["linkdown"]
+linkdown_routes6[-1]["flags"] = ["linkdown"]
+rejected(lambda: network.parse_routes(encoded(linkdown_routes6), 6, kata_links))
+assert len(network.parse_routes(encoded(linkdown_routes6), 6, kata_links,
+                                allow_tap_linkdown=True)) == 5
 rejected(lambda: network.parse_routes(encoded(kata_routes6[:-1]), 6, kata_links))
 hostile_kata_addresses = copy.deepcopy(kata_runtime_addresses)
 hostile_kata_addresses[-1]["addr_info"][0]["local"] = "fe80::31"

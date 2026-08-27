@@ -421,9 +421,10 @@ _ROUTE6_CANDIDATE = {
 }
 
 
-def parse_routes(raw, family, links, host_if=HOST_IF):
+def parse_routes(raw, family, links, host_if=HOST_IF, allow_tap_linkdown=False):
     value = _load(raw)
-    if type(value) is not list or family not in (4, 6) or type(links) is not tuple:
+    if (type(value) is not list or family not in (4, 6) or type(links) is not tuple
+            or type(allow_tap_linkdown) is not bool):
         raise NetworkError("route list")
     bound = {item.ifname for item in links}
     runtime_tap_links = tuple(item for item in links if item.kind == "tap")
@@ -475,13 +476,14 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     else:
         expected = set(_ROUTE4_CANDIDATE if family == 4 else _ROUTE6_CANDIDATE)
         if family == 6:
+            tap_flags = ("linkdown",) if allow_tap_linkdown else ()
             expected.update(("multicast", "ff00::/8", tap, "local", "kernel", None,
-                             None, 256, (), "medium") for tap in runtime_taps)
+                             None, 256, tap_flags, "medium") for tap in runtime_taps)
             for tap in runtime_tap_links:
                 if tap.addrgenmode == "eui64":
                     expected.update({
                         ("unicast", "fe80::/64", tap.ifname, "main", "kernel",
-                         None, None, 256, (), "medium"),
+                         None, None, 256, tap_flags, "medium"),
                         ("local", _eui64_link_local(tap.mac), tap.ifname, "local",
                          "kernel", None, None, 0, (), "medium"),
                     })
@@ -2785,7 +2787,8 @@ def _observe_fixed_runtime_network(journal, ip, nft, tc, record=True):
     identity_sources = expected[len(observed_prefix):]
     outputs = [{"source_id": name, "raw": value} for name, value in zip(identity_sources, raw, strict=True)]
     identity = _derive_journal_identity(
-        "runtime", None, outputs, prior, baselines, _journal_policy(journal))[0]
+        "runtime", None, outputs, prior, baselines, _journal_policy(journal),
+        allow_tap_linkdown=not record)[0]
     sources = _sources(journal, cursor_after)
     return _snapshot(journal, "runtime", baselines, identity, sources) if record else _bind_identity(identity, sources)
 
@@ -2937,7 +2940,7 @@ def _journal_netns(rows, prior):
 
 
 def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
-                             policy_version=None):
+                             policy_version=None, allow_tap_linkdown=False):
     """Purely derive durable state from exact canonical observer bytes."""
     if policy_version is None:
         causal = True
@@ -3015,7 +3018,8 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
         links = (*retained, tap)
         parse_routes(rows["IP_HOST_ROUTES4"][0], 4, host_links, host.ifname)
         parse_routes(rows["IP_HOST_ROUTES6"][0], 6, host_links, host.ifname)
-        parse_routes(rows["IP_NS_ROUTES4"][0], 4, links); parse_routes(rows["IP_NS_ROUTES6"][0], 6, links)
+        parse_routes(rows["IP_NS_ROUTES4"][0], 4, links)
+        parse_routes(rows["IP_NS_ROUTES6"][0], 6, links, allow_tap_linkdown=allow_tap_linkdown)
         guest_q = parse_tc_qdiscs(rows["TC_QDISC"][0], guest); tap_q = parse_tc_qdiscs(rows["TC_QDISC:" + tap.ifname][0], tap)
         filters = (parse_tc_filters(rows["TC_INGRESS_FILTER:eth0"][0], guest, tap) +
                    parse_tc_filters(rows["TC_INGRESS_FILTER:" + tap.ifname][0], tap, guest))
