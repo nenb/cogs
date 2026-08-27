@@ -3451,16 +3451,25 @@ def _make_authority():
             serial, command_id, binding_sha256, stdout, stderr,
         )
     def production(authority): return claim_production_cleanup_operation(authority) if type(authority) is CleanupAuthority else claim_production_operation(authority)
+    def loaded_production(authority):
+        if type(authority) is not OperationAuthority:
+            return production(authority)
+        _fail(authority in owners and authority not in closed and authority not in poisoned)
+        _io, records, status = owner(authority)
+        _fail(status == "exact" and sum(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records) == 1
+              and sum(row.record_type == "LIFECYCLE_DEADLINE_V1" for row in records) == 1)
+        _require_live_production_deadline(records)
+        return authority
     def record_runtime_mount_v2(authority, manifest, generation):
         return production(authority).record_runtime_mount_v2(seal, manifest, generation)
     def pending_fs_intent(authority): return production(authority).pending_fs_intent()
     def record_fs_absent(authority, body): return production(authority).record_fs_absent(body)
-    def record_input_grant(authority, body): return production(authority).record_input_grant(body)
+    def record_input_grant(authority, body): return loaded_production(authority).record_input_grant(body)
     def input_grants(authority): return production(authority).input_grants()
-    def record_input_wa(authority, body): return production(authority).record_input_wa(body)
+    def record_input_wa(authority, body): return loaded_production(authority).record_input_wa(body)
     def input_wa(authority): return production(authority).input_wa()
     def record_input_step(authority, action, path, kind, key, digest):
-        return production(authority).record_input_step(action, path, kind, key, digest)
+        return loaded_production(authority).record_input_step(action, path, kind, key, digest)
     def input_steps(authority): return production(authority).input_steps()
     def input_cleanup_token(authority): return production(authority).input_cleanup_token()
     def record_fs_intent(authority, body): return production(authority).record_fs_intent(body)
