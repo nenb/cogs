@@ -182,6 +182,17 @@ assert network._normalize_baseline_links(hyperv_a) != network._normalize_baselin
     [{**hyperv_a[0], "tso_max_size": 0}])
 assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
     [{**hyperv_a[0], "tso_max_size": 524280}])
+dynamic_a = [{"ifindex": 3, "ifname": "wlan0", "addr_info": [{
+    "family": "inet", "local": "192.0.2.8", "prefixlen": 24, "dynamic": True,
+    "valid_life_time": 65096, "preferred_life_time": 65096,
+}]}]
+dynamic_b = copy.deepcopy(dynamic_a)
+dynamic_b[0]["addr_info"][0].update(valid_life_time=63469, preferred_life_time=63469)
+assert network._normalize_baseline_addresses(dynamic_a) == network._normalize_baseline_addresses(dynamic_b)
+dynamic_replaced = copy.deepcopy(dynamic_b); dynamic_replaced[0]["addr_info"][0]["local"] = "192.0.2.9"
+assert network._normalize_baseline_addresses(dynamic_a) != network._normalize_baseline_addresses(dynamic_replaced)
+invalid_lease = copy.deepcopy(dynamic_a); invalid_lease[0]["addr_info"][0]["preferred_life_time"] = 65097
+rejected(lambda: network._normalize_baseline_addresses(invalid_lease))
 # Pre-admission waits for the VF, then binds every exact row and TSO value.
 assert network._pre_admission_host_links_binding(encoded(hyperv_a)) is None
 terminal_binding = network._pre_admission_host_links_binding(encoded(hyperv_terminal))

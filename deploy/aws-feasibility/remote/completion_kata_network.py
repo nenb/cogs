@@ -2229,6 +2229,29 @@ def _normalize_baseline_links(links):
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _normalize_baseline_addresses(value):
+    """Preserve address identity while excluding DHCP lease countdown metrics."""
+    normalized = json.loads(json.dumps(value))
+    if type(normalized) is not list:
+        raise NetworkError("address normalization inventory")
+    for link in normalized:
+        if type(link) is not dict or type(link.get("addr_info")) is not list:
+            raise NetworkError("address normalization link")
+        for address in link["addr_info"]:
+            if type(address) is not dict:
+                raise NetworkError("address normalization row")
+            dynamic = address.get("dynamic", False)
+            if type(dynamic) is not bool:
+                raise NetworkError("address dynamic marker")
+            if dynamic:
+                valid = address.get("valid_life_time"); preferred = address.get("preferred_life_time")
+                if (type(valid) is not int or type(preferred) is not int
+                        or not 0 <= preferred <= valid <= (1 << 32) - 1):
+                    raise NetworkError("address lease metric")
+                address["valid_life_time"] = address["preferred_life_time"] = 0
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+
+
 def _normalize_baseline_nft(value):
     """Preserve complete ruleset objects while excluding traffic-only counters."""
     normalized = json.loads(json.dumps(value))
@@ -2366,8 +2389,8 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
             raise NetworkError("fixed nft table already exists")
     normalized_names = json.dumps([row for row in names if row["name"] not in ignored_names],
                                   sort_keys=True, separators=(",", ":")).encode()
-    all_raw = (_normalize_baseline_links(links), *raws[1:4], normalized_names,
-               _normalize_baseline_nft(nft), mountinfo)
+    all_raw = (_normalize_baseline_links(links), _normalize_baseline_addresses(addresses),
+               *raws[2:4], normalized_names, _normalize_baseline_nft(nft), mountinfo)
     return dict(zip(_BASELINE_KEYS, (hashlib.sha256(raw).hexdigest() for raw in all_raw), strict=True))
 
 
