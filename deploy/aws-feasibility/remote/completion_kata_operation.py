@@ -2811,7 +2811,7 @@ def _make_authority():
         def record_fs_absent(self, body):
             write_validated(self, "FS_ABSENT", body)
         def record_input_grant(self, body):
-            _io, records, status = reload(self, True)
+            _io, records, status = owner(self)
             _fail(status == "exact" and records)
             value = {"operation_token": records[0].body["operation_token"], **body}
             write_validated(self, "INPUT_GRANT", value)
@@ -2819,7 +2819,7 @@ def _make_authority():
             _io, records, status = reload(self, True); _fail(status == "exact")
             return tuple(item.body for item in records if item.record_type == "INPUT_GRANT")
         def record_input_wa(self, body):
-            _io, records, status = reload(self, True)
+            _io, records, status = owner(self)
             _fail(status == "exact" and records)
             value = {"operation_token": records[0].body["operation_token"], **body}
             write_validated(self, "INPUT_WA", value)
@@ -2827,7 +2827,7 @@ def _make_authority():
             _io, records, status = reload(self, True); _fail(status == "exact")
             return tuple(item.body for item in records if item.record_type == "INPUT_WA")
         def record_input_step(self, action, path, kind, key, digest):
-            _io, records, status = reload(self, True)
+            _io, records, status = owner(self)
             _fail(status == "exact" and records)
             write_validated(self, "INPUT_STEP", {
                 "operation_token": records[0].body["operation_token"], "action": action,
