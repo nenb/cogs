@@ -56,6 +56,7 @@ CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
 FIXED_ENV = kata_operation.FIXED_ENV
 CGROUP_ROOT = "/sys/fs/cgroup"
 CGROUP_BASE = CGROUP_ROOT + "/cogs-stage2-completion-v1"
+KATA_OVERHEAD_BASE = CGROUP_ROOT + "/kata_overhead"
 CGROUP2_MAGIC = 0x63677270
 HOSTILE_ROOT_LIMITATION = (
     "cgroup-v2 owns ordinary descendants; a hostile host-root process can escape "
@@ -1322,6 +1323,42 @@ def _remove_retired_runtime_leaf(profile, daemon_cgroup):
         raise ProcessError("retired runtime cgroup removal differs")
 
 
+def _remove_retired_kata_overhead(profile):
+    name = profile.runtime_leaf_name
+    if name is None:
+        return
+    root_fd, root_generation = _directory_identity(CGROUP_ROOT)
+    base_fd = leaf_fd = None
+    try:
+        base_fd, base_generation = _directory_identity(KATA_OVERHEAD_BASE)
+        if _cgroup_leaf_names(base_fd) != {name}:
+            raise ProcessError("retired Kata overhead census")
+        leaf_fd, leaf_generation = _directory_identity(KATA_OVERHEAD_BASE + "/" + name)
+        leaf = _CgroupOwner(KATA_OVERHEAD_BASE + "/" + name, _generation_tuple(leaf_generation),
+                            _generation_tuple(base_generation), False, {}, leaf_fd, None, name)
+        if _cgroup_members(leaf) or _cgroup_members(leaf):
+            raise ProcessError("retired Kata overhead remains populated")
+        os.close(leaf_fd); leaf_fd = None
+        if _cgroup_generation(leaf.path) != leaf.leaf_generation:
+            raise ProcessError("retired Kata overhead changed")
+        os.rmdir(name, dir_fd=base_fd)
+        if _cgroup_leaf_names(base_fd):
+            raise ProcessError("retired Kata overhead removal differs")
+        base_generation = _host_generation(base_fd, "directory")
+        base = _CgroupOwner(KATA_OVERHEAD_BASE, _generation_tuple(base_generation),
+                            _generation_tuple(root_generation), False, {}, base_fd, None, "kata_overhead")
+        if _cgroup_members(base) or _cgroup_members(base):
+            raise ProcessError("retired Kata overhead base remains populated")
+        if _owned_cgroup_generation(base) != base.leaf_generation:
+            raise ProcessError("retired Kata overhead base changed")
+        os.close(base_fd); base_fd = None
+        os.rmdir("kata_overhead", dir_fd=root_fd)
+    finally:
+        if leaf_fd is not None: os.close(leaf_fd)
+        if base_fd is not None: os.close(base_fd)
+        os.close(root_fd)
+
+
 def _cgroup_file(owner, name, flags):
     if _owned_cgroup_generation(owner) != owner.leaf_generation:
         raise ProcessError("cgroup leaf replaced")
@@ -2227,10 +2264,12 @@ def _daemon_routes():
                     if _proc_row(retained["pid"])[4] == retained["proc_start_time"]: errors.append("daemon-not-absent")
                 except FileNotFoundError: pass
         else: errors.append("daemon-final-deadline")
-        try: _remove_retired_runtime_leaf(profile, state[3])
-        except (OSError, ProcessError) as error:
-            detail = getattr(error, "errno", None) if isinstance(error, OSError) else str(error)
-            errors.append(f"runtime-cgroup-remove:{detail}")
+        for label, action in (("runtime-cgroup-remove", lambda: _remove_retired_runtime_leaf(profile, state[3])),
+                              ("kata-overhead-remove", lambda: _remove_retired_kata_overhead(profile))):
+            try: action()
+            except (OSError, ProcessError) as error:
+                detail = getattr(error, "errno", None) if isinstance(error, OSError) else str(error)
+                errors.append(f"{label}:{detail}")
         empty, descendants, removed, leader = _settle_cgroup(state[3], retained["pid"], final, errors)
         errors.extend(close_state(owner))
         absent = False

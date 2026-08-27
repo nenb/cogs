@@ -361,6 +361,8 @@ def authentic_daemon_transaction_profile():
                 foreign_pid = None; accepted_socket = None
                 foreign_leaf = process.CGROUP_BASE + "/foreign"
                 runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
+                overhead_base = process.KATA_OVERHEAD_BASE
+                overhead_leaf = overhead_base + "/kata_" + process.kata_runtime.CONTAINER_ID
                 try:
                     assert process._child_census() == (profile.pid,)
                     recovery_errors = []
@@ -375,7 +377,9 @@ def authentic_daemon_transaction_profile():
                         accepted_socket.connect(process.CONTAINERD_TTRPC_SOCKET); time.sleep(0.05)
                         assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     if fault == "runtime-leaf":
-                        os.mkdir(runtime_leaf, 0o700); journal.runtime_succeeded = True
+                        os.mkdir(runtime_leaf, 0o700)
+                        os.mkdir(overhead_base, 0o700); os.mkdir(overhead_leaf, 0o700)
+                        journal.runtime_succeeded = True
                         profile = process._fixed_daemon_transaction_profile(owner, journal)
                         assert profile.runtime_leaf_name == "kata_" + process.kata_runtime.CONTAINER_ID
                     if fault == "foreign-child":
@@ -420,6 +424,7 @@ def authentic_daemon_transaction_profile():
                     if os.path.isdir(runtime_leaf) and fault != "runtime-leaf": os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)
                 assert process._active_fixed_daemon_profile(journal) is None
+                assert not os.path.exists(overhead_base)
                 assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
                         and not os.path.lexists(process.CONTAINERD_TTRPC_SOCKET))
             return True
