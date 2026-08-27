@@ -3027,9 +3027,11 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
                                      RuntimeState(netns, host_links, links, guest_q + tap_q, filters))
         table = prior["nft"]["table_name"]; nft_state = parse_nft_snapshot(
             rows["NFT_TABLE"][0], table, host.ifname, causal)
+        observed_routes = hashlib.sha256(b"".join(rows[name][0] for name in
+                          ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6"))).hexdigest()
+        route_identity = prior["routes_sha256"] if allow_tap_linkdown else observed_routes
         value = _identity(netns, host, guest, nft_state, tap, _tc_value(binding.qdiscs, binding.filters),
-                          prior["addresses_sha256"], hashlib.sha256(b"".join(rows[name][0] for name in
-                          ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6"))).hexdigest())
+                          prior["addresses_sha256"], route_identity)
         return value, baselines
     # Effect observations are derived from exact post-effect inventory.
     if action is not None:

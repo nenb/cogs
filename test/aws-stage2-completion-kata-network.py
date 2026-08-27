@@ -742,4 +742,5 @@ assert "while total <= MAX_MOUNTINFO_BYTES:" in source
 assert "chunks.append(part); total += len(part)" in source
 assert 'cursor_after = "NETWORK_SNAPSHOT_V2" if record else "NETWORK_CLEANUP_INTENT_V2"' in source
 assert 'observed_prefix = () if record else ("MOUNTINFO", "NETNS_STAT")' in source
+assert 'route_identity = prior["routes_sha256"] if allow_tap_linkdown else observed_routes' in source
 print("completion Kata network owner fixed-snapshot matrix passed")
