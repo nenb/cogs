@@ -2774,10 +2774,11 @@ def _observe_fixed_runtime_network(journal, ip, nft, tc, record=True):
     tap = Link(**{**prior["tap"], "flags": tuple(prior["tap"]["flags"])})
     guest = Link(**{**prior["peer_link"], "flags": tuple(prior["peer_link"]["flags"])})
     observed_prefix = () if record else ("MOUNTINFO", "NETNS_STAT")
+    cursor_after = "NETWORK_SNAPSHOT_V2" if record else "NETWORK_CLEANUP_INTENT_V2"
     expected = observed_prefix + ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
                 "TC_QDISC", "TC_QDISC:" + tap.ifname, "TC_INGRESS_FILTER:eth0",
                 "TC_INGRESS_FILTER:" + tap.ifname, "MOUNTINFO", "NETNS_STAT", "NFT_TABLE")
-    raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_SNAPSHOT_V2", endpoints={
+    raw = _observer_pass(journal, ip, nft, tc, expected, cursor_after, endpoints={
         "TC_QDISC:" + tap.ifname: tap, "TC_INGRESS_FILTER:eth0": guest,
         "TC_INGRESS_FILTER:" + tap.ifname: tap})
     raw = raw[len(observed_prefix):]
@@ -2785,7 +2786,7 @@ def _observe_fixed_runtime_network(journal, ip, nft, tc, record=True):
     outputs = [{"source_id": name, "raw": value} for name, value in zip(identity_sources, raw, strict=True)]
     identity = _derive_journal_identity(
         "runtime", None, outputs, prior, baselines, _journal_policy(journal))[0]
-    sources = _sources(journal, "NETWORK_SNAPSHOT_V2")
+    sources = _sources(journal, cursor_after)
     return _snapshot(journal, "runtime", baselines, identity, sources) if record else _bind_identity(identity, sources)
 
 

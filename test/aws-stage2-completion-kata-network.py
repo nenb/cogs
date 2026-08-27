@@ -734,4 +734,6 @@ rejected(lambda: network.recover_nft(nft_remove, network.NftObservation(("cogs_s
 source = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()
 assert "while total <= MAX_MOUNTINFO_BYTES:" in source
 assert "chunks.append(part); total += len(part)" in source
+assert 'cursor_after = "NETWORK_SNAPSHOT_V2" if record else "NETWORK_CLEANUP_INTENT_V2"' in source
+assert 'observed_prefix = () if record else ("MOUNTINFO", "NETNS_STAT")' in source
 print("completion Kata network owner fixed-snapshot matrix passed")
