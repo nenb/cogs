@@ -1664,7 +1664,8 @@ def _legal(records):
         elif kind in LIFECYCLE:
             _fail(rootfs)
             seen = {item.record_type for item in records[:index]}; setup_abort = bool(
-                network_state["snapshots"] and network_journal.setup_abort_complete(network_state))
+                runtime_staged is None and network_state["snapshots"]
+                and network_journal.setup_abort_complete(network_state))
             if network_state["snapshots"]:
                 requirement = (phase if setup_abort else
                                network_journal.LIFECYCLE_REQUIREMENTS.get(kind))
