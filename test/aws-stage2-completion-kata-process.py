@@ -362,7 +362,7 @@ def authentic_daemon_transaction_profile():
                 foreign_leaf = process.CGROUP_BASE + "/foreign"
                 runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
                 overhead_base = process.KATA_OVERHEAD_BASE
-                overhead_leaf = overhead_base + "/kata_" + process.kata_runtime.CONTAINER_ID
+                overhead_leaf = overhead_base + "/" + process.kata_runtime.CONTAINER_ID
                 try:
                     assert process._child_census() == (profile.pid,)
                     recovery_errors = []

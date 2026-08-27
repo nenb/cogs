@@ -1324,9 +1324,9 @@ def _remove_retired_runtime_leaf(profile, daemon_cgroup):
 
 
 def _remove_retired_kata_overhead(profile):
-    name = profile.runtime_leaf_name
-    if name is None:
+    if profile.runtime_leaf_name is None:
         return
+    name = kata_runtime.CONTAINER_ID
     root_fd, root_generation = _directory_identity(CGROUP_ROOT)
     base_fd = leaf_fd = None
     try:
