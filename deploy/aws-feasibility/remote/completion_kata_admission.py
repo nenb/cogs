@@ -902,7 +902,9 @@ def _static_routes():
                      "static preparation platform differs")
             control, envelope, runtime, contracts, held = _read_control_package()
             descriptors.extend(held)
+            source_start = len(descriptors)
             _verify_complete_source(envelope.value["implementation"], descriptors)
+            source_descriptors = tuple(descriptors[source_start:])
             source_anchor = os.open(FIXED_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
             descriptors.append(source_anchor)
             source_seen = os.fstat(source_anchor)
@@ -919,6 +921,7 @@ def _static_routes():
                 "final": final,
                 "configuration_identity": configuration_identity,
                 "descriptors": descriptors,
+                "source_descriptors": source_descriptors,
                 "source_anchor": source_anchor,
                 "roles": set(),
                 "mapping": None,
@@ -1090,11 +1093,18 @@ def _static_routes():
         prepared_claim, prepared_state = prepared_claims[0]
         prepared_facts(prepared_claim, "verify")
         prepared_descriptors = list(prepared_state["descriptors"])
+        source_check = []
+        try:
+            _verify_complete_source(state["envelope"].value["implementation"], source_check)
+        finally:
+            _close_all(source_check)
+        source_descriptors = [*state["source_descriptors"], state["source_anchor"]]
         configuration = state["configuration_identity"]
         _verify_retiring_observer_configuration(configuration)
         configuration_descriptors = [configuration[name] for name in
                                      ("base_parent", "base_fd", "active_parent", "active_fd")]
-        descriptors = [*role_descriptors, *prepared_descriptors, *configuration_descriptors]
+        descriptors = [*role_descriptors, *prepared_descriptors, *source_descriptors,
+                       *configuration_descriptors]
         _require(len(descriptors) == len(set(descriptors))
                  and all(descriptor in state["descriptors"] for descriptor in descriptors))
         retired = set(descriptors)
@@ -1102,6 +1112,8 @@ def _static_routes():
                                 if descriptor not in retired]
         state["configuration_identity"] = {
             "retired": True, "active_sha256": configuration["active_sha256"]}
+        state["source_descriptors"] = ()
+        state["source_anchor"] = None
         for claim, _item in claims: role_states.pop(claim)
         prepared_states.pop(prepared_claim)
         _close_all(descriptors)
