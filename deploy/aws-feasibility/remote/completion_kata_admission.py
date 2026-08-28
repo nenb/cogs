@@ -1057,6 +1057,7 @@ def _static_routes():
         state["descriptors"].extend(held)
         claim = _PreparedRuntimeCustody(seal)
         prepared_states[claim] = {"custody": custody, "facts": facts,
+                                  "descriptors": tuple(held),
                                   "consumed": False, "verified": False}
         return claim
 
@@ -1083,11 +1084,17 @@ def _static_routes():
                  and all(item["consumed"] for _claim, item in claims)
                  and state["roles"] == {row[0] for row in EXECUTABLES})
         role_descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
+        prepared_claims = [(claim, item) for claim, item in prepared_states.items()
+                           if item["custody"] is custody]
+        _require(len(prepared_claims) == 1 and prepared_claims[0][1]["consumed"])
+        prepared_claim, prepared_state = prepared_claims[0]
+        prepared_facts(prepared_claim, "verify")
+        prepared_descriptors = list(prepared_state["descriptors"])
         configuration = state["configuration_identity"]
         _verify_retiring_observer_configuration(configuration)
         configuration_descriptors = [configuration[name] for name in
                                      ("base_parent", "base_fd", "active_parent", "active_fd")]
-        descriptors = [*role_descriptors, *configuration_descriptors]
+        descriptors = [*role_descriptors, *prepared_descriptors, *configuration_descriptors]
         _require(len(descriptors) == len(set(descriptors))
                  and all(descriptor in state["descriptors"] for descriptor in descriptors))
         retired = set(descriptors)
@@ -1096,6 +1103,7 @@ def _static_routes():
         state["configuration_identity"] = {
             "retired": True, "active_sha256": configuration["active_sha256"]}
         for claim, _item in claims: role_states.pop(claim)
+        prepared_states.pop(prepared_claim)
         _close_all(descriptors)
 
     def source_approval(custody):
