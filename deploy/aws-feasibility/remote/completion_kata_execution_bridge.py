@@ -696,8 +696,9 @@ def _routes():
             "cgroup_baseline": not cgroup_residue,
             "namespace_baseline": not namespace_residue,
         }
-        _require(tuple(absent) == local.RESIDUE_FACTS and all(absent.values()),
-                 "independent 37-domain residue differs")
+        failed = tuple(name for name, value in absent.items() if not value)
+        _require(tuple(absent) == local.RESIDUE_FACTS and not failed,
+                 "independent 37-domain residue differs:" + ",".join(failed))
         return evidence._ResidueOwnerResult(
             token, final.body["final_baselines_sha256"], tuple(absent))
 
