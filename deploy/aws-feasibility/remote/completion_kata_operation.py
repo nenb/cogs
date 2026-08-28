@@ -2084,8 +2084,7 @@ def _make_authority():
                     raw_names, records, phase, _key_value(self.completion.generation.key))
                 if len(records) > 1:
                     _fail(_generation_value(self.state.generation) == records[1].body["state_parent"])
-                if phase not in {"GENESIS", "GENESIS_SETTLED", "ROOTFS_ABSENT",
-                                 "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
+                if phase not in {"GENESIS", "GENESIS_SETTLED"}:
                     _fail(ROOTFS_NAME.raw in names)
                 input_required = {"FS_OBSERVED", "COMMAND_INTENT", "COMMAND_PREEXEC",
                                   "COMMAND_OUTCOME", "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2",
@@ -2107,8 +2106,6 @@ def _make_authority():
                         or phase in set(LIFECYCLE[LIFECYCLE.index("INPUT_REMOVED"):])
                         | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}):
                     _fail(INPUT_NAME.raw not in names)
-                if phase in {"ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
-                    _fail(ROOTFS_NAME.raw not in names)
             else:
                 candidates = _stage_candidates(names)
                 _fail(not candidates and names & RUNTIME_NAMES == {RUNTIME_NAME.raw}
