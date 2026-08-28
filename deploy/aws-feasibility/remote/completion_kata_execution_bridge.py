@@ -655,15 +655,21 @@ def _routes():
         task_marker_residue = Path(runtime.CONTAINERD_STATE).exists()
         container_marker_residue = Path(runtime.CONTAINERD_ROOT).exists()
         share_path_residue = share_path.exists() or share_path.is_symlink()
-        descriptor_residue = False
+        descriptor_residue = False; descriptor_roles = set()
         for entry in Path("/proc/self/fd").iterdir():
             try:
                 target = os.readlink(entry).encode()
-                mutable_markers = (b"kata-input-v1", b"kata-runtime-v1", b"/run/c42d",
-                                   b"cogs-stage2-ssh", b"/run/netns/c42",
-                                   runtime.SHARE_ROOT.encode(), runtime.KATA_VM_DIRECTORY.encode())
-                if target.decode("utf-8", "surrogateescape") == net_target or any(marker in target for marker in mutable_markers):
-                    descriptor_residue = True
+                mutable_markers = {
+                    "input": b"kata-input-v1", "runtime": b"kata-runtime-v1",
+                    "runtime-alias": b"/run/c42d", "sandbox": b"cogs-stage2-ssh",
+                    "named-netns": b"/run/netns/c42", "share": runtime.SHARE_ROOT.encode(),
+                    "vm": runtime.KATA_VM_DIRECTORY.encode(),
+                }
+                matched = {name for name, marker in mutable_markers.items() if marker in target}
+                if target.decode("utf-8", "surrogateescape") == net_target:
+                    matched.add("netns")
+                if matched:
+                    descriptor_residue = True; descriptor_roles.update(matched)
             except FileNotFoundError:
                 pass
         any_process_residue = any(process_sets[name] for name in (
@@ -698,7 +704,8 @@ def _routes():
         }
         failed = tuple(name for name, value in absent.items() if not value)
         _require(tuple(absent) == local.RESIDUE_FACTS and not failed,
-                 "independent 37-domain residue differs:" + ",".join(failed))
+                 "independent 37-domain residue differs:" + ",".join(failed)
+                 + "@" + ",".join(sorted(descriptor_roles)))
         return evidence._ResidueOwnerResult(
             token, final.body["final_baselines_sha256"], tuple(absent))
 
