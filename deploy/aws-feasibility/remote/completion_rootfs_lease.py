@@ -631,6 +631,8 @@ def _authorize_kata_release(permit, held, control):
             return kata_operation.RootfsAuthorization(reference.token, terminal.sequence,
                                                        terminal.next_offset, terminal.line_sha256)
         _fail(builder._terminal_record(active).record_type == "leased")
+        normalized_kata_key = {name: context.kata_ledger_key[name]
+                               for name in ("mount_id", "device", "inode", "kind")}
         body = {
             "token": reference.token,
             "operation_name": reference.operation_name,
@@ -638,7 +640,7 @@ def _authorize_kata_release(permit, held, control):
             "lease_offset": reference.leased_settled.offset,
             "lease_sha256": reference.leased_settled.line_sha256,
             "kata_operation_token": context.operation_token,
-            "kata_ledger_key": context.kata_ledger_key,
+            "kata_ledger_key": normalized_kata_key,
             "kata_release_sequence": kata_settled.sequence,
             "kata_release_offset": kata_settled.offset,
             "kata_release_sha256": kata_settled.line_sha256,
