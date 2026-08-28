@@ -2097,9 +2097,13 @@ def _make_authority():
                                      and records[settlements[-1] - 1].record_type == "FS_ABSENT")
                 if phase == "FS_SETTLED" and not absent_settlement:
                     input_required.add("FS_SETTLED")
-                if phase in input_required and phase != "FS_INTENT":
+                terminal_input_absent = (phase == "CONTAINERD_ABSENT"
+                    and records[-1].record_type == "INPUT_STEP"
+                    and records[-1].body["action"] == "absent"
+                    and records[-1].body["path"] == ".")
+                if phase in input_required and phase != "FS_INTENT" and not terminal_input_absent:
                     _fail(INPUT_NAME.raw in names)
-                if (phase == "FS_ABSENT" or absent_settlement
+                if (phase == "FS_ABSENT" or absent_settlement or terminal_input_absent
                         or phase in set(LIFECYCLE[LIFECYCLE.index("INPUT_REMOVED"):])
                         | {"FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}):
                     _fail(INPUT_NAME.raw not in names)
