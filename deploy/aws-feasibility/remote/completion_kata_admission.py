@@ -1089,15 +1089,11 @@ def _static_routes():
         role_descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
         prepared_claims = [(claim, item) for claim, item in prepared_states.items()
                            if item["custody"] is custody]
-        _require(len(prepared_claims) == 1 and prepared_claims[0][1]["consumed"])
+        _require(len(prepared_claims) == 1
+                 and prepared_claims[0][1]["consumed"]
+                 and prepared_claims[0][1]["verified"])
         prepared_claim, prepared_state = prepared_claims[0]
-        prepared_facts(prepared_claim, "verify")
         prepared_descriptors = list(prepared_state["descriptors"])
-        source_check = []
-        try:
-            _verify_complete_source(state["envelope"].value["implementation"], source_check)
-        finally:
-            _close_all(source_check)
         source_descriptors = [*state["source_descriptors"], state["source_anchor"]]
         configuration = state["configuration_identity"]
         _verify_retiring_observer_configuration(configuration)
