@@ -192,6 +192,15 @@ def _reconstruct_fixed_executable_owner(custody, journal):
     return owner
 
 
+def _retire_fixed_executable_owner(custody, owner):
+    """Close the exact executable owner after all command and observer use."""
+    state = _states.get(custody)
+    _require(state is not None and state["executables"] is owner
+             and type(owner) is process.AttestedExecutableOwner)
+    process._abort_attested_executable_owner(owner)
+    state["executables"] = None
+
+
 def _abandon_fixed_rootfs(custody, lease):
     """Close a verified pre-operation lease while preserving its durable ledger."""
     state = _states.get(custody)

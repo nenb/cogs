@@ -501,6 +501,12 @@ def _routes():
         if chain is not None:
             try: fs._close_chain(chain)
             except BaseException as error: errors.append(error)
+        if not errors and lifecycle.executables is not None:
+            try:
+                preparation._retire_fixed_executable_owner(
+                    lifecycle.static_custody, lifecycle.executables)
+                lifecycle.executables = None
+            except BaseException as error: errors.append(error)
         if errors: raise BaseExceptionGroup("network tool/chain close", errors)
         return result
 
