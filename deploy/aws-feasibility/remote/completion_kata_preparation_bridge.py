@@ -199,6 +199,7 @@ def _retire_fixed_executable_owner(custody, owner):
              and type(owner) is process.AttestedExecutableOwner)
     process._abort_attested_executable_owner(owner)
     state["executables"] = None
+    admission._retire_consumed_executable_role_custody(custody)
 
 
 def _abandon_fixed_rootfs(custody, lease):

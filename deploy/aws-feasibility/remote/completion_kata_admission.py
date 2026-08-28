@@ -1047,6 +1047,23 @@ def _static_routes():
         if action is not None: item[{"consume": "consumed", "verify": "verified"}[action]] = True
         return dict(item["facts"])
 
+    def retire_consumed_roles(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None)
+        claims = [(claim, item) for claim, item in role_states.items()
+                  if item["custody"] is custody]
+        _require(len(claims) == len(EXECUTABLES)
+                 and all(item["consumed"] for _claim, item in claims)
+                 and state["roles"] == {row[0] for row in EXECUTABLES})
+        descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
+        _require(len(descriptors) == len(set(descriptors))
+                 and all(descriptor in state["descriptors"] for descriptor in descriptors))
+        retired = set(descriptors)
+        state["descriptors"] = [descriptor for descriptor in state["descriptors"]
+                                if descriptor not in retired]
+        for claim, _item in claims: role_states.pop(claim)
+        _close_all(descriptors)
+
     def source_approval(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None,
@@ -1074,12 +1091,13 @@ def _static_routes():
             prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer, source_approval, claim_role, consume_role, claim_live_mapping,
-            consume_mapping, claim_prepared, prepared_facts, binding, abort)
+    return (take_issuer, source_approval, claim_role, consume_role, retire_consumed_roles,
+            claim_live_mapping, consume_mapping, claim_prepared, prepared_facts, binding, abort)
 
 
 (_take_static_preparation_issuer, _fixed_source_approval,
  _claim_executable_role_custody, _consume_executable_role_custody,
+ _retire_consumed_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
  _static_custody_binding, _abort_static_preparation) = _static_routes()
