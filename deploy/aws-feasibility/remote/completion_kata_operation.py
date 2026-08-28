@@ -1362,15 +1362,15 @@ def _legal(records):
         if kind == "INPUT_WA":
             _fail(command_phase is None and phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
                   "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
-            key = (body["action"], body["path"])
-            _fail(key not in input_wa)
+            input_key = (body["action"], body["path"])
+            _fail(input_key not in input_wa)
             if body["action"] == "mkdir-settled":
                 intents = input_wa.get(("mkdir", body["path"]), ())
                 _fail(len(intents) == 1 and all(body[name] == intents[0][name]
                       for name in ("parent_key", "names_sha256", "target_mode")))
             elif body["action"] == "file-settled":
                 _fail((body["path"], "settled") in input_grant_paths)
-            input_wa.setdefault(key, []).append(body)
+            input_wa.setdefault(input_key, []).append(body)
             continue
         if kind == "INPUT_STEP":
             _fail(command_phase is None and phase in {"FS_INTENT", "FS_SETTLED", "RUNTIME_READY",
