@@ -3495,7 +3495,8 @@ def _make_authority():
     def record_ssh_readiness_ready(authority):
         return production(authority).record_ssh_readiness_ready()
     def cycle_timing_lineage(authority): return production(authority).cycle_timing_lineage()
-    def durable_phase(authority): return production(authority).durable_phase()
+    def durable_phase(authority):
+        return (authority if type(authority) is CleanupAuthority else production(authority)).durable_phase()
     def revoke_readiness(authority): return production(authority).revoke_readiness()
     def revoke_or_require_terminal(authority):
         authority = production(authority)
