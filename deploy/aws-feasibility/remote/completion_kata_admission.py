@@ -811,6 +811,27 @@ def _verify_held_observer_configuration(value):
              "held active Kata configuration changed")
 
 
+def _verify_retiring_observer_configuration(value):
+    _require(type(value) is dict and set(value) == {
+        "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
+        "active_status", "active_sha256"})
+    base = _read_held_raw(value["base_fd"], value["base_status"],
+                          preparation.KATA_BASE_CONFIGURATION_SIZE)
+    expected = value["active_status"]
+    current = os.fstat(value["active_fd"])
+    stable = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                           item.st_gid, item.st_size, item.st_mtime_ns)
+    _require(stable(current) == stable(expected)
+             and current.st_nlink in {expected.st_nlink, 0}
+             and (current.st_nlink == 0 or current.st_ctime_ns == expected.st_ctime_ns),
+             "retiring active Kata configuration generation differs")
+    active = _read_held_raw(value["active_fd"], current,
+                            preparation.KATA_BASE_CONFIGURATION_SIZE + 2)
+    _require(active == preparation.derive_observer_configuration(base)
+             and _sha(active) == value["active_sha256"],
+             "retiring active Kata configuration changed")
+
+
 def _validate_final_and_rootfs(envelope, runtime):
     try:
         import completion_runtime_contract as workload_contract
@@ -1063,7 +1084,7 @@ def _static_routes():
                  and state["roles"] == {row[0] for row in EXECUTABLES})
         role_descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
         configuration = state["configuration_identity"]
-        _verify_held_observer_configuration(configuration)
+        _verify_retiring_observer_configuration(configuration)
         configuration_descriptors = [configuration[name] for name in
                                      ("base_parent", "base_fd", "active_parent", "active_fd")]
         descriptors = [*role_descriptors, *configuration_descriptors]
