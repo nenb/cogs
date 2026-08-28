@@ -788,14 +788,20 @@ def _retain_observer_configuration(runtime, descriptors):
         "kind": "file", "mode": 0o400, "size": active_row["size"],
         "sha256": active_row["sha256"], "link_target": None,
     }, "active Kata configuration launch artifact differs")
-    return {"base_fd": base_fd, "base_status": base_status,
-            "active_fd": active_fd, "active_status": active_status,
-            "active_sha256": active_row["sha256"]}
+    return {"base_parent": base_parent, "base_fd": base_fd, "base_status": base_status,
+            "active_parent": active_parent, "active_fd": active_fd,
+            "active_status": active_status, "active_sha256": active_row["sha256"]}
 
 
 def _verify_held_observer_configuration(value):
+    if type(value) is dict and set(value) == {"retired", "active_sha256"}:
+        _require(value["retired"] is True and type(value["active_sha256"]) is str
+                 and len(value["active_sha256"]) == 64
+                 and set(value["active_sha256"]) <= HEX)
+        return
     _require(type(value) is dict and set(value) == {
-        "base_fd", "base_status", "active_fd", "active_status", "active_sha256"})
+        "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
+        "active_status", "active_sha256"})
     base = _read_held_raw(value["base_fd"], value["base_status"],
                           preparation.KATA_BASE_CONFIGURATION_SIZE)
     active = _read_held_raw(value["active_fd"], value["active_status"],
@@ -1055,12 +1061,19 @@ def _static_routes():
         _require(len(claims) == len(EXECUTABLES)
                  and all(item["consumed"] for _claim, item in claims)
                  and state["roles"] == {row[0] for row in EXECUTABLES})
-        descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
+        role_descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
+        configuration = state["configuration_identity"]
+        _verify_held_observer_configuration(configuration)
+        configuration_descriptors = [configuration[name] for name in
+                                     ("base_parent", "base_fd", "active_parent", "active_fd")]
+        descriptors = [*role_descriptors, *configuration_descriptors]
         _require(len(descriptors) == len(set(descriptors))
                  and all(descriptor in state["descriptors"] for descriptor in descriptors))
         retired = set(descriptors)
         state["descriptors"] = [descriptor for descriptor in state["descriptors"]
                                 if descriptor not in retired]
+        state["configuration_identity"] = {
+            "retired": True, "active_sha256": configuration["active_sha256"]}
         for claim, _item in claims: role_states.pop(claim)
         _close_all(descriptors)
 
