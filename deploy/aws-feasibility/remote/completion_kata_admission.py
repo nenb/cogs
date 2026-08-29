@@ -952,7 +952,8 @@ def _static_routes():
             state["descriptors"].extend(descriptors)
             state["roles"].add(role)
             claim = _ExecutableRoleCustody(seal)
-            role_states[claim] = {"custody": custody, "role": role, "objects": retained, "consumed": False}
+            role_states[claim] = {"custody": custody, "role": role, "objects": retained,
+                                  "descriptors": tuple(descriptors), "consumed": False}
             return claim
         except BaseException as error:
             _close_all(descriptors, error)
@@ -1086,7 +1087,8 @@ def _static_routes():
         _require(len(claims) == len(EXECUTABLES)
                  and all(item["consumed"] for _claim, item in claims)
                  and state["roles"] == {row[0] for row in EXECUTABLES})
-        role_descriptors = [obj.descriptor for _claim, item in claims for obj in item["objects"]]
+        role_descriptors = [descriptor for _claim, item in claims
+                            for descriptor in item["descriptors"]]
         prepared_claims = [(claim, item) for claim, item in prepared_states.items()
                            if item["custody"] is custody]
         _require(len(prepared_claims) == 1
