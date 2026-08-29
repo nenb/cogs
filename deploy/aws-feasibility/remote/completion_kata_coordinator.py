@@ -19,6 +19,7 @@ import completion_kata_ssh as ssh
 import completion_rootfs_lease as rootfs_lease
 import completion_local_evidence as local_evidence
 import completion_local_receipt as local_receipt
+import completion_cycle_evidence as cycle_evidence
 
 _produce_owner_evidence = local_receipt._take_owner_evidence_producer()
 _issue_owner_receipt = local_receipt._take_local_receipt_issuer()
@@ -35,6 +36,7 @@ FORWARD_ORDER = (
     "RUNTIME_STAGED",
     "EXECUTION_MAPPING_BOUND",
     "TASK_LAUNCHED",
+    "RUNTIME_NETWORK_OBSERVED",
     "RUNTIME_PROVED",
     "NETWORK_CAUSAL_PROOF",
     "SSH_AUTHENTICATED",
@@ -42,12 +44,13 @@ FORWARD_ORDER = (
 TEARDOWN_ORDER = (
     "READINESS_REVOKED",
     "TASK_STOPPED",
-    "NETWORK_ABSENT",
     "TASK_ABSENT",
-    "CONTAINER_ABSENT",
     "RUNTIME_ABSENT",
+    "NETWORK_ABSENT",
+    "CONTAINER_ABSENT",
     "SHARE_ABSENT",
     "FIREWALL_ABSENT",
+    "CONTAINERD_ABSENT",
     "INPUT_REMOVED",
     "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED",
@@ -59,13 +62,14 @@ CLEANUP_ORDER = (
     "READINESS_REVOKED",
     "OWNERSHIP_OBSERVED",
     "TASK_STOPPED",
-    "NETWORK_ABSENT",
     "TASK_ABSENT",
-    "CONTAINER_ABSENT",
     "RUNTIME_ABSENT",
+    "RUNTIME_NETWORK_RELEASED_V1",
+    "NETWORK_ABSENT",
+    "CONTAINER_ABSENT",
     "SHARE_ABSENT",
-    "CONTAINERD_ABSENT",
     "FIREWALL_ABSENT",
+    "CONTAINERD_ABSENT",
     "INPUT_REMOVED",
     "ROOTFS_RELEASE_READY",
     "ROOTFS_RELEASE_AUTHORIZED",
@@ -121,6 +125,7 @@ def _safe_failure_diagnostic(error):
 @dataclass
 class _Lifecycle:
     recovery: bool = False
+    cycle_route: object = None
     static_custody: object = None
     static_gate: object = None
     source_approval: object = None
@@ -136,6 +141,7 @@ class _Lifecycle:
     staged_runtime: object = None
     execution_mapping: object = None
     task: object = None
+    runtime_network: object = None
     runtime_observation: object = None
     runtime_proof: object = None
     session: object = None
@@ -160,6 +166,15 @@ class _AdmissionBoundary:
             raise CoordinatorBlocked(BLOCKED_REASON) from error
         return custody, approval
 
+    def claim_recovery_static(self):
+        try:
+            custody = preparation_bridge._claim_fixed_recovery_static_preparation()
+            approval = preparation_bridge._fixed_source_approval(custody)
+        except (admission.AdmissionError,
+                preparation_bridge.PreparationBridgeError) as error:
+            raise CoordinatorBlocked(BLOCKED_REASON) from error
+        return custody, approval
+
     def claim_live(self, lifecycle):
         if (lifecycle.static_custody is None or lifecycle.rootfs is None
                 or lifecycle.source_approval is not lifecycle.static_gate):
@@ -175,6 +190,12 @@ class _AdmissionBoundary:
         if lifecycle.live_mapping is not lifecycle.live_custody:
             raise CoordinatorBlocked("exact live mapping must precede executable custody")
         return preparation_bridge._claim_fixed_executable_owner(
+            lifecycle.static_custody)
+
+    def claim_recovery_executables(self, lifecycle):
+        if not lifecycle.recovery or lifecycle.source_approval is not lifecycle.static_gate:
+            raise CoordinatorBlocked("cleanup-only executable policy admission differs")
+        return preparation_bridge._claim_fixed_recovery_executable_owner(
             lifecycle.static_custody)
 
     def abort(self, lifecycle):
@@ -239,7 +260,8 @@ class _PackagePrivateOwners:
         self.evidence = _PrivateEvidenceBoundary()
 
     def claim_static_custody(self, lifecycle):
-        return self.admission.claim_static()
+        return (self.admission.claim_recovery_static() if lifecycle.recovery
+                else self.admission.claim_static())
 
     def acquire_rootfs(self, lifecycle):
         if lifecycle.source_approval is not lifecycle.static_gate:
@@ -254,6 +276,15 @@ class _PackagePrivateOwners:
 
     def claim_executables(self, lifecycle):
         return self.admission.claim_executables(lifecycle)
+
+    def claim_recovery_executables(self, lifecycle):
+        return self.admission.claim_recovery_executables(lifecycle)
+
+    def bind_cycle_route(self, lifecycle):
+        if lifecycle.cycle_route is None:
+            return None
+        return cycle_evidence._bind_operation_route(
+            lifecycle.cycle_route, lifecycle.operation)
 
     def create_inputs(self, lifecycle):
         return operation_bridge._create_inputs(self.operation, lifecycle)
@@ -276,17 +307,27 @@ class _PackagePrivateOwners:
     def launch_task(self, lifecycle):
         return execution_bridge._launch_task(self.execution, lifecycle)
 
+    def observe_runtime_network(self, lifecycle):
+        return execution_bridge._observe_runtime_network(self.execution, lifecycle)
+
     def prove_runtime(self, lifecycle):
         return execution_bridge._prove_runtime(self.execution, lifecycle)
 
     def authenticate_ssh(self, lifecycle):
         return execution_bridge._authenticate_ssh(self.execution, lifecycle)
 
+    def authenticate_readiness_ssh(self, lifecycle):
+        return execution_bridge._authenticate_readiness_ssh(
+            self.execution, lifecycle)
+
     def open_existing_operation(self, lifecycle):
         return operation_bridge._open_existing_operation(self.operation, lifecycle)
 
     def recover_pending(self, lifecycle):
         return operation_bridge._recover_pending(self.operation, lifecycle)
+
+    def recover_preproduction(self, lifecycle):
+        return operation_bridge._recover_preproduction(self.operation, lifecycle)
 
     def reconstruct_cleanup(self, lifecycle):
         lifecycle.rootfs = operation_bridge._reconstruct_rootfs(
@@ -302,6 +343,9 @@ class _PackagePrivateOwners:
 
     def stop_task(self, lifecycle):
         return execution_bridge._stop_task(self.execution, lifecycle)
+
+    def release_network_holds(self, lifecycle):
+        return execution_bridge._release_network_holds(self.execution, lifecycle)
 
     def remove_network(self, lifecycle):
         return execution_bridge._remove_network(self.execution, lifecycle)
@@ -384,13 +428,14 @@ def _cleanup_operation(lifecycle):
     lifecycle.ownership_proof = _collect(
         errors, lambda: _owners.observe_ownership(lifecycle))
     _collect(errors, lambda: _owners.stop_task(lifecycle))
-    _collect(errors, lambda: _owners.remove_network(lifecycle))
     _collect(errors, lambda: _owners.remove_task(lifecycle))
-    _collect(errors, lambda: _owners.remove_container(lifecycle))
     _collect(errors, lambda: _owners.remove_runtime(lifecycle))
+    _collect(errors, lambda: _owners.release_network_holds(lifecycle))
+    _collect(errors, lambda: _owners.remove_network(lifecycle))
+    _collect(errors, lambda: _owners.remove_container(lifecycle))
     _collect(errors, lambda: _owners.remove_share(lifecycle))
-    _collect(errors, lambda: _owners.stop_containerd(lifecycle))
     _collect(errors, lambda: _owners.remove_firewall(lifecycle))
+    _collect(errors, lambda: _owners.stop_containerd(lifecycle))
     _collect(errors, lambda: _owners.remove_inputs(lifecycle))
     _collect(errors, lambda: _owners.prepare_rootfs_release(lifecycle))
     _collect(errors, lambda: _owners.authorize_rootfs_release(lifecycle))
@@ -435,6 +480,11 @@ def _raise_failures(message, errors):
 
 
 def _finish(lifecycle):
+    if lifecycle.cycle_route is not None:
+        if lifecycle.primary_failure is not None:
+            raise CoordinatorBlocked("failed cycle cannot mint a receipt")
+        lifecycle.custody_settled = True
+        return cycle_evidence._issue_cycle_receipt(lifecycle.cycle_route, lifecycle)
     evidence = _owners.owner_evidence(lifecycle)
     # From this call onward the receipt transaction exclusively owns custody
     # close, including every no-mint failure. The coordinator must never retry
@@ -443,9 +493,14 @@ def _finish(lifecycle):
     return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
-def _run_fixed_local_qualification():
-    """Compose exactly one fixed lifecycle, then settle it exactly once."""
-    lifecycle = _Lifecycle()
+def _run_cycle(route=None):
+    """Compose one lifecycle; only closure-issued route capabilities are accepted."""
+    if route is not None:
+        cycle_evidence._describe_route(route)
+        if not cycle_evidence._cycle_launch_authorized(route):
+            raise CoordinatorBlocked(
+                "cycle batch/ordinal authority is not implemented; no effects admitted")
+    lifecycle = _Lifecycle(cycle_route=route)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -455,6 +510,8 @@ def _run_fixed_local_qualification():
         lifecycle.operation = _owners.open_operation(lifecycle)
         if lifecycle.operation is None:
             raise CoordinatorBlocked("exact operation owner was not established")
+        if route is not None:
+            _owners.bind_cycle_route(lifecycle)
         lifecycle.failure_stage = "operation-live"
         lifecycle.live_custody = _owners.claim_live_custody(lifecycle)
         lifecycle.executables = _owners.claim_executables(lifecycle)
@@ -464,9 +521,13 @@ def _run_fixed_local_qualification():
         lifecycle.staged_runtime = _owners.stage_runtime(lifecycle)
         lifecycle.execution_mapping = _owners.bind_execution_mapping(lifecycle)
         lifecycle.task = _owners.launch_task(lifecycle)
+        lifecycle.runtime_network = _owners.observe_runtime_network(lifecycle)
         lifecycle.runtime_observation = _owners.prove_runtime(lifecycle)
-        lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
-        lifecycle.session = _owners.authenticate_ssh(lifecycle)
+        if route is None or type(route) is cycle_evidence._FullRoute:
+            lifecycle.network_proof = _owners.prove_network_causality(lifecycle)
+            lifecycle.session = _owners.authenticate_ssh(lifecycle)
+        else:
+            lifecycle.session = _owners.authenticate_readiness_ssh(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
         if type(error) is rootfs_lease.RootfsAcquireError:
@@ -497,16 +558,37 @@ def _run_fixed_local_qualification():
         _raise_failures("fixed lifecycle owner evidence was not exact", errors)
 
 
+def _run_fixed_local_qualification():
+    """Preserve the existing local V3 owner and receipt semantics."""
+    return _run_cycle()
+
+
+def _run_fixed_full_cycle():
+    """Zero-argument sealed full owner route."""
+    return _run_cycle(cycle_evidence._fixed_full_route())
+
+
+def _run_fixed_readiness_cycle():
+    """Zero-argument sealed marker-only readiness owner route."""
+    return _run_cycle(cycle_evidence._fixed_readiness_route())
+
+
 def _recover_fixed_local_qualification():
     """Open durable ownership and clean only; work construction is unreachable."""
     lifecycle = _Lifecycle(recovery=True)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
+        # Command records are validated against an identity-sealed policy map.
+        # Establish that map from reviewed static custody before the first
+        # journal byte is parsed; no cleanup tool is claimed at this boundary.
+        lifecycle.executables = _owners.claim_recovery_executables(lifecycle)
         lifecycle.operation = _owners.open_existing_operation(lifecycle)
         if lifecycle.operation is not None:
             _owners.recover_pending(lifecycle)
             _owners.reconstruct_cleanup(lifecycle)
+        else:
+            _owners.recover_preproduction(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
 

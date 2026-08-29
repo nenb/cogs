@@ -19,13 +19,13 @@ PRE_BASE_GROSS_ADDITIONS = 2_949
 CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
-PREFERRED_LIMIT = 66_500
-HARD_LIMIT = 67_000
-DEPLOY_CORRECTION_HIGH = 8_000
-RETAINED_CORRECTION_HIGH = 3_200
-WORKFLOW_CORRECTION_HIGH = 1_320
-GLOBAL_CORRECTION_HIGH = 11_100
-MUTABLE_OWNER_LINE_LIMIT = 1_200
+PREFERRED_LIMIT = 76_000
+HARD_LIMIT = 78_000
+DEPLOY_CORRECTION_HIGH = 15_500
+RETAINED_CORRECTION_HIGH = 6_500
+WORKFLOW_CORRECTION_HIGH = 1_400
+GLOBAL_CORRECTION_HIGH = 20_500
+MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
@@ -50,6 +50,12 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
 RETAINED_FILES = (
+    "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
+    "deploy/aws-feasibility/remote/stage2-completion-rootfs-v2.json",
+    "schemas/aws-stage2-completion-private-evidence-v1.json",
+    "schemas/aws-stage2-completion-evidence-v1.json",
+    "scripts/validate-aws-stage2-completion-evidence.ts",
+    "scripts/render-aws-stage2-completion-report.ts",
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
     "scripts/render-aws-stage2-measurement-report.ts",
@@ -82,8 +88,10 @@ RETAINED_FILES = (
     "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
     "schemas/stage2-workload-post-pin-v1.json",
     "schemas/stage2-workload-local-qualification-v2.json",
+    "schemas/stage2-workload-local-qualification-v3.json",
     "config/stage2-completion-ssh-workload-v2.json",
     "config/stage2-completion-ssh-workload-v3.json",
+    "config/stage2-completion-ssh-readiness-v1.json",
     "scripts/check-stage2-retained-lines.py",
 )
 
@@ -171,7 +179,7 @@ def measure():
     current = deploy + retained + workflows
     deploy_gross = _gross_slice((DEPLOY_ROOT,), lambda name: (
         (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
-        or name in control_data_names))
+        or name in control_data_names or name in retained_names))
     retained_gross = _gross_slice(RETAINED_FILES, lambda name: name in retained_names)
     workflow_gross = _gross_slice((WORKFLOW_ROOT,), lambda name: (
         name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)))

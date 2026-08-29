@@ -23,25 +23,28 @@ METHOD_EVENT = {
     "open_operation": "OPERATION_ADMITTED",
     "claim_live_custody": "LIVE_CUSTODY",
     "claim_executables": "EXECUTABLES_RETAINED",
+    "claim_recovery_executables": "RECOVERY_EXECUTABLE_POLICY",
     "create_inputs": "INPUTS_CREATED",
     "capture_baselines": "BASELINES_CAPTURED",
     "create_network": "NETWORK_READY",
     "stage_runtime": "RUNTIME_STAGED",
     "bind_execution_mapping": "EXECUTION_MAPPING_BOUND",
     "launch_task": "TASK_LAUNCHED",
+    "observe_runtime_network": "RUNTIME_NETWORK_OBSERVED",
     "prove_runtime": "RUNTIME_PROVED",
     "prove_network_causality": "NETWORK_CAUSAL_PROOF",
     "authenticate_ssh": "SSH_AUTHENTICATED",
     "revoke_readiness": "READINESS_REVOKED",
     "observe_ownership": "OWNERSHIP_OBSERVED",
     "stop_task": "TASK_STOPPED",
-    "remove_network": "NETWORK_ABSENT",
     "remove_task": "TASK_ABSENT",
-    "remove_container": "CONTAINER_ABSENT",
     "remove_runtime": "RUNTIME_ABSENT",
+    "release_network_holds": "RUNTIME_NETWORK_RELEASED_V1",
+    "remove_network": "NETWORK_ABSENT",
+    "remove_container": "CONTAINER_ABSENT",
     "remove_share": "SHARE_ABSENT",
-    "stop_containerd": "CONTAINERD_ABSENT",
     "remove_firewall": "FIREWALL_ABSENT",
+    "stop_containerd": "CONTAINERD_ABSENT",
     "remove_inputs": "INPUT_REMOVED",
     "prepare_rootfs_release": "ROOTFS_RELEASE_READY",
     "authorize_rootfs_release": "ROOTFS_RELEASE_AUTHORIZED",
@@ -90,6 +93,8 @@ class FakeOwners:
     def claim_live_custody(self, _lifecycle):
         return self.step("claim_live_custody", ("custody", "live-gate"))
     def claim_executables(self, _lifecycle): return self.step("claim_executables")
+    def claim_recovery_executables(self, _lifecycle):
+        return self.step("claim_recovery_executables")
     def create_inputs(self, _lifecycle): return self.step("create_inputs")
     def capture_baselines(self, _lifecycle): return self.step("capture_baselines")
     def create_network(self, _lifecycle): return self.step("create_network")
@@ -100,16 +105,22 @@ class FakeOwners:
     def stage_runtime(self, _lifecycle): return self.step("stage_runtime")
     def bind_execution_mapping(self, _lifecycle): return self.step("bind_execution_mapping")
     def launch_task(self, _lifecycle): return self.step("launch_task")
-    def prove_runtime(self, _lifecycle): return self.step("prove_runtime")
+    def observe_runtime_network(self, lifecycle):
+        assert lifecycle.task == "TASK_LAUNCHED"
+        return self.step("observe_runtime_network")
+    def prove_runtime(self, lifecycle):
+        assert lifecycle.runtime_network == "RUNTIME_NETWORK_OBSERVED"
+        return self.step("prove_runtime")
     def authenticate_ssh(self, _lifecycle): return self.step("authenticate_ssh")
 
     def revoke_readiness(self, _lifecycle): return self.step("revoke_readiness")
     def observe_ownership(self, _lifecycle): return self.step("observe_ownership")
     def stop_task(self, _lifecycle): return self.step("stop_task")
-    def remove_network(self, _lifecycle): return self.step("remove_network")
     def remove_task(self, _lifecycle): return self.step("remove_task")
-    def remove_container(self, _lifecycle): return self.step("remove_container")
     def remove_runtime(self, _lifecycle): return self.step("remove_runtime")
+    def release_network_holds(self, _lifecycle): return self.step("release_network_holds")
+    def remove_network(self, _lifecycle): return self.step("remove_network")
+    def remove_container(self, _lifecycle): return self.step("remove_container")
     def remove_share(self, _lifecycle): return self.step("remove_share")
     def stop_containerd(self, _lifecycle): return self.step("stop_containerd")
     def remove_firewall(self, _lifecycle): return self.step("remove_firewall")
@@ -131,6 +142,9 @@ class FakeOwners:
 
     def recover_pending(self, _lifecycle):
         return self.step("PENDING_OWNER_RECOVERED")
+
+    def recover_preproduction(self, _lifecycle):
+        return self.step("PREPRODUCTION_RECOVERED")
 
     def reconstruct_cleanup(self, _lifecycle):
         return self.step("DURABLE_OWNERS_RECONSTRUCTED")
@@ -320,7 +334,8 @@ for side in ("before", "after"):
 
 # Recovery has only immutable custody, exact existing-state opening, pending
 # child settlement, cleanup, and custody close. It cannot issue evidence/receipt.
-recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED",
+recovery_prefix = ("STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                   "RECOVERY_OPERATION_OPENED", "PENDING_OWNER_RECOVERED",
                    "DURABLE_OWNERS_RECONSTRUCTED")
 fake = FakeOwners()
 assert invoke(coordinator._recover_fixed_local_qualification, fake)
@@ -339,8 +354,35 @@ for event in (*recovery_prefix, *coordinator.CLEANUP_ORDER):
             assert observed == expected
             assert "RECOVERY_EVIDENCE" not in fake.events
             assert "RECEIPT_ISSUED" not in fake.events
-        if event in {"STATIC_CUSTODY", "RECOVERY_OPERATION_OPENED"}:
+        if event in {"STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                     "RECOVERY_OPERATION_OPENED"}:
             assert cleanup_projection(fake.events) == ()
+
+# A retained unadmitted prefix is routed exactly once to cleanup-only recovery.
+# No production reconstruction, 18-step cleanup, evidence, or receipt is reachable.
+class PrestageOwners(FakeOwners):
+    def open_existing_operation(self, _lifecycle):
+        self.step("RECOVERY_OPERATION_OPENED")
+        return None
+    def recover_pending(self, _lifecycle):
+        raise AssertionError("prestage entered pending-command recovery")
+    def reconstruct_cleanup(self, _lifecycle):
+        raise AssertionError("prestage entered production reconstruction")
+
+for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
+            ("after", "PREPRODUCTION_RECOVERED")):
+    fake = PrestageOwners(cut)
+    invoke(coordinator._recover_fixed_local_qualification, fake)
+    expected = ["STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
+                "RECOVERY_OPERATION_OPENED"]
+    if cut is None or cut[0] == "after": expected.append("PREPRODUCTION_RECOVERED")
+    expected.append("CUSTODY_ABORTED")
+    assert fake.events == expected
+    assert cleanup_projection(fake.events) == ()
+    assert not any(item in fake.events for item in (
+        "PENDING_OWNER_RECOVERED", "DURABLE_OWNERS_RECONSTRUCTED",
+        "OWNER_EVIDENCE", "RECOVERY_EVIDENCE", "RECEIPT_ISSUED"))
+    assert fake.events.count("CUSTODY_ABORTED") == 1
 
 # Source shape keeps both production entries zero argument and recovery cannot
 # name any work-opening method. Public openers and arbitrary receipts stay shut.

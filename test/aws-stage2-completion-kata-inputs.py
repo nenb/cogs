@@ -36,7 +36,7 @@ def ssh_string(raw):
     return struct.pack(">I", len(raw)) + raw
 
 
-def synthetic_key(seed_hex, public_hex, comment):
+def synthetic_key(seed_hex, public_hex, comment, zero_padding=False):
     # Fixed RFC 8032 vectors: standard-library encoding, no external keygen.
     seed = bytes.fromhex(seed_hex)
     public = bytes.fromhex(public_hex)
@@ -45,7 +45,7 @@ def synthetic_key(seed_hex, public_hex, comment):
     row = b"ssh-ed25519 " + base64.b64encode(blob) + b" " + comment + b"\n"
     inner = struct.pack(">II", 0x12345678, 0x12345678)
     inner += ssh_string(b"ssh-ed25519") + ssh_string(public) + ssh_string(private) + ssh_string(comment)
-    padding = 8 - len(inner) % 8
+    padding = ((-len(inner)) % 8 if zero_padding else 8 - len(inner) % 8)
     inner += bytes(range(1, padding + 1))
     outer = b"openssh-key-v1\0" + ssh_string(b"none") + ssh_string(b"none") + ssh_string(b"")
     outer += struct.pack(">I", 1) + ssh_string(blob) + ssh_string(inner)
@@ -68,6 +68,13 @@ server_private, server_public, server_raw = synthetic_key(
 )
 material = inputs.KeyMaterial(client_private, client_public, server_private, server_public)
 assert inputs._validate_key_material(material) == material
+zero_client, zero_public, _zero_raw = synthetic_key(
+    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    inputs.CLIENT_COMMENT, True,
+)
+assert inputs._validate_key_material(inputs.KeyMaterial(
+    zero_client, zero_public, server_private, server_public))
 assert client_raw != server_raw
 
 # The test issuer accepts only these exact approved RFC vectors. A canonical
@@ -178,7 +185,15 @@ mountinfo = (
 assert inputs._parse_mountinfo(mountinfo, "/fixed/input") == 2
 assert inputs._parse_mountinfo(
     mountinfo + b"22 20 0:5 / /proc rw,nosuid - proc proc rw\n", "/fixed/input") == 3
+nsfs = b"23 20 0:4 mnt:[4026532807] /run/netns/example rw - nsfs nsfs rw\n"
+net_nsfs = b"24 20 0:4 net:[4026532681] /run/netns/c42nexact rw - nsfs nsfs rw\n"
+assert inputs._parse_mountinfo(mountinfo + nsfs, "/fixed/input") == 3
+assert inputs._parse_mountinfo(mountinfo + net_nsfs, "/fixed/input") == 3
 for hostile in (
+    mountinfo + b"23 20 0:4 mnt:[x] /run/netns/example rw - nsfs nsfs rw\n",
+    mountinfo + b"23 20 0:4 net:[x] /run/netns/example rw - nsfs nsfs rw\n",
+    mountinfo + b"23 20 0:4 pid:[4026532681] /run/netns/example rw - nsfs nsfs rw\n",
+    mountinfo + b"23 20 0:4 mnt:[4026532807] relative rw - nsfs nsfs rw\n",
     mountinfo + b"22 20 8:1 /x /fixed/input rw - ext4 /dev/root rw\n",
     mountinfo + b"22 20 8:1 /x /fixed/input/fixture rw - ext4 /dev/root rw\n",
     mountinfo + b"22 20 8:1 /fixed/input/key /elsewhere rw - ext4 /dev/root rw\n",
@@ -625,5 +640,9 @@ def linux_functional():
 
 
 
+source = (REMOTE / "completion_kata_inputs.py").read_text()
+assert 'value.count(b" ") == 2' in source
+assert "public_derivations(client_public)" in source
+assert "public_derivations(server_public)" in source
 linux_functional()
 print("completion Kata input/control owner foundation matrix passed")

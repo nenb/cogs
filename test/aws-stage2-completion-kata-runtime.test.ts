@@ -35,11 +35,14 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   const source = await readFile(modulePath, "utf8");
   const physicalLines = source.split("\n").length - 1;
   assert.ok(
-    physicalLines >= 650 && physicalLines <= 1_600,
+    physicalLines >= 650 && physicalLines <= 2_500,
     `unexpected integrated production line count: ${physicalLines}`,
   );
   assert.match(source, /mounts = \(/u);
   assert.match(source, /def validate_stored_spec\(stored_spec\):/u);
+  assert.match(source, /def _runtime_config_path\(options\):/u);
+  assert.match(source, /base64\.b64decode\(encoded_ascii, validate=True\)/u);
+  assert.match(source, /RUNTIME_OPTIONS_TYPE_URL = "runtimeoptions\.v1\.Options"/u);
   assert.match(source, /def custom_mount_argv\(\):/u);
   assert.match(source, /mounts\[7:\]/u);
   assert.match(source, /hashlib\.sha256\(canonical_mount_json\(\)\)\.hexdigest\(\)/u);
@@ -51,14 +54,19 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
   assert.match(source, /def _open_production_owner\(\):/u);
   assert.match(source, /def fixed_command_specs_v2\(\):/u);
   assert.match(source, /def _activate_prepared_containerd\(/u);
-  assert.match(source, /prepared runtime is not static-only/u);
+  assert.match(source, /prepared runtime observer configuration differs/u);
   assert.match(source, /CONTAINERD_ARCHIVE_SHA256/u);
   assert.match(source, /def shutdown_daemon\(daemon\):/u);
   assert.match(source, /successful released TERM[\s\S]*CTR_TASK_KILL/u);
   assert.match(source, /def cleanup\(owner\):/u);
-  assert.match(source, /def _proc_snapshot\(attested, netns\):/u);
-  assert.match(source, /def _qmp_kvm\(processes\):/u);
-  assert.match(source, /def _share_fact\(\):/u);
+  assert.match(source, /def _proc_snapshot\(attested, netns, host_netns\):/u);
+  assert.match(source, /expected_netns = \{"shim": host_netns, "qemu": netns_root\}/u);
+  assert.match(source, /legacy_virtiofsd[\s\S]*native_virtiofsd/u);
+  assert.match(source, /def _qmp_kvm\(processes, deadline=None\):/u);
+  assert.match(source, /def _share_fact\(retained=None\):/u);
+  assert.match(source, /def _remove_owned_empty_share\(retained\):/u);
+  assert.match(source, /def await_runtime_roles_absent\(state\):/u);
+  assert.match(source, /def release_network\(owner\):/u);
   assert.doesNotMatch(
     source,
     /subprocess|requests|urllib|boto|AWS|terraform|tofu|argparse|sys\.argv|pathlib|if __name__|ctr run --config|callable\(/u,

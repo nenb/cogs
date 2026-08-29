@@ -293,7 +293,8 @@ def successful_behavior_tests():
         )
         writer = ledger.LedgerWriterState(node, ledger_generation.key, settled, ledger_generation)
         active = builder.ActiveLedger(node, history, writer)
-        locked = SimpleNamespace(state=object())
+        locked = SimpleNamespace(state=SimpleNamespace(generation=generation(39)), chain=object())
+        refreshed_locked = object()
         operation = SimpleNamespace(identity_fd=object(), operation_fd=object())
         root = SimpleNamespace(identity_fd=object(), operation_fd=object())
         owned = builder.OwnedOperation(locked, active, operation, root, operation_name)
@@ -331,12 +332,14 @@ def successful_behavior_tests():
             (builder, "_walk_entries", lambda *_args: (((builder.ROOT_NAME.text, root_generation),), ())),
             (builder, "_parent", lambda *_args: state_parent),
             (builder, "_current_ledger", lambda *_args: ledger_generation),
+            (builder, "_rebound_locked_state", lambda *_args: refreshed_locked),
             (fs, "_observe_node", observe),
             (ledger, "_reconcile_ledger", lambda *_args: next(reconciliations)),
             (ledger, "_append_leased_record", append_leased),
         ):
             marked = builder._mark_leased(owned, "5" * 64, 7, "7" * 64, 512, 1, control)
         matrix_case()
+        assert marked.locked is refreshed_locked
         assert builder._terminal_record(marked.active).record_type == "leased" and len(appended) == 1
         assert appended[0] == (
             token, operation_name, state_parent, operation_generation, root_generation,
@@ -568,7 +571,55 @@ def stable_terminal_replacement_test():
     assert terminal == {"reconciled": True, "revalidated": True, "closed": True}
 
 
+def operation_parent_transition_tests():
+    control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+    retained, reference, _parent = graph_fixture()
+    held = lease.RetainedRootfsLease(reference, retained)
+    old_prefix = retained.base_chain.components[0].node
+    nodes = tuple(held_node(200 + index, f"prefix-{index}") for index in range(9))
+    base = fs.HeldChain(retained.base_chain.anchor, tuple(
+        fs.ChainComponent(fs._name(f"p{index}"), node) for index, node in enumerate(nodes)))
+    owned = retained.owned
+    locked_chain = fs.HeldChain(base.anchor, base.components + (
+        fs.ChainComponent(builder.STATE_NAME, owned.locked.state),))
+    retained.base_chain = base
+    retained.owned = builder.OwnedOperation(
+        builder.LockedState(locked_chain, owned.locked.state, owned.locked.lock),
+        owned.active, owned.operation, owned.root, owned.operation_name)
+    fs._close_node(old_prefix)
+    before = nodes[builder.COMPLETION_INDEX].generation
+    expected_names = tuple(sorted(name.raw for name in (
+        lease.kata_operation.ARTIFACTS_NAME, lease.kata_operation.ROOTFS_NAME,
+        lease.kata_operation.IMMUTABLE_PREPARATION_NAME,
+        lease.kata_operation.RUNTIME_NAME, lease.kata_operation.STATE_NAME)))
+    def snapshot(nlink):
+        return SimpleNamespace(raw_names=expected_names, generation=fs.HostGeneration(
+            before.key, before.mode, before.uid, before.gid, nlink,
+            before.size, before.mtime_ns, before.ctime_ns + 1))
+    with patched((fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink))):
+        rejected(lambda: lease._admit_operation_parent_transition(held, control))
+    with patched(
+        (fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink + 1)),
+        (fs, "_revalidate_chain", lambda *_args: None),
+    ):
+        lease._admit_operation_parent_transition(held, control)
+    assert retained.base_chain.components[builder.COMPLETION_INDEX].node.generation.nlink == before.nlink + 1
+    assert retained.owned.locked.chain.components[-1].node is retained.owned.locked.state
+    close_graph_nodes(retained)
+    matrix_case(2)
+
+
 def alias_and_close_tests():
+    retained, reference, _state_parent = graph_fixture()
+    refreshed_base = fs.HeldChain(retained.base_chain.anchor, tuple(
+        fs.ChainComponent(component.name, component.node)
+        for component in retained.base_chain.components))
+    refreshed = build.RetainedBuild(retained.owned, refreshed_base)
+    refreshed.disposition = retained.disposition
+    assert lease._topology(refreshed, reference) is retained.owned
+    close_graph_nodes(refreshed)
+    matrix_case()
+
     retained, reference, _state_parent = graph_fixture()
     owned = retained.owned
     duplicate_node = held_node(140, "duplicate-ledger", "file", 0o600, 1, owned.active.writer.settled.offset)
@@ -700,6 +751,9 @@ def acquisition_boundary_tests():
             events.append(("equal", retained.disposition))
             if fault in {"equal", "abandon-secondary", "abandon-return"}: inject(fault)
 
+        def bootstrap(*_args):
+            events.append(("bootstrap",))
+            if fault == "bootstrap": inject(fault)
         def load_pins():
             if fault == "pins": inject(fault)
             return pins
@@ -728,6 +782,7 @@ def acquisition_boundary_tests():
             if fault == "pin-check": inject(fault)
         token_values = iter(("6" * 64, "7" * 64))
         with patched(
+            (lease, "_bootstrap_state", bootstrap),
             (publication, "_load_pins", load_pins),
             (lease.secrets, "token_hex", lambda _size: next(token_values)),
             (build, "_build_once", build_one),
@@ -749,7 +804,8 @@ def acquisition_boundary_tests():
                 try: lease._acquire(approval, control)
                 except lease.RootfsAcquireError as error:
                     expected = {
-                        "pins": "pins", "build-first": "build-first", "build-second": "build-second",
+                        "bootstrap": "bootstrap", "pins": "pins",
+                        "build-first": "build-first", "build-second": "build-second",
                         **{
                             f"build-{ordinal}-outcome-{outcome}": f"build-{ordinal}-{detail}"
                             for ordinal in ("first", "second")
@@ -777,7 +833,7 @@ def acquisition_boundary_tests():
     outcome_faults = tuple(
         f"build-{ordinal}-outcome-{outcome}"
         for ordinal in ("first", "second") for outcome in lease.ROOTFS_BUILD_OUTCOMES)
-    for fault in ("pins", "build-first", "build-second", *outcome_faults,
+    for fault in ("bootstrap", "pins", "build-first", "build-second", *outcome_faults,
                   "build-first-outcome-failed-files"):
         events, retained = run(fault)
         matrix_case()
@@ -1735,6 +1791,48 @@ def model_tests():
     rejected(lambda: build._require_pinned(first, dataclasses.replace(pins, entry_count=2)))
 
 
+def retired_prelease_recovery_test():
+    approval = fs.SourceApproval("a" * 40, "b" * 64)
+    control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
+    binding, grant = {"kind": "journal-absent"}, object()
+    genesis = SimpleNamespace(record_type="genesis", body_value=lambda: {
+        "source_revision": approval.revision,
+        "source_manifest_sha256": approval.manifest_sha256,
+    })
+    retired = SimpleNamespace(record_type="retired")
+    records = (genesis, retired)
+    active = SimpleNamespace(records=SimpleNamespace(legal=SimpleNamespace(phase="retired")))
+    fixed_idle = tuple(sorted((builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw)))
+    names = tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw)))
+    events = []
+    patches = (
+        patch.object(lease.kata_operation, "_claim_prestage_rootfs", return_value=grant),
+        patch.object(lease.kata_operation, "_prestage_rootfs_binding", return_value=binding),
+        patch.object(lease.kata_operation, "_prestage_rootfs_coordinates", return_value=None),
+        patch.object(builder, "_token", return_value="c" * 64),
+        patch.object(builder, "_operation_name", return_value=fs._name(b"operation-c")),
+        patch.object(builder, "_open_base_chain", return_value=object()),
+        patch.object(builder, "_open_state", return_value=object()),
+        patch.object(fs, "_enumerate_stable", return_value=SimpleNamespace(raw_names=names)),
+        patch.object(builder, "_acquire_lock", return_value=object()),
+        patch.object(builder, "_read_active_ledger", return_value=active),
+        patch.object(builder, "_records", return_value=records),
+        patch.object(builder, "_source", return_value=object()),
+        patch.object(fs, "_verify_source_bundle", return_value=None),
+        patch.object(lease, "_close_prestage_nodes", side_effect=lambda *_args: events.append("closed")),
+        patch.object(builder, "_recover_fixed", side_effect=lambda _control: events.append("recovered")),
+        patch.object(lease.kata_operation, "_settle_prestage_rootfs",
+                     side_effect=lambda *_args: events.append("settled")),
+        patch.object(lease, "_prestage_rootfs_absent", return_value=True),
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+            patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], \
+            patches[12], patches[13], patches[14], patches[15], patches[16]:
+        receipt = lease._recover_unadmitted_kata_operation(object(), approval, control)
+    assert lease._is_prestage_cleanup_receipt(receipt)
+    assert events == ["closed", "recovered", "settled"]
+
+
 def source_tests():
     source = (REMOTE / "completion_rootfs_lease.py").read_text()
     builder_source = (REMOTE / "completion_rootfs_builder.py").read_text()
@@ -1760,10 +1858,16 @@ def source_tests():
         assert forbidden not in source
     assert "resolve()" not in source and "destination" not in source
     assert "_append_mechanical" not in builder_source
-    assert 'record_type not in {"leased", "release-authorized"}' in builder_source
+    assert 'record_type not in {"leased", "release-authorized", "prestage-release-authorized"}' in builder_source
+    assert "def _recover_unadmitted_kata_operation(" in source
+    assert "_append_prestage_authorized_record(" in source
+    assert 'cleanup_origin == "prestage-authorized"' in source
+    assert "builder._recover_prestage_fixed(control)" in source
+    assert "_fail(recovery_key is _PRESTAGE_RECOVERY)" in builder_source
     assert "def _mark_leased(" in builder_source and "def _stable_active(" in builder_source
     writer_calls = []
     control_owners = []
+    prestage_recovery_calls = []
     for path in (ROOT / "deploy").rglob("*.py"):
         tree = ast.parse(path.read_text())
         parents = {}
@@ -1775,23 +1879,31 @@ def source_tests():
             while owner in parents and not isinstance(parents[owner], (ast.FunctionDef, ast.ClassDef)):
                 owner = parents[owner]
             owner_name = getattr(parents.get(owner), "name", "<module>")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"_append_record", "_append_leased_record", "_append_release_authorized_record"}:
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"_append_record", "_append_leased_record", "_append_release_authorized_record", "_append_prestage_authorized_record"}:
                 writer_calls.append((path.name, owner_name, node.func.attr))
-            if isinstance(node, ast.Constant) and node.value in {"leased", "release-authorized"}:
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_recover_prestage_fixed"):
+                prestage_recovery_calls.append((path.name, owner_name))
+            if isinstance(node, ast.Constant) and node.value in {"leased", "release-authorized", "prestage-release-authorized"}:
                 control_owners.append((path.name, owner_name))
+    assert prestage_recovery_calls == [
+        ("completion_rootfs_lease.py", "_recover_unadmitted_kata_operation")]
     assert sorted(writer_calls) == [
         ("completion_rootfs_builder.py", "_append", "_append_record"),
         ("completion_rootfs_builder.py", "_mark_leased", "_append_leased_record"),
+        ("completion_rootfs_lease.py", "_recover_unadmitted_kata_operation", "_append_prestage_authorized_record"),
         ("completion_rootfs_lease.py", "route", "_append_release_authorized_record"),
     ]
     assert set(control_owners) == {
         ("completion_rootfs_builder.py", "_append"),
+        ("completion_rootfs_builder.py", "_cleanup_active"),
         ("completion_rootfs_builder.py", "_mark_leased"),
         ("completion_rootfs_builder.py", "_recover_locked"),
         ("completion_rootfs_builder.py", "_cleanup_active"),
         ("completion_rootfs_builder.py", "_require_cleanup_model"),
         ("completion_rootfs_builder.py", "_session_require"),
         ("completion_rootfs_lease.py", "_classify_release_crash_for_tests"),
+        ("completion_rootfs_lease.py", "_recover_unadmitted_kata_operation"),
         ("completion_rootfs_lease.py", "_reference"),
         ("completion_rootfs_lease.py", "_stable_graph"),
         ("completion_rootfs_lease.py", "_stable_lease_pass"),
@@ -1801,6 +1913,7 @@ def source_tests():
         ("completion_rootfs_ledger.py", "<module>"),
         ("completion_rootfs_ledger.py", "__post_init__"),
         ("completion_rootfs_ledger.py", "_append_leased_record"),
+        ("completion_rootfs_ledger.py", "_append_prestage_authorized_record"),
         ("completion_rootfs_ledger.py", "_append_record"),
         ("completion_rootfs_ledger.py", "_append_release_authorized_record"),
         ("completion_rootfs_ledger.py", "_lease_history"),
@@ -1842,11 +1955,6 @@ def docker_real_lease_test():
 
     approval = fs_module.SourceApproval(revision, source_digest)
     control = fs_module.OperationControl(time.monotonic_ns() + 3600 * 1_000_000_000, lambda: False)
-    chain = builder_module._open_base_chain(control)
-    state = builder_module._bootstrap(chain, approval, control)
-    fs_module._close_node(state)
-    fs_module._close_chain(chain)
-
     held = lease_module._acquire(approval, control)
     reference = held.reference
     pins = publication_module._load_pins()
@@ -2002,6 +2110,12 @@ def docker_real_lease_test():
             os.close(directory)
         return journal_path
 
+    completion_root = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1"
+    for fixed_name in (operation_module.IMMUTABLE_PREPARATION_NAME.text,
+                       operation_module.RUNTIME_NAME.text):
+        path = completion_root / fixed_name
+        path.mkdir(mode=0o700, exist_ok=True); os.chmod(path, 0o700)
+
     bad_journal = operation_journal(True, True)
     authority = operation_module._open_fixed_operation()
     rejected(lambda: lease_module._reopen_kata_reserved(authority.reserve_rootfs(), control))
@@ -2028,20 +2142,37 @@ def docker_real_lease_test():
     ))
     preserved()
 
-    operation_journal(True, input_removed=True)
-    authority = operation_module._open_fixed_operation()
-    cleanup = operation_module._claim_production_cleanup_operation(authority)
-    with patch.object(type(cleanup), "settle_rootfs_absent", side_effect=RuntimeError("crash cut")):
-        rejected(lambda: lease_module._recover_kata_release(cleanup, control))
-    assert operation_module._durable_phase(cleanup) == "ROOTFS_RELEASE_AUTHORIZED"
-    assert not root_path.exists()
-    authority.close()
-    authority = operation_module._open_fixed_operation()
-    cleanup = operation_module._claim_production_cleanup_operation(authority)
-    released, authorization = lease_module._recover_kata_release(cleanup, control)
-    assert released is authorization is None
-    assert operation_module._durable_phase(cleanup) == "ROOTFS_ABSENT"
-    authority.close()
+    # The distinct prestage event is durable before either journal unlink or
+    # rootfs removal. Every restart consumes only fresh sealed cleanup custody.
+    journal_path = operation_journal(True)
+    authority = operation_module._open_fixed_operation_recovery()
+    prestage = operation_module._claim_pre_admission_cleanup(authority, approval)
+    with patch.object(operation_module, "_settle_prestage_rootfs",
+                      side_effect=RuntimeError("post-authorization cut")):
+        rejected(lambda: lease_module._recover_unadmitted_kata_operation(
+            prestage.reserve_prestage_rootfs_release(), approval, control))
+    root_records = ledger_module._parse_ledger(ledger_path.read_bytes())
+    assert root_records[-1].record_type == "prestage-release-authorized"
+    assert journal_path.exists() and root_path.exists()
+    prestage.close()
+
+    authority = operation_module._open_fixed_operation_recovery()
+    prestage = operation_module._claim_pre_admission_cleanup(authority, approval)
+    receipt = lease_module._recover_unadmitted_kata_operation(
+        prestage.reserve_prestage_rootfs_release(), approval, control)
+    assert lease_module._is_prestage_cleanup_receipt(receipt)
+    assert not journal_path.exists() and not root_path.exists()
+    prestage.close()
+    authority = operation_module._open_fixed_operation_recovery()
+    prestage = operation_module._claim_pre_admission_cleanup(authority, approval)
+    assert lease_module._recover_unadmitted_kata_operation(
+        prestage.reserve_prestage_rootfs_release(), approval, control) is None
+    prestage.close()
+    journal_path.write_bytes(b"replacement\n"); os.chmod(journal_path, 0o600)
+    replacement = operation_module._open_fixed_operation_recovery()
+    assert replacement.status() == "preserve"
+    replacement.close()
+    assert journal_path.read_bytes() == b"replacement\n" and not root_path.exists()
     state_root = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1"
     assert sorted(path.name for path in state_root.iterdir()) == sorted((builder_module.STATE_SENTINEL_NAME.text, builder_module.LOCK_NAME.text))
     cache = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1/artifacts/cache"
@@ -2060,6 +2191,7 @@ def main(argv):
         probe_outcome_tests()
         stable_graph_success_test()
         stable_terminal_replacement_test()
+        operation_parent_transition_tests()
         alias_and_close_tests()
         acquisition_boundary_tests()
         verify_order_and_drift_tests()
@@ -2073,6 +2205,7 @@ def main(argv):
         cleanup_phase_truth_table_tests()
         cleanup_session_entrance_tests()
         cleanup_complexity_tests()
+        retired_prelease_recovery_test()
         source_tests()
         assert MATRIX_CASES > 0
         print(f"completion rootfs lease portable behavioral matrix: {MATRIX_CASES} finite cases")

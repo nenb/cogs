@@ -10,7 +10,7 @@ test("fresh-root immutable preparation transaction is exact and rolls back every
     cwd: process.cwd(),
     encoding: "utf8",
     timeout: 60_000,
-    env: { PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /fresh-root immutable preparation transaction\/no-KVM fault matrix passed/u);

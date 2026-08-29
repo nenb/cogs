@@ -67,6 +67,8 @@ native_supported = sys.platform == "linux" and platform.machine() == "x86_64" an
 ssh_parameters = tuple(inspect.signature(ssh._compose_production_ssh).parameters)
 input_parameters = tuple(inspect.signature(inputs._compose_production_inputs).parameters)
 check(ssh_parameters == ("journal", "input_owner", "executable_owner"), "SSH injection seam")
+check('lifecycle_phase == "RUNTIME_READY"' in (REMOTE / "completion_kata_ssh.py").read_text(),
+      "production SSH is not bound after exact runtime proof")
 check(input_parameters == ("journal", "completion", "control", "executable_owner"),
       "key injection seam")
 source = (REMOTE / "completion_kata_inputs.py").read_text()
@@ -98,7 +100,8 @@ for left in range(len(policy.KEY_COMMAND_ORDER)):
 for omitted in range(len(policy.KEY_COMMAND_ORDER)):
     check(policy.KEY_COMMAND_ORDER[:omitted] + policy.KEY_COMMAND_ORDER[omitted + 1:]
           != policy.KEY_COMMAND_ORDER, "key omission accepted")
-check(policy.ATTESTED_COMMANDS == {"SSH_READY", *policy.KEY_COMMANDS}
+check(policy.ATTESTED_COMMANDS == {"SSH_READY", "SSH_READINESS", *policy.KEY_COMMANDS}
+      and policy.SSH_COMMANDS == ("SSH_READY", "SSH_READINESS")
       and not policy.ATTESTED_EXECUTABLES, "unattested SSH execution was enabled")
 for name, argv in policy.KEY_COMMANDS.items():
     fixed = process._FIXED_COMMANDS[process.CommandId[name]]
@@ -134,7 +137,8 @@ reject(lambda: operation._stage_candidates(
     set(operation.COMPLETION_NAMES) | {active_layout_name, active_layout_name + b".quarantine"}))
 reject(lambda: operation._stage_candidates(
     set(operation.COMPLETION_NAMES) | {b"kata-key-stage-v1-foreign"}))
-layout_names = tuple(sorted(set(operation.COMPLETION_NAMES) | {active_layout_name}))
+layout_names = tuple(sorted(set(operation.COMPLETION_NAMES) |
+                            {operation.RUNTIME_NAME.raw, active_layout_name}))
 layout_parent_key = {"mount_id": 1, "device": 2, "inode": 3, "kind": "directory"}
 layout_names_sha256 = hashlib.sha256(operation._canonical([
     name.decode() for name in layout_names if name != active_layout_name])).hexdigest()
@@ -179,8 +183,10 @@ runtime_intent = type("LayoutRecord", (), {
     "record_type": "RUNTIME_STAGE_INTENT_V4", "body": {}})()
 runtime_staged = type("LayoutRecord", (), {
     "record_type": "RUNTIME_STAGED_V3", "body": {}})()
-for runtime_name in operation.RUNTIME_NAMES:
-    operation._validate_runtime_layout({runtime_name}, [runtime_intent], "NETWORK_READY")
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, [runtime_intent], "NETWORK_READY")
+reject(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_STAGING_NAME.raw}, [runtime_intent], "NETWORK_READY"))
 reject(lambda: operation._validate_runtime_layout(
     set(operation.RUNTIME_NAMES), [runtime_intent], "NETWORK_READY"))
 operation._validate_runtime_layout(
@@ -201,7 +207,9 @@ root_settled = type("LayoutRecord", (), {"record_type": "INPUT_GRANT", "body": {
 root_published = type("LayoutRecord", (), {"record_type": "INPUT_WA", "body": {
     "path": ".", "action": "mkdir-settled"}})()
 root_records = [layout_records[0], root_intent]
-prepublication_names = tuple(operation.COMPLETION_NAMES - {operation.INPUT_NAME.raw})
+prepublication_names = tuple(
+    (operation.COMPLETION_NAMES - {operation.INPUT_NAME.raw}) |
+    {operation.RUNTIME_NAME.raw})
 operation._validate_stage_layout(
     prepublication_names + (root_temporary,), root_records, "FS_INTENT", layout_parent_key)
 operation._validate_stage_layout(
@@ -297,10 +305,10 @@ for hostile in (stdout[:-1], stdout + b"extra\n", stdout.replace(b"|01|GIT_01|",
 # SSH options remain one private authenticated /bin/sh stdin session.
 argv = ssh.ARGV
 check(argv[:4] == ("/usr/bin/ssh", "-F", "/dev/null", "-T"), "SSH prefix")
-check(argv[-4:] == ("-i", "/proc/self/fd/200", "root@192.0.2.2", "/bin/sh -s"), "SSH tail")
+check(argv[-4:] == ("-i", "/proc/{command-parent-pid}/fd/1000", "root@192.0.2.2", "/bin/sh -s"), "SSH tail")
 for option in ("BatchMode=yes", "StdinNull=no", "IdentitiesOnly=yes", "IdentityAgent=none",
                "PasswordAuthentication=no", "KbdInteractiveAuthentication=no",
-               "StrictHostKeyChecking=yes", "UserKnownHostsFile=/proc/self/fd/201",
+               "StrictHostKeyChecking=yes", "UserKnownHostsFile=/proc/{command-parent-pid}/fd/1001",
                "ConnectionAttempts=1", "ProxyCommand=none", "ProxyJump=none",
                "ControlMaster=no", "ClearAllForwardings=yes", "ForwardAgent=no"):
     check(argv.count(option) == 1, option)
@@ -459,6 +467,9 @@ if native_supported:
         raw = append_grant(raw, "@key-stage", "kata-key-stage-v1-" + "a" * 64,
                            "directory", 0o700, 0, True)
         serial = 0
+        journal_key_generation = {
+            **live_key.generation, "mount_id": max(1, live_key.generation["mount_id"]),
+        }
         for command_name in policy.KEY_COMMAND_ORDER:
             if "KEYGEN" in command_name:
                 names = ("client", "client.pub") if "CLIENT" in command_name else ("server", "server.pub")
@@ -469,7 +480,7 @@ if native_supported:
             command = make_intent(serial, command_name, "ROOTFS_LEASED")
             command = rebound({**command, "executable_sha256": live_key.sha256,
                                "tool_closure_sha256": live_key.closure_sha256,
-                               "executable_generation": live_key.generation})
+                               "executable_generation": journal_key_generation})
             raw = add(raw, "COMMAND_INTENT_V2", command); cuts[f"{command_name}-intent"] = raw
             before_exec = make_preexec(command)
             raw = add(raw, "COMMAND_PREEXEC_V2", before_exec); cuts[f"{command_name}-preexec"] = raw
@@ -518,17 +529,22 @@ if native_supported:
                     "after_parent": after_parent, "before_child": None,
                     "after_child": generation(65)}
         raw = add(add(raw, "FS_OBSERVED", observed), "FS_SETTLED", observed)
-        for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
+        for kind in ("BASELINES_CAPTURED", "NETWORK_READY"):
             raw = add(raw, kind, {"operation_token": "a" * 64, "proof_sha256": "9" * 64})
         mount = {"operation_token": "a" * 64, "manifest_sha256": "c" * 64,
                  "mount_generation": generation(52), "issuance_sha256": operation.ZERO}
         mount["issuance_sha256"] = hashlib.sha256(operation._canonical({
             name: mount[name] for name in mount if name != "issuance_sha256"})).hexdigest()
         raw = add(raw, "RUNTIME_MOUNT_V2", mount)
+        raw = add(raw, "RUNTIME_READY", {
+            "operation_token": "a" * 64, "proof_sha256": "9" * 64})
         ssh_command = make_intent(serial, "SSH_READY", "RUNTIME_READY")
         ssh_command = rebound({**ssh_command, "executable_sha256": live_ssh.sha256,
                                "tool_closure_sha256": live_ssh.closure_sha256,
-                               "executable_generation": live_ssh.generation})
+                               "executable_generation": {
+                                   **live_ssh.generation,
+                                   "mount_id": max(1, live_ssh.generation["mount_id"]),
+                               }})
         raw = add(raw, "COMMAND_INTENT_V2", ssh_command); cuts["ssh-intent"] = raw
         raw = add(raw, "COMMAND_PREEXEC_V2", make_preexec(ssh_command)); cuts["ssh-preexec"] = raw
         raw = add(raw, "COMMAND_OUTCOME_V2", make_outcome(ssh_command, stdout)); cuts["ssh-outcome"] = raw

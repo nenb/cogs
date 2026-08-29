@@ -16,7 +16,7 @@ import completion_rootfs_plan as plan
 
 MATERIALIZE_SECONDS = 900
 NATIVE_PACKAGE_MATERIALIZE_SECONDS = 1_200
-CLEANUP_SECONDS = 600
+CLEANUP_SECONDS = 720
 
 
 class MaterializerError(Exception):
@@ -569,7 +569,32 @@ def _record_matches(generation, record):
         _fail(generation.size == record.archive_size)
 
 
+def _refresh_postwalk_base(owned, control):
+    """Refresh descriptor-held ancestors after reviewed sibling mutations.
+
+    Kata runtime staging mutates a sibling below completion-v1.  That changes
+    directory timestamps without changing any held identity or rootfs child.
+    Refresh only already-held base descriptors, preserving every key and
+    ownership field, before the complete rootfs walk revalidates the chain.
+    """
+    chain = owned.locked.chain
+    _fail(chain.components and chain.components[-1].name == builder.STATE_NAME)
+    def refreshed(node):
+        observed = fs._observe_node(node.identity_fd, node.operation_fd, control)
+        _fail(observed.key == node.generation.key
+              and observed.mode == node.generation.mode
+              and observed.uid == node.generation.uid
+              and observed.gid == node.generation.gid)
+        return fs.HeldNode(node.identity_fd, node.operation_fd, observed)
+    anchor = refreshed(chain.anchor)
+    prefix = tuple(fs.ChainComponent(component.name, refreshed(component.node))
+                   for component in chain.components[:-1])
+    updated = fs.HeldChain(anchor, prefix + (chain.components[-1],))
+    return replace(owned, locked=replace(owned.locked, chain=updated))
+
+
 def _postwalk(owned, root, authority, control):
+    owned = _refresh_postwalk_base(owned, control)
     fs._structural_increment("complete_walks")
     root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
     _fail(not root_opened)

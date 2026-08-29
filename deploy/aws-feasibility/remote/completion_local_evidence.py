@@ -16,16 +16,17 @@ guest = ssh.guest
 RUNTIME_ATTESTATION_VERSION = "cogs.stage2-local-private-runtime-attestation/v1"
 OPERATION_BINDING_VERSION = "cogs.stage2-local-private-operation-binding/v1"
 JOURNAL_TEARDOWN_ORDER = (
-    "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
-    "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-    "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
+    "READINESS_REVOKED", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_SHARE_IDENTITY_V1",
+    "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT",
+    "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT", "CONTAINER_ABSENT",
+    "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
     "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED",
 )
 REPORT_TEARDOWN_SOURCES = (
-    ("READINESS_REVOKED",), ("TASK_STOPPED",), ("NETWORK_ABSENT",),
-    ("TASK_ABSENT",), ("CONTAINER_ABSENT",), ("RUNTIME_ABSENT",),
-    ("SHARE_ABSENT",), ("FIREWALL_ABSENT",),
-    ("RESIDUE:containerd_processes",), ("INPUT_REMOVED",),
+    ("READINESS_REVOKED",), ("TASK_STOPPED",), ("TASK_ABSENT",),
+    ("RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT"),
+    ("RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT"), ("CONTAINER_ABSENT",),
+    ("SHARE_ABSENT",), ("FIREWALL_ABSENT",), ("CONTAINERD_ABSENT",), ("INPUT_REMOVED",),
     ("ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"),
     ("FINAL_BASELINES",), ("RETIRED",),
 )
@@ -157,18 +158,37 @@ class _DurableHistoryOwnerResult:
 
 @dataclass(frozen=True)
 class _PlatformOwnerResult:
-    """Typed pre-workload runtime/QMP observation retained through teardown."""
+    """Typed pre-workload independent-observer fact retained through teardown."""
     operation_token: str
     live_mapping_sha256: str
     qemu_process_sha256: str
+    qemu_argv_sha256: str
+    qemu_pid: int
+    qemu_starttime: int
+    qemu_executable_device: int
+    qemu_executable_inode: int
+    observer_qmp_device: int
+    observer_qmp_inode: int
+    kvm_device: int
+    kvm_inode: int
+    kvm_rdev: int
     kvm_api: int
     qmp_present: bool
     qmp_enabled: bool
 
     def __post_init__(self):
         _token(self.operation_token)
-        _digest(self.live_mapping_sha256)
-        _digest(self.qemu_process_sha256)
+        for value in (self.live_mapping_sha256, self.qemu_process_sha256,
+                      self.qemu_argv_sha256):
+            _digest(value)
+        _require(type(self.qemu_pid) is int and self.qemu_pid > 1
+                 and type(self.qemu_starttime) is int and self.qemu_starttime > 0)
+        for value in (self.qemu_executable_device, self.observer_qmp_device,
+                      self.kvm_device, self.kvm_rdev):
+            _require(type(value) is int and value >= 0)
+        for value in (self.qemu_executable_inode, self.observer_qmp_inode,
+                      self.kvm_inode):
+            _require(type(value) is int and value > 0)
         _require(type(self.kvm_api) is int and self.kvm_api == 12)
         _require(type(self.qmp_present) is bool and self.qmp_present is True)
         _require(type(self.qmp_enabled) is bool and self.qmp_enabled is True)
@@ -176,12 +196,22 @@ class _PlatformOwnerResult:
 
 @dataclass(frozen=True)
 class _RuntimeOwnerResult:
-    """Causal network/runtime/QMP fact retained through exact teardown."""
+    """Causal network/runtime/independent-observer fact through teardown."""
     operation_token: str
     runtime_mount_record_sha256: str
     network_causal_proof_sha256: str
     live_mapping_sha256: str
     qemu_process_sha256: str
+    qemu_argv_sha256: str
+    qemu_pid: int
+    qemu_starttime: int
+    qemu_executable_device: int
+    qemu_executable_inode: int
+    observer_qmp_device: int
+    observer_qmp_inode: int
+    kvm_device: int
+    kvm_inode: int
+    kvm_rdev: int
     kvm_api: int
     qmp_present: bool
     qmp_enabled: bool
@@ -190,8 +220,16 @@ class _RuntimeOwnerResult:
         _token(self.operation_token)
         for value in (self.runtime_mount_record_sha256,
                       self.network_causal_proof_sha256, self.live_mapping_sha256,
-                      self.qemu_process_sha256):
+                      self.qemu_process_sha256, self.qemu_argv_sha256):
             _digest(value)
+        _require(type(self.qemu_pid) is int and self.qemu_pid > 1
+                 and type(self.qemu_starttime) is int and self.qemu_starttime > 0)
+        for value in (self.qemu_executable_device, self.observer_qmp_device,
+                      self.kvm_device, self.kvm_rdev):
+            _require(type(value) is int and value >= 0)
+        for value in (self.qemu_executable_inode, self.observer_qmp_inode,
+                      self.kvm_inode):
+            _require(type(value) is int and value > 0)
         _require(type(self.kvm_api) is int and self.kvm_api == 12)
         _require(type(self.qmp_present) is bool and self.qmp_present is True)
         _require(type(self.qmp_enabled) is bool and self.qmp_enabled is True)
@@ -218,7 +256,17 @@ def _runtime_attestation_value(result):
         "live_mapping_sha256": result.live_mapping_sha256,
         "network_causal_proof_sha256": result.network_causal_proof_sha256,
         "operation_token": result.operation_token,
+        "observer_qmp_device": result.observer_qmp_device,
+        "observer_qmp_inode": result.observer_qmp_inode,
+        "qemu_argv_sha256": result.qemu_argv_sha256,
+        "qemu_executable_device": result.qemu_executable_device,
+        "qemu_executable_inode": result.qemu_executable_inode,
+        "qemu_pid": result.qemu_pid,
         "qemu_process_sha256": result.qemu_process_sha256,
+        "qemu_starttime": result.qemu_starttime,
+        "kvm_device": result.kvm_device,
+        "kvm_inode": result.kvm_inode,
+        "kvm_rdev": result.kvm_rdev,
         "qmp_enabled": result.qmp_enabled,
         "qmp_present": result.qmp_present,
         "runtime_mount_record_sha256": result.runtime_mount_record_sha256,
@@ -475,15 +523,20 @@ def _durable_first_failure(records):
 
 def _report_teardown(records, residue, binding):
     rows = []
+    active_runtime = bool(_records_of(records, "RUNTIME_ROLE_IDENTITIES_V1"))
+    runtime_only = {"TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_IDENTITIES_V1",
+                    "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT",
+                    "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}
     _require(len(REPORT_TEARDOWN_SOURCES) == len(local.TEARDOWN_PHASES))
     for phase, sources in zip(local.TEARDOWN_PHASES, REPORT_TEARDOWN_SOURCES, strict=True):
         for source in sources:
             if source.startswith("RESIDUE:"):
                 _require(source.removeprefix("RESIDUE:") in residue.absent_facts)
             elif not _records_of(records, source):
-                # Inapplicable runtime teardown is not a vacuous journal pass:
-                # every report domain is independently observed absent below.
-                _require(residue.absent_facts == local.RESIDUE_FACTS)
+                # Only genuinely inapplicable runtime work may omit its owner
+                # event. Applicable events can never be replaced by residue.
+                _require(not active_runtime and source in runtime_only
+                         and residue.absent_facts == local.RESIDUE_FACTS)
             else:
                 _one(records, source)
         rows.append({"phase": phase, "outcome": "pass", "binding_sha256": binding})

@@ -31,6 +31,11 @@ def load(name, path):
 def portable():
     source = (REMOTE / "completion_rootfs_materializer.py").read_text()
     assert "def _materialize(" in source and "revalidate_build_inputs" in source and "def _postwalk(" in source
+    assert ("def _refresh_postwalk_base(" in source
+            and "observed.key == node.generation.key" in source
+            and "observed.mode == node.generation.mode" in source
+            and "observed.uid == node.generation.uid" in source
+            and "observed.gid == node.generation.gid" in source)
     assert "if __name__" not in source and "sys.argv" not in source
     assert "target_opened + (() if target is None" in source and "(active.node,) +" in source
     for forbidden in ("rmtree", "os.walk", "glob", "subprocess", "socket", "tarfile", "extractall", "rename"):
@@ -58,6 +63,19 @@ def portable():
                 == 1_300 * 1_000_000_000)
         controls = build._native_package_controls(outer)
         assert controls.work.deadline_ns == 1_300 * 1_000_000_000
+        original_fresh = build.materializer._fresh_cleanup_control
+        original_native_cleanup = build.materializer._native_package_cleanup_control
+        fresh, native = object(), object()
+        build.materializer._fresh_cleanup_control = lambda: fresh
+        build.materializer._native_package_cleanup_control = lambda work, deadline: (
+            native if work is controls.work and deadline == outer.deadline_ns else None)
+        try:
+            assert build._cleanup_control(controls.work, None) is fresh
+            assert build._cleanup_control(
+                controls.work, outer.deadline_ns) is native
+        finally:
+            build.materializer._fresh_cleanup_control = original_fresh
+            build.materializer._native_package_cleanup_control = original_native_cleanup
         assert controls.cleanup_deadline_ns == outer.deadline_ns
         assert (materializer._native_package_materialize_control(controls.work).deadline_ns
                 == controls.work.deadline_ns)
@@ -108,7 +126,7 @@ def portable():
                 raise AssertionError("native materializer failure accepted")
         finally:
             materializer._reload_and_cleanup = real_reload
-        assert observed_cleanup == [700 * 1_000_000_000]
+        assert observed_cleanup == [820 * 1_000_000_000]
         now[0] = 300 * 1_000_000_000
         observed_cleanup.clear()
         materializer._reload_and_cleanup = lambda _owned, selected: observed_cleanup.append(

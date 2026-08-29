@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.invalid/schemas/stage2-local-runtime-manifest-v2.json",
   "title": "Static reviewed Stage 2 runtime manifest without live identities",
-  "$comment": "This description contains no inode, device, ctime, PID, QMP socket, or live mapping. Admission derives those facts later from a held rootfs lease.",
+  "$comment": "This description contains fixed QMP launch policy but no live inode, device, ctime, PID, or mapping. Admission derives live identities later.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "authority", "architecture", "archives", "rootfs", "launch", "executables"],
@@ -191,9 +191,9 @@
         "static_closure"
       ],
       "properties": {
-        "manifest_sha256": { "const": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691" },
+        "manifest_sha256": { "const": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1" },
         "manifest_size": { "const": 1049443 },
-        "ustar_sha256": { "const": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3" },
+        "ustar_sha256": { "const": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397" },
         "ustar_size": { "const": 136905728 },
         "entry_count": { "const": 4353 },
         "static_mapping_policy": {
@@ -228,6 +228,8 @@
       "required": [
         "runtime",
         "configuration",
+        "active_configuration",
+        "observer",
         "containerd_configuration_sha256",
         "mount_list_sha256",
         "shared_filesystem",
@@ -244,8 +246,39 @@
           "required": ["path", "size", "sha256"],
           "properties": {
             "path": { "const": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml" },
-            "size": { "type": "integer", "minimum": 1, "maximum": 1048576 },
-            "sha256": { "$ref": "#/$defs/sha256" }
+            "size": { "const": 32218 },
+            "sha256": { "const": "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae" }
+          }
+        },
+        "active_configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "size", "sha256", "base_path", "base_size", "base_sha256", "substitutions"],
+          "properties": {
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/configuration-qemu-observer.toml"
+            },
+            "size": { "const": 32220 },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "base_path": { "const": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml" },
+            "base_size": { "const": 32218 },
+            "base_sha256": { "const": "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae" },
+            "substitutions": {
+              "const": [
+                { "from": "enable_debug = false", "to": "enable_debug = true" },
+                { "from": "extra_monitor_socket = \"\"", "to": "extra_monitor_socket = \"qmp\"" }
+              ]
+            }
+          }
+        },
+        "observer": {
+          "const": {
+            "private_socket": "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock",
+            "observer_socket": "/run/vc/vm/cogs-stage2-ssh-v1/extra-monitor.sock",
+            "qmp_frontends": 2,
+            "commands": ["qmp_capabilities", "query-status", "query-kvm"],
+            "client_policy": "closed-query-only-full-control-endpoint",
+            "debug_effect": "hypervisor-debug-kernel-parameters-and-debug-threads"
           }
         },
         "containerd_configuration_sha256": { "$ref": "#/$defs/sha256" },

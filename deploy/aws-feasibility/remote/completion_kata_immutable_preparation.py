@@ -60,7 +60,7 @@ _OBSERVATION_STAGE = "entry"
 _DIAGNOSTIC_STAGES = frozenset({
     "entry", "preflight", "expected-control", "ownership", "rootfs-acquisition",
     "runtime-acquisition", "extract-kata", "extract-containerd", "archive-values",
-    "receipt", "publication", "installed-verification", "package-verification",
+    "receipt", "active-configuration", "publication", "installed-verification", "package-verification",
 })
 ALLOWED_REDIRECT_HOSTS = frozenset({
     "release-assets.githubusercontent.com",
@@ -485,6 +485,7 @@ def _copy_fixed(source, destination, mode):
 
 
 def _publish_runtime(extracted):
+    global _OBSERVATION_STAGE
     _require(not STAGED_RUNTIME.exists() and not KATA_ROOT.exists()
              and not IMMUTABLE_STAGING.exists())
     IMMUTABLE_STAGING.mkdir(mode=0o700)
@@ -494,6 +495,14 @@ def _publish_runtime(extracted):
         _require(source.is_file() and source.stat().st_size == size
                  and hashlib.sha256(source.read_bytes()).hexdigest() == digest)
         _copy_fixed(source, IMMUTABLE_STAGING / relative, mode)
+    _OBSERVATION_STAGE = "active-configuration"
+    base_path = (extracted["kata"] /
+                 preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/"))
+    base = base_path.read_bytes()
+    active = preparation.derive_observer_configuration(base)
+    _write_owned_file(
+        IMMUTABLE_STAGING / Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).name,
+        active, 0o400)
     os.chmod(IMMUTABLE_STAGING / "bin", 0o500)
     os.rename(IMMUTABLE_STAGING, STAGED_RUNTIME)
     _sync_directory(COMPLETION_ROOT)
@@ -505,8 +514,19 @@ def _publish_runtime(extracted):
 
 def _verify_installed(expected_runtime):
     _require(STAGED_RUNTIME.is_dir() and KATA_ROOT.is_dir())
-    if expected_runtime is None:
-        return
+    # Historical narrow unit fixtures contain only launch-artifact rows. Real
+    # preparation either has no reviewed control yet or the exact new binding.
+    observer_bound = (expected_runtime is None or
+                      "active_configuration" in expected_runtime.get("launch", {}))
+    if observer_bound:
+        base = Path(preparation.KATA_BASE_CONFIGURATION_PATH).read_bytes()
+        active = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).read_bytes()
+        _require(active == preparation.derive_observer_configuration(base))
+        active_description = preparation.observer_configuration_description(base)
+        if expected_runtime is None:
+            return
+        _require(expected_runtime["launch"]["active_configuration"] == active_description,
+                 "reviewed active Kata configuration differs")
     for row in expected_runtime["launch"]["artifacts"]:
         path = Path(row["path"])
         seen = path.lstat()
@@ -581,6 +601,22 @@ def _static_runtime_rows():
         rows.append({"path": relative, "kind": "file", "mode": mode,
                      "uid": uid, "gid": gid, "size": size,
                      "link_target": None, "sha256": digest})
+    active_path = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH)
+    observed_active = next((path for path in (
+        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name)
+        if path.exists()), None)
+    if observed_active is not None:
+        base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
+        base_source = next((path for path in (
+            KATA_ROOT / preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/opt/kata/"),
+            EXTRACTED_ROOT / "kata" / base_relative)
+            if path.exists()), None)
+        _require(base_source is not None,
+                 "active configuration lacks pinned rollback base")
+        active = preparation.derive_observer_configuration(base_source.read_bytes())
+        rows.append({"path": active_path.name, "kind": "file", "mode": 0o400,
+                     "uid": uid, "gid": gid, "size": len(active),
+                     "link_target": None, "sha256": hashlib.sha256(active).hexdigest()})
     return sorted(rows, key=lambda row: row["path"].encode())
 
 
@@ -604,10 +640,24 @@ def _artifact_rows(contract):
 
 def _remove_artifact_cache(contract, custody):
     cache = ARTIFACT_ROOT / "cache"
-    for path, expected in ((ARTIFACT_ROOT, custody["artifact_root_identity"]),
-                           (cache, custody["artifact_cache_identity"])):
-        seen = _directory_identity(path)
-        _require(seen == expected, "transaction artifact cache identity changed")
+    owned_empty = (custody["artifact_cache_created"]
+                   and not custody["artifact_baseline"]
+                   and not custody["artifact_sentinel_existed"])
+    if not ARTIFACT_ROOT.exists() and not ARTIFACT_ROOT.is_symlink():
+        _require(owned_empty, "retained artifact root disappeared")
+        return
+    seen = _directory_identity(ARTIFACT_ROOT)
+    _require(seen == custody["artifact_root_identity"],
+             "transaction artifact root identity changed")
+    if not cache.exists() and not cache.is_symlink():
+        _require(owned_empty and not os.listdir(ARTIFACT_ROOT),
+                 "artifact cache disappeared before settlement")
+        ARTIFACT_ROOT.rmdir()
+        _sync_directory(ARTIFACT_ROOT.parent)
+        return
+    seen = _directory_identity(cache)
+    _require(seen == custody["artifact_cache_identity"],
+             "transaction artifact cache identity changed")
     rows = _artifact_rows(contract)
     by_name = {row["cache_name"]: row for row in rows}
     names = set(os.listdir(cache))
@@ -643,6 +693,41 @@ def _remove_artifact_cache(contract, custody):
     _sync_directory(ARTIFACT_ROOT.parent)
 
 
+def _remove_runtime_partial(path, quarantine, expected):
+    """Settle one root-created interrupted download without adopting its bytes."""
+    _require(not (path.exists() and quarantine.exists()),
+             "duplicate runtime partial generations")
+    active = quarantine if quarantine.exists() else path
+    before = os.stat(active, follow_symlinks=False)
+    _require(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+             and (os.geteuid() != 0 or before.st_gid == 0) and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o600
+             and 0 <= before.st_size <= expected["size"],
+             "runtime partial identity changed")
+    generation = lambda seen: (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
+                               seen.st_gid, seen.st_nlink, seen.st_size, seen.st_mtime_ns)
+    descriptor = os.open(active, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        _require(generation(os.fstat(descriptor)) == generation(before),
+                 "runtime partial changed before custody")
+        if active == path:
+            os.rename(path, quarantine)
+            _sync_directory(RUNTIME_CACHE)
+            active = quarantine
+        _require(generation(os.stat(active, follow_symlinks=False)) == generation(before)
+                 and generation(os.fstat(descriptor)) == generation(before),
+                 "runtime partial changed before removal")
+        active.unlink()
+        _sync_directory(RUNTIME_CACHE)
+        settled = os.fstat(descriptor)
+        _require((settled.st_dev, settled.st_ino, settled.st_mode, settled.st_uid,
+                  settled.st_gid, settled.st_size) ==
+                 (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                  before.st_gid, before.st_size) and settled.st_nlink == 0,
+                 "runtime partial did not settle")
+    finally:
+        os.close(descriptor)
+
+
 def _rollback_preparation(contract):
     """Inspect every owned class and aggregate uncertainty; never report best effort."""
     if not PREPARATION_ROOT.exists():
@@ -667,7 +752,11 @@ def _rollback_preparation(contract):
 
     values = None if receipt is None else receipt[1]["runtime_archives"]
     kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
-    if kata_moved:
+    # The staged observer derivative is authorized only by the still-present
+    # pinned base generation, so verify/remove it before the Kata tree.
+    cleanup(lambda: _remove_static_runtime(STAGED_RUNTIME, False), "staged runtime")
+    cleanup(lambda: _remove_static_runtime(IMMUTABLE_STAGING, True), "immutable staging")
+    if kata_moved and not errors:
         def remove_kata():
             _require(values is not None, "Kata staging lacks durable manifest")
             rows = next(row for row in values if row["role"] == "kata")["extracted"]["entries"]
@@ -676,8 +765,6 @@ def _rollback_preparation(contract):
                         if row["path"].startswith("opt/kata/")]
             _remove_verified_tree(KATA_ROOT, children, root_row)
         cleanup(remove_kata)
-    cleanup(lambda: _remove_static_runtime(STAGED_RUNTIME, False), "staged runtime")
-    cleanup(lambda: _remove_static_runtime(IMMUTABLE_STAGING, True), "immutable staging")
 
     if EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink():
         def remove_extracted():
@@ -702,15 +789,29 @@ def _rollback_preparation(contract):
 
     if RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink():
         def remove_runtime_cache():
-            _require(stat.S_ISDIR(RUNTIME_CACHE.lstat().st_mode))
+            _directory_identity(RUNTIME_CACHE)
             pins = {pin["name"]: pin for pin in preparation.ARCHIVES}
+            partials = {"." + name + ".partial": pin for name, pin in pins.items()}
+            quarantines = {name + ".removing": pin for name, pin in partials.items()}
             names = set(os.listdir(RUNTIME_CACHE))
-            _require(names <= set(pins), "foreign runtime cache entry")
-            for name in sorted(names):
-                _stable_file(RUNTIME_CACHE / name, pins[name])
+            _require(names <= set(pins) | set(partials) | set(quarantines),
+                     "foreign runtime cache entry")
+            for name, pin in pins.items():
+                present = {candidate for candidate in
+                           (name, "." + name + ".partial", "." + name + ".partial.removing")
+                           if candidate in names}
+                _require(len(present) <= 1, "duplicate runtime cache generations")
+                if name in present:
+                    _stable_file(RUNTIME_CACHE / name, pin)
+                elif present:
+                    partial = RUNTIME_CACHE / ("." + name + ".partial")
+                    quarantine = RUNTIME_CACHE / ("." + name + ".partial.removing")
+                    _remove_runtime_partial(partial, quarantine, pin)
             os.chmod(RUNTIME_CACHE, 0o700)
-            for name in sorted(names):
+            for name in sorted(set(os.listdir(RUNTIME_CACHE))):
+                _require(name in pins, "runtime partial settlement drift")
                 (RUNTIME_CACHE / name).unlink()
+            _sync_directory(RUNTIME_CACHE)
             RUNTIME_CACHE.rmdir()
         cleanup(remove_runtime_cache)
 
@@ -732,17 +833,28 @@ def _forbidden_mutable_paths():
     return (
         COMPLETION_ROOT / "kata-operation-v1",
         COMPLETION_ROOT / "kata-input-v1",
-        COMPLETION_ROOT / "rootfs-v1",
         Path("/run/cogs-stage2-local-private-v2"),
         Path("/run/cogs-stage2-ssh"),
         Path("/run/vc/vm/cogs-stage2-ssh-v1"),
     )
 
 
+def _rootfs_state_idle():
+    import completion_rootfs_fs as rootfs_fs
+    import completion_rootfs_lease as rootfs_lease
+    control = rootfs_fs.OperationControl(time.monotonic_ns() + 30_000_000_000,
+                                         lambda: False)
+    return rootfs_lease._prestage_rootfs_absent(control)
+
+
 def recover_failed_preparation():
     """Inspect and settle only durable immutable transaction custody."""
     _require(not any(path.exists() or path.is_symlink()
                      for path in _forbidden_mutable_paths()))
+    rootfs_state = COMPLETION_ROOT / "rootfs-v1"
+    if rootfs_state.exists() or rootfs_state.is_symlink():
+        _require(_rootfs_state_idle(),
+                 "active rootfs state blocks immutable recovery")
     contract = _fixed_contract()
     _rollback_preparation(contract)
     _require(not PREPARATION_ROOT.exists() and not IMMUTABLE_STAGING.exists()

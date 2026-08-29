@@ -38,6 +38,7 @@ const steps = [
   "Gate reviewed H and G after unauthenticated exact-G acquisition",
   "Acquire exact reviewed implementation revision H separately without credentials",
   "Complete exact immutable preparation before KVM eligibility and role custody",
+  "Provision the fresh-host NFT writer owner",
   "Execute the sole zero-argument local qualification entry",
   "Invoke cleanup-only recovery after every local entry outcome",
   "Settle and remove fixed source and control roots only after recovery",
@@ -135,6 +136,7 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
     "Acquire exact reviewed implementation revision H separately without credentials",
   );
   const preparation = workflow.indexOf("Complete exact immutable preparation before KVM eligibility and role custody");
+  const provision = workflow.indexOf("Provision the fresh-host NFT writer owner");
   const entry = workflow.indexOf("Execute the sole zero-argument local qualification entry");
   assert.ok(
     0 <= admission &&
@@ -142,7 +144,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
       control < gate &&
       gate < implementation &&
       implementation < preparation &&
-      preparation < entry,
+      preparation < provision &&
+      provision < entry,
   );
   assert.match(workflow.slice(admission, control), /\n {2}local-kata:\n {4}needs: admission/u);
   assert.doesNotMatch(workflow.slice(admission, control), /\n {8}uses:/u);
@@ -175,6 +178,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(preparation, entry), /"rootfs_artifact_count":16/u);
   assert.match(workflow.slice(preparation, entry), /"runtime_archive_count":2/u);
   assert.match(workflow.slice(preparation, entry), /"control_verified":True/u);
+  assert.match(workflow.slice(provision, entry), /source\/scripts\/provision-stage2-nft-owner\.py/u);
+  assert.match(workflow.slice(provision, entry), /test -d \/var\/lib\/cogs-stage2-nft-owner-v1/u);
   assert.equal(workflow.slice(preparation, entry).match(/sudo -n \/usr\/bin\/test -x/gu)?.length, 3);
   assert.match(
     workflow.slice(preparation, entry),
@@ -193,16 +198,16 @@ test("fixed phase bounds preserve recovery, independent residue, and publication
   const total = steps.reduce((sum, name) => sum + stepTimeout(name), 0);
   const localJob = workflow.slice(workflow.indexOf("\n  local-kata:"));
   const job = Number(localJob.match(/^ {4}timeout-minutes: ([0-9]+)$/mu)?.[1]);
-  assert.equal(job, 120);
-  assert.equal(total, 116);
-  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 115);
-  assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 59);
-  const postEntry = steps.slice(6).reduce((sum, name) => sum + stepTimeout(name), 0);
-  assert.equal(postEntry, 21);
+  assert.equal(job, 201);
+  assert.equal(total, 197);
+  assert.equal(total - stepTimeout("Admit the stable first-created dispatch before every source effect"), 196);
+  assert.equal(stepTimeout("Execute the sole zero-argument local qualification entry"), 132);
+  const postEntry = steps.slice(7).reduce((sum, name) => sum + stepTimeout(name), 0);
+  assert.equal(postEntry, 28);
   assert.ok(postEntry * 60 >= 600);
-  assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 3470s/u);
-  assert.ok(3470 + 10 <= 59 * 60);
-  assert.match(workflow, /one 7,200-second envelope/u);
+  assert.match(workflow, /timeout --foreground --signal=TERM --kill-after=10s 7800s/u);
+  assert.ok(7800 + 10 <= 132 * 60);
+  assert.match(workflow, /one 12,060-second envelope/u);
 });
 
 test("recovery and independent settlement always run without turning cancellation into success", () => {
@@ -211,12 +216,13 @@ test("recovery and independent settlement always run without turning cancellatio
   const residue = workflow.indexOf("Independently prove zero lifecycle residue after cleanup");
   const publicationAt = workflow.indexOf("Validate semantics and reviewed schema");
   assert.ok(0 < recovery && recovery < cleanup && cleanup < residue && residue < publicationAt);
-  for (const name of steps.slice(6, 9)) {
+  for (const name of steps.slice(7, 10)) {
     const start = workflow.indexOf(`      - name: ${name}`);
     const next = workflow.indexOf("\n      - name:", start + 1);
     assert.match(workflow.slice(start, next), /if: always\(\)/u);
   }
   assert.match(workflow, /recover-stage2-completion-remote\.sh/u);
+  assert.match(workflow.slice(recovery, cleanup), /kill-after=10s 720s/u);
   assert.match(recoverySource, /_recover_fixed_local_qualification/u);
   assert.match(recoverySource, /result is None/u);
   assert.doesNotMatch(recoverySource, /_run_fixed_local_qualification|_consume_local_receipt|completion_local_full/u);

@@ -128,8 +128,8 @@ jobs:
                       expected_sha=6a4e31c3fe1bf1d593660b4a95fc9b21229f70abfbec00218294b47c9e3ae383
                       ;;
                     cogs-stage2-attested-static-v3.elf)
-                      expected_size=13688
-                      expected_sha=7c2bfd83c6c9c600eb626b74c475e0c22e1fc1b5c963203083acf3a803539247
+                      expected_size=13704
+                      expected_sha=e628b160cf16b1b417bbc1788db5dfc33e2fac3915158778309e51cb58dc16c5
                       ;;
                     *) return 1 ;;
                   esac

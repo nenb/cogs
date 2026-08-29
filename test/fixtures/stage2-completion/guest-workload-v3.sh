@@ -89,12 +89,13 @@ mount_invariant() {
   /usr/bin/awk '
   function has(values,want, n,a,i){n=split(values,a,",");for(i=1;i<=n;i++)if(a[i]==want)return 1;return 0}
   function safeleaf(root, value){if(index(root,"/mounts/")!=1)return "";value=substr(root,9);if(length(value)<1||length(value)>255||value=="."||value==".."||value!~/^[A-Za-z0-9][A-Za-z0-9._-]*$/)return "";return value}
+  function nativeleaf(root,role, prefix,suffix,value){prefix="/cogs-stage2-ssh-v1-";suffix="-" role;if(index(root,prefix)!=1||substr(root,length(root)-length(suffix)+1)!=suffix)return "";value=substr(root,length(prefix)+1,length(root)-length(prefix)-length(suffix));if(length(value)!=16||value!~/^[0-9a-f]+$/)return "";return root}
   BEGIN{bad=0;r=key=auth=input=0;keyleaf=authleaf=inputleaf=""}
   index($5,"/run/cogs-stage2-ssh/")==1 && $5!="/run/cogs-stage2-ssh/ssh_host_ed25519_key" && $5!="/run/cogs-stage2-ssh/authorized_keys" && $5!="/run/cogs-stage2-ssh/input" {bad=1}
   $5=="/run/cogs-stage2-ssh" {r++;if($4!="/"||$7!="-"||$8!="tmpfs"||$9!="tmpfs"||!has($6,"rw")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec")||!has($10,"rw")||!has($10,"size=65536k")||!has($10,"nr_inodes=16384")||!has($10,"mode=700"))bad=1}
-  $5=="/run/cogs-stage2-ssh/ssh_host_ed25519_key" {key++;keyleaf=safeleaf($4);if(keyleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
-  $5=="/run/cogs-stage2-ssh/authorized_keys" {auth++;authleaf=safeleaf($4);if(authleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
-  $5=="/run/cogs-stage2-ssh/input" {input++;inputleaf=safeleaf($4);if(inputleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/ssh_host_ed25519_key" {key++;keyleaf=safeleaf($4);if(keyleaf=="")keyleaf=nativeleaf($4,"ssh_host_ed25519_key");if(keyleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/authorized_keys" {auth++;authleaf=safeleaf($4);if(authleaf=="")authleaf=nativeleaf($4,"authorized_keys");if(authleaf==""||$7!="-"||$8!="virtiofs"||$9!="kataShared"||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
+  $5=="/run/cogs-stage2-ssh/input" {input++;inputnative=0;inputleaf=safeleaf($4);if(inputleaf==""&&$4=="/"&&$7=="-"&&$8=="virtiofs"&&$9=="none"){inputleaf="native-input";inputnative=1}if(inputleaf==""||$7!="-"||$8!="virtiofs"||(inputnative&&$9!="none")||(!inputnative&&$9!="kataShared")||!has($6,"ro")||!has($6,"nosuid")||!has($6,"nodev")||!has($6,"noexec"))bad=1}
   END{if(r!=1||key!=1||auth!=1||input!=1||keyleaf==authleaf||keyleaf==inputleaf||authleaf==inputleaf)bad=1;exit bad?1:0}
   ' /proc/self/mountinfo
 }
@@ -175,6 +176,14 @@ observe_deb() {
   DEB_BUILD_COUNT=$((DEB_BUILD_COUNT+1))
   /bin/rm -f -- "$scratch.sha" "$scratch.size"
 }
+normalize_installed() {
+  root=$1 scratch=$2
+  metadata_rows "$root" 4 256 "$scratch"
+  while IFS= read -r entry; do /bin/chown 0:0 -- "$entry"; /bin/chmod 0755 -- "$entry"; /usr/bin/touch -d @1782172800 -- "$entry"; done < "$scratch.dirs"
+  while IFS= read -r entry; do /bin/chown 0:0 -- "$entry"; /bin/chmod 0644 -- "$entry"; /usr/bin/touch -d @1782172800 -- "$entry"; done < "$scratch.files"
+  verify_metadata "$root" 4 256 "$scratch" 755 644
+  /bin/rm -f -- "$scratch.dirs" "$scratch.files" "$scratch.other"
+}
 verify_installed_tree() {
   root=$1 scratch=$2
   manifest "$root" "$INSTALLED_MANIFEST" 256 "$scratch.manifest"
@@ -252,12 +261,13 @@ install_sample() {
   /usr/bin/dpkg-deb --build --root-owner-group --compression=xz --compression-level=6 --threads-max=1 "$p/source" "$p/package.deb" > "$p/build.out" 2> "$p/build.err"
   [ ! -s "$p/build.err" ]; observe_deb "$p/package.deb" "$p/deb"; verify_deb "$p/package.deb" "$p/check"
   /bin/mkdir -m 0700 -- "$p/admin" "$p/admin/updates"; : > "$p/admin/status"; /bin/mkdir -m 0755 -- "$p/installed"; /usr/bin/touch -d @1782172800 -- "$p/installed"
-  start=$(now); /usr/bin/dpkg --force-not-root --admindir "$p/admin" --instdir "$p/installed/" --install "$p/package.deb" > "$p/install.out" 2> "$p/install.err"; end=$(now); elapsed "$start" "$end"
+  start=$(now); /usr/bin/dpkg --force-not-root --log=/dev/null --admindir "$p/admin" --instdir "$p/installed/" --install "$p/package.deb" > "$p/install.out" 2> "$p/install.err"; end=$(now); elapsed "$start" "$end"
   [ ! -s "$p/install.err" ]
   [ "$(/usr/bin/grep -c '^Package: cogs-stage2-fixture$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Version: 1.0$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Architecture: all$' "$p/admin/status")" -eq 1 ]
   [ "$(/usr/bin/grep -c '^Status: install ok installed$' "$p/admin/status")" -eq 1 ]
+  normalize_installed "$p/installed" "$p/installed.metadata"
   verify_installed_tree "$p/installed" "$p/installed.tree"
   delete_sample "$p"
   emit "$ord" "INSTALL_$n" "$ELAPSED" "$FINAL_TREE_SHA"

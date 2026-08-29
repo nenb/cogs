@@ -32,6 +32,7 @@ import completion_kata_operation as kata_operation
 import completion_kata_owner as owner_helpers
 import completion_kata_runtime as kata_runtime
 import completion_kata_ssh as kata_ssh
+import completion_guest_readiness_v1 as guest_readiness
 
 _install_attested_policy = command_policy._take_attested_policy_inserter()
 _install_v2_attested_policy = command_policy._take_v2_attested_policy_inserter()
@@ -47,7 +48,7 @@ HEX = frozenset("0123456789abcdef")
 SONAME = re.compile(r"(?:lib[A-Za-z0-9_+.-]+|ld-[A-Za-z0-9_+.-]+)\.so(?:\.[0-9]+)*")
 FORBIDDEN_TAGS = frozenset({"RPATH", "RUNPATH", "AUDIT", "DEPAUDIT", "FILTER", "AUXILIARY", "CONFIG"})
 DEADLINE_SECONDS = {
-    "observer": 5, "network": 10, "keygen": 15, "runtime-start": 60,
+    "observer": 15, "network": 10, "keygen": 15, "runtime-start": 60,
     "task-term": 15, "task-kill": 10, "remove": 20, "listener": 60,
     "ssh": command_policy.SSH_TOTAL_NS / 1_000_000_000, "runtime-absence": 30,
 }
@@ -55,6 +56,7 @@ CLOCK = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
 FIXED_ENV = kata_operation.FIXED_ENV
 CGROUP_ROOT = "/sys/fs/cgroup"
 CGROUP_BASE = CGROUP_ROOT + "/cogs-stage2-completion-v1"
+KATA_OVERHEAD_BASE = CGROUP_ROOT + "/kata_overhead"
 CGROUP2_MAGIC = 0x63677270
 HOSTILE_ROOT_LIMITATION = (
     "cgroup-v2 owns ordinary descendants; a hostile host-root process can escape "
@@ -172,11 +174,15 @@ def _attested_executable_routes(install_policy):
         if custody is None or role in state:
             return
         claim_value = admission._claim_executable_role_custody(custody, role)
-        objects = admission._consume_executable_role_custody(custody, claim_value, role)
-        if (type(objects) is not tuple or not objects or objects[0].kind != "executable"
+        description = admission._consume_executable_role_custody(
+            custody, claim_value, role)
+        if (type(description) is not admission.ExecutableRoleDescription
+                or description.role != role or not description.objects
+                or description.objects[0].kind != "executable"
                 or any(type(item) is not admission.RetainedObject or item.role != role
-                       for item in objects)):
+                       for item in description.objects)):
             raise ProcessError("admitted executable closure required")
+        objects = description.objects
         descriptors = []
         try:
             for item in objects:
@@ -184,16 +190,12 @@ def _attested_executable_routes(install_policy):
                 os.set_inheritable(descriptor, False)
                 descriptors.append(descriptor)
             executable = objects[0]
-            closure = hashlib.sha256(kata_operation._canonical([{
-                "kind": item.kind, "path": item.path, "sha256": item.sha256,
-                "size": item.size, "interpreter": item.interpreter,
-                "soname": item.soname, "needed": list(item.needed),
-            } for item in objects])).hexdigest()
+            closure = description.closure_sha256
             retained = RetainedExecutable(
                 role, executable.path, descriptors[0], executable.sha256, closure,
                 _host_generation(descriptors[0]), tuple(descriptors[1:]))
             if role in {"ssh", "ssh-keygen"}:
-                command_ids = (("SSH_READY",) if role == "ssh" else command_policy.KEY_COMMAND_ORDER)
+                command_ids = (command_policy.SSH_COMMANDS if role == "ssh" else command_policy.KEY_COMMAND_ORDER)
                 install_policy(command_ids, {
                     "executable_sha256": retained.sha256,
                     "tool_closure_sha256": retained.closure_sha256,
@@ -240,7 +242,7 @@ def _attested_executable_routes(install_policy):
         values, policies, owned = {}, {}, []
         try:
             for role, expected_ids, path in (
-                ("ssh", ("SSH_READY",), "/usr/bin/ssh"),
+                ("ssh", command_policy.SSH_COMMANDS, "/usr/bin/ssh"),
                 ("ssh-keygen", command_policy.KEY_COMMAND_ORDER, "/usr/bin/ssh-keygen"),
             ):
                 descriptor = reviewed.get(role)
@@ -305,7 +307,7 @@ def _attested_executable_routes(install_policy):
                     or fdmap.identity(value.descriptor) != observed):
                 raise ProcessError("retained executable changed before ownership")
             values[role] = [value, False]
-            command_ids = (("SSH_READY",) if role == "ssh" else
+            command_ids = (command_policy.SSH_COMMANDS if role == "ssh" else
                            command_policy.KEY_COMMAND_ORDER if role == "ssh-keygen" else ())
             if command_ids:
                 policies.append((command_ids, {
@@ -321,6 +323,7 @@ def _attested_executable_routes(install_policy):
         return states.issue(values)
     def abort_owner(owner):
         state = states.pop(owner)
+        state.pop("__static_custody__", None)
         errors = []
         for retained, _consumed in state.values():
             if id(retained) in released:
@@ -396,16 +399,14 @@ class ProcessOutcome:
     errors: tuple
 
 
-CONTAINERD_SOCKET = kata_operation.BASE + "/kata-runtime-v1/containerd.sock"
-CONTAINERD_ROOT = kata_operation.BASE + "/kata-runtime-v1/containerd-root"
-CONTAINERD_STATE = kata_operation.BASE + "/kata-runtime-v1/containerd-state"
+CONTAINERD_SOCKET, CONTAINERD_ROOT, CONTAINERD_STATE = command_policy.CONTAINERD_ADDRESS, command_policy.CONTAINERD_ROOT, command_policy.CONTAINERD_STATE
+CONTAINERD_TTRPC_SOCKET = CONTAINERD_SOCKET + ".ttrpc"
 CONTAINERD_CONFIG = kata_operation.BASE + "/kata-runtime-v1/containerd.toml"
 STAGED_CONTAINERD = kata_operation.BASE + "/kata-runtime-v1/bin/containerd"
 STAGED_CTR = kata_operation.BASE + "/kata-runtime-v1/bin/ctr"
 LONG_LIVED_CONTAINERD = LongLivedCommand(
     CommandId.CONTAINERD_START, "containerd", "/usr/bin/containerd",
-    ("/usr/bin/containerd", "--address", CONTAINERD_SOCKET, "--root", CONTAINERD_ROOT,
-     "--state", CONTAINERD_STATE, "--config", CONTAINERD_CONFIG),
+    ("/usr/bin/containerd", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", "--root", kata_operation.BASE + "/kata-runtime-v1/containerd-root", "--state", kata_operation.BASE + "/kata-runtime-v1/containerd-state", "--config", CONTAINERD_CONFIG),
 )
 
 
@@ -426,7 +427,7 @@ def _compose_fixed_commands():
             10_000_000_000, output_grammar="json" if "json" in source.tool_contract else "text",
         )
     for source in kata_runtime.fixed_command_specs_for_tests():
-        argv = ("/usr/bin/ctr", "--address", CONTAINERD_SOCKET, *source.argv[1:])
+        argv = ("/usr/bin/ctr", "--address", kata_operation.BASE + "/kata-runtime-v1/containerd.sock", *source.argv[1:])
         rows[source.command_id] = FixedCommand(
             source.command_id, "ctr", "/usr/bin/ctr", argv, source.stdin,
             int(DEADLINE_SECONDS[source.deadline_class] * 1_000_000_000),
@@ -442,6 +443,11 @@ def _compose_fixed_commands():
     rows[CommandId.SSH_READY] = FixedCommand(
         CommandId.SSH_READY, "ssh", "/usr/bin/ssh", source.argv, source.stdin,
         command_policy.SSH_TOTAL_NS, 4096, 4096, "ssh-plan", source.inherited_fds,
+    )
+    rows[CommandId.SSH_READINESS] = FixedCommand(
+        CommandId.SSH_READINESS, "ssh", "/usr/bin/ssh", source.argv,
+        guest_readiness.guest_program_bytes(), command_policy.SSH_TOTAL_NS,
+        guest_readiness.GUEST_OUTPUT_LIMIT, 4096, "ssh-plan", source.inherited_fds,
     )
     return rows
 
@@ -490,7 +496,7 @@ def _spec(command_id):
     if source is None:
         raise ProcessError("fixed action belongs to its lifecycle owner")
     seconds = source.duration_ns / 1_000_000_000
-    if command_id is CommandId.SSH_READY:
+    if command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS}:
         deadline_class = "ssh"
     elif command_id in {CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
                         CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}:
@@ -753,6 +759,29 @@ def _claim_inherited_fds(spec, owner):
         raise ProcessError("invalid inherited descriptor map") from error
 
 
+def _retain_parent_ssh_inputs(bindings):
+    if tuple(row.role for row in bindings) != (fdmap.CLIENT_KEY, fdmap.KNOWN_HOSTS):
+        return ()
+    targets = (kata_ssh.PARENT_KEY_FD, kata_ssh.PARENT_KNOWN_HOSTS_FD)
+    opened = []
+    try:
+        for row, target in zip(bindings, targets, strict=True):
+            try:
+                fcntl.fcntl(target, fcntl.F_GETFD)
+            except OSError as error:
+                if error.errno != errno.EBADF: raise
+            else: raise OSError(errno.EBUSY, "parent SSH descriptor target occupied")
+            os.dup2(row.source_fd, target, inheritable=False); opened.append(target)
+            if _fd_identity(target) != row.identity or os.get_inheritable(target):
+                raise OSError(errno.ESTALE, "parent SSH descriptor target changed")
+        return tuple(opened)
+    except BaseException:
+        for descriptor in opened:
+            try: os.close(descriptor)
+            except OSError: pass
+        raise
+
+
 def _write_child_error(descriptor, value):
     try:
         os.write(descriptor, struct.pack("!I", min(max(int(value), 1), 65535)))
@@ -798,7 +827,7 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
-        argv = spec.argv
+        argv = tuple(item.replace("{command-parent-pid}", str(os.getppid())) for item in spec.argv)
         if network_fd is not None:
             if network_fd != kata_runtime.CTR_NS_FD:
                 os.dup2(network_fd, kata_runtime.CTR_NS_FD, inheritable=True); os.close(network_fd)
@@ -976,6 +1005,7 @@ class _DaemonTransactionProfile:
     leaf_name: str
     leaf_generation: tuple
     base_generation: tuple
+    runtime_leaf_name: object = None
 
 
 def _boottime_ns():
@@ -1033,7 +1063,8 @@ def _digest_fd(descriptor, size):
 
 def _cleanup_reserve_ns(fixed):
     reviewed = (command_policy.SSH_CLEANUP_RESERVE_NS
-                if fixed.command_id is CommandId.SSH_READY else command_policy.CLEANUP_RESERVE_NS)
+                if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS}
+                else command_policy.CLEANUP_RESERVE_NS)
     return min(reviewed, fixed.duration_ns // 2)
 
 
@@ -1079,7 +1110,8 @@ def _internally_fixed(fixed):
 
 
 def _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed=False):
-    if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_KEYGEN_CLIENT,
+    if fixed.command_id in {CommandId.SSH_READY, CommandId.SSH_READINESS,
+                            CommandId.SSH_KEYGEN_CLIENT,
                             CommandId.SSH_KEYGEN_SERVER, CommandId.SSH_PUBLIC_CLIENT,
                             CommandId.SSH_PUBLIC_SERVER}:
         _require_attested_executable(executable)
@@ -1201,16 +1233,24 @@ def _prepare_cgroup(context, daemon_profile=None):
         if daemon_profile is None:
             if leaves:
                 raise ProcessError("cgroup base has an owned leaf")
-        elif (type(daemon_profile) is not _DaemonTransactionProfile
-              or _generation_tuple(base_generation) != daemon_profile.base_generation
-              or leaves != {daemon_profile.leaf_name}
-              or _cgroup_generation(daemon_profile.cgroup_path) != daemon_profile.leaf_generation):
-            raise ProcessError("daemon transaction cgroup baseline differs")
+        else:
+            expected_leaves = {daemon_profile.leaf_name}
+            if daemon_profile.runtime_leaf_name is not None:
+                expected_leaves.add(daemon_profile.runtime_leaf_name)
+            if (type(daemon_profile) is not _DaemonTransactionProfile
+                    or _generation_tuple(base_generation) != daemon_profile.base_generation
+                    or leaves != expected_leaves
+                    or _cgroup_generation(daemon_profile.cgroup_path) != daemon_profile.leaf_generation):
+                raise ProcessError("daemon transaction cgroup baseline differs")
         os.mkdir(leaf_name, 0o700, dir_fd=base_fd)
         leaf_created = True
         leaf_fd, leaf_generation = _directory_identity(CGROUP_BASE + "/" + leaf_name)
-        if daemon_profile is not None and _cgroup_leaf_names(base_fd) != {daemon_profile.leaf_name, leaf_name}:
-            raise ProcessError("daemon transaction cgroup set differs")
+        if daemon_profile is not None:
+            expected_leaves = {daemon_profile.leaf_name, leaf_name}
+            if daemon_profile.runtime_leaf_name is not None:
+                expected_leaves.add(daemon_profile.runtime_leaf_name)
+            if _cgroup_leaf_names(base_fd) != expected_leaves:
+                raise ProcessError("daemon transaction cgroup set differs")
     except BaseException as primary:
         try:
             if leaf_fd is not None:
@@ -1245,13 +1285,79 @@ def _owned_cgroup_generation(owner):
 
 
 def _verify_daemon_transaction_census(profile, owner, leader_pid):
+    expected_leaves = {profile.leaf_name, owner.leaf_name}
+    if profile.runtime_leaf_name is not None:
+        expected_leaves.add(profile.runtime_leaf_name)
     if (type(profile) is not _DaemonTransactionProfile
             or _child_census() != tuple(sorted((profile.pid, leader_pid)))
             or _proc_row(profile.pid) != profile.proc_row
             or _cgroup_generation(profile.cgroup_path) != profile.leaf_generation
             or _owned_cgroup_generation(owner) != owner.leaf_generation
-            or _cgroup_leaf_names(owner.base_fd) != {profile.leaf_name, owner.leaf_name}):
+            or _cgroup_leaf_names(owner.base_fd) != expected_leaves):
         raise ProcessError("daemon transaction shared ownership differs")
+
+
+def _remove_retired_runtime_leaf(profile, daemon_cgroup):
+    name = profile.runtime_leaf_name
+    if name is None:
+        return
+    if type(profile) is not _DaemonTransactionProfile or daemon_cgroup.base_fd is None:
+        raise ProcessError("retired runtime cgroup profile")
+    if _owned_cgroup_generation(daemon_cgroup) != profile.leaf_generation:
+        raise ProcessError("retired runtime daemon cgroup changed")
+    if _cgroup_leaf_names(daemon_cgroup.base_fd) != {profile.leaf_name, name}:
+        raise ProcessError("retired runtime cgroup census")
+    path = CGROUP_BASE + "/" + name
+    descriptor, generation = _directory_identity(path)
+    runtime = _CgroupOwner(path, _generation_tuple(generation), profile.base_generation,
+                           False, {}, descriptor, None, name)
+    try:
+        if _cgroup_members(runtime) or _cgroup_members(runtime):
+            raise ProcessError("retired runtime cgroup remains populated")
+        if _owned_cgroup_generation(runtime) != runtime.leaf_generation:
+            raise ProcessError("retired runtime cgroup changed")
+    finally:
+        if runtime.directory_fd is not None:
+            os.close(runtime.directory_fd); runtime.directory_fd = None
+    os.rmdir(name, dir_fd=daemon_cgroup.base_fd)
+    if _cgroup_leaf_names(daemon_cgroup.base_fd) != {profile.leaf_name}:
+        raise ProcessError("retired runtime cgroup removal differs")
+
+
+def _remove_retired_kata_overhead(profile):
+    if profile.runtime_leaf_name is None:
+        return
+    name = kata_runtime.CONTAINER_ID
+    root_fd, root_generation = _directory_identity(CGROUP_ROOT)
+    base_fd = leaf_fd = None
+    try:
+        base_fd, base_generation = _directory_identity(KATA_OVERHEAD_BASE)
+        if _cgroup_leaf_names(base_fd) != {name}:
+            raise ProcessError("retired Kata overhead census")
+        leaf_fd, leaf_generation = _directory_identity(KATA_OVERHEAD_BASE + "/" + name)
+        leaf = _CgroupOwner(KATA_OVERHEAD_BASE + "/" + name, _generation_tuple(leaf_generation),
+                            _generation_tuple(base_generation), False, {}, leaf_fd, None, name)
+        if _cgroup_members(leaf) or _cgroup_members(leaf):
+            raise ProcessError("retired Kata overhead remains populated")
+        os.close(leaf_fd); leaf_fd = None
+        if _cgroup_generation(leaf.path) != leaf.leaf_generation:
+            raise ProcessError("retired Kata overhead changed")
+        os.rmdir(name, dir_fd=base_fd)
+        if _cgroup_leaf_names(base_fd):
+            raise ProcessError("retired Kata overhead removal differs")
+        base_generation = _host_generation(base_fd, "directory")
+        base = _CgroupOwner(KATA_OVERHEAD_BASE, _generation_tuple(base_generation),
+                            _generation_tuple(root_generation), False, {}, base_fd, None, "kata_overhead")
+        if _cgroup_members(base) or _cgroup_members(base):
+            raise ProcessError("retired Kata overhead base remains populated")
+        if _owned_cgroup_generation(base) != base.leaf_generation:
+            raise ProcessError("retired Kata overhead base changed")
+        os.close(base_fd); base_fd = None
+        os.rmdir("kata_overhead", dir_fd=root_fd)
+    finally:
+        if leaf_fd is not None: os.close(leaf_fd)
+        if base_fd is not None: os.close(base_fd)
+        os.close(root_fd)
 
 
 def _cgroup_file(owner, name, flags):
@@ -1370,7 +1476,8 @@ def _read_setup_boottime(descriptor, deadline):
         descriptor, lambda: (deadline - _boottime_ns()) / 1_000_000_000)
 
 
-def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at):
+def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, kill_at,
+                       marker_observer=None):
     selector = selectors.DefaultSelector()
     buffers = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
     overflow = {"stdout": False, "stderr": False}
@@ -1379,6 +1486,7 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
     errors = []
     wait_status = None
     stdin_offset = 0
+    first_line_settled = False
     try:
         for name, descriptor in descriptors.items():
             os.set_blocking(descriptor, False)
@@ -1415,6 +1523,12 @@ def _drain_transaction(pid, descriptors, stdin_bytes, owner, deadline, term_at, 
                 limit = STATUS_SIZE if name == "status" else limits[name]
                 room = max(0, limit - len(buffers[name]))
                 buffers[name].extend(part[:room])
+                if name == "stdout" and not first_line_settled:
+                    newline = buffers["stdout"].find(b"\n")
+                    if newline >= 0:
+                        first_line_settled = True
+                        if marker_observer is not None:
+                            marker_observer(bytes(buffers["stdout"][:newline + 1]))
                 if len(part) > room:
                     if name == "status":
                         errors.append("invalid-exec-status")
@@ -1612,6 +1726,10 @@ def _prove_child_inherited_fds(pid, bindings):
                 raise ProcessError("child does not retain the NFT OFD lock")
 
 
+def _active_fixed_daemon_profile(_journal):
+    return None
+
+
 def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None, consumption_owner=None, launch_permit=None):
     """Private T1 transaction over one registered fixed table identity."""
     context = kata_operation._command_context(journal)
@@ -1636,14 +1754,34 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         raise ProcessError("runtime path owners required")
     if not hasattr(signal, "pidfd_send_signal") or not hasattr(os, "pidfd_open"):
         raise ProcessError("usable pidfd signaling is required")
-    deadline = _boottime_ns() + fixed.duration_ns
-    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     spec = _Spec(
         fixed.command_id.value, fixed.argv, fixed.stdin, "fixed",
         fixed.duration_ns / 1_000_000_000, fixed.inherited_fds,
     )
     bindings = _claim_inherited_fds(spec, inherited); network_fd = None
+    parent_ssh_fds = ()
     daemon_profile = None
+    # Expensive custody checks precede the command's absolute deadline.  They
+    # are read-only and must not consume the bounded execution/cleanup window.
+    if runtime_extension or runtime_fixed:
+        daemon_profile = _fixed_daemon_transaction_profile(daemon_owner, journal)
+        if runtime_extension:
+            kata_runtime._verify_runtime_consumption(
+                consumption_owner, journal, fixed.command_id.value)
+        _verify_fixed_daemon(daemon_owner, journal)
+        _require_no_children(daemon_profile)
+    if daemon_profile is None:
+        daemon_profile = _active_fixed_daemon_profile(journal)
+        if daemon_profile is not None:
+            _require_no_children(daemon_profile)
+    marker_bytes = (kata_ssh.MARKER if fixed.command_id is CommandId.SSH_READY else
+                    guest_readiness.GUEST_READY_MARKER
+                    if fixed.command_id is CommandId.SSH_READINESS else None)
+    route = (None if marker_bytes is None
+             or kata_operation._is_production_recovery_operation(journal)
+             else kata_operation._cycle_route(journal))
+    deadline = _boottime_ns() + fixed.duration_ns
+    work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
     kata_operation._record_command_intent(journal, intent)
     owner = None
@@ -1656,12 +1794,16 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     errors = []
     wait_status = None
     preexec_recorded = False
+    launch_started_boottime_ns = None
     try:
+        parent_ssh_fds = _retain_parent_ssh_inputs(bindings)
         network_fd = None if launch_permit is None else kata_runtime._retain_launch_network_descriptor(launch_permit)
-        if runtime_extension or runtime_fixed:
-            daemon_profile = _fixed_daemon_transaction_profile(daemon_owner, journal)
-        _require_no_children(daemon_profile)
-        previous_subreaper = _set_subreaper(True)
+        if daemon_profile is None:
+            _require_no_children()
+        # Kata's shim daemonizes during CTR_RUN.  It must reparent to PID 1,
+        # whose independent runtime owner inventories it, rather than becoming
+        # an unowned direct child of this command supervisor.
+        previous_subreaper = _set_subreaper(fixed.command_id is not CommandId.CTR_RUN)
         _within_work_cutoff(work_cutoff)
         owner = (_prepare_cgroup(context) if daemon_profile is None
                  else _prepare_cgroup(context, daemon_profile))
@@ -1715,10 +1857,9 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         kata_operation._record_command_preexec(journal, preexec)
         preexec_recorded = True
         _within_work_cutoff(work_cutoff)
-        if runtime_extension:
-            kata_runtime._verify_runtime_consumption(consumption_owner, journal, fixed.command_id.value)
         if runtime_extension or runtime_fixed:
             _verify_fixed_daemon(daemon_owner, journal)
+        if daemon_profile is not None:
             _verify_daemon_transaction_census(daemon_profile, owner, pid)
         if launch_permit is not None:
             retained_network = kata_runtime._preexec_launch_network(launch_permit, pid)
@@ -1726,6 +1867,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                 raise ProcessError("runtime network opener binding")
         if bindings:
             _prove_child_inherited_fds(pid, bindings)
+        if fixed.command_id is CommandId.CTR_RUN:
+            launch_started_boottime_ns = _boottime_ns()
         if os.write(release_w, b"R") != 1:
             raise ProcessError("short release")
         release_count = 1
@@ -1737,11 +1880,19 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         work_span = max(1, fixed.duration_ns - _cleanup_reserve_ns(fixed))
         term_at = work_cutoff - min(1_500_000_000, work_span // 4)
         kill_at = work_cutoff - min(250_000_000, work_span // 8)
+        marker_observer = None
+        if route is not None and marker_bytes is not None:
+            def marker_observer(first_line):
+                if first_line == marker_bytes:
+                    kata_operation._record_ssh_marker(
+                        journal, intent["command_serial"], intent["command_id"],
+                        intent["binding_sha256"], hashlib.sha256(marker_bytes).hexdigest(),
+                        _boottime_ns())
         buffers, overflow, wait_status, pipes_eof, state, drain_errors = _drain_transaction(
             pid, {"status": status_r, "stdout": stdout_r, "stderr": stderr_r,
                   "stdin": stdin_w, "stdout_limit": fixed.stdout_limit,
                   "stderr_limit": fixed.stderr_limit},
-            fixed.stdin, owner, work_cutoff, term_at, kill_at,
+            fixed.stdin, owner, work_cutoff, term_at, kill_at, marker_observer,
         )
         errors.extend(drain_errors)
         status_raw = bytes(buffers["status"])
@@ -1776,6 +1927,14 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
                 "command_serial": intent["command_serial"], "command_id": intent["command_id"],
                 "binding_sha256": intent["binding_sha256"], "stdout_hex": stdout.hex(), "stderr_hex": stderr.hex()})
         durable = kata_operation._record_command_outcome(journal, body)
+        if (route is not None and fixed.command_id is CommandId.CTR_RUN
+                and body["outcome"] == "exited" and body["status"] == 0
+                and not body["uncertain"]):
+            if launch_started_boottime_ns is None:
+                raise ProcessError("launch release observation absent")
+            kata_operation._record_launch_issued(
+                journal, intent["command_serial"], intent["binding_sha256"],
+                launch_started_boottime_ns)
         return ProcessOutcome(
             fixed.command_id.value, identity, body["outcome"], body["status"], body["errno"],
             stdout, stderr, body["stdout_sha256"], body["stderr_sha256"],
@@ -1854,6 +2013,9 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             settlement_errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join((*diagnostics, *settlement_errors))) from primary
     finally:
+        for descriptor in parent_ssh_fds:
+            try: os.close(descriptor)
+            except OSError: pass
         if network_fd is not None:
             try: os.close(network_fd)
             except OSError: pass
@@ -1871,15 +2033,52 @@ def _daemon_routes():
         "_DaemonOwner", ProcessError, "private daemon owner",
         sealed_message="sealed daemon owner")
     _DaemonOwner = states.kind
-    def socket_generation():
-        descriptor = os.open(CONTAINERD_SOCKET, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try: return _host_generation(descriptor, "socket")
+    active = {}
+    def socket_generations(pid):
+        paths = {"s": CONTAINERD_SOCKET, "s.ttrpc": CONTAINERD_TTRPC_SOCKET}
+        descriptor = os.open("/proc/net/unix", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            raw = bytearray()
+            while len(raw) <= 1_048_576:
+                part = os.read(descriptor, min(65_536, 1_048_577 - len(raw)))
+                if not part: break
+                raw.extend(part)
+            if len(raw) > 1_048_576: raise ProcessError("private daemon unix table bound")
         finally: os.close(descriptor)
+        rows = [row.split() for row in bytes(raw).splitlines()]
+        fd_names = os.listdir(f"/proc/{pid}/fd")
+        if len(fd_names) > 4096: raise ProcessError("private daemon fd bound")
+        links = []
+        for name in fd_names:
+            if not name.isdigit(): raise ProcessError("private daemon fd name")
+            try: links.append(os.readlink(f"/proc/{pid}/fd/{name}").encode("ascii"))
+            except FileNotFoundError: pass
+        result = {}
+        for name, path in paths.items():
+            descriptor = os.open(path, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try: generation = _host_generation(descriptor, "socket")
+            finally: os.close(descriptor)
+            matches = [row for row in rows if len(row) == 8 and row[-1] == path.encode("ascii")]
+            listeners = [row for row in matches if row[3:6] == [b"00010000", b"0001", b"01"]]
+            accepted = [row for row in matches if row[3:6] == [b"00000000", b"0001", b"03"]]
+            if (generation["uid"] != 0 or generation["gid"] != 0 or generation["nlink"] != 1
+                    or len(listeners) != 1 or len(matches) != 1 + len(accepted)
+                    or len(accepted) > 64 or any(not row[6].isdigit() for row in matches)):
+                raise ProcessError("private daemon socket ownership")
+            inodes = [int(row[6]) for row in matches]
+            if len(inodes) != len(set(inodes)) or any(
+                    links.count(f"socket:[{inode}]".encode("ascii")) != 1 for inode in inodes):
+                raise ProcessError("private daemon socket fd ownership")
+            result[name] = {"generation": generation, "fd_inode": int(listeners[0][6])}
+        if len({row["fd_inode"] for row in result.values()}) != 2 or len({(row["generation"]["device"], row["generation"]["inode"]) for row in result.values()}) != 2: raise ProcessError("private daemon socket identity collision")
+        return result
     def close_state(owner):
         try:
             state = states.pop(owner)
         except ProcessError:
             return []
+        if active.get(id(state[0])) is owner:
+            del active[id(state[0])]
         errors = []
         descriptors = ([state[2]] if state[2] is not None else []) + [row[0] for row in state[3].pidfds.values()]; state[2] = None; state[3].pidfds.clear()
         for descriptor in descriptors:
@@ -1901,7 +2100,7 @@ def _daemon_routes():
         retained = state[1]; row = _proc_row(retained["pid"])
         if (row[4] != retained["proc_start_time"] or _cgroup_generation(retained["cgroup_path"]) !=
                 tuple(retained["cgroup_generation"][name] for name in kata_operation.GEN_KEYS) or
-                socket_generation() != retained["socket_generation"]):
+                socket_generations(retained["pid"]) != retained["socket_generations"] or _proc_row(retained["pid"]) != row):
             raise ProcessError("private daemon replacement")
         return retained
     def transaction_profile(owner, journal):
@@ -1917,9 +2116,20 @@ def _daemon_routes():
                 or cgroup.base_fd is None):
             raise ProcessError("private daemon transaction profile differs")
         base_generation = _generation_tuple(_host_generation(cgroup.base_fd, "directory"))
+        history = journal.runtime_recovery_history()
+        runs = [item for item in history.get("intents", ())
+                if item.get("command_id") == "CTR_RUN"]
+        successful = (len(runs) == 1 and len([
+            item for item in history.get("outcomes", ())
+            if item.get("command_serial") == runs[0].get("command_serial")
+            and item.get("binding_sha256") == runs[0].get("binding_sha256")
+            and item.get("outcome") == "exited" and item.get("status") == 0
+            and item.get("uncertain") is False]) == 1)
+        runtime_leaf = ("kata_" + kata_runtime.CONTAINER_ID
+                        if history.get("launches") or successful else None)
         return _DaemonTransactionProfile(
             retained["pid"], row, cgroup.path, cgroup.leaf_name,
-            cgroup.leaf_generation, base_generation)
+            cgroup.leaf_generation, base_generation, runtime_leaf)
     def start(journal, executable):
         fixed = _bind_containerd_extension(); context = kata_operation._command_context(journal)
         deadline = _boottime_ns() + fixed.duration_ns
@@ -1966,14 +2176,18 @@ def _daemon_routes():
             if status_raw: raise ProcessError("daemon exec failed")
             while _boottime_ns() < deadline:
                 try:
-                    observed = os.lstat(CONTAINERD_SOCKET)
-                    if stat.S_ISSOCK(observed.st_mode): break
+                    observed = (os.lstat(CONTAINERD_SOCKET), os.lstat(CONTAINERD_TTRPC_SOCKET))
+                    if not all(stat.S_ISSOCK(item.st_mode) for item in observed): raise ProcessError("daemon socket kind")
+                    break
                 except FileNotFoundError: pass
                 time.sleep(0.01)
             else: raise ProcessError("daemon socket timeout")
-            retained = {**preexec, "socket_generation": socket_generation()}
+            retained = {**preexec, "socket_generations": socket_generations(pid)}
             kata_operation._record_daemon_retained(journal, retained)
-            return states.issue([journal, retained, pidfd, cgroup, previous])
+            owner = states.issue([journal, retained, pidfd, cgroup, previous])
+            if id(journal) in active: raise ProcessError("duplicate active daemon journal")
+            active[id(journal)] = owner
+            return owner
         except BaseException as primary:
             if pidfd is not None:
                 try: signal.pidfd_send_signal(pidfd, signal.SIGKILL)
@@ -2007,7 +2221,10 @@ def _daemon_routes():
             owner = states.issue([
                 journal, retained, pidfd, cgroup, _set_subreaper(True),
             ])
-            verify(owner, journal); return owner
+            verify(owner, journal)
+            if id(journal) in active: raise ProcessError("duplicate active daemon journal")
+            active[id(journal)] = owner
+            return owner
         except (FileNotFoundError, ProcessLookupError) as absent:
             errors = ["daemon-absent-on-reopen"]
             if owner is not None: errors.extend(close_state(owner)); owner = None
@@ -2034,6 +2251,7 @@ def _daemon_routes():
             raise
     def stop(owner, journal):
         retained = verify(owner, journal); state = states.require(owner); errors = []
+        profile = transaction_profile(owner, journal)
         final = _boottime_ns() + 10_000_000_000; term_limit = min(final, _boottime_ns() + 5_000_000_000); status = None
         signal.pidfd_send_signal(state[2], signal.SIGTERM); poller = select.poll(); poller.register(state[2], select.POLLIN)
         wait_ms = max(1, (term_limit - _boottime_ns()) // 1_000_000)
@@ -2049,6 +2267,12 @@ def _daemon_routes():
                     if _proc_row(retained["pid"])[4] == retained["proc_start_time"]: errors.append("daemon-not-absent")
                 except FileNotFoundError: pass
         else: errors.append("daemon-final-deadline")
+        for label, action in (("runtime-cgroup-remove", lambda: _remove_retired_runtime_leaf(profile, state[3])),
+                              ("kata-overhead-remove", lambda: _remove_retired_kata_overhead(profile))):
+            try: action()
+            except (OSError, ProcessError) as error:
+                detail = getattr(error, "errno", None) if isinstance(error, OSError) else str(error)
+                errors.append(f"{label}:{detail}")
         empty, descendants, removed, leader = _settle_cgroup(state[3], retained["pid"], final, errors)
         errors.extend(close_state(owner))
         absent = False
@@ -2063,10 +2287,16 @@ def _daemon_routes():
         kata_operation._record_daemon_outcome(journal, body)
         if body["uncertain"]: raise ProcessError("private daemon cleanup uncertain")
         return body
-    return start, reopen, verify, stop, transaction_profile
+    def active_profile(journal):
+        owner = active.get(id(journal))
+        if owner is None: return None
+        state = states.require(owner)
+        if state[0] is not journal: raise ProcessError("active daemon journal identity")
+        return transaction_profile(owner, journal)
+    return start, reopen, verify, stop, transaction_profile, active_profile
 
 (_start_fixed_daemon, _reopen_fixed_daemon, _verify_fixed_daemon, _stop_fixed_daemon,
- _fixed_daemon_transaction_profile) = _daemon_routes()
+ _fixed_daemon_transaction_profile, _active_fixed_daemon_profile) = _daemon_routes()
 del _daemon_routes
 
 
@@ -2100,8 +2330,10 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
             os.close(owner.directory_fd)
             owner.directory_fd = None
             os.rmdir(owner.leaf_name, dir_fd=owner.base_fd)
+            remaining = _cgroup_leaf_names(owner.base_fd)
             os.close(owner.base_fd); owner.base_fd = None
-            os.rmdir(CGROUP_BASE)
+            if not remaining:
+                os.rmdir(CGROUP_BASE)
             removed = True
         for attribute in ("directory_fd", "base_fd"):
             descriptor = getattr(owner, attribute)
@@ -2111,8 +2343,10 @@ def _recover_cgroup(path, expected_generation, deadline, state, errors):
         return empty, removed
     except FileNotFoundError:
         if base_fd is not None:
+            remaining = _cgroup_leaf_names(base_fd)
             os.close(base_fd); base_fd = None
-            os.rmdir(CGROUP_BASE)
+            if not remaining:
+                os.rmdir(CGROUP_BASE)
         return True, True
     except BaseException as error:
         errors.append(f"recovery:{type(error).__name__}")
@@ -2149,6 +2383,13 @@ def _transact_fixed_ssh(journal, executable, inherited):
     journal = kata_operation._claim_production_operation(journal)
     _require_attested_executable(executable)
     return _transact_fixed(journal, _FIXED_COMMANDS[CommandId.SSH_READY], executable, inherited)
+
+
+def _transact_fixed_ssh_readiness(journal, executable, inherited):
+    journal = kata_operation._claim_production_operation(journal)
+    _require_attested_executable(executable)
+    return _transact_fixed(
+        journal, _FIXED_COMMANDS[CommandId.SSH_READINESS], executable, inherited)
 
 
 def _transact_key(journal, executable, command_id):
@@ -2269,6 +2510,7 @@ def _fixed_spec_snapshots_for_tests():
                  CommandId.CTR_TASK_LIST, CommandId.CTR_TASK_TERM,
                  CommandId.CTR_TASK_KILL, CommandId.CTR_TASK_REMOVE,
                  CommandId.CTR_CONTAINER_REMOVE, CommandId.SSH_READY,
+                 CommandId.SSH_READINESS,
                  CommandId.SSH_KEYGEN_CLIENT, CommandId.SSH_KEYGEN_SERVER,
                  CommandId.SSH_PUBLIC_CLIENT, CommandId.SSH_PUBLIC_SERVER}
     return tuple((item.value, _spec(item).argv, _spec(item).stdin,

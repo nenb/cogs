@@ -17,7 +17,8 @@ KEY_COMMANDS = MappingProxyType({
     "SSH_PUBLIC_SERVER": ("/usr/bin/ssh-keygen", "-y", "-f", KEY_STAGE + "/server"),
 })
 KEY_COMMAND_ORDER = tuple(KEY_COMMANDS)
-ATTESTED_COMMANDS = frozenset({"SSH_READY", *KEY_COMMANDS})
+SSH_COMMANDS = ("SSH_READY", "SSH_READINESS")
+ATTESTED_COMMANDS = frozenset({*SSH_COMMANDS, *KEY_COMMANDS})
 # Exact final contract descriptors are inserted only by a later reviewed host
 # contract commit. The real issuer consumes this object by identity and cannot
 # issue while it is empty.
@@ -32,9 +33,9 @@ REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS = MappingProxyType({
 # retained byte-for-byte for the V1 process/recovery matrices.
 REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3 = MappingProxyType({
     "ssh": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-contract-v3.json",
-                              "contract_sha256": "d740640973f8aa8f152207970e3cdd6a7d0b6864eca4e5b274ce903cf3f4527a"}),
+                              "contract_sha256": "91bfbaaa11a81aa0740610672f715166aea1ce9a78736cf5b61b80f07d78f0be"}),
     "ssh-keygen": MappingProxyType({"contract_path": "/tmp/cogs-stage2-attested-ssh-keygen-contract-v3.json",
-                                     "contract_sha256": "272ab6f074b96d515402396e1768b1a04a43ace1fc706c044e457f19d1029814"}),
+                                     "contract_sha256": "fb774a1bf0484ce6cc2ee5cbede716880f5e6c7359e3c11cddddc971740b82d7"}),
 })
 _ATTESTED_EXECUTABLES = {}
 ATTESTED_EXECUTABLES = MappingProxyType(_ATTESTED_EXECUTABLES)
@@ -113,11 +114,11 @@ _IDENTITY_CREATE_DIGESTS = (
     "2e2f373d5154ddbfbeea4ae24799ddbbc321f272a0a44474ef4fa9feda7706cf",
 )
 _POLICY_SHA256 = {
-    "CTR_CONTAINER_INFO": "2815a5d4b7e306c3eee1030f3328bef1a4b7dab914cadc79aea4b215bd0977aa",
-    "CTR_CONTAINER_LIST": "ba75e006cbdf34f5e6fdd2006b14bf9273a8e3ce7d6951bc30cd2aa9d54be2a9",
+    "CTR_CONTAINER_INFO": "76e49d7961bb727c6fa3fdd39c608cd147517d0b63c1b5f5c6020a35ec8cb826",
+    "CTR_CONTAINER_LIST": "7de312907f75ac0ff6b8e39f12aa6fc15066ff448d7e3a4bfcafb9dbe37ee5fe",
     "CTR_CONTAINER_REMOVE": "6707260cbfdd20df52e020160490f4e0ed28be1f8e3f46f0183c54e4b54b854e",
     "CTR_TASK_KILL": "0265c47f6f0edab4caf082451b926f7d07da4b1fda52f8e81bd6771fcc4139e6",
-    "CTR_TASK_LIST": "2208b3c2544259064211be7c0ca934e7f817a4cdb13eb25fd076baf260c67447",
+    "CTR_TASK_LIST": "f92f8122f8b604267537b51ef483052671baa802a5781d3a6fbe2d3447e25699",
     "CTR_TASK_REMOVE": "7d38e7ee2c13f5d6c19bf7b2c1dd44244c3100de1ea621c92724900542625548",
     "CTR_TASK_TERM": "a834973f3c29b2ecafe99919da4c461c3e08042946991675d7890cef29567ef0",
     "IP_GUEST_ADDRESS_ADD": "83428606b3855e2b2f9178968cd9ed6a374ee6cc4be7f69c75bb5a6aaf737ee9",
@@ -142,7 +143,8 @@ _POLICY_SHA256 = {
     "NFT_INSTALL": "64bc4796579f9f7676baa58f927a4608e2a28b0dfccd569d93922458256226bc",
     "NFT_REMOVE": "e05578f9ddf2bd48b9e8dd4fab15450121204cb312224c47337bd54992a46afa",
     "NFT_TABLE": "c81d934f138b8c4e89faff3d51620eab944a100e92e077242c9ce02e37f93b0d",
-    "SSH_READY": "fc798706a66c9a9676311bf2f43483c147b672aebb4c89869618975c29de7497",
+    "SSH_READY": "0e2e25e6e5e7248de23ae04911483e48906f7e68e301737c99ad337dfe2ae2d5",
+    "SSH_READINESS": "da39614f8223f6f81cb4c55ca5f024e1e5f82a7734292bf578050b49aa6e0177",
     "SSH_KEYGEN_CLIENT": _IDENTITY_CREATE_DIGESTS[0],
     "SSH_PUBLIC_CLIENT": "1f68af8c1dde18e50dc62e3c2a6f5d2bf2d9518056df9955577f35a0ca2e2526",
     "SSH_KEYGEN_SERVER": _IDENTITY_CREATE_DIGESTS[1],
@@ -154,32 +156,31 @@ del _IDENTITY_CREATE_DIGESTS, _POLICY_SHA256
 
 _OCCURRENCES = {name: ("BASELINES_CAPTURED",) for name in POLICY_SHA256}
 for _name in KEY_COMMANDS: _OCCURRENCES[_name] = ("ROOTFS_LEASED",)
-_OCCURRENCES["SSH_READY"] = ("RUNTIME_READY",)
+for _name in SSH_COMMANDS: _OCCURRENCES[_name] = ("RUNTIME_READY",)
 OCCURRENCES = MappingProxyType(_OCCURRENCES)
 PHASES = MappingProxyType(dict(_OCCURRENCES))
 MAX_OCCURRENCES = MappingProxyType({name: 1 for name in _OCCURRENCES})
 del _name, _OCCURRENCES
 
-RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v6-proven-absence-1"; RUNTIME_POLICY_SHA256 = "be929fc5bdff58d3d1e10392ae2cb711981bc4efa7815480e8c7005a0ec23bc9"
+RUNTIME_POLICY_VERSION = "cogs.stage2-kata-runtime-policy/v9-coherent-teardown-independent-qmp-1"; RUNTIME_POLICY_SHA256 = "45870a704fcdebf2b212fb722f6e68d23b3efa19461f9cc4699f70af931e4992"
 RUNTIME_POST_KILL_OBSERVATIONS = 8; RUNTIME_POST_KILL_INTERVAL_NS = 250_000_000
-BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; CONTAINERD_ADDRESS = BASE + "/kata-runtime-v1/containerd.sock"
+RUNTIME_RETIREMENT_OBSERVATIONS = 16; RUNTIME_RETIREMENT_INTERVAL_NS = 250_000_000
+BASE = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1"; RUNTIME_ALIAS = "/run/c42d"; CONTAINERD_ADDRESS = RUNTIME_ALIAS + "/s"; CONTAINERD_ROOT = RUNTIME_ALIAS + "/r"; CONTAINERD_STATE = RUNTIME_ALIAS + "/t"
 STAGED_CONTAINERD = BASE + "/kata-runtime-v1/bin/containerd"; STAGED_CTR = BASE + "/kata-runtime-v1/bin/ctr"
+RUNTIME_CONFIG = BASE + "/kata-runtime-v1/configuration-qemu-observer.toml"
 CONTAINERD_ARCHIVE_SHA256 = "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"; CONTAINERD_ARCHIVE_SIZE = 33_645_699
 CONTAINERD_EXTRACTION = (("bin/containerd", 44_050_184, "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da", 0o500),
     ("bin/ctr", 22_143_160, "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db", 0o500))
 CONTAINERD_EXTRACTION_SHA256 = "ffd892ec4ef2da92a824d78645b75e66972bbe44d664062026d324a58ab88512"
 INPUT_SHARE = BASE + "/kata-input-v1/share"; NETNS_PATH = "/run/netns/cogs-stage2-ssh"; NAMESPACE = "cogs-stage2-completion-v1"
-BOOTSTRAP = """set -eu
-umask 077
-/bin/mkdir -p /run/sshd /run/cogs-stage2-ssh/work
-/bin/chown 0:0 /run/sshd /run/cogs-stage2-ssh/work
-/bin/chmod 0755 /run/sshd
-/bin/chmod 0700 /run/cogs-stage2-ssh/work
-[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/sshd)\" = \"0:0:755:directory\" ]
-[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/cogs-stage2-ssh/work)\" = \"0:0:700:directory\" ]
-[ ! -e /run/cogs-stage2-ssh/sshd.pid ]
-exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
-"""
+BOOTSTRAP = ("set -eu; umask 077; "
+    "/bin/mkdir -p /run/sshd /run/cogs-stage2-ssh/work; "
+    "/bin/chown 0:0 /run/sshd /run/cogs-stage2-ssh/work; "
+    "/bin/chmod 0755 /run/sshd; /bin/chmod 0700 /run/cogs-stage2-ssh/work; "
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/sshd)\" = \"0:0:755:directory\" ]; "
+    "[ \"$(/usr/bin/stat -c '%u:%g:%a:%F' -- /run/cogs-stage2-ssh/work)\" = \"0:0:700:directory\" ]; "
+    "[ ! -e /run/cogs-stage2-ssh/sshd.pid ]; "
+    "exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config")
 CTR_MOUNTS = ("type=tmpfs,src=tmpfs,dst=/run/cogs-stage2-ssh,options=rw:nosuid:nodev:noexec:mode=0700:size=67108864:nr_inodes=16384",
     f"type=bind,src={INPUT_SHARE}/ssh_host_ed25519_key,dst=/run/cogs-stage2-ssh/ssh_host_ed25519_key,options=bind:ro:nosuid:nodev:noexec:private",
     f"type=bind,src={INPUT_SHARE}/authorized_keys,dst=/run/cogs-stage2-ssh/authorized_keys,options=bind:ro:nosuid:nodev:noexec:private",
@@ -193,31 +194,33 @@ def ctr_run_argv(rootfs_token):
     if type(rootfs_token) is not str or len(rootfs_token) != 64 or any(c not in "0123456789abcdef" for c in rootfs_token): raise ValueError("rootfs token")
     mounts = tuple(value for row in CTR_MOUNTS for value in ("--mount", row)); root = BASE + "/rootfs-v1/operation-" + rootfs_token + "/rootfs"
     return (STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, "run", "--runtime", "io.containerd.kata.v2",
-        "--runtime-config-path", "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml", "--rootfs", "--read-only",
+        "--runtime-config-path", RUNTIME_CONFIG, "--cap-add", "CAP_NET_ADMIN",
+        "--rootfs", "--read-only",
         "--detach", "--with-ns", "network:/proc/{ctr-child-pid}/fd/202", *mounts, root,
         "cogs-stage2-ssh-v1", "/bin/sh", "-c", BOOTSTRAP)
 def validate_runtime_policy(intent, genesis):
     command = intent.get("command_id")
     if command == "CTR_RUN": argv, deadline, duration, grammar = list(ctr_run_argv(genesis["rootfs_token"])), "runtime-start", 60_000_000_000, "text"
     elif command == "CONTAINERD_START":
-        argv = [STAGED_CONTAINERD, "--address", CONTAINERD_ADDRESS, "--root", BASE + "/kata-runtime-v1/containerd-root",
-                "--state", BASE + "/kata-runtime-v1/containerd-state", "--config", BASE + "/kata-runtime-v1/containerd.toml"]
+        argv = [STAGED_CONTAINERD, "--address", CONTAINERD_ADDRESS, "--root", CONTAINERD_ROOT,
+                "--state", CONTAINERD_STATE, "--config", BASE + "/kata-runtime-v1/containerd.toml"]
         deadline, duration, grammar = "runtime-start", 60_000_000_000, "empty"
     elif command in CTR_TAILS:
         argv = [STAGED_CTR, "--address", CONTAINERD_ADDRESS, "--namespace", NAMESPACE, *CTR_TAILS[command]]
         deadline = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-        duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline] * 1_000_000_000; grammar = "text"
+        duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline] * 1_000_000_000; grammar = "text"
     else: return False
     expected = {"executable_role": "containerd" if command == "CONTAINERD_START" else "ctr", "executable_path": argv[0], "argv": argv,
         "stdin_hex": "", "policy_version": RUNTIME_POLICY_VERSION, "deadline_class": deadline, "duration_ns": duration,
         "cleanup_reserve_ns": min(CLEANUP_RESERVE_NS, duration // 2), "output_grammar": grammar, "stdout_limit": 65536, "stderr_limit": 65536, "inherited_fds": []}
     return all(intent.get(name) == value for name, value in expected.items())
-_RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_RUN"),
+_RUNTIME_TRACES = {"NETWORK_READY": ("CONTAINERD_START", "CTR_CONTAINER_LIST", "CTR_RUN"),
     "RUNTIME_READY": ("CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"), "READINESS_REVOKED": ("CTR_TASK_LIST", "CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST"),
     "OWNERSHIP_OBSERVED:task-exact": ("CTR_TASK_LIST", "CTR_TASK_TERM", "CTR_TASK_LIST", "CTR_TASK_KILL") + ("CTR_TASK_LIST",) * RUNTIME_POST_KILL_OBSERVATIONS,
-    "NETWORK_ABSENT": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"), "TASK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"), "CONTAINER_ABSENT": ("CTR_CONTAINER_LIST",)}
+    "TASK_STOPPED": ("CTR_TASK_REMOVE", "CTR_TASK_LIST"),
+    "NETWORK_ABSENT": ("CTR_CONTAINER_REMOVE", "CTR_CONTAINER_LIST"),}
 RUNTIME_TRACES = MappingProxyType(_RUNTIME_TRACES); _OWNED = _RUNTIME_TRACES["OWNERSHIP_OBSERVED:task-exact"]; RUNTIME_OWNERSHIP_TRACES = (_OWNED[:3],) + tuple(_OWNED[:5 + index] for index in range(RUNTIME_POST_KILL_OBSERVATIONS))
-RUNTIME_PROVEN_ABSENT_TRACES = MappingProxyType({"NETWORK_ABSENT": ("CTR_TASK_LIST",), "TASK_ABSENT": ("CTR_CONTAINER_LIST",)})
+RUNTIME_PROVEN_ABSENT_TRACES = MappingProxyType({"TASK_STOPPED": ("CTR_TASK_LIST",), "NETWORK_ABSENT": ("CTR_CONTAINER_LIST",)})
 _RUNTIME_OCCURRENCES = {name: tuple(phase.split(":", 1)[0] for phase, trace in _RUNTIME_TRACES.items() for item in trace if item == name) for name in RUNTIME_EXTENSION_COMMANDS}
 RUNTIME_OCCURRENCES = MappingProxyType(_RUNTIME_OCCURRENCES); RUNTIME_PHASES = MappingProxyType({name: tuple(dict.fromkeys(phases)) for name, phases in _RUNTIME_OCCURRENCES.items()})
 RUNTIME_MAX_OCCURRENCES = MappingProxyType({name: len(phases) for name, phases in _RUNTIME_OCCURRENCES.items()}); del _RUNTIME_TRACES, _RUNTIME_OCCURRENCES, _OWNED

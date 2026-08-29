@@ -685,6 +685,47 @@ def lease_codec_and_origin_tests():
     assert state.status == "release-authorized" and state.cleanup_origin == "release-authorized" and state.cleanup_allowed
     assert state.lease_seen and state.release_authorized
 
+    infrastructure = {
+        "completion_generation": gvalue(generation(200)),
+        "completion_names": ["artifacts", "rootfs-v1"],
+        "state_generation": None, "entries": [],
+    }
+    prestage_authorization = ledger.LedgerProposal.create(
+        "prestage-release-authorized", {
+            "token": TOKEN, "operation_name": ledger._operation_name(TOKEN),
+            "lease_sequence": leased_terminal.sequence,
+            "lease_offset": leased_terminal.next_offset,
+            "lease_sha256": leased_terminal.line_sha256,
+            "operation_binding": {"kind": "journal-absent",
+                                  "infrastructure": infrastructure},
+        })
+    prestage_proposals = leased_proposals + [prestage_authorization]
+    prestage_records = ledger._parse_ledger(encoded(prestage_proposals))
+    prestage_state = ledger._reconcile_ledger(prestage_records, observations)
+    assert (prestage_state.status, prestage_state.cleanup_origin,
+            prestage_state.cleanup_allowed, prestage_state.release_authorized) == (
+                "prestage-release-authorized", "prestage-authorized", True, False)
+    prestage_removing = ledger._parse_ledger(encoded(prestage_proposals + [
+        ledger.LedgerProposal.create("remove-intent", {
+            "token": TOKEN, "path": "rootfs", "kind": "directory",
+            "parent": pvalue(operation_after), "child": gvalue(root),
+            "target_path": None})]))
+    assert ledger._reconcile_ledger(prestage_removing, observations).cleanup_origin == "prestage-authorized"
+    rejected(lambda: ledger._parse_ledger(encoded(prestage_proposals + [authorization])))
+    rejected(lambda: ledger._parse_ledger(encoded(authorized_proposals + [prestage_authorization])))
+    for hostile in (
+        {"kind": "journal-absent", "infrastructure": {**infrastructure, "entries": [{
+            "name": "unknown", "generation": gvalue(generation(201, "file", 0o600, 1))}]}},
+        {"kind": "unadmitted-journal", "operation_token": "f" * 64,
+         "journal_key": {"mount_id": 1, "device": 1, "inode": 202, "kind": "file"},
+         "journal_generation": gvalue(generation(203, "file", 0o600, 1)),
+         "tip_sequence": 1, "tip_offset": 10, "tip_sha256": "2" * 64,
+         "phase": "ADMITTED", "infrastructure": infrastructure},
+    ):
+        rejected(lambda hostile=hostile: ledger.LedgerProposal.create(
+            "prestage-release-authorized", {
+                **prestage_authorization.body_value(), "operation_binding": hostile}))
+
     remove_intent = ledger.LedgerProposal.create(
         "remove-intent",
         {"token": TOKEN, "path": "rootfs", "kind": "directory", "parent": pvalue(operation_after), "child": gvalue(root), "target_path": None},
@@ -722,6 +763,8 @@ def lease_codec_and_origin_tests():
         },
     )
     operation_removing = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove]))
+    prestage_reduced = prestage_proposals + [remove_intent, remove_observed, remove_settled]
+    ledger._parse_ledger(encoded(prestage_reduced + [operation_remove]))
     state = ledger._reconcile_ledger(operation_removing, reduced_observations)
     assert state.status == "operation-remove-retry" and state.cleanup_origin == "release-authorized"
     state_absent = parent(1, ("active-ledger", "lock", "sentinel"), ctime=3)
@@ -738,10 +781,43 @@ def lease_codec_and_origin_tests():
     )
     authorized_absent_records = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove, operation_absent]))
     assert ledger._reconcile_ledger(authorized_absent_records, absent_observations).status == "retirable"
-    authorized_retired = ledger._parse_ledger(encoded(reduced_proposals + [operation_remove, operation_absent, ledger.LedgerProposal.create(
-        "retired", {"token": TOKEN, "state_parent": pvalue(state_absent)},
-    )]))
+    retired_record = ledger.LedgerProposal.create(
+        "retired", {"token": TOKEN, "state_parent": pvalue(state_absent)})
+    authorized_retired = ledger._parse_ledger(encoded(
+        reduced_proposals + [operation_remove, operation_absent, retired_record]))
     assert ledger._reconcile_ledger(authorized_retired, absent_observations).status == "retired"
+
+    # Every namespace cut under the distinct prestage origin remains restartable.
+    assert (ledger._reconcile_ledger(prestage_removing, authorized_absent).status,
+            ledger._reconcile_ledger(prestage_removing, authorized_absent).cleanup_origin) == (
+                "remove-absence-settleable", "prestage-authorized")
+    prestage_observed = ledger._parse_ledger(encoded(
+        prestage_proposals + [remove_intent, remove_observed]))
+    assert (ledger._reconcile_ledger(prestage_observed, authorized_absent).status,
+            ledger._reconcile_ledger(prestage_observed, authorized_absent).cleanup_origin) == (
+                "remove-settleable", "prestage-authorized")
+    prestage_reduced_records = ledger._parse_ledger(encoded(prestage_reduced))
+    assert (ledger._reconcile_ledger(prestage_reduced_records, reduced_observations).status,
+            ledger._reconcile_ledger(prestage_reduced_records, reduced_observations).cleanup_origin) == (
+                "prestage-release-authorized", "prestage-authorized")
+    prestage_operation_removing = ledger._parse_ledger(encoded(
+        prestage_reduced + [operation_remove]))
+    assert (ledger._reconcile_ledger(prestage_operation_removing, reduced_observations).status,
+            ledger._reconcile_ledger(prestage_operation_removing, reduced_observations).cleanup_origin) == (
+                "operation-remove-retry", "prestage-authorized")
+    assert (ledger._reconcile_ledger(prestage_operation_removing, absent_observations).status,
+            ledger._reconcile_ledger(prestage_operation_removing, absent_observations).cleanup_origin) == (
+                "operation-absence-settleable", "prestage-authorized")
+    prestage_absent = ledger._parse_ledger(encoded(
+        prestage_reduced + [operation_remove, operation_absent]))
+    assert (ledger._reconcile_ledger(prestage_absent, absent_observations).status,
+            ledger._reconcile_ledger(prestage_absent, absent_observations).cleanup_origin) == (
+                "retirable", "prestage-authorized")
+    prestage_retired = ledger._parse_ledger(encoded(
+        prestage_reduced + [operation_remove, operation_absent, retired_record]))
+    assert (ledger._reconcile_ledger(prestage_retired, absent_observations).status,
+            ledger._reconcile_ledger(prestage_retired, absent_observations).cleanup_origin) == (
+                "retired", "prestage-authorized")
 
     target = generation(30, "file", 0o644, 1, 7, mtime=5_000_000_000)
     linked = dataclasses.replace(target, nlink=2, ctime_ns=2)
@@ -895,7 +971,7 @@ def reference_validate(records):
         elif phase == "operation-observed":
             assert kind == "operation-create-settled" and body["operation_name"] == operation_name and body == previous_body
             phase = "active"
-        elif phase in {"active", "release-authorized"}:
+        elif phase in {"active", "release-authorized", "prestage-release-authorized"}:
             if kind == "leased":
                 assert phase == "active" and pending is None and lease_snapshot is None
                 assert ledger._parse_parent(body["state_parent"]) == state_parent
@@ -916,7 +992,7 @@ def reference_validate(records):
                 assert body["path"] not in operation_parent.names
                 pending, return_phase, phase = record, "active", "candidate-tar-intent"
             else:
-                allowed = {"remove-intent"} if phase == "release-authorized" else {
+                allowed = {"remove-intent"} if phase in {"release-authorized", "prestage-release-authorized"} else {
                     "create-intent", "metadata-intent", "hardlink-create-intent", "remove-intent",
                 }
                 assert kind in allowed
@@ -931,12 +1007,12 @@ def reference_validate(records):
                 pending, return_phase = record, phase
                 phase = kind.removesuffix("-intent") + "-intent"
         elif phase == "leased":
-            assert kind == "release-authorized" and lease_snapshot is not None
+            assert kind in {"release-authorized", "prestage-release-authorized"} and lease_snapshot is not None
             actual = lease_snapshot.settled
             assert (body["lease_sequence"], body["lease_offset"], body["lease_sha256"]) == (
                 actual.sequence, actual.offset, actual.line_sha256,
             )
-            phase = "release-authorized"
+            phase = kind
         elif phase == "candidate-tar-intent":
             assert kind in {"candidate-tar-abort", "candidate-tar-observed"} and pending is not None
             if kind == "candidate-tar-abort":
@@ -1042,7 +1118,7 @@ def incremental_validation_tests():
         "active", "create-intent", "create-observed", "metadata-intent", "metadata-observed",
         "hardlink-create-intent", "hardlink-create-observed", "remove-intent", "remove-observed",
         "candidate-tar-intent", "candidate-tar-observed", "leased", "release-authorized",
-        "operation-remove", "operation-absent", "uncertain",
+        "prestage-release-authorized", "operation-remove", "operation-absent", "uncertain",
     }, phases
 
     expected_next = {
@@ -1065,8 +1141,9 @@ def incremental_validation_tests():
         "hardlink-create-observed": {"hardlink-create-settled"},
         "remove-intent": {"remove-observed"},
         "remove-observed": {"remove-settled"},
-        "leased": {"release-authorized"},
+        "leased": {"release-authorized", "prestage-release-authorized"},
         "release-authorized": {"remove-intent", "operation-remove-intent"},
+        "prestage-release-authorized": {"remove-intent", "operation-remove-intent"},
         "operation-remove": {"operation-absent"},
         "operation-absent": {"retired"},
         "retired": set(),
@@ -1679,6 +1756,14 @@ def reconcile_emission_tests():
         ("remove-settleable", "prelease", True), ("operation-remove-retry", "prelease", True),
         ("operation-absence-settleable", "prelease", True), ("retirable", "prelease", True), ("retired", "prelease", True),
         ("leased", "none", False), ("release-authorized", "release-authorized", True),
+        ("prestage-release-authorized", "prestage-authorized", True),
+        ("remove-retry", "prestage-authorized", True),
+        ("remove-absence-settleable", "prestage-authorized", True),
+        ("remove-settleable", "prestage-authorized", True),
+        ("operation-remove-retry", "prestage-authorized", True),
+        ("operation-absence-settleable", "prestage-authorized", True),
+        ("retirable", "prestage-authorized", True),
+        ("retired", "prestage-authorized", True),
         ("remove-retry", "release-authorized", True), ("remove-absence-settleable", "release-authorized", True),
         ("hardlink-remove-absence-settleable", "release-authorized", True),
         ("remove-settleable", "release-authorized", True), ("operation-remove-retry", "release-authorized", True),

@@ -26,7 +26,7 @@ def load(name, path):
 
 fs = load("completion_rootfs_fs", REMOTE / "completion_rootfs_fs.py")
 publish = load("completion_rootfs_publish", REMOTE / "completion_rootfs_publish.py")
-raw = (REMOTE / "stage2-completion-rootfs-v1.json").read_bytes()
+raw = (REMOTE / "stage2-completion-rootfs-v2.json").read_bytes()
 pins = publish._parse_pins(raw)
 assert fs.ANONYMOUS_FDINFO_FLAGS == (b"022440002", b"022300002")
 anonymous_fd = fs.CheckedFd(99, "anonymous-boundary-test")

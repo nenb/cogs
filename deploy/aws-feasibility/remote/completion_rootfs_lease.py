@@ -1,5 +1,4 @@
 """Private durable retained rootfs lease and verification for ADR 0040."""
-
 from dataclasses import dataclass, field
 import errno
 import fcntl
@@ -7,9 +6,7 @@ import hashlib
 import os
 import secrets
 import sys
-
 sys.dont_write_bytecode = True
-
 import completion_kata_operation as kata_operation
 import completion_rootfs_build as build
 import completion_rootfs_builder as builder
@@ -19,14 +16,9 @@ import completion_rootfs_ledger as ledger
 import completion_rootfs_materializer as materializer
 import completion_rootfs_plan as plan
 import completion_rootfs_publish as publication
-
 FIXED_PREFIX = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/rootfs-v1/"
-
-
 class LeaseError(Exception):
     pass
-
-
 ROOTFS_BUILD_OUTCOMES = {
     "cancelled": "cancel", "deadline": "deadline", "failed": "work",
     "not-started": "setup", "success": "post",
@@ -34,28 +26,22 @@ ROOTFS_BUILD_OUTCOMES = {
 ROOTFS_BUILD_DETAILS = (materializer.MATERIALIZE_STAGES - {"internal"}) | set(
     ROOTFS_BUILD_OUTCOMES.values())
 ROOTFS_ACQUIRE_STAGES = frozenset({
-    "pins", "build-first", "build-second", "equality", "pin-check", "topology",
+    "bootstrap", "pins", "build-first", "build-second", "equality", "pin-check", "topology",
     "lease-mark", "lease-verify", *(
         f"{build_stage}-{detail}"
         for build_stage in ("build-first", "build-second")
         for detail in ROOTFS_BUILD_DETAILS
     ),
 })
-
-
 class RootfsAcquireError(LeaseError):
     def __init__(self, stage):
         if stage not in ROOTFS_ACQUIRE_STAGES:
             raise LeaseError()
         super().__init__("fixed rootfs acquisition failed")
         self.stage = stage
-
-
 def _fail(condition):
     if not condition:
         raise LeaseError()
-
-
 @dataclass(frozen=True)
 class RuntimeRootfsReference:
     path: str
@@ -71,7 +57,6 @@ class RuntimeRootfsReference:
     ustar_sha256: str
     ustar_size: int
     entry_count: int
-
     def __post_init__(self):
         ledger._token(self.token)
         _fail(type(self.path) is str and type(self.operation_name) is str)
@@ -88,20 +73,17 @@ class RuntimeRootfsReference:
         _fail(type(self.ustar_size) is int and self.ustar_size > 0 and self.ustar_size % 512 == 0)
         _fail(type(self.entry_count) is int and self.entry_count > 0)
 
-
 @dataclass
 class RetainedRootfsLease:
     reference: RuntimeRootfsReference
     retained: build.RetainedBuild = field(repr=False)
     disposition: str = field(default="held", init=False)
 
-
 def _descriptors(node):
     _fail(type(node) is fs.HeldNode and type(node.identity_fd) is fs.CheckedFd)
     values = (node.identity_fd,) if node.operation_fd is None else (node.identity_fd, node.operation_fd)
     _fail(all(type(value) is fs.CheckedFd and value.disposition == "open" for value in values))
     return values
-
 
 def _topology(retained, reference=None):
     _fail(type(retained) is build.RetainedBuild and type(retained.base_chain) is fs.HeldChain)
@@ -113,7 +95,9 @@ def _topology(retained, reference=None):
     locked_chain = owned.locked.chain
     _fail(type(locked_chain) is fs.HeldChain and locked_chain.anchor is base.anchor)
     _fail(len(locked_chain.components) == len(base.components) + 1)
-    _fail(all(locked_chain.components[index] is component for index, component in enumerate(base.components)))
+    _fail(all(locked_chain.components[index].name == component.name
+              and locked_chain.components[index].node is component.node
+              for index, component in enumerate(base.components)))
     _fail(locked_chain.components[-1].name == builder.STATE_NAME and locked_chain.components[-1].node is owned.locked.state)
     active = owned.active
     _fail(active.node is active.writer.node)
@@ -132,9 +116,22 @@ def _topology(retained, reference=None):
         _fail((reference.token, reference.operation_name) == (token, owned.operation_name))
     return owned
 
-
 def _merge(error, addition):
     return addition if error is None else fs.RootfsFsError(error, addition)
+
+def _bootstrap_state(approval, control):
+    chain = builder._open_base_chain(control)
+    try:
+        state = builder._bootstrap(chain, approval, control)
+        try:
+            fs._close_node(state)
+        except BaseException as error:
+            fs._close_chain(chain, error)
+        fs._close_chain(chain)
+    except BaseException as error:
+        if chain.anchor.identity_fd.disposition == "open":
+            fs._close_chain(chain, error)
+        raise
 
 def _close_preserving(retained, primary=None):
     error = primary
@@ -173,7 +170,6 @@ def _abandon_active(retained, primary):
         error = _merge(error, caught)
     raise error
 
-
 def _probe_lock(state, expected, retained_descriptors, control):
     probe = None
     error = None
@@ -199,7 +195,6 @@ def _probe_lock(state, expected, retained_descriptors, control):
             error = _merge(error, caught)
     if error is not None:
         raise error
-
 
 def _fresh_fixed_chain(operation_name, control):
     chain = builder._open_base_chain(control)
@@ -228,10 +223,9 @@ def _fresh_fixed_chain(operation_name, control):
             error = _merge(error, close_error)
         raise error
 
-
 def _stable_graph(retained, reference, control, expected_status):
     owned = _topology(retained, reference)
-    _fail(type(control) is fs.OperationControl and expected_status in {"active", "leased", "release-authorized"})
+    _fail(type(control) is fs.OperationControl and expected_status in {"active", "leased", "release-authorized", "prestage-release-authorized"})
     sentinel = builder._verify_fixed_file(owned.locked.state, builder.STATE_SENTINEL_NAME, builder.STATE_SENTINEL, control)
     fs._close_node(sentinel)
     held_state = fs._observe_node(owned.locked.state.identity_fd, owned.locked.state.operation_fd, control)
@@ -287,7 +281,9 @@ def _stable_graph(retained, reference, control, expected_status):
         else:
             _fail(reconciled.lease_seen and reference is not None)
             _fail(reconciled.release_authorized == (expected_status == "release-authorized"))
-            _fail(reconciled.cleanup_allowed == (expected_status == "release-authorized"))
+            _fail(reconciled.cleanup_allowed == (expected_status in {"release-authorized", "prestage-release-authorized"}))
+            if expected_status == "prestage-release-authorized":
+                _fail(reconciled.cleanup_origin == "prestage-authorized")
             terminal = next(item for item in records if item.record_type == "leased")
             body = terminal.body_value()
             _fail(terminal.record_type == "leased")
@@ -324,7 +320,6 @@ def _stable_graph(retained, reference, control, expected_status):
         raise error
     return active, reconciled
 
-
 def _stable_lease_pass(lease, control):
     _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
     _fail(type(lease.reference) is RuntimeRootfsReference and type(lease.retained) is build.RetainedBuild)
@@ -332,10 +327,9 @@ def _stable_lease_pass(lease, control):
     _stable_graph(lease.retained, lease.reference, control, "leased")
     return lease.reference
 
-
 def _reference(owned, active):
     records = builder._records(active)
-    _fail(records[-1].record_type in {"leased", "release-authorized"})
+    _fail(records[-1].record_type in {"leased", "release-authorized", "prestage-release-authorized"})
     terminal = next(item for item in records if item.record_type == "leased")
     body = terminal.body_value()
     snapshot = ledger._lease_from_record(records, terminal)
@@ -345,13 +339,14 @@ def _reference(owned, active):
         body["manifest_sha256"], body["manifest_size"], body["ustar_sha256"], body["ustar_size"], body["entry_count"],
     )
 
-
 def _acquire(approval, outer):
     _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
     retained = None
     boundary = False
-    stage = "pins"
+    stage = "bootstrap"
     try:
+        _bootstrap_state(approval, outer)
+        stage = "pins"
         pins = publication._load_pins()
         _fail(type(pins) is publication.RootfsPins)
         stage = "build-first"
@@ -400,7 +395,6 @@ def _acquire(approval, outer):
             raise RootfsAcquireError(stage) from settled
         raise RootfsAcquireError(stage) from error
 
-
 def _abandon(lease, control):
     """Drop live custody of a verified lease without deleting durable state."""
     _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
@@ -417,11 +411,41 @@ def _abandon(lease, control):
         lease.disposition = "uncertain"
         raise
 
+def _admit_operation_parent_transition(held, control):
+    """Refresh only the exact completion-parent change made by operation open."""
+    retained, index = held.retained, builder.COMPLETION_INDEX
+    owned, base = retained.owned, retained.base_chain
+    locked = owned.locked
+    _fail(locked.chain.anchor is base.anchor
+          and locked.chain.components[index].node is base.components[index].node)
+    before = base.components[index].node.generation
+    snapshot = fs._enumerate_stable(base.components[index].node, control)
+    expected = tuple(sorted(name.raw for name in (
+        kata_operation.ARTIFACTS_NAME, kata_operation.ROOTFS_NAME,
+        kata_operation.IMMUTABLE_PREPARATION_NAME, kata_operation.RUNTIME_NAME,
+        kata_operation.STATE_NAME,
+    )))
+    after = snapshot.generation
+    _fail(snapshot.raw_names == expected and after.key == before.key
+          and (after.mode, after.uid, after.gid) == (before.mode, before.uid, before.gid)
+          and after.nlink == before.nlink + 1
+          and after.mtime_ns >= before.mtime_ns and after.ctime_ns >= before.ctime_ns)
+    locked_chain = builder._chain_after_parent(locked.chain, before, after)
+    base = fs.HeldChain(base.anchor, locked_chain.components[:len(base.components)])
+    state = locked_chain.components[-1].node
+    _fail(state is locked.state)
+    refreshed_locked = builder.LockedState(locked_chain, state, locked.lock)
+    retained.base_chain = base
+    retained.owned = builder.OwnedOperation(
+        refreshed_locked, owned.active, owned.operation, owned.root, owned.operation_name)
+    fs._revalidate_chain(base, control)
+    fs._revalidate_chain(locked_chain, control)
 
 def _begin_kata_operation(authority, held, approval, control):
     """Derive genesis/lease facts here, then seal them in the operation owner."""
     _fail(type(held) is RetainedRootfsLease and held.disposition == "held"
           and type(approval) is fs.SourceApproval and type(control) is fs.OperationControl)
+    _admit_operation_parent_transition(held, control)
     reference = _verify(held, control)
     baseline = hashlib.sha256(kata_operation._canonical({
         "entry_count": reference.entry_count,
@@ -437,7 +461,6 @@ def _begin_kata_operation(authority, held, approval, control):
     _attach_kata_operation(authority.reserve_rootfs(), held, control)
     kata_operation._admit_production_v2(authority)
     return authority
-
 
 def _attach_kata_operation(permit, held, control):
     """Settle one fresh Kata intent against the already-held exact lease."""
@@ -534,7 +557,6 @@ def _reopen_kata_reserved(permit, control):
             _close_preserving(held.retained, error)
         raise
 
-
 def _classify_release_crash_for_tests(operation_raw, rootfs_raw):
     """Pure two-ledger crash matrix; malformed or mismatched suffixes preserve."""
     try:
@@ -576,7 +598,6 @@ def _classify_release_crash_for_tests(operation_raw, rootfs_raw):
             raise
         raise LeaseError() from error
 
-
 def _authorize_kata_release(permit, held, control):
     """Closure-routed Stage B append after the exact Kata release-ready suffix."""
     _fail(type(held) is RetainedRootfsLease and held.disposition == "held")
@@ -610,6 +631,8 @@ def _authorize_kata_release(permit, held, control):
             return kata_operation.RootfsAuthorization(reference.token, terminal.sequence,
                                                        terminal.next_offset, terminal.line_sha256)
         _fail(builder._terminal_record(active).record_type == "leased")
+        normalized_kata_key = {name: context.kata_ledger_key[name]
+                               for name in ("mount_id", "device", "inode", "kind")}
         body = {
             "token": reference.token,
             "operation_name": reference.operation_name,
@@ -617,7 +640,7 @@ def _authorize_kata_release(permit, held, control):
             "lease_offset": reference.leased_settled.offset,
             "lease_sha256": reference.leased_settled.line_sha256,
             "kata_operation_token": context.operation_token,
-            "kata_ledger_key": context.kata_ledger_key,
+            "kata_ledger_key": normalized_kata_key,
             "kata_release_sequence": kata_settled.sequence,
             "kata_release_offset": kata_settled.offset,
             "kata_release_sha256": kata_settled.line_sha256,
@@ -654,6 +677,194 @@ def _authorize_kata_release(permit, held, control):
     kata_operation._settle_rootfs_release(grant, authorization)
     return authorization
 
+def _prestage_receipt_routes():
+    seal = object()
+    issued = set()
+    class PrestageCleanupReceipt:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _fail(key is seal)
+            value = super().__new__(cls); issued.add(value); return value
+    def issue(): return PrestageCleanupReceipt(seal)
+    def valid(value): return type(value) is PrestageCleanupReceipt and value in issued
+    return PrestageCleanupReceipt, issue, valid
+
+
+(PrestageCleanupReceipt, _issue_prestage_cleanup_receipt,
+ _is_prestage_cleanup_receipt) = _prestage_receipt_routes()
+del _prestage_receipt_routes
+
+
+def _close_prestage_nodes(chain, state, locked, active, operation, primary=None):
+    error = primary
+    for node in (operation, None if active is None else active.node,
+                 None if locked is None else locked.lock, state):
+        if node is not None and node.identity_fd.disposition == "open":
+            try: fs._close_node(node)
+            except BaseException as caught: error = _merge(error, caught)
+    if chain is not None and chain.anchor.identity_fd.disposition == "open":
+        try: fs._close_chain(chain)
+        except BaseException as caught: error = _merge(error, caught)
+    if error is not None: raise error
+
+
+def _prestage_rootfs_absent(control):
+    chain = builder._open_base_chain(control); state = None
+    try:
+        state = builder._open_state(chain, control)
+        if state is None: return True
+        names = fs._enumerate_stable(state, control).raw_names
+        return names == tuple(sorted((builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw)))
+    finally:
+        if state is not None and state.identity_fd.disposition == "open": fs._close_node(state)
+        fs._close_chain(chain)
+
+
+def _recover_unadmitted_kata_operation(prestage_permit, approval, control):
+    """Authorize one fixed unadmitted lease, remove its journal, then remove only it."""
+    _fail(type(approval) is fs.SourceApproval and type(control) is fs.OperationControl)
+    grant = kata_operation._claim_prestage_rootfs(prestage_permit)
+    current_binding = dict(kata_operation._prestage_rootfs_binding(grant))
+    coordinates = kata_operation._prestage_rootfs_coordinates(grant)
+    chain = state = locked = active = operation = root = held = None
+    authorized_binding = None
+    try:
+        chain = builder._open_base_chain(control)
+        state = builder._open_state(chain, control)
+        if state is None:
+            _fail(current_binding["kind"] == "journal-absent")
+            fs._close_chain(chain); chain = None
+            return None
+        names = fs._enumerate_stable(state, control).raw_names
+        fixed_idle = tuple(sorted((builder.STATE_SENTINEL_NAME.raw, builder.LOCK_NAME.raw)))
+        if names == fixed_idle:
+            _fail(current_binding["kind"] == "journal-absent")
+            fs._close_node(state); state = None
+            fs._close_chain(chain); chain = None
+            return None
+        _fail(builder.LEDGER_NAME.raw in names)
+        locked = builder._acquire_lock(chain, state, control)
+        active = builder._read_active_ledger(state, control)
+        records = builder._records(active)
+        genesis = records[0].body_value()
+        _fail((genesis["source_revision"], genesis["source_manifest_sha256"]) ==
+              (approval.revision, approval.manifest_sha256))
+        fs._verify_source_bundle(builder._source(chain), approval, control)
+        leased_rows = [record for record in records if record.record_type == "leased"]
+        ordinary = [record for record in records if record.record_type == "release-authorized"]
+        prestage = [record for record in records
+                    if record.record_type == "prestage-release-authorized"]
+        _fail(not ordinary and len(prestage) <= 1)
+        if not leased_rows:
+            operation_name = builder._operation_name(builder._token(active)).raw
+            allowed_names = {
+                tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw))),
+                tuple(sorted((*fixed_idle, builder.LEDGER_NAME.raw, operation_name))),
+            }
+            _fail(not prestage and coordinates is None
+                  and current_binding["kind"] == "journal-absent"
+                  and active.records.legal.phase not in
+                  {"leased", "release-authorized", "prestage-release-authorized"}
+                  and names in allowed_names)
+            _close_prestage_nodes(chain, state, locked, active, operation)
+            chain = state = locked = active = operation = None
+            builder._recover_fixed(control)
+            kata_operation._settle_prestage_rootfs(grant, current_binding)
+            _fail(_prestage_rootfs_absent(control))
+            return _issue_prestage_cleanup_receipt()
+        _fail(len(leased_rows) == 1)
+        leased_record = leased_rows[0]
+        leased_body = leased_record.body_value()
+        observations, operation = builder._observations(
+            locked, records, builder._current_ledger(active, control), control)
+        reconciled = ledger._reconcile_ledger(records, observations)
+        if coordinates is not None:
+            _fail((coordinates["source_revision"], coordinates["source_manifest_sha256"],
+                   coordinates["rootfs_token"]) ==
+                  (approval.revision, approval.manifest_sha256, leased_body["token"]))
+            kata_lease = coordinates["rootfs_leased"]
+            if kata_lease is not None:
+                snapshot = reconciled.lease_snapshot
+                _fail(type(snapshot) is ledger.LeaseSnapshot)
+                expected = (
+                    kata_lease["rootfs_ledger_key"], kata_lease["leased_sequence"],
+                    int(kata_lease["leased_offset"], 16), kata_lease["leased_sha256"],
+                    kata_lease["state_generation"], kata_lease["operation_generation"],
+                    kata_lease["root_generation"],
+                )
+                actual = (
+                    kata_operation._key_value(snapshot.ledger_key), snapshot.settled.sequence,
+                    snapshot.settled.offset, snapshot.settled.line_sha256,
+                    kata_operation._generation_value(snapshot.state_parent.generation),
+                    kata_operation._generation_value(snapshot.operation),
+                    kata_operation._generation_value(snapshot.root),
+                )
+                _fail(expected == actual)
+        if not prestage:
+            _fail(reconciled.status == "leased" and not reconciled.cleanup_allowed
+                  and records[-1] is leased_record and operation is not None)
+            root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", control)
+            _fail(type(reconciled.lease_snapshot) is ledger.LeaseSnapshot
+                  and root.generation == reconciled.lease_snapshot.root)
+            owned = builder.OwnedOperation(locked, active, operation, root,
+                                           ledger._operation_name(leased_body["token"]))
+            retained = build.RetainedBuild(owned, chain); retained.disposition = "transferred"
+            held = RetainedRootfsLease(_reference(owned, active), retained)
+            _verify(held, control)
+            reference = held.reference
+            proposal = ledger.LedgerProposal.create("prestage-release-authorized", {
+                "token": reference.token, "operation_name": reference.operation_name,
+                "lease_sequence": reference.leased_settled.sequence,
+                "lease_offset": reference.leased_settled.offset,
+                "lease_sha256": reference.leased_settled.line_sha256,
+                "operation_binding": current_binding,
+            })
+            raw = ledger._encode_proposal(proposal, active.writer.settled)
+            record = ledger.LedgerRecord(
+                active.writer.settled.sequence + 1, active.writer.settled.sequence,
+                active.writer.settled.offset, active.writer.settled.line_sha256,
+                active.writer.settled.offset + len(raw), "prestage-release-authorized",
+                proposal.body, hashlib.sha256(raw).hexdigest())
+            prospective = ledger._advance_history(active.records, record)
+            written = ledger._append_prestage_authorized_record(
+                active.writer, reference.token, reference.operation_name,
+                reference.leased_settled, current_binding, control)
+            _fail(prospective.legal.settled == written.settled)
+            parsed = ledger._parse_ledger_history(
+                os.pread(written.node.operation_fd.number, written.settled.offset, 0))
+            _fail(parsed.legal == prospective.legal)
+            node = fs.HeldNode(active.node.identity_fd, active.node.operation_fd,
+                               written.generation)
+            writer = ledger.LedgerWriterState(node, written.stable_key,
+                                               written.settled, written.generation)
+            active = builder.ActiveLedger(node, parsed, writer)
+            held.retained.owned = builder.OwnedOperation(
+                locked, active, operation, root, owned.operation_name)
+            _stable_graph(held.retained, reference, control,
+                          "prestage-release-authorized")
+            authorized_binding = current_binding
+        else:
+            _fail(reconciled.cleanup_allowed and
+                  reconciled.cleanup_origin == "prestage-authorized")
+            authorized_binding = prestage[0].body_value()["operation_binding"]
+            _fail(kata_operation._validate_prestage_binding(grant,
+                                                             authorized_binding))
+        kata_operation._settle_prestage_rootfs(grant, authorized_binding)
+        if held is not None:
+            _close_preserving(held.retained)
+            held = None; chain = state = locked = active = operation = root = None
+        else:
+            _close_prestage_nodes(chain, state, locked, active, operation)
+            chain = state = locked = active = operation = None
+        builder._recover_prestage_fixed(control)
+        _fail(_prestage_rootfs_absent(control))
+        return _issue_prestage_cleanup_receipt()
+    except BaseException as error:
+        if held is not None and held.disposition == "held":
+            _close_preserving(held.retained, error)
+        _close_prestage_nodes(chain, state, locked, active, operation, error)
+
+
 def _recover_kata_release(authority, control):
     """Compose release-ready, authorization, exact owner removal, and operation absence."""
     _fail(type(control) is fs.OperationControl); context = authority.prepare_rootfs_release()
@@ -676,8 +887,8 @@ def _recover_kata_release(authority, control):
 
 def _verify(lease, control):
     terminal = builder._terminal_record(lease.retained.owned.active).record_type
-    _fail(terminal in {"leased", "release-authorized"})
-    expected_status = "release-authorized" if terminal == "release-authorized" else "leased"
+    _fail(terminal in {"leased", "release-authorized", "prestage-release-authorized"})
+    expected_status = terminal if terminal != "leased" else "leased"
     if expected_status == "leased":
         _stable_lease_pass(lease, control)
     else:

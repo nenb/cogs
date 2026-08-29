@@ -180,6 +180,21 @@ with tempfile.TemporaryDirectory() as directory:
     os.link(target, nested / "alias")
     reject(lambda: admission._open_fixed_relative(root, "fixed/value", 64, status.st_uid, status.st_gid))
 
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); root.chmod(0o700); identity = root.stat()
+    (root / "bin").mkdir(); (root / "usr").mkdir(); (root / "usr/sbin").mkdir()
+    target = root / "bin/tool"; target.write_bytes(b"trusted-target"); target.chmod(0o755)
+    (root / "usr/sbin/tool").symlink_to("/bin/tool")
+    descriptor, parent, seen = admission._open_trusted_absolute_regular(
+        "/usr/sbin/tool", 64, identity.st_uid, identity.st_gid, str(root))
+    try:
+        assert admission._read_held(descriptor, seen, 64) == sha(b"trusted-target")
+    finally:
+        os.close(descriptor); os.close(parent)
+    (root / "usr/sbin/escape").symlink_to("../../../outside")
+    reject(lambda: admission._open_trusted_absolute_regular(
+        "/usr/sbin/escape", 64, identity.st_uid, identity.st_gid, str(root)))
+
 assert admission.committed_status() == {"envelope_reviewed": False, "runtime_manifest_reviewed": False, "custody_issued": False}
 assert admission.static_status()["v2_static_only"] is True
 assert admission.static_status()["kvm_permit"] is False
@@ -192,6 +207,10 @@ reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
 source = (REMOTE / "completion_kata_admission.py").read_text()
 assert "REVIEWED_ENVELOPE_SHA256 = None" in source and "REVIEWED_RUNTIME_MANIFEST_SHA256 = None" in source
 assert "candidate_contract_sha256" in source and "candidate_result_sha256" in source
+assert "workload_contract.REVIEWED_ROOTFS_SHA256" not in source
+assert 'COMPLETION_ROOTFS_SHA256 = "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"' in source
 assert "fixed_runtime_closure(load_verified_build_inputs())" in source
-assert "_derived_elf(raw)" in source
+assert "_derived_elf(raw)" in source and "sorted(needed)" in source
+assert 'item["kind"] == "executable"' in source
+assert "time.monotonic_ns() + 300_000_000_000" in source
 print("corrected custody/private receipt hostile matrix passed")

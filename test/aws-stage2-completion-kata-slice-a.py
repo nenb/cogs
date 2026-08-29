@@ -111,7 +111,7 @@ def intent(serial=0, command_id="CTR_TASK_LIST", phase="RUNTIME_READY"):
         "inherited_fds": inherited, "policy_version": operation.command_policy.POLICY_VERSION,
         "deadline_class": deadline_class, "duration_ns": duration,
         "cleanup_reserve_ns": (operation.command_policy.SSH_CLEANUP_RESERVE_NS
-                               if command_id == "SSH_READY" else
+                               if command_id in operation.command_policy.SSH_COMMANDS else
                                operation.command_policy.CLEANUP_RESERVE_NS),
         "deadline_boottime_ns": 99_000_000_000, "output_grammar": grammar,
         "stdout_limit": stdout_limit, "stderr_limit": stderr_limit,
@@ -231,9 +231,18 @@ daemon = intent(daemon_serial, "CONTAINERD_START", "BASELINES_CAPTURED")
 daemon_raw = add(daemon_prefix, "COMMAND_INTENT_V2", daemon)
 daemon_preexec = preexec(daemon)
 daemon_raw = add(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
-retained = {**daemon_preexec, "socket_generation": generation(95, "socket", 0o600)}
+retained = {**daemon_preexec, "socket_generations": {
+    "s": {"generation": generation(95, "socket", 0o600), "fd_inode": 195},
+    "s.ttrpc": {"generation": generation(96, "socket", 0o600), "fd_inode": 196}}}
 reject(lambda: operation._key(key(95, "socket")))
-operation._daemon_socket_generation(retained["socket_generation"])
+operation._daemon_socket_generations(retained["socket_generations"])
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", {**retained, "socket_generations": {"s": retained["socket_generations"]["s"]}}))
+nonroot = copy.deepcopy(retained); nonroot["socket_generations"]["s.ttrpc"]["generation"]["uid"] = 1
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", nonroot))
+bad_fd = copy.deepcopy(retained); bad_fd["socket_generations"]["s"]["fd_inode"] = 0
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", bad_fd))
+duplicate = copy.deepcopy(retained); duplicate["socket_generations"]["s.ttrpc"] = copy.deepcopy(duplicate["socket_generations"]["s"])
+reject(lambda: add(daemon_raw, "DAEMON_RETAINED_V2", duplicate))
 daemon_raw = add(daemon_raw, "DAEMON_RETAINED_V2", retained)
 retained_raw = daemon_raw
 daemon_raw = add(daemon_raw, "COMMAND_INTENT_V2",
@@ -296,13 +305,13 @@ EXPECTED_IMPLEMENTED = {
     "IP_LINK_MOVE", "IP_LOOPBACK_UP", "IP_NETNS_ADD", "IP_NETNS_REMOVE",
     "IP_NS_ADDRESSES", "IP_NS_LINKS", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
     "IP_PEER_ADDRGEN_NONE", "IP_PEER_RENAME", "NFT_INSTALL", "NFT_REMOVE",
-    "NFT_TABLE", "SSH_READY", "SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT",
+    "NFT_TABLE", "SSH_READY", "SSH_READINESS", "SSH_KEYGEN_CLIENT", "SSH_PUBLIC_CLIENT",
     "SSH_KEYGEN_SERVER", "SSH_PUBLIC_SERVER", "CONTAINERD_START",
 }
 check(policy.POLICY_VERSION == "cogs.stage2-kata-command-policy/v4-process-only-ssh-stable-1",      "process-only policy version drift")
 check(set(policy.POLICY_SHA256) == EXPECTED_IMPLEMENTED, "implemented process policy drift")
 expected_occurrences = {name: (("ROOTFS_LEASED",) if name in policy.KEY_COMMANDS else
-                               ("RUNTIME_READY",) if name == "SSH_READY" else
+                               ("RUNTIME_READY",) if name in policy.SSH_COMMANDS else
                                ("BASELINES_CAPTURED",)) for name in policy.POLICY_SHA256}
 check(dict(policy.OCCURRENCES) == expected_occurrences
       and dict(policy.PHASES) == dict(policy.OCCURRENCES)
@@ -382,7 +391,8 @@ with patch.object(process, "_directory_identity", side_effect=[
         (base_fd, generation(80)), (leaf_fd, recovery_preexec["cgroup_generation"])]), \
      patch.object(process, "_kill_cgroup") as killed, \
      patch.object(process, "_cgroup_members", side_effect=[(777,), (), ()]), \
-     patch.object(process.os, "rmdir"):
+     patch.object(process, "_cgroup_leaf_names", return_value=set()), \
+     patch.object(process.os, "rmdir"): 
     check(process._recover_cgroup(recovery_preexec["cgroup_path"],
           process._generation_tuple(recovery_preexec["cgroup_generation"]),
           process._boottime_ns() + 1_000_000_000, state, errors) == (True, True),

@@ -8,8 +8,11 @@ import hashlib
 import json
 import sys
 
-VERSION = "cogs.stage2-workload-local-qualification/v2"
-SCHEMA_REGISTRY = ((VERSION, "schemas/stage2-workload-local-qualification-v2.json"),)
+VERSION = "cogs.stage2-workload-local-qualification/v3"
+SCHEMA_REGISTRY = (
+    (VERSION, "schemas/stage2-workload-local-qualification-v3.json"),
+    ("cogs.stage2-workload-local-qualification/v2", "schemas/stage2-workload-local-qualification-v2.json"),
+)
 MAX_RESULT_BYTES = 32 * 1024
 AUTHORITY = "non-authoritative-local-qualification-report-data"
 VALIDATION_CLASSIFICATION = "schema-insufficient-independent-semantics-and-private-receipt-required"
@@ -27,6 +30,12 @@ DIGEST_FIELDS = (
 ADMISSION_PHASES = ("preflight", "source_binding", "attestation", "kvm")
 ADMISSION_CODES = ("preflight", "source-binding", "attestation", "kvm")
 TEARDOWN_PHASES = (
+    "READINESS_REVOKED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_PROCESSES_ABSENT",
+    "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_AND_MOUNTS_ABSENT",
+    "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUTS_ABSENT", "ROOTFS_ABSENT",
+    "FINAL_BASELINES", "RETIRED",
+)
+HISTORICAL_V2_TEARDOWN_PHASES = (
     "READINESS_REVOKED", "TASK_STOPPED", "NETWORK_ABSENT", "TASK_ABSENT",
     "CONTAINER_ABSENT", "RUNTIME_PROCESSES_ABSENT", "SHARE_AND_MOUNTS_ABSENT",
     "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUTS_ABSENT", "ROOTFS_ABSENT",
@@ -161,11 +170,11 @@ def _work_failure(timings):
             or _phase_failure(install, (), "install-sample"))
 
 
-def _teardown_failure(teardown, binding, operation_status, residue):
-    _require(type(teardown) is list and len(teardown) == len(TEARDOWN_PHASES))
+def _teardown_failure(teardown, binding, operation_status, residue, phases):
+    _require(type(phases) is tuple and type(teardown) is list and len(teardown) == len(phases))
     first_bad = None
     unreachable = False
-    for index, (expected, row) in enumerate(zip(TEARDOWN_PHASES, teardown, strict=True)):
+    for index, (expected, row) in enumerate(zip(phases, teardown, strict=True)):
         _keys(row, {"phase", "outcome", "binding_sha256"})
         _require(row["phase"] == expected and row["outcome"] in ("pass", "failure", "not-reached"))
         _require(row["binding_sha256"] == binding)
@@ -185,7 +194,7 @@ def _teardown_failure(teardown, binding, operation_status, residue):
         _require(not all_pass and teardown[-1]["outcome"] != "pass" and not all_absent)
     if first_bad is None:
         return None
-    if first_bad >= TEARDOWN_PHASES.index("FINAL_BASELINES") and not all_absent:
+    if first_bad >= phases.index("FINAL_BASELINES") and not all_absent:
         return "residue"
     return "cleanup"
 
@@ -193,7 +202,9 @@ def _teardown_failure(teardown, binding, operation_status, residue):
 def validate_result(value):
     """Validate one closed execution history and recompute its first failure."""
     _keys(value, ROOT_KEYS)
-    _require(value["version"] == VERSION and value["result"] in ("pass", "failure"))
+    _require(value["version"] in dict(SCHEMA_REGISTRY) and value["result"] in ("pass", "failure"))
+    teardown_phases = (TEARDOWN_PHASES if value["version"] == VERSION
+                       else HISTORICAL_V2_TEARDOWN_PHASES)
     _require(type(value["qualified"]) is bool and value["authority"] == AUTHORITY)
     _require(value["validation_classification"] == VALIDATION_CLASSIFICATION)
     _require(type(value["limitations"]) is list and tuple(value["limitations"]) == LIMITATIONS)
@@ -303,7 +314,8 @@ def validate_result(value):
     residue = value["zero_residue"]
     _keys(residue, RESIDUE_FACTS)
     _require(all(item in ("absent", "not-proved") for item in residue.values()))
-    teardown_failure = _teardown_failure(value["teardown"], binding, operation["status"], residue)
+    teardown_failure = _teardown_failure(value["teardown"], binding, operation["status"], residue,
+                                          teardown_phases)
     if first_failure is None:
         first_failure = teardown_failure
 

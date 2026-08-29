@@ -62,7 +62,7 @@ const workerDockerfile = readFileSync(resolve(root, "images/worker/Dockerfile"),
 const nodeWorkerImage =
   "docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e";
 const workerFinalImage =
-  "gcr.io/distroless/nodejs22-debian13:nonroot@sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd";
+  "gcr.io/distroless/nodejs22-debian13:nonroot@sha256:4e4fb0ce55fd73901600796ef079a9490369d2515d7da31633a91608c82ca13b";
 const mitmproxySuite = readFileSync(
   resolve(root, "test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts"),
   "utf8",
@@ -125,24 +125,28 @@ for (const workflow of [insecureContainerWorkflow, kvmWorkflow]) {
 }
 assert.ok(
   insecureContainerDockerfile.includes(
-    "FROM debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd",
+    "FROM debian:testing-slim@sha256:b21cba5194c0cddc19b41045ceebce11b5413ac40bac7f2410c066b5acb28091",
   ),
-  "insecure-container must use the reviewed Debian 13.6 index digest",
+  "insecure-container must use the reviewed fixed OpenSSL Debian testing index digest",
 );
 assert.ok(
-  insecureContainerDockerfile.includes("ARG DEBIAN_SECURITY_SNAPSHOT=20260815T000000Z"),
-  "insecure-container must use the immutable security snapshot containing fixed util-linux, Expat, and OpenJDK",
+  insecureContainerDockerfile.includes("ARG DEBIAN_SNAPSHOT=20260829T000000Z"),
+  "insecure-container must use the immutable testing snapshot containing fixed runtime packages",
+);
+assert.ok(
+  insecureContainerDockerfile.includes("'Suites: testing'"),
+  "insecure-container must not mix stable packages into its testing base",
 );
 for (const fixedUtilLinuxPackage of [
-  "bsdutils=1:2.41.5-0+deb13u1",
-  "libblkid1=2.41.5-0+deb13u1",
-  "liblastlog2-2=2.41.5-0+deb13u1",
-  "libmount1=2.41.5-0+deb13u1",
-  "libsmartcols1=2.41.5-0+deb13u1",
-  "libuuid1=2.41.5-0+deb13u1",
-  "login=1:4.16.0-2+really2.41.5-0+deb13u1",
-  "mount=2.41.5-0+deb13u1",
-  "util-linux=2.41.5-0+deb13u1",
+  "bsdutils=1:2.42.2-2",
+  "libblkid1=2.42.2-2",
+  "liblastlog2-2=2.42.2-2",
+  "libmount1=2.42.2-2",
+  "libsmartcols1=2.42.2-2",
+  "libuuid1=2.42.2-2",
+  "login=1:4.16.0-2+really2.42.2-2",
+  "mount=2.42.2-2",
+  "util-linux=2.42.2-2",
 ]) {
   assert.ok(
     insecureContainerDockerfile.includes(fixedUtilLinuxPackage),
@@ -150,17 +154,23 @@ for (const fixedUtilLinuxPackage of [
   );
 }
 assert.ok(
-  insecureContainerDockerfile.includes("libexpat1=2.8.2-1~deb13u1"),
+  insecureContainerDockerfile.includes("libexpat1=2.8.3-1"),
   "insecure-container must install the exact fixed Expat package",
 );
 assert.ok(
-  insecureContainerDockerfile.includes("openjdk-21-jre-headless=21.0.12+8-1~deb13u1"),
-  "insecure-container must install the exact fixed OpenJDK package",
+  insecureContainerDockerfile.includes("openjdk-25-jre-headless=25.0.4+7-1"),
+  "insecure-container must install the exact testing OpenJDK package",
 );
+for (const fixedOpenSslPackage of ["libssl3t64=3.6.3-1", "openssl=3.6.3-1"]) {
+  assert.ok(
+    insecureContainerDockerfile.includes(fixedOpenSslPackage),
+    `insecure-container must install ${fixedOpenSslPackage}`,
+  );
+}
 for (const label of [
   'dev.cogs.profile="insecure-container"',
   'dev.cogs.authority="functional-only"',
-  'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260815-insecure-conformance-v3"',
+  'dev.cogs.package-policy="debian-testing-snapshot-20260829-insecure-conformance-v4"',
 ]) {
   assert.ok(insecureContainerDockerfile.includes(label), `insecure conformance image must retain label ${label}`);
 }
@@ -173,7 +183,7 @@ for (const conformanceRoot of [
   "nftables",
   "nodejs",
   "npm",
-  "openjdk-21-jre-headless",
+  "openjdk-25-jre-headless",
   "python3-httpx",
   "python3-pip",
   "python3-requests",
@@ -243,6 +253,7 @@ for (const forbiddenProductionRoot of [
   "nodejs",
   "npm",
   "openjdk-21-jre-headless",
+  "openjdk-25-jre-headless",
   "openssh-sftp-server",
   "python3-httpx",
   "python3-pip",

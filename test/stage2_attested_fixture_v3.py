@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "test/fixtures/stage2-completion/attested-static-v3.c"
 EXPECTED_STDOUT = ROOT / "test/fixtures/stage2-completion/attested-ssh-output-v3.txt"
 OUTPUT = Path("/tmp/cogs-stage2-attested-static-v3.elf")
-SHA256 = "7c2bfd83c6c9c600eb626b74c475e0c22e1fc1b5c963203083acf3a803539247"
-SIZE = 13_688
+SHA256 = "e628b160cf16b1b417bbc1788db5dfc33e2fac3915158778309e51cb58dc16c5"
+SIZE = 13_704
 TOOLCHAIN = ("/usr/bin/clang-18", "/usr/bin/ld")
 
 

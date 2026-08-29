@@ -97,33 +97,61 @@ def _routes():
             raise BaseExceptionGroup("operation begin preservation failure", errors)
 
     def open_existing(bridge, lifecycle):
-        """Reconstruct the exact journal writer; never admit a forward owner."""
+        """Read-only classification; unadmitted state never becomes production."""
         current = state(bridge, lifecycle)
-        _require(current.get("authority") is None)
-        authority = operation._open_fixed_operation()
+        _require(current.get("authority") is None
+                 and type(lifecycle.source_approval) is fs.SourceApproval)
+        authority = operation._open_fixed_operation_recovery()
         try:
-            phase = authority.reconstruction_identity()["phase"]
-            cleanup = (operation._claim_production_retired_operation(authority)
-                       if phase == "RETIRED" else
-                       operation._claim_production_recovery_operation(authority))
+            status = authority.status()
+            if status == "preserve":
+                raise OperationBridgeError("operation recovery classification preserved")
+            if status in {"infrastructure-absent", "infrastructure-subset",
+                          "infrastructure-complete"}:
+                prestage = operation._claim_pre_admission_cleanup(
+                    authority, lifecycle.source_approval)
+                current.update({"authority": authority, "prestage": prestage,
+                                "reconstructed_phase": status})
+                return None
+            _require(status == "exact")
+            identity = authority.reconstruction_identity()
+            phase = identity["phase"]
+            try:
+                cleanup = (operation._claim_production_retired_operation(authority)
+                           if phase == "RETIRED" else
+                           operation._claim_production_recovery_operation(authority))
+            except operation.OperationError:
+                prestage = operation._claim_pre_admission_cleanup(
+                    authority, lifecycle.source_approval)
+                current.update({"authority": authority, "prestage": prestage,
+                                "reconstructed_phase": phase})
+                return None
             current.update({"authority": authority, "cleanup": cleanup,
                             "reconstructed_phase": phase})
             open_chain(current)
             return cleanup
         except BaseException as error:
-            # The mandatory post-entry recovery sees exact absence after a fully
-            # retired transaction. Distinguish that read-only state from every
-            # malformed or still-owned journal before returning no operation.
-            open_chain(current)
-            if authority.status() == "absent":
-                authority.close()
-                current["authority"] = None
-                chain, current["chain"] = current.get("chain"), None
-                if chain is not None: fs._close_chain(chain)
-                return None
             authority.close()
             current["authority"] = None
             raise error
+
+    def recover_preproduction(bridge, lifecycle):
+        current = state(bridge, lifecycle)
+        prestage = current.get("prestage")
+        _require(prestage is not None and lifecycle.operation is None
+                 and current.get("cleanup") is None)
+        if current.get("control") is None: current["control"] = control()
+        try:
+            receipt = rootfs._recover_unadmitted_kata_operation(
+                prestage.reserve_prestage_rootfs_release(),
+                lifecycle.source_approval, current["control"])
+            _require(receipt is None or rootfs._is_prestage_cleanup_receipt(receipt))
+            current["prestage_receipt"] = receipt
+            return receipt
+        finally:
+            prestage.close()
+            current["prestage"] = None
+            current["authority"] = None
 
     def reconstruct_rootfs(bridge, lifecycle):
         """Reopen only the lease named by both exact durable ledgers."""
@@ -269,16 +297,19 @@ def _routes():
         _require(not issued, "mutable operation bridge already issued")
         issued = True
         value = _Bridge(seal)
-        states[value] = {"lifecycle": None, "authority": None, "chain": None}
+        states[value] = {"lifecycle": None, "authority": None, "chain": None,
+                         "prestage": None}
         return value
 
-    return (issue, acquire, open_operation, open_existing, reconstruct_rootfs,
-            create_inputs, remove_inputs, prepare_release, authorize_release, remove_rootfs,
-            retire, remove_operation, abandon, recover_pending)
+    return (issue, acquire, open_operation, open_existing, recover_preproduction,
+            reconstruct_rootfs, create_inputs, remove_inputs, prepare_release,
+            authorize_release, remove_rootfs, retire, remove_operation, abandon,
+            recover_pending)
 
 
 (_take_operation_bridge, _acquire_rootfs, _open_operation, _open_existing_operation,
- _reconstruct_rootfs, _create_inputs, _remove_inputs, _prepare_rootfs_release, _authorize_rootfs_release,
+ _recover_preproduction, _reconstruct_rootfs, _create_inputs, _remove_inputs,
+ _prepare_rootfs_release, _authorize_rootfs_release,
  _remove_rootfs, _retire_operation, _remove_operation, _abandon_prepared_rootfs,
  _recover_pending) = _routes()
 del _routes
