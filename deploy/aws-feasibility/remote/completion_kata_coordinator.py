@@ -157,9 +157,18 @@ class _Lifecycle:
 class _AdmissionBoundary:
     """Exact V2 preparation custody, lease mapping, and executable handoffs."""
 
-    def claim_static(self, recovery=False):
+    def claim_static(self):
         try:
-            custody = preparation_bridge._claim_fixed_static_preparation(recovery)
+            custody = preparation_bridge._claim_fixed_static_preparation()
+            approval = preparation_bridge._fixed_source_approval(custody)
+        except (admission.AdmissionError,
+                preparation_bridge.PreparationBridgeError) as error:
+            raise CoordinatorBlocked(BLOCKED_REASON) from error
+        return custody, approval
+
+    def claim_recovery_static(self):
+        try:
+            custody = preparation_bridge._claim_fixed_recovery_static_preparation()
             approval = preparation_bridge._fixed_source_approval(custody)
         except (admission.AdmissionError,
                 preparation_bridge.PreparationBridgeError) as error:
@@ -251,7 +260,8 @@ class _PackagePrivateOwners:
         self.evidence = _PrivateEvidenceBoundary()
 
     def claim_static_custody(self, lifecycle):
-        return self.admission.claim_static(lifecycle.recovery)
+        return (self.admission.claim_recovery_static() if lifecycle.recovery
+                else self.admission.claim_static())
 
     def acquire_rootfs(self, lifecycle):
         if lifecycle.source_approval is not lifecycle.static_gate:

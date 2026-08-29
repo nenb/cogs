@@ -33,14 +33,22 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _claim_fixed_static_preparation(recovery=False):
-    """Authenticate the sole fixed V2 package and retain its source files."""
-    custody = (_claim_recovery_static if recovery else _claim_static)()
+def _record_static_custody(custody):
     _states[custody] = {
         "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
     }
     return custody
+
+
+def _claim_fixed_static_preparation():
+    """Authenticate the sole forward V2 package and retain its source files."""
+    return _record_static_custody(_claim_static())
+
+
+def _claim_fixed_recovery_static_preparation():
+    """Authenticate the sole cleanup-only V2 package."""
+    return _record_static_custody(_claim_recovery_static())
 
 
 def _fixed_source_approval(custody):
