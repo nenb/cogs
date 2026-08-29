@@ -168,6 +168,16 @@ def _claim_fixed_recovery_executable_owner(custody):
     _require(state is not None and state["lease"] is None
              and state["mapping"] is None and state["executables"] is None)
     owner = process._open_static_attested_executable_owner(custody)
+    try:
+        for role in ("ssh", "ssh-keygen"):
+            retained = process._claim_attested_executable(owner, role)
+            process._release_attested_executable(retained)
+    except BaseException as error:
+        try:
+            process._abort_attested_executable_owner(owner)
+        except BaseException as close_error:
+            raise BaseExceptionGroup("recovery policy owner close", [error, close_error])
+        raise
     state["executables"] = owner
     return owner
 

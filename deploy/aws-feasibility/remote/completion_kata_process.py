@@ -174,11 +174,15 @@ def _attested_executable_routes(install_policy):
         if custody is None or role in state:
             return
         claim_value = admission._claim_executable_role_custody(custody, role)
-        objects = admission._consume_executable_role_custody(custody, claim_value, role)
-        if (type(objects) is not tuple or not objects or objects[0].kind != "executable"
+        description = admission._consume_executable_role_custody(
+            custody, claim_value, role)
+        if (type(description) is not admission.ExecutableRoleDescription
+                or description.role != role or not description.objects
+                or description.objects[0].kind != "executable"
                 or any(type(item) is not admission.RetainedObject or item.role != role
-                       for item in objects)):
+                       for item in description.objects)):
             raise ProcessError("admitted executable closure required")
+        objects = description.objects
         descriptors = []
         try:
             for item in objects:
@@ -186,11 +190,7 @@ def _attested_executable_routes(install_policy):
                 os.set_inheritable(descriptor, False)
                 descriptors.append(descriptor)
             executable = objects[0]
-            closure = hashlib.sha256(kata_operation._canonical([{
-                "kind": item.kind, "path": item.path, "sha256": item.sha256,
-                "size": item.size, "interpreter": item.interpreter,
-                "soname": item.soname, "needed": list(item.needed),
-            } for item in objects])).hexdigest()
+            closure = description.closure_sha256
             retained = RetainedExecutable(
                 role, executable.path, descriptors[0], executable.sha256, closure,
                 _host_generation(descriptors[0]), tuple(descriptors[1:]))
@@ -1874,7 +1874,8 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
         work_span = max(1, fixed.duration_ns - _cleanup_reserve_ns(fixed))
         term_at = work_cutoff - min(1_500_000_000, work_span // 4)
         kill_at = work_cutoff - min(250_000_000, work_span // 8)
-        route = kata_operation._cycle_route(journal)
+        route = (None if kata_operation._is_production_recovery_operation(journal)
+                 else kata_operation._cycle_route(journal))
         marker_bytes = (kata_ssh.MARKER if fixed.command_id is CommandId.SSH_READY else
                         guest_readiness.GUEST_READY_MARKER
                         if fixed.command_id is CommandId.SSH_READINESS else None)
