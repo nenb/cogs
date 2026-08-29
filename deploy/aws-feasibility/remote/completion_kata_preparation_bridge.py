@@ -14,7 +14,8 @@ import completion_rootfs_fs as rootfs_fs
 import completion_rootfs_lease as rootfs_lease
 
 _ROOTFS_DEADLINE_NS = 3_600_000_000_000
-_claim_static = admission._take_static_preparation_issuer()
+_claim_static = admission._claim_static_preparation
+_claim_recovery_static = admission._claim_recovery_static_preparation
 _states = {}
 
 
@@ -32,9 +33,9 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _claim_fixed_static_preparation():
+def _claim_fixed_static_preparation(recovery=False):
     """Authenticate the sole fixed V2 package and retain its source files."""
-    custody = _claim_static()
+    custody = (_claim_recovery_static if recovery else _claim_static)()
     _states[custody] = {
         "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
@@ -166,7 +167,9 @@ def _claim_fixed_recovery_executable_owner(custody):
     state = _states.get(custody)
     _require(state is not None and state["lease"] is None
              and state["mapping"] is None and state["executables"] is None)
-    return _issue_fixed_executable_owner(custody)
+    owner = process._open_static_attested_executable_owner(custody)
+    state["executables"] = owner
+    return owner
 
 
 def _reconstruct_fixed_executable_owner(custody, journal):

@@ -323,6 +323,7 @@ def _attested_executable_routes(install_policy):
         return states.issue(values)
     def abort_owner(owner):
         state = states.pop(owner)
+        state.pop("__static_custody__", None)
         errors = []
         for retained, _consumed in state.values():
             if id(retained) in released:

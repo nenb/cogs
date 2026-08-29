@@ -793,6 +793,34 @@ def _retain_observer_configuration(runtime, descriptors):
             "active_status": active_status, "active_sha256": active_row["sha256"]}
 
 
+def _retain_retired_observer_configuration(runtime, descriptors):
+    launch = runtime.value["launch"]
+    base_row, active_row = launch["configuration"], launch["active_configuration"]
+    base_fd, base_parent, base_status = _open_absolute_regular(
+        base_row["path"], base_row["size"])
+    descriptors.extend((base_parent, base_fd))
+    base = _read_held_raw(base_fd, base_status, base_row["size"])
+    _require(active_row == preparation.observer_configuration_description(base)
+             and _sha(preparation.derive_observer_configuration(base)) == active_row["sha256"])
+    relative_parent = Path(active_row["path"]).relative_to(FIXED_ROOT).parent.parent
+    parent = os.open(FIXED_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        for component in relative_parent.parts:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                            dir_fd=parent)
+            seen = os.fstat(child)
+            _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and not stat.S_IMODE(seen.st_mode) & 0o022)
+            os.close(parent); parent = child
+        before = os.fstat(parent); names = os.listdir(parent); after = os.fstat(parent)
+        _require(before == after and "kata-runtime-v1" not in names,
+                 "retired active Kata configuration is not absent")
+        descriptors.append(parent)
+    except BaseException:
+        os.close(parent); raise
+    return {"retired": True, "active_sha256": active_row["sha256"]}
+
+
 def _verify_held_observer_configuration(value):
     if type(value) is dict and set(value) == {"retired", "active_sha256"}:
         _require(value["retired"] is True and type(value["active_sha256"]) is str
@@ -862,7 +890,7 @@ def _static_routes():
     mapping_states = {}
     prepared_states = {}
     issuance_started = False
-    issuer_taken = False
+    issuers_taken = set()
 
     class _StaticPreparationCustody:
         __slots__ = ()
@@ -891,7 +919,7 @@ def _static_routes():
             _require(key is seal, "sealed prepared runtime custody")
             return super().__new__(cls)
 
-    def claim_static():
+    def claim_static(recovery=False):
         nonlocal issuance_started
         if issuance_started:
             raise AdmissionUnavailable("static preparation issuance is globally one-shot")
@@ -910,7 +938,11 @@ def _static_routes():
             source_seen = os.fstat(source_anchor)
             _require(source_seen.st_uid == source_seen.st_gid == 0
                      and stat.S_IMODE(source_seen.st_mode) == 0o700)
-            configuration_identity = _retain_observer_configuration(runtime, descriptors)
+            active_path = runtime.value["launch"]["active_configuration"]["path"]
+            configuration_identity = (
+                _retain_retired_observer_configuration(runtime, descriptors)
+                if recovery and not os.path.lexists(active_path) else
+                _retain_observer_configuration(runtime, descriptors))
             final = _validate_final_and_rootfs(envelope, runtime)
             custody = _StaticPreparationCustody(seal)
             custody_states[custody] = {
@@ -933,11 +965,11 @@ def _static_routes():
                 primary.__cause__ = error
             _close_all(descriptors, primary)
 
-    def take_issuer():
-        nonlocal issuer_taken
-        _require(not issuer_taken, "static preparation issuer already taken")
-        issuer_taken = True
-        return claim_static
+    def take_issuer(recovery=False):
+        _require(recovery in {False, True} and recovery not in issuers_taken,
+                 "static preparation issuer already taken")
+        issuers_taken.add(recovery)
+        return lambda: claim_static(recovery)
 
     def claim_role(custody, role):
         state = custody_states.get(custody)
@@ -1143,17 +1175,22 @@ def _static_routes():
             prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer, source_approval, claim_role, consume_role, retire_consumed_roles,
+    return (take_issuer(False), take_issuer(True), source_approval,
+            claim_role, consume_role, retire_consumed_roles,
             claim_live_mapping, consume_mapping, claim_prepared, prepared_facts, binding, abort)
 
 
-(_take_static_preparation_issuer, _fixed_source_approval,
- _claim_executable_role_custody, _consume_executable_role_custody,
+(_claim_static_preparation, _claim_recovery_static_preparation,
+ _fixed_source_approval, _claim_executable_role_custody,
+ _consume_executable_role_custody,
  _retire_consumed_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
  _static_custody_binding, _abort_static_preparation) = _static_routes()
 del _static_routes
+
+def _take_static_preparation_issuer():
+    raise AdmissionUnavailable("static preparation issuer already taken")
 
 def _consume_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "consume")
 def _verify_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "verify")
