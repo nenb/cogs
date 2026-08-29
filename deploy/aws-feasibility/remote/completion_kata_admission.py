@@ -813,7 +813,9 @@ def _retain_retired_observer_configuration(runtime, descriptors):
                      and not stat.S_IMODE(seen.st_mode) & 0o022)
             os.close(parent); parent = child
         before = os.fstat(parent); names = os.listdir(parent); after = os.fstat(parent)
-        _require(before == after and "kata-runtime-v1" not in names,
+        stable = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                               item.st_gid, item.st_nlink, item.st_mtime_ns, item.st_ctime_ns)
+        _require(stable(before) == stable(after) and "kata-runtime-v1" not in names,
                  "retired active Kata configuration is not absent")
         descriptors.append(parent)
     except BaseException:
