@@ -4,6 +4,7 @@ from enum import Enum
 from types import MappingProxyType
 import base64, copy, fcntl, hashlib, json, os, re, socket, stat, time
 import completion_kata_actions as actions
+import completion_kata_admission as admission
 import completion_kata_command_policy as command_policy
 import completion_kata_inputs as kata_inputs
 import completion_kata_network as kata_network
@@ -1508,6 +1509,7 @@ def _activate_prepared_containerd(journal, completion, control, prepared_grant=N
     history = journal.runtime_recovery_history()
     if not history["runtime_prepared"]:
         kata_operation._record_runtime_prepared(journal, prepared_grant)
+        admission._verify_prepared_runtime_custody(prepared_grant)
         history = journal.runtime_recovery_history()
     if not history["runtime_stage_intents"]:
         journal.record_runtime_stage_intent({"operation_token": history["operation_token"],
