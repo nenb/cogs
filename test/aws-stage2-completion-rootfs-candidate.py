@@ -1069,10 +1069,12 @@ def portable_supervisor_tests():
                     portable_child(write_fd, chain["fds"][3], chain["fds"][4], kind, row,
                                    1 if kind == "post-settlement" else 0)
                 os.close(write_fd)
-                # Hosted contention can exceed the old 80 ms portable-only
-                # handshake window before the child emits its first frame.
-                phase = time.monotonic_ns() + 500_000_000
-                result = supervise_child(pid, read_fd, phase, phase + 500_000_000, 100_000_000)
+                # The failed full hosted suite took 13.4 s across these 21
+                # cases, so a 500 ms per-phase portable-only window was below
+                # observed concurrent-runner scheduling. Keep production bounds
+                # unchanged and allow one second for each synthetic phase.
+                phase = time.monotonic_ns() + NS
+                result = supervise_child(pid, read_fd, phase, phase + NS, 100_000_000)
                 os.close(read_fd)
                 assert result["reaped"] and result["valid"]
                 assert terminal_recovery_count(result) == (

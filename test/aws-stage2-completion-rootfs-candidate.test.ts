@@ -12,7 +12,7 @@ test("ADR 0057 candidate qualification is portable and fixed", async () => {
     cwd: root,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: 45_000,
   });
   assert.equal(portable.status, 0, portable.stderr);
   assert.match(portable.stdout, /candidate portable\/static tests passed/u);
@@ -24,7 +24,7 @@ test("ADR 0057 candidate qualification is portable and fixed", async () => {
   const hosted = spawnSync("python3", ["-I", testPath, "--hosted-exact"], {
     cwd: root,
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: 45_000,
   });
   assert.notEqual(hosted.status, 0);
 });
