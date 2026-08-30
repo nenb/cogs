@@ -63,12 +63,13 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
       - name: Observe exact package-private static admission boundary
-        timeout-minutes: 2
+        timeout-minutes: 70
         run: |
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             python3 -I -B - <<'PY'
           import sys
+          sys.stdout.reconfigure(line_buffering=True)
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
           import completion_kata_coordinator as coordinator
           lifecycle = coordinator._Lifecycle()
