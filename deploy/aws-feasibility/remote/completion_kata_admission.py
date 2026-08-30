@@ -305,6 +305,17 @@ def _attestation_digest(rows):
     return _sha(_canonical(rows))
 
 
+def _host_bound_binding(base, executables):
+    """Complete the authenticated static base with its held host-tool set."""
+    _require(type(base) is dict
+             and set(base) == BINDING_KEYS - {
+                 "host_attestation_sha256", "runtime_attestation_sha256"})
+    _require(type(executables) is list and len(executables) >= 5)
+    value = dict(base)
+    value["host_attestation_sha256"] = _attestation_digest(executables[:5])
+    return value
+
+
 def _source_digest(source, path):
     rows = [row for row in source["files"] if row["path"] == path]
     _require(len(rows) == 1)
@@ -1164,7 +1175,9 @@ def _static_routes():
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live exact static custody required")
         _verify_held_observer_configuration(state["configuration_identity"])
-        return dict(state["envelope"].value["result_binding_base"])
+        return _host_bound_binding(
+            state["envelope"].value["result_binding_base"],
+            state["runtime"].value["executables"])
 
     def abort(custody):
         state = custody_states.pop(custody, None)
