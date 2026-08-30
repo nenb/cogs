@@ -15,6 +15,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
+import completion_kata_admission as admission
 import completion_kata_preparation as preparation
 import completion_local_evidence as evidence
 
@@ -198,8 +199,10 @@ runtime_owner = evidence._RuntimeOwnerResult(
     kvm_device=12, kvm_inode=13, kvm_rdev=14,
     kvm_api=12, qmp_present=True, qmp_enabled=True,
 )
-terminal_bindings = dict(envelope.value["result_binding_base"])
-terminal_bindings["host_attestation_sha256"] = "f" * 64
+terminal_bindings = admission._host_bound_binding(
+    envelope.value["result_binding_base"], runtime_description.value["executables"])
+assert terminal_bindings["host_attestation_sha256"] == admission._attestation_digest(
+    runtime_description.value["executables"][:5])
 terminal_bindings["runtime_attestation_sha256"] = evidence._runtime_attestation_sha256(runtime_owner)
 owner_bindings = evidence._BindingOwnerResult(**terminal_bindings)
 genesis = SimpleNamespace(body={
