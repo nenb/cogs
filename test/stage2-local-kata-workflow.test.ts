@@ -61,7 +61,9 @@ test("terminal receipt diagnostic is exact, consumed in memory, and never publis
   assert.match(diagnostic, /95151289288631bfc047983af1f499df2cf7a202/u);
   assert.match(diagnostic, /bf0479a012b39c074ecb623ea83e85b3dc3ebe36/u);
   assert.match(diagnostic, /_consume_local_receipt\(receipt\)/u);
-  assert.doesNotMatch(diagnostic, /actions\/upload-artifact|actions\/download-artifact/u);
+  assert.match(diagnostic, /traceback\.extract_tb\(error\.__traceback__\)/u);
+  assert.match(diagnostic, /frames\[-8:\]/u);
+  assert.doesNotMatch(diagnostic, /inspect|getargvalues|f_locals|actions\/upload-artifact|actions\/download-artifact/u);
 });
 
 test("mixed H-G preflight runs exact preparation and settlement but never KVM", () => {
