@@ -76,6 +76,13 @@ jobs:
               admission._verify_complete_source(envelope.value["implementation"], descriptors)
               print("COGS_STATIC_ADMISSION_PHASE:SOURCE")
               stage = "configuration"
+              active = runtime.value["launch"]["active_configuration"]["path"]
+              current = "/"
+              for component in active.removeprefix("/").split("/")[:-1]:
+                  current = os.path.join(current, component)
+                  seen = os.stat(current, follow_symlinks=False)
+                  if current.startswith("/var/lib/cogs"):
+                      print(f"COGS_STATIC_ADMISSION_PATH:{current}:{seen.st_uid}:{seen.st_gid}:{seen.st_mode & 0o7777:o}")
               admission._retain_observer_configuration(runtime, descriptors)
               print("COGS_STATIC_ADMISSION_PHASE:CONFIGURATION")
               stage = "final"
