@@ -25,13 +25,13 @@ jobs:
           "${clean[@]}" git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin \
-            54973848cac9b2ce168b539fff4b03802fb514aa
+            95151289288631bfc047983af1f499df2cf7a202
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
           destination=$GITHUB_WORKSPACE/stage2-implementation-H
           "${clean[@]}" git init --quiet "$destination"
           "${clean[@]}" git -C "$destination" remote add origin https://github.com/nenb/cogs.git
           "${clean[@]}" git -C "$destination" fetch --quiet --no-tags --depth=1 origin \
-            89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14
+            bf0479a012b39c074ecb623ea83e85b3dc3ebe36
           "${clean[@]}" git -C "$destination" checkout --quiet --detach FETCH_HEAD
 
       - name: Reproduce immutable preparation without lifecycle entry
@@ -52,11 +52,11 @@ jobs:
           python3 -I -c 'import json,sys
           value=json.loads(sys.stdin.buffer.read()); assert value["revision"] == sys.argv[1]
           assert value["manifest_sha256"] == sys.argv[2]' \
-            89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14 \
-            2b3253d48f00ba6c183d72dea3c6b69011008b4448e05f2d62634b1ee89211c1 <<<"$prepared"
+            bf0479a012b39c074ecb623ea83e85b3dc3ebe36 \
+            5d6b499de8e4a9147f7d5fdf49ec8df537b8f9db5d27c938ded59388c8544752 <<<"$prepared"
           test "$(sudo -n env -i PATH=/usr/bin:/bin python3 -I -B \
             "$GITHUB_WORKSPACE/scripts/stage2-stage-reviewed-control.py")" = \
-            control_sha256=76bbc6fca2b7c6694b49f3c1961ad231cf78c218f683b89087bc5c88f9372474
+            control_sha256=8932cab023904b75e959a471629a7589a7978dde50db26dc5165bf93509045a0
           sudo -n timeout --foreground --signal=TERM --kill-after=10s 1770s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py \
@@ -65,25 +65,21 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
-      - name: Observe the full owner failure without minting a receipt
+      - name: Observe and consume the full diagnostic receipt without publication
         timeout-minutes: 150
         run: |
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             python3 -I -B - <<'PY'
-          import sys
+          import hashlib, sys
           sys.stdout.reconfigure(line_buffering=True)
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
           import completion_kata_coordinator as coordinator
-          class DiagnosticStop(Exception):
-              pass
-          original = coordinator._issue_owner_receipt
-          def stop_before_receipt(_custody, _evidence):
-              raise DiagnosticStop("complete owner evidence reached without receipt mint")
-          coordinator._issue_owner_receipt = stop_before_receipt
+          import completion_local_receipt as local_receipt
           try:
-              coordinator._run_fixed_local_qualification()
-              print("COGS_FULL_OWNER_DIAGNOSTIC:UNEXPECTED_RETURN")
+              receipt = coordinator._run_fixed_local_qualification()
+              raw = local_receipt._consume_local_receipt(receipt)
+              print(f"COGS_FULL_OWNER_DIAGNOSTIC:CONSUMED:{len(raw)}:{hashlib.sha256(raw).hexdigest()}")
           except BaseException as error:
               print("COGS_FULL_OWNER_DIAGNOSTIC:TERMINAL")
               for index in range(32):
@@ -92,8 +88,6 @@ jobs:
                   message = str(error).replace("\n", " ")[:192]
                   print(f"COGS_FULL_OWNER_CAUSE:{index}:{type(error).__name__}:{message}")
                   error = error.__cause__ or error.__context__
-          finally:
-              coordinator._issue_owner_receipt = original
           PY
 
       - name: Remove diagnostic-only immutable state

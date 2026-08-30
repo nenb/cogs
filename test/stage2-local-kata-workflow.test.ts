@@ -12,6 +12,7 @@ const recoveryPath = "deploy/aws-feasibility/remote/recover-stage2-completion-re
 const controlStagingPath = "scripts/stage2-stage-reviewed-control.py";
 const preflightWorkflowPath = ".github/workflows/stage2-mixed-hg-preflight.yml";
 const preflightPath = "scripts/stage2-mixed-hg-preflight.sh";
+const diagnosticPath = ".github/workflows/stage2-local-static-admission-diagnostic.yml";
 const workflow = readFileSync(workflowPath, "utf8");
 const guard = readFileSync(guardPath, "utf8");
 const settlement = readFileSync(settlementPath, "utf8");
@@ -21,6 +22,7 @@ const recoverySource = readFileSync(recoveryPath, "utf8");
 const controlStaging = readFileSync(controlStagingPath, "utf8");
 const preflightWorkflow = readFileSync(preflightWorkflowPath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
+const diagnostic = readFileSync(diagnosticPath, "utf8");
 
 function stepTimeout(name: string): number {
   const start = workflow.indexOf(`      - name: ${name}`);
@@ -54,6 +56,13 @@ const steps = [
   "Remove all local report and readback staging",
   "Enforce attempt 1 complete custody chain and final zero residue",
 ];
+
+test("terminal receipt diagnostic is exact, consumed in memory, and never published", () => {
+  assert.match(diagnostic, /95151289288631bfc047983af1f499df2cf7a202/u);
+  assert.match(diagnostic, /bf0479a012b39c074ecb623ea83e85b3dc3ebe36/u);
+  assert.match(diagnostic, /_consume_local_receipt\(receipt\)/u);
+  assert.doesNotMatch(diagnostic, /actions\/upload-artifact|actions\/download-artifact/u);
+});
 
 test("mixed H-G preflight runs exact preparation and settlement but never KVM", () => {
   assert.match(preflightWorkflow, /^name: Stage 2 exact mixed H-G no-KVM preflight$/mu);
