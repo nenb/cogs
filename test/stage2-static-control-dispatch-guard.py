@@ -109,6 +109,14 @@ def predecessor(run_id=GUARD.PREDECESSOR_RUN_ID, **changes):
     return value
 
 
+def rejected_branch_predecessor(run_id=GUARD.REJECTED_BRANCH_PREDECESSOR_RUN_ID, **changes):
+    workflow_head, title, branch = GUARD.REJECTED_BRANCH_PREDECESSORS[run_id]
+    value = run(run_id, head=workflow_head, title=title, head_branch=branch,
+                status="completed", conclusion="failure")
+    value.update(changes)
+    return value
+
+
 class Response:
     def __init__(self, value=None, *, status=200, link=None, raw=None):
         self.status = status
@@ -149,6 +157,7 @@ def opener(runs, *, total=None, link=None, status=200, raw=None, observe=None,
 
 BASE_HISTORY = [
     *(predecessor(run_id) for run_id in GUARD.PREDECESSORS),
+    *(rejected_branch_predecessor(run_id) for run_id in GUARD.REJECTED_BRANCH_PREDECESSORS),
     *(successful_predecessor(run_id) for run_id in GUARD.SUCCESSFUL_PREDECESSORS),
     run(CURRENT_RUN_ID),
 ]

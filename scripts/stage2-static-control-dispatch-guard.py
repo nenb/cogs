@@ -8,11 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v19"
+GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v22"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-REVIEWED_IMPLEMENTATION_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+REVIEWED_IMPLEMENTATION_HEAD = "dfb28c2e8deb7fed90da095c41b4d556c737af97"
 RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
 PREDECESSOR_RUN_ID = 32558263561
 PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
@@ -74,6 +74,10 @@ TWELFTH_PREDECESSOR_WORKFLOW_HEAD = "8dd6d58f4f9e24a2f1bcccbd4719fbf03e72bbb2"
 TWELFTH_PREDECESSOR_REVIEWED_HEAD = "4a3beae8683309f3fef30cecce3187262efc4b23"
 TWELFTH_PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={TWELFTH_PREDECESSOR_REVIEWED_HEAD}")
+REJECTED_BRANCH_PREDECESSOR_RUN_ID = 33267664208
+REJECTED_BRANCH_PREDECESSOR_WORKFLOW_HEAD = "77efaff8d306ce1ff0e4a283d83db9ae065ecbb3"
+REJECTED_BRANCH_PREDECESSOR_RUN_TITLE = RUN_TITLE
+REJECTED_BRANCH_PREDECESSOR_BRANCH = "fix/issue42-static-event-contract"
 SUCCESSFUL_PREDECESSOR_RUN_ID = 32577727971
 SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c2540af5cb85e2845de1eebfad3475d28c0483e5"
 SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"
@@ -104,6 +108,11 @@ SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "aee6966c2977258d310affa0c3b63d0863
 SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"
 SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
     f"Non-authoritative Stage 2 static control H={SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
+SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32633570406
+SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c16f3168a2b14ed0b88acf5753ef106940af1b73"
+SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
+    f"Non-authoritative Stage 2 static control H={SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
 PREDECESSORS = {
     PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
     SECOND_PREDECESSOR_RUN_ID: (
@@ -129,6 +138,12 @@ PREDECESSORS = {
     TWELFTH_PREDECESSOR_RUN_ID: (
         TWELFTH_PREDECESSOR_WORKFLOW_HEAD, TWELFTH_PREDECESSOR_RUN_TITLE),
 }
+REJECTED_BRANCH_PREDECESSORS = {
+    REJECTED_BRANCH_PREDECESSOR_RUN_ID: (
+        REJECTED_BRANCH_PREDECESSOR_WORKFLOW_HEAD,
+        REJECTED_BRANCH_PREDECESSOR_RUN_TITLE,
+        REJECTED_BRANCH_PREDECESSOR_BRANCH),
+}
 SUCCESSFUL_PREDECESSORS = {
     SUCCESSFUL_PREDECESSOR_RUN_ID: (
         SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD, SUCCESSFUL_PREDECESSOR_RUN_TITLE),
@@ -147,6 +162,9 @@ SUCCESSFUL_PREDECESSORS = {
     SIXTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
         SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
         SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
+    SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
+        SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
+        SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
 }
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
@@ -316,7 +334,10 @@ def _common_run_identity(run):
              "HISTORY_RUN_REJECTED")
     repository = run.get("repository")
     head_repository = run.get("head_repository")
-    _require(run.get("event") == "workflow_dispatch" and run.get("head_branch") == "main"
+    rejected = REJECTED_BRANCH_PREDECESSORS.get(run_id)
+    expected_branch = "main" if rejected is None else rejected[2]
+    _require(run.get("event") == "workflow_dispatch"
+             and run.get("head_branch") == expected_branch
              and run.get("path") == WORKFLOW_PATH,
              "HISTORY_RUN_REJECTED")
     _require(type(repository) is dict and repository.get("full_name") == REPOSITORY,
@@ -330,6 +351,9 @@ def _predecessor_binding(run):
     binding = PREDECESSORS.get(run.get("id"))
     if binding is not None:
         return (*binding, "failure")
+    rejected = REJECTED_BRANCH_PREDECESSORS.get(run.get("id"))
+    if rejected is not None:
+        return (*rejected[:2], "failure")
     successful = SUCCESSFUL_PREDECESSORS.get(run.get("id"))
     return None if successful is None else (*successful, "success")
 
@@ -386,7 +410,8 @@ def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
         else:
             raise GuardError("UNKNOWN_HISTORY_REJECTED")
     _require(len(run_ids) == len(set(run_ids)), "HISTORY_RUN_REJECTED")
-    _require(predecessor_ids == set(PREDECESSORS) | set(SUCCESSFUL_PREDECESSORS),
+    _require(predecessor_ids == (set(PREDECESSORS) | set(REJECTED_BRANCH_PREDECESSORS)
+                                 | set(SUCCESSFUL_PREDECESSORS)),
              "PREDECESSOR_REJECTED")
     _require(current_ids, "CURRENT_GENERATION_MISSING")
     _require(current_run_id == min(current_ids), "CURRENT_RUN_NOT_EARLIEST")

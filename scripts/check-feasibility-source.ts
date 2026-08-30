@@ -16,7 +16,15 @@ const shellFiles = [
   "run-runtime-validation.sh",
   "validate.sh",
 ];
-const pythonFiles = ["check-plan.py"];
+const pythonFiles = [
+  "check-plan.py",
+  "completion_campaign_codec.py",
+  "completion_campaign_contracts.py",
+  "completion_campaign_controller.py",
+  "completion_campaign_evidence.py",
+  "completion_campaign_receipts.py",
+  "completion_campaign_state.py",
+];
 const files = [...hclFiles, ...shellFiles, ...pythonFiles];
 const maximumFileBytes = 256 * 1024;
 const maximumTotalBytes = 1024 * 1024;

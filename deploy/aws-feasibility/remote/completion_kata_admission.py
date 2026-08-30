@@ -24,6 +24,7 @@ RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v1"
 CONTRACT_VERSION = "cogs.stage2-local-executable-closure/v1"
 AUTHORITY = "non-authoritative-execution-input-description"
 FIXED_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
+COMPLETION_ROOTFS_SHA256 = "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"
 ENVELOPE_PATH = FIXED_ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-envelope-v1.json"
 RUNTIME_MANIFEST_PATH = FIXED_ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-runtime-v1.json"
 REVIEWED_ENVELOPE_SHA256 = None
@@ -39,6 +40,10 @@ EXECUTABLES = preparation.EXECUTABLES
 MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
+    "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
+    "deploy/aws-feasibility/remote/completion_cycle_evidence.py",
+    "deploy/aws-feasibility/remote/completion_cycle_full.py",
+    "deploy/aws-feasibility/remote/completion_cycle_readiness.py",
     "deploy/aws-feasibility/remote/completion_kata_actions.py",
     "deploy/aws-feasibility/remote/completion_kata_admission.py",
     "deploy/aws-feasibility/remote/completion_kata_command_policy.py",
@@ -52,6 +57,7 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_operation.py",
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
+    "deploy/aws-feasibility/remote/completion_kata_prestage_runtime.py",
     "deploy/aws-feasibility/remote/completion_kata_process.py",
     "deploy/aws-feasibility/remote/completion_kata_qualification.py",
     "deploy/aws-feasibility/remote/completion_kata_runtime.py",
@@ -65,6 +71,10 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+    "config/stage2-completion-ssh-readiness-v1.json",
+    "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
 })
 BINDING_KEYS = frozenset({
     "source_head", "source_manifest_sha256", "host_attestation_sha256",
@@ -477,6 +487,83 @@ def _open_absolute_regular(path, maximum):
     return _open_fixed_relative("/", path[1:], maximum)
 
 
+def _open_trusted_absolute_regular(path, maximum, expected_uid=0, expected_gid=0, root="/"):
+    """Follow only bounded links below an administrator-owned absolute root."""
+    _require(type(path) is str and path.startswith("/") and path.isascii())
+    _require("//" not in path and "\\" not in path)
+    pending = path[1:].split("/")
+    _require(pending and all(part not in {"", ".", ".."} for part in pending))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    _require(type(root) is str)
+    anchor = os.open(root, flags)
+    parent = os.dup(anchor); os.set_inheritable(parent, False)
+    descriptor = -1
+    resolved = []
+    links = 0
+    try:
+        root_seen = os.fstat(anchor)
+        _require(stat.S_ISDIR(root_seen.st_mode) and root_seen.st_uid == expected_uid
+                 and root_seen.st_gid == expected_gid
+                 and not stat.S_IMODE(root_seen.st_mode) & 0o022,
+                 "untrusted executable root")
+        while pending:
+            component = pending.pop(0)
+            before = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode):
+                links += 1
+                _require(links <= 40 and before.st_uid == expected_uid
+                         and before.st_gid == expected_gid and before.st_nlink == 1,
+                         "untrusted executable symlink")
+                target = os.readlink(component, dir_fd=parent)
+                _require(type(target) is str and 0 < len(target) <= 4096
+                         and target.isascii() and "\\" not in target)
+                parts = [] if target.startswith("/") else list(resolved)
+                for part in target.split("/"):
+                    if part in {"", "."}:
+                        continue
+                    if part == "..":
+                        _require(parts, "executable symlink escapes root")
+                        parts.pop()
+                    else:
+                        parts.append(part)
+                _require(parts and len(parts) + len(pending) <= 256)
+                pending = parts + pending
+                resolved = []
+                os.close(parent)
+                parent = os.dup(anchor); os.set_inheritable(parent, False)
+                continue
+            if pending:
+                child = os.open(component, flags, dir_fd=parent)
+                after = os.fstat(child)
+                _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                          after.st_gid, after.st_nlink) ==
+                         (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                          before.st_gid, before.st_nlink)
+                         and stat.S_ISDIR(after.st_mode)
+                         and after.st_uid == expected_uid and after.st_gid == expected_gid
+                         and not stat.S_IMODE(after.st_mode) & 0o022,
+                         "untrusted executable directory")
+                os.close(parent); parent = child; resolved.append(component)
+                continue
+            descriptor = os.open(component, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                 dir_fd=parent)
+            after = os.fstat(descriptor)
+            _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                      after.st_gid, after.st_nlink, after.st_size) ==
+                     (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                      before.st_gid, before.st_nlink, before.st_size))
+            _status(after, maximum, expected_uid, expected_gid)
+            return descriptor, parent, after
+        raise AdmissionError("trusted executable path is incomplete")
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent)
+        raise
+    finally:
+        os.close(anchor)
+
+
 def _read_held(descriptor, before, maximum):
     digest = hashlib.sha256()
     total = 0
@@ -540,7 +627,8 @@ def _retain_contract_objects(contract, descriptors, role=None):
     identities = set()
     retained = []
     for item in contract["objects"]:
-        descriptor, parent, status_value = _open_absolute_regular(item["path"], item["size"])
+        descriptor, parent, status_value = _open_trusted_absolute_regular(
+            item["path"], item["size"])
         descriptors.extend((parent, descriptor))
         raw = _read_held_raw(descriptor, status_value, item["size"])
         identity = (status_value.st_dev, status_value.st_ino)
@@ -549,7 +637,8 @@ def _retain_contract_objects(contract, descriptors, role=None):
         _require(status_value.st_size == item["size"] and _sha(raw) == item["sha256"],
                  "executable closure source differs")
         interpreter, soname, needed = _derived_elf(raw)
-        _require((interpreter, soname, list(needed)) ==
+        declared_interpreter = interpreter if item["kind"] == "executable" else None
+        _require((declared_interpreter, soname, sorted(needed)) ==
                  (item["interpreter"], item["soname"], item["needed"]),
                  "declared ELF metadata differs from retained bytes")
         retained.append(RetainedObject(
@@ -667,6 +756,112 @@ def _verify_complete_source(implementation, descriptors):
     return manifest
 
 
+def _retain_observer_configuration(runtime, descriptors):
+    """Retain and derive-check both exact configuration generations."""
+    launch = runtime.value["launch"]
+    base_row = launch["configuration"]
+    active_row = launch["active_configuration"]
+    _require(base_row == {
+        "path": preparation.KATA_BASE_CONFIGURATION_PATH,
+        "size": preparation.KATA_BASE_CONFIGURATION_SIZE,
+        "sha256": preparation.KATA_BASE_CONFIGURATION_SHA256,
+    })
+    base_fd, base_parent, base_status = _open_absolute_regular(
+        base_row["path"], base_row["size"])
+    descriptors.extend((base_parent, base_fd))
+    base = _read_held_raw(base_fd, base_status, base_row["size"])
+    relative = str(Path(active_row["path"]).relative_to(FIXED_ROOT))
+    active_fd, active_parent, active_status = _open_fixed_relative(
+        FIXED_ROOT, relative, active_row["size"])
+    descriptors.extend((active_parent, active_fd))
+    active = _read_held_raw(active_fd, active_status, active_row["size"])
+    _require(stat.S_IMODE(active_status.st_mode) == 0o400
+             and active_status.st_uid == active_status.st_gid == 0
+             and active_row == preparation.observer_configuration_description(base)
+             and active == preparation.derive_observer_configuration(base)
+             and _sha(active) == active_row["sha256"],
+             "active Kata observer configuration differs")
+    artifact = tuple(row for row in launch["artifacts"]
+                     if row["role"] == "active-configuration")
+    _require(len(artifact) == 1 and artifact[0] == {
+        "role": "active-configuration", "path": active_row["path"],
+        "kind": "file", "mode": 0o400, "size": active_row["size"],
+        "sha256": active_row["sha256"], "link_target": None,
+    }, "active Kata configuration launch artifact differs")
+    return {"base_parent": base_parent, "base_fd": base_fd, "base_status": base_status,
+            "active_parent": active_parent, "active_fd": active_fd,
+            "active_status": active_status, "active_sha256": active_row["sha256"]}
+
+
+def _retain_retired_observer_configuration(runtime, descriptors):
+    launch = runtime.value["launch"]
+    base_row, active_row = launch["configuration"], launch["active_configuration"]
+    base_fd, base_parent, base_status = _open_absolute_regular(
+        base_row["path"], base_row["size"])
+    descriptors.extend((base_parent, base_fd))
+    base = _read_held_raw(base_fd, base_status, base_row["size"])
+    _require(active_row == preparation.observer_configuration_description(base)
+             and _sha(preparation.derive_observer_configuration(base)) == active_row["sha256"])
+    relative_parent = Path(active_row["path"]).relative_to(FIXED_ROOT).parent.parent
+    parent = os.open(FIXED_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        for component in relative_parent.parts:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                            dir_fd=parent)
+            seen = os.fstat(child)
+            _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and not stat.S_IMODE(seen.st_mode) & 0o022)
+            os.close(parent); parent = child
+        before = os.fstat(parent); names = os.listdir(parent); after = os.fstat(parent)
+        stable = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                               item.st_gid, item.st_nlink, item.st_mtime_ns, item.st_ctime_ns)
+        _require(stable(before) == stable(after) and "kata-runtime-v1" not in names,
+                 "retired active Kata configuration is not absent")
+        descriptors.append(parent)
+    except BaseException:
+        os.close(parent); raise
+    return {"retired": True, "active_sha256": active_row["sha256"]}
+
+
+def _verify_held_observer_configuration(value):
+    if type(value) is dict and set(value) == {"retired", "active_sha256"}:
+        _require(value["retired"] is True and type(value["active_sha256"]) is str
+                 and len(value["active_sha256"]) == 64
+                 and set(value["active_sha256"]) <= HEX)
+        return
+    _require(type(value) is dict and set(value) == {
+        "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
+        "active_status", "active_sha256"})
+    base = _read_held_raw(value["base_fd"], value["base_status"],
+                          preparation.KATA_BASE_CONFIGURATION_SIZE)
+    active = _read_held_raw(value["active_fd"], value["active_status"],
+                            preparation.KATA_BASE_CONFIGURATION_SIZE + 2)
+    _require(active == preparation.derive_observer_configuration(base)
+             and _sha(active) == value["active_sha256"],
+             "held active Kata configuration changed")
+
+
+def _verify_retiring_observer_configuration(value):
+    _require(type(value) is dict and set(value) == {
+        "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
+        "active_status", "active_sha256"})
+    base = _read_held_raw(value["base_fd"], value["base_status"],
+                          preparation.KATA_BASE_CONFIGURATION_SIZE)
+    expected = value["active_status"]
+    current = os.fstat(value["active_fd"])
+    stable = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                           item.st_gid, item.st_size, item.st_mtime_ns)
+    _require(stable(current) == stable(expected)
+             and current.st_nlink in {expected.st_nlink, 0}
+             and (current.st_nlink == 0 or current.st_ctime_ns == expected.st_ctime_ns),
+             "retiring active Kata configuration generation differs")
+    active = _read_held_raw(value["active_fd"], current,
+                            preparation.KATA_BASE_CONFIGURATION_SIZE + 2)
+    _require(active == preparation.derive_observer_configuration(base)
+             and _sha(active) == value["active_sha256"],
+             "retiring active Kata configuration changed")
+
+
 def _validate_final_and_rootfs(envelope, runtime):
     try:
         import completion_runtime_contract as workload_contract
@@ -684,9 +879,9 @@ def _validate_final_and_rootfs(envelope, runtime):
     static_closure = runtime.value["rootfs"]["static_closure"]
     _require({name: static_closure[name] for name in pinned} == pinned)
     rootfs = envelope.value["rootfs"]
-    _require(rootfs["contract_sha256"] == workload_contract.REVIEWED_ROOTFS_SHA256)
-    _require(rootfs["manifest_sha256"] == "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691")
-    _require(rootfs["ustar_sha256"] == "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3")
+    _require(rootfs["contract_sha256"] == COMPLETION_ROOTFS_SHA256)
+    _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
+    _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     return final
 
 
@@ -695,8 +890,9 @@ def _static_routes():
     custody_states = {}
     role_states = {}
     mapping_states = {}
+    prepared_states = {}
     issuance_started = False
-    issuer_taken = False
+    issuers_taken = set()
 
     class _StaticPreparationCustody:
         __slots__ = ()
@@ -719,7 +915,13 @@ def _static_routes():
             _require(key is seal, "sealed live mapping claim")
             return super().__new__(cls)
 
-    def claim_static():
+    class _PreparedRuntimeCustody:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _require(key is seal, "sealed prepared runtime custody")
+            return super().__new__(cls)
+
+    def claim_static(recovery=False):
         nonlocal issuance_started
         if issuance_started:
             raise AdmissionUnavailable("static preparation issuance is globally one-shot")
@@ -730,7 +932,19 @@ def _static_routes():
                      "static preparation platform differs")
             control, envelope, runtime, contracts, held = _read_control_package()
             descriptors.extend(held)
+            source_start = len(descriptors)
             _verify_complete_source(envelope.value["implementation"], descriptors)
+            source_descriptors = tuple(descriptors[source_start:])
+            source_anchor = os.open(FIXED_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            descriptors.append(source_anchor)
+            source_seen = os.fstat(source_anchor)
+            _require(source_seen.st_uid == source_seen.st_gid == 0
+                     and stat.S_IMODE(source_seen.st_mode) == 0o700)
+            active_path = runtime.value["launch"]["active_configuration"]["path"]
+            configuration_identity = (
+                _retain_retired_observer_configuration(runtime, descriptors)
+                if recovery and not os.path.lexists(active_path) else
+                _retain_observer_configuration(runtime, descriptors))
             final = _validate_final_and_rootfs(envelope, runtime)
             custody = _StaticPreparationCustody(seal)
             custody_states[custody] = {
@@ -739,7 +953,10 @@ def _static_routes():
                 "runtime": runtime,
                 "contracts": contracts,
                 "final": final,
+                "configuration_identity": configuration_identity,
                 "descriptors": descriptors,
+                "source_descriptors": source_descriptors,
+                "source_anchor": source_anchor,
                 "roles": set(),
                 "mapping": None,
             }
@@ -750,15 +967,16 @@ def _static_routes():
                 primary.__cause__ = error
             _close_all(descriptors, primary)
 
-    def take_issuer():
-        nonlocal issuer_taken
-        _require(not issuer_taken, "static preparation issuer already taken")
-        issuer_taken = True
-        return claim_static
+    def take_issuer(recovery=False):
+        _require(recovery in {False, True} and recovery not in issuers_taken,
+                 "static preparation issuer already taken")
+        issuers_taken.add(recovery)
+        return lambda: claim_static(recovery)
 
     def claim_role(custody, role):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         _require(type(role) is str and role in {row[0] for row in EXECUTABLES} and role not in state["roles"],
                  "executable role claim is not exact one-shot")
         contract = state["contracts"][role].value
@@ -768,7 +986,8 @@ def _static_routes():
             state["descriptors"].extend(descriptors)
             state["roles"].add(role)
             claim = _ExecutableRoleCustody(seal)
-            role_states[claim] = {"custody": custody, "role": role, "objects": retained, "consumed": False}
+            role_states[claim] = {"custody": custody, "role": role, "objects": retained,
+                                  "descriptors": tuple(descriptors), "consumed": False}
             return claim
         except BaseException as error:
             _close_all(descriptors, error)
@@ -847,7 +1066,7 @@ def _static_routes():
             import completion_rootfs_fs as rootfs_fs
             import completion_rootfs_lease as rootfs_lease
             _require(type(lease) is rootfs_lease.RetainedRootfsLease and lease.disposition == "held")
-            control = rootfs_fs.OperationControl(time.monotonic_ns() + 120_000_000_000, lambda: False)
+            control = rootfs_fs.OperationControl(time.monotonic_ns() + 300_000_000_000, lambda: False)
             reference = rootfs_lease._verify(lease, control)
             root = lease.retained.owned.root.operation_fd
             _require(root is not None and root.disposition == "open")
@@ -866,10 +1085,76 @@ def _static_routes():
         state["consumed"] = True
         return state["description"]
 
+    def claim_prepared(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None
+                 and not any(item["custody"] is custody for item in prepared_states.values()))
+        import completion_kata_prestage_runtime as prepared
+        active = state["runtime"].value["launch"]["active_configuration"]
+        facts, held = prepared._claim_exact(state["contracts"], state["source_anchor"], active)
+        state["descriptors"].extend(held)
+        claim = _PreparedRuntimeCustody(seal)
+        prepared_states[claim] = {"custody": custody, "facts": facts,
+                                  "descriptors": tuple(held),
+                                  "consumed": False, "verified": False}
+        return claim
+
+    def prepared_facts(claim, action=None):
+        item = prepared_states.get(claim)
+        _require(type(claim) is _PreparedRuntimeCustody and item is not None
+                 and (action != "consume" or not item["consumed"])
+                 and (action != "verify" or item["consumed"] and not item["verified"]))
+        state = custody_states.get(item["custody"]); _require(state is not None)
+        import completion_kata_prestage_runtime as prepared
+        active = state["runtime"].value["launch"]["active_configuration"]
+        fresh, held = prepared._claim_exact(state["contracts"], state["source_anchor"], active)
+        try: _require(fresh == item["facts"], "prepared runtime pathname replacement")
+        finally: _close_all(held)
+        if action is not None: item[{"consume": "consumed", "verify": "verified"}[action]] = True
+        return dict(item["facts"])
+
+    def retire_consumed_roles(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None)
+        claims = [(claim, item) for claim, item in role_states.items()
+                  if item["custody"] is custody]
+        _require(len(claims) == len(EXECUTABLES)
+                 and all(item["consumed"] for _claim, item in claims)
+                 and state["roles"] == {row[0] for row in EXECUTABLES})
+        role_descriptors = [descriptor for _claim, item in claims
+                            for descriptor in item["descriptors"]]
+        prepared_claims = [(claim, item) for claim, item in prepared_states.items()
+                           if item["custody"] is custody]
+        _require(len(prepared_claims) == 1
+                 and prepared_claims[0][1]["consumed"]
+                 and prepared_claims[0][1]["verified"])
+        prepared_claim, prepared_state = prepared_claims[0]
+        prepared_descriptors = list(prepared_state["descriptors"])
+        source_descriptors = [*state["source_descriptors"], state["source_anchor"]]
+        configuration = state["configuration_identity"]
+        _verify_retiring_observer_configuration(configuration)
+        configuration_descriptors = [configuration[name] for name in
+                                     ("base_parent", "base_fd", "active_parent", "active_fd")]
+        descriptors = [*role_descriptors, *prepared_descriptors, *source_descriptors,
+                       *configuration_descriptors]
+        _require(len(descriptors) == len(set(descriptors))
+                 and all(descriptor in state["descriptors"] for descriptor in descriptors))
+        retired = set(descriptors)
+        state["descriptors"] = [descriptor for descriptor in state["descriptors"]
+                                if descriptor not in retired]
+        state["configuration_identity"] = {
+            "retired": True, "active_sha256": configuration["active_sha256"]}
+        state["source_descriptors"] = ()
+        state["source_anchor"] = None
+        for claim, _item in claims: role_states.pop(claim)
+        prepared_states.pop(prepared_claim)
+        _close_all(descriptors)
+
     def source_approval(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None,
                  "live exact static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         implementation = state["envelope"].value["implementation"]
         import completion_rootfs_fs as rootfs_fs
         return rootfs_fs.SourceApproval(
@@ -878,6 +1163,7 @@ def _static_routes():
     def binding(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None, "live exact static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
         return dict(state["envelope"].value["result_binding_base"])
 
     def abort(custody):
@@ -887,17 +1173,29 @@ def _static_routes():
             role_states.pop(claim)
         for claim in [claim for claim, item in mapping_states.items() if item["custody"] is custody]:
             mapping_states.pop(claim)
+        for claim in [claim for claim, item in prepared_states.items() if item["custody"] is custody]:
+            prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer, source_approval, claim_role, consume_role, claim_live_mapping,
-            consume_mapping, binding, abort)
+    return (take_issuer(False), take_issuer(True), source_approval,
+            claim_role, consume_role, retire_consumed_roles,
+            claim_live_mapping, consume_mapping, claim_prepared, prepared_facts, binding, abort)
 
 
-(_take_static_preparation_issuer, _fixed_source_approval,
- _claim_executable_role_custody, _consume_executable_role_custody,
+(_claim_static_preparation, _claim_recovery_static_preparation,
+ _fixed_source_approval, _claim_executable_role_custody,
+ _consume_executable_role_custody,
+ _retire_consumed_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
+ _claim_prepared_runtime_custody, _prepared_runtime_facts,
  _static_custody_binding, _abort_static_preparation) = _static_routes()
 del _static_routes
+
+def _take_static_preparation_issuer():
+    raise AdmissionUnavailable("static preparation issuer already taken")
+
+def _consume_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "consume")
+def _verify_prepared_runtime_custody(claim): return _prepared_runtime_facts(claim, "verify")
 
 
 # Historical coordinator imports remain blocked rather than reinterpreting V1.

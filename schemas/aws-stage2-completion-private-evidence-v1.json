@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-completion-private-evidence-v1.json",
+  "title": "Cogs AWS Stage 2 completion private controller event v1",
+  "description": "Slice A closed controller-event record. No receipt, report, fake authority, or execution contract validates through this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "batch_commitment",
+    "sequence",
+    "event",
+    "cycle_ordinal",
+    "cycle_mode",
+    "prior_record_sha256",
+    "payload_sha256",
+    "monotonic_observation_ns",
+    "wall_observation_unix_ns",
+    "outcome",
+    "uncertainty"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.aws-stage2-completion/controller-event/v1"
+    },
+    "batch_commitment": {
+      "$ref": "#/$defs/sha256"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "event": {
+      "enum": [
+        "BATCH_ADMITTED",
+        "CYCLE_OPENED",
+        "PLAN_INTENT",
+        "PLAN_ACCEPTED",
+        "APPLY_INTENT",
+        "APPLY_ACCEPTED",
+        "RUNNING_OBSERVED",
+        "REMOTE_INTENT",
+        "REMOTE_ACCEPTED",
+        "PRE_DESTROY_SEALED",
+        "DESTROY_INTENT",
+        "DESTROY_SETTLED",
+        "ZERO_OBSERVATION_INTENT",
+        "ZERO_ACCEPTED",
+        "CYCLE_SEALED",
+        "FINAL_ZERO_OBSERVATION_INTENT",
+        "FINAL_ZERO_ACCEPTED",
+        "TERMINAL_CANDIDATE_VALIDATED",
+        "SEALED",
+        "FAILURE_RECORDED",
+        "TERMINAL_FAILURE_SEALED",
+        "TERMINAL_UNCERTAIN_SEALED"
+      ]
+    },
+    "cycle_ordinal": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 7
+    },
+    "cycle_mode": {
+      "type": ["string", "null"],
+      "enum": ["full", "readiness", null]
+    },
+    "prior_record_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "monotonic_observation_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "wall_observation_unix_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "outcome": {
+      "enum": ["intended", "accepted", "observed", "sealed", "failed", "uncertain", "zero", "nonzero"]
+    },
+    "uncertainty": {
+      "enum": ["clear", "sticky"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "enum": [
+              "CYCLE_OPENED",
+              "PLAN_INTENT",
+              "PLAN_ACCEPTED",
+              "APPLY_INTENT",
+              "APPLY_ACCEPTED",
+              "RUNNING_OBSERVED",
+              "REMOTE_INTENT",
+              "REMOTE_ACCEPTED",
+              "PRE_DESTROY_SEALED",
+              "DESTROY_INTENT",
+              "DESTROY_SETTLED",
+              "ZERO_OBSERVATION_INTENT",
+              "ZERO_ACCEPTED",
+              "CYCLE_SEALED"
+            ]
+          }
+        },
+        "required": ["event"]
+      },
+      "then": {
+        "properties": {
+          "cycle_ordinal": {
+            "type": "integer"
+          },
+          "cycle_mode": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "event": {
+              "const": "FAILURE_RECORDED"
+            }
+          },
+          "required": ["event"]
+        },
+        "then": {
+          "oneOf": [
+            {
+              "properties": {
+                "cycle_ordinal": {
+                  "const": null
+                },
+                "cycle_mode": {
+                  "const": null
+                }
+              }
+            },
+            {
+              "properties": {
+                "cycle_ordinal": {
+                  "type": "integer"
+                },
+                "cycle_mode": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "else": {
+          "properties": {
+            "cycle_ordinal": {
+              "const": null
+            },
+            "cycle_mode": {
+              "const": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "cycle_ordinal": {
+            "const": 1
+          }
+        },
+        "required": ["cycle_ordinal"]
+      },
+      "then": {
+        "properties": {
+          "cycle_mode": {
+            "const": "full"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "cycle_ordinal": {
+            "enum": [2, 3, 4, 5, 6, 7]
+          }
+        },
+        "required": ["cycle_ordinal"]
+      },
+      "then": {
+        "properties": {
+          "cycle_mode": {
+            "const": "readiness"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "outcome": {
+                "enum": ["uncertain", "nonzero"]
+              }
+            },
+            "required": ["outcome"]
+          },
+          {
+            "properties": {
+              "event": {
+                "const": "DESTROY_SETTLED"
+              },
+              "outcome": {
+                "const": "failed"
+              }
+            },
+            "required": ["event", "outcome"]
+          },
+          {
+            "properties": {
+              "event": {
+                "const": "TERMINAL_UNCERTAIN_SEALED"
+              }
+            },
+            "required": ["event"]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "uncertainty": {
+            "const": "sticky"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "enum": ["SEALED", "TERMINAL_FAILURE_SEALED"]
+          }
+        },
+        "required": ["event"]
+      },
+      "then": {
+        "properties": {
+          "uncertainty": {
+            "const": "clear"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "FAILURE_RECORDED"
+          },
+          "outcome": {
+            "const": "failed"
+          }
+        },
+        "required": ["event", "outcome"]
+      },
+      "then": {
+        "properties": {
+          "uncertainty": {
+            "const": "clear"
+          }
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "enum": [
+                "PLAN_INTENT",
+                "APPLY_INTENT",
+                "REMOTE_INTENT",
+                "DESTROY_INTENT",
+                "ZERO_OBSERVATION_INTENT",
+                "FINAL_ZERO_OBSERVATION_INTENT"
+              ]
+            },
+            "outcome": {
+              "const": "intended"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "enum": ["BATCH_ADMITTED", "CYCLE_OPENED", "PLAN_ACCEPTED", "APPLY_ACCEPTED", "REMOTE_ACCEPTED"]
+            },
+            "outcome": {
+              "const": "accepted"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "const": "RUNNING_OBSERVED"
+            },
+            "outcome": {
+              "const": "observed"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "enum": [
+                "PRE_DESTROY_SEALED",
+                "CYCLE_SEALED",
+                "TERMINAL_CANDIDATE_VALIDATED",
+                "SEALED",
+                "TERMINAL_FAILURE_SEALED",
+                "TERMINAL_UNCERTAIN_SEALED"
+              ]
+            },
+            "outcome": {
+              "const": "sealed"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "const": "DESTROY_SETTLED"
+            },
+            "outcome": {
+              "enum": ["accepted", "failed", "uncertain"]
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "enum": ["ZERO_ACCEPTED", "FINAL_ZERO_ACCEPTED"]
+            },
+            "outcome": {
+              "enum": ["zero", "nonzero", "uncertain"]
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/outcomeCase",
+          "properties": {
+            "event": {
+              "const": "FAILURE_RECORDED"
+            },
+            "outcome": {
+              "enum": ["failed", "uncertain"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "outcomeCase": {
+      "type": "object",
+      "required": ["event", "outcome"]
+    }
+  }
+}

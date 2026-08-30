@@ -105,6 +105,7 @@ def prepare_real_workspace():
         "verify-completion-artifacts.py",
         "stage2-completion-artifacts-v1.json",
         "stage2-completion-rootfs-v1.json",
+        "stage2-completion-rootfs-v2.json",
     )
     manifest_entries = [
         {"path": "deploy", "kind": "directory", "mode": 0o700, "size": 0, "sha256": None},

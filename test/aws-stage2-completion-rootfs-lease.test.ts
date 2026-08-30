@@ -33,5 +33,8 @@ test("retained rootfs lease and closure-private Stage B release remain fixed", a
   assert.match(source, /LOCK_EX \| fcntl\.LOCK_NB/u);
   assert.match(source, /def _authorize_kata_release\(permit, held, control\):/u);
   assert.match(source, /_append_release_authorized_record/u);
+  assert.match(source, /def _recover_unadmitted_kata_operation\(prestage_permit, approval, control\):/u);
+  assert.match(source, /_append_prestage_authorized_record/u);
+  assert.match(source, /"prestage-authorized"/u);
   assert.doesNotMatch(source, /subprocess|\/proc\/self\/fd|resolve\(\)/u);
 });

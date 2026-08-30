@@ -52,6 +52,7 @@ class CommandId(Enum):
     CTR_TASK_REMOVE = "CTR_TASK_REMOVE"
     CTR_CONTAINER_REMOVE = "CTR_CONTAINER_REMOVE"
     SSH_READY = "SSH_READY"
+    SSH_READINESS = "SSH_READINESS"
 
     # Compatibility spellings are aliases of the same canonical members, not a
     # second action vocabulary.

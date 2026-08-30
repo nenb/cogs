@@ -244,6 +244,33 @@ def zero_outcome(command, outcome="not_started"):
 # Every line boundary is a legal prefix. Every partial suffix is rejected.
 raw, rootfs_intent, leased = leased_prefix()
 observed_names = ["artifacts", "rootfs-v1"]
+assert operation._stage_candidates({
+    operation.ARTIFACTS_NAME.raw, operation.ROOTFS_NAME.raw,
+    operation.IMMUTABLE_PREPARATION_NAME.raw, operation.RUNTIME_NAME.raw,
+}) == set()
+rejected(lambda: operation._stage_candidates({b"immutable-preparation-v1-unreviewed"}))
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "GENESIS")
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "RUNTIME_ABSENT")
+operation._validate_runtime_layout({operation.RUNTIME_NAME.raw}, (), "SHARE_ABSENT")
+operation._validate_runtime_layout(set(), (), "SHARE_ABSENT")
+operation._validate_runtime_layout(set(), (), "FIREWALL_ABSENT")
+rejected(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, (), "FIREWALL_ABSENT"))
+staged_runtime = SimpleNamespace(record_type="RUNTIME_STAGED_V3", body={})
+closed_daemon = SimpleNamespace(record_type="DAEMON_OUTCOME_V2", body={
+    "uncertain": False, "leader_reaped": True, "descendants_reaped": True,
+    "cgroup_empty": True, "cgroup_removed": True,
+})
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, (staged_runtime, closed_daemon), "FIREWALL_ABSENT")
+operation._validate_runtime_layout(set(), (staged_runtime, closed_daemon), "FIREWALL_ABSENT")
+uncertain_daemon = SimpleNamespace(record_type="DAEMON_OUTCOME_V2", body={
+    **closed_daemon.body, "uncertain": True,
+})
+rejected(lambda: operation._validate_runtime_layout(
+    set(), (staged_runtime, uncertain_daemon), "FIREWALL_ABSENT"))
+rejected(lambda: operation._validate_runtime_layout(
+    {operation.RUNTIME_STAGING_NAME.raw}, (), "NETWORK_READY"))
 fs_intent = {
     "operation_token": "a" * 64,
     "resource_id": "input-root",
@@ -703,7 +730,7 @@ def runtime_v2_intent(raw, command_id):
     command = command_id.value; policy = operation.command_policy
     argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS, "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
     deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-    duration = {"observer": 5, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+    duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
     environment = [list(row) for row in operation.FIXED_ENV]
     body = {"operation_token": genesis["operation_token"], "command_serial": serial, "command_id": command,
         "binding_sha256": operation.ZERO, "journal_key": genesis["journal_key"], "host_boot_id": genesis["host_boot_id"],
@@ -732,10 +759,26 @@ def runtime_outcome(intent, uncertain=False, status=0):
         "kill_attempted": False, "deadline_expired": False, "uncertain": uncertain, "errors": []}
 
 
+def runtime_prepared_body(token="a" * 64):
+    extraction = operation.command_policy.CONTAINERD_EXTRACTION
+    body = {"operation_token": token, "runtime_generation": generation(90, nlink=3),
+        "bin_generation": generation(91, mode=0o500),
+        "observer_configuration_generation": generation(94, "file", 0o400, 1, 32_220),
+        "containerd_generation": generation(92, "file", 0o500, 1, extraction[0][1]),
+        "ctr_generation": generation(93, "file", 0o500, 1, extraction[1][1]),
+        "observer_configuration_size": 32_220,
+        "observer_configuration_sha256": "e" * 64,
+        "containerd_size": extraction[0][1], "containerd_sha256": extraction[0][2],
+        "ctr_size": extraction[1][1], "ctr_sha256": extraction[1][2]}
+    body["manifest_sha256"] = hashlib.sha256(operation.RUNTIME_PREPARED_DOMAIN + operation._canonical(body)).hexdigest()
+    return body
+
+
 def staged_runtime_prefix():
     raw, _intent, _leased = leased_prefix(); token = "a" * 64; policy = operation.command_policy
     raw = append(raw, "BASELINES_CAPTURED", {"operation_token": token, "proof_sha256": "1" * 64})
     raw = append(raw, "NETWORK_READY", {"operation_token": token, "proof_sha256": "2" * 64})
+    raw = append(raw, "RUNTIME_PREPARED_V1", runtime_prepared_body(token))
     raw = append(raw, "RUNTIME_STAGE_INTENT_V4", {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
         "policy_sha256": policy.RUNTIME_POLICY_SHA256, "temporary_name": ".kata-runtime-v1.staging"})
     stage = {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
@@ -762,6 +805,23 @@ def append_runtime_command(raw, command_id, uncertain=False, status=0):
     return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
 
+# Prepared custody is a non-phase event with exact bytes and strict one-shot ordering.
+prepared_prefix, _unused, _leased = leased_prefix()
+prepared_prefix = append(prepared_prefix, "BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "1" * 64})
+prepared_prefix = append(prepared_prefix, "NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "2" * 64})
+prepared = runtime_prepared_body()
+prepared_raw = append(prepared_prefix, "RUNTIME_PREPARED_V1", prepared)
+assert operation._legal(operation._parse(prepared_raw)) == "NETWORK_READY", "prepared event changed lifecycle"
+rejected(lambda: append(prepared_raw, "RUNTIME_PREPARED_V1", prepared))
+wrong = dict(prepared); wrong["ctr_sha256"] = "0" * 64
+rejected(lambda: append(prepared_prefix, "RUNTIME_PREPARED_V1", wrong))
+intent_body = {"operation_token": "a" * 64, "policy_version": operation.command_policy.RUNTIME_POLICY_VERSION,
+    "policy_sha256": operation.command_policy.RUNTIME_POLICY_SHA256, "temporary_name": ".kata-runtime-v1.staging"}
+legacy_intent = append(prepared_prefix, "RUNTIME_STAGE_INTENT_V4", intent_body)
+rejected(lambda: append(legacy_intent, "RUNTIME_PREPARED_V1", prepared))
+operation._validate_runtime_layout(set(), operation._parse(prepared_raw), "NETWORK_READY")
+rejected(lambda: operation._validate_runtime_layout(set(), operation._parse(prepared_prefix), "NETWORK_READY"))
+
 # Runtime uncertainty is historical and sticky: observers are never resumable
 # or retryable, while a consumed TERM uncertainty can finish teardown but never retire.
 token = "a" * 64; proof = lambda value: {"operation_token": token, "proof_sha256": value * 64}
@@ -772,27 +832,46 @@ observer_resume = {"operation_token": token, "target_phase": "READINESS_REVOKED"
 rejected(lambda: append(observer_raw, "RUNTIME_RESUME_V4", observer_resume))
 rejected(lambda: append_runtime_command(observer_raw, process.CommandId.CTR_TASK_LIST))
 
-# Proven-absent ownership has observation-only cleanup traces: the parser
-# rejects both remove mutations while retaining their original exact-path order.
+# Proven-absent failed launch skips inapplicable task/role events, but still
+# closes its runtime network owner before network removal and observes the
+# exact absent container at the corrected NETWORK_ABSENT command phase.
 proven = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
 for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO,
                    process.CommandId.CTR_CONTAINER_LIST):
     proven, _unused = append_runtime_command(
         proven, command_id, status=1 if command_id is process.CommandId.CTR_CONTAINER_INFO else 0)
 proven_owner = {**proof("2"), "task": "absent", "container": "absent", "runtime": "absent", "share": "absent"}
-proven = append(proven, "OWNERSHIP_OBSERVED", proven_owner); proven = append(proven, "NETWORK_ABSENT", proof("3"))
+proven = append(proven, "OWNERSHIP_OBSERVED", proven_owner)
+proven = append(proven, "RUNTIME_ABSENT", proof("3"))
+release = {"operation_token": token, "owner_closed": True, "grants_closed": True,
+           "registry_empty": True, "proof_sha256": "4" * 64}
+proven = append(proven, "RUNTIME_NETWORK_RELEASED_V1", release)
+proven = append(proven, "NETWORK_ABSENT", proof("5"))
 rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_TASK_REMOVE))
-proven, _unused = append_runtime_command(proven, process.CommandId.CTR_TASK_LIST)
-proven = append(proven, "TASK_ABSENT", proof("4"))
 rejected(lambda: append_runtime_command(proven, process.CommandId.CTR_CONTAINER_REMOVE))
 proven, _unused = append_runtime_command(proven, process.CommandId.CTR_CONTAINER_LIST)
-proven = append(proven, "CONTAINER_ABSENT", proof("5"))
+proven = append(proven, "CONTAINER_ABSENT", proof("6"))
 assert operation._legal(operation._parse(proven)) == "CONTAINER_ABSENT"
 
 sticky = append(staged_runtime_prefix(), "READINESS_REVOKED", {"operation_token": token})
 for command_id in (process.CommandId.CTR_TASK_LIST, process.CommandId.CTR_CONTAINER_INFO, process.CommandId.CTR_CONTAINER_LIST):
     sticky, _unused = append_runtime_command(sticky, command_id)
 ownership = {**proof("3"), "task": "exact-owned", "container": "exact-owned", "runtime": "exact-owned", "share": "exact-owned"}
+role_paths = (("shim", "/opt/kata/bin/containerd-shim-kata-v2"),
+              ("qemu", "/opt/kata/bin/qemu-system-x86_64"),
+              ("virtiofsd", "/opt/kata/libexec/virtiofsd"))
+role_body = {"operation_token": token, "roles": [
+    {"role": role, "pid": 100 + index, "starttime": 200 + index,
+     "executable": path, "executable_device": 1, "executable_inode": 300 + index,
+     "executable_generation": generation(400 + index, "file", 0o500),
+     "namespaces": [[name, f"{name}:[{500 + index}]"] for name in ("ipc", "mnt", "net", "pid", "user", "uts")]}
+    for index, (role, path) in enumerate(role_paths)]}
+sticky = append(sticky, "RUNTIME_ROLE_IDENTITIES_V1", role_body)
+share_generation = {"device": 1, "inode": 900, "mode": 0o700,
+                    "uid": 0, "gid": 0, "ctime_ns": 1000}
+sticky = append(sticky, "RUNTIME_SHARE_IDENTITY_V1", {
+    "operation_token": token, "root_generation": share_generation,
+    "parent_generation": {**share_generation, "inode": 901}, "layout_sha256": "2" * 64})
 sticky = append(sticky, "OWNERSHIP_OBSERVED", ownership)
 sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
 sticky, term_intent = append_runtime_command(sticky, process.CommandId.CTR_TASK_TERM, True)
@@ -801,15 +880,28 @@ term_resume = {"operation_token": token, "target_phase": "OWNERSHIP_OBSERVED",
 sticky = append(sticky, "RUNTIME_RESUME_V4", term_resume)
 assert operation._legal(operation._parse(sticky)) == "OWNERSHIP_OBSERVED"
 sticky, _unused = append_runtime_command(sticky, process.CommandId.CTR_TASK_LIST)
-sticky = append(sticky, "TASK_STOPPED", proof("4")); sticky = append(sticky, "NETWORK_ABSENT", proof("5"))
-for phase, commands, next_phase in (
-    ("NETWORK_ABSENT", (process.CommandId.CTR_TASK_REMOVE, process.CommandId.CTR_TASK_LIST), "TASK_ABSENT"),
-    ("TASK_ABSENT", (process.CommandId.CTR_CONTAINER_REMOVE, process.CommandId.CTR_CONTAINER_LIST), "CONTAINER_ABSENT"),
-    ("CONTAINER_ABSENT", (process.CommandId.CTR_CONTAINER_LIST,), "RUNTIME_ABSENT")):
-    assert operation._legal(operation._parse(sticky)) == phase
-    for command_id in commands: sticky, _unused = append_runtime_command(sticky, command_id)
-    sticky = append(sticky, next_phase, proof("6"))
-for kind in ("SHARE_ABSENT", "FIREWALL_ABSENT", "INPUT_REMOVED"): sticky = append(sticky, kind, proof("7"))
+sticky = append(sticky, "TASK_STOPPED", proof("4"))
+rejected(lambda: append(sticky, "RUNTIME_ABSENT", proof("f")))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+for command_id in (process.CommandId.CTR_TASK_REMOVE, process.CommandId.CTR_TASK_LIST):
+    sticky, _unused = append_runtime_command(sticky, command_id)
+sticky = append(sticky, "TASK_ABSENT", proof("5"))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+role_absence = {"operation_token": token, "observations": 2,
+                "roles": {role: "absent" for role, _path in role_paths}, "qmp": "absent"}
+sticky = append(sticky, "RUNTIME_ROLE_ABSENCE_V1", role_absence)
+sticky = append(sticky, "RUNTIME_ABSENT", proof("6"))
+rejected(lambda: append(sticky, "NETWORK_ABSENT", proof("f")))
+sticky = append(sticky, "RUNTIME_NETWORK_RELEASED_V1", {
+    "operation_token": token, "owner_closed": True, "grants_closed": True,
+    "registry_empty": True, "proof_sha256": "7" * 64})
+rejected(lambda: append(sticky, "CONTAINER_ABSENT", proof("f")))
+sticky = append(sticky, "NETWORK_ABSENT", proof("8"))
+for command_id in (process.CommandId.CTR_CONTAINER_REMOVE, process.CommandId.CTR_CONTAINER_LIST):
+    sticky, _unused = append_runtime_command(sticky, command_id)
+sticky = append(sticky, "CONTAINER_ABSENT", proof("9"))
+for kind in ("SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED"):
+    sticky = append(sticky, kind, proof("a"))
 leased_body = next(row.body for row in operation._parse(sticky) if row.record_type == "ROOTFS_LEASED")
 ready = {"operation_token": token, "rootfs_token": "b" * 64, "rootfs_ledger_key": leased_body["rootfs_ledger_key"],
     "leased_sequence": leased_body["leased_sequence"], "leased_offset": leased_body["leased_offset"],
@@ -914,14 +1006,14 @@ DAEMON_SOURCE = r'''#include <sys/socket.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
-static const char *path,*root,*state;static int listener=-1,graceful=0;
+static const char *path,*root,*state;static char tpath[512];static int listener=-1,tlistener=-1,graceful=0;
 static void put(const char *base,const char *branch,const char *leaf){char p[512];snprintf(p,sizeof(p),"%s/%s",base,branch);mkdir(p,0700);snprintf(p,sizeof(p),"%s/%s/%s",base,branch,leaf);int f=open(p,O_WRONLY|O_CREAT|O_TRUNC,0600);if(f>=0){write(f,leaf,strlen(leaf));close(f);}}
 static void mutate(int sig){(void)sig;put(root,"metadata/live","during");put(state,"plugins/live","during");}
-static void remove_socket(int sig){(void)sig;unlink(path);}
-static void terminate(int sig){(void)sig;if(!graceful)return;if(listener>=0)close(listener);unlink(path);_exit(0);}
+static void remove_socket(int sig){(void)sig;unlink(path);unlink(tpath);}
+static void terminate(int sig){(void)sig;if(!graceful)return;if(listener>=0)close(listener);if(tlistener>=0)close(tlistener);unlink(path);unlink(tpath);_exit(0);}
 int main(int n,char **v){for(int i=1;i+1<n;i++){if(!strcmp(v[i],"--address"))path=v[i+1];if(!strcmp(v[i],"--root"))root=v[i+1];if(!strcmp(v[i],"--state"))state=v[i+1];}if(!path||!root||!state)return 90;
 mkdir(root,0700);mkdir(state,0700);put(root,"metadata","before");put(state,"plugins","before");char mode[512];snprintf(mode,sizeof(mode),"%s/term-responsive",state);graceful=access(mode,F_OK)==0;listener=socket(AF_UNIX,SOCK_STREAM,0);struct sockaddr_un a={.sun_family=AF_UNIX};strncpy(a.sun_path,path,sizeof(a.sun_path)-1);
-unlink(path);if(listener<0||bind(listener,(void*)&a,sizeof(a))||listen(listener,1))return 91;signal(SIGTERM,graceful?terminate:SIG_IGN);signal(SIGUSR1,remove_socket);signal(SIGUSR2,mutate);for(;;)pause();}'''
+unlink(path);if(listener<0||bind(listener,(void*)&a,sizeof(a))||listen(listener,1))return 91;snprintf(tpath,sizeof(tpath),"%s.ttrpc",path);tlistener=socket(AF_UNIX,SOCK_STREAM,0);struct sockaddr_un t={.sun_family=AF_UNIX};strncpy(t.sun_path,tpath,sizeof(t.sun_path)-1);unlink(tpath);if(tlistener<0||bind(tlistener,(void*)&t,sizeof(t))||listen(tlistener,1))return 92;signal(SIGTERM,graceful?terminate:SIG_IGN);signal(SIGUSR1,remove_socket);signal(SIGUSR2,mutate);for(;;)pause();}'''
 
 
 def native_runtime_daemon_foundations(completion):
@@ -935,17 +1027,26 @@ def native_runtime_daemon_foundations(completion):
         descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
         digest = process._digest_fd(descriptor, os.fstat(descriptor).st_size); executable_generation = process._host_generation(descriptor)
         runtime_base = str(Path(completion) / "kata-runtime-v1")
-        socket_path = runtime_base + "/containerd.sock"; original = {
-            "base": policy.BASE, "address": policy.CONTAINERD_ADDRESS, "containerd": policy.STAGED_CONTAINERD,
-            "process": (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
+        socket_path = runtime_base + "/s"; original = {
+            "base": policy.BASE, "address": policy.CONTAINERD_ADDRESS,
+            "root": policy.CONTAINERD_ROOT, "state": policy.CONTAINERD_STATE,
+            "containerd": policy.STAGED_CONTAINERD,
+            "process": (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET,
+                        process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
                         process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD),
-            "extraction": policy.CONTAINERD_EXTRACTION, "objects": operation._RUNTIME_POLICY_OBJECTS}
+            "extraction": policy.CONTAINERD_EXTRACTION, "objects": operation._RUNTIME_POLICY_OBJECTS,
+            "runtime_alias": runtime.RUNTIME_ALIAS, "runtime_root": runtime.RUNTIME_ROOT}
         replacement = (("bin/containerd", os.fstat(descriptor).st_size, digest, 0o500),
                        ("bin/ctr", os.fstat(descriptor).st_size, digest, 0o500))
-        policy.BASE = str(completion); policy.CONTAINERD_ADDRESS = socket_path; policy.STAGED_CONTAINERD = runtime_base + "/bin/containerd"
-        process.CONTAINERD_SOCKET = socket_path; process.CONTAINERD_ROOT = runtime_base + "/containerd-root"
-        process.CONTAINERD_STATE = runtime_base + "/containerd-state"; process.CONTAINERD_CONFIG = runtime_base + "/containerd.toml"
+        policy.BASE = str(completion); policy.CONTAINERD_ADDRESS = socket_path
+        policy.CONTAINERD_ROOT = runtime_base + "/r"
+        policy.CONTAINERD_STATE = runtime_base + "/t"
+        policy.STAGED_CONTAINERD = runtime_base + "/bin/containerd"
+        process.CONTAINERD_SOCKET = socket_path; process.CONTAINERD_TTRPC_SOCKET = socket_path + ".ttrpc"
+        process.CONTAINERD_ROOT = policy.CONTAINERD_ROOT
+        process.CONTAINERD_STATE = policy.CONTAINERD_STATE; process.CONTAINERD_CONFIG = runtime_base + "/containerd.toml"
         process.STAGED_CONTAINERD = policy.STAGED_CONTAINERD; policy.CONTAINERD_EXTRACTION = replacement
+        runtime.RUNTIME_ALIAS = "/run/c42test"; runtime.RUNTIME_ROOT = runtime_base
         objects = list(operation._RUNTIME_POLICY_OBJECTS); objects[8] = replacement; operation._RUNTIME_POLICY_OBJECTS = tuple(objects)
         retained = process.RetainedExecutable("containerd", policy.STAGED_CONTAINERD, descriptor, digest,
             "d" * 64, executable_generation)
@@ -958,19 +1059,22 @@ def native_runtime_daemon_foundations(completion):
         def reset(extra=(), tree=True, graceful=False):
             if tree:
                 Path(runtime_base).mkdir(mode=0o700)
-                for child in ("bin", "containerd-root", "containerd-state"):
+                for child in ("bin", "r", "t"):
                     Path(runtime_base, child).mkdir(mode=0o700)
+                Path(runtime_base + "/configuration-qemu-observer.toml").write_bytes(b"")
                 Path(runtime_base + "/containerd.toml").write_bytes(runtime.CONTAINERD_CONFIG_BYTES)
                 os.chmod(runtime_base + "/containerd.toml", 0o600)
-                if graceful: Path(runtime_base + "/containerd-state/term-responsive").write_bytes(b"1")
+                if graceful: Path(runtime_base + "/t/term-responsive").write_bytes(b"1")
+                if runtime._runtime_alias(): runtime._set_runtime_alias(False)
+                runtime._set_runtime_alias(True)
             stage = {"operation_token": "a" * 64, "policy_version": policy.RUNTIME_POLICY_VERSION,
                 "policy_sha256": policy.RUNTIME_POLICY_SHA256, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
                 "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction_sha256": policy.CONTAINERD_EXTRACTION_SHA256,
                 "runtime_generation": path_generation(runtime_base, "directory") if tree else generation(101),
                 "containerd_generation": executable_generation, "ctr_generation": executable_generation,
                 "config_generation": path_generation(runtime_base + "/containerd.toml", "file") if tree else generation(103, "file", 0o600),
-                "root_generation": path_generation(runtime_base + "/containerd-root", "directory") if tree else generation(104),
-                "state_generation": path_generation(runtime_base + "/containerd-state", "directory") if tree else generation(105)}
+                "root_generation": path_generation(runtime_base + "/r", "directory") if tree else generation(104),
+                "state_generation": path_generation(runtime_base + "/t", "directory") if tree else generation(105)}
             fixture_journal(completion, (("ROOTFS_ACQUIRE_INTENT", rootfs_intent), ("ROOTFS_LEASED", leased),
                 ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}),
                 ("NETWORK_READY", {"operation_token": "a" * 64, "proof_sha256": "8" * 64}),
@@ -986,9 +1090,9 @@ def native_runtime_daemon_foundations(completion):
             daemon = runtime._retain_private_containerd(authority, completion_node, owner, control)
             daemon_pid = authority.runtime_recovery_history()["daemon_retained"][-1]["pid"]; os.kill(daemon_pid, signal.SIGUSR2)
             deadline = time.monotonic() + 2
-            while not os.path.exists(runtime_base + "/containerd-state/plugins/live/during") and time.monotonic() < deadline: time.sleep(0.01)
-            assert Path(runtime_base + "/containerd-root/metadata/before").is_file() and Path(runtime_base + "/containerd-root/metadata/live/during").is_file()
-            assert runtime._verify_private_containerd(daemon)["socket_generation"] == authority.runtime_recovery_history()["daemon_retained"][-1]["socket_generation"]
+            while not os.path.exists(runtime_base + "/t/plugins/live/during") and time.monotonic() < deadline: time.sleep(0.01)
+            assert Path(runtime_base + "/r/metadata/before").is_file() and Path(runtime_base + "/r/metadata/live/during").is_file()
+            assert runtime._verify_private_containerd(daemon)["socket_generations"] == authority.runtime_recovery_history()["daemon_retained"][-1]["socket_generations"]
             runtime._shutdown_private_containerd(daemon); outcome = authority.runtime_recovery_history()["daemon_outcomes"][-1]
             assert outcome["status"] == signal.SIGKILL and not outcome["uncertain"] and not os.path.lexists(socket_path)
             assert not os.path.exists(runtime_base) and not os.path.exists(process.CGROUP_BASE); authority.close(); fs._close_chain(chain); chain = None
@@ -1014,8 +1118,8 @@ def native_runtime_daemon_foundations(completion):
                 "cgroup_removed": False, "uncertain": True, "errors": ["native-fixture-incomplete"]})
             rejected(lambda: runtime._shutdown_private_containerd(uncertain_daemon))
             assert (os.path.exists(f"/proc/{retained_body['pid']}") and os.path.isdir(retained_body["cgroup_path"])
-                    and os.path.lexists(socket_path) and Path(runtime_base + "/containerd-root").is_dir()
-                    and Path(runtime_base + "/containerd-state").is_dir())
+                    and os.path.lexists(socket_path) and Path(runtime_base + "/r").is_dir()
+                    and Path(runtime_base + "/t").is_dir())
             saved_socket = runtime_base + "/.uncertain-original.sock"; os.rename(socket_path, saved_socket)
             replacement_socket = socket.socket(socket.AF_UNIX); replacement_socket.bind(socket_path); os.chmod(socket_path, 0o600)
             rejected(lambda: runtime._shutdown_private_containerd(uncertain_daemon))
@@ -1033,7 +1137,8 @@ def native_runtime_daemon_foundations(completion):
             assert not process_close(uncertain_owner)
             runtime_states = inspect.getclosurevars(runtime._shutdown_private_containerd).nonlocals["daemons"]
             uncertain_state = runtime_states.pop(uncertain_daemon)
-            if uncertain_state[9] is not None: os.close(uncertain_state[9][0])
+            for socket_state in uncertain_state[9].values():
+                if socket_state is not None: os.close(socket_state[0])
             for index in (5, 6, 7, 4):
                 if uncertain_state[index] is not None: fs._close_node(uncertain_state[index])
             parent = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -1102,7 +1207,7 @@ def native_runtime_daemon_foundations(completion):
                         setattr(runtime.os, operation_name, cut); runtime._shutdown_private_containerd(local_daemon)
                     finally: os._exit(code + 10)
                 assert os.waitpid(child, 0)[1] == code << 8
-                expected_name = ".containerd.sock.removing" if operation_name == "rename" else None
+                expected_name = ".s.removing" if operation_name == "rename" else None
                 assert os.path.lexists(runtime_base + "/" + expected_name) if expected_name else not os.path.lexists(socket_path)
                 held, node = boundary(); reopened = operation._open_fixed_operation()
                 local_daemon = runtime._retain_private_containerd(reopened, node, None, control)
@@ -1145,6 +1250,7 @@ def native_runtime_daemon_foundations(completion):
             staged.close(); assert not os.path.exists(runtime_base); fs._close_chain(chain); chain = None
             # The portable runtime matrix owns exact indexed post-KILL trace coverage.
             policy.BASE = original["base"]; policy.CONTAINERD_ADDRESS = original["address"]
+            policy.CONTAINERD_ROOT = original["root"]; policy.CONTAINERD_STATE = original["state"]
             policy.STAGED_CONTAINERD = original["containerd"]
             # Staging rollback handles interrupted special-entry residue.
             stage = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -1159,6 +1265,7 @@ def native_runtime_daemon_foundations(completion):
             assert not os.path.exists(runtime_base) and not os.path.lexists(socket_path)
             return True
         finally:
+            if runtime._runtime_alias(): runtime._set_runtime_alias(False)
             if previous is not None: process._set_subreaper(previous)
             if os.path.isdir(runtime_base):
                 emergency = os.open(completion, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -1173,10 +1280,14 @@ def native_runtime_daemon_foundations(completion):
             if chain is not None: fs._close_chain(chain)
             input_root.rmdir()
             os.close(descriptor); policy.BASE = original["base"]; policy.CONTAINERD_ADDRESS = original["address"]
+            policy.CONTAINERD_ROOT = original["root"]; policy.CONTAINERD_STATE = original["state"]
             policy.STAGED_CONTAINERD = original["containerd"]; policy.CONTAINERD_EXTRACTION = original["extraction"]
-            (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
+            (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET,
+             process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
              process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD) = original["process"]
             operation._RUNTIME_POLICY_OBJECTS = original["objects"]
+            runtime.RUNTIME_ALIAS = original["runtime_alias"]
+            runtime.RUNTIME_ROOT = original["runtime_root"]
 
 
 def native_containerd_metadata_fixture(completion, journal, network_owner, permit):
@@ -1328,7 +1439,7 @@ def production_owner_test():
         os.chmod(temporary, 0o700)
         completion = Path(temporary) / "completion"
         completion.mkdir(mode=0o700)
-        for sibling in ("artifacts", "rootfs-v1", "kata-input-v1"):
+        for sibling in ("artifacts", "rootfs-v1", "kata-input-v1", "kata-runtime-v1"):
             (completion / sibling).mkdir(mode=0o700)
 
         def factory(control):
@@ -1351,12 +1462,94 @@ def production_owner_test():
             opened.close()
 
             fixture_journal(completion, malformed=b"malformed\n")
-            malformed = operation._open_fixed_operation()
+            malformed_before = fixture_journal_path(completion).read_bytes()
+            malformed = operation._open_fixed_operation_recovery()
             assert malformed.status() == "preserve"
             malformed.close()
+            assert fixture_journal_path(completion).read_bytes() == malformed_before
 
             intent = ("ROOTFS_ACQUIRE_INTENT", rootfs_intent)
             leased_records = (intent, ("ROOTFS_LEASED", leased))
+            approval = fs.SourceApproval("5" * 40, "6" * 64)
+
+            # Recovery observation is read-only and issues only sealed cleanup custody.
+            fixture_journal(completion)
+            genesis_only = fixture_journal_path(completion).read_bytes().splitlines(keepends=True)[0]
+            fixture_journal_path(completion).write_bytes(genesis_only)
+            recovery = operation._open_fixed_operation_recovery()
+            prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+            assert prestage.reconstruction_context()["phase"] == "GENESIS"
+            prestage.close()
+            unadmitted_prefixes = ((), (intent,), leased_records,
+                                   leased_records + (lifecycle_deadline(),))
+            for prefix in unadmitted_prefixes:
+                fixture_journal(completion, prefix)
+                before = fixture_journal_path(completion).read_bytes()
+                recovery = operation._open_fixed_operation_recovery()
+                assert recovery.status() == "exact"
+                prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+                assert prestage.reconstruction_context()["kind"] == "unadmitted-journal"
+                for forbidden in (
+                    "command_context", "admit_production_v2", "reserve_rootfs",
+                    "record_network", "record_runtime_prepared", "retire",
+                    "evidence", "receipt",
+                ):
+                    rejected(lambda forbidden=forbidden: getattr(prestage, forbidden))
+                permit = prestage.reserve_prestage_rootfs_release()
+                rejected(prestage.reserve_prestage_rootfs_release)
+                grant = operation._claim_prestage_rootfs(permit)
+                rejected(lambda: operation._claim_prestage_rootfs(permit))
+                binding = operation._prestage_rootfs_binding(grant)
+                assert (binding["tip_sequence"], binding["tip_offset"],
+                        binding["tip_sha256"]) == (
+                            operation._parse(before)[-1].sequence,
+                            operation._parse(before)[-1].next_offset,
+                            operation._parse(before)[-1].line_sha256)
+                coordinates = operation._prestage_rootfs_coordinates(grant)
+                assert coordinates["rootfs_token"] == "b" * 64
+                assert fixture_journal_path(completion).read_bytes() == before
+                prestage.close()
+            fixture_journal(completion, leased_records)
+            recovery = operation._open_fixed_operation_recovery()
+            mismatch_bytes = fixture_journal_path(completion).read_bytes()
+            rejected(lambda: operation._claim_pre_admission_cleanup(
+                recovery, fs.SourceApproval("4" * 40, "6" * 64)))
+            assert fixture_journal_path(completion).read_bytes() == mismatch_bytes
+            recovery.close()
+
+            # Exact journal-absent infrastructure subsets are observed, never repaired.
+            state_path = completion / operation.STATE_NAME.text
+            fixture_journal(completion)
+            fixture_journal_path(completion).unlink()
+            for retained_names, expected in (
+                ((), "infrastructure-subset"),
+                ((operation.SENTINEL_NAME.text,), "infrastructure-subset"),
+                ((operation.SENTINEL_NAME.text, operation.LOCK_NAME.text),
+                 "infrastructure-complete"),
+            ):
+                for name in (operation.SENTINEL_NAME.text, operation.LOCK_NAME.text):
+                    path = state_path / name
+                    if name not in retained_names and path.exists(): path.unlink()
+                    if name in retained_names and not path.exists():
+                        path.write_bytes(operation.SENTINEL if name == operation.SENTINEL_NAME.text else b"")
+                        os.chmod(path, 0o600)
+                before_names = tuple(sorted(path.name for path in state_path.iterdir()))
+                recovery = operation._open_fixed_operation_recovery()
+                assert recovery.status() == expected
+                prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+                assert prestage.reconstruction_context()["kind"] == "journal-absent"
+                assert tuple(sorted(path.name for path in state_path.iterdir())) == before_names
+                prestage.close()
+            for path in tuple(state_path.iterdir()): path.unlink()
+            state_path.rmdir()
+            recovery = operation._open_fixed_operation_recovery()
+            assert recovery.status() == "infrastructure-absent"
+            prestage = operation._claim_pre_admission_cleanup(recovery, approval)
+            assert prestage.reconstruction_context()["kind"] == "journal-absent"
+            assert not state_path.exists()
+            prestage.close()
+            fixture_journal(completion)
+
             def reset_nft_owner_fixture():
                 nft = network.nft_owner
                 if (os.environ.get("COGS_REQUIRE_STAGE2_NETWORK_FOUNDATION") != "1"
@@ -1669,10 +1862,14 @@ def production_owner_test():
                                 os.fsync(descriptor)
                             finally: os.close(descriptor)
                         production_network.close()
-                        lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
+                        prepared_network = append(
+                            journal_path.read_bytes(), "RUNTIME_PREPARED_V1", runtime_prepared_body())
+                        (completion / "kata-runtime-v1").rmdir()
+                        lifecycle = operation._make_fake_lifecycle_for_tests(prepared_network)
                         lifecycle.runtime_ready(runtime_body["proof_sha256"])
                         lifecycle.ssh_ready("1" * 64); lifecycle.revoke_readiness()
                         lifecycle.ownership_observed("2" * 64); lifecycle.task_stopped("3" * 64)
+                        lifecycle.task_absent("4" * 64); lifecycle.runtime_absent("6" * 64)
                         replace_journal(lifecycle.journal_bytes())
                         production_network = operation._open_fixed_operation()
                         # Durable teardown-prefix cut resumes without a duplicate runtime pass.
@@ -1733,8 +1930,7 @@ def production_owner_test():
                         os.close(tun); tun = None
                         production_network.close()
                         lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
-                        lifecycle.task_absent("4" * 64); lifecycle.container_absent("5" * 64)
-                        lifecycle.runtime_absent("6" * 64); lifecycle.share_absent("7" * 64)
+                        lifecycle.container_absent("5" * 64); lifecycle.share_absent("7" * 64)
                         replace_journal(lifecycle.journal_bytes())
                         production_network = operation._open_fixed_operation()
                         child = os.fork()
@@ -1777,6 +1973,7 @@ def production_owner_test():
 
                     # Failed-launch route: task absent while the ready network still exists.
                     production_network.close()
+                    (completion / "kata-runtime-v1").mkdir(mode=0o700)
                     production_fixture((intent, ("ROOTFS_LEASED", leased),
                         ("FS_INTENT", fs_intent), ("FS_OBSERVED", baseline_observed),
                         ("FS_SETTLED", baseline_observed)))
@@ -1794,8 +1991,12 @@ def production_owner_test():
                     discovered_body = network._snapshot(production_network, "discovered", baselines,
                         discovered_identity, network._sources(production_network, "NETWORK_SNAPSHOT_V2"))
                     production_network.close(); journal_path = fixture_journal_path(completion)
-                    lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
+                    prepared_network = append(
+                        journal_path.read_bytes(), "RUNTIME_PREPARED_V1", runtime_prepared_body())
+                    (completion / "kata-runtime-v1").rmdir()
+                    lifecycle = operation._make_fake_lifecycle_for_tests(prepared_network)
                     lifecycle.revoke_readiness(); lifecycle.ownership_observed("8" * 64, task="absent")
+                    lifecycle.task_absent("9" * 64); lifecycle.runtime_absent("b" * 64)
                     replace_journal(lifecycle.journal_bytes())
                     production_network = operation._open_fixed_operation()
                     class IntentCut(Exception): pass
@@ -1878,8 +2079,7 @@ def production_owner_test():
                     assert absent_body["snapshot_kind"] == "network-absent"
                     os.close(tun2); tun2 = None
                     production_network.close(); lifecycle = operation._make_fake_lifecycle_for_tests(journal_path.read_bytes())
-                    lifecycle.task_absent("9" * 64); lifecycle.container_absent("a" * 64)
-                    lifecycle.runtime_absent("b" * 64); lifecycle.share_absent("c" * 64)
+                    lifecycle.container_absent("a" * 64); lifecycle.share_absent("c" * 64)
                     replace_journal(lifecycle.journal_bytes())
                     production_network = operation._open_fixed_operation()
                     assert network._remove_fixed_firewall(
@@ -1908,6 +2108,8 @@ def production_owner_test():
                     for placeholder in Path(network.PRESERVED_DIR).glob("c42paaaaaaaaaa-*"):
                         try: placeholder.unlink()
                         except FileNotFoundError: pass
+                    if not (completion / "kata-runtime-v1").exists():
+                        (completion / "kata-runtime-v1").mkdir(mode=0o700)
 
             # Real FixedJournal persists exact output-bound baseline/effect cuts.
             network_fs_observed = {
@@ -1975,6 +2177,7 @@ def production_owner_test():
             # production authority and carry exact phase/cross-ledger pointers.
             input_root = completion / "kata-input-v1"
             input_root.rmdir()
+            (completion / "kata-runtime-v1").rmdir()
             for authorized in (False, True):
                 fixture_journal(completion, release_bodies(authorized))
                 release_owner = operation._open_fixed_operation()
@@ -2149,11 +2352,16 @@ def production_owner_test():
                 rejected(lambda: admitted.record_command_intent(stale_intent))
             assert fixture_journal_path(completion).read_bytes() == admitted_bytes
             admitted.close()
-            reopened_admitted = operation._open_fixed_operation()
-            assert operation._claim_production_operation(reopened_admitted) is reopened_admitted
+            reopened_admitted = operation._open_fixed_operation_recovery()
+            rejected(lambda: operation._claim_pre_admission_cleanup(
+                reopened_admitted, approval))
+            recovered_cleanup = operation._claim_production_recovery_operation(
+                reopened_admitted)
+            assert operation._is_production_recovery_operation(recovered_cleanup)
             assert fixture_journal_path(completion).read_bytes() == admitted_bytes
-            reopened_admitted.close()
+            recovered_cleanup.close()
             input_root.rmdir()
+            (completion / "kata-runtime-v1").mkdir(mode=0o700)
 
             # Real FixedJournal layout derives the sole active/quarantine names
             # from the admitted operation token and permits settlement writes
@@ -2343,6 +2551,7 @@ def production_owner_test():
                  Path("/tmp/cogs-stage2-attested-ssh-keygen-contract-v3.json"), 0o600),
             )
             previous_attestation_test = os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V3")
+            synthetic_generation_patch = None
             os.environ["COGS_KATA_SYNTHETIC_ATTESTATION_V3"] = "1"
             try:
                 for source, target, mode in staged_attestation:
@@ -2354,12 +2563,20 @@ def production_owner_test():
                         while offset < len(value): offset += os.write(descriptor, value[offset:])
                         os.fsync(descriptor)
                     finally: os.close(descriptor)
+                live_host_generation = process._host_generation
+                def synthetic_host_generation(descriptor, kind=None):
+                    value = live_host_generation(descriptor, kind)
+                    return {**value, "mount_id": max(1, value["mount_id"])}
+                synthetic_generation_patch = patch.object(
+                    process, "_host_generation", side_effect=synthetic_host_generation)
+                synthetic_generation_patch.start()
                 executable_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
 
                 # Build expired cleanup fixtures only after the exact production
                 # key-command policy has been issued, and advance through the
                 # required production FS_SETTLED phase before network setup.
+                (completion / "kata-runtime-v1").rmdir()
                 production_fixture(release_rows[:2] + (release_deadline, release_admission,
                     settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
                 expired_release_owner = operation._open_fixed_operation()
@@ -2519,6 +2736,7 @@ def production_owner_test():
                     transaction_completion.mkdir(parents=True, mode=0o700)
                     for sibling in ("artifacts", "rootfs-v1"):
                         (transaction_completion / sibling).mkdir(mode=0o700)
+                    (transaction_completion / "kata-runtime-v1").mkdir(mode=0o700)
                     fixture_journal(
                         transaction_completion, layout_prefix, host_boot_id=process._boot_id())
                     identity_r, identity_w = os.pipe2(os.O_CLOEXEC)
@@ -2543,7 +2761,7 @@ def production_owner_test():
                                     binding_owner, "a" * 64, identity.manifest_sha256)
                                 authority.close()
                                 raw = fixture_journal_path(transaction_completion).read_bytes()
-                                for kind in ("BASELINES_CAPTURED", "NETWORK_READY", "RUNTIME_READY"):
+                                for kind in ("BASELINES_CAPTURED", "NETWORK_READY"):
                                     raw += operation._encode(kind, {"operation_token": "a" * 64,
                                         "proof_sha256": "9" * 64}, operation._parse(raw))
                                 descriptor = os.open(fixture_journal_path(transaction_completion),
@@ -2560,6 +2778,7 @@ def production_owner_test():
                                 runtime_grant = runtime._issue_runtime_mount_grant(runtime_owner)
                                 issuance = operation._issue_runtime_mount_v2(authority, runtime_grant)
                                 operation._record_runtime_mount_v2(authority, issuance)
+                                authority.settle_runtime_phase("RUNTIME_READY", "9" * 64)
                                 install_process_cut(cut, "SSH_READY")
                                 process._transact_fixed_ssh(authority, ssh_executable, bindings)
                         except BaseException:
@@ -2621,6 +2840,7 @@ def production_owner_test():
                 transaction_chain = linux_chain_factory(transaction_completion, transaction_control)
                 transaction_parent = transaction_chain.components[-1].node
                 try:
+                    (transaction_completion / "kata-runtime-v1").mkdir(mode=0o700)
                     fixture_journal(
                         transaction_completion, layout_prefix, host_boot_id=process._boot_id())
                     runtime_authority = operation._open_fixed_operation()
@@ -2639,8 +2859,6 @@ def production_owner_test():
                     for kind, body in (("BASELINES_CAPTURED", {
                                            "operation_token": "a" * 64, "proof_sha256": "9" * 64}),
                                        ("NETWORK_READY", {
-                                           "operation_token": "a" * 64, "proof_sha256": "9" * 64}),
-                                       ("RUNTIME_READY", {
                                            "operation_token": "a" * 64, "proof_sha256": "9" * 64})):
                         current_raw += operation._encode(kind, body, operation._parse(current_raw))
                     journal_descriptor = os.open(
@@ -2664,11 +2882,14 @@ def production_owner_test():
                     issuance = operation._issue_runtime_mount_v2(runtime_authority, runtime_grant)
                     operation._record_runtime_mount_v2(runtime_authority, issuance)
                     rejected(lambda: operation._record_runtime_mount_v2(runtime_authority, issuance))
+                    runtime_authority.settle_runtime_phase("RUNTIME_READY", "9" * 64)
+                    rejected(lambda: operation._record_runtime_mount_v2(runtime_authority, issuance))
                     runtime_authority.close()
                     reopened_runtime = operation._open_fixed_operation()
-                    assert operation._parse(
-                        fixture_journal_path(transaction_completion).read_bytes())[-1].record_type == \
-                        "RUNTIME_MOUNT_V2"
+                    runtime_records = operation._parse(
+                        fixture_journal_path(transaction_completion).read_bytes())
+                    assert ([row.record_type for row in runtime_records[-2:]] ==
+                            ["RUNTIME_MOUNT_V2", "RUNTIME_READY"])
                     ssh_outcome, ssh_receipt = process._transact_fixed_ssh(
                         reopened_runtime, ssh_executable, bindings)
                     actual_v3_stdout = ssh_outcome.stdout
@@ -2695,10 +2916,12 @@ def production_owner_test():
                     operation._revoke_readiness(reopened_runtime)
                     production_inputs.release_ssh_bindings()
                     reopened_runtime.close()
+                    fs._close_node(manifest_node); fs._close_node(mounted_input)
                     teardown_raw = fixture_journal_path(transaction_completion).read_bytes()
                     for index, kind in enumerate(("OWNERSHIP_OBSERVED", "TASK_STOPPED",
                             "NETWORK_ABSENT", "TASK_ABSENT", "CONTAINER_ABSENT",
-                            "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT"), 1):
+                            "RUNTIME_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+                            "CONTAINERD_ABSENT"), 1):
                         body = {"operation_token": "a" * 64, "proof_sha256": str(index) * 64}
                         if kind == "OWNERSHIP_OBSERVED":
                             body.update({name: "exact-owned" for name in
@@ -2710,17 +2933,19 @@ def production_owner_test():
                         while offset < len(teardown_raw): offset += os.write(descriptor, teardown_raw[offset:])
                         os.fsync(descriptor)
                     finally: os.close(descriptor)
-                    fs._close_node(manifest_node); fs._close_node(mounted_input)
-                    completed_runtime = operation._open_fixed_operation()
-                    assert operation._durable_phase(completed_runtime) == "FIREWALL_ABSENT"
+                    (transaction_completion / "kata-runtime-v1").rmdir()
+                    completed_inputs = operation._open_fixed_operation()
                     cleanup = inputs._compose_production_input_cleanup(
-                        completed_runtime, transaction_parent, transaction_control)
+                        completed_inputs, transaction_parent, transaction_control)
                     cleanup.continue_cleanup()
                     final_names = set(fs._enumerate_stable(
                         transaction_parent, transaction_control).raw_names)
                     assert (operation.INPUT_NAME.raw not in final_names
                             and active_name.encode() not in final_names
                             and quarantine_name.encode() not in final_names)
+                    completed_inputs.close()
+                    completed_runtime = operation._open_fixed_operation()
+                    assert operation._durable_phase(completed_runtime) == "INPUT_REMOVED"
                     completed_runtime.close()
                     process._release_attested_executable(ssh_executable)
                 finally:
@@ -2732,6 +2957,8 @@ def production_owner_test():
                         try: directory.rmdir()
                         except OSError: break
             finally:
+                if synthetic_generation_patch is not None:
+                    synthetic_generation_patch.stop()
                 os.environ.pop("COGS_KATA_SYNTHETIC_RUNTIME_V1", None)
                 if previous_attestation_test is None:
                     os.environ.pop("COGS_KATA_SYNTHETIC_ATTESTATION_V3", None)
@@ -2749,6 +2976,7 @@ def production_owner_test():
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
                 "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+            (completion / "kata-runtime-v1").mkdir(mode=0o700)
             production_fixture(recovery_prefix)
             recovery_authority = operation._open_fixed_operation()
             recovery_control = fs.OperationControl(
@@ -2764,6 +2992,7 @@ def production_owner_test():
             finally:
                 fs._close_chain(recovery_chain)
                 recovery_authority.close()
+            (completion / "kata-runtime-v1").rmdir()
 
             # Dedicated input/SSH shards above own current V2 recovery cuts.
             lifecycle_prefix = leased_records

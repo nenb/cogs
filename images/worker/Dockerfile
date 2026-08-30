@@ -30,7 +30,7 @@ FROM --platform=linux/amd64 envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af
 
 # Debian 13 distroless supplies the glibc ABI required by the selected Envoy binary
 # and Node binary, but no shell, package manager, npm, or compiler.
-FROM --platform=linux/amd64 gcr.io/distroless/nodejs22-debian13:nonroot@sha256:773a62fbe24a3f8c8b24b16fd59154627f8b406737bc906f83bf1732bc8907dd AS worker
+FROM --platform=linux/amd64 gcr.io/distroless/nodejs22-debian13:nonroot@sha256:4e4fb0ce55fd73901600796ef079a9490369d2515d7da31633a91608c82ca13b AS worker
 WORKDIR /opt/cogs
 ENV NODE_ENV=production \
     HOME=/tmp \

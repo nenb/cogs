@@ -86,7 +86,7 @@ const insecureConformanceRoots = [
   "nftables",
   "nodejs",
   "npm",
-  "openjdk-21-jre-headless",
+  "openjdk-25-jre-headless",
   "python3-httpx",
   "python3-pip",
   "python3-requests",
@@ -189,7 +189,7 @@ test("conformance clients and network probes cannot re-enter production and rema
   for (const label of [
     'dev.cogs.profile="insecure-container"',
     'dev.cogs.authority="functional-only"',
-    'dev.cogs.package-policy="debian-trixie-snapshots-20260713-20260815-insecure-conformance-v3"',
+    'dev.cogs.package-policy="debian-testing-snapshot-20260829-insecure-conformance-v4"',
   ]) {
     assert.ok(insecureDockerfile.includes(label), label);
   }

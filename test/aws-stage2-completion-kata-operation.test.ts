@@ -29,12 +29,12 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationLines = operation.split("\n").length - 1;
   const leaseExtension = lease.split("\n").length - 1 - 376;
   // The mutable-owner bridge adds sealed begin/retire/removal boundaries.
-  const adr0109Preferred = 66_500;
-  const adr0109Hard = 67_000;
-  assert.ok(adr0109Preferred < adr0109Hard);
+  const adr0155Preferred = 76_000;
+  const adr0155Hard = 78_000;
+  assert.ok(adr0155Preferred < adr0155Hard);
   assert.ok(
-    operationLines + leaseExtension <= 3220,
-    `Integrated operation/rootfs ownership exceeds 3220: ${operationLines + leaseExtension}`,
+    operationLines + leaseExtension <= 4500,
+    `Integrated operation/rootfs ownership exceeds 4500: ${operationLines + leaseExtension}`,
   );
   const caps = spawnSync("python3", [join(root, "scripts/check-stage2-retained-lines.py")], {
     cwd: root,
@@ -47,6 +47,11 @@ test("S0 fixed operation foundation fails closed", async () => {
   const operationTest = await readFile(testPath, "utf8");
   assert.match(operationTest, /production baseline route[\s\S]*network\._capture_fixed_baselines\(production_network/u);
   assert.match(operation, /def _make_authority\(\):[\s\S]*class OperationAuthority:/u);
+  assert.match(operation, /def _open_fixed_operation_recovery\(\):/u);
+  assert.match(operation, /class PreAdmissionCleanupAuthority:/u);
+  assert.match(operation, /class PrestageRootfsPermit:/u);
+  assert.match(operation, /def _probe\(self\):/u);
+  assert.match(operation, /"infrastructure-subset"/u);
   assert.doesNotMatch(operation, /^class (?:_FixedJournal|OperationAuthority):/mu);
   assert.doesNotMatch(operation, /^def _open_io\(\):/mu);
   assert.match(operation, /\) = _make_authority\(\)/u);
@@ -57,7 +62,9 @@ test("S0 fixed operation foundation fails closed", async () => {
   assert.match(operation, /fs\._mount_id\(identity, self\.control, fs\.FDINFO_IDENTITY_FLAGS\)/u);
   assert.match(operation, /generation == original and generation\.key == original\.key/u);
   assert.match(operation, /def create_fixed_operation_test_local\(authority, body\):/u);
-  assert.match(operation, /validate_layout\(self, records, journal_generation\)/u);
+  assert.match(operation, /validate_layout\(self, records, journal_generation, known_phase=None\)/u);
+  assert.match(operation, /os\.O_RDWR \| os\.O_APPEND/u);
+  assert.match(operation, /os\.pread\(descriptor\.number, len\(line\) \+ 1, expected\) == line/u);
   assert.match(operation, /records\[1\]\.body\["state_parent"\]/u);
   assert.match(operation, /LOCK_EX \| fcntl\.LOCK_NB/u);
   assert.match(operation, /fs\._observe_child\(self\.state, LOCK_NAME/u);

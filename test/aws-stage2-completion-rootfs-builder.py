@@ -55,7 +55,7 @@ def portable_tests():
     assert "def _bootstrap(" in source and "_bootstrap(" not in source.split("def main", 1)[1]
     assert "alias_opened + target_opened" in source and "transferred or operation is None" in source
     assert "def _stable_active(" in source and "def _mark_leased(" in source
-    assert 'record_type not in {"leased", "release-authorized"}' in source
+    assert 'record_type not in {"leased", "release-authorized", "prestage-release-authorized"}' in source
     assert "_append_mechanical" not in source and source.count("ledger._append_record(") == 1
     assert source.count("ledger._append_leased_record(") == 1
     assert "active.records + (record,)" not in source
@@ -96,7 +96,9 @@ def portable_tests():
     assert cleanup_loop.count("_open_cleanup_session(") == 1
     assert all(name not in cleanup_loop for name in ("_stable_active", "_walk_entries", "_reconcile_ledger"))
     retirement = source.split("def _retire_absent(", 1)[1].split("\ndef ", 1)[0]
-    assert retirement.count("_open_cleanup_session(") == 2
+    assert retirement.count("_open_cleanup_session(") == 1
+    assert 'boundary.status = "retired"' in retirement
+    assert "return _unlink_ledger(boundary, control)" in retirement
     resumed = source.split("def _resume_observed(", 1)[1].split("\ndef ", 1)[0]
     assert resumed.count("_relative_parent_chain(") == resumed.count("_chain_with_child(") == 3
     final_zero = source.split("def _unlink_ledger(", 1)[1].split("\ndef ", 1)[0]

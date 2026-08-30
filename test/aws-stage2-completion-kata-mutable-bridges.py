@@ -37,7 +37,7 @@ def runtime_removal_crash(root):
         target.rmdir()
         os._exit(93)
 
-    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+    with patch.object(execution.operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
          patch.object(execution.operation, "_open_base_chain", return_value=chain), \
          patch.object(execution.runtime, "_retain_private_containerd",
                       side_effect=lambda journal, node, process_owner, control: daemon
@@ -50,12 +50,17 @@ def runtime_removal_crash(root):
 
 
 def runtime_removal_recovery(root):
-    """Fresh recovery at durable SHARE_ABSENT claims no removed runtime tool."""
+    """Fresh recovery at durable FIREWALL_ABSENT claims no removed runtime tool."""
     root = Path(root)
     staged = root / "kata-runtime-v1"
-    assert (root / "phase").read_text() == "SHARE_ABSENT\n" and not staged.exists()
+    assert (root / "phase").read_text() == "FIREWALL_ABSENT\n" and not staged.exists()
+    settlements = []
+    journal = SimpleNamespace(
+        runtime_recovery_history=lambda: {"runtime_network_released": True},
+        settle_runtime_phase=lambda phase, fact: settlements.append((phase, fact)),
+    )
     lifecycle = coordinator._Lifecycle(
-        recovery=True, static_custody=object(), operation=object(), rootfs=object())
+        recovery=True, static_custody=object(), operation=journal, rootfs=object())
     lazy_owner = object()
     roles = []
     completion = object()
@@ -69,9 +74,11 @@ def runtime_removal_recovery(root):
             raise AssertionError("removed staged executable role was reclaimed")
         return SimpleNamespace(role=role)
 
-    with patch.object(execution.operation, "_durable_phase", return_value="SHARE_ABSENT"), \
+    with patch.object(execution.operation, "_durable_phase", return_value="FIREWALL_ABSENT"), \
          patch.object(execution.operation, "_network_records", return_value=()), \
          patch.object(execution.operation, "_open_base_chain", return_value=chain), \
+         patch.object(execution.fs, "_enumerate_stable",
+                      return_value=SimpleNamespace(raw_names=())), \
          patch.object(execution.nft_owner, "reopen_cleanup", return_value=object()), \
          patch.object(execution.preparation, "_reconstruct_fixed_executable_owner",
                       return_value=lazy_owner), \
@@ -89,6 +96,7 @@ def runtime_removal_recovery(root):
             "containerd": "absent"}
         assert execution._remove_firewall(coordinator._owners.execution, lifecycle) == "FIREWALL_ABSENT"
     shutdown.assert_called_once_with(daemon)
+    assert len(settlements) == 1 and settlements[0][0] == "CONTAINERD_ABSENT"
     assert roles == ["ip", "nft", "tc"]
     (root / "firewall-transition").write_text("FIREWALL_ABSENT\n")
 
@@ -101,7 +109,7 @@ def runtime_removal_parent():
         (runtime_root / "bin").mkdir(parents=True)
         for name in ("containerd", "ctr"):
             (runtime_root / "bin" / name).write_bytes((name + "\n").encode())
-        (root / "phase").write_text("SHARE_ABSENT\n")
+        (root / "phase").write_text("FIREWALL_ABSENT\n")
         crashed = subprocess.run(
             (sys.executable, "-B", __file__, "--remove-runtime-crash", str(root)),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -145,13 +153,16 @@ routes = {
     "stage_runtime": (execution, "_stage_runtime", owners.execution),
     "bind_execution_mapping": (execution, "_bind_execution_mapping", owners.execution),
     "launch_task": (execution, "_launch_task", owners.execution),
+    "observe_runtime_network": (execution, "_observe_runtime_network", owners.execution),
     "prove_runtime": (execution, "_prove_runtime", owners.execution),
     "authenticate_ssh": (execution, "_authenticate_ssh", owners.execution),
     "open_existing_operation": (operation, "_open_existing_operation", owners.operation),
+    "recover_preproduction": (operation, "_recover_preproduction", owners.operation),
     "recover_pending": (operation, "_recover_pending", owners.operation),
     "revoke_readiness": (execution, "_revoke_readiness", owners.execution),
     "observe_ownership": (execution, "_observe_ownership", owners.execution),
     "stop_task": (execution, "_stop_task", owners.execution),
+    "release_network_holds": (execution, "_release_network_holds", owners.execution),
     "remove_network": (execution, "_remove_network", owners.execution),
     "remove_task": (execution, "_remove_task", owners.execution),
     "remove_container": (execution, "_remove_container", owners.execution),
@@ -189,6 +200,29 @@ for method_name, (module, route_name, expected_bridge) in routes.items():
         else: raise AssertionError(f"{method_name} swallowed fault")
     assert calls == [(expected_bridge, lifecycle)]
 
+# The production bridge consumes the retained network tools exactly once after
+# CTR_RUN and returns only the durable operation-bound runtime snapshot.
+tools = (object(), object(), object())
+runtime_network = {"snapshot_kind": "runtime", "operation_token": "a" * 64,
+                   "proof_sha256": "b" * 64}
+lifecycle.task = object()
+with patch.object(execution.process, "_claim_attested_executable",
+                  side_effect=tools), \
+     patch.object(execution.network, "_capture_fixed_baselines",
+                  return_value=lifecycle.baselines), \
+     patch.object(execution.network, "_setup_fixed_network", return_value=object()), \
+     patch.object(execution.network, "_reopen_runtime_network",
+                  return_value=lifecycle.network_owner), \
+     patch.object(execution.network, "_observe_fixed_runtime_network",
+                  return_value=runtime_network) as observed, \
+     patch.object(execution.operation, "_command_context",
+                  return_value=SimpleNamespace(operation_token="a" * 64)):
+    assert owners.capture_baselines(lifecycle) is lifecycle.baselines
+    assert owners.create_network(lifecycle) is lifecycle.network_owner
+    assert owners.observe_runtime_network(lifecycle) is runtime_network
+observed.assert_called_once_with(lifecycle.operation, *tools)
+lifecycle.runtime_network = runtime_network
+
 # Executable custody is the one static-to-mutable handoff. It consumes only the
 # exact static custody object and does not reinterpret the historical gate.
 claimed = object()
@@ -200,10 +234,15 @@ with patch.object(preparation, "_claim_fixed_executable_owner",
 
 # Linux no-KVM foundation: an absent QEMU proves QMP absence without opening
 # /dev/kvm. KVM-present success remains exclusively in the real QMP path.
-if sys.platform == "linux" and not Path(runtime.QMP_SOCKET).exists():
+if (sys.platform == "linux"
+        and not Path(runtime.KATA_QMP_SOCKET).exists()
+        and not Path(runtime.OBSERVER_QMP_SOCKET).exists()
+        and not Path(runtime.KATA_VM_DIRECTORY).exists()):
     absent = runtime.ProcessClassification(runtime.Observation.ABSENT, (), "no runtime")
     with patch.object(runtime.os, "open", wraps=runtime.os.open) as opened:
-        assert runtime._qmp_kvm(absent) == {"state": "absent"}
+        assert runtime._qmp_kvm(absent) == {
+            "state": "absent", "private_socket": "absent",
+            "observer_socket": "absent"}
     assert not any(call.args and call.args[0] == "/dev/kvm" for call in opened.call_args_list)
 
 # Narrow modules expose no public opener and contain no caller-controlled
@@ -217,6 +256,13 @@ for name in ("completion_kata_operation_bridge.py", "completion_kata_execution_b
                                                          *node.args.kwonlyargs)]
             assert not set(parameters) & {"path", "command", "argv", "callback", "retry", "fallback"}
     assert "def open_fixed" not in source
+
+execution_source = (REMOTE / "completion_kata_execution_bridge.py").read_text()
+assert "proc_passes = (proc_pass(), proc_pass())" in execution_source
+assert 'netns_identity["inode_device"]' in execution_source
+assert 'os.listdir(f"/proc/{pid}/fd")' in execution_source
+assert 'Path(runtime.SHARE_ROOT)' in execution_source
+assert 'Path(runtime.RUNTIME_ALIAS)' in execution_source
 
 # The real zero-argument coordinator still refuses at static custody before any
 # mutable bridge call; owner evidence remains a separate unavailable bridge.

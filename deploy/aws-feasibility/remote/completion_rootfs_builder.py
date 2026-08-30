@@ -1062,7 +1062,7 @@ def _current_ledger(active, control):
 
 def _append_capabilities():
     def _append(active, record_type, body, control):
-        _fail(record_type not in {"leased", "release-authorized"})
+        _fail(record_type not in {"leased", "release-authorized", "prestage-release-authorized"})
         proposal = ledger.LedgerProposal.create(record_type, body)
         raw = ledger._encode_proposal(proposal, active.writer.settled)
         record = ledger.LedgerRecord(
@@ -1127,7 +1127,10 @@ def _append_capabilities():
         )
         reconciled = ledger._reconcile_ledger(_records(active), observations)
         _fail(reconciled.status == "leased" and reconciled.lease_seen and not reconciled.cleanup_allowed)
-        return OwnedOperation(owned.locked, active, owned.operation, owned.root, owned.operation_name)
+        locked = _rebound_locked_state(
+            owned.locked, owned.locked.chain, owned.locked.state.generation,
+            observations.state_parent.generation)
+        return OwnedOperation(locked, active, owned.operation, owned.root, owned.operation_name)
 
     return _append, _append_candidate, _mark_leased
 
@@ -1200,12 +1203,13 @@ def _poisoned(function):
 
 def _session_require(session, phase=None):
     _fail(type(session) is CleanupSession and session.disposition == "active")
-    _fail(session.origin in {"prelease", "release-authorized"})
+    _fail(session.origin in {"prelease", "release-authorized", "prestage-authorized"})
     _fail(type(session.active) is ActiveLedger and type(session.active.records) is ledger.LedgerHistory)
     legal = session.active.records.legal
     _fail(session.active.node is session.active.writer.node and legal.settled == session.active.writer.settled)
     if phase is None:
-        origin_phase = "active" if session.origin == "prelease" else "release-authorized"
+        origin_phase = {"prelease": "active", "release-authorized": "release-authorized",
+                        "prestage-authorized": "prestage-release-authorized"}[session.origin]
         _fail(legal.phase == origin_phase or legal.return_phase == origin_phase)
     else:
         phases = phase if type(phase) is tuple else (phase,)
@@ -1256,6 +1260,7 @@ def _require_cleanup_model(state, observations, history, groups):
         "candidate-tar-observeable": {"candidate-tar-intent"},
         "candidate-tar-settleable": {"candidate-tar-observed"},
         "active": {"active"}, "release-authorized": {"release-authorized"},
+        "prestage-release-authorized": {"prestage-release-authorized"},
         "remove-retry": {"remove-intent"}, "remove-absence-settleable": {"remove-intent"},
         "hardlink-remove-absence-settleable": {"remove-intent"}, "remove-settleable": {"remove-observed"},
         "operation-remove-retry": {"operation-remove"}, "operation-absence-settleable": {"operation-remove"},
@@ -1277,7 +1282,7 @@ def _require_cleanup_model(state, observations, history, groups):
         _fail(parent.names == names)
         if path:
             _fail(entries.get(path) == parent.generation and parent.generation.key.kind == "directory")
-    stable = {"active", "release-authorized", "entry-absent", "remove-retry", "operation-remove-retry", "candidate-tar-abortable"}
+    stable = {"active", "release-authorized", "prestage-release-authorized", "entry-absent", "remove-retry", "operation-remove-retry", "candidate-tar-abortable"}
     if state.status in stable:
         _fail(entries == dict(state.owned))
     body = history.terminal.body_value()
@@ -1606,7 +1611,7 @@ def _cleanup_active(session, control):
     _fail(not session.owned and all(not aliases for aliases in session.groups.values()))
     boundary = _open_cleanup_session(session.active, session.locked, session.operation, session.origin, control)
     session.disposition = "finished"
-    _fail(boundary.status in {"active", "release-authorized"} and not boundary.owned)
+    _fail(boundary.status in {"active", "release-authorized", "prestage-release-authorized"} and not boundary.owned)
     return _retire(boundary, control)
 
 @_poisoned
@@ -1721,11 +1726,10 @@ def _retire_absent(session, control):
     boundary = _open_cleanup_session(session.active, session.locked, None, session.origin, control)
     session.disposition = "finished"
     _fail(boundary.status == "retirable")
-    _session_append(boundary, "retired", {"token": _token(boundary.active), "state_parent": _p(boundary.state_parent)}, control)
-    final = _open_cleanup_session(boundary.active, boundary.locked, None, boundary.origin, control)
-    boundary.disposition = "finished"
-    _fail(final.status == "retired")
-    return _unlink_ledger(final, control)
+    _session_append(boundary, "retired", {"token": _token(boundary.active),
+                                           "state_parent": _p(boundary.state_parent)}, control)
+    boundary.status = "retired"
+    return _unlink_ledger(boundary, control)
 
 @_poisoned
 def _retire(session, control, intent_exists=False):
@@ -1822,7 +1826,10 @@ def _cleanup_owned(owned, active, control):
     _release_lock(owned.locked)
     _close(owned.locked.state)
 
-def _recover_locked(chain, state, control):
+_PRESTAGE_RECOVERY = object()
+
+
+def _recover_locked(chain, state, control, recovery_key=None):
     locked = _acquire_lock(chain, state, control)
     active = operation = None
     try:
@@ -1840,7 +1847,15 @@ def _recover_locked(chain, state, control):
         if operation_names:
             _fail(operation_names == [_operation_name(_token(active))])
             operation = fs._open_path_node(locked.state, operation_names[0], "directory", control)
-        session = _open_cleanup_session(active, locked, operation, "release-authorized" if active.records.legal.phase == "release-authorized" or active.records.legal.return_phase == "release-authorized" or active.records.legal.lease_snapshot is not None else "prelease", control)
+        legal = active.records.legal
+        if legal.phase == "prestage-release-authorized" or legal.return_phase == "prestage-release-authorized":
+            _fail(recovery_key is _PRESTAGE_RECOVERY)
+            origin = "prestage-authorized"
+        elif legal.phase == "release-authorized" or legal.return_phase == "release-authorized":
+            origin = "release-authorized"
+        else:
+            origin = "prelease"
+        session = _open_cleanup_session(active, locked, operation, origin, control)
         active = session.active
         status = session.status
         if status in {"genesis-settleable", "operation-create-settleable"}:
@@ -1849,7 +1864,7 @@ def _recover_locked(chain, state, control):
             _abort(session, "genesis-abort", control)
         elif status == "operation-abortable":
             _abort(session, "operation-abort", control)
-        elif status in {"active", "release-authorized"}:
+        elif status in {"active", "release-authorized", "prestage-release-authorized"}:
             _fail(operation is not None)
             _cleanup_active(session, control)
         elif status == "entry-absent":
@@ -1884,8 +1899,9 @@ def _recover_locked(chain, state, control):
             except BaseException as close_error:
                 error = fs.RootfsFsError(error, close_error)
         _release_lock(locked, error)
-def _recover_fixed_unmasked(control):
-    _fail(Path(__file__).resolve() == FIXED_MODULE)
+def _recover_fixed_unmasked(control, recovery_key=None):
+    _fail(Path(__file__).resolve() == FIXED_MODULE
+          and recovery_key in {None, _PRESTAGE_RECOVERY})
     chain = _open_base_chain(control)
     try:
         state = _open_state(chain, control)
@@ -1893,7 +1909,7 @@ def _recover_fixed_unmasked(control):
             fs._close_chain(chain)
             return
         try:
-            _recover_locked(chain, state, control)
+            _recover_locked(chain, state, control, recovery_key)
             _close(state)
             fs._close_chain(chain)
         except BaseException as error:
@@ -1907,7 +1923,12 @@ def _recover_fixed_unmasked(control):
 
 
 def _recover_fixed(control):
-    return _fixed_umask(_recover_fixed_unmasked, control)
+    return _fixed_umask(_recover_fixed_unmasked, control, None)
+
+
+def _recover_prestage_fixed(control):
+    """The cross-owner lease route only; generic builder recovery preserves."""
+    return _fixed_umask(_recover_fixed_unmasked, control, _PRESTAGE_RECOVERY)
 
 
 def _kata_authorized_absence(context, control):

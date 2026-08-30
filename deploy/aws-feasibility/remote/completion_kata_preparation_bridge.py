@@ -14,7 +14,8 @@ import completion_rootfs_fs as rootfs_fs
 import completion_rootfs_lease as rootfs_lease
 
 _ROOTFS_DEADLINE_NS = 3_600_000_000_000
-_claim_static = admission._take_static_preparation_issuer()
+_claim_static = admission._claim_static_preparation
+_claim_recovery_static = admission._claim_recovery_static_preparation
 _states = {}
 
 
@@ -32,14 +33,22 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _claim_fixed_static_preparation():
-    """Authenticate the sole fixed V2 package and retain its source files."""
-    custody = _claim_static()
+def _record_static_custody(custody):
     _states[custody] = {
         "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
-        "executables": None, "abandoned": False,
+        "executables": None, "prepared": None, "abandoned": False,
     }
     return custody
+
+
+def _claim_fixed_static_preparation():
+    """Authenticate the sole forward V2 package and retain its source files."""
+    return _record_static_custody(_claim_static())
+
+
+def _claim_fixed_recovery_static_preparation():
+    """Authenticate the sole cleanup-only V2 package."""
+    return _record_static_custody(_claim_recovery_static())
 
 
 def _fixed_source_approval(custody):
@@ -140,11 +149,45 @@ def _issue_fixed_executable_owner(custody):
         raise BaseExceptionGroup("fixed executable owner issuance failed", errors)
 
 
+def _claim_fixed_prepared_runtime(custody):
+    """Claim the sole exact static-only runtime without accepting a pathname."""
+    state = _states.get(custody)
+    _require(state is not None and state["prepared"] is None)
+    state["prepared"] = admission._claim_prepared_runtime_custody(custody)
+    return state["prepared"]
+
+
 def _claim_fixed_executable_owner(custody):
     """Forward-only executable handoff after live rootfs mapping custody."""
     state = _states.get(custody)
     _require(state is not None and state["mapping_consumed"])
     return _issue_fixed_executable_owner(custody)
+
+
+def _claim_fixed_recovery_executable_owner(custody):
+    """Install reviewed host-tool policy before parsing an admitted journal.
+
+    The journal's command lineage contains the hashes that this immutable
+    policy validates, so recovery must establish the policy from static
+    custody first.  The owner grants cleanup tools only after the journal is
+    independently parsed and source-bound.
+    """
+    state = _states.get(custody)
+    _require(state is not None and state["lease"] is None
+             and state["mapping"] is None and state["executables"] is None)
+    owner = process._open_static_attested_executable_owner(custody)
+    try:
+        for role in ("ssh", "ssh-keygen"):
+            retained = process._claim_attested_executable(owner, role)
+            process._release_attested_executable(retained)
+    except BaseException as error:
+        try:
+            process._abort_attested_executable_owner(owner)
+        except BaseException as close_error:
+            raise BaseExceptionGroup("recovery policy owner close", [error, close_error])
+        raise
+    state["executables"] = owner
+    return owner
 
 
 def _reconstruct_fixed_executable_owner(custody, journal):
@@ -157,15 +200,27 @@ def _reconstruct_fixed_executable_owner(custody, journal):
     """
     state = _states.get(custody)
     _require(state is not None and state["lease"] is None
-             and state["mapping"] is None and state["executables"] is None)
+             and state["mapping"] is None)
     approval = _fixed_source_approval(custody)
     identity = journal.reconstruction_identity()
     _require(identity["source_revision"] == approval.revision
              and identity["source_manifest_sha256"] == approval.manifest_sha256
              and identity["phase"] != "UNCERTAIN")
-    owner = process._open_static_attested_executable_owner(custody)
-    state["executables"] = owner
+    owner = state["executables"]
+    if owner is None:
+        owner = _issue_fixed_executable_owner(custody)
+    _require(type(owner) is process.AttestedExecutableOwner)
     return owner
+
+
+def _retire_fixed_executable_owner(custody, owner):
+    """Close the exact executable owner after all command and observer use."""
+    state = _states.get(custody)
+    _require(state is not None and state["executables"] is owner
+             and type(owner) is process.AttestedExecutableOwner)
+    process._abort_attested_executable_owner(owner)
+    state["executables"] = None
+    admission._retire_consumed_executable_role_custody(custody)
 
 
 def _abandon_fixed_rootfs(custody, lease):

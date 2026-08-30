@@ -181,7 +181,7 @@ def _private_key(raw, expected_blob, expected_public, comment):
     padding = private_blob[inner:]
     _fail(check1 == check2 and key_type == b"ssh-ed25519")
     _fail(public == expected_public and len(private) == 64 and private[32:] == public)
-    _fail(private_comment == comment and 1 <= len(padding) <= 8)
+    _fail(private_comment == comment and 0 <= len(padding) <= 8)
     _fail(padding == bytes(range(1, len(padding) + 1)))
 
 def _validate_key_material(value):
@@ -397,7 +397,14 @@ def _parse_mountinfo(raw, source):
         mount_root = _mount_unescape(fields[3])
         mountpoint = _mount_unescape(fields[4])
         mount_source = _mount_unescape(fields[separator + 2])
-        _fail(mountpoint.startswith(b"/") and mount_root.startswith(b"/"))
+        namespace_prefix = next((prefix for prefix in (b"mnt:[", b"net:[")
+                                 if mount_root.startswith(prefix)), None)
+        namespace_root = (fields[separator + 1] == mount_source == b"nsfs"
+                          and namespace_prefix is not None and mount_root.endswith(b"]")
+                          and mount_root[len(namespace_prefix):-1].isdigit()
+                          and int(mount_root[len(namespace_prefix):-1]) > 0)
+        _fail(mountpoint.startswith(b"/")
+              and (mount_root.startswith(b"/") or namespace_root))
         for candidate in (mount_root, mountpoint, mount_source):
             _fail(not (candidate == source_raw or candidate.startswith(source_raw + b"/")))
     return len(lines)
@@ -1197,6 +1204,10 @@ def _owner_routes():
 
     production = {}
 
+    def public_derivations(value):
+        _fail(type(value) is bytes and value.endswith(b"\n") and value.count(b" ") == 2)
+        return (value.rsplit(b" ", 1)[0] + b"\n", value)
+
     def fixed_key_material(state, first_serial):
         import completion_kata_process as process
         _fail(type(state["key_executable"]) is process.RetainedExecutable)
@@ -1237,7 +1248,13 @@ def _owner_routes():
                 _fail(type(outcome) is process.ProcessOutcome
                       and type(receipt) is operation.DurableCommandOutcome)
                 _fail(receipt.command_serial == serial and outcome.command_id == receipt.command_id)
-                if expected_stdout is not None: _fail(outcome.stdout == expected_stdout)
+                if expected_stdout is not None:
+                    accepted = ((expected_stdout,) if type(expected_stdout) is bytes
+                                else expected_stdout)
+                    _fail(type(accepted) is tuple and len(accepted) in {1, 2}
+                          and all(type(value) is bytes for value in accepted)
+                          and len(set(accepted)) == len(accepted)
+                          and outcome.stdout in accepted)
                 durable = operation._durable_command_output(
                     state["journal"], serial, receipt.command_id, receipt.binding_sha256,
                     outcome.stdout, outcome.stderr)
@@ -1270,8 +1287,8 @@ def _owner_routes():
             run(process.CommandId.SSH_KEYGEN_CLIENT, first_serial, b"")
             client_node, client_private = opened("client", 0o600, MAX_PRIVATE, client_grant)
             client_pub_node, client_public = opened("client.pub", 0o644, MAX_PUBLIC, client_pub_grant)
-            client_y = client_public.rsplit(b" ", 1)[0] + b"\n"
-            run(process.CommandId.SSH_PUBLIC_CLIENT, first_serial + 1, client_y)
+            run(process.CommandId.SSH_PUBLIC_CLIENT, first_serial + 1,
+                public_derivations(client_public))
             _fail(fs._observe_node(client_node.identity_fd, client_node.operation_fd, control)
                   == client_node.generation)
             server_grant = key_grant("server", 0o600, first_serial + 2)
@@ -1279,8 +1296,8 @@ def _owner_routes():
             run(process.CommandId.SSH_KEYGEN_SERVER, first_serial + 2, b"")
             server_node, server_private = opened("server", 0o600, MAX_PRIVATE, server_grant)
             server_pub_node, server_public = opened("server.pub", 0o644, MAX_PUBLIC, server_pub_grant)
-            server_y = server_public.rsplit(b" ", 1)[0] + b"\n"
-            run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3, server_y)
+            run(process.CommandId.SSH_PUBLIC_SERVER, first_serial + 3,
+                public_derivations(server_public))
             for node in (client_node, client_pub_node, server_node, server_pub_node):
                 _fail(fs._observe_node(node.identity_fd, node.operation_fd, control) == node.generation)
             _fail(state["journal"].command_context().command_serial == first_serial + 4)
@@ -1582,7 +1599,7 @@ def _owner_routes():
             identity = self.verify()
             _fail(state["handles"] is None)
             context = state["journal"].command_context()
-            _fail(context.lifecycle_phase == "FIREWALL_ABSENT")
+            _fail(context.lifecycle_phase == "CONTAINERD_ABSENT")
             detach = _ProductionDetachGrant(seal)
             detaches[detach] = {"operation": state["grant"], "status": "detached", "uncertain": None}
             try:
@@ -1798,7 +1815,7 @@ def _owner_routes():
                         state["journal"].record_input_removed(proof)
                     else:
                         state["journal"].record_uncertain("incomplete")
-                elif phase == "FIREWALL_ABSENT":
+                elif phase == "CONTAINERD_ABSENT":
                     state["journal"].record_input_removed(proof)
                 return proof
             finally:
@@ -1827,7 +1844,7 @@ def _owner_routes():
         journal = operation._claim_production_cleanup_operation(journal)
         _fail(type(completion) is fs.HeldNode and type(control) is fs.OperationControl)
         _fail(operation._durable_phase(journal) in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED",
-              "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"})
+              "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED", "CONTAINERD_ABSENT", "UNCERTAIN"})
         value = _ProductionInputCleanup(seal)
         production[value] = {
             "journal": journal, "completion": completion, "control": control,

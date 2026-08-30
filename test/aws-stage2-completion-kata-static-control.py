@@ -35,6 +35,25 @@ def reject(call):
     raise AssertionError("hostile static control was accepted")
 
 
+# The active file is a byte derivative, not a second caller-selected TOML.
+synthetic_base = b'''[hypervisor.qemu]\npath = "/opt/kata/bin/qemu-system-x86_64"\nenable_annotations = ["enable_iommu", "kernel_params", "kernel_verity_params"]\nenable_debug = false\nextra_monitor_socket = ""\n\n[agent.kata]\nenable_debug = false\n\n[runtime]\nenable_debug = false\n'''
+synthetic_active = preparation.derive_observer_configuration(
+    synthetic_base, require_pinned=False)
+assert synthetic_active == synthetic_base.replace(
+    b"enable_debug = false", b"enable_debug = true", 1).replace(
+    b'extra_monitor_socket = ""', b'extra_monitor_socket = "qmp"', 1)
+assert len(synthetic_active) == len(synthetic_base) + 2
+for hostile_base in (
+    synthetic_base.replace(b"enable_debug = false", b"enable_debug = true", 1),
+    synthetic_base.replace(b'extra_monitor_socket = ""', b'extra_monitor_socket = "qmp"', 1),
+    synthetic_base.replace(b"[hypervisor.qemu]", b"[hypervisor.qemu]\n[hypervisor.qemu]"),
+    synthetic_base.replace(b"enable_debug = false\nextra_monitor_socket",
+                           b"enable_debug = false\nenable_debug = false\nextra_monitor_socket", 1),
+):
+    reject(lambda value=hostile_base: preparation.derive_observer_configuration(
+        value, require_pinned=False))
+
+
 def source_implementation():
     paths = sorted(preparation.MANDATORY_SECURITY_SOURCES)
     rows = [{"path": path, "sha256": f"{(index % 15) + 1:x}" * 64, "size": index + 1}
@@ -99,19 +118,41 @@ def values():
     for expected in preparation.ARCHIVES:
         archives.append({**expected, "layout": layout(expected["role"] + "-archive"),
                          "extracted": layout(expected["role"] + "-extracted")})
+    active = {"path": preparation.KATA_ACTIVE_CONFIGURATION_PATH, "size": 32_220,
+              "sha256": "e" * 64,
+              "base_path": preparation.KATA_BASE_CONFIGURATION_PATH,
+              "base_size": 32_218,
+              "base_sha256": preparation.KATA_BASE_CONFIGURATION_SHA256,
+              "substitutions": [{"from": old.decode("ascii"), "to": new.decode("ascii")}
+                                for old, new in preparation.KATA_CONFIGURATION_SUBSTITUTIONS]}
+    base_artifact = next(row for row in artifacts if row["role"] == "configuration")
+    base_artifact.update(mode=0o644, size=32_218,
+                         sha256=preparation.KATA_BASE_CONFIGURATION_SHA256)
+    artifacts.append({"role": "active-configuration", "path": active["path"],
+                      "kind": "file", "mode": 0o400, "size": active["size"],
+                      "sha256": active["sha256"], "link_target": None})
+    artifacts.sort(key=lambda row: row["role"])
     runtime = {"version": preparation.RUNTIME_VERSION, "authority": preparation.AUTHORITY,
                "architecture": "x86_64", "archives": archives,
-               "rootfs": {"manifest_sha256": "8783c292f232842a3d1d2d35e7ac2268d591fa6e947d3984868fe33ca006e691",
+               "rootfs": {"manifest_sha256": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1",
                           "manifest_size": 1_049_443,
-                          "ustar_sha256": "47b0ab5752ae50da6bc9840345aa9ba6285bde3e5ae186c0c548acbaa83768d3",
+                          "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
                           "ustar_size": 136_905_728, "entry_count": 4_353,
                           "static_mapping_policy": {"uid": 0, "gid": 0, "nlink": 1,
                                                     "distinct_file_identities": True,
                                                     "path_basis": "rootfs-relative-no-symlink"},
                           "static_closure": static_closure()},
                "launch": {"runtime": "io.containerd.kata.v2",
-                          "configuration": {"path": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml",
-                                            "size": 1, "sha256": "e" * 64},
+                          "configuration": {"path": preparation.KATA_BASE_CONFIGURATION_PATH,
+                                            "size": 32_218,
+                                            "sha256": preparation.KATA_BASE_CONFIGURATION_SHA256},
+                          "active_configuration": active,
+                          "observer": {"private_socket": preparation.KATA_PRIVATE_QMP_SOCKET,
+                                       "observer_socket": preparation.KATA_OBSERVER_QMP_SOCKET,
+                                       "qmp_frontends": 2,
+                                       "commands": ["qmp_capabilities", "query-status", "query-kvm"],
+                                       "client_policy": "closed-query-only-full-control-endpoint",
+                                       "debug_effect": "hypervisor-debug-kernel-parameters-and-debug-threads"},
                           "containerd_configuration_sha256": "f" * 64,
                           "mount_list_sha256": "1" * 64, "shared_filesystem": "virtio-fs",
                           "hypervisor": "qemu", "fallback": "none", "artifacts": artifacts,
@@ -131,11 +172,11 @@ def values():
 implementation, runtime, package, contracts = values()
 first_control, first_members = preparation.build_control_bytes(
     implementation, runtime, package,
-    "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54",
+    "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
     contracts)
 second_control, second_members = preparation.build_control_bytes(
     copy.deepcopy(implementation), copy.deepcopy(runtime), copy.deepcopy(package),
-    "caf9082f56625dc3f55a41ad115c7c700e84a1198e60c0cd9be420d7c13b4d54",
+    "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
     copy.deepcopy(contracts))
 assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)
@@ -151,10 +192,11 @@ runtime_owner = evidence._RuntimeOwnerResult(
     runtime_mount_record_sha256="b" * 64,
     network_causal_proof_sha256="c" * 64,
     live_mapping_sha256="d" * 64,
-    qemu_process_sha256="e" * 64,
-    kvm_api=12,
-    qmp_present=True,
-    qmp_enabled=True,
+    qemu_process_sha256="e" * 64, qemu_argv_sha256="f" * 64,
+    qemu_pid=101, qemu_starttime=102, qemu_executable_device=8,
+    qemu_executable_inode=9, observer_qmp_device=10, observer_qmp_inode=11,
+    kvm_device=12, kvm_inode=13, kvm_rdev=14,
+    kvm_api=12, qmp_present=True, qmp_enabled=True,
 )
 terminal_bindings = dict(envelope.value["result_binding_base"])
 terminal_bindings["host_attestation_sha256"] = "f" * 64
@@ -263,10 +305,12 @@ with tempfile.TemporaryDirectory() as directory:
         preparation.OBSERVATION_ROOT = original_observation_root
 
 source = (REMOTE / "completion_kata_preparation.py").read_text()
-assert "/dev/kvm" not in source and "QMP_SOCKET" not in source
+assert "/dev/kvm" not in source and "socket.connect" not in source
 assert "os.getpid" not in source and "import completion_kata_coordinator" not in source
 assert "subprocess.Popen" in source and '"/usr/bin/zstd"' in source
 assert "def generate_implementation_h_candidate_control_bytes():" in source
+assert "runtime_contract.REVIEWED_ROOTFS_SHA256" not in source
+assert '"8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506", contracts' in source
 assert "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py" in preparation.MANDATORY_SECURITY_SOURCES
 bridge_source = (REMOTE / "completion_kata_preparation_bridge.py").read_text()
 assert all(word not in bridge_source for word in ("getenv", "os.environ", "/dev/kvm", "QMP"))

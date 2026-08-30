@@ -233,6 +233,31 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not module.STAGED_RUNTIME.exists() and not module.KATA_ROOT.exists()
     assert not module.ARTIFACT_ROOT.exists()
 
+# Immutable cleanup may proceed beside only an independently authenticated
+# idle rootfs owner. Active or uncertain rootfs state remains a hard stop.
+original_rootfs_idle = module._rootfs_state_idle
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    rootfs_state = module.COMPLETION_ROOT / "rootfs-v1"
+    rootfs_state.mkdir(mode=0o700)
+    module._rootfs_state_idle = lambda: True
+    module.recover_failed_preparation()
+    assert rootfs_state.is_dir() and not module.PREPARATION_ROOT.exists()
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    (module.COMPLETION_ROOT / "rootfs-v1").mkdir(mode=0o700)
+    module._rootfs_state_idle = lambda: False
+    try:
+        module.recover_failed_preparation()
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("active rootfs state did not block immutable recovery")
+    assert module.PREPARATION_ROOT.exists()
+module._rootfs_state_idle = original_rootfs_idle
+
 for cut in ("rootfs", "extract-kata", "extract-containerd", "publish"):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -250,6 +275,50 @@ for cut in ("rootfs", "extract-kata", "extract-containerd", "publish"):
             assert not module.STAGED_RUNTIME.exists()
             assert not module.KATA_ROOT.exists()
             assert not module.ARTIFACT_ROOT.exists()
+
+# A SIGTERM-style interrupted runtime download leaves no Python finally path.
+# Recovery authenticates only the exact root-created partial or its crash-cut
+# quarantine generation; changed policy is preserved.
+for suffix in (".partial", ".partial.removing"):
+    with tempfile.TemporaryDirectory() as temporary:
+        configure(Path(temporary))
+        def interrupted(pin, _deadline, suffix=suffix):
+            path = module.RUNTIME_CACHE / ("." + pin["name"] + suffix)
+            path.write_bytes(b"interrupted")
+            path.chmod(0o600)
+            raise KeyboardInterrupt()
+        module._download_runtime = interrupted
+        try:
+            module.prepare()
+        except BaseException:
+            pass
+        else:
+            raise AssertionError("interrupted runtime download unexpectedly succeeded")
+        assert not module.PREPARATION_ROOT.exists()
+        assert not module.ARTIFACT_ROOT.exists()
+
+with tempfile.TemporaryDirectory() as temporary:
+    configure(Path(temporary))
+    def changed_partial(pin, _deadline):
+        path = module.RUNTIME_CACHE / ("." + pin["name"] + ".partial")
+        path.write_bytes(b"changed-policy")
+        path.chmod(0o644)
+        raise KeyboardInterrupt()
+    module._download_runtime = changed_partial
+    try:
+        module.prepare()
+    except BaseException:
+        pass
+    else:
+        raise AssertionError("changed runtime partial unexpectedly succeeded")
+    changed = next(module.RUNTIME_CACHE.glob("*.partial"))
+    assert changed.read_bytes() == b"changed-policy"
+    # The failed rollback already settled later independent artifact custody.
+    # Correcting only the diagnostic fixture's policy exercises restart from
+    # an absent transaction-owned artifact root without hiding foreign state.
+    changed.chmod(0o600)
+    module.recover_failed_preparation()
+    assert not module.PREPARATION_ROOT.exists() and not module.ARTIFACT_ROOT.exists()
 
 # A retained exact cache object remains while transaction-created siblings are
 # removed after failure.

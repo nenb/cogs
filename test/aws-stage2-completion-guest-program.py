@@ -17,6 +17,7 @@ sys.path.insert(0, str(REMOTE))
 
 import completion_guest_workloads_v2 as guest
 import completion_guest_workloads_v3 as guest_v3
+import completion_guest_readiness_v1 as readiness
 import completion_fixtures as fixtures
 
 
@@ -173,6 +174,23 @@ snapshot_v3 = (ROOT / "test/fixtures/stage2-completion/guest-workload-v3.sh").re
 check(program_v3 == snapshot_v3, "V3 guest stdin snapshot differs")
 check(hashlib.sha256(program_v3).hexdigest() == guest_v3.GUEST_PROGRAM_SHA256,
       "V3 guest stdin digest differs")
+text_v3 = program_v3.decode("ascii")
+mount_awk_v3 = text_v3.split("/usr/bin/awk '\n", 1)[1].split("\n  ' /proc/self/mountinfo", 1)[0]
+native_mounts = """114 113 0:41 / /run/cogs-stage2-ssh rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=65536k,nr_inodes=16384,mode=700
+115 114 0:34 /cogs-stage2-ssh-v1-4b987a1b02c2312d-ssh_host_ed25519_key /run/cogs-stage2-ssh/ssh_host_ed25519_key ro,nosuid,nodev,noexec,relatime - virtiofs kataShared rw
+116 114 0:34 /cogs-stage2-ssh-v1-47c903dd2bba27ba-authorized_keys /run/cogs-stage2-ssh/authorized_keys ro,nosuid,nodev,noexec,relatime - virtiofs kataShared rw
+118 114 0:42 / /run/cogs-stage2-ssh/input ro,nosuid,nodev,noexec,relatime - virtiofs none rw
+"""
+def awk_status_v3(raw):
+    return subprocess.run(("awk", mount_awk_v3), input=raw, text=True,
+                          capture_output=True, check=False).returncode
+check(awk_status_v3(native_mounts) == 0, "native Kata guest mounts rejected")
+for hostile in (
+    native_mounts.replace("47c903dd2bba27ba", "47c903dd2bba27bg"),
+    native_mounts.replace(" - virtiofs none rw", " - virtiofs kataShared rw"),
+    native_mounts.replace("/run/cogs-stage2-ssh/input ro,", "/run/cogs-stage2-ssh/input rw,"),
+):
+    check(awk_status_v3(hostile) != 0, "hostile native Kata guest mount accepted")
 source_v3 = (REMOTE / "completion_guest_workloads_v3.py").read_bytes()
 config_v3 = json.loads(
     (ROOT / "config/stage2-completion-ssh-workload-v3.json").read_bytes())
@@ -310,5 +328,34 @@ if platform.system() == "Linux" and os.geteuid() == 0:
         result = subprocess.run(("/bin/sh", "-c", probe), capture_output=True, check=False)
         check(result.returncode == 0,
               "literal V3 installed-tree shell codec failed: " + result.stderr.decode("utf-8", "replace"))
+
+# Marker-only readiness is a distinct inert program/codec with no workload API.
+readiness_raw = readiness.guest_program_bytes()
+readiness_snapshot = (ROOT / "test/fixtures/stage2-completion/guest-readiness-v1.sh").read_bytes()
+readiness_contract = json.loads(
+    (ROOT / "config/stage2-completion-ssh-readiness-v1.json").read_bytes())
+check(readiness_raw == readiness_snapshot
+      and readiness_raw != guest_v3.guest_program_bytes()
+      and hashlib.sha256(readiness_raw).hexdigest() == readiness.GUEST_PROGRAM_SHA256
+      == readiness_contract["guest_program_sha256"], "readiness program pin")
+check(readiness_contract["guest_program_size"] == len(readiness_raw)
+      and readiness_contract["guest_output_limit"] == len(readiness.GUEST_READY_MARKER)
+      and readiness_contract["marker_sha256"] == readiness.MARKER_SHA256
+      and readiness_contract["parser_sha256"] == readiness.PARSER_SHA256
+      and readiness_contract["source_path"] ==
+          "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py"
+      and readiness_contract["source_sha256"] == hashlib.sha256(
+          (REMOTE / "completion_guest_readiness_v1.py").read_bytes()).hexdigest(),
+      "readiness contract")
+check(readiness.parse_guest_readiness_output(readiness.GUEST_READY_MARKER) ==
+      readiness.GUEST_READY_MARKER, "readiness parser")
+for hostile in (b"", readiness.GUEST_READY_MARKER[:-1],
+                readiness.GUEST_READY_MARKER + b"x",
+                readiness.GUEST_READY_MARKER * 2, b"warning\n"):
+    rejected(lambda hostile=hostile: readiness.parse_guest_readiness_output(hostile))
+check(not hasattr(readiness, "GuestWorkloadResult")
+      and not hasattr(readiness, "parse_guest_workload_output")
+      and b"COGS_STAGE2_RESULT" not in readiness_raw,
+      "readiness cannot reach workload codec")
 
 print("completion guest workload program tests passed")

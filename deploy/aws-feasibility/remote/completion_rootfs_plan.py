@@ -173,6 +173,13 @@ _ACCOUNT_LINES = {
     "etc/shadow": b"sshd:!:0:0:99999:7:::\n",
     "etc/gshadow": b"sshd:!::\n",
 }
+_ROOT_SHADOW_SOURCE = b"root:*:20627:0:99999:7:::"
+# OpenSSH treats leading `!` and `*` as account locks even for public-key auth
+# when PAM is disabled.  `x` is nonempty and unlocked by that rule, but cannot
+# be a crypt(3) result (traditional hashes are 13 bytes; modern hashes are
+# modular `$...` strings).  Password and keyboard-interactive auth remain off.
+_ROOT_SHADOW_PASSWORD = b"x"
+_ROOT_SHADOW_RESULT = b"root:" + _ROOT_SHADOW_PASSWORD + b":20627:0:99999:7:::"
 _SSHD_CONFIG = b"""Port 22
 ListenAddress 192.0.2.2
 HostKey /run/cogs-stage2-ssh/ssh_host_ed25519_key
@@ -358,6 +365,22 @@ def _require_accounts(plan):
         _fail(all(line.split(":", 1)[0] != "sshd" for line in lines))
         if path in {"etc/passwd", "etc/group"}:
             _fail(all(parts[2] != "101" for parts in (line.split(":") for line in lines)))
+        if path == "etc/shadow":
+            shadow_lines = raw.splitlines()
+            _fail(shadow_lines[0] == _ROOT_SHADOW_SOURCE)
+            _fail(sum(line.startswith(b"root:") for line in shadow_lines) == 1)
+
+
+def _account_result(path, raw):
+    _fail(path in _ACCOUNT_LINES and type(raw) is bytes and raw.endswith(b"\n"))
+    if path == "etc/shadow":
+        lines = raw.splitlines()
+        _fail(lines and lines[0] == _ROOT_SHADOW_SOURCE)
+        _fail(sum(line.startswith(b"root:") for line in lines) == 1)
+        _fail(_ROOT_SHADOW_PASSWORD and _ROOT_SHADOW_PASSWORD[:1] not in {b"!", b"*"})
+        lines[0] = _ROOT_SHADOW_RESULT
+        raw = b"\n".join(lines) + b"\n"
+    return raw + _ACCOUNT_LINES[path]
 
 
 def fixed_transitions(source_plan):
@@ -366,7 +389,7 @@ def fixed_transitions(source_plan):
     _fail(all(path not in entries for path in ("etc/ssh/sshd_config", "run/sshd", "run/cogs-stage2-ssh")))
     transitions = []
     for path in sorted(_ACCOUNT_EXPECTED, key=lambda value: value.encode("utf-8")):
-        content = bytes(entries[path].content()) + _ACCOUNT_LINES[path]
+        content = _account_result(path, bytes(entries[path].content()))
         result = _generated_file(path, content, entries[path].record.mode, entries[path].record.gid)
         transitions.append(Transition(path, "replace", _ACCOUNT_EXPECTED[path], result))
     transitions.extend(

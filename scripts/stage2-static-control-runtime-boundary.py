@@ -22,7 +22,7 @@ MAX_FDS_PER_PROCESS = 4_096
 MAX_TOTAL_FDS = 131_072
 MAX_PROC_TEXT = 64 * 1024
 WORKFLOW_PATH = ".github/workflows/stage2-local-static-control-candidate.yml"
-NORMALIZED_WORKFLOW_SHA256 = "790984535150dffc9369883eb4dad8a0120e8eadaffe89d0a0ac3cbadbee978d"
+NORMALIZED_WORKFLOW_SHA256 = "4b775170b2ce0740bcf6833b2b9bf8e9a68135dbd217fbd51f59c95ac85f006e"
 REVIEWED_HEAD_ASSIGNMENT = re.compile(
     rb'REVIEWED_IMPLEMENTATION_HEAD = "[0-9a-f]{40}"')
 POLICY = {
@@ -31,11 +31,11 @@ POLICY = {
         "effect": "fixed-source-materialization; reviewed child executable is isolated git cat-file only",
     },
     "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py": {
-        "sha256": "ccf617aa6b5f0ec078d522265d2d5919500854f5155f496bc3f271d371cbdc8d",
+        "sha256": "14692d38c079e95ca980b5031fbedb484eca304a88e7c9e163e01995302bb413",
         "effect": "immutable HTTPS acquisition and archive extraction only; runtime launch surfaces forbidden",
     },
     "deploy/aws-feasibility/remote/completion_kata_preparation.py": {
-        "sha256": "be7743e0d06f63e1b184c4c7e29267dd7a81cf6374d9de28797bdd4b8103cedc",
+        "sha256": "97fd32fe47e020efbdd59cc4fb51605a1f49d1447a5ef88fd90312596cb49347",
         "effect": "deterministic static description only; reviewed child executable is zstd decompression only",
     },
 }

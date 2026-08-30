@@ -1,0 +1,14 @@
+{
+  "cleanup_reserve_ns": 30000000000,
+  "command_id": "SSH_READINESS",
+  "guest_output_limit": 29,
+  "guest_program_sha256": "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab",
+  "guest_program_size": 168,
+  "marker_sha256": "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010",
+  "parser": "completion_guest_readiness_v1.parse_guest_readiness_output",
+  "parser_sha256": "65bda4ab75ce62a1d90de65df9a672ae5bb26713a0bfb0ec35aaa7a1d9bd810d",
+  "source_path": "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
+  "source_sha256": "91b64fc166e6fd5b48ce906ce45f14e75345a9fcd1056dcc36a5bf51b67455c9",
+  "total_deadline_ns": 1200000000000,
+  "version": "cogs.stage2-completion-ssh-readiness/v1"
+}

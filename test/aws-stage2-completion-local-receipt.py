@@ -112,11 +112,28 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
         rows.append(record(len(rows), phase, body))
     runtime = evidence._RuntimeOwnerResult(
-        token, mount.body["issuance_sha256"], causal.body["causal_proof_sha256"],
-        "9" * 64, ownership.body["proof_sha256"], 12, True, True)
+        operation_token=token,
+        runtime_mount_record_sha256=mount.body["issuance_sha256"],
+        network_causal_proof_sha256=causal.body["causal_proof_sha256"],
+        live_mapping_sha256="9" * 64,
+        qemu_process_sha256=ownership.body["proof_sha256"],
+        qemu_argv_sha256="a" * 64, qemu_pid=101, qemu_starttime=102,
+        qemu_executable_device=8, qemu_executable_inode=9,
+        observer_qmp_device=10, observer_qmp_inode=11,
+        kvm_device=12, kvm_inode=13, kvm_rdev=14,
+        kvm_api=12, qmp_present=True, qmp_enabled=True)
     platform = evidence._PlatformOwnerResult(
-        token, runtime.live_mapping_sha256, runtime.qemu_process_sha256,
-        12, True, True)
+        operation_token=token, live_mapping_sha256=runtime.live_mapping_sha256,
+        qemu_process_sha256=runtime.qemu_process_sha256,
+        qemu_argv_sha256=runtime.qemu_argv_sha256,
+        qemu_pid=runtime.qemu_pid, qemu_starttime=runtime.qemu_starttime,
+        qemu_executable_device=runtime.qemu_executable_device,
+        qemu_executable_inode=runtime.qemu_executable_inode,
+        observer_qmp_device=runtime.observer_qmp_device,
+        observer_qmp_inode=runtime.observer_qmp_inode,
+        kvm_device=runtime.kvm_device, kvm_inode=runtime.kvm_inode,
+        kvm_rdev=runtime.kvm_rdev, kvm_api=12,
+        qmp_present=True, qmp_enabled=True)
     residue = evidence._ResidueOwnerResult(token, "8" * 64, local.RESIDUE_FACTS)
     bindings = {
         "source_head": genesis["source_revision"],
@@ -197,12 +214,31 @@ try:
           "guest durations were not represented as exact nanoseconds")
     check([row["phase"] for row in report["teardown"]] == list(local.TEARDOWN_PHASES),
           "journal-to-report teardown mapping differs")
-    check(evidence.REPORT_TEARDOWN_SOURCES[5] == ("RUNTIME_ABSENT",)
+    check(evidence.REPORT_TEARDOWN_SOURCES[3] == (
+              "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT")
+          and evidence.REPORT_TEARDOWN_SOURCES[4] == (
+              "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT")
           and evidence.REPORT_TEARDOWN_SOURCES[6] == ("SHARE_ABSENT",)
-          and evidence.REPORT_TEARDOWN_SOURCES[8] == ("RESIDUE:containerd_processes",)
+          and evidence.REPORT_TEARDOWN_SOURCES[8] == ("CONTAINERD_ABSENT",)
           and evidence.REPORT_TEARDOWN_SOURCES[10] == (
               "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"),
-          "historical journal phase mapping was implicit")
+          "truthful owner-derived journal phase mapping differs")
+    active_binding = report["operation"]["binding_sha256"]
+    for mandatory in ("RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_NETWORK_RELEASED_V1",
+                      "CONTAINERD_ABSENT"):
+        missing = tuple(row for row in records if row.record_type != mandatory)
+        rejected(lambda missing=missing: evidence._report_teardown(
+            missing, residue, active_binding), evidence.LocalEvidenceError,
+            f"residue substituted for applicable {mandatory}")
+    ordered = list(records)
+    left = next(index for index, row in enumerate(ordered)
+                if row.record_type == "RUNTIME_ABSENT")
+    right = next(index for index, row in enumerate(ordered)
+                 if row.record_type == "RUNTIME_NETWORK_RELEASED_V1")
+    ordered[left] = replace(ordered[left], sequence=ordered[right].sequence)
+    ordered[right] = replace(ordered[right], sequence=records[left].sequence)
+    rejected(lambda: evidence._ordered_phases(tuple(ordered)), evidence.LocalEvidenceError,
+             "adjacent runtime release reorder accepted")
     rejected(lambda: consume(private_receipt), receipt_model.LocalReceiptError,
              "private receipt replay succeeded")
 
@@ -451,10 +487,8 @@ try:
         ("journal", lambda journal, runtime_value, custody_value: (
             evidence._RetiredJournalOwnerResult(b"replaced-journal\n"), runtime_value, custody_value)),
         ("runtime", lambda journal, runtime_value, custody_value: (
-            journal, evidence._RuntimeOwnerResult(runtime_value.operation_token,
-                runtime_value.runtime_mount_record_sha256,
-                runtime_value.network_causal_proof_sha256, "0" * 63 + "1",
-                runtime_value.qemu_process_sha256, 12, True, True), custody_value)),
+            journal, replace(runtime_value, live_mapping_sha256="0" * 63 + "1"),
+            custody_value)),
         ("binding", lambda journal, runtime_value, custody_value: (
             journal, runtime_value, {**custody_value, "final_pin_sha256": "0" * 64})),
     ):

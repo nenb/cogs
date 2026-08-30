@@ -42,7 +42,7 @@ def contract_rejected(raw):
 # Historical process-only snapshots remain byte stable; V3 is separate.
 snapshots = {name: (argv, stdin, deadline, fds) for name, argv, stdin, deadline, fds in process._fixed_spec_snapshots_for_tests()}
 assert snapshots["CTR_TASK_TERM"] == ((
-    "/usr/bin/ctr", "--address", process.CONTAINERD_SOCKET,
+    "/usr/bin/ctr", "--address", process.kata_operation.BASE + "/kata-runtime-v1/containerd.sock",
     "--namespace", "cogs-stage2-completion-v1", "tasks", "kill",
     "--signal", "SIGTERM", "cogs-stage2-ssh-v1",
 ), b"", "task-term", ())
@@ -89,6 +89,26 @@ process_source = (REMOTE / "completion_kata_process.py").read_text()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
 rejected(lambda: process._start_fixed_daemon(object(), object()))
+socket_generations = __import__("inspect").getclosurevars(process._verify_fixed_daemon).nonlocals["socket_generations"]
+if not hasattr(process.os, "O_PATH"): process.os.O_PATH = 0
+def socket_table(first=111, second=222):
+    return (b"Num RefCount Protocol Flags Type St Inode Path\n"
+            b"000: 00000002 00000000 00010000 0001 01 " + str(first).encode() + b" " + process.CONTAINERD_SOCKET.encode() + b"\n"
+            b"001: 00000002 00000000 00010000 0001 01 " + str(second).encode() + b" " + process.CONTAINERD_TTRPC_SOCKET.encode() + b"\n")
+root_socket = {"uid": 0, "gid": 0, "nlink": 1, "device": 7, "inode": 8}
+ttrpc_socket = {**root_socket, "inode": 9}
+with patch.object(process.os, "open", side_effect=[10, 11, 12]), patch.object(process.os, "read", side_effect=[socket_table(), b""]), \
+     patch.object(process.os, "close"), patch.object(process.os, "listdir", return_value=["3", "4"]), \
+     patch.object(process.os, "readlink", side_effect=["socket:[111]", "socket:[222]"]), \
+     patch.object(process, "_host_generation", side_effect=[root_socket, ttrpc_socket]):
+    assert socket_generations(41) == {"s": {"generation": root_socket, "fd_inode": 111},
+                                      "s.ttrpc": {"generation": ttrpc_socket, "fd_inode": 222}}
+# Deterministic process/socket readiness rejects a companion listener not held
+# by the exact daemon even though both root-owned pathnames exist.
+with patch.object(process.os, "open", side_effect=[10, 11, 12]), patch.object(process.os, "read", side_effect=[socket_table(), b""]), \
+     patch.object(process.os, "close"), patch.object(process.os, "listdir", return_value=["3"]), \
+     patch.object(process.os, "readlink", return_value="socket:[111]"), patch.object(process, "_host_generation", side_effect=[root_socket, ttrpc_socket]):
+    rejected(lambda: socket_generations(41))
 assert process.NFT_INPUT.endswith(b'add rule inet cogs_stage2_ssh_v1 forward oifname "c42h0" drop\n')
 unissued = {item.command_id: item for item in process._unissued_spec_snapshots_for_tests()}
 assert unissued["IP_NETNS_ADD"].tool_contract == "ip"
@@ -102,7 +122,10 @@ assert unissued["NFT_INSTALL"].argv_tail == ("-f", "-")
 assert unissued["NFT_INSTALL"].stdin == process.NFT_INPUT
 assert snapshots["SSH_READY"][0][-2:] == ("root@192.0.2.2", "/bin/sh -s")
 assert snapshots["SSH_READY"][2:] == ("ssh", (200, 201))
-assert len(snapshots) == 12
+assert snapshots["SSH_READINESS"][0] == snapshots["SSH_READY"][0]
+assert snapshots["SSH_READINESS"][1] != snapshots["SSH_READY"][1]
+assert snapshots["SSH_READINESS"][2:] == ("ssh", (200, 201))
+assert len(snapshots) == 13
 rejected(lambda: process._spec("IP_NETNS_ADD"))
 rejected(lambda: process._test_spec("ok"))
 BOOT_A = "12345678-1234-1234-1234-123456789abc"
@@ -253,22 +276,26 @@ int main(int argc, char **argv) {
 
 
 DAEMON = r'''#include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/un.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-static const char *path; static int listener;
-static void stop(int signal_number) { (void)signal_number; close(listener); unlink(path); _exit(0); }
+static char paths[2][108]; static int listeners[2], accepted[64], accepted_count;
+static void stop(int signal_number) { (void)signal_number; for(int i=0;i<accepted_count;i++)close(accepted[i]); for(int i=0;i<2;i++){close(listeners[i]);unlink(paths[i]);} _exit(0); }
 int main(int argc, char **argv) {
-  path = 0;
+  const char *path = 0;
   for (int i=1; i+1<argc; ++i) if (!strcmp(argv[i],"--address")) path=argv[i+1];
-  if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 90;
-  listener=socket(AF_UNIX,SOCK_STREAM,0);
-  struct sockaddr_un address={.sun_family=AF_UNIX};
-  memcpy(address.sun_path,path,strlen(path)+1); unlink(path);
-  if(listener<0||bind(listener,(void*)&address,sizeof(address))||listen(listener,1))return 91;
+  if (!path || strlen(path)+strlen(".ttrpc") >= sizeof(paths[0])) return 90;
+  size_t length=strlen(path); memcpy(paths[0],path,length+1); memcpy(paths[1],path,length); memcpy(paths[1]+length,".ttrpc",7);
+  for(int i=0;i<2;i++){ listeners[i]=socket(AF_UNIX,SOCK_STREAM,0); struct sockaddr_un address={.sun_family=AF_UNIX};
+    memcpy(address.sun_path,paths[i],strlen(paths[i])+1); unlink(paths[i]);
+    if(listeners[i]<0||bind(listeners[i],(void*)&address,sizeof(address))||listen(listeners[i],1))return 91; }
   signal(SIGTERM,stop);
-  for(;;)pause();
+  for(;;){ fd_set reads; FD_ZERO(&reads); int high=0; for(int i=0;i<2;i++){FD_SET(listeners[i],&reads);if(listeners[i]>high)high=listeners[i];}
+    if(select(high+1,&reads,0,0,0)>0)for(int i=0;i<2;i++)if(FD_ISSET(listeners[i],&reads)&&accepted_count<64){int fd=accept(listeners[i],0,0);if(fd>=0)accepted[accepted_count++]=fd;} }
+
 }
 '''
 
@@ -277,8 +304,8 @@ def authentic_daemon_transaction_profile():
     """Run real child/cgroup transactions beside one retained dummy daemon."""
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.geteuid() != 0 or not os.access(process.CGROUP_ROOT, os.W_OK):
         return False
-    saved = (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
-             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR)
+    saved = (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET, process.CONTAINERD_ROOT,
+             process.CONTAINERD_STATE, process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR)
     with tempfile.TemporaryDirectory(dir="/tmp") as directory:
         root = Path(directory); daemon_path = root / "containerd"; source = root / "daemon.c"
         source.write_text(DAEMON, encoding="ascii")
@@ -286,10 +313,11 @@ def authentic_daemon_transaction_profile():
         runtime = root / "runtime"; runtime.mkdir(); (runtime / "root").mkdir(); (runtime / "state").mkdir()
         (runtime / "config").write_bytes(b"")
         process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT = str(runtime / "socket"), str(runtime / "root")
+        process.CONTAINERD_TTRPC_SOCKET = process.CONTAINERD_SOCKET + ".ttrpc"
         process.CONTAINERD_STATE, process.CONTAINERD_CONFIG = str(runtime / "state"), str(runtime / "config")
         process.STAGED_CONTAINERD, process.STAGED_CTR = str(daemon_path), str(root / "ctr")
         class Journal:
-            def __init__(self): self.serial = 0; self.daemon = None
+            def __init__(self): self.serial = 0; self.daemon = None; self.launched = False; self.runtime_succeeded = False
             def command_context(self):
                 return process.kata_operation.CommandContext(
                     "b" * 64, {"mount_id": 1, "device": 2, "inode": 3, "kind": "file"},
@@ -308,6 +336,14 @@ def authentic_daemon_transaction_profile():
                 process.kata_operation._validate_body("DAEMON_RETAINED_V2", body); self.daemon = body; self.serial += 1; return body
             def record_daemon_outcome(self, body):
                 process.kata_operation._validate_body("DAEMON_OUTCOME_V2", body); return body
+            def runtime_recovery_history(self):
+                run = {"command_id": "CTR_RUN", "command_serial": 91,
+                       "binding_sha256": "9" * 64}
+                outcome = {**run, "outcome": "exited", "status": 0,
+                           "uncertain": False}
+                return {"launches": ({"command_id": "CTR_RUN"},) if self.launched else (),
+                        "intents": (run,) if self.runtime_succeeded else (),
+                        "outcomes": (outcome,) if self.runtime_succeeded else ()}
         daemon_fd = os.open(daemon_path, os.O_RDONLY | os.O_CLOEXEC)
         true_fd = os.open("/usr/bin/true", os.O_RDONLY | os.O_CLOEXEC)
         def retained(role, path, descriptor):
@@ -317,24 +353,51 @@ def authentic_daemon_transaction_profile():
         daemon_executable = retained("containerd", process.STAGED_CONTAINERD, daemon_fd)
         ctr_executable = retained("ctr", process.STAGED_CTR, true_fd)
         try:
-            for fault in (None, "foreign-child", "foreign-leaf", "post-fork"):
+            for fault in (None, "slow-custody", "accepted-socket", "runtime-leaf", "foreign-child", "foreign-leaf", "post-fork"):
                 journal = Journal(); owner = process._start_fixed_daemon(journal, daemon_executable)
                 profile = process._fixed_daemon_transaction_profile(owner, journal)
-                foreign_pid = None; foreign_leaf = process.CGROUP_BASE + "/foreign"
+                assert process._active_fixed_daemon_profile(journal) == profile
+                assert process._active_fixed_daemon_profile(object()) is None
+                foreign_pid = None; accepted_socket = None
+                foreign_leaf = process.CGROUP_BASE + "/foreign"
+                runtime_leaf = process.CGROUP_BASE + "/kata_" + process.kata_runtime.CONTAINER_ID
+                overhead_base = process.KATA_OVERHEAD_BASE
+                overhead_leaf = overhead_base + "/" + process.kata_runtime.CONTAINER_ID
                 try:
                     assert process._child_census() == (profile.pid,)
+                    recovery_errors = []
+                    assert process._recover_cgroup(
+                        process.CGROUP_BASE + "/absent-pending-command", None,
+                        process._boottime_ns() + 1_000_000_000,
+                        {"term": False, "kill": False}, recovery_errors) == (True, True)
+                    assert not recovery_errors and os.path.isdir(profile.cgroup_path)
+                    if fault == "accepted-socket":
+                        socket_module = __import__("socket")
+                        accepted_socket = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+                        accepted_socket.connect(process.CONTAINERD_TTRPC_SOCKET); time.sleep(0.05)
+                        assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
+                    if fault == "runtime-leaf":
+                        os.mkdir(runtime_leaf, 0o700)
+                        os.mkdir(overhead_base, 0o700); os.mkdir(overhead_leaf, 0o700)
+                        journal.runtime_succeeded = True
+                        profile = process._fixed_daemon_transaction_profile(owner, journal)
+                        assert profile.runtime_leaf_name == "kata_" + process.kata_runtime.CONTAINER_ID
                     if fault == "foreign-child":
                         foreign_pid = os.fork()
                         if foreign_pid == 0: time.sleep(30); os._exit(0)
                     if fault == "foreign-leaf": os.mkdir(foreign_leaf, 0o700)
                     fixed = process._bind_ctr_extension(process.CommandId.CTR_TASK_LIST)
-                    patches = [patch.object(process.kata_runtime, "_verify_runtime_consumption", return_value=None)]
+                    custody_check = ((lambda *_args: time.sleep(3))
+                                     if fault == "slow-custody" else (lambda *_args: None))
+                    patches = [patch.object(process.kata_runtime, "_verify_runtime_consumption",
+                                            side_effect=custody_check)]
                     if fault == "post-fork": patches.append(patch.object(
                         process, "_identity", side_effect=process.ProcessError("fault after fork")))
-                    with patches[0]:
+                    with patches[0], patch.object(
+                            process.kata_operation, "_cycle_route", return_value=None):
                         if len(patches) == 2: patches[1].start()
                         try:
-                            if fault is None:
+                            if fault in {None, "slow-custody", "accepted-socket", "runtime-leaf"}:
                                 outcome, durable = process._transact_fixed(journal, fixed, ctr_executable,
                                     daemon_owner=owner, consumption_owner=object())
                                 assert (outcome.outcome, outcome.status, outcome.errors) == ("exited", 0, ()) and not durable.body["uncertain"]
@@ -344,22 +407,31 @@ def authentic_daemon_transaction_profile():
                             if len(patches) == 2: patches[1].stop()
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0); foreign_pid = None
+                    if accepted_socket is not None: accepted_socket.close(); accepted_socket = None
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    if os.path.isdir(runtime_leaf) and fault != "runtime-leaf": os.rmdir(runtime_leaf)
                     assert process._verify_fixed_daemon(owner, journal)["pid"] == profile.pid
                     base_fd, _generation = process._directory_identity(process.CGROUP_BASE)
-                    try: assert process._cgroup_leaf_names(base_fd) == {profile.leaf_name}
+                    expected = {profile.leaf_name}
+                    if profile.runtime_leaf_name is not None: expected.add(profile.runtime_leaf_name)
+                    try: assert process._cgroup_leaf_names(base_fd) == expected
                     finally: os.close(base_fd)
                 finally:
                     if foreign_pid is not None:
                         os.kill(foreign_pid, signal.SIGKILL); os.waitpid(foreign_pid, 0)
+                    if accepted_socket is not None: accepted_socket.close()
                     if os.path.isdir(foreign_leaf): os.rmdir(foreign_leaf)
+                    if os.path.isdir(runtime_leaf) and fault != "runtime-leaf": os.rmdir(runtime_leaf)
                     process._stop_fixed_daemon(owner, journal)
-                assert not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
+                assert process._active_fixed_daemon_profile(journal) is None
+                assert not os.path.exists(overhead_base)
+                assert (not os.path.exists(process.CGROUP_BASE) and not os.path.lexists(process.CONTAINERD_SOCKET)
+                        and not os.path.lexists(process.CONTAINERD_TTRPC_SOCKET))
             return True
         finally:
             os.close(daemon_fd); os.close(true_fd)
-            (process.CONTAINERD_SOCKET, process.CONTAINERD_ROOT, process.CONTAINERD_STATE,
-             process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR) = saved
+            (process.CONTAINERD_SOCKET, process.CONTAINERD_TTRPC_SOCKET, process.CONTAINERD_ROOT,
+             process.CONTAINERD_STATE, process.CONTAINERD_CONFIG, process.STAGED_CONTAINERD, process.STAGED_CTR) = saved
 
 
 def authentic_root_cgroup_recovery():
@@ -580,9 +652,16 @@ def linux_supervisor_tests():
             previous = process._FIXED_COMMANDS.get(command_id)
             process._FIXED_COMMANDS[command_id] = fixed
             identity = process._fd_identity(executable_fd)
+            original_host_generation = process._host_generation
+            def normalized_generation(descriptor, kind=None):
+                generation = original_host_generation(descriptor, kind)
+                if descriptor == executable_fd and generation["mount_id"] == 0:
+                    generation = {**generation, "mount_id": 1}
+                return generation
+            executable_generation = normalized_generation(executable_fd)
             retained = process.RetainedExecutable(
                 "test", process.TEST_PATH, executable_fd, contract.executable.sha256,
-                contract.closure_sha256, process._host_generation(executable_fd),
+                contract.closure_sha256, executable_generation,
             )
             journal = Journal()
             leaf_generation = (
@@ -591,7 +670,9 @@ def linux_supervisor_tests():
             owner = process._CgroupOwner("", leaf_generation, (), False, {})
             patches = cgroup_patches(owner)
             try:
-                with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                     patch.object(process, "_host_generation", side_effect=normalized_generation), \
+                     patch.object(process.kata_operation, "_cycle_route", return_value=None):
                     outcome, _durable = process._transact_fixed(
                         journal, fixed, retained, () if inherited is None else inherited,
                     )
@@ -679,6 +760,32 @@ def linux_supervisor_tests():
                 except OSError: pass
             else:
                 os.dup2(original, target); os.close(original)
+        os.close(key_r); os.close(hosts_r)
+        os.unlink(key_path); os.unlink(hosts_path)
+
+    # OpenSSH closes inherited descriptors before resolving identity paths. The
+    # fixed child template therefore opens exact non-inheritable duplicates
+    # retained by its already-recorded parent process.
+    key_r, key_path = tempfile.mkstemp(dir=directory)
+    hosts_r, hosts_path = tempfile.mkstemp(dir=directory)
+    os.write(key_r, b"K"); os.write(hosts_r, b"H")
+    rows = (
+        process.fdmap.InheritedBinding(process.fdmap.CLIENT_KEY, key_r, 200,
+                                       process._fd_identity(key_r), hashlib.sha256(b"K").hexdigest()),
+        process.fdmap.InheritedBinding(process.fdmap.KNOWN_HOSTS, hosts_r, 201,
+                                       process._fd_identity(hosts_r), hashlib.sha256(b"H").hexdigest()),
+    )
+    retained = process._retain_parent_ssh_inputs(rows)
+    try:
+        assert retained == (1000, 1001)
+        assert not os.get_inheritable(1000) and not os.get_inheritable(1001)
+        observed = subprocess.run(
+            ["/bin/cat", f"/proc/{os.getpid()}/fd/1000", f"/proc/{os.getpid()}/fd/1001"],
+            check=True, stdout=subprocess.PIPE,
+        )
+        assert observed.stdout == b"KH"
+    finally:
+        for descriptor in retained: os.close(descriptor)
         os.close(key_r); os.close(hosts_r)
         os.unlink(key_path); os.unlink(hosts_path)
 

@@ -272,9 +272,12 @@ def _parse_link_row(row, runtime=False):
             raise NetworkError("synthetic TAP kind")
         if runtime and kind == "tun":
             data = info.get("info_data")
-            _keys(data, ("type", "pi", "vnet_hdr", "multi_queue", "persist"))
-            if data != {"type": "tap", "pi": False, "vnet_hdr": True,
-                        "multi_queue": False, "persist": False}:
+            legacy = {"type": "tap", "pi": False, "vnet_hdr": True,
+                      "multi_queue": False, "persist": False}
+            native = {"type": "tap", "pi": False, "vnet_hdr": True,
+                      "multi_queue": True, "numqueues": 1, "numdisabled": 0,
+                      "persist": True, "user": "root", "group": "root"}
+            if data not in (legacy, native):
                 raise NetworkError("TAP detail drift")
             kind = "tap"
     if type(kind) is not str or type(row["qdisc"]) is not str or type(row["operstate"]) is not str:
@@ -418,12 +421,14 @@ _ROUTE6_CANDIDATE = {
 }
 
 
-def parse_routes(raw, family, links, host_if=HOST_IF):
+def parse_routes(raw, family, links, host_if=HOST_IF, allow_tap_linkdown=False):
     value = _load(raw)
-    if type(value) is not list or family not in (4, 6) or type(links) is not tuple:
+    if (type(value) is not list or family not in (4, 6) or type(links) is not tuple
+            or type(allow_tap_linkdown) is not bool):
         raise NetworkError("route list")
     bound = {item.ifname for item in links}
-    runtime_taps = {item.ifname for item in links if item.kind == "tap"}
+    runtime_tap_links = tuple(item for item in links if item.kind == "tap")
+    runtime_taps = {item.ifname for item in runtime_tap_links}
     namespace_bound = (bound == {"lo", GUEST_IF} | runtime_taps
                        and len(runtime_taps) <= 1)
     if bound != {host_if} and not namespace_bound:
@@ -471,15 +476,32 @@ def parse_routes(raw, family, links, host_if=HOST_IF):
     else:
         expected = set(_ROUTE4_CANDIDATE if family == 4 else _ROUTE6_CANDIDATE)
         if family == 6:
+            tap_flags = ("linkdown",) if allow_tap_linkdown else ()
             expected.update(("multicast", "ff00::/8", tap, "local", "kernel", None,
-                             None, 256, (), "medium") for tap in runtime_taps)
+                             None, 256, tap_flags, "medium") for tap in runtime_taps)
+            for tap in runtime_tap_links:
+                if tap.addrgenmode == "eui64":
+                    expected.update({
+                        ("unicast", "fe80::/64", tap.ifname, "main", "kernel",
+                         None, None, 256, tap_flags, "medium"),
+                        ("local", _eui64_link_local(tap.mac), tap.ifname, "local",
+                         "kernel", None, None, 0, (), "medium"),
+                    })
     if len(actual) != len(result) or actual != expected:
         raise NetworkError("complete route inventory drift")
     return tuple(result)
 
 
+def _eui64_link_local(mac):
+    if type(mac) is not str or _MAC.fullmatch(mac) is None:
+        raise NetworkError("TAP MAC for EUI-64")
+    octets = [int(item, 16) for item in mac.split(":")]
+    iid = bytes((octets[0] ^ 2, *octets[1:3], 0xff, 0xfe, *octets[3:]))
+    return str(ipaddress.IPv6Address((0xfe80 << 112) | int.from_bytes(iid, "big")))
+
+
 def parse_runtime_addresses(raw, links):
-    """Validate complete lo/veth/TAP rows and exact TAP address absence."""
+    """Validate complete lo/veth/TAP rows and exact derived TAP addresses."""
     value = _load(raw)
     if type(value) is not list or type(links) is not tuple:
         raise NetworkError("runtime address list")
@@ -502,6 +524,9 @@ def parse_runtime_addresses(raw, links):
     expected = {("lo", "inet", "127.0.0.1", 8, "host"),
                 ("lo", "inet6", "::1", 128, "host"),
                 (GUEST_IF, "inet", "192.0.2.2", 30, "global")}
+    expected.update((item.ifname, "inet6", _eui64_link_local(item.mac), 64, "link")
+                    for item in links
+                    if item.kind == "tap" and item.addrgenmode == "eui64")
     if seen != set(bound) or identities != expected:
         raise NetworkError("runtime TAP/address inventory drift")
     return tuple(sorted(identities))
@@ -584,7 +609,8 @@ _NFT_SENSOR_NAMES = {
 }
 CAUSAL_POSITIVE_SENSORS = ("ssh-request-allowed", "ssh-return-allowed", "direct-tcp-denied",
                            "direct-udp-denied", "route-tcp-denied", "route-udp-denied")
-CAUSAL_ZERO_SENSORS = ("input-other-drop", "output-other-drop", "forward-guest-other-drop",
+CAUSAL_MONOTONIC_SENSORS = ("output-other-drop",)
+CAUSAL_ZERO_SENSORS = ("input-other-drop", "forward-guest-other-drop",
                        "forward-host-other-drop")
 CAUSAL_GUEST_MARKERS = ("route-baseline-no-default", "direct-tcp-denied", "direct-udp-denied",
                         "default-route-added", "route-tcp-denied", "route-udp-denied",
@@ -822,7 +848,8 @@ def bind_causal_sensor(operation_token, stage, snapshot, observation_sha256):
 def _counter_map(snapshot):
     rows = snapshot.nft.counters
     result = {row.sensor: row for row in rows}
-    if len(result) != len(rows) or set(result) != set(CAUSAL_POSITIVE_SENSORS) | set(CAUSAL_ZERO_SENSORS):
+    expected = set(CAUSAL_POSITIVE_SENSORS) | set(CAUSAL_MONOTONIC_SENSORS) | set(CAUSAL_ZERO_SENSORS)
+    if len(result) != len(rows) or set(result) != expected:
         raise NetworkError("causal sensor inventory")
     return result
 
@@ -840,7 +867,7 @@ def _prove_causal_values(before, after, markers, route_before, route_after):
         raise NetworkError("guest route restoration proof")
     first, second = _counter_map(before), _counter_map(after)
     deltas = []
-    for name in (*CAUSAL_POSITIVE_SENSORS, *CAUSAL_ZERO_SENSORS):
+    for name in (*CAUSAL_POSITIVE_SENSORS, *CAUSAL_MONOTONIC_SENSORS, *CAUSAL_ZERO_SENSORS):
         left, right = first[name], second[name]
         if ((left.chain, left.ordinal, left.handle) != (right.chain, right.ordinal, right.handle)
                 or right.packets < left.packets or right.bytes < left.bytes):
@@ -850,6 +877,8 @@ def _prove_causal_values(before, after, markers, route_before, route_after):
             if packet_delta <= 0 or byte_delta <= 0:
                 raise NetworkError("required causal sensor did not increase")
             category = "positive"
+        elif name in CAUSAL_MONOTONIC_SENSORS:
+            category = "denied-sibling"
         else:
             if packet_delta != 0 or byte_delta != 0:
                 raise NetworkError("unexpected sibling sensor increase")
@@ -1055,8 +1084,21 @@ _NATIVE_FQ_CODEL_OPTIONS = {
 def parse_tc_qdiscs(raw, endpoint):
     endpoint = _tc_endpoint(endpoint)
     value = _load(raw)
-    if type(value) is not list or len(value) not in (1, 2):
+    native_mq = endpoint.kind == "tap" and endpoint.qdisc == "mq"
+    if type(value) is not list or len(value) not in ((1, 2, 3) if native_mq else (1, 2)):
         raise NetworkError("tc qdisc list")
+    if len(value) == 3:
+        root, child, ingress = value
+        if (root != {"kind": "mq", "handle": "0:", "root": True, "options": {}}
+                or child != {"kind": "fq_codel", "handle": "0:", "parent": ":1",
+                             "options": _NATIVE_FQ_CODEL_OPTIONS}
+                or ingress != {"kind": "ingress", "handle": "ffff:",
+                               "parent": "ffff:fff1", "options": {}}):
+            raise NetworkError("native mq qdisc drift")
+        return (TcQdisc(endpoint.ifindex, endpoint.ifname, "mq", "0:", None, True, None),
+                TcQdisc(endpoint.ifindex, endpoint.ifname, "fq_codel", "0:", ":1", False, None),
+                TcQdisc(endpoint.ifindex, endpoint.ifname, "ingress", "ffff:",
+                         "ffff:fff1", False, None))
     result = []
     for index, row in enumerate(value):
         if index == 0:
@@ -1095,11 +1137,14 @@ def parse_tc_filters(raw, source, target):
     native = len(value) == 3
     if native:
         header, table_row, row = value
-        _keys(header, ("protocol", "pref", "kind", "chain"))
+        native_parent = all(item.get("parent") == "ffff:" for item in value)
+        _keys(header, (("parent",) if native_parent else ())
+              + ("protocol", "pref", "kind", "chain"))
     else:
-        table_row, row = value
+        native_parent = False; table_row, row = value
     for item in (table_row, row):
-        _keys(item, ("protocol", "pref", "kind", "chain", "options"))
+        _keys(item, (("parent",) if native_parent else ())
+              + ("protocol", "pref", "kind", "chain", "options"))
     for item in value:
         if (item["protocol"], item["pref"], item["kind"], item["chain"]) != ("all", 49152, "u32", 0):
             raise NetworkError("tc filter header drift")
@@ -1163,10 +1208,12 @@ def parse_runtime_links(raw):
             or guest.operstate != "UP" or not guest.up or guest.qdisc != "noqueue"):
         raise NetworkError("runtime veth drift")
     for tap in taps:
-        tap_state = (tap.qdisc, tap.operstate)
+        tap_state = (tap.qdisc, tap.operstate, tap.addrgenmode)
         if (tap.peer_ifindex is not None or not tap.up
-                or tap_state not in {("noqueue", "UP"), ("fq_codel", "UNKNOWN")}
-                or tap.addrgenmode not in ("none", 1)
+                or tap_state not in {("noqueue", "UP", "none"), ("noqueue", "UP", 1),
+                                     ("fq_codel", "UNKNOWN", "none"),
+                                     ("fq_codel", "UNKNOWN", 1),
+                                     ("mq", "UNKNOWN", "eui64")}
                 or tap.mac == "00:00:00:00:00:00"
                 or set(tap.flags) != {"BROADCAST", "MULTICAST", "UP", "LOWER_UP"}):
             raise NetworkError(f"runtime TAP identity drift:{tap!r}")
@@ -1215,11 +1262,17 @@ def runtime_difference(before, after):
     tap = taps[0]
     guest_root = TcQdisc(guest.ifindex, guest.ifname, "noqueue", "0:", None, True, 2)
     guest_ingress = TcQdisc(guest.ifindex, guest.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
-    tap_root = TcQdisc(tap.ifindex, tap.ifname, tap.qdisc, "0:", None, True, 2)
+    tap_root = TcQdisc(tap.ifindex, tap.ifname, tap.qdisc, "0:", None, True,
+                       None if tap.qdisc == "mq" else 2)
     tap_ingress = TcQdisc(tap.ifindex, tap.ifname, "ingress", "ffff:", "ffff:fff1", False, None)
+    tap_qdiscs = {tap_root, tap_ingress}
+    if tap.qdisc == "mq":
+        tap_qdiscs.add(TcQdisc(tap.ifindex, tap.ifname, "fq_codel", "0:",
+                               ":1", False, None))
     if before.qdiscs != (guest_root,) or before.filters:
         raise NetworkError("unexpected tc baseline")
-    if set(after.qdiscs) != {guest_root, guest_ingress, tap_root, tap_ingress} or len(after.qdiscs) != 4:
+    expected_qdiscs = {guest_root, guest_ingress, *tap_qdiscs}
+    if set(after.qdiscs) != expected_qdiscs or len(after.qdiscs) != len(expected_qdiscs):
         raise NetworkError("complete qdisc difference required")
     tables = tuple(item for item in after.filters if type(item) is TcFilterTable)
     filters = tuple(item for item in after.filters if type(item) is TcFilter)
@@ -1485,8 +1538,15 @@ def _perform_fixed(journal, action, ip, nft, tc, target=None, endpoint=None):
 
 
 def _read_mountinfo():
+    chunks = []
+    total = 0
     with open("/proc/self/mountinfo", "rb", buffering=0) as source:
-        raw = source.read(MAX_MOUNTINFO_BYTES + 1)
+        while total <= MAX_MOUNTINFO_BYTES:
+            part = source.read(min(65_536, MAX_MOUNTINFO_BYTES + 1 - total))
+            if not part:
+                break
+            chunks.append(part); total += len(part)
+    raw = b"".join(chunks)
     if len(raw) > MAX_MOUNTINFO_BYTES or not raw.endswith(b"\n"):
         raise NetworkError("bounded complete mountinfo required")
     return raw
@@ -2169,6 +2229,29 @@ def _normalize_baseline_links(links):
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _normalize_baseline_addresses(value):
+    """Preserve address identity while excluding DHCP lease countdown metrics."""
+    normalized = json.loads(json.dumps(value))
+    if type(normalized) is not list:
+        raise NetworkError("address normalization inventory")
+    for link in normalized:
+        if type(link) is not dict or type(link.get("addr_info")) is not list:
+            raise NetworkError("address normalization link")
+        for address in link["addr_info"]:
+            if type(address) is not dict:
+                raise NetworkError("address normalization row")
+            dynamic = address.get("dynamic", False)
+            if type(dynamic) is not bool:
+                raise NetworkError("address dynamic marker")
+            if dynamic:
+                valid = address.get("valid_life_time"); preferred = address.get("preferred_life_time")
+                if (type(valid) is not int or type(preferred) is not int
+                        or not 0 <= preferred <= valid <= (1 << 32) - 1):
+                    raise NetworkError("address lease metric")
+                address["valid_life_time"] = address["preferred_life_time"] = 0
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+
+
 def _normalize_baseline_nft(value):
     """Preserve complete ruleset objects while excluding traffic-only counters."""
     normalized = json.loads(json.dumps(value))
@@ -2306,8 +2389,8 @@ def _complete_baseline(raws, mountinfo, journal, allow_owned_nft=False):
             raise NetworkError("fixed nft table already exists")
     normalized_names = json.dumps([row for row in names if row["name"] not in ignored_names],
                                   sort_keys=True, separators=(",", ":")).encode()
-    all_raw = (_normalize_baseline_links(links), *raws[1:4], normalized_names,
-               _normalize_baseline_nft(nft), mountinfo)
+    all_raw = (_normalize_baseline_links(links), _normalize_baseline_addresses(addresses),
+               *raws[2:4], normalized_names, _normalize_baseline_nft(nft), mountinfo)
     return dict(zip(_BASELINE_KEYS, (hashlib.sha256(raw).hexdigest() for raw in all_raw), strict=True))
 
 
@@ -2715,16 +2798,21 @@ def _observe_fixed_runtime_network(journal, ip, nft, tc, record=True):
                           _sources(journal, "NETWORK_SNAPSHOT_V2"))["identity"]
     tap = Link(**{**prior["tap"], "flags": tuple(prior["tap"]["flags"])})
     guest = Link(**{**prior["peer_link"], "flags": tuple(prior["peer_link"]["flags"])})
-    expected = ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
+    observed_prefix = () if record else ("MOUNTINFO", "NETNS_STAT")
+    cursor_after = "NETWORK_SNAPSHOT_V2" if record else "NETWORK_CLEANUP_INTENT_V2"
+    expected = observed_prefix + ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6",
                 "TC_QDISC", "TC_QDISC:" + tap.ifname, "TC_INGRESS_FILTER:eth0",
                 "TC_INGRESS_FILTER:" + tap.ifname, "MOUNTINFO", "NETNS_STAT", "NFT_TABLE")
-    raw = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_SNAPSHOT_V2", endpoints={
+    raw = _observer_pass(journal, ip, nft, tc, expected, cursor_after, endpoints={
         "TC_QDISC:" + tap.ifname: tap, "TC_INGRESS_FILTER:eth0": guest,
         "TC_INGRESS_FILTER:" + tap.ifname: tap})
-    outputs = [{"source_id": name, "raw": value} for name, value in zip(expected, raw, strict=True)]
+    raw = raw[len(observed_prefix):]
+    identity_sources = expected[len(observed_prefix):]
+    outputs = [{"source_id": name, "raw": value} for name, value in zip(identity_sources, raw, strict=True)]
     identity = _derive_journal_identity(
-        "runtime", None, outputs, prior, baselines, _journal_policy(journal))[0]
-    sources = _sources(journal, "NETWORK_SNAPSHOT_V2")
+        "runtime", None, outputs, prior, baselines, _journal_policy(journal),
+        allow_tap_linkdown=not record)[0]
+    sources = _sources(journal, cursor_after)
     return _snapshot(journal, "runtime", baselines, identity, sources) if record else _bind_identity(identity, sources)
 
 
@@ -2875,7 +2963,7 @@ def _journal_netns(rows, prior):
 
 
 def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
-                             policy_version=None):
+                             policy_version=None, allow_tap_linkdown=False):
     """Purely derive durable state from exact canonical observer bytes."""
     if policy_version is None:
         causal = True
@@ -2953,7 +3041,8 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
         links = (*retained, tap)
         parse_routes(rows["IP_HOST_ROUTES4"][0], 4, host_links, host.ifname)
         parse_routes(rows["IP_HOST_ROUTES6"][0], 6, host_links, host.ifname)
-        parse_routes(rows["IP_NS_ROUTES4"][0], 4, links); parse_routes(rows["IP_NS_ROUTES6"][0], 6, links)
+        parse_routes(rows["IP_NS_ROUTES4"][0], 4, links)
+        parse_routes(rows["IP_NS_ROUTES6"][0], 6, links, allow_tap_linkdown=allow_tap_linkdown)
         guest_q = parse_tc_qdiscs(rows["TC_QDISC"][0], guest); tap_q = parse_tc_qdiscs(rows["TC_QDISC:" + tap.ifname][0], tap)
         filters = (parse_tc_filters(rows["TC_INGRESS_FILTER:eth0"][0], guest, tap) +
                    parse_tc_filters(rows["TC_INGRESS_FILTER:" + tap.ifname][0], tap, guest))
@@ -2961,9 +3050,11 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
                                      RuntimeState(netns, host_links, links, guest_q + tap_q, filters))
         table = prior["nft"]["table_name"]; nft_state = parse_nft_snapshot(
             rows["NFT_TABLE"][0], table, host.ifname, causal)
+        observed_routes = hashlib.sha256(b"".join(rows[name][0] for name in
+                          ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6"))).hexdigest()
+        route_identity = prior["routes_sha256"] if allow_tap_linkdown else observed_routes
         value = _identity(netns, host, guest, nft_state, tap, _tc_value(binding.qdiscs, binding.filters),
-                          prior["addresses_sha256"], hashlib.sha256(b"".join(rows[name][0] for name in
-                          ("IP_HOST_ROUTES4", "IP_HOST_ROUTES6", "IP_NS_ROUTES4", "IP_NS_ROUTES6"))).hexdigest())
+                          prior["addresses_sha256"], route_identity)
         return value, baselines
     # Effect observations are derived from exact post-effect inventory.
     if action is not None:
@@ -3416,12 +3507,16 @@ def _runtime_network_routes():
     def descriptor(grant):
         verify(grant)
         return os.dup(owners.require(grants.require(grant)[0])[1])
-    def close(owner):
-        state = owners.pop(owner)
-        os.close(state[1])
-        for grant, row in grants.items():
-            if row[0] is owner:
-                grants.pop(grant)
+    def close(owner, expected_grant=None):
+        state = owners.require(owner)
+        associated = tuple((grant, row) for grant, row in grants.items() if row[0] is owner)
+        if expected_grant is not None and (len(associated) != 1 or associated[0][0] is not expected_grant):
+            raise NetworkError("runtime network grant closure differs")
+        owners.pop(owner); os.close(state[1])
+        for grant, _row in associated: grants.pop(grant)
+        registry_empty = not tuple(owners.items()) and not tuple(grants.items())
+        return {"owner_closed": True, "grants_closed": True,
+                "registry_empty": registry_empty, "closed_grants": len(associated)}
     return reopen, claim, verify, consume, descriptor, close
 
 (_reopen_runtime_network, _claim_runtime_network, _verify_runtime_network,

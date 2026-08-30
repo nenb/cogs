@@ -38,12 +38,12 @@ jobs:
           import urllib.error
           import urllib.parse
           import urllib.request
-
-          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v19"
+          
+          GUARD_VERSION = "cogs.stage2-static-control-dispatch-guard/v22"
           REPOSITORY = "nenb/cogs"
           WORKFLOW_NAME = "stage2-local-static-control-candidate.yml"
           WORKFLOW_PATH = f".github/workflows/{WORKFLOW_NAME}"
-          REVIEWED_IMPLEMENTATION_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+          REVIEWED_IMPLEMENTATION_HEAD = "dfb28c2e8deb7fed90da095c41b4d556c737af97"
           RUN_TITLE = f"Non-authoritative Stage 2 static control H={REVIEWED_IMPLEMENTATION_HEAD}"
           PREDECESSOR_RUN_ID = 32558263561
           PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"
@@ -105,6 +105,10 @@ jobs:
           TWELFTH_PREDECESSOR_REVIEWED_HEAD = "4a3beae8683309f3fef30cecce3187262efc4b23"
           TWELFTH_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={TWELFTH_PREDECESSOR_REVIEWED_HEAD}")
+          REJECTED_BRANCH_PREDECESSOR_RUN_ID = 33267664208
+          REJECTED_BRANCH_PREDECESSOR_WORKFLOW_HEAD = "77efaff8d306ce1ff0e4a283d83db9ae065ecbb3"
+          REJECTED_BRANCH_PREDECESSOR_RUN_TITLE = RUN_TITLE
+          REJECTED_BRANCH_PREDECESSOR_BRANCH = "fix/issue42-static-event-contract"
           SUCCESSFUL_PREDECESSOR_RUN_ID = 32577727971
           SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c2540af5cb85e2845de1eebfad3475d28c0483e5"
           SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"
@@ -135,6 +139,11 @@ jobs:
           SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"
           SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
               f"Non-authoritative Stage 2 static control H={SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
+          SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32633570406
+          SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c16f3168a2b14ed0b88acf5753ef106940af1b73"
+          SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"
+          SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE = (
+              f"Non-authoritative Stage 2 static control H={SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD}")
           PREDECESSORS = {
               PREDECESSOR_RUN_ID: (PREDECESSOR_WORKFLOW_HEAD, PREDECESSOR_RUN_TITLE),
               SECOND_PREDECESSOR_RUN_ID: (
@@ -160,6 +169,12 @@ jobs:
               TWELFTH_PREDECESSOR_RUN_ID: (
                   TWELFTH_PREDECESSOR_WORKFLOW_HEAD, TWELFTH_PREDECESSOR_RUN_TITLE),
           }
+          REJECTED_BRANCH_PREDECESSORS = {
+              REJECTED_BRANCH_PREDECESSOR_RUN_ID: (
+                  REJECTED_BRANCH_PREDECESSOR_WORKFLOW_HEAD,
+                  REJECTED_BRANCH_PREDECESSOR_RUN_TITLE,
+                  REJECTED_BRANCH_PREDECESSOR_BRANCH),
+          }
           SUCCESSFUL_PREDECESSORS = {
               SUCCESSFUL_PREDECESSOR_RUN_ID: (
                   SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD, SUCCESSFUL_PREDECESSOR_RUN_TITLE),
@@ -178,6 +193,9 @@ jobs:
               SIXTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
                   SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
                   SIXTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
+              SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID: (
+                  SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD,
+                  SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_TITLE),
           }
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_API_BYTES = 4 * 1024 * 1024
@@ -205,25 +223,25 @@ jobs:
               "PREDECESSOR_REJECTED", "TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING",
               "UNKNOWN_HISTORY_REJECTED",
           ))
-
-
+          
+          
           class GuardError(Exception):
               def __init__(self, code):
                   self.code = code if code in DIAGNOSTIC_CODES else "IDENTITY_REJECTED"
                   super().__init__(self.code)
-
-
+          
+          
           def _require(condition, code="IDENTITY_REJECTED"):
               if not condition:
                   raise GuardError(code)
-
-
+          
+          
           def _required(environ, name, code="IDENTITY_REJECTED"):
               value = environ.get(name)
               _require(type(value) is str and value != "", code)
               return value
-
-
+          
+          
           def _actions_read_token(environ):
               token = environ.get("ACTIONS_READ_TOKEN")
               _require(type(token) is str and token != "", "TOKEN_MISSING")
@@ -234,8 +252,8 @@ jobs:
               _require(1 <= len(raw) <= MAX_TOKEN_BYTES, "TOKEN_BOUND")
               _require(all(0x21 <= byte <= 0x7e for byte in raw), "TOKEN_CHAR")
               return token
-
-
+          
+          
           def _read_event(path):
               try:
                   descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -272,25 +290,25 @@ jobs:
                   raise GuardError("EVENT_JSON_REJECTED") from error
               _require(type(value) is dict, "EVENT_OBJECT_REJECTED")
               return value
-
-
+          
+          
           def _link_header(response):
               if hasattr(response, "getheader"):
                   return response.getheader("Link")
               headers = getattr(response, "headers", None)
               return None if headers is None else headers.get("Link")
-
-
+          
+          
           class _RejectRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, _request, _file_pointer, _code, _message, _headers, _new_url):
                   raise GuardError("API_REDIRECT_REJECTED")
-
-
+          
+          
           def _authenticated_open(request, timeout):
               opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirect())
               return opener.open(request, timeout=timeout)
-
-
+          
+          
           def _open_history(request, urlopen):
               try:
                   return urlopen(request, timeout=20)
@@ -310,8 +328,8 @@ jobs:
                   raise GuardError("API_RESPONSE_REJECTED") from None
               except Exception:
                   raise GuardError("API_UNAVAILABLE") from None
-
-
+          
+          
           def _response_bytes(response):
               try:
                   status = getattr(response, "status", None)
@@ -337,8 +355,8 @@ jobs:
                        "API_RESPONSE_REJECTED")
               _require(not link, "HISTORY_INCOMPLETE")
               return raw
-
-
+          
+          
           def _common_run_identity(run):
               _require(type(run) is dict, "HISTORY_RUN_REJECTED")
               run_id = run.get("id")
@@ -347,7 +365,10 @@ jobs:
                        "HISTORY_RUN_REJECTED")
               repository = run.get("repository")
               head_repository = run.get("head_repository")
-              _require(run.get("event") == "workflow_dispatch" and run.get("head_branch") == "main"
+              rejected = REJECTED_BRANCH_PREDECESSORS.get(run_id)
+              expected_branch = "main" if rejected is None else rejected[2]
+              _require(run.get("event") == "workflow_dispatch"
+                       and run.get("head_branch") == expected_branch
                        and run.get("path") == WORKFLOW_PATH,
                        "HISTORY_RUN_REJECTED")
               _require(type(repository) is dict and repository.get("full_name") == REPOSITORY,
@@ -355,16 +376,19 @@ jobs:
               _require(type(head_repository) is dict and head_repository.get("full_name") == REPOSITORY,
                        "HISTORY_RUN_REJECTED")
               return run_id
-
-
+          
+          
           def _predecessor_binding(run):
               binding = PREDECESSORS.get(run.get("id"))
               if binding is not None:
                   return (*binding, "failure")
+              rejected = REJECTED_BRANCH_PREDECESSORS.get(run.get("id"))
+              if rejected is not None:
+                  return (*rejected[:2], "failure")
               successful = SUCCESSFUL_PREDECESSORS.get(run.get("id"))
               return None if successful is None else (*successful, "success")
-
-
+          
+          
           def _validate_predecessor(run, binding):
               workflow_head, run_title, conclusion = binding
               _require(run.get("head_sha") == workflow_head,
@@ -373,12 +397,12 @@ jobs:
                        "PREDECESSOR_REJECTED")
               _require(run.get("status") == "completed" and run.get("conclusion") == conclusion,
                        "PREDECESSOR_REJECTED")
-
-
+          
+          
           def _is_current_generation(run, workflow_head):
               return run.get("head_sha") == workflow_head and run.get("display_title") == RUN_TITLE
-
-
+          
+          
           def _history(workflow_head, current_run_id, token, urlopen=_authenticated_open):
               query = urllib.parse.urlencode({
                   "event": "workflow_dispatch", "per_page": MAX_RUNS, "page": 1,
@@ -417,13 +441,14 @@ jobs:
                   else:
                       raise GuardError("UNKNOWN_HISTORY_REJECTED")
               _require(len(run_ids) == len(set(run_ids)), "HISTORY_RUN_REJECTED")
-              _require(predecessor_ids == set(PREDECESSORS) | set(SUCCESSFUL_PREDECESSORS),
+              _require(predecessor_ids == (set(PREDECESSORS) | set(REJECTED_BRANCH_PREDECESSORS)
+                                           | set(SUCCESSFUL_PREDECESSORS)),
                        "PREDECESSOR_REJECTED")
               _require(current_ids, "CURRENT_GENERATION_MISSING")
               _require(current_run_id == min(current_ids), "CURRENT_RUN_NOT_EARLIEST")
               _require(len(current_ids) == 1, "CURRENT_SECOND_RUN")
-
-
+          
+          
           def guard(environ=os.environ, urlopen=_authenticated_open):
               _require(not (DENIED_ENVIRONMENT & set(environ)), "ENVIRONMENT_REJECTED")
               token = _actions_read_token(environ)
@@ -453,16 +478,16 @@ jobs:
               # payload identity fields are intentionally not an authorization source.
               _read_event(_required(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"))
               _history(workflow_head, int(run_id_text), token, urlopen=urlopen)
-
-
+          
+          
           def _safe_diagnostic(error):
               code = error.code if isinstance(error, GuardError) else "LOCAL_IO_REJECTED"
               if code not in DIAGNOSTIC_CODES:
                   code = "IDENTITY_REJECTED"
               message = f"{GUARD_VERSION}: {code}\n"
               return message if len(message) <= 96 else f"{GUARD_VERSION}: IDENTITY_REJECTED\n"
-
-
+          
+          
           def main():
               try:
                   _require(len(sys.argv) == 1, "IDENTITY_REJECTED")
@@ -471,8 +496,8 @@ jobs:
                   sys.stderr.write(_safe_diagnostic(error))
                   return 2
               return 0
-
-
+          
+          
           if __name__ == "__main__":
               raise SystemExit(main())
           PY

@@ -182,6 +182,17 @@ assert network._normalize_baseline_links(hyperv_a) != network._normalize_baselin
     [{**hyperv_a[0], "tso_max_size": 0}])
 assert network._normalize_baseline_links(hyperv_a) != network._normalize_baseline_links(
     [{**hyperv_a[0], "tso_max_size": 524280}])
+dynamic_a = [{"ifindex": 3, "ifname": "wlan0", "addr_info": [{
+    "family": "inet", "local": "192.0.2.8", "prefixlen": 24, "dynamic": True,
+    "valid_life_time": 65096, "preferred_life_time": 65096,
+}]}]
+dynamic_b = copy.deepcopy(dynamic_a)
+dynamic_b[0]["addr_info"][0].update(valid_life_time=63469, preferred_life_time=63469)
+assert network._normalize_baseline_addresses(dynamic_a) == network._normalize_baseline_addresses(dynamic_b)
+dynamic_replaced = copy.deepcopy(dynamic_b); dynamic_replaced[0]["addr_info"][0]["local"] = "192.0.2.9"
+assert network._normalize_baseline_addresses(dynamic_a) != network._normalize_baseline_addresses(dynamic_replaced)
+invalid_lease = copy.deepcopy(dynamic_a); invalid_lease[0]["addr_info"][0]["preferred_life_time"] = 65097
+rejected(lambda: network._normalize_baseline_addresses(invalid_lease))
 # Pre-admission waits for the VF, then binds every exact row and TSO value.
 assert network._pre_admission_host_links_binding(encoded(hyperv_a)) is None
 terminal_binding = network._pre_admission_host_links_binding(encoded(hyperv_terminal))
@@ -366,7 +377,8 @@ operation_token = "a" * 64
 causal_before = network.parse_nft_snapshot(encoded(dynamic_nft), "c42taaaaaaaaaa", "c42haaaaaaaaaa")
 changed = []
 for row in causal_before.counters:
-    increase = 1 if row.sensor in network.CAUSAL_POSITIVE_SENSORS else 0
+    increase = 1 if row.sensor in (*network.CAUSAL_POSITIVE_SENSORS,
+                                   *network.CAUSAL_MONOTONIC_SENSORS) else 0
     changed.append(network.NftCounter(row.sensor, row.chain, row.ordinal, row.handle,
                                       row.packets + increase, row.bytes + increase * 64))
 causal_after = network.NftSnapshot(causal_before.content, causal_before.identity, tuple(changed))
@@ -376,7 +388,10 @@ rejected(lambda: network.GuestNetworkProof(
     network.CAUSAL_GUEST_MARKERS, "3" * 64, "3" * 64))
 causal_proof = network._replay_causal_network(before_sensor, after_sensor, "3" * 64)
 assert tuple(row[0] for row in causal_proof.deltas) == (*network.CAUSAL_POSITIVE_SENSORS,
+                                                        *network.CAUSAL_MONOTONIC_SENSORS,
                                                         *network.CAUSAL_ZERO_SENSORS)
+assert next(row for row in causal_proof.deltas
+            if row[0] == "output-other-drop")[1:] == ("denied-sibling", 1, 64)
 for hostile in (
     network.CausalSensorSnapshot("b" * 64, "after", causal_after, "2" * 64),
     network.CausalSensorSnapshot(operation_token, "after", causal_after, "1" * 64),
@@ -453,10 +468,56 @@ tap_json = {
 parsed_runtime = network.parse_runtime_links(encoded(ns_links_json + [tap_json]))
 tap = parsed_runtime[-1]
 assert tap.kind == "tap" and tap.ifindex == 30
-native_tap_json = {**tap_json, "operstate": "UNKNOWN", "qdisc": "fq_codel"}
+native_tap_json = copy.deepcopy(tap_json)
+native_tap_json.update({"operstate": "UNKNOWN", "qdisc": "fq_codel"})
+native_tap_json["linkinfo"]["info_data"] = {
+    "type": "tap", "pi": False, "vnet_hdr": True, "multi_queue": True,
+    "numqueues": 1, "numdisabled": 0, "persist": True,
+    "user": "root", "group": "root",
+}
 assert network.parse_runtime_links(encoded(ns_links_json + [native_tap_json]))[-1].kind == "tap"
+kata_native_tap = copy.deepcopy(native_tap_json)
+kata_native_tap.pop("addrgenmode")
+kata_native_tap.update({"qdisc": "mq", "inet6_addr_gen_mode": "eui64"})
+assert network.parse_runtime_links(encoded(ns_links_json + [kata_native_tap]))[-1].kind == "tap"
+hostile_kata_tap = copy.deepcopy(kata_native_tap)
+hostile_kata_tap["inet6_addr_gen_mode"] = "none"
+rejected(lambda: network.parse_runtime_links(encoded(ns_links_json + [hostile_kata_tap])))
+hostile_native_tap = copy.deepcopy(native_tap_json)
+hostile_native_tap["linkinfo"]["info_data"]["user"] = "other"
+rejected(lambda: network.parse_runtime_links(encoded(ns_links_json + [hostile_native_tap])))
 runtime_addresses = ns_addresses + [{"ifindex": 30, "ifname": "tap-dynamic", "addr_info": []}]
 assert len(network.parse_runtime_addresses(encoded(runtime_addresses), parsed_runtime)) == 3
+kata_links = network.parse_runtime_links(encoded(ns_links_json + [kata_native_tap]))
+kata_runtime_addresses = ns_addresses + [{
+    "ifindex": 30, "ifname": "tap-dynamic", "addr_info": [{
+        "family": "inet6", "local": "fe80::ff:fe00:30", "prefixlen": 64,
+        "scope": "link", "valid_life_time": 4294967295,
+        "preferred_life_time": 4294967295,
+    }],
+}]
+assert len(network.parse_runtime_addresses(encoded(kata_runtime_addresses), kata_links)) == 4
+kata_routes6 = routes6 + [
+    {"dst": "fe80::/64", "dev": "tap-dynamic", "protocol": "kernel",
+     "metric": 256, "flags": [], "pref": "medium"},
+    {"type": "local", "dst": "fe80::ff:fe00:30", "dev": "tap-dynamic",
+     "table": "local", "protocol": "kernel", "metric": 0,
+     "flags": [], "pref": "medium"},
+    {"type": "multicast", "dst": "ff00::/8", "dev": "tap-dynamic",
+     "table": "local", "protocol": "kernel", "metric": 256,
+     "flags": [], "pref": "medium"},
+]
+assert len(network.parse_routes(encoded(kata_routes6), 6, kata_links)) == 5
+linkdown_routes6 = copy.deepcopy(kata_routes6)
+linkdown_routes6[-3]["flags"] = ["linkdown"]
+linkdown_routes6[-1]["flags"] = ["linkdown"]
+rejected(lambda: network.parse_routes(encoded(linkdown_routes6), 6, kata_links))
+assert len(network.parse_routes(encoded(linkdown_routes6), 6, kata_links,
+                                allow_tap_linkdown=True)) == 5
+rejected(lambda: network.parse_routes(encoded(kata_routes6[:-1]), 6, kata_links))
+hostile_kata_addresses = copy.deepcopy(kata_runtime_addresses)
+hostile_kata_addresses[-1]["addr_info"][0]["local"] = "fe80::31"
+rejected(lambda: network.parse_runtime_addresses(encoded(hostile_kata_addresses), kata_links))
 hostile_tap_addresses = copy.deepcopy(runtime_addresses)
 hostile_tap_addresses[-1]["addr_info"] = [
     {"family": "inet6", "local": "fe80::30", "prefixlen": 64, "scope": "link"},
@@ -500,6 +561,17 @@ native_tap_qdiscs = network.parse_tc_qdiscs(encoded([
     {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
 ]), native_tap)
 assert native_tap_qdiscs[0].kind == "fq_codel"
+kata_mq_qdiscs = [
+    {"kind": "mq", "handle": "0:", "root": True, "options": {}},
+    {"kind": "fq_codel", "handle": "0:", "parent": ":1",
+     "options": network._NATIVE_FQ_CODEL_OPTIONS},
+    {"kind": "ingress", "handle": "ffff:", "parent": "ffff:fff1", "options": {}},
+]
+parsed_kata_qdiscs = network.parse_tc_qdiscs(encoded(kata_mq_qdiscs), kata_links[-1])
+assert tuple(item.kind for item in parsed_kata_qdiscs) == ("mq", "fq_codel", "ingress")
+hostile_kata_qdiscs = copy.deepcopy(kata_mq_qdiscs)
+hostile_kata_qdiscs[1]["parent"] = ":2"
+rejected(lambda: network.parse_tc_qdiscs(encoded(hostile_kata_qdiscs), kata_links[-1]))
 guest_filter = network.parse_tc_filters(encoded(filter_fixture("tap-dynamic", 11)), guest, tap)
 tap_filter = network.parse_tc_filters(encoded(filter_fixture("eth0", 12)), tap, guest)
 native_filter = [
@@ -515,12 +587,22 @@ native_filter = [
     }},
 ]
 assert network.parse_tc_filters(encoded(native_filter), guest, tap)[-1].action.control == "stolen"
+native_parent_filter = [{"parent": "ffff:", **row} for row in native_filter]
+assert network.parse_tc_filters(encoded(native_parent_filter), guest, tap)[-1].action.control == "stolen"
+hostile_parent_filter = copy.deepcopy(native_parent_filter)
+hostile_parent_filter[1]["parent"] = "ffff:fff1"
+rejected(lambda: network.parse_tc_filters(encoded(hostile_parent_filter), guest, tap))
 before_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns, guest_root, ())
 after_runtime = network.RuntimeState(netns_identity, parsed_host, parsed_ns + (tap,),
                                      guest_qdiscs + tap_qdiscs, guest_filter + tap_filter)
 tc_binding = network.runtime_difference(before_runtime, after_runtime)
 assert tc_binding.netns_identity == netns_identity
 assert (tc_binding.host_veth.ifindex, tc_binding.guest_veth.ifindex, tc_binding.tap.ifindex) == (7, 8, 30)
+kata_after_runtime = network.RuntimeState(
+    netns_identity, parsed_host, parsed_ns + (kata_links[-1],),
+    guest_qdiscs + parsed_kata_qdiscs, guest_filter + tap_filter)
+check_kata_binding = network.runtime_difference(before_runtime, kata_after_runtime)
+assert tuple(item.kind for item in check_kata_binding.qdiscs).count("mq") == 1
 
 # Durable replay uses the same pure codecs over retained canonical observer bytes.
 def observation(source_id, raw): return {"source_id": source_id, "raw": raw}
@@ -666,4 +748,10 @@ assert network.recover_nft(nft_remove, network.NftObservation(replaced_nft_snaps
 rejected(lambda: network.recover_nft(nft_remove, network.NftObservation(("cogs_stage2_ssh_v1",)), firewall_ready_proof))
 
 
+source = (ROOT / "deploy/aws-feasibility/remote/completion_kata_network.py").read_text()
+assert "while total <= MAX_MOUNTINFO_BYTES:" in source
+assert "chunks.append(part); total += len(part)" in source
+assert 'cursor_after = "NETWORK_SNAPSHOT_V2" if record else "NETWORK_CLEANUP_INTENT_V2"' in source
+assert 'observed_prefix = () if record else ("MOUNTINFO", "NETNS_STAT")' in source
+assert 'route_identity = prior["routes_sha256"] if allow_tap_linkdown else observed_routes' in source
 print("completion Kata network owner fixed-snapshot matrix passed")

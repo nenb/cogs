@@ -99,6 +99,13 @@ def _cache_values(authority):
     return tuple((item.name, item.identity, item.sha256) for item in authority.cache)
 
 
+def _cleanup_control(work_control, cleanup_deadline_ns):
+    if cleanup_deadline_ns is None:
+        return materializer._fresh_cleanup_control()
+    return materializer._native_package_cleanup_control(work_control,
+                                                        cleanup_deadline_ns)
+
+
 def _build_once_controlled(approval, token, retain, control, materialize, materialize_control,
                            cleanup_deadline_ns=None):
     _fail(type(approval) is fs.SourceApproval and type(retain) is bool)
@@ -150,18 +157,16 @@ def _build_once_controlled(approval, token, retain, control, materialize, materi
             _fail(transferred[1].owned is refreshed and transferred[1].base_chain is chain)
             owned = None
             return transferred
-        builder._cleanup_owned(refreshed, active, control)
+        builder._cleanup_owned(refreshed, active,
+                               _cleanup_control(control, cleanup_deadline_ns))
         owned = None
         fs._close_chain(chain)
         return candidate
     except BaseException as error:
         if owned is not None:
             try:
-                cleanup = (materializer._fresh_cleanup_control()
-                           if cleanup_deadline_ns is None else
-                           materializer._native_package_cleanup_control(
-                               control, cleanup_deadline_ns))
-                materializer._reload_and_cleanup(owned, cleanup)
+                materializer._reload_and_cleanup(
+                    owned, _cleanup_control(control, cleanup_deadline_ns))
                 owned = None
             except BaseException as cleanup_error:
                 error = fs.RootfsFsError(error, cleanup_error)
