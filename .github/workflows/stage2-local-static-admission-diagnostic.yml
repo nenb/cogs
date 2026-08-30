@@ -62,9 +62,30 @@ jobs:
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             python3 -I -B - <<'PY'
-          import sys
+          import os, sys
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
+          import completion_kata_admission as admission
           import completion_kata_coordinator as coordinator
+          descriptors = []
+          stage = "control"
+          try:
+              control, envelope, runtime, contracts, held = admission._read_control_package()
+              descriptors.extend(held)
+              print("COGS_STATIC_ADMISSION_PHASE:CONTROL")
+              stage = "source"
+              admission._verify_complete_source(envelope.value["implementation"], descriptors)
+              print("COGS_STATIC_ADMISSION_PHASE:SOURCE")
+              stage = "configuration"
+              admission._retain_observer_configuration(runtime, descriptors)
+              print("COGS_STATIC_ADMISSION_PHASE:CONFIGURATION")
+              stage = "final"
+              admission._validate_final_and_rootfs(envelope, runtime)
+              print("COGS_STATIC_ADMISSION_PHASE:FINAL")
+          except BaseException as error:
+              message = str(error).replace("\n", " ")[:160]
+              print(f"COGS_STATIC_ADMISSION_PHASE_FAIL:{stage}:{type(error).__name__}:{message}")
+          finally:
+              admission._close_all(descriptors)
           lifecycle = coordinator._Lifecycle()
           try:
               custody, approval = coordinator._owners.claim_static_custody(lifecycle)
