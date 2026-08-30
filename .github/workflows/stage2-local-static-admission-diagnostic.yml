@@ -71,7 +71,7 @@ jobs:
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             python3 -I -B - <<'PY'
-          import hashlib, sys
+          import hashlib, sys, traceback
           sys.stdout.reconfigure(line_buffering=True)
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
           import completion_kata_coordinator as coordinator
@@ -87,6 +87,11 @@ jobs:
                       break
                   message = str(error).replace("\n", " ")[:192]
                   print(f"COGS_FULL_OWNER_CAUSE:{index}:{type(error).__name__}:{message}")
+                  frames = traceback.extract_tb(error.__traceback__)
+                  for ordinal, frame in enumerate(frames[-8:]):
+                      if frame.filename.startswith("/var/lib/cogs/stage2-completion-v1/source/"):
+                          name = frame.filename.rsplit("/", 1)[-1]
+                          print(f"COGS_FULL_OWNER_FRAME:{index}:{ordinal}:{name}:{frame.lineno}:{frame.name}")
                   error = error.__cause__ or error.__context__
           PY
 
