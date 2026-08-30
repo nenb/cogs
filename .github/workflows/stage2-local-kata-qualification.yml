@@ -96,7 +96,7 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 11)
+                  and len(runs) == 12)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
@@ -120,6 +120,8 @@ jobs:
                   " G=36bfa11a5da930d3b36eba4a388aba9ed85119d1")
               tenth_predecessor_title = ("Stage 2 local Kata qualification H=89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14"
                   " G=54973848cac9b2ce168b539fff4b03802fb514aa")
+              eleventh_predecessor_title = ("Stage 2 local Kata qualification H=89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14"
+                  " G=9180ea85d42f3f3dc2703e1ba677c7dbdccfb104")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -155,6 +157,9 @@ jobs:
                   elif item["id"] == 33292919137:
                       need(row[2:] == ("completed", "failure", "54973848cac9b2ce168b539fff4b03802fb514aa",
                                       tenth_predecessor_title))
+                  elif item["id"] == 33299709836:
+                      need(row[2:] == ("completed", "failure", "9180ea85d42f3f3dc2703e1ba677c7dbdccfb104",
+                                      eleventh_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
@@ -163,7 +168,7 @@ jobs:
               need({row[0] for row in rows} == {
                   32584575939, 32586393441, 32596053811, 32602439014, 32613383776,
                   32614828572, 32622048772, 32628930290, 32635519776, 33292919137,
-                  int(run_id)})
+                  33299709836, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows
@@ -247,6 +252,9 @@ jobs:
           phase baseline
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
+          test ! -e /run/netns
+          sudo -n /bin/mkdir -m 0755 /run/netns
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
           sudo -n /bin/chmod 0755 /opt
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:755
@@ -532,14 +540,17 @@ jobs:
           test ! -e "$REPORT_READBACK_STAGING"
           test ! -e "$RECEIPT_READBACK_STAGING"
 
-      - name: Restore the exact hosted runner opt parent only after runtime removal
-        id: opt_parent_restore
+      - name: Restore exact hosted scaffolding only after runtime removal
+        id: host_scaffold_restore
         if: always()
         continue-on-error: true
         timeout-minutes: 1
         run: |
           set -euo pipefail
           test ! -e /opt/kata
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
+          sudo -n /bin/rmdir /run/netns
+          test ! -e /run/netns
           seen=$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)
           case "$seen" in
             root:root:755) sudo -n /bin/chmod 0777 /opt ;;
@@ -566,7 +577,7 @@ jobs:
           RECEIPT_DOWNLOAD: ${{ steps.receipt_download.outcome }}
           RECEIPT_READBACK: ${{ steps.receipt_readback.outcome }}
           OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
-          OPT_PARENT_RESTORE: ${{ steps.opt_parent_restore.outcome }}
+          HOST_SCAFFOLD_RESTORE: ${{ steps.host_scaffold_restore.outcome }}
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
@@ -577,7 +588,7 @@ jobs:
           for outcome in "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" \
             "$PUBLICATION" "$REPORT_UPLOAD" "$REPORT_DOWNLOAD" "$REPORT_READBACK" \
             "$RECEIPT_CREATE" "$RECEIPT_UPLOAD" "$RECEIPT_DOWNLOAD" "$RECEIPT_READBACK" \
-            "$OUTPUT_CLEANUP" "$OPT_PARENT_RESTORE"
+            "$OUTPUT_CLEANUP" "$HOST_SCAFFOLD_RESTORE"
           do
             test "$outcome" = success
           done
