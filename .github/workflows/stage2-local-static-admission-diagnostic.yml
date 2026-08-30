@@ -1,0 +1,99 @@
+name: Stage 2 local static admission diagnostic
+run-name: Non-authoritative Stage 2 static admission diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Acquire exact diagnostic control and implementation revisions
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test -z "$({ find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit; })"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin \
+            54973848cac9b2ce168b539fff4b03802fb514aa
+          "${clean[@]}" git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+          destination=$GITHUB_WORKSPACE/stage2-implementation-H
+          "${clean[@]}" git init --quiet "$destination"
+          "${clean[@]}" git -C "$destination" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" git -C "$destination" fetch --quiet --no-tags --depth=1 origin \
+            89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14
+          "${clean[@]}" git -C "$destination" checkout --quiet --detach FETCH_HEAD
+
+      - name: Reproduce immutable preparation without lifecycle entry
+        timeout-minutes: 32
+        run: |
+          set -euo pipefail
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
+          prepared=$(sudo -n timeout --foreground --signal=TERM --kill-after=5s 75s \
+            env -i PATH=/usr/bin:/bin python3 -I -B \
+            "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
+          python3 -I -c 'import json,sys
+          value=json.loads(sys.stdin.buffer.read()); assert value["revision"] == sys.argv[1]
+          assert value["manifest_sha256"] == sys.argv[2]' \
+            89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14 \
+            2b3253d48f00ba6c183d72dea3c6b69011008b4448e05f2d62634b1ee89211c1 <<<"$prepared"
+          test "$(sudo -n env -i PATH=/usr/bin:/bin python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/stage2-stage-reviewed-control.py")" = \
+            control_sha256=76bbc6fca2b7c6694b49f3c1961ad231cf78c218f683b89087bc5c88f9372474
+          sudo -n timeout --foreground --signal=TERM --kill-after=10s 1770s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py \
+            >/tmp/cogs-static-admission-preparation.json
+
+      - name: Observe exact package-private static admission boundary
+        timeout-minutes: 2
+        run: |
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            python3 -I -B - <<'PY'
+          import sys
+          sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
+          import completion_kata_coordinator as coordinator
+          lifecycle = coordinator._Lifecycle()
+          try:
+              custody, approval = coordinator._owners.claim_static_custody(lifecycle)
+              lifecycle.static_custody = custody
+              lifecycle.static_gate = approval
+              lifecycle.source_approval = approval
+              print("COGS_STATIC_ADMISSION_DIAGNOSTIC:PASS")
+          except BaseException as error:
+              print("COGS_STATIC_ADMISSION_DIAGNOSTIC:FAIL")
+              for index in range(16):
+                  if error is None:
+                      break
+                  message = str(error).replace("\n", " ")[:160]
+                  print(f"COGS_STATIC_ADMISSION_CAUSE:{index}:{type(error).__name__}:{message}")
+                  error = error.__cause__ or error.__context__
+          finally:
+              errors = []
+              if lifecycle.static_custody is not None:
+                  coordinator._abort_custody(lifecycle, errors)
+              if errors:
+                  raise SystemExit(2)
+          PY
+
+      - name: Remove diagnostic-only immutable state
+        if: always()
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          sudo -n rm -rf --one-file-system -- /var/lib/cogs /opt/kata
+          sudo -n rm -f -- /tmp/cogs-static-admission-preparation.json
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
