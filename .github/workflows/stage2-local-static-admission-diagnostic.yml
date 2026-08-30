@@ -10,7 +10,7 @@ permissions:
 jobs:
   diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Acquire exact diagnostic control and implementation revisions
         timeout-minutes: 2
@@ -41,6 +41,9 @@ jobs:
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
           test ! -e /var/lib/cogs-stage2-nft-owner-v1
+          test ! -e /run/netns
+          sudo -n mkdir -m 0755 /run/netns
+          test "$(sudo -n stat -c '%U:%G:%a' /run/netns)" = root:root:755
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
           sudo -n chmod 0755 /opt
           prepared=$(sudo -n timeout --foreground --signal=TERM --kill-after=5s 75s \
@@ -62,8 +65,8 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
-      - name: Observe exact package-private static admission boundary
-        timeout-minutes: 70
+      - name: Observe the full owner failure without minting a receipt
+        timeout-minutes: 150
         run: |
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
@@ -72,61 +75,44 @@ jobs:
           sys.stdout.reconfigure(line_buffering=True)
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
           import completion_kata_coordinator as coordinator
-          lifecycle = coordinator._Lifecycle()
-          stage = "static"
+          class DiagnosticStop(Exception):
+              pass
+          original = coordinator._issue_owner_receipt
+          def stop_before_receipt(_custody, _evidence):
+              raise DiagnosticStop("complete owner evidence reached without receipt mint")
+          coordinator._issue_owner_receipt = stop_before_receipt
           try:
-              lifecycle.static_custody, lifecycle.static_gate = coordinator._owners.claim_static_custody(lifecycle)
-              lifecycle.source_approval = lifecycle.static_gate
-              print("COGS_BASELINE_DIAGNOSTIC:STATIC")
-              stage = "rootfs"
-              lifecycle.rootfs = coordinator._owners.acquire_rootfs(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:ROOTFS")
-              stage = "operation"
-              lifecycle.operation = coordinator._owners.open_operation(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:OPERATION")
-              stage = "live-custody"
-              lifecycle.live_custody = coordinator._owners.claim_live_custody(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:LIVE_CUSTODY")
-              stage = "executables"
-              lifecycle.executables = coordinator._owners.claim_executables(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:EXECUTABLES")
-              stage = "inputs"
-              lifecycle.inputs = coordinator._owners.create_inputs(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:INPUTS")
-              stage = "baselines"
-              lifecycle.baselines = coordinator._owners.capture_baselines(lifecycle)
-              print("COGS_BASELINE_DIAGNOSTIC:BASELINES")
+              coordinator._run_fixed_local_qualification()
+              print("COGS_FULL_OWNER_DIAGNOSTIC:UNEXPECTED_RETURN")
           except BaseException as error:
-              print(f"COGS_BASELINE_DIAGNOSTIC:FAIL:{stage}")
-              for index in range(24):
+              print("COGS_FULL_OWNER_DIAGNOSTIC:TERMINAL")
+              for index in range(32):
                   if error is None:
                       break
-                  message = str(error).replace("\n", " ")[:160]
-                  print(f"COGS_BASELINE_CAUSE:{index}:{type(error).__name__}:{message}")
+                  message = str(error).replace("\n", " ")[:192]
+                  print(f"COGS_FULL_OWNER_CAUSE:{index}:{type(error).__name__}:{message}")
                   error = error.__cause__ or error.__context__
           finally:
-              errors = []
-              if lifecycle.static_custody is not None:
-                  coordinator._abort_custody(lifecycle, errors)
-              for index, error in enumerate(errors[:8]):
-                  print(f"COGS_BASELINE_CLOSE:{index}:{type(error).__name__}:{str(error)[:160]}")
+              coordinator._issue_owner_receipt = original
           PY
 
       - name: Remove diagnostic-only immutable state
         if: always()
-        timeout-minutes: 2
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           if test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh; then
             sudo -n timeout --signal=TERM --kill-after=10s 720s \
               env -i HOME=/nonexistent LANG=C LC_ALL=C \
               PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
-              /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh \
-              || true
+              /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
           fi
           sudo -n rm -rf --one-file-system -- /var/lib/cogs /opt/kata /var/lib/cogs-stage2-nft-owner-v1
           sudo -n rm -f -- /tmp/cogs-static-admission-preparation.json
+          test "$(sudo -n stat -c '%U:%G:%a' /run/netns)" = root:root:755
+          sudo -n rmdir /run/netns
           sudo -n chmod 0777 /opt
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
+          test ! -e /run/netns
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
