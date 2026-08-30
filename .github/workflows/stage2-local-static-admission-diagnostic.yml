@@ -10,7 +10,7 @@ permissions:
 jobs:
   diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - name: Acquire exact diagnostic control and implementation revisions
         timeout-minutes: 2
@@ -40,6 +40,9 @@ jobs:
           set -euo pipefail
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
+          test ! -e /var/lib/cogs-stage2-nft-owner-v1
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
+          sudo -n chmod 0755 /opt
           prepared=$(sudo -n timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin python3 -I -B \
             "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
@@ -55,6 +58,9 @@ jobs:
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py \
             >/tmp/cogs-static-admission-preparation.json
+          sudo -n env -i HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
       - name: Observe exact package-private static admission boundary
         timeout-minutes: 2
@@ -62,58 +68,47 @@ jobs:
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             python3 -I -B - <<'PY'
-          import os, sys
+          import sys
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
-          import completion_kata_admission as admission
           import completion_kata_coordinator as coordinator
-          descriptors = []
-          stage = "control"
-          try:
-              control, envelope, runtime, contracts, held = admission._read_control_package()
-              descriptors.extend(held)
-              print("COGS_STATIC_ADMISSION_PHASE:CONTROL")
-              stage = "source"
-              admission._verify_complete_source(envelope.value["implementation"], descriptors)
-              print("COGS_STATIC_ADMISSION_PHASE:SOURCE")
-              stage = "configuration"
-              launch = runtime.value["launch"]
-              for fixed in (launch["configuration"]["path"], launch["active_configuration"]["path"]):
-                  current = "/"
-                  for component in fixed.removeprefix("/").split("/")[:-1]:
-                      current = os.path.join(current, component)
-                      seen = os.stat(current, follow_symlinks=False)
-                      print(f"COGS_STATIC_ADMISSION_PATH:{current}:{seen.st_uid}:{seen.st_gid}:{seen.st_mode & 0o7777:o}")
-              admission._retain_observer_configuration(runtime, descriptors)
-              print("COGS_STATIC_ADMISSION_PHASE:CONFIGURATION")
-              stage = "final"
-              admission._validate_final_and_rootfs(envelope, runtime)
-              print("COGS_STATIC_ADMISSION_PHASE:FINAL")
-          except BaseException as error:
-              message = str(error).replace("\n", " ")[:160]
-              print(f"COGS_STATIC_ADMISSION_PHASE_FAIL:{stage}:{type(error).__name__}:{message}")
-          finally:
-              admission._close_all(descriptors)
           lifecycle = coordinator._Lifecycle()
+          stage = "static"
           try:
-              custody, approval = coordinator._owners.claim_static_custody(lifecycle)
-              lifecycle.static_custody = custody
-              lifecycle.static_gate = approval
-              lifecycle.source_approval = approval
-              print("COGS_STATIC_ADMISSION_DIAGNOSTIC:PASS")
+              lifecycle.static_custody, lifecycle.static_gate = coordinator._owners.claim_static_custody(lifecycle)
+              lifecycle.source_approval = lifecycle.static_gate
+              print("COGS_BASELINE_DIAGNOSTIC:STATIC")
+              stage = "rootfs"
+              lifecycle.rootfs = coordinator._owners.acquire_rootfs(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:ROOTFS")
+              stage = "operation"
+              lifecycle.operation = coordinator._owners.open_operation(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:OPERATION")
+              stage = "live-custody"
+              lifecycle.live_custody = coordinator._owners.claim_live_custody(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:LIVE_CUSTODY")
+              stage = "executables"
+              lifecycle.executables = coordinator._owners.claim_executables(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:EXECUTABLES")
+              stage = "inputs"
+              lifecycle.inputs = coordinator._owners.create_inputs(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:INPUTS")
+              stage = "baselines"
+              lifecycle.baselines = coordinator._owners.capture_baselines(lifecycle)
+              print("COGS_BASELINE_DIAGNOSTIC:BASELINES")
           except BaseException as error:
-              print("COGS_STATIC_ADMISSION_DIAGNOSTIC:FAIL")
-              for index in range(16):
+              print(f"COGS_BASELINE_DIAGNOSTIC:FAIL:{stage}")
+              for index in range(24):
                   if error is None:
                       break
                   message = str(error).replace("\n", " ")[:160]
-                  print(f"COGS_STATIC_ADMISSION_CAUSE:{index}:{type(error).__name__}:{message}")
+                  print(f"COGS_BASELINE_CAUSE:{index}:{type(error).__name__}:{message}")
                   error = error.__cause__ or error.__context__
           finally:
               errors = []
               if lifecycle.static_custody is not None:
                   coordinator._abort_custody(lifecycle, errors)
-              if errors:
-                  raise SystemExit(2)
+              for index, error in enumerate(errors[:8]):
+                  print(f"COGS_BASELINE_CLOSE:{index}:{type(error).__name__}:{str(error)[:160]}")
           PY
 
       - name: Remove diagnostic-only immutable state
@@ -121,7 +116,16 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          sudo -n rm -rf --one-file-system -- /var/lib/cogs /opt/kata
+          if test -x /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh; then
+            sudo -n timeout --signal=TERM --kill-after=10s 720s \
+              env -i HOME=/nonexistent LANG=C LC_ALL=C \
+              PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+              /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh \
+              || true
+          fi
+          sudo -n rm -rf --one-file-system -- /var/lib/cogs /opt/kata /var/lib/cogs-stage2-nft-owner-v1
           sudo -n rm -f -- /tmp/cogs-static-admission-preparation.json
+          sudo -n chmod 0777 /opt
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
