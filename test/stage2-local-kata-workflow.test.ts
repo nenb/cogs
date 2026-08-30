@@ -99,7 +99,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
     /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "2b3253d48f00ba6c183d72dea3c6b69011008b4448e05f2d62634b1ee89211c1"/u,
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "76bbc6fca2b7c6694b49f3c1961ad231cf78c218f683b89087bc5c88f9372474"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "6a713ac5a7b41448fb045861dd1b5a99ca6203f4c0a2a2e9fe5bfc69c03fd6f9"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "cdd1ed2d97c69e2b4edcdad1e1808b6ffd903e283de7c7a385b0f23a4cbc70d5"/u);
   assert.match(
     guard,
     /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
@@ -162,7 +162,8 @@ test("attempt-one stable admission is the first step and precedes unauthenticate
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32614828572/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32622048772/u);
   assert.match(workflow.slice(admission, control), /item\["id"\] == 32628930290/u);
-  assert.match(workflow.slice(admission, control), /len\(runs\) == 9/u);
+  assert.match(workflow.slice(admission, control), /item\["id"\] == 32635519776/u);
+  assert.match(workflow.slice(admission, control), /len\(runs\) == 10/u);
   assert.match(workflow.slice(admission, control), /rows == previous/u);
   assert.match(workflow.slice(admission, control), /ProxyHandler\(\{\}\)/u);
   assert.match(workflow.slice(admission, control), /"Authorization":f"Bearer \{token\}"/u);
