@@ -19,7 +19,7 @@ export const STAGE4_PINNED_GIT = Object.freeze({
 
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAXIMUM_TRACKED_FILES = 1226;
+const MAXIMUM_TRACKED_FILES = 1227;
 const MAXIMUM_AGGREGATE_BYTES = 18 * 1024 * 1024;
 const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-mode-path-byte-merkle/v2\0";
 const UNTRACKED_VALIDATION_PREFIXES = Object.freeze([
