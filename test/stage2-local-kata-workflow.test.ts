@@ -57,12 +57,12 @@ const steps = [
   "Enforce attempt 1 complete custody chain and final zero residue",
 ];
 
-test("terminal receipt diagnostic is exact, consumed in memory, and never published", () => {
-  assert.match(diagnostic, /9a525719bed23e3a948f760862722e8e4864a575/u);
+test("terminal diagnostic is exact, consumed, publication-tested, and never uploaded", () => {
+  assert.match(diagnostic, /9f6cca5fcc059d3316cc702d2cc9f4b46b36079c/u);
   assert.match(diagnostic, /1fc2dea2dcefea2aaf71a80356e0f5ed946e9991/u);
   assert.match(diagnostic, /_consume_local_receipt\(receipt\)/u);
-  assert.match(diagnostic, /traceback\.extract_tb\(error\.__traceback__\)/u);
-  assert.match(diagnostic, /frames\[-8:\]/u);
+  assert.match(diagnostic, /publication\.publish\(staging/u);
+  assert.match(diagnostic, /traceback\.extract_tb\(error\.__traceback__\)\[-8:\]/u);
   assert.doesNotMatch(diagnostic, /inspect|getargvalues|f_locals|actions\/upload-artifact|actions\/download-artifact/u);
 });
 

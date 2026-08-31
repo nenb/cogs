@@ -25,7 +25,7 @@ jobs:
           "${clean[@]}" git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin \
-            9a525719bed23e3a948f760862722e8e4864a575
+            9f6cca5fcc059d3316cc702d2cc9f4b46b36079c
           "${clean[@]}" git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
           destination=$GITHUB_WORKSPACE/stage2-implementation-H
           "${clean[@]}" git init --quiet "$destination"
@@ -65,34 +65,57 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
-      - name: Observe and consume the full diagnostic receipt without publication
+      - name: Consume the full diagnostic receipt and exercise publication without upload
         timeout-minutes: 150
         run: |
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" TRUSTED_RUNNER_UID="$(id -u)" \
             python3 -I -B - <<'PY'
-          import hashlib, sys, traceback
+          import hashlib, importlib.util, os, pathlib, sys, traceback
           sys.stdout.reconfigure(line_buffering=True)
           sys.path.insert(0, "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
           import completion_kata_coordinator as coordinator
           import completion_local_receipt as local_receipt
+          staging = pathlib.Path("/var/lib/cogs/stage2-diagnostic-publication")
           try:
               receipt = coordinator._run_fixed_local_qualification()
               raw = local_receipt._consume_local_receipt(receipt)
               print(f"COGS_FULL_OWNER_DIAGNOSTIC:CONSUMED:{len(raw)}:{hashlib.sha256(raw).hexdigest()}")
+              staging.mkdir(mode=0o700)
+              source = os.open(staging / "report.partial", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              try:
+                  if os.write(source, raw) != len(raw): raise RuntimeError("diagnostic write incomplete")
+                  os.fchown(source, int(os.environ["TRUSTED_RUNNER_UID"]), 0)
+                  os.fsync(source)
+              finally: os.close(source)
+              os.chown(staging, int(os.environ["TRUSTED_RUNNER_UID"]), 0)
+              path = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "scripts/stage2-local-publication.py"
+              spec = importlib.util.spec_from_file_location("diagnostic_publication", path)
+              publication = importlib.util.module_from_spec(spec); spec.loader.exec_module(publication)
+              result = publication.publish(staging, "1fc2dea2dcefea2aaf71a80356e0f5ed946e9991",
+                  "509dacc4a83b45a2da1ca7892210de8434a2b9de5b2a478ce4d8197f85967f3a",
+                  "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375",
+                  int(os.environ["TRUSTED_RUNNER_UID"]))
+              print(f"COGS_FULL_OWNER_DIAGNOSTIC:PUBLISHED:{result[0]}:{result[1]}:{result[2]}")
           except BaseException as error:
               print("COGS_FULL_OWNER_DIAGNOSTIC:TERMINAL")
               for index in range(32):
-                  if error is None:
-                      break
+                  if error is None: break
                   message = str(error).replace("\n", " ")[:192]
                   print(f"COGS_FULL_OWNER_CAUSE:{index}:{type(error).__name__}:{message}")
-                  frames = traceback.extract_tb(error.__traceback__)
-                  for ordinal, frame in enumerate(frames[-8:]):
-                      if frame.filename.startswith("/var/lib/cogs/stage2-completion-v1/source/"):
-                          name = frame.filename.rsplit("/", 1)[-1]
+                  for ordinal, frame in enumerate(traceback.extract_tb(error.__traceback__)[-8:]):
+                      name = frame.filename.rsplit("/", 1)[-1]
+                      if (frame.filename.startswith("/var/lib/cogs/stage2-completion-v1/source/")
+                              or name in {"stage2-local-publication.py", "stage2-native-publication.py"}):
                           print(f"COGS_FULL_OWNER_FRAME:{index}:{ordinal}:{name}:{frame.lineno}:{frame.name}")
                   error = error.__cause__ or error.__context__
+          finally:
+              for name in ("report.partial", "report.fresh", "report.json"):
+                  try: os.unlink(staging / name)
+                  except FileNotFoundError: pass
+              try: staging.rmdir()
+              except FileNotFoundError: pass
           PY
 
       - name: Remove diagnostic-only immutable state
