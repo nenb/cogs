@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-pre-aws-qualification-package-v1.json",
+  "title": "Stage 2 pre-AWS qualification package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "claims",
+    "source",
+    "control",
+    "static_observation",
+    "qualification",
+    "package_identity",
+    "terminal_gate"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-pre-aws-qualification-package/v1" },
+    "authority": { "const": "non-aws-prerequisite-evidence-only" },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aws_authorized",
+        "aws_execution_observed",
+        "local_kata_qualification_passed",
+        "promotion_authorized",
+        "provider_execution_observed",
+        "release_eligible"
+      ],
+      "properties": {
+        "aws_authorized": { "const": false },
+        "aws_execution_observed": { "const": false },
+        "local_kata_qualification_passed": { "const": true },
+        "promotion_authorized": { "const": false },
+        "provider_execution_observed": { "const": false },
+        "release_eligible": { "const": false }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_head", "manifest_sha256"],
+      "properties": {
+        "implementation_head": { "$ref": "#/$defs/sha1" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "static_control_sha256", "workflow_sha256", "result_schema_sha256"],
+      "properties": {
+        "head": { "$ref": "#/$defs/sha1" },
+        "static_control_sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_sha256": { "$ref": "#/$defs/sha256" },
+        "result_schema_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "static_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "artifact_id",
+        "artifact_digest",
+        "artifact_members",
+        "static_control_sha256"
+      ],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/positive" },
+        "run_attempt": { "const": 1 },
+        "artifact_id": { "$ref": "#/$defs/positive" },
+        "artifact_digest": { "$ref": "#/$defs/sha256" },
+        "artifact_members": { "const": 13 },
+        "static_control_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "first_created",
+        "event",
+        "conclusion",
+        "job_id",
+        "started_at",
+        "completed_at",
+        "samples",
+        "measurements",
+        "teardown_phases",
+        "zero_residue_domains",
+        "report",
+        "upload_receipt",
+        "report_artifact",
+        "receipt_artifact"
+      ],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/positive" },
+        "run_attempt": { "const": 1 },
+        "first_created": { "const": true },
+        "event": { "const": "workflow_dispatch" },
+        "conclusion": { "const": "success" },
+        "job_id": { "$ref": "#/$defs/positive" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "samples": { "const": 7 },
+        "measurements": { "const": 21 },
+        "teardown_phases": { "const": 13 },
+        "zero_residue_domains": { "type": "integer", "minimum": 1 },
+        "report": { "$ref": "#/$defs/member" },
+        "upload_receipt": { "$ref": "#/$defs/member" },
+        "report_artifact": { "$ref": "#/$defs/artifact" },
+        "receipt_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "package_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deb_sha256", "final_pin_sha256", "rootfs_sha256"],
+      "properties": {
+        "deb_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "terminal_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fresh_aws_authorization_required", "next_action", "prohibited_without_fresh_authorization"],
+      "properties": {
+        "fresh_aws_authorization_required": { "const": true },
+        "next_action": { "const": "stop-before-aws-and-request-fresh-authorization" },
+        "prohibited_without_fresh_authorization": {
+          "const": [
+            "aws-api",
+            "aws-credentials",
+            "provider",
+            "opentofu",
+            "ssm",
+            "inventory",
+            "deployment",
+            "campaign",
+            "production",
+            "release"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "positive": { "type": "integer", "minimum": 1 },
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^docs/security-evidence/[a-z0-9./-]+\\.json$" },
+        "bytes": { "$ref": "#/$defs/positive" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "result": { "const": "pass" },
+        "qualified": { "const": true }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "archive_bytes", "archive_sha256", "member", "created_at", "expires_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/positive" },
+        "name": { "type": "string", "pattern": "^stage2-local-kata-[a-z0-9-]+$" },
+        "archive_bytes": { "$ref": "#/$defs/positive" },
+        "archive_sha256": { "$ref": "#/$defs/sha256" },
+        "member": { "enum": ["report.json", "receipt.json"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
