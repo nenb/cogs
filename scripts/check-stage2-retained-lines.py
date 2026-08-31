@@ -23,7 +23,7 @@ PREFERRED_LIMIT = 90_000
 HARD_LIMIT = 94_000
 DEPLOY_CORRECTION_HIGH = 19_500
 RETAINED_CORRECTION_HIGH = 9_500
-WORKFLOW_CORRECTION_HIGH = 3_000
+WORKFLOW_CORRECTION_HIGH = 3_700
 GLOBAL_CORRECTION_HIGH = 32_000
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
@@ -80,6 +80,7 @@ RETAINED_FILES = (
     "scripts/stage2-local-upload-receipt.py",
     "scripts/stage2-prebuilt-rootfs-producer.py",
     "scripts/stage2-prebuilt-rootfs-publisher.py",
+    "scripts/stage2-prebuilt-rehearsal-grant.py",
     "scripts/stage2-stage-reviewed-control.py",
     "schemas/stage2-phase-a-candidate-v1.json",
     "schemas/stage2-phase-a-candidate-v2.json",

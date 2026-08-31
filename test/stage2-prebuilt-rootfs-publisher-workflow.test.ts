@@ -17,7 +17,10 @@ test("trusted publisher is directional, numeric-artifact-bound, signed, and byte
   assert.match(workflow, /id-token: write/u);
   assert.match(workflow, /cosign sign --yes --new-bundle-format=true "\$SUBJECT"/u);
   assert.match(workflow, /cosign verify --new-bundle-format=true/u);
-  assert.match(workflow, /for name in accepted\/rootfs\.tar accepted\/rootfs\.manifest\.json accepted\/rootfs\.metadata\.json rootfs\.package\.json rootfs\.provenance\.json/u);
+  assert.match(
+    workflow,
+    /for name in accepted\/rootfs\.tar accepted\/rootfs\.manifest\.json accepted\/rootfs\.metadata\.json rootfs\.package\.json rootfs\.provenance\.json/u,
+  );
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
   assert.match(workflow, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-producer\.yml"/u);
   assert.doesNotMatch(workflow, /latest|continue-on-error:\s*true/u);

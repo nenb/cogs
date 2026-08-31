@@ -45,8 +45,11 @@
     "ami_state": { "const": "available" },
     "ami_commitment": { "$ref": "#/$defs/sha256" },
     "plan_sha256s": {
-      "type": "array", "minItems": 7, "maxItems": 7,
-      "uniqueItems": true, "items": { "$ref": "#/$defs/sha256" }
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/sha256" }
     },
     "not_before_unix_ns": { "type": "integer", "minimum": 1 },
     "effect_deadline_ns": { "type": "integer", "minimum": 1, "maximum": 5400000000000 },

@@ -40,7 +40,10 @@ test("production controller is pure while issuing only adapter-sealed, receipt-b
     assert.match(source, new RegExp(`"${category}"`, "u"));
   assert.match(source, /class CleanupReceipt/u);
   assert.match(source, /self\.ports\.recover\(/u);
-  assert.doesNotMatch(source.slice(source.indexOf("except BaseException as primary")), /self\.ports\.effect\("destroy"/u);
+  assert.doesNotMatch(
+    source.slice(source.indexOf("except BaseException as primary")),
+    /self\.ports\.effect\("destroy"/u,
+  );
   assert.match(source, /self\.final_zero_unix_ns - self\.first_apply_unix_ns/u);
   assert.match(source, /all\(len\(set\(values\)\) == 7/u);
 });

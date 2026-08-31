@@ -88,8 +88,10 @@ class FakeOwners:
         self.step("claim_static_custody")
         return "custody", "static-gate"
 
+    def validate_cycle_grant(self, _lifecycle): return self.step("CYCLE_GRANT_VALIDATED")
     def acquire_rootfs(self, _lifecycle): return self.step("acquire_rootfs")
     def open_operation(self, _lifecycle): return self.step("open_operation")
+    def bind_cycle_route(self, _lifecycle): return self.step("CYCLE_ROUTE_BOUND")
     def claim_live_custody(self, _lifecycle):
         return self.step("claim_live_custody", ("custody", "live-gate"))
     def claim_executables(self, _lifecycle): return self.step("claim_executables")
@@ -112,6 +114,8 @@ class FakeOwners:
         assert lifecycle.runtime_network == "RUNTIME_NETWORK_OBSERVED"
         return self.step("prove_runtime")
     def authenticate_ssh(self, _lifecycle): return self.step("authenticate_ssh")
+    def authenticate_readiness_ssh(self, _lifecycle):
+        return self.step("READINESS_SSH_AUTHENTICATED")
 
     def revoke_readiness(self, _lifecycle): return self.step("revoke_readiness")
     def observe_ownership(self, _lifecycle): return self.step("observe_ownership")
@@ -194,6 +198,39 @@ assert invoke(coordinator._run_fixed_local_qualification, fake)
 assert tuple(fake.events) == (*coordinator.FORWARD_ORDER, *coordinator.CLEANUP_ORDER,
                               "OWNER_EVIDENCE", "RECEIPT_ISSUED")
 assert len(fake.events) == len(set(fake.events))
+
+# The two authentic production route capabilities can each complete exactly one
+# lifecycle while the rehearsal policy makes both evidence producers and the
+# cycle receipt issuer unreachable. Cleanup, residue, and custody close remain.
+def rehearsal_grant(mode, ordinal):
+    value = {"batch_commitment": "1" * 64, "ordinal": ordinal, "mode": mode,
+             "implementation_revision": "2" * 40, "control_revision": "3" * 40,
+             "static_control_sha256": "4" * 64, "rootfs_descriptor_sha256": "5" * 64,
+             "ami_commitment": "6" * 64, "plan_sha256": "7" * 64}
+    value["grant_commitment"] = coordinator.cycle_authority.campaign._commit(
+        b"cogs.stage2-cycle-launch-grant/v1", value)
+    return coordinator.cycle_authority.campaign.CycleLaunchGrant(**value)
+
+for route, grant, ssh_event in (
+        (coordinator.cycle_evidence._fixed_full_route(), rehearsal_grant("full", 1),
+         "SSH_AUTHENTICATED"),
+        (coordinator.cycle_evidence._fixed_readiness_route(), rehearsal_grant("readiness", 2),
+         "READINESS_SSH_AUTHENTICATED")):
+    fake = FakeOwners()
+    with patch.object(coordinator, "_owners", fake), \
+         patch.object(coordinator.cycle_evidence, "_issue_cycle_receipt",
+                      side_effect=AssertionError("rehearsal minted cycle receipt")), \
+         patch.object(coordinator, "_produce_owner_evidence",
+                      side_effect=AssertionError("rehearsal produced owner evidence")), \
+         patch.object(coordinator, "_issue_owner_receipt",
+                      side_effect=AssertionError("rehearsal minted local receipt")):
+        assert coordinator._run_cycle(route, grant, False) is None
+    assert fake.events.count("CYCLE_GRANT_VALIDATED") == 1
+    assert fake.events.count("CYCLE_ROUTE_BOUND") == 1
+    assert fake.events.count(ssh_event) == 1
+    assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+    assert fake.events[-1] == "CUSTODY_ABORTED"
+    assert "OWNER_EVIDENCE" not in fake.events and "RECEIPT_ISSUED" not in fake.events
 
 # Every before/after forward cut stops forward progress. Once an operation was
 # returned, all cleanup phases are attempted in order. Before that, only the
@@ -389,9 +426,14 @@ for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
 source = (REMOTE / "completion_kata_coordinator.py").read_text()
 tree = ast.parse(source)
 functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-for name in ("_run_fixed_local_qualification", "_recover_fixed_local_qualification"):
+for name in ("_run_fixed_local_qualification", "_run_fixed_full_rehearsal",
+             "_run_fixed_readiness_rehearsal", "_recover_fixed_local_qualification"):
     node = functions[name]
     assert not node.args.args and node.args.vararg is node.args.kwarg is None
+for name in ("_run_fixed_full_rehearsal", "_run_fixed_readiness_rehearsal"):
+    rehearsal = ast.get_source_segment(source, functions[name])
+    assert "_run_cycle(" in rehearsal and ", False)" in rehearsal
+    assert "_issue_cycle_receipt" not in rehearsal and "owner_evidence" not in rehearsal
 recovery = ast.get_source_segment(source, functions["_recover_fixed_local_qualification"])
 for forbidden in coordinator.RECOVERY_FORBIDDEN:
     assert f".{forbidden}(" not in recovery
