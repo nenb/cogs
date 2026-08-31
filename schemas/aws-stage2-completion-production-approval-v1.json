@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-completion-production-approval-v1.json",
+  "title": "Private Stage 2 production campaign approval v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "phrase",
+    "batch_commitment",
+    "implementation_revision",
+    "control_revision",
+    "source_manifest_sha256",
+    "static_control_sha256",
+    "pre_aws_package_sha256",
+    "rootfs_descriptor_sha256",
+    "runtime_commitment",
+    "fixture_commitment",
+    "account_commitment",
+    "region",
+    "ami_id",
+    "ami_commitment",
+    "plan_sha256s",
+    "not_before_unix_ns",
+    "expires_unix_ns",
+    "deadline_ns",
+    "maximum_cost_micro_usd",
+    "one_attempt"
+  ],
+  "properties": {
+    "batch_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "static_control_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pre_aws_package_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rootfs_descriptor_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "runtime_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fixture_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "account_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ami_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "version": {
+      "const": "cogs.stage2-completion-production-approval/v1"
+    },
+    "phrase": {
+      "const": "run-seven-sequential-stage2-completion-launches"
+    },
+    "implementation_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "control_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(?:-gov)?-[a-z]+-[1-9]$"
+    },
+    "ami_id": {
+      "type": "string",
+      "pattern": "^ami-[0-9a-f]{17}$"
+    },
+    "plan_sha256s": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "not_before_unix_ns": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_unix_ns": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "deadline_ns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5400000000000
+    },
+    "maximum_cost_micro_usd": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 499999
+    },
+    "one_attempt": {
+      "const": true
+    }
+  }
+}

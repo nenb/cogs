@@ -43,6 +43,7 @@
         "test/fixtures/stage5-privacy/valid-suite-v1.json",
         "test/fixtures/stage2-completion/local-result-v2-*.json",
         "test/fixtures/stage2-completion/local-result-v3-*.json",
+        "test/fixtures/stage2-completion/local-result-v4-*.json",
         "test/fixtures/stage2-completion/attested-*-contract-v1.json",
         "test/fixtures/stage2-completion/attested-*-contract-v3.json",
         "config/stage2-completion-ssh-workload-v2.json",

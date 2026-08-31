@@ -18,11 +18,14 @@ const shellFiles = [
 ];
 const pythonFiles = [
   "check-plan.py",
+  "completion_campaign_aws_adapter.py",
   "completion_campaign_codec.py",
   "completion_campaign_contracts.py",
   "completion_campaign_controller.py",
   "completion_campaign_evidence.py",
+  "completion_campaign_production.py",
   "completion_campaign_receipts.py",
+  "completion_campaign_remote_adapter.py",
   "completion_campaign_state.py",
 ];
 const files = [...hclFiles, ...shellFiles, ...pythonFiles];

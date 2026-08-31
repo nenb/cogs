@@ -18,6 +18,7 @@ sys.path.insert(0, str(REMOTE))
 import completion_kata_admission as admission
 import completion_kata_preparation as preparation
 import completion_local_evidence as evidence
+import completion_rootfs_prebuilt as prebuilt
 
 
 def canonical(value):
@@ -61,6 +62,55 @@ def source_implementation():
             for index, path in enumerate(paths)]
     return {"revision": "1" * 40, "source_manifest_sha256": "2" * 64,
             "selected_sources": rows, "selected_sources_sha256": sha(canonical(rows))}
+
+
+def prebuilt_custody():
+    package = {"version": "cogs.stage2-prebuilt-rootfs-package/v1"}
+    provenance = {"version": "cogs.stage2-prebuilt-rootfs-provenance/v1"}
+    qualification = {"version": "cogs.stage2-prebuilt-rootfs-producer-receipt/v1"}
+    signature = "7" * 64
+    publication = {
+        "version": "cogs.stage2-prebuilt-rootfs-publication-receipt/v1",
+        "result": "pass", "implementation_revision": "1" * 40,
+        "control_revision": "2" * 40, "source_manifest_sha256": "2" * 64,
+        "oci_manifest_sha256": "1" * 64,
+        "rootfs_ustar_sha256": prebuilt.USTAR_SHA256,
+        "package_manifest_sha256": sha(canonical(package)),
+        "provenance_sha256": sha(canonical(provenance)),
+        "qualification_receipt_sha256": sha(canonical(qualification)),
+        "signature_verification_sha256": signature,
+        "publisher_workflow_sha256": "8" * 64,
+        "publisher_run_id": 10, "producer_run_id": 9, "producer_artifact_id": 8,
+        "conditional_identity": "immutable-manifest-digest",
+        "readback": "byte-equal-all-five-members",
+    }
+    return {"package_manifest": package, "provenance": provenance,
+            "qualification_receipt": qualification, "publication_receipt": publication,
+            "signature_verification_sha256": signature}
+
+
+def prebuilt_descriptor():
+    custody = prebuilt_custody()
+    return {
+        "version": prebuilt.VERSION,
+        "authority": prebuilt.AUTHORITY,
+        "artifact": {"version": prebuilt.ARTIFACT_VERSION, "os": "linux", "architecture": prebuilt.ARCHITECTURE, "format": prebuilt.FORMAT},
+        "registry": {"host": prebuilt.REGISTRY_HOST, "repository": prebuilt.REGISTRY_REPOSITORY,
+                     "manifest_media_type": prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE,
+                     "manifest_digest": "1" * 64,
+                     "layer_media_type": prebuilt.REGISTRY_LAYER_MEDIA_TYPE,
+                     "layer_digest": prebuilt.USTAR_SHA256, "layer_size": prebuilt.USTAR_SIZE},
+        "rootfs": {"metadata_sha256": prebuilt.METADATA_SHA256, "metadata_size": prebuilt.METADATA_SIZE,
+                   "manifest_sha256": prebuilt.MANIFEST_SHA256, "manifest_size": prebuilt.MANIFEST_SIZE,
+                   "ustar_sha256": prebuilt.USTAR_SHA256, "ustar_size": prebuilt.USTAR_SIZE,
+                   "entry_count": prebuilt.ENTRY_COUNT, "source_date_epoch": prebuilt.model.SOURCE_DATE_EPOCH},
+        "producer": {"revision": "1" * 40, "source_manifest_sha256": "2" * 64,
+                     "input_contract_sha256": prebuilt.INPUT_CONTRACT_SHA256,
+                     "package_manifest_sha256": sha(canonical(custody["package_manifest"])),
+                     "provenance_sha256": sha(canonical(custody["provenance"])),
+                     "qualification_receipt_sha256": sha(canonical(custody["qualification_receipt"])),
+                     "publication_receipt_sha256": sha(canonical(custody["publication_receipt"]))},
+    }
 
 
 def static_closure():
@@ -139,6 +189,8 @@ def values():
                           "manifest_size": 1_049_443,
                           "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
                           "ustar_size": 136_905_728, "entry_count": 4_353,
+                          "prebuilt_descriptor": prebuilt_descriptor(),
+                          "prebuilt_descriptor_sha256": sha(canonical(prebuilt_descriptor())),
                           "static_mapping_policy": {"uid": 0, "gid": 0, "nlink": 1,
                                                     "distinct_file_identities": True,
                                                     "path_basis": "rootfs-relative-no-symlink"},
@@ -174,11 +226,11 @@ implementation, runtime, package, contracts = values()
 first_control, first_members = preparation.build_control_bytes(
     implementation, runtime, package,
     "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-    contracts)
+    contracts, "2" * 40, prebuilt_custody())
 second_control, second_members = preparation.build_control_bytes(
     copy.deepcopy(implementation), copy.deepcopy(runtime), copy.deepcopy(package),
     "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-    copy.deepcopy(contracts))
+    copy.deepcopy(contracts), "2" * 40, copy.deepcopy(prebuilt_custody()))
 assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)
 envelope, runtime_description, loaded_contracts = preparation.validate_control_members(control, first_members)
@@ -313,7 +365,8 @@ assert "os.getpid" not in source and "import completion_kata_coordinator" not in
 assert "subprocess.Popen" in source and '"/usr/bin/zstd"' in source
 assert "def generate_implementation_h_candidate_control_bytes():" in source
 assert "runtime_contract.REVIEWED_ROOTFS_SHA256" not in source
-assert '"8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506", contracts' in source
+assert '"8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",' in source
+assert "contracts, control_revision, prebuilt_custody" in source
 assert "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py" in preparation.MANDATORY_SECURITY_SOURCES
 bridge_source = (REMOTE / "completion_kata_preparation_bridge.py").read_text()
 assert all(word not in bridge_source for word in ("getenv", "os.environ", "/dev/kvm", "QMP"))
@@ -431,4 +484,4 @@ if sys.argv[1:] == ["--samples"]:
 elif sys.argv[1:]:
     raise AssertionError("unexpected arguments")
 else:
-    print("static V2 control/no-KVM admission hostile matrix passed")
+    print("static V3 control/no-KVM admission hostile matrix passed")

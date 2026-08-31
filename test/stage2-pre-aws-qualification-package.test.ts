@@ -1,5 +1,6 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: exact frozen JSON evidence is checked structurally below */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -97,10 +98,12 @@ test("qualification package binds exact H, G, static observation, artifacts, and
   assert.equal(report.bindings.artifact_sha256, value.package_identity.deb_sha256);
   assert.equal(report.bindings.final_pin_sha256, value.package_identity.final_pin_sha256);
   assert.equal(report.bindings.rootfs_sha256, value.package_identity.rootfs_sha256);
-  const workflow = readFileSync(join(root, ".github/workflows/stage2-local-kata-qualification.yml"));
-  const schema = readFileSync(join(root, "schemas/stage2-workload-local-qualification-v3.json"));
-  const control = readFileSync(
-    join(root, "deploy/aws-feasibility/remote/stage2-completion-local-control-v2/stage2-local-static-control-v1.json"),
+  const historical = value.control.head as string;
+  const fromHistorical = (path: string) => execFileSync("git", ["show", `${historical}:${path}`], { cwd: root });
+  const workflow = fromHistorical(".github/workflows/stage2-local-kata-qualification.yml");
+  const schema = fromHistorical("schemas/stage2-workload-local-qualification-v3.json");
+  const control = fromHistorical(
+    "deploy/aws-feasibility/remote/stage2-completion-local-control-v2/stage2-local-static-control-v1.json",
   );
   assert.equal(sha256(workflow), value.control.workflow_sha256);
   assert.equal(sha256(schema), value.control.result_schema_sha256);

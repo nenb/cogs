@@ -1,6 +1,6 @@
-"""Package-private V2 static preparation handoffs for the fixed coordinator.
+"""Package-private V3 static preparation handoffs for the fixed coordinator.
 
-Every choice is fixed by reviewed V2 control bytes.  Callers supply only sealed
+Every choice is fixed by reviewed V3 control bytes.  Callers supply only sealed
 custody values returned here; there are no path, environment, command, role, or
 selector parameters.  This module neither opens KVM nor composes network,
 evidence, operation, runtime, or workflow owners.
@@ -8,6 +8,7 @@ evidence, operation, runtime, or workflow owners.
 import os
 import time
 
+import completion_cycle_authority as cycle_authority
 import completion_kata_admission as admission
 import completion_kata_process as process
 import completion_rootfs_fs as rootfs_fs
@@ -25,7 +26,7 @@ class PreparationBridgeError(Exception):
 
 def _require(condition):
     if not condition:
-        raise PreparationBridgeError("exact fixed V2 preparation custody required")
+        raise PreparationBridgeError("exact fixed V3 preparation custody required")
 
 
 def _control():
@@ -35,19 +36,20 @@ def _control():
 
 def _record_static_custody(custody):
     _states[custody] = {
-        "approval": None, "lease": None, "mapping": None, "mapping_consumed": False,
+        "approval": None, "rootfs_authority": None, "cycle_grant": None,
+        "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
     }
     return custody
 
 
 def _claim_fixed_static_preparation():
-    """Authenticate the sole forward V2 package and retain its source files."""
+    """Authenticate the sole forward V3 package and retain its source files."""
     return _record_static_custody(_claim_static())
 
 
 def _claim_fixed_recovery_static_preparation():
-    """Authenticate the sole cleanup-only V2 package."""
+    """Authenticate the sole cleanup-only V3 package."""
     return _record_static_custody(_claim_recovery_static())
 
 
@@ -63,14 +65,32 @@ def _fixed_source_approval(custody):
 
 
 def _acquire_fixed_rootfs(custody):
-    """Acquire the exact two-build pinned rootfs lease for this V2 custody."""
+    """Import the one descriptor-bound prebuilt rootfs; no build fallback exists."""
     state = _states.get(custody)
     _require(state is not None and state["lease"] is None and not state["abandoned"])
-    lease = rootfs_lease._acquire(_fixed_source_approval(custody), _control())
+    authority = admission._fixed_prebuilt_rootfs_authority(custody)
+    state["rootfs_authority"] = authority
+    lease = rootfs_lease._acquire_prebuilt(
+        _fixed_source_approval(custody), authority, _control())
     _require(type(lease) is rootfs_lease.RetainedRootfsLease
              and lease.disposition == "held")
     state["lease"] = lease
     return lease
+
+
+def _validate_fixed_cycle_grant(custody, grant):
+    """Bind controller-issued batch authority to exact H/G control and rootfs."""
+    state = _states.get(custody)
+    _require(state is not None)
+    binding = admission._cycle_grant_binding(custody)
+    _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
+             and state["cycle_grant"] is None
+             and grant.implementation_revision == binding["implementation_revision"]
+             and grant.control_revision == binding["control_revision"]
+             and grant.static_control_sha256 == binding["static_control_sha256"]
+             and grant.rootfs_descriptor_sha256 == binding["rootfs_descriptor_sha256"])
+    state["cycle_grant"] = grant
+    return grant
 
 
 def _claim_fixed_live_mapping(custody, lease):

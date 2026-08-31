@@ -1,7 +1,7 @@
 """Fixed rootfs ownership lifecycle and exact recover-owned command for ADR 0040."""
 
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import fcntl
 import hashlib
 import os
@@ -25,6 +25,7 @@ OPERATION_SENTINEL_NAME = fs._name(b".cogs-stage2-rootfs-operation-v1")
 OPERATION_SENTINEL = b"cogs-stage2-rootfs-operation-v1\n"
 ROOT_NAME = fs._name(b"rootfs")
 CANDIDATE_TAR_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
+MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
 RECOVER_SECONDS = 600
 FIXED_MODULE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_rootfs_builder.py")
 SOURCE_INDEX = 4
@@ -123,6 +124,14 @@ class OwnedOperation:
     operation: fs.HeldNode
     root: fs.HeldNode
     operation_name: str
+
+
+@dataclass
+class RetainedOperation:
+    """Producer-independent retained ownership used by build and prebuilt routes."""
+    owned: OwnedOperation
+    base_chain: fs.HeldChain
+    disposition: str = field(default="owned", init=False)
 
 
 @dataclass
@@ -1084,7 +1093,8 @@ def _append_capabilities():
         _fail(terminal.record_type == record_type and terminal.body_value() == body)
         return result
 
-    def _mark_leased(owned, manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control):
+    def _mark_leased(owned, manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control,
+                     prebuilt_descriptor=None):
         _fail(type(owned) is OwnedOperation and type(control) is fs.OperationControl)
         _fail(all(type(value) is int and value > 0 for value in (manifest_size, ustar_size, entry_count)))
         active = _stable_active(owned.active, owned.locked.state, control)
@@ -1104,6 +1114,8 @@ def _append_capabilities():
             "manifest_sha256": manifest_sha256, "manifest_size": manifest_size,
             "ustar_sha256": ustar_sha256, "ustar_size": ustar_size, "entry_count": entry_count,
         }
+        if prebuilt_descriptor is not None:
+            body["prebuilt_descriptor"] = prebuilt_descriptor
         proposal = ledger.LedgerProposal.create("leased", body)
         raw = ledger._encode_proposal(proposal, active.writer.settled)
         record = ledger.LedgerRecord(
@@ -1112,10 +1124,14 @@ def _append_capabilities():
             proposal.body, hashlib.sha256(raw).hexdigest(),
         )
         history = ledger._advance_history(active.records, record)
-        written = ledger._append_leased_record(
-            active.writer, body["token"], body["operation_name"], observations.state_parent, operation, root,
-            manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control,
+        arguments = (
+            active.writer, body["token"], body["operation_name"], observations.state_parent,
+            operation, root, manifest_sha256, manifest_size, ustar_sha256, ustar_size,
+            entry_count, control,
         )
+        if prebuilt_descriptor is not None:
+            arguments = (*arguments, prebuilt_descriptor)
+        written = ledger._append_leased_record(*arguments)
         node = fs.HeldNode(active.node.identity_fd, active.node.operation_fd, written.generation)
         writer = ledger.LedgerWriterState(node, written.stable_key, written.settled, written.generation)
         _fail(history.legal.settled == written.settled)

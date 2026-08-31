@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-cycle-launch-grant-v1.json",
+  "title": "Stage 2 one-shot cycle launch grant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "batch_commitment",
+    "ordinal",
+    "mode",
+    "implementation_revision",
+    "control_revision",
+    "static_control_sha256",
+    "rootfs_descriptor_sha256",
+    "ami_commitment",
+    "plan_sha256",
+    "grant_commitment"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-cycle-launch-grant/v1"
+    },
+    "batch_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ordinal": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7
+    },
+    "mode": {
+      "enum": ["full", "readiness"]
+    },
+    "implementation_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "control_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "static_control_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rootfs_descriptor_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ami_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "grant_commitment": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -161,7 +161,7 @@ def portable_tests():
     assert all(stale not in build_source for stale in (
         "def _writable_file", "def _candidate_record", "EMPTY_TAR", "materializer._metadata(",
     ))
-    assert "class RetainedBuild" in build_source and "def _build_once_retained(" in build_source
+    assert "RetainedBuild = builder.RetainedOperation" in build_source and "def _build_once_retained(" in build_source
     assert "def _require_equal_builds(" in build_source and "def _require_pinned(" in build_source
     assert "for path in sorted(tuple(session.owned)" in source
 

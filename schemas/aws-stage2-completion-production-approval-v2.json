@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-completion-production-approval-v2.json",
+  "title": "Authenticated one-shot AWS Stage 2 completion approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version", "phrase", "batch_commitment", "implementation_revision",
+    "control_revision", "source_manifest_sha256", "static_control_sha256",
+    "pre_aws_package_sha256", "rootfs_descriptor_sha256", "runtime_commitment",
+    "fixture_commitment", "account_commitment", "region", "ami_id",
+    "ami_commitment", "plan_sha256s", "not_before_unix_ns",
+    "effect_deadline_ns", "cleanup_reserve_ns", "expires_unix_ns",
+    "maximum_cost_micro_usd", "issuer_commitment",
+    "authentication_receipt_sha256", "one_attempt"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-completion-production-approval/v2" },
+    "phrase": { "const": "run-seven-sequential-stage2-completion-launches" },
+    "batch_commitment": { "$ref": "#/$defs/sha256" },
+    "implementation_revision": { "$ref": "#/$defs/gitSha" },
+    "control_revision": { "$ref": "#/$defs/gitSha" },
+    "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "static_control_sha256": { "$ref": "#/$defs/sha256" },
+    "pre_aws_package_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+    "runtime_commitment": { "$ref": "#/$defs/sha256" },
+    "fixture_commitment": { "$ref": "#/$defs/sha256" },
+    "account_commitment": { "$ref": "#/$defs/sha256" },
+    "region": { "type": "string", "pattern": "^[a-z]{2}(?:-gov)?-[a-z]+-[1-9]$" },
+    "ami_id": { "type": "string", "pattern": "^ami-[0-9a-f]{17}$" },
+    "ami_commitment": { "$ref": "#/$defs/sha256" },
+    "plan_sha256s": {
+      "type": "array", "minItems": 7, "maxItems": 7,
+      "uniqueItems": true, "items": { "$ref": "#/$defs/sha256" }
+    },
+    "not_before_unix_ns": { "type": "integer", "minimum": 1 },
+    "effect_deadline_ns": { "type": "integer", "minimum": 1, "maximum": 5400000000000 },
+    "cleanup_reserve_ns": { "type": "integer", "minimum": 300000000000, "maximum": 1800000000000 },
+    "expires_unix_ns": { "type": "integer", "minimum": 1 },
+    "maximum_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+    "issuer_commitment": { "$ref": "#/$defs/sha256" },
+    "authentication_receipt_sha256": { "$ref": "#/$defs/sha256" },
+    "one_attempt": { "const": true }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

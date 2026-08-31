@@ -2,6 +2,8 @@ output "campaign" {
   description = "Non-secret identifiers required for bounded validation and cleanup."
   value = {
     region                    = var.aws_region
+    batch_commitment          = var.batch_commitment
+    cycle_ordinal             = var.cycle_ordinal
     availability_zone         = var.availability_zone
     instance_id               = aws_instance.host.id
     instance_type             = aws_instance.host.instance_type

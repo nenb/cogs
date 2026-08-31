@@ -58,6 +58,10 @@ class _BindingOwnerResult:
     host_attestation_sha256: str
     runtime_attestation_sha256: str
     rootfs_sha256: str
+    rootfs_descriptor_sha256: str
+    rootfs_package_manifest_sha256: str
+    rootfs_provenance_sha256: str
+    rootfs_publication_receipt_sha256: str
     artifact_sha256: str
     candidate_sha256: str
     final_pin_sha256: str
@@ -668,6 +672,22 @@ def _failure_timings(failure, binding):
     return timings
 
 
+def _rootfs_input(bindings, import_attempts, outcome):
+    return {
+        "mode": "prebuilt-versioned-hash-pinned",
+        "descriptor_sha256": bindings["rootfs_descriptor_sha256"],
+        "ustar_sha256": bindings["rootfs_sha256"],
+        "package_manifest_sha256": bindings["rootfs_package_manifest_sha256"],
+        "provenance_sha256": bindings["rootfs_provenance_sha256"],
+        "publication_receipt_sha256": bindings["rootfs_publication_receipt_sha256"],
+        "acquisition_attempts": 1,
+        "import_attempts": import_attempts,
+        "build_attempts": 0,
+        "fallback_used": False,
+        "outcome": outcome,
+    }
+
+
 def _derive_failure_report(bindings, owner_bindings, journal, history,
                            session, platform, runtime, residue):
     """Derive certainty and first failure only from the typed durable history."""
@@ -779,6 +799,7 @@ def _derive_failure_report(bindings, owner_bindings, journal, history,
             "status": "retired",
         },
         "platform": platform_value, "qualified": False, "result": "failure",
+        "rootfs_input": _rootfs_input(bindings, 1, "pass"),
         "teardown": teardown,
         "timing_summaries": {name: local._summary(rows)
                              for name, rows in timings.items()},
@@ -820,6 +841,8 @@ def _derive_preoperation_report(bindings, owner_bindings, history,
         "platform": {"kvm_api": None, "observation": "not-reached",
                      "qmp_enabled": False, "qmp_present": False},
         "qualified": False, "result": "failure",
+        "rootfs_input": _rootfs_input(
+            bindings, 1, "failure" if history.classification == "rootfs" else "pass"),
         "teardown": [{"phase": phase, "outcome": "not-reached",
                       "binding_sha256": None}
                      for phase in local.TEARDOWN_PHASES],
@@ -889,7 +912,8 @@ def _derive_report(bindings, owner_bindings, journal, history,
         },
         "platform": {"kvm_api": runtime.kvm_api, "observation": "pass",
                      "qmp_enabled": runtime.qmp_enabled, "qmp_present": runtime.qmp_present},
-        "qualified": True, "result": "pass", "teardown": teardown,
+        "qualified": True, "result": "pass",
+        "rootfs_input": _rootfs_input(bindings, 1, "pass"), "teardown": teardown,
         "timing_summaries": {name: local._summary(rows) for name, rows in timings.items()},
         "timings": timings,
         "validation_classification": local.VALIDATION_CLASSIFICATION,

@@ -1,16 +1,12 @@
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-data "aws_ssm_parameter" "ubuntu_ami" {
-  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-}
-
 data "aws_ami" "ubuntu" {
-  owners = ["099720109477"]
+  owners = [var.ami_owner_id]
 
   filter {
     name   = "image-id"
-    values = [nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)]
+    values = [var.ami_id]
   }
 
   filter {
@@ -20,13 +16,15 @@ data "aws_ami" "ubuntu" {
 }
 
 locals {
-  name          = "cogs-s2-${substr(var.source_revision, 0, 8)}"
+  name          = "cogs-s2-${substr(var.source_revision, 0, 8)}-c${var.cycle_ordinal}"
   purpose       = "stage-2-nested-virtualization"
   resolver_cidr = "10.77.0.2/32"
   tags = {
     "cogs:owner"           = "nenb"
     "cogs:purpose"         = local.purpose
     "cogs:source-revision" = var.source_revision
+    "cogs:batch"           = var.batch_commitment
+    "cogs:cycle-ordinal"   = tostring(var.cycle_ordinal)
     "cogs:expires-at"      = var.expires_at
     "cogs:managed-by"      = "opentofu"
   }

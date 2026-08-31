@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-execution-envelope-v3.json",
+  "title": "Reviewed static Stage 2 execution-envelope description",
+  "$comment": "Revision G carries these data bytes and names earlier implementation H. Dynamic runtime attestation is intentionally absent and is derived privately from the held lease during the operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "directional_binding",
+    "control_revision",
+    "implementation",
+    "package",
+    "rootfs",
+    "runtime",
+    "programs",
+    "result_binding_base",
+    "receipt"
+  ],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-local-execution-envelope/v3"
+    },
+    "authority": {
+      "const": "non-authoritative-reviewed-static-control-data"
+    },
+    "directional_binding": {
+      "const": "control-revision-g-describes-earlier-implementation-revision-h"
+    },
+    "control_revision": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "implementation": {
+      "$ref": "#/$defs/implementation"
+    },
+    "package": {
+      "$ref": "#/$defs/package"
+    },
+    "rootfs": {
+      "$ref": "#/$defs/rootfs"
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtime"
+    },
+    "programs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guest_program_sha256", "coordinator_sha256", "owner_source_set_sha256"],
+      "properties": {
+        "guest_program_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "coordinator_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "owner_source_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "result_binding_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "rootfs_sha256",
+        "rootfs_descriptor_sha256",
+        "rootfs_package_manifest_sha256",
+        "rootfs_provenance_sha256",
+        "rootfs_publication_receipt_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "source_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_descriptor_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_package_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_provenance_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rootfs_publication_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidate_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "final_pin_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "guest_program_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "owner_implementation_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "receipt": {
+      "const": {
+        "version": "cogs.stage2-local-private-receipt/v1",
+        "domain": "cogs.stage2-local-private-receipt/v1\u0000"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "selectedSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        }
+      }
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "source_manifest_sha256", "selected_sources", "selected_sources_sha256"],
+      "properties": {
+        "revision": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "source_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_sources": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/selectedSource"
+          }
+        },
+        "selected_sources_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deb_sha256",
+        "deb_bytes",
+        "installed_tree_sha256",
+        "installed_entries",
+        "installed_bytes",
+        "package",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "deb_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "deb_bytes": {
+          "const": 1064816
+        },
+        "installed_tree_sha256": {
+          "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"
+        },
+        "installed_entries": {
+          "const": 259
+        },
+        "installed_bytes": {
+          "const": 1048576
+        },
+        "package": {
+          "const": "cogs-stage2-fixture"
+        },
+        "version": {
+          "const": "1.0"
+        },
+        "architecture": {
+          "const": "all"
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_contract_sha256", "candidate_result_sha256", "final_pin_sha256", "identity"],
+      "properties": {
+        "candidate_contract_sha256": {
+          "const": "b8660b92d778e9f5dc89586df4f68a2e2b12cdce818ff4fe12adf0a8e951fdf3"
+        },
+        "candidate_result_sha256": {
+          "const": "e967438172de7faee443c417fa85bf040f68decc889d74e21759b0aeb19d2b7b"
+        },
+        "final_pin_sha256": {
+          "const": "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31"
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        }
+      }
+    },
+    "rootfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_sha256",
+        "manifest_sha256",
+        "manifest_size",
+        "ustar_sha256",
+        "ustar_size",
+        "entry_count",
+        "prebuilt_descriptor",
+        "prebuilt_descriptor_sha256",
+        "custody"
+      ],
+      "properties": {
+        "contract_sha256": {
+          "const": "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"
+        },
+        "manifest_sha256": {
+          "const": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1"
+        },
+        "manifest_size": {
+          "const": 1049443
+        },
+        "ustar_sha256": {
+          "const": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397"
+        },
+        "ustar_size": {
+          "const": 136905728
+        },
+        "entry_count": {
+          "const": 4353
+        },
+        "prebuilt_descriptor": {
+          "$ref": "https://cogs.dev/schemas/stage2-prebuilt-rootfs-descriptor-v1.json"
+        },
+        "prebuilt_descriptor_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "custody": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "package_manifest",
+            "provenance",
+            "qualification_receipt",
+            "publication_receipt",
+            "signature_verification_sha256"
+          ],
+          "properties": {
+            "package_manifest": { "type": "object" },
+            "provenance": { "type": "object" },
+            "qualification_receipt": { "type": "object" },
+            "publication_receipt": { "type": "object" },
+            "signature_verification_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_member",
+        "manifest_sha256",
+        "archive_set_sha256",
+        "launch_assets_sha256",
+        "executable_set_sha256"
+      ],
+      "properties": {
+        "manifest_member": {
+          "const": "stage2-local-runtime-manifest-v3.json"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "archive_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "launch_assets_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executable_set_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

@@ -972,7 +972,10 @@ def reference_validate(records):
             assert kind == "operation-create-settled" and body["operation_name"] == operation_name and body == previous_body
             phase = "active"
         elif phase in {"active", "release-authorized", "prestage-release-authorized"}:
-            if kind == "leased":
+            if kind == "prebuilt-import-intent":
+                assert phase == "active" and pending is None and lease_snapshot is None
+                assert not any(item.record_type == "prebuilt-import-intent" for item in records[:record.sequence])
+            elif kind == "leased":
                 assert phase == "active" and pending is None and lease_snapshot is None
                 assert ledger._parse_parent(body["state_parent"]) == state_parent
                 assert ledger._parse_generation(body["operation"]) == operation_parent.generation
@@ -1074,6 +1077,13 @@ def reference_validate(records):
 
 
 def incremental_validation_tests():
+    proposals, _state_before, _state_after, _operation = lifecycle_prefix()
+    proposals.append(ledger.LedgerProposal.create("prebuilt-import-intent", {
+        "token": TOKEN, "descriptor_sha256": "1" * 64,
+        "manifest_sha256": "2" * 64, "manifest_size": 1,
+        "ustar_sha256": "3" * 64, "ustar_size": 512, "entry_count": 1,
+    }))
+    encoded(proposals)
     phases = set()
     record_types = set()
     accepted = []
@@ -1130,6 +1140,7 @@ def incremental_validation_tests():
         "active": {
             "leased", "operation-remove-intent", "hardlink-group", "create-intent",
             "metadata-intent", "hardlink-create-intent", "remove-intent", "candidate-tar-intent",
+            "prebuilt-import-intent",
         },
         "candidate-tar-intent": {"candidate-tar-observed", "candidate-tar-abort"},
         "candidate-tar-observed": {"candidate-tar-settled"},

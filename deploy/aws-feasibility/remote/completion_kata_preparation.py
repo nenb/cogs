@@ -30,18 +30,27 @@ sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 
 import completion_guest_workloads_v3 as final_guest
 
-CONTROL_VERSION = "cogs.stage2-local-static-control-package/v1"
-ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v2"
-RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v2"
+CONTROL_VERSION = "cogs.stage2-local-static-control-package/v2"
+ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v3"
+RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v3"
 CONTRACT_VERSION = "cogs.stage2-local-executable-closure/v1"
 AUTHORITY = "non-authoritative-reviewed-static-control-data"
 SOURCE_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
 CONTROL_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control")
 OBSERVATION_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control-observation-v1")
 SOURCE_MANIFEST = ".cogs-stage2-source-manifest-v1.json"
-CONTROL_MEMBER = "stage2-local-static-control-v1.json"
-ENVELOPE_MEMBER = "stage2-local-execution-envelope-v2.json"
-RUNTIME_MEMBER = "stage2-local-runtime-manifest-v2.json"
+CONTROL_MEMBER = "stage2-local-static-control-v2.json"
+ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
+RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"
+PREBUILT_INPUT_ROOT = Path("/var/lib/cogs/stage2-completion-v1/prebuilt-rootfs-input-v1")
+PREBUILT_DESCRIPTOR_ROOT = Path("/var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1")
+PREBUILT_DESCRIPTOR_PATH = PREBUILT_DESCRIPTOR_ROOT / "descriptor.json"
+PREBUILT_PUBLICATION_RECEIPT_PATH = PREBUILT_DESCRIPTOR_ROOT / "publication-receipt.json"
+PREBUILT_PROVENANCE_PATH = PREBUILT_DESCRIPTOR_ROOT / "rootfs.provenance.json"
+PREBUILT_PACKAGE_PATH = PREBUILT_DESCRIPTOR_ROOT / "rootfs.package.json"
+PREBUILT_QUALIFICATION_RECEIPT_PATH = PREBUILT_DESCRIPTOR_ROOT / "producer-receipt.json"
+PREBUILT_SIGNATURE_VERIFICATION_PATH = PREBUILT_DESCRIPTOR_ROOT / "cosign-verification.json"
+PREBUILT_USTAR_PATH = PREBUILT_INPUT_ROOT / "rootfs.tar"
 MAX_CONTROL_BYTES = 256 * 1024
 MAX_ENVELOPE_BYTES = 512 * 1024
 MAX_RUNTIME_BYTES = 32 * 1024 * 1024
@@ -101,6 +110,11 @@ ARCHIVES = (
 )
 
 MANDATORY_SECURITY_SOURCES = frozenset({
+    "deploy/aws-feasibility/completion_campaign_production.py",
+    "deploy/aws-feasibility/completion_campaign_remote_adapter.py",
+    "deploy/aws-feasibility/remote/completion_cycle_authority.py",
+    "deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py",
+    "deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
     "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
@@ -129,19 +143,29 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
+    "deploy/aws-feasibility/remote/completion_prebuilt_runtime_contract.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_builder.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_canonical.py",
     "deploy/aws-feasibility/remote/completion_rootfs_fs.py",
     "deploy/aws-feasibility/remote/completion_rootfs_lease.py",
-    "deploy/aws-feasibility/remote/completion_rootfs_plan.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_ledger.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_materializer.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_model.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_prebuilt.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_prebuilt_acquisition.py",
     "deploy/aws-feasibility/remote/completion_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_runtime_contract.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
     "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
     "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
     "config/stage2-completion-ssh-readiness-v1.json",
     "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
-    "schemas/stage2-local-execution-envelope-v2.json",
-    "schemas/stage2-local-runtime-manifest-v2.json",
-    "schemas/stage2-local-static-control-package-v1.json",
+    "schemas/stage2-local-execution-envelope-v3.json",
+    "schemas/stage2-local-runtime-manifest-v3.json",
+    "schemas/stage2-local-static-control-package-v2.json",
+    "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
 })
 
 
@@ -538,6 +562,73 @@ def load_contract(raw, expected=None):
     return StaticDescription(raw, _sha(raw), validate_contract_value(decode_canonical(raw, MAX_CONTRACT_BYTES), expected))
 
 
+def _prebuilt_descriptor(value, expected_sha256=None):
+    import completion_rootfs_prebuilt as prebuilt
+
+    raw = canonical_bytes(value)
+    descriptor = prebuilt.decode_fixed_descriptor(raw)
+    if expected_sha256 is not None:
+        _digest(expected_sha256)
+        _require(_sha(raw) == expected_sha256, "prebuilt descriptor digest differs")
+    return raw, descriptor
+
+
+def _prebuilt_custody(value, descriptor, implementation, control_revision):
+    _exact_keys(value, ("package_manifest", "provenance", "qualification_receipt",
+                        "publication_receipt", "signature_verification_sha256"))
+    for name in ("package_manifest", "provenance", "qualification_receipt",
+                 "publication_receipt"):
+        _require(type(value[name]) is dict, "prebuilt custody member must be canonical JSON")
+    _digest(value["signature_verification_sha256"])
+    package_raw = canonical_bytes(value["package_manifest"])
+    provenance_raw = canonical_bytes(value["provenance"])
+    qualification_raw = canonical_bytes(value["qualification_receipt"])
+    publication_raw = canonical_bytes(value["publication_receipt"])
+    _require(_sha(package_raw) == descriptor.package_manifest_sha256
+             and _sha(provenance_raw) == descriptor.provenance_sha256
+             and _sha(qualification_raw) == descriptor.qualification_receipt_sha256
+             and _sha(publication_raw) == descriptor.publication_receipt_sha256,
+             "prebuilt custody digest differs")
+    publication = value["publication_receipt"]
+    _exact_keys(publication, (
+        "version", "result", "implementation_revision", "control_revision",
+        "source_manifest_sha256", "oci_manifest_sha256", "rootfs_ustar_sha256",
+        "package_manifest_sha256", "provenance_sha256",
+        "qualification_receipt_sha256", "signature_verification_sha256",
+        "publisher_workflow_sha256", "publisher_run_id", "producer_run_id",
+        "producer_artifact_id", "conditional_identity", "readback"))
+    _require(publication["version"] ==
+             "cogs.stage2-prebuilt-rootfs-publication-receipt/v1"
+             and publication["result"] == "pass"
+             and publication["implementation_revision"] == implementation["revision"]
+             and publication["control_revision"] == control_revision
+             and publication["source_manifest_sha256"] ==
+                 implementation["source_manifest_sha256"]
+             and publication["oci_manifest_sha256"] == descriptor.manifest_digest
+             and publication["rootfs_ustar_sha256"] == descriptor.ustar_sha256
+             and publication["package_manifest_sha256"] ==
+                 descriptor.package_manifest_sha256
+             and publication["provenance_sha256"] == descriptor.provenance_sha256
+             and publication["qualification_receipt_sha256"] ==
+                 descriptor.qualification_receipt_sha256
+             and publication["signature_verification_sha256"] ==
+                 value["signature_verification_sha256"]
+             and publication["conditional_identity"] == "immutable-manifest-digest"
+             and publication["readback"] == "byte-equal-all-five-members",
+             "prebuilt publication receipt differs")
+    for name in ("publisher_workflow_sha256",): _digest(publication[name])
+    for name in ("publisher_run_id", "producer_run_id", "producer_artifact_id"):
+        _require(type(publication[name]) is int and publication[name] > 0)
+    _require(value["package_manifest"].get("version") ==
+             "cogs.stage2-prebuilt-rootfs-package/v1"
+             and value["provenance"].get("version") ==
+                 "cogs.stage2-prebuilt-rootfs-provenance/v1"
+             and value["qualification_receipt"].get("version") ==
+                 "cogs.stage2-prebuilt-rootfs-producer-receipt/v1",
+             "prebuilt producer custody version differs")
+    return value
+
+
 def validate_runtime_value(value):
     _exact_keys(value, ("version", "authority", "architecture", "archives", "rootfs", "launch", "executables"))
     _require(value["version"] == RUNTIME_VERSION and value["authority"] == AUTHORITY and value["architecture"] == "x86_64")
@@ -547,12 +638,19 @@ def validate_runtime_value(value):
         _archive(row, expected)
     rootfs = value["rootfs"]
     _exact_keys(rootfs, ("manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count",
+                         "prebuilt_descriptor", "prebuilt_descriptor_sha256",
                          "static_mapping_policy", "static_closure"))
-    for name in ("manifest_sha256", "ustar_sha256"):
+    for name in ("manifest_sha256", "ustar_sha256", "prebuilt_descriptor_sha256"):
         _digest(rootfs[name])
+    _descriptor_raw, descriptor = _prebuilt_descriptor(
+        rootfs["prebuilt_descriptor"], rootfs["prebuilt_descriptor_sha256"])
     _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
     _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     _require((rootfs["manifest_size"], rootfs["ustar_size"], rootfs["entry_count"]) == (1_049_443, 136_905_728, 4_353))
+    _require((descriptor.rootfs_manifest_sha256, descriptor.rootfs_manifest_size,
+              descriptor.ustar_sha256, descriptor.ustar_size, descriptor.entry_count) ==
+             (rootfs["manifest_sha256"], rootfs["manifest_size"], rootfs["ustar_sha256"],
+              rootfs["ustar_size"], rootfs["entry_count"]))
     _require(rootfs["static_mapping_policy"] == {"uid": 0, "gid": 0, "nlink": 1,
                                                    "distinct_file_identities": True,
                                                    "path_basis": "rootfs-relative-no-symlink"})
@@ -632,10 +730,12 @@ def load_runtime(raw):
 
 
 def validate_envelope_value(value):
-    _exact_keys(value, ("version", "authority", "directional_binding", "implementation", "package", "rootfs",
-                         "runtime", "programs", "result_binding_base", "receipt"))
+    _exact_keys(value, ("version", "authority", "directional_binding", "control_revision",
+                         "implementation", "package", "rootfs", "runtime", "programs",
+                         "result_binding_base", "receipt"))
     _require(value["version"] == ENVELOPE_VERSION and value["authority"] == AUTHORITY)
     _require(value["directional_binding"] == "control-revision-g-describes-earlier-implementation-revision-h")
+    _git_revision(value["control_revision"])
     _validate_implementation(value["implementation"])
     package = value["package"]
     _exact_keys(package, ("candidate_contract_sha256", "candidate_result_sha256", "final_pin_sha256", "identity"))
@@ -648,13 +748,28 @@ def validate_envelope_value(value):
                   "7dd03d3e4ef8ae7be1f76cefce3f704c86fb84765365a5eca0df437bf72e4d31"))
     _package_identity(package["identity"])
     rootfs = value["rootfs"]
-    _exact_keys(rootfs, ("contract_sha256", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"))
-    for name in ("contract_sha256", "manifest_sha256", "ustar_sha256"):
+    _exact_keys(rootfs, ("contract_sha256", "manifest_sha256", "manifest_size",
+                         "ustar_sha256", "ustar_size", "entry_count",
+                         "prebuilt_descriptor", "prebuilt_descriptor_sha256",
+                         "custody"))
+    for name in ("contract_sha256", "manifest_sha256", "ustar_sha256", "prebuilt_descriptor_sha256"):
         _digest(rootfs[name])
+    _descriptor_raw, descriptor = _prebuilt_descriptor(
+        rootfs["prebuilt_descriptor"], rootfs["prebuilt_descriptor_sha256"])
     _require(rootfs["contract_sha256"] == "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506")
     _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
     _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
     _require((rootfs["manifest_size"], rootfs["ustar_size"], rootfs["entry_count"]) == (1_049_443, 136_905_728, 4_353))
+    _require((descriptor.rootfs_manifest_sha256, descriptor.rootfs_manifest_size,
+              descriptor.ustar_sha256, descriptor.ustar_size, descriptor.entry_count) ==
+             (rootfs["manifest_sha256"], rootfs["manifest_size"], rootfs["ustar_sha256"],
+              rootfs["ustar_size"], rootfs["entry_count"]))
+    _require(descriptor.producer_revision == value["implementation"]["revision"]
+             and descriptor.producer_source_manifest_sha256 ==
+                 value["implementation"]["source_manifest_sha256"],
+             "prebuilt descriptor H lineage differs")
+    _prebuilt_custody(rootfs["custody"], descriptor, value["implementation"],
+                      value["control_revision"])
     runtime = value["runtime"]
     _exact_keys(runtime, ("manifest_member", "manifest_sha256", "archive_set_sha256", "launch_assets_sha256", "executable_set_sha256"))
     _require(runtime["manifest_member"] == RUNTIME_MEMBER)
@@ -665,11 +780,18 @@ def validate_envelope_value(value):
     for item in programs.values():
         _digest(item)
     bindings = value["result_binding_base"]
-    _exact_keys(bindings, ("source_head", "source_manifest_sha256", "rootfs_sha256", "artifact_sha256",
-                           "candidate_sha256", "final_pin_sha256", "guest_program_sha256", "owner_implementation_sha256"))
+    _exact_keys(bindings, ("source_head", "source_manifest_sha256", "rootfs_sha256",
+                           "rootfs_descriptor_sha256", "rootfs_package_manifest_sha256",
+                           "rootfs_provenance_sha256", "rootfs_publication_receipt_sha256",
+                           "artifact_sha256", "candidate_sha256", "final_pin_sha256",
+                           "guest_program_sha256", "owner_implementation_sha256"))
     _require(bindings["source_head"] == value["implementation"]["revision"])
     _require(bindings["source_manifest_sha256"] == value["implementation"]["source_manifest_sha256"])
     _require(bindings["rootfs_sha256"] == rootfs["ustar_sha256"], "rootfs SHA must mean exact ustar bytes")
+    _require(bindings["rootfs_descriptor_sha256"] == rootfs["prebuilt_descriptor_sha256"])
+    _require(bindings["rootfs_package_manifest_sha256"] == descriptor.package_manifest_sha256)
+    _require(bindings["rootfs_provenance_sha256"] == descriptor.provenance_sha256)
+    _require(bindings["rootfs_publication_receipt_sha256"] == descriptor.publication_receipt_sha256)
     _require(bindings["artifact_sha256"] == package["identity"]["deb_sha256"])
     _require(bindings["candidate_sha256"] == package["candidate_result_sha256"])
     _require(bindings["final_pin_sha256"] == package["final_pin_sha256"])
@@ -709,9 +831,11 @@ def validate_control_value(value):
     _require({row["name"] for row in members if row["kind"] == "envelope"} == {ENVELOPE_MEMBER})
     _require({row["name"] for row in members if row["kind"] == "runtime-manifest"} == {RUNTIME_MEMBER})
     producer = value["producer"]
-    _exact_keys(producer, ("classification", "implementation_revision", "source_manifest_sha256", "kvm_absent",
-                           "network_used", "forbidden_surfaces"))
+    _exact_keys(producer, ("classification", "control_revision", "implementation_revision",
+                           "source_manifest_sha256", "kvm_absent", "network_used",
+                           "forbidden_surfaces"))
     _require(producer["classification"] == "deterministic-no-kvm-static-observation-candidate")
+    _git_revision(producer["control_revision"])
     _require(producer["implementation_revision"] == value["implementation"]["revision"])
     _require(producer["source_manifest_sha256"] == value["implementation"]["source_manifest_sha256"])
     _require(producer["kvm_absent"] is True and producer["network_used"] is False)
@@ -1088,7 +1212,8 @@ def _source_digest(implementation, path):
     return row["sha256"]
 
 
-def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256, contracts):
+def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256, contracts,
+                        control_revision, prebuilt_custody):
     """Pure deterministic producer used by the fixed no-KVM collector and tests."""
     _require(type(contracts) is dict and set(contracts) == {row[0] for row in EXECUTABLES})
     clean_runtime = json.loads(canonical_bytes(runtime))
@@ -1111,12 +1236,24 @@ def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256
     programs = {"guest_program_sha256": guest_program_sha256,
                 "coordinator_sha256": _source_digest(implementation, "deploy/aws-feasibility/remote/completion_kata_coordinator.py"),
                 "owner_source_set_sha256": _sha(canonical_bytes(owner_rows))}
+    descriptor = _prebuilt_descriptor(
+        clean_runtime["rootfs"]["prebuilt_descriptor"],
+        clean_runtime["rootfs"]["prebuilt_descriptor_sha256"])[1]
+    _git_revision(control_revision)
+    _require(descriptor.producer_revision == implementation["revision"]
+             and descriptor.producer_source_manifest_sha256 ==
+                 implementation["source_manifest_sha256"],
+             "prebuilt descriptor was not produced by exact H")
+    _prebuilt_custody(prebuilt_custody, descriptor, implementation, control_revision)
     envelope = {"version": ENVELOPE_VERSION, "authority": AUTHORITY,
                 "directional_binding": "control-revision-g-describes-earlier-implementation-revision-h",
+                "control_revision": control_revision,
                 "implementation": implementation, "package": final,
                 "rootfs": {"contract_sha256": rootfs_contract_sha256,
                            **{name: clean_runtime["rootfs"][name] for name in
-                              ("manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count")}},
+                              ("manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count",
+                               "prebuilt_descriptor", "prebuilt_descriptor_sha256")},
+                           "custody": prebuilt_custody},
                 "runtime": {"manifest_member": RUNTIME_MEMBER, "manifest_sha256": _sha(runtime_raw),
                             "archive_set_sha256": _sha(canonical_bytes(clean_runtime["archives"])),
                             "launch_assets_sha256": clean_runtime["launch"]["artifacts_sha256"],
@@ -1125,6 +1262,10 @@ def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256
                 "result_binding_base": {"source_head": implementation["revision"],
                     "source_manifest_sha256": implementation["source_manifest_sha256"],
                     "rootfs_sha256": clean_runtime["rootfs"]["ustar_sha256"],
+                    "rootfs_descriptor_sha256": clean_runtime["rootfs"]["prebuilt_descriptor_sha256"],
+                    "rootfs_package_manifest_sha256": descriptor.package_manifest_sha256,
+                    "rootfs_provenance_sha256": descriptor.provenance_sha256,
+                    "rootfs_publication_receipt_sha256": descriptor.publication_receipt_sha256,
                     "artifact_sha256": final["identity"]["deb_sha256"],
                     "candidate_sha256": final["candidate_result_sha256"],
                     "final_pin_sha256": final["final_pin_sha256"],
@@ -1145,6 +1286,7 @@ def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256
                "directional_binding": "control-revision-g-describes-earlier-implementation-revision-h",
                "implementation": implementation, "members": member_rows,
                "producer": {"classification": "deterministic-no-kvm-static-observation-candidate",
+                            "control_revision": control_revision,
                             "implementation_revision": implementation["revision"],
                             "source_manifest_sha256": implementation["source_manifest_sha256"],
                             "kvm_absent": True, "network_used": False,
@@ -1232,13 +1374,22 @@ def collect_fixed_candidate():
     receipt_path = (SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1/"
                     "immutable-preparation-v1/receipt.json")
     receipt = decode_canonical(receipt_path.read_bytes(), MAX_RUNTIME_BYTES)
-    _exact_keys(receipt, ("version", "authority", "rootfs_artifact_count",
+    _exact_keys(receipt, ("version", "authority", "rootfs_artifact",
                           "runtime_archives", "forbidden_surfaces"))
-    _require(receipt["version"] == "cogs.stage2-local-immutable-preparation/v1"
+    _require(receipt["version"] == "cogs.stage2-local-immutable-preparation/v2"
              and receipt["authority"] == "immutable-public-input-preparation-only"
-             and receipt["rootfs_artifact_count"] == 16
              and receipt["forbidden_surfaces"] ==
              ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"])
+    rootfs_artifact = receipt["rootfs_artifact"]
+    _exact_keys(rootfs_artifact, ("descriptor_sha256", "manifest_digest",
+                                  "blob_sha256", "blob_size", "intent_sha256",
+                                  "settlement_sha256", "downloaded"))
+    for name in ("descriptor_sha256", "manifest_digest", "blob_sha256",
+                 "intent_sha256", "settlement_sha256"):
+        _digest(rootfs_artifact[name])
+    _require(rootfs_artifact["blob_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397"
+             and rootfs_artifact["blob_size"] == 136_905_728
+             and rootfs_artifact["downloaded"] is True)
     archive_values = receipt["runtime_archives"]
     _require(type(archive_values) is list and len(archive_values) == len(ARCHIVES))
     for value, expected in zip(archive_values, ARCHIVES, strict=True):
@@ -1247,12 +1398,38 @@ def collect_fixed_candidate():
 
     _OBSERVATION_STAGE = "runtime-closure"
     import completion_kata_runtime as kata_runtime
-    import completion_runtime_contract as runtime_contract
-    from completion_rootfs_plan import load_verified_build_inputs
-    from completion_runtime_closure import fixed_runtime_closure
+    import completion_rootfs_prebuilt as rootfs_prebuilt
+    import completion_prebuilt_runtime_contract as runtime_contract
+    from completion_runtime_closure import prebuilt_runtime_closure
 
-    final = runtime_contract.load_final_pin()
-    closure = fixed_runtime_closure(load_verified_build_inputs())
+    descriptor_raw = PREBUILT_DESCRIPTOR_PATH.read_bytes()
+    ustar = PREBUILT_USTAR_PATH.read_bytes()
+    authority = rootfs_prebuilt.load_authority(descriptor_raw, ustar)
+    closure = prebuilt_runtime_closure(authority)
+    final = runtime_contract.load_prebuilt_final_pin(closure)
+    descriptor_value = decode_canonical(descriptor_raw, rootfs_prebuilt.MAX_DESCRIPTOR_BYTES)
+    descriptor_sha256 = _sha(descriptor_raw)
+    prebuilt_custody = {
+        "package_manifest": decode_canonical(
+            PREBUILT_PACKAGE_PATH.read_bytes(), MAX_CONTRACT_BYTES),
+        "provenance": decode_canonical(
+            PREBUILT_PROVENANCE_PATH.read_bytes(), MAX_CONTRACT_BYTES),
+        "qualification_receipt": decode_canonical(
+            PREBUILT_QUALIFICATION_RECEIPT_PATH.read_bytes(), MAX_CONTRACT_BYTES),
+        "publication_receipt": decode_canonical(
+            PREBUILT_PUBLICATION_RECEIPT_PATH.read_bytes(), MAX_CONTRACT_BYTES),
+        "signature_verification_sha256": _sha(
+            PREBUILT_SIGNATURE_VERIFICATION_PATH.read_bytes()),
+    }
+    _require(rootfs_artifact == {
+        "descriptor_sha256": descriptor_sha256,
+        "manifest_digest": authority.descriptor.manifest_digest,
+        "blob_sha256": authority.descriptor.layer_digest,
+        "blob_size": authority.descriptor.layer_size,
+        "intent_sha256": rootfs_artifact["intent_sha256"],
+        "settlement_sha256": rootfs_artifact["settlement_sha256"],
+        "downloaded": True,
+    })
     static_objects = [json.loads(canonical_bytes(asdict(record))) for record in closure.records]
     static_closure = {**final.runtime_closure.value(), "objects": static_objects}
     _OBSERVATION_STAGE = "launch-assets"
@@ -1295,6 +1472,8 @@ def collect_fixed_candidate():
                           "manifest_size": 1_049_443,
                           "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
                           "ustar_size": 136_905_728, "entry_count": 4_353,
+                          "prebuilt_descriptor": descriptor_value,
+                          "prebuilt_descriptor_sha256": descriptor_sha256,
                           "static_mapping_policy": {"uid": 0, "gid": 0, "nlink": 1,
                                                     "distinct_file_identities": True,
                                                     "path_basis": "rootfs-relative-no-symlink"},
@@ -1321,8 +1500,11 @@ def collect_fixed_candidate():
                "candidate_result_sha256": final.candidate_result_sha256,
                "final_pin_sha256": final.final_pin_sha256,
                "identity": final.package_identity.value()}
+    control_revision = os.environ.get("COGS_STAGE2_CONTROL_REVISION", "")
+    _git_revision(control_revision)
     return build_control_bytes(implementation, runtime, package,
-                               "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506", contracts)
+                               "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
+                               contracts, control_revision, prebuilt_custody)
 
 
 def generate_implementation_h_candidate_control_bytes():

@@ -38,6 +38,11 @@ RECEIPT_VERSION = "cogs.stage2-local-private-receipt/v1"
 RECEIPT_DOMAIN = "cogs.stage2-local-private-receipt/v1\x00"
 EXECUTABLES = preparation.EXECUTABLES
 MANDATORY_SOURCES = frozenset({
+    "deploy/aws-feasibility/completion_campaign_production.py",
+    "deploy/aws-feasibility/completion_campaign_remote_adapter.py",
+    "deploy/aws-feasibility/remote/completion_cycle_authority.py",
+    "deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py",
+    "deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py",
     "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
@@ -63,23 +68,39 @@ MANDATORY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/completion_kata_runtime.py",
     "deploy/aws-feasibility/remote/completion_kata_ssh.py",
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
+    "deploy/aws-feasibility/remote/completion_prebuilt_runtime_contract.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_builder.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_canonical.py",
     "deploy/aws-feasibility/remote/completion_rootfs_fs.py",
     "deploy/aws-feasibility/remote/completion_rootfs_lease.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_ledger.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_materializer.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_model.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_prebuilt.py",
+    "deploy/aws-feasibility/remote/completion_rootfs_prebuilt_acquisition.py",
     "deploy/aws-feasibility/remote/completion_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_runtime_contract.py",
-    "deploy/aws-feasibility/remote/completion_rootfs_plan.py",
     "deploy/aws-feasibility/remote/completion_local_full.py",
     "deploy/aws-feasibility/remote/completion_local_receipt.py",
     "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
     "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
     "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+    "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
     "config/stage2-completion-ssh-readiness-v1.json",
     "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
 })
-BINDING_KEYS = frozenset({
+HISTORICAL_BINDING_KEYS = frozenset({
     "source_head", "source_manifest_sha256", "host_attestation_sha256",
     "runtime_attestation_sha256", "rootfs_sha256", "artifact_sha256",
     "candidate_sha256", "final_pin_sha256", "guest_program_sha256",
+    "owner_implementation_sha256",
+})
+BINDING_KEYS = frozenset({
+    "source_head", "source_manifest_sha256", "host_attestation_sha256",
+    "runtime_attestation_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
+    "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
+    "rootfs_publication_receipt_sha256", "artifact_sha256", "candidate_sha256", "final_pin_sha256", "guest_program_sha256",
     "owner_implementation_sha256",
 })
 PACKAGE_IDENTITY_KEYS = (
@@ -352,7 +373,7 @@ def validate_envelope_value(value):
         _digest(item)
     _validate_executables(value["executables"])
     bindings = value["result_bindings"]
-    _keys(bindings, BINDING_KEYS)
+    _keys(bindings, HISTORICAL_BINDING_KEYS)
     for name, item in bindings.items():
         if name == "source_head":
             _require(item == value["source"]["head"])
@@ -873,15 +894,15 @@ def _verify_retiring_observer_configuration(value):
              "retiring active Kata configuration changed")
 
 
-def _validate_final_and_rootfs(envelope, runtime):
+def _validate_final_and_rootfs(envelope, runtime, authority):
     try:
-        import completion_runtime_contract as workload_contract
-        final = workload_contract.load_final_pin()
+        import completion_prebuilt_runtime_contract as workload_contract
+        from completion_runtime_closure import prebuilt_runtime_closure
+        closure = prebuilt_runtime_closure(authority)
+        final = workload_contract.load_prebuilt_final_pin(closure)
     except Exception as error:
-        raise AdmissionError("exact final pin is unavailable") from error
+        raise AdmissionError("exact prebuilt final pin is unavailable") from error
     package = envelope.value["package"]
-    # load_final_pin() already performs the historical exact recomputation:
-    # fixed_runtime_closure(load_verified_build_inputs()).
     _require(final.final_pin_sha256 == package["final_pin_sha256"])
     _require(final.candidate_contract_sha256 == package["candidate_contract_sha256"])
     _require(final.candidate_result_sha256 == package["candidate_result_sha256"])
@@ -890,6 +911,9 @@ def _validate_final_and_rootfs(envelope, runtime):
     static_closure = runtime.value["rootfs"]["static_closure"]
     _require({name: static_closure[name] for name in pinned} == pinned)
     rootfs = envelope.value["rootfs"]
+    runtime_rootfs = runtime.value["rootfs"]
+    _require(rootfs["prebuilt_descriptor"] == runtime_rootfs["prebuilt_descriptor"]
+             and rootfs["prebuilt_descriptor_sha256"] == runtime_rootfs["prebuilt_descriptor_sha256"])
     _require(rootfs["contract_sha256"] == COMPLETION_ROOTFS_SHA256)
     _require(rootfs["manifest_sha256"] == "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1")
     _require(rootfs["ustar_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397")
@@ -951,12 +975,24 @@ def _static_routes():
             source_seen = os.fstat(source_anchor)
             _require(source_seen.st_uid == source_seen.st_gid == 0
                      and stat.S_IMODE(source_seen.st_mode) == 0o700)
+            import completion_rootfs_prebuilt as rootfs_prebuilt
+            descriptor_raw = preparation.canonical_bytes(
+                envelope.value["rootfs"]["prebuilt_descriptor"])
+            _require(_sha(descriptor_raw) ==
+                     envelope.value["rootfs"]["prebuilt_descriptor_sha256"])
+            rootfs_fd, rootfs_parent, rootfs_status = _open_absolute_regular(
+                str(preparation.PREBUILT_USTAR_PATH), rootfs_prebuilt.USTAR_SIZE)
+            descriptors.extend((rootfs_parent, rootfs_fd))
+            rootfs_raw = _read_held_raw(
+                rootfs_fd, rootfs_status, rootfs_prebuilt.USTAR_SIZE)
+            rootfs_authority = rootfs_prebuilt.load_authority(
+                descriptor_raw, rootfs_raw)
             active_path = runtime.value["launch"]["active_configuration"]["path"]
             configuration_identity = (
                 _retain_retired_observer_configuration(runtime, descriptors)
                 if recovery and not os.path.lexists(active_path) else
                 _retain_observer_configuration(runtime, descriptors))
-            final = _validate_final_and_rootfs(envelope, runtime)
+            final = _validate_final_and_rootfs(envelope, runtime, rootfs_authority)
             custody = _StaticPreparationCustody(seal)
             custody_states[custody] = {
                 "control": control,
@@ -964,6 +1000,9 @@ def _static_routes():
                 "runtime": runtime,
                 "contracts": contracts,
                 "final": final,
+                "rootfs_authority": rootfs_authority,
+                "rootfs_fd": rootfs_fd,
+                "rootfs_status": rootfs_status,
                 "configuration_identity": configuration_identity,
                 "descriptors": descriptors,
                 "source_descriptors": source_descriptors,
@@ -1161,6 +1200,17 @@ def _static_routes():
         prepared_states.pop(prepared_claim)
         _close_all(descriptors)
 
+    def rootfs_authority(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None,
+                 "live exact static custody required")
+        import completion_rootfs_prebuilt as rootfs_prebuilt
+        _require(_read_held(state["rootfs_fd"], state["rootfs_status"],
+                            rootfs_prebuilt.USTAR_SIZE) == rootfs_prebuilt.USTAR_SHA256)
+        fresh = rootfs_prebuilt.revalidate_authority(state["rootfs_authority"])
+        _require(fresh.descriptor == state["rootfs_authority"].descriptor)
+        return state["rootfs_authority"]
+
     def source_approval(custody):
         state = custody_states.get(custody)
         _require(type(custody) is _StaticPreparationCustody and state is not None,
@@ -1170,6 +1220,18 @@ def _static_routes():
         import completion_rootfs_fs as rootfs_fs
         return rootfs_fs.SourceApproval(
             implementation["revision"], implementation["source_manifest_sha256"])
+
+    def cycle_grant_binding(custody):
+        state = custody_states.get(custody)
+        _require(type(custody) is _StaticPreparationCustody and state is not None,
+                 "live exact static custody required")
+        envelope = state["envelope"].value
+        return {
+            "implementation_revision": envelope["implementation"]["revision"],
+            "control_revision": state["control"].value["producer"]["control_revision"],
+            "static_control_sha256": state["control"].sha256,
+            "rootfs_descriptor_sha256": envelope["rootfs"]["prebuilt_descriptor_sha256"],
+        }
 
     def binding(custody):
         state = custody_states.get(custody)
@@ -1190,18 +1252,21 @@ def _static_routes():
             prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer(False), take_issuer(True), source_approval,
+    return (take_issuer(False), take_issuer(True), source_approval, rootfs_authority,
             claim_role, consume_role, retire_consumed_roles,
-            claim_live_mapping, consume_mapping, claim_prepared, prepared_facts, binding, abort)
+            claim_live_mapping, consume_mapping, claim_prepared, prepared_facts,
+            binding, cycle_grant_binding, abort)
 
 
 (_claim_static_preparation, _claim_recovery_static_preparation,
- _fixed_source_approval, _claim_executable_role_custody,
+ _fixed_source_approval, _fixed_prebuilt_rootfs_authority,
+ _claim_executable_role_custody,
  _consume_executable_role_custody,
  _retire_consumed_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
- _static_custody_binding, _abort_static_preparation) = _static_routes()
+ _static_custody_binding, _cycle_grant_binding,
+ _abort_static_preparation) = _static_routes()
 del _static_routes
 
 def _take_static_preparation_issuer():
@@ -1247,7 +1312,7 @@ def static_status():
     return {
         "control_path": str(CONTROL_PATH),
         "source_root": str(FIXED_ROOT),
-        "v2_static_only": True,
+        "v3_static_only": True,
         "kvm_permit": False,
         "qmp_permit": False,
         "coordinator_composed": False,

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
+  "title": "Stage 2 prebuilt rootfs descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "artifact", "registry", "rootfs", "producer"],
+  "properties": {
+    "version": { "const": "cogs.stage2-prebuilt-rootfs-descriptor/v1" },
+    "authority": { "const": "authenticated-static-control-only" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "os", "architecture", "format"],
+      "properties": {
+        "version": { "const": "cogs.stage2-prebuilt-rootfs/v1" },
+        "os": { "const": "linux" },
+        "architecture": { "const": "x86_64" },
+        "format": { "const": "canonical-ustar-v1" }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "repository",
+        "manifest_media_type",
+        "manifest_digest",
+        "layer_media_type",
+        "layer_digest",
+        "layer_size"
+      ],
+      "properties": {
+        "host": { "const": "ghcr.io" },
+        "repository": { "const": "nenb/cogs/stage2-rootfs" },
+        "manifest_media_type": { "const": "application/vnd.oci.image.manifest.v1+json" },
+        "manifest_digest": { "$ref": "#/$defs/digest" },
+        "layer_media_type": { "const": "application/vnd.cogs.stage2.rootfs.v1.tar" },
+        "layer_digest": { "$ref": "#/$defs/digest" },
+        "layer_size": { "type": "integer", "minimum": 136905728, "maximum": 136905728 }
+      }
+    },
+    "rootfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadata_sha256",
+        "metadata_size",
+        "manifest_sha256",
+        "manifest_size",
+        "ustar_sha256",
+        "ustar_size",
+        "entry_count",
+        "source_date_epoch"
+      ],
+      "properties": {
+        "metadata_sha256": { "const": "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506" },
+        "metadata_size": { "const": 444 },
+        "manifest_sha256": { "const": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1" },
+        "manifest_size": { "const": 1049443 },
+        "ustar_sha256": { "const": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397" },
+        "ustar_size": { "const": 136905728 },
+        "entry_count": { "const": 4353 },
+        "source_date_epoch": { "const": 1782172800 }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "source_manifest_sha256",
+        "input_contract_sha256",
+        "package_manifest_sha256",
+        "provenance_sha256",
+        "qualification_receipt_sha256",
+        "publication_receipt_sha256"
+      ],
+      "properties": {
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_manifest_sha256": { "$ref": "#/$defs/digest" },
+        "input_contract_sha256": { "const": "fe524cc5caafab7f6bb10ef9ebcac40903c1b1bdd60e8ebbf21919bfa788a341" },
+        "package_manifest_sha256": { "$ref": "#/$defs/digest" },
+        "provenance_sha256": { "$ref": "#/$defs/digest" },
+        "qualification_receipt_sha256": { "$ref": "#/$defs/digest" },
+        "publication_receipt_sha256": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

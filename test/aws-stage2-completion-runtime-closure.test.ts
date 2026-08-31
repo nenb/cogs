@@ -24,8 +24,10 @@ test("F2 portable ELF parser and resolver reject hostile synthetic inputs", asyn
   assert.doesNotMatch(harness, /skip|SKIP/u);
 
   const source = await readFile(modulePath, "utf8");
-  assert.match(source, /def fixed_runtime_closure\(authority: RootfsBuildInputs\) -> ClosureResult:/u);
-  assert.match(source, /revalidate_build_inputs\(authority\)/u);
+  assert.match(source, /def fixed_runtime_closure\(authority\):/u);
+  assert.match(source, /def prebuilt_runtime_closure\(authority\):/u);
+  assert.match(source, /revalidate_build_inputs/u);
+  assert.match(source, /revalidate_authority/u);
   assert.match(source, /len\(result_records\) == 35/u);
   assert.match(source, /"usr\/lib\/x86_64-linux-gnu\/libnss_files\.so\.2"/u);
   assert.doesNotMatch(
