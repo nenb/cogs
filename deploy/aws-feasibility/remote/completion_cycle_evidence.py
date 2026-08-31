@@ -239,6 +239,19 @@ def _receipt_realm():
                                if row.record_type in PRIVATE_TEARDOWN_RECORDS)
         _require(teardown_kinds == PRIVATE_TEARDOWN_RECORDS)
         bindings = admission._static_custody_binding(lifecycle.static_custody)
+        settled_key_grants = [row.body for row in records
+                              if row.record_type == "INPUT_GRANT"
+                              and row.body["action"] == "settled"]
+        def key_commitment(path):
+            rows = [row for row in settled_key_grants if row["path"] == path]
+            _require(len(rows) == 1, "exact fresh SSH key grant required")
+            return hashlib.sha256(
+                b"cogs.stage2-ssh-key-generation/v1\0" + _canonical(rows[0])).hexdigest()
+        key_freshness = {
+            "client_key_commitment": key_commitment("@key-stage/client"),
+            "host_key_commitment": key_commitment("@key-stage/server"),
+        }
+        _require(len(set(key_freshness.values())) == 2)
         timing = {
             "host_boot_id": launch.body["host_boot_id"],
             "launch_record_sha256": launch.line_sha256,
@@ -268,6 +281,7 @@ def _receipt_realm():
             "journal_sha256": hashlib.sha256(lifecycle.retired.raw).hexdigest(),
             "program_sha256": program, "marker_sha256": marker,
             "launch_attempts": 1, "ssh_attempts": 1, "timing": timing,
+            "key_freshness": key_freshness,
             "runtime_network_sha256": next(
                 row.body["proof_sha256"] for row in records
                 if row.record_type == "NETWORK_SNAPSHOT_V2"

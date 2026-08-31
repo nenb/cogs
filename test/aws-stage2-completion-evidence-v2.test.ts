@@ -150,6 +150,12 @@ test("seven cycles, 21 measurements, eight detailed inventories, common bindings
   reject((value) => {
     value.cycles[2].effects.running.state_lineage_commitment = value.bindings.runtime_commitment;
   }, "within-cycle lineage drift");
+  reject((value) => {
+    value.cycles[4].freshness.root_volume = value.cycles[3].freshness.root_volume;
+  }, "root volume replay");
+  reject((value) => {
+    value.cycles[2].freshness.client_key = value.cycles[2].freshness.host_key;
+  }, "within-cycle SSH key graft");
 });
 
 test("summaries and every typed receipt cost are independently recomputed", () => {
@@ -210,6 +216,8 @@ test("failure authority, sensitive strings, noncanonical bytes, and duplicate ke
 test("issuer source accepts no public mapping and historical evidence remains additive", () => {
   const source = readFileSync(join(root, "deploy/aws-feasibility/completion_campaign_evidence_issuer.py"), "utf8");
   assert.match(source, /retained\.pop\(id\(candidate\), None\) is candidate/u);
+  assert.match(source, /candidate\.execution_authority == "authenticated-aws-adapter"/u);
+  assert.match(source, /def _project_test_candidate/u);
   assert.doesNotMatch(source, /^_RETAINED\s*=/mu);
   assert.match(source, /type\(candidate\) is production\.CampaignCandidate/u);
   assert.doesNotMatch(source, /def issue_completion_evidence\([^)]*(?:dict|mapping|json)/iu);

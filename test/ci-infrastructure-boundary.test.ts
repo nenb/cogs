@@ -98,6 +98,6 @@ test("bounded feasibility checker performs static parsing only", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /^Statically checked 23 bounded feasibility fixture sources without infrastructure execution\.\n$/u,
+    /^Statically checked 33 bounded feasibility fixture sources without infrastructure execution\.\n$/u,
   );
 });

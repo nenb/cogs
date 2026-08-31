@@ -172,6 +172,8 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
 
     expected_rate = production._commit(
         b"cogs.stage2-fixed-rate/v1", {"micro_usd_per_hour": AGGREGATE_RATE})
+    _require(approval.rate_source_commitment == expected_rate,
+             "approval rate source differs")
     cycles = []
     prior_zero_end = None
     for index, (grant, effects, remote, zero, cost, cycle_commitment) in enumerate(zip(
@@ -224,6 +226,22 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  and cost.rate_source_commitment == expected_rate
                  and cost.cost_micro_usd == _ceil_cost(duration),
                  "typed cost receipt recomputation")
+        running_resources = dict(running.resource_commitments)
+        destroy_resources = dict(destroy.resource_commitments)
+        _require(set(running_resources) == {"instance", "root_volume",
+                                            "launch_template_generation"}
+                 and set(destroy_resources) == {"pre_destroy_receipt"},
+                 "provider freshness receipt differs")
+        freshness = {
+            **running_resources,
+            "host_boot": remote.host_boot_commitment,
+            "operation": remote.operation_commitment,
+            "client_key": remote.client_key_commitment,
+            "host_key": remote.host_key_commitment,
+            **destroy_resources,
+        }
+        _require(len(freshness) == len(set(freshness.values())) == 8,
+                 "within-cycle freshness replay")
         workloads = [{"category": row.category, "ordinal": row.ordinal,
                       "duration_ns": row.duration_ns, "commitment": row.commitment}
                      for row in remote.workloads]
@@ -235,6 +253,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
             "cycle_commitment": cycle_commitment,
             "plan_sha256": grant.plan_sha256,
             "effects": {item.kind: _effect(item) for item in effects},
+            "freshness": freshness,
             "remote": {
                 "host_receipt_commitment": remote.host_receipt_commitment,
                 "instance_commitment": remote.instance_commitment,
@@ -266,6 +285,14 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(item.host_receipt_commitment for item in candidate.remotes),
                  tuple(item.operation_commitment for item in candidate.remotes),
                  tuple(item.host_boot_commitment for item in candidate.remotes),
+                 tuple(item.client_key_commitment for item in candidate.remotes),
+                 tuple(item.host_key_commitment for item in candidate.remotes),
+                 tuple(dict(row[2].resource_commitments)["root_volume"]
+                       for row in candidate.effects),
+                 tuple(dict(row[2].resource_commitments)["launch_template_generation"]
+                       for row in candidate.effects),
+                 tuple(dict(row[3].resource_commitments)["pre_destroy_receipt"]
+                       for row in candidate.effects),
              )), "cycle freshness replay")
     _require(len({item.settlement_commitment for row in candidate.effects for item in row}) == 28,
              "effect settlement replay")
@@ -287,6 +314,10 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         "static_control_commitment": approval.static_control_sha256,
         "pre_aws_package_commitment": approval.pre_aws_package_sha256,
         "rootfs_descriptor_commitment": approval.rootfs_descriptor_sha256,
+        "rootfs_package_manifest_commitment": approval.rootfs_package_manifest_sha256,
+        "rootfs_provenance_commitment": approval.rootfs_provenance_sha256,
+        "rootfs_qualification_receipt_commitment": approval.rootfs_qualification_receipt_sha256,
+        "rootfs_publication_receipt_commitment": approval.rootfs_publication_receipt_sha256,
         "runtime_commitment": approval.runtime_commitment,
         "fixture_commitment": approval.fixture_commitment,
         "account_commitment": approval.account_commitment,
@@ -476,9 +507,22 @@ class IssuedCompletionEvidence:
     custody_root: str
 
 
+def _project_test_candidate(candidate: production.CampaignCandidate):
+    """Return validator fixtures for tests; this route has no publication authority."""
+    _require(type(candidate) is production.CampaignCandidate
+             and candidate.execution_authority == "test-only",
+             "test projection requires a test-only candidate")
+    _consume_retained_candidate(candidate)
+    validated = _validate(candidate)
+    return _canonical(validated.value), _render(validated)
+
+
 def issue_completion_evidence(candidate: production.CampaignCandidate,
                               custody: PublicationCustody) -> IssuedCompletionEvidence:
-    """Consume one retained candidate and publish/read back all pass artifacts."""
+    """Consume one retained provider candidate and publish/read back all artifacts."""
+    _require(type(candidate) is production.CampaignCandidate
+             and candidate.execution_authority == "authenticated-aws-adapter",
+             "only authenticated AWS adapter custody can mint completion evidence")
     _require(type(custody) is PublicationCustody and custody._seal is _PUBLICATION_SEAL
              and not custody.used, "publication custody is not fresh")
     custody.used = True

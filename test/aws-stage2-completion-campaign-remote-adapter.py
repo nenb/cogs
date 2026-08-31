@@ -27,11 +27,16 @@ def grant(mode, ordinal):
 
 
 def effect(kind, grant, start, end, identity):
+    resources = (tuple(sorted((
+        ("instance", d(f"instance-resource-{grant.ordinal}")),
+        ("root_volume", d(f"root-volume-{grant.ordinal}")),
+        ("launch_template_generation", d(f"launch-template-{grant.ordinal}")),
+    ))) if kind == "running" else ())
     return production.EffectReceipt(
         kind, grant.grant_commitment, grant.batch_commitment, grant.ordinal,
         grant.mode, d(f"state-{grant.ordinal}"), d(f"lineage-{grant.ordinal}"),
         identity, d(f"intent-{kind}"), d(f"settlement-{kind}"),
-        grant.ami_commitment, start, end, 1, True)
+        grant.ami_commitment, resources, start, end, 1, True)
 
 
 def owner(grant):
@@ -53,6 +58,10 @@ def owner(grant):
         },
         "launch_attempts": 1, "ssh_attempts": 1,
         "operation_token": d(f"operation-{grant.ordinal}"),
+        "key_freshness": {
+            "client_key_commitment": d(f"client-key-{grant.ordinal}"),
+            "host_key_commitment": d(f"host-key-{grant.ordinal}"),
+        },
         "source_bindings": {
             "source_head": grant.implementation_revision,
             "rootfs_descriptor_sha256": grant.rootfs_descriptor_sha256,

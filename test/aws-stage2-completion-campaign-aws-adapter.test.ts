@@ -36,5 +36,6 @@ test("adapter commands and custody paths are fixed rather than caller-selected",
   ]) assert.match(source, new RegExp(command.replace(".", "\\."), "u"));
   assert.doesNotMatch(source, /sys\.argv|argparse|getenv\(|environ\.get/u);
   assert.match(source, /run_fixed_campaign/u);
+  assert.match(source, /issue_completion_evidence\(candidate, custody\)/u);
   assert.match(source, /approval-authentication\.json/u);
 });

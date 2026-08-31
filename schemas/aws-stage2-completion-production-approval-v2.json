@@ -7,12 +7,15 @@
   "required": [
     "version", "phrase", "batch_commitment", "implementation_revision",
     "control_revision", "source_manifest_sha256", "static_control_sha256",
-    "pre_aws_package_sha256", "rootfs_descriptor_sha256", "runtime_commitment",
+    "pre_aws_package_sha256", "rootfs_descriptor_sha256",
+    "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
+    "rootfs_qualification_receipt_sha256", "rootfs_publication_receipt_sha256",
+    "runtime_commitment",
     "fixture_commitment", "account_commitment", "partition", "region", "ami_id",
     "ami_owner_id", "ami_architecture", "ami_virtualization_type",
     "ami_root_device_type", "ami_state", "ami_commitment", "plan_sha256s", "not_before_unix_ns",
     "effect_deadline_ns", "cleanup_reserve_ns", "expires_unix_ns",
-    "maximum_cost_micro_usd", "issuer_commitment",
+    "maximum_cost_micro_usd", "rate_source_commitment", "issuer_commitment",
     "authentication_receipt_sha256", "one_attempt"
   ],
   "properties": {
@@ -25,6 +28,10 @@
     "static_control_sha256": { "$ref": "#/$defs/sha256" },
     "pre_aws_package_sha256": { "$ref": "#/$defs/sha256" },
     "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_package_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_provenance_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_qualification_receipt_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_publication_receipt_sha256": { "$ref": "#/$defs/sha256" },
     "runtime_commitment": { "$ref": "#/$defs/sha256" },
     "fixture_commitment": { "$ref": "#/$defs/sha256" },
     "account_commitment": { "$ref": "#/$defs/sha256" },
@@ -46,6 +53,7 @@
     "cleanup_reserve_ns": { "type": "integer", "minimum": 300000000000, "maximum": 1800000000000 },
     "expires_unix_ns": { "type": "integer", "minimum": 1 },
     "maximum_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+    "rate_source_commitment": { "$ref": "#/$defs/sha256" },
     "issuer_commitment": { "$ref": "#/$defs/sha256" },
     "authentication_receipt_sha256": { "$ref": "#/$defs/sha256" },
     "one_attempt": { "const": true }

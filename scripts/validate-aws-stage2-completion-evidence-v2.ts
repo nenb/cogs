@@ -66,6 +66,17 @@ type Cycle = {
   cycle_commitment: string;
   plan_sha256: string;
   effects: Record<(typeof EFFECTS)[number], Effect>;
+  freshness: Record<
+    | "instance"
+    | "root_volume"
+    | "launch_template_generation"
+    | "host_boot"
+    | "operation"
+    | "client_key"
+    | "host_key"
+    | "pre_destroy_receipt",
+    string
+  >;
   remote: {
     host_receipt_commitment: string;
     instance_commitment: string;
@@ -300,6 +311,20 @@ function semantics(e: CompletionEvidence): void {
   const operations: string[] = [];
   const boots: string[] = [];
   const settlements: string[] = [];
+  const freshnessNames = [
+    "instance",
+    "root_volume",
+    "launch_template_generation",
+    "host_boot",
+    "operation",
+    "client_key",
+    "host_key",
+    "pre_destroy_receipt",
+  ] as const;
+  const freshness = Object.fromEntries(freshnessNames.map((name) => [name, [] as string[]])) as Record<
+    (typeof freshnessNames)[number],
+    string[]
+  >;
   let priorZeroEnd = 0n;
   let aggregateDuration = 0;
   let aggregateCost = 0;
@@ -314,6 +339,8 @@ function semantics(e: CompletionEvidence): void {
     hostReceipts.push(cycle.remote.host_receipt_commitment);
     operations.push(cycle.remote.operation_commitment);
     boots.push(cycle.remote.host_boot_commitment);
+    distinct(Object.values(cycle.freshness), `cycle ${index + 1} within-cycle freshness`);
+    for (const name of freshnessNames) freshness[name].push(cycle.freshness[name]);
     const { plan, apply, running, destroy } = cycle.effects;
     let priorEffectEnd: bigint | undefined;
     for (const name of EFFECTS) {
@@ -373,6 +400,7 @@ function semantics(e: CompletionEvidence): void {
   distinct(operations, "operation");
   distinct(boots, "host boot");
   distinct(settlements, "effect settlement");
+  for (const name of freshnessNames) distinct(freshness[name], `${name} freshness`);
 
   const zeros: string[] = [];
   const observers: string[] = [];

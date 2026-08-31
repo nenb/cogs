@@ -221,7 +221,8 @@ class FixedProvider:
         return claim
 
     def _common(self, directory: Path, grant, kind: str, intent: str,
-                started: int, ended: int, identity: str, state_digest: str):
+                started: int, ended: int, identity: str, state_digest: str,
+                resources: tuple[tuple[str, str], ...]):
         lineage = _digest(b"cogs.stage2-provider-state-lineage/v1", {
             "batch_commitment": grant.batch_commitment,
             "ordinal": grant.ordinal,
@@ -235,6 +236,7 @@ class FixedProvider:
                 "batch_commitment": grant.batch_commitment, "ordinal": grant.ordinal}),
             "state_lineage_commitment": lineage, "identity_commitment": identity,
             "intent_commitment": intent, "ami_commitment": grant.ami_commitment,
+            "resource_commitments": resources,
             "observed_started_unix_ns": started,
             "observed_ended_unix_ns": ended, "invocation_count": 1,
             "certain": True,
@@ -310,6 +312,7 @@ class FixedProvider:
         plan = directory / "campaign.tfplan"
         plan_json = directory / "campaign.plan.json"
         started = time.time_ns()
+        resources = ()
         if kind == "plan":
             _require(plan.is_file() and plan_json.is_file()
                      and _sha256_file(plan) == grant.plan_sha256,
@@ -347,9 +350,20 @@ class FixedProvider:
                 "primary_eni": row.get("NetworkInterfaces", [{}])[0].get("NetworkInterfaceId"),
                 "launch_template": row.get("LaunchTemplate"),
             })
+            resources = tuple(sorted((
+                ("instance", _digest(b"cogs.stage2-instance-identity/v1", {"id": instance})),
+                ("root_volume", _digest(b"cogs.stage2-root-volume-identity/v1",
+                                        {"id": output["root_volume_id"]})),
+                ("launch_template_generation", _digest(
+                    b"cogs.stage2-launch-template-generation/v1",
+                    {"id": output["launch_template_id"],
+                     "version": output["launch_template_version"]})),
+            )))
             _write_once(directory / "running-observation.json", canonical(observed))
         else:
-            _require((directory / "running.receipt.json").is_file())
+            running_receipt = directory / "running.receipt.json"
+            _require(running_receipt.is_file())
+            resources = (("pre_destroy_receipt", _sha256_file(running_receipt)),)
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve",
                        "-input=false", "-lock-timeout=30s",
@@ -360,7 +374,8 @@ class FixedProvider:
         _require(ended > started)
         state_digest = _sha256_file(state) if state.exists() else ZERO
         return canonical(asdict(self._common(directory, grant, kind, intent,
-                                             started, ended, identity, state_digest)))
+                                             started, ended, identity, state_digest,
+                                             resources)))
 
     def _validate_campaign_output(self, value: dict, grant) -> None:
         required = {"region", "batch_commitment", "cycle_ordinal", "instance_id",
@@ -503,7 +518,15 @@ class FixedProvider:
         for category, service, operation, scope in INVENTORY_QUERIES:
             for page_ordinal, (requested, returned, response) in enumerate(
                     self._api_pages(service, operation, account_id), 1):
-                response_commitment = _digest(b"cogs.stage2-inventory-api-response/v1", response)
+                response_raw = canonical(response)
+                response_commitment = _digest(
+                    b"cogs.stage2-inventory-api-response/v1", response)
+                _write_once(
+                    inventory_dir / f"{category}-{page_ordinal:02d}.response.json",
+                    response_raw, 0o400)
+                _require(_sha256_file(
+                    inventory_dir / f"{category}-{page_ordinal:02d}.response.json") ==
+                    hashlib.sha256(response_raw).hexdigest())
                 resources = self._resource_rows(category, response, grant, graph)
                 value = {
                     "category": category, "service": service, "operation": operation,

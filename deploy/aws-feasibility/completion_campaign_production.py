@@ -59,6 +59,12 @@ def _approval_fields(value):
     return result
 
 
+FIXED_RATE_MICRO_USD_PER_HOUR = 118_000
+RATE_SOURCE_COMMITMENT = _commit(
+    b"cogs.stage2-fixed-rate/v1",
+    {"micro_usd_per_hour": FIXED_RATE_MICRO_USD_PER_HOUR})
+
+
 def approval_batch_commitment(value):
     return _commit(b"cogs.stage2-production-approved-batch/v2", _approval_fields(value))
 
@@ -90,6 +96,10 @@ class ProductionApproval:
     static_control_sha256: str
     pre_aws_package_sha256: str
     rootfs_descriptor_sha256: str
+    rootfs_package_manifest_sha256: str
+    rootfs_provenance_sha256: str
+    rootfs_qualification_receipt_sha256: str
+    rootfs_publication_receipt_sha256: str
     runtime_commitment: str
     fixture_commitment: str
     account_commitment: str
@@ -108,6 +118,7 @@ class ProductionApproval:
     cleanup_reserve_ns: int
     expires_unix_ns: int
     maximum_cost_micro_usd: int
+    rate_source_commitment: str
     issuer_commitment: str
     authentication_receipt_sha256: str
     one_attempt: bool
@@ -120,9 +131,11 @@ class ProductionApproval:
         for item in (
             self.source_manifest_sha256, self.static_control_sha256,
             self.pre_aws_package_sha256, self.rootfs_descriptor_sha256,
-            self.runtime_commitment, self.fixture_commitment, self.account_commitment,
-            self.ami_commitment, self.issuer_commitment,
-            self.authentication_receipt_sha256,
+            self.rootfs_package_manifest_sha256, self.rootfs_provenance_sha256,
+            self.rootfs_qualification_receipt_sha256,
+            self.rootfs_publication_receipt_sha256, self.runtime_commitment, self.fixture_commitment, self.account_commitment,
+            self.ami_commitment, self.rate_source_commitment,
+            self.issuer_commitment, self.authentication_receipt_sha256,
         ): _digest(item)
         _require(self.partition in {"aws", "aws-us-gov"}
                  and type(self.region) is str and 3 <= len(self.region) <= 32
@@ -146,7 +159,8 @@ class ProductionApproval:
                  and 5 * 60 * 1_000_000_000 <= self.cleanup_reserve_ns <= 30 * 60 * 1_000_000_000
                  and self.not_before_unix_ns + self.effect_deadline_ns + self.cleanup_reserve_ns
                      <= self.expires_unix_ns
-                 and 0 < self.maximum_cost_micro_usd < 500_000,
+                 and 0 < self.maximum_cost_micro_usd < 500_000
+                 and self.rate_source_commitment == RATE_SOURCE_COMMITMENT,
                  ProductionApprovalError)
         _require(self.batch_commitment == approval_batch_commitment(self),
                  ProductionApprovalError)
@@ -202,6 +216,7 @@ class EffectReceipt:
     intent_commitment: str
     settlement_commitment: str
     ami_commitment: str
+    resource_commitments: tuple[tuple[str, str], ...]
     observed_started_unix_ns: int
     observed_ended_unix_ns: int
     invocation_count: int
@@ -212,6 +227,18 @@ class EffectReceipt:
                      self.state_commitment, self.state_lineage_commitment,
                      self.identity_commitment, self.intent_commitment,
                      self.settlement_commitment, self.ami_commitment): _digest(item)
+        _require(type(self.resource_commitments) is tuple
+                 and all(type(row) is tuple and len(row) == 2
+                         and type(row[0]) is str and _digest(row[1]) == row[1]
+                         for row in self.resource_commitments)
+                 and tuple(name for name, _value in self.resource_commitments) ==
+                     tuple(sorted({name for name, _value in self.resource_commitments})),
+                 ProductionReceiptError)
+        expected_resources = ({"instance", "root_volume", "launch_template_generation"}
+                              if self.kind == "running" else
+                              {"pre_destroy_receipt"} if self.kind == "destroy" else set())
+        _require({name for name, _value in self.resource_commitments} == expected_resources,
+                 ProductionReceiptError)
         _require(self.kind in EFFECT_KINDS and 1 <= self.ordinal <= 7
                  and self.mode == CYCLE_MODES[self.ordinal - 1]
                  and type(self.observed_started_unix_ns) is int
@@ -246,6 +273,8 @@ class RemoteReceipt:
     host_receipt_commitment: str
     operation_commitment: str
     host_boot_commitment: str
+    client_key_commitment: str
+    host_key_commitment: str
     rootfs_descriptor_sha256: str
     ami_commitment: str
     provider_launch_started_unix_ns: int
@@ -260,12 +289,14 @@ class RemoteReceipt:
             self.grant_commitment, self.batch_commitment, self.state_commitment,
             self.state_lineage_commitment, self.instance_commitment,
             self.host_receipt_commitment, self.operation_commitment,
-            self.host_boot_commitment, self.rootfs_descriptor_sha256,
+            self.host_boot_commitment, self.client_key_commitment,
+            self.host_key_commitment, self.rootfs_descriptor_sha256,
             self.ami_commitment,
         ): _digest(item)
         _require(1 <= self.ordinal <= 7 and self.mode == CYCLE_MODES[self.ordinal - 1]
                  and self.provider_launch_started_unix_ns < self.provider_running_observed_unix_ns
                  and 0 < self.kata_launch_started_boottime_ns < self.ssh_ready_observed_boottime_ns
+                 and self.client_key_commitment != self.host_key_commitment
                  and type(self.workloads) is tuple
                  and len(self.workloads) == (21 if self.mode == "full" else 0)
                  and self.certain is True, ProductionReceiptError)

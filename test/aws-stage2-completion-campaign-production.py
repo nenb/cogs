@@ -26,6 +26,10 @@ def approval():
         control_revision="2" * 40,
         source_manifest_sha256=d("source"), static_control_sha256=d("control"),
         pre_aws_package_sha256=d("preaws"), rootfs_descriptor_sha256=d("rootfs"),
+        rootfs_package_manifest_sha256=d("rootfs-package"),
+        rootfs_provenance_sha256=d("rootfs-provenance"),
+        rootfs_qualification_receipt_sha256=d("rootfs-qualification"),
+        rootfs_publication_receipt_sha256=d("rootfs-publication"),
         runtime_commitment=d("runtime"), fixture_commitment=d("fixture"),
         account_commitment=d("account"), partition="aws", region="us-east-1",
         ami_id="ami-" + "a" * 17, ami_owner_id="099720109477",
@@ -36,6 +40,7 @@ def approval():
         cleanup_reserve_ns=10 * 60 * 10**9,
         expires_unix_ns=101 * 60 * 10**9,
         maximum_cost_micro_usd=499_999,
+        rate_source_commitment=production.RATE_SOURCE_COMMITMENT,
         issuer_commitment=d("issuer"), authentication_receipt_sha256=d("auth"),
         one_attempt=True,
     )
@@ -87,12 +92,19 @@ class Harness:
         state_ordinal = 1 if self.mutate == "state" and grant.ordinal == 2 else grant.ordinal
         state = d(f"state-{state_ordinal}"); lineage = d(f"lineage-{state_ordinal}")
         identity = grant.plan_sha256 if kind == "plan" else d(f"{kind}-{grant.ordinal}")
+        resources = (tuple(sorted((
+            ("instance", d(f"instance-resource-{grant.ordinal}")),
+            ("root_volume", d(f"root-volume-{grant.ordinal}")),
+            ("launch_template_generation", d(f"launch-template-{grant.ordinal}")),
+        ))) if kind == "running" else
+            (("pre_destroy_receipt", d(f"pre-destroy-{grant.ordinal}")),)
+            if kind == "destroy" else ())
         start = self.tick(); end = self.tick()
         return production.EffectReceipt(
             kind, grant.grant_commitment, grant.batch_commitment, grant.ordinal,
             grant.mode, state, lineage, identity, d(f"intent-{kind}-{grant.ordinal}"),
             d(f"settle-{kind}-{grant.ordinal}"), grant.ami_commitment,
-            start, end, 1, True)
+            resources, start, end, 1, True)
 
     def remote(self, grant, apply, running):
         self.calls.append(("remote", grant.ordinal, grant.mode))
@@ -110,7 +122,8 @@ class Harness:
             grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
             apply.state_commitment, apply.state_lineage_commitment,
             d(f"instance-{instance_ordinal}"), d(f"host-{grant.ordinal}"),
-            d(f"operation-{operation_ordinal}"), d(f"boot-{grant.ordinal}"), rootfs,
+            d(f"operation-{operation_ordinal}"), d(f"boot-{grant.ordinal}"),
+            d(f"client-key-{grant.ordinal}"), d(f"host-key-{grant.ordinal}"), rootfs,
             grant.ami_commitment, apply.observed_started_unix_ns,
             running.observed_ended_unix_ns, 100, 200, workloads, True)
 
@@ -180,8 +193,8 @@ assert len(candidate.workload_measurements) == 21 and len(candidate.inventories)
 assert h.inventory_count == 8 and not h.active and h.cleanup_count == 0
 assert [row[2] for row in h.calls if row[0] == "remote"] == list(production.CYCLE_MODES)
 
-# The closure-private issuer consumes this exact candidate, publishes canonical
-# machine/human/receipt bytes with no-replace semantics, and reads all three back.
+# Test-only controller candidates can exercise projection/validation, but the
+# publication issuer categorically rejects them as AWS evidence authority.
 import completion_campaign_evidence_issuer as issuer
 with tempfile.TemporaryDirectory() as directory:
     os.chmod(directory, 0o700)
@@ -192,24 +205,18 @@ with tempfile.TemporaryDirectory() as directory:
         try: issuer.issue_completion_evidence(forged, custody)
         except issuer.EvidenceIssuanceError: pass
         else: raise AssertionError("reconstructed candidate minted evidence")
-        # A rejected caller consumed its own publication custody, never the real
-        # candidate; obtain a fresh held capability for the authentic issuance.
         custody = issuer.open_publication_custody(parent_fd)
-        issued = issuer.issue_completion_evidence(candidate, custody)
-        evidence_raw = Path(directory, issuer.EVIDENCE_NAME).read_bytes()
-        report_raw = Path(directory, issuer.REPORT_NAME).read_bytes()
+        try: issuer.issue_completion_evidence(candidate, custody)
+        except issuer.EvidenceIssuanceError: pass
+        else: raise AssertionError("test-only candidate acquired AWS publication authority")
+        evidence_raw, report_raw = issuer._project_test_candidate(candidate)
         evidence = json.loads(evidence_raw)
         assert evidence_raw.endswith(b"\n") and evidence["result"] == "pass"
         assert evidence["deadlines"]["actual_campaign_duration_ns"] == candidate.actual_duration_ns
         assert len(evidence["cycles"]) == 7 and len(evidence["inventories"]) == 8
         assert len(evidence["cycles"][0]["workloads"]) == 21
         assert sum(row["cost"]["cost_micro_usd"] for row in evidence["cycles"]) == 7
-        assert issued.evidence_sha256 == hashlib.sha256(evidence_raw).hexdigest()
-        for name in (issuer.EVIDENCE_NAME, issuer.REPORT_NAME, issuer.RECEIPT_NAME):
-            assert stat.S_IMODE(os.stat(Path(directory, name)).st_mode) == 0o400
-        try: issuer.issue_completion_evidence(candidate, custody)
-        except issuer.EvidenceIssuanceError: pass
-        else: raise AssertionError("candidate/publication custody replay accepted")
+        assert not list(Path(directory).iterdir())
     finally: os.close(parent_fd)
 try: controller.run()
 except production.ProductionCampaignError: pass
@@ -243,8 +250,8 @@ for change in ({"phrase": "wrong"}, {"batch_commitment": d("wrong")},
     except production.ProductionCampaignError: pass
     else: raise AssertionError("hostile approval accepted")
 
-# No-replace publication failure is sticky: existing bytes are preserved and
-# the consumed candidate cannot be retried through fresh publication custody.
+# The no-replace transaction preserves occupied bytes, while test projection
+# custody itself is one-shot and cannot be retried.
 h = Harness(); publication_candidate = production.ProductionCampaignController(h.ports()).run()
 with tempfile.TemporaryDirectory() as directory:
     os.chmod(directory, 0o700)
@@ -252,15 +259,15 @@ with tempfile.TemporaryDirectory() as directory:
     occupied.write_bytes(b"occupied\n"); occupied.chmod(0o400)
     parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        try: issuer.issue_completion_evidence(
-            publication_candidate, issuer.open_publication_custody(parent_fd))
+        custody = issuer.open_publication_custody(parent_fd)
+        try: issuer._stage_and_publish(custody, ((issuer.EVIDENCE_NAME, b"new\n"),))
         except issuer.EvidencePublicationUncertain: pass
         else: raise AssertionError("no-replace publication overwrote an artifact")
         assert occupied.read_bytes() == b"occupied\n"
-        try: issuer.issue_completion_evidence(
-            publication_candidate, issuer.open_publication_custody(parent_fd))
+        issuer._project_test_candidate(publication_candidate)
+        try: issuer._project_test_candidate(publication_candidate)
         except issuer.EvidenceIssuanceError: pass
-        else: raise AssertionError("uncertain publication candidate was retried")
+        else: raise AssertionError("consumed test projection was retried")
     finally: os.close(parent_fd)
 
 # Two controller instances cannot reuse one durable approval consumption.

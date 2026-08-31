@@ -141,11 +141,18 @@ def remote_receipt(grant, apply, running, raw):
     _require(type(host_boot) is str and 1 <= len(host_boot) <= 128)
     host_boot_commitment = production._commit(
         b"cogs.stage2-host-boot/v1", {"host_boot_id": host_boot})
+    key_freshness = value.get("key_freshness")
+    _require(type(key_freshness) is dict
+             and set(key_freshness) == {"client_key_commitment",
+                                        "host_key_commitment"})
+    for item in key_freshness.values(): production._digest(item)
+    _require(len(set(key_freshness.values())) == 2)
     return production.RemoteReceipt(
         grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
         apply.state_commitment, apply.state_lineage_commitment,
         running.identity_commitment, host_receipt, operation,
-        host_boot_commitment, grant.rootfs_descriptor_sha256,
+        host_boot_commitment, key_freshness["client_key_commitment"],
+        key_freshness["host_key_commitment"], grant.rootfs_descriptor_sha256,
         grant.ami_commitment, apply.observed_started_unix_ns,
         running.observed_ended_unix_ns,
         timing["kata_launch_started_boottime_ns"],

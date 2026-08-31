@@ -149,7 +149,10 @@ def _approval():
                 "signature_verification_commitment"):
         production._digest(authentication[key])
     _require(authentication["approver_principal_commitment"] !=
-             authentication["executor_principal_commitment"])
+             authentication["executor_principal_commitment"]
+             and type(authentication["workflow_run_id"]) is int
+             and authentication["workflow_run_id"] > 0)
+    production._sha1(authentication["control_revision"])
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
     approval = production.ProductionApproval(**value)
     _require(approval.authentication_receipt_sha256 ==
@@ -325,7 +328,10 @@ class AwsCampaignCustodian:
         self._append("effect", "intent", grant.ordinal, grant.mode, intent)
         raw = self._run(EFFECT_COMMAND, (kind, str(grant.ordinal), grant.mode,
                         grant.grant_commitment, intent), 900)
-        receipt = production.EffectReceipt(**_decode(raw))
+        value = _decode(raw)
+        value["resource_commitments"] = tuple(
+            tuple(row) for row in value["resource_commitments"])
+        receipt = production.EffectReceipt(**value)
         _require(receipt.intent_commitment == intent)
         if kind in {"plan", "apply", "running"}:
             self._active(grant, receipt.state_commitment)
@@ -349,12 +355,11 @@ class AwsCampaignCustodian:
     def cost(self, grant, apply, destroy):
         duration = destroy.observed_ended_unix_ns - apply.observed_started_unix_ns
         _require(duration > 0)
-        rate = 118_000
+        rate = production.FIXED_RATE_MICRO_USD_PER_HOUR
         cost = (duration * rate + 3_600_000_000_000 - 1) // 3_600_000_000_000
         fields = {"grant_commitment": grant.grant_commitment,
                   "cycle_ordinal": grant.ordinal,
-                  "rate_source_commitment": production._commit(
-                      b"cogs.stage2-fixed-rate/v1", {"micro_usd_per_hour": rate}),
+                  "rate_source_commitment": self.approval.rate_source_commitment,
                   "usage_commitment": production._commit(
                       b"cogs.stage2-provider-usage/v1", {"duration_ns": duration}),
                   "cost_micro_usd": cost}
@@ -412,8 +417,19 @@ def run_fixed_campaign():
                  and not CLEANUP_COMPLETE.exists())
         approval = _approval()
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval)
-        return production.ProductionCampaignController(
+        candidate = production.ProductionCampaignController(
             custodian.ports(_ADAPTER_SEAL)).run()
+        import completion_campaign_evidence_issuer as evidence_issuer
+        evidence_root = ROOT / "evidence-publication"
+        evidence_root.mkdir(mode=0o700, exist_ok=False)
+        os.chown(evidence_root, 0, 0); os.chmod(evidence_root, 0o700)
+        parent_fd = os.open(evidence_root, os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            custody = evidence_issuer.open_publication_custody(parent_fd, 0)
+            return evidence_issuer.issue_completion_evidence(candidate, custody)
+        finally:
+            os.close(parent_fd)
     finally:
         os.close(lock)
 

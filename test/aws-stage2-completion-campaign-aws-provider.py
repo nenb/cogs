@@ -24,6 +24,10 @@ def approval(plan_digests, account):
         "implementation_revision": "1" * 40, "control_revision": "2" * 40,
         "source_manifest_sha256": d("source"), "static_control_sha256": d("control"),
         "pre_aws_package_sha256": d("preaws"), "rootfs_descriptor_sha256": d("rootfs"),
+        "rootfs_package_manifest_sha256": d("rootfs-package"),
+        "rootfs_provenance_sha256": d("rootfs-provenance"),
+        "rootfs_qualification_receipt_sha256": d("rootfs-qualification"),
+        "rootfs_publication_receipt_sha256": d("rootfs-publication"),
         "runtime_commitment": d("runtime"), "fixture_commitment": d("fixture"),
         "account_commitment": hashlib.sha256(account.encode()).hexdigest(),
         "partition": "aws", "region": "us-east-1", "ami_id": "ami-" + "a" * 17,
@@ -33,6 +37,7 @@ def approval(plan_digests, account):
         "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
         "cleanup_reserve_ns": 10 * 60 * 10**9,
         "expires_unix_ns": 2_000_000_000_000_000_000, "maximum_cost_micro_usd": 499_999,
+        "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": d("issuer"), "authentication_receipt_sha256": d("auth"),
         "one_attempt": True,
     }
@@ -130,8 +135,11 @@ with tempfile.TemporaryDirectory() as temporary:
         "resource_changes": [{"address": "aws_launch_template.host",
                               "change": {"after": {"image_id": current.ami_id}}}]}))
 
-    receipt = production.EffectReceipt(**json.loads(boundary.effect(
-        "plan", 1, "full", grants[1].grant_commitment, d("intent"))))
+    receipt_value = json.loads(boundary.effect(
+        "plan", 1, "full", grants[1].grant_commitment, d("intent")))
+    receipt_value["resource_commitments"] = tuple(
+        tuple(row) for row in receipt_value["resource_commitments"])
+    receipt = production.EffectReceipt(**receipt_value)
     assert receipt.kind == "plan" and receipt.identity_commitment == plans[0]
     try:
         boundary.effect("plan", 1, "full", grants[1].grant_commitment, d("second"))

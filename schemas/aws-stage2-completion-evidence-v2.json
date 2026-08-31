@@ -55,6 +55,10 @@
         "static_control_commitment",
         "pre_aws_package_commitment",
         "rootfs_descriptor_commitment",
+        "rootfs_package_manifest_commitment",
+        "rootfs_provenance_commitment",
+        "rootfs_qualification_receipt_commitment",
+        "rootfs_publication_receipt_commitment",
         "runtime_commitment",
         "fixture_commitment",
         "account_commitment",
@@ -67,6 +71,10 @@
         "static_control_commitment": { "$ref": "#/$defs/digest" },
         "pre_aws_package_commitment": { "$ref": "#/$defs/digest" },
         "rootfs_descriptor_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_package_manifest_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_provenance_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_qualification_receipt_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_publication_receipt_commitment": { "$ref": "#/$defs/digest" },
         "runtime_commitment": { "$ref": "#/$defs/digest" },
         "fixture_commitment": { "$ref": "#/$defs/digest" },
         "account_commitment": { "$ref": "#/$defs/digest" },
@@ -263,6 +271,7 @@
         "cycle_commitment",
         "plan_sha256",
         "effects",
+        "freshness",
         "remote",
         "zero_inventory_commitment",
         "cost"
@@ -282,6 +291,25 @@
             "apply": { "$ref": "#/$defs/effect" },
             "running": { "$ref": "#/$defs/effect" },
             "destroy": { "$ref": "#/$defs/effect" }
+          }
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instance", "root_volume", "launch_template_generation",
+            "host_boot", "operation", "client_key", "host_key",
+            "pre_destroy_receipt"
+          ],
+          "properties": {
+            "instance": { "$ref": "#/$defs/digest" },
+            "root_volume": { "$ref": "#/$defs/digest" },
+            "launch_template_generation": { "$ref": "#/$defs/digest" },
+            "host_boot": { "$ref": "#/$defs/digest" },
+            "operation": { "$ref": "#/$defs/digest" },
+            "client_key": { "$ref": "#/$defs/digest" },
+            "host_key": { "$ref": "#/$defs/digest" },
+            "pre_destroy_receipt": { "$ref": "#/$defs/digest" }
           }
         },
         "remote": {
