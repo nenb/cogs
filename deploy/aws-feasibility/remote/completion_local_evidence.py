@@ -284,6 +284,25 @@ def _one(records, kind):
     return rows[0]
 
 
+def _validate_runtime_identity(records, platform, runtime):
+    """Bind stable QMP identity to the durable exact QEMU role, not a changing journal snapshot."""
+    fields = (
+        "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+        "qemu_executable_device", "qemu_executable_inode",
+        "observer_qmp_device", "observer_qmp_inode",
+        "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api",
+        "qmp_present", "qmp_enabled")
+    _require(all(getattr(platform, name) == getattr(runtime, name) for name in fields))
+    roles = _one(records, "RUNTIME_ROLE_IDENTITIES_V1").body["roles"]
+    qemu = [row for row in roles if row.get("role") == "qemu"]
+    _require(len(qemu) == 1)
+    qemu = qemu[0]
+    _require((qemu.get("pid"), qemu.get("starttime"),
+              qemu.get("executable_device"), qemu.get("executable_inode")) ==
+             (runtime.qemu_pid, runtime.qemu_starttime,
+              runtime.qemu_executable_device, runtime.qemu_executable_inode))
+
+
 def _ordered_phases(records):
     positions = []
     for kind in JOURNAL_TEARDOWN_ORDER:
@@ -731,9 +750,9 @@ def _derive_failure_report(bindings, owner_bindings, journal, history,
                      and runtime.operation_token == token
                      and runtime.live_mapping_sha256 == platform.live_mapping_sha256)
             causal = _one(records, "NETWORK_CAUSAL_PROOF_V1")
-            ownership = _one(records, "OWNERSHIP_OBSERVED")
-            _require(runtime.network_causal_proof_sha256 == causal.body["causal_proof_sha256"]
-                     and runtime.qemu_process_sha256 == ownership.body["proof_sha256"])
+            _one(records, "OWNERSHIP_OBSERVED")
+            _require(runtime.network_causal_proof_sha256 == causal.body["causal_proof_sha256"])
+            _validate_runtime_identity(records, platform, runtime)
         platform_value = {"kvm_api": platform.kvm_api, "observation": "pass",
                           "qmp_enabled": platform.qmp_enabled,
                           "qmp_present": platform.qmp_present}
@@ -837,8 +856,8 @@ def _derive_report(bindings, owner_bindings, journal, history,
     token = genesis.body["operation_token"]
     _require(runtime.operation_token == residue.operation_token == token)
     _one(records, "PRODUCTION_ADMISSION_V2")
-    ownership = _one(records, "OWNERSHIP_OBSERVED")
-    _require(runtime.qemu_process_sha256 == ownership.body["proof_sha256"])
+    _one(records, "OWNERSHIP_OBSERVED")
+    _validate_runtime_identity(records, platform, runtime)
     _ordered_phases(records)
     final = _one(records, "FINAL_BASELINES")
     retired = _one(records, "RETIRED")

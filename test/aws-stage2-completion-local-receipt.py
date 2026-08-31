@@ -106,7 +106,20 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
     rows.append(ownership)
     for phase in evidence.JOURNAL_TEARDOWN_ORDER:
         body = {"operation_token": token}
-        if phase == "FINAL_BASELINES":
+        if phase == "RUNTIME_ROLE_IDENTITIES_V1":
+            body["roles"] = [{
+                "role": role, "pid": pid, "starttime": pid + 1,
+                "executable": f"/opt/kata/bin/{role}", "executable_device": 8,
+                "executable_inode": inode,
+                "executable_generation": {
+                    "mount_id": 1, "device": 8, "inode": inode, "kind": "file",
+                    "mode": 0o500, "uid": 0, "gid": 0, "nlink": 1,
+                    "size": 1, "mtime_ns": 1, "ctime_ns": 1},
+                "namespaces": [[name, f"{name}:[1]"] for name in
+                               ("cgroup", "ipc", "mnt", "net", "pid", "uts")],
+            } for role, pid, inode in (("shim", 99, 7), ("qemu", 101, 9),
+                                       ("virtiofsd", 103, 11))]
+        elif phase == "FINAL_BASELINES":
             body["final_baselines_sha256"] = "8" * 64
         elif phase in ("RETIRE_INTENT", "RETIRED"):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
@@ -116,7 +129,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         runtime_mount_record_sha256=mount.body["issuance_sha256"],
         network_causal_proof_sha256=causal.body["causal_proof_sha256"],
         live_mapping_sha256="9" * 64,
-        qemu_process_sha256=ownership.body["proof_sha256"],
+        qemu_process_sha256="d" * 64,
         qemu_argv_sha256="a" * 64, qemu_pid=101, qemu_starttime=102,
         qemu_executable_device=8, qemu_executable_inode=9,
         observer_qmp_device=10, observer_qmp_inode=11,
@@ -124,7 +137,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         kvm_api=12, qmp_present=True, qmp_enabled=True)
     platform = evidence._PlatformOwnerResult(
         operation_token=token, live_mapping_sha256=runtime.live_mapping_sha256,
-        qemu_process_sha256=runtime.qemu_process_sha256,
+        qemu_process_sha256="e" * 64,
         qemu_argv_sha256=runtime.qemu_argv_sha256,
         qemu_pid=runtime.qemu_pid, qemu_starttime=runtime.qemu_starttime,
         qemu_executable_device=runtime.qemu_executable_device,
@@ -241,6 +254,22 @@ try:
              "adjacent runtime release reorder accepted")
     rejected(lambda: consume(private_receipt), receipt_model.LocalReceiptError,
              "private receipt replay succeeded")
+    take_producer, take_issuer, _consume = receipt_model._new_local_receipt_routes(binding, close)
+    changed_custody = Custody(bindings)
+    changed_evidence = take_producer()(
+        changed_custody, typed_bindings(bindings), evidence._RetiredJournalOwnerResult(raw),
+        history, session, replace(platform, qemu_pid=platform.qemu_pid + 1), runtime, residue)
+    rejected(lambda: take_issuer()(changed_custody, changed_evidence),
+             receipt_model.LocalReceiptError,
+             "changed platform/runtime QEMU identity minted a receipt")
+    role_row = next(row for row in records if row.record_type == "RUNTIME_ROLE_IDENTITIES_V1")
+    changed_roles = copy.deepcopy(role_row.body)
+    changed_roles["roles"][1]["starttime"] += 1
+    changed_records = tuple(replace(row, body=changed_roles) if row is role_row else row
+                            for row in records)
+    rejected(lambda: evidence._validate_runtime_identity(changed_records, platform, runtime),
+             evidence.LocalEvidenceError,
+             "changed durable QEMU role minted identity evidence")
 
     # Exact retired cleanup can transactionally mint a canonical failure, but
     # only the typed durable history—not an exception, status, or report—selects
