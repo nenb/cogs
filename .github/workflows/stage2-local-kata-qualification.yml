@@ -96,7 +96,7 @@ jobs:
                   value = json.loads(body)
               except Exception: raise SystemExit(2) from None
               runs = value.get("workflow_runs"); need(type(runs) is list and value.get("total_count") == len(runs)
-                  and len(runs) == 15)
+                  and len(runs) == 16)
               rows = []
               current_title = ("Stage 2 local Kata qualification H=" + get("EXACT_IMPLEMENTATION_HEAD")
                   + " G=" + get("EXACT_CONTROL_HEAD"))
@@ -128,6 +128,8 @@ jobs:
                   " G=dae1abcf40bd2ebbe9535d95732e5627e414c091")
               fourteenth_predecessor_title = ("Stage 2 local Kata qualification H=bf0479a012b39c074ecb623ea83e85b3dc3ebe36"
                   " G=95151289288631bfc047983af1f499df2cf7a202")
+              fifteenth_predecessor_title = ("Stage 2 local Kata qualification H=1fc2dea2dcefea2aaf71a80356e0f5ed946e9991"
+                  " G=9a525719bed23e3a948f760862722e8e4864a575")
               for item in runs:
                   need(type(item) is dict and item.get("event") == "workflow_dispatch"
                        and type(item.get("id")) is int and item["id"] > 0 and item.get("run_attempt") == 1)
@@ -175,6 +177,9 @@ jobs:
                   elif item["id"] == 33323414697:
                       need(row[2:] == ("completed", "failure", "95151289288631bfc047983af1f499df2cf7a202",
                                       fourteenth_predecessor_title))
+                  elif item["id"] == 33350122895:
+                      need(row[2:] == ("completed", "failure", "9a525719bed23e3a948f760862722e8e4864a575",
+                                      fifteenth_predecessor_title))
                   elif item["id"] == int(run_id):
                       need(row[2] in ("queued", "in_progress") and row[3] is None
                            and row[4:] == (get("EXACT_CONTROL_HEAD"), current_title))
@@ -183,7 +188,8 @@ jobs:
               need({row[0] for row in rows} == {
                   32584575939, 32586393441, 32596053811, 32602439014, 32613383776,
                   32614828572, 32622048772, 32628930290, 32635519776, 33292919137,
-                  33299709836, 33306125902, 33321865244, 33323414697, int(run_id)})
+                  33299709836, 33306125902, 33321865244, 33323414697,
+                  33350122895, int(run_id)})
               if rows == previous:
                   print(f"run_id={run_id}"); break
               previous = rows
