@@ -113,7 +113,7 @@ test("dedicated workflow is manual, same-repository, and exact reviewed H/G", ()
   assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "2c48eb15be3eef4c60ba36171614d499333624fc2bf889f41f749aa382d47ea7"/u);
   assert.match(
     guard,
-    /REVIEWED_RESULT_SCHEMA_SHA256 = "27d60133f202d9c32381d2b3dc8fe281334dc67d59dc8d72b402e6b7ca825375"/u,
+    /REVIEWED_RESULT_SCHEMA_SHA256 = "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27"/u,
   );
   assert.match(guard, /review constants remain blocked/u);
   assert.doesNotMatch(guard, /REVIEWED_[A-Z_]+\s*=\s*(?:""|os\.environ|getenv)/u);
