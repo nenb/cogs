@@ -717,6 +717,11 @@ class ProductionCampaignController:
                      and len(candidate.workload_measurements) == 21,
                      ProductionReceiptError)
             self.ports.journal("batch", "candidate", None, None, custody)
+            # Transfer only this exact, fully checked object into the closure-private
+            # pass-only evidence route.  Reconstructed dataclasses/public JSON never
+            # enter that route.
+            import completion_campaign_evidence_issuer as evidence_issuer
+            evidence_issuer._retain_controller_candidate(candidate)
             return candidate
         except BaseException as primary:
             if active_grant is not None and active_state is not None:

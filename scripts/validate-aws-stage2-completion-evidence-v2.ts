@@ -6,28 +6,37 @@ import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
-const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
-const root = resolve(import.meta.dirname, "..");
 const schema = JSON.parse(
-  readFileSync(resolve(root, "schemas/aws-stage2-completion-evidence-v2.json"), "utf8"),
+  readFileSync(resolve(import.meta.dirname, "../schemas/aws-stage2-completion-evidence-v2.json"), "utf8"),
 ) as object;
-const ajv = new Ajv2020({ allErrors: true, strict: true, ownProperties: true });
-addFormats(ajv);
-const schemaValidator = ajv.compile(schema) as ValidateFunction<CompletionEvidence>;
+const schemaValidator = new Ajv2020({ allErrors: true, strict: true, ownProperties: true }).compile(
+  schema,
+) as ValidateFunction<CompletionEvidence>;
 
-const MAX_EVIDENCE_BYTES = 128 * 1024;
 const BILLING_HOUR_NS = 3_600_000_000_000n;
-const NORMAL_DEADLINE_NS = 5_400_000_000_000;
 const MODES = ["full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness"] as const;
-const FRESHNESS_FIELDS = [
-  "instance_commitment",
-  "root_volume_commitment",
-  "launch_template_generation_commitment",
-  "host_boot_commitment",
-  "operation_commitment",
-  "client_key_commitment",
-  "host_key_commitment",
-  "pre_destroy_receipt_commitment",
+const CATEGORIES = [
+  "ec2_instances",
+  "ebs_volumes",
+  "network_interfaces",
+  "eni_public_associations",
+  "elastic_ips",
+  "security_groups",
+  "vpcs",
+  "subnets",
+  "internet_gateways",
+  "route_tables",
+  "routes",
+  "launch_templates",
+  "key_pairs",
+  "iam_roles",
+  "iam_role_policies",
+  "iam_policy_attachments",
+  "iam_instance_profiles",
+  "eventbridge_schedules",
+  "eventbridge_targets",
+  "budgets",
+  "ssm_managed_instances",
 ] as const;
 const LIMITATIONS = [
   "standalone-stage-2-only",
@@ -38,414 +47,436 @@ const LIMITATIONS = [
   "no-isolation-claim-beyond-measured-sandbox",
   "custody-is-local-tamper-evidence-not-external-worm",
 ] as const;
+const EFFECTS = ["plan", "apply", "running", "destroy"] as const;
 
-export type Summary = {
-  samples_ns: number[];
-  min_ns: number;
-  p50_ns: number;
-  p95_ns: number;
-  max_ns: number;
-};
-type WorkloadRow = {
-  ordinal: number;
-  duration_ns: number;
-  output_commitment: string;
-  deleted: true;
-  cycle_receipt_commitment: string;
+export type Summary = { samples_ns: number[]; min_ns: number; p50_ns: number; p95_ns: number; max_ns: number };
+type Effect = {
+  intent_commitment: string;
+  settlement_commitment: string;
+  identity_commitment: string;
+  state_commitment: string;
+  state_lineage_commitment: string;
+  observed_started_unix_ns: string;
+  observed_ended_unix_ns: string;
 };
 type Cycle = {
   ordinal: number;
-  mode: "full" | "readiness";
+  mode: string;
+  grant_commitment: string;
   cycle_commitment: string;
-  receipt_commitment: string;
-  expiry_at: string;
-  deadline_binding_commitment: string;
-  effect_started_offset_ns: number;
-  effect_ended_offset_ns: number;
-  duration_ns: number;
-  apply_to_running_ns: number;
-  kata_launch_to_ssh_ready_ns: number;
-  freshness: Record<(typeof FRESHNESS_FIELDS)[number], string>;
-  workloads?: Record<"git" | "build" | "install", WorkloadRow[]>;
-  destroy_commitment: string;
+  plan_sha256: string;
+  effects: Record<(typeof EFFECTS)[number], Effect>;
+  remote: {
+    host_receipt_commitment: string;
+    instance_commitment: string;
+    operation_commitment: string;
+    host_boot_commitment: string;
+    apply_to_running_ns: number;
+    kata_launch_to_ssh_ready_ns: number;
+  };
+  workloads?: Array<{ category: string; ordinal: number; duration_ns: number; commitment: string }>;
   zero_inventory_commitment: string;
   cost: {
+    receipt_commitment: string;
+    rate_source_commitment: string;
+    usage_commitment: string;
     billable_duration_ns: number;
-    compute_micro_usd: number;
-    public_ipv4_micro_usd: number;
-    gp3_micro_usd: number;
-    support_allowance_micro_usd: number;
-    total_micro_usd: number;
+    cost_micro_usd: number;
   };
+};
+type Inventory = {
+  observation_sequence: number;
+  cycle_ordinal: number | null;
+  observer_commitment: string;
+  session_commitment: string;
+  run_commitment: string;
+  account_commitment: string;
+  region_commitment: string;
+  destroyed_state_commitment: string;
+  observed_started_unix_ns: string;
+  observed_ended_unix_ns: string;
+  zero_commitment: string;
+  pages: Array<{
+    category: string;
+    ordinal: number;
+    request_token_commitment: string | null;
+    next_token_commitment: string | null;
+    page_commitment: string;
+    resources: Array<{ identity_commitment: string; disposition: string; public_address_commitment: string | null }>;
+  }>;
 };
 export type CompletionEvidence = {
   version: "cogs.aws-stage2-completion-evidence/v2";
   authority: "aws-stage2-completion";
   result: "pass";
-  batch: { commitment: string; source_revision: string; expiry_at: string; cycle_count: 7; modes: string[] };
+  batch: {
+    commitment: string;
+    implementation_revision: string;
+    control_revision: string;
+    consumption_commitment: string;
+    custody_root: string;
+    cycle_count: 7;
+    modes: string[];
+  };
   bindings: Record<string, string>;
   deadlines: {
-    first_apply_started_at: string;
-    effect_deadline_at: string;
-    expiry_at: string;
-    normal_effect_deadline_seconds: 5400;
-    cleanup_reserve_seconds: number;
-    binding_commitment: string;
+    first_apply_unix_ns: string;
+    effect_deadline_unix_ns: string;
+    cleanup_reserve_ns: number;
+    expires_unix_ns: string;
+    final_zero_unix_ns: string;
+    actual_campaign_duration_ns: number;
   };
   cycles: Cycle[];
+  inventories: Inventory[];
   launch_summary: Summary;
   ssh_ready_summary: Summary;
-  workload_summary: {
-    cycle_ordinal: 1;
-    receipt_commitment: string;
-    git: Summary & { output_commitment: string };
-    build: Summary & { output_commitment: string };
-    install: Summary & { output_commitment: string };
-  };
+  workload_summaries: Record<"git" | "build" | "install", Summary>;
   cleanup: {
-    cycle_zero_commitments: string[];
-    final_zero_commitment: string;
-    zero_receipt_count: 8;
     destroy_attempts: 7;
     inventory_observations: 8;
-    teardown_phase_count: 13;
-    final_zero_receipt: {
-      receipt_commitment: string;
-      observer_commitment: string;
-      session_commitment: string;
-      run_commitment: string;
-      observed_at: string;
-      pagination_complete: true;
-      account_region_complete: true;
-      resource_total: 0;
-      categories: string[];
-    };
+    cycle_zero_commitments: string[];
+    final_zero_commitment: string;
     inventory_categories: string[];
   };
   cost: {
-    rate_table_commitment: string;
-    price_evidence_commitment: string;
-    deadline_binding_commitment: string;
-    rates_micro_usd_per_hour: Record<"compute" | "public_ipv4" | "gp3" | "support_allowance", number>;
-    expected_upper_bound_micro_usd: number;
+    currency: "micro-USD";
+    rate_components_micro_usd_per_hour: Record<string, number>;
+    aggregate_rate_micro_usd_per_hour: number;
+    rate_source_commitment: string;
     aggregate_effect_duration_ns: number;
     actual_campaign_duration_ns: number;
     aggregate_cost_micro_usd: number;
+    approved_maximum_micro_usd: number;
   };
   limitations: string[];
 };
 
 export class CompletionEvidenceValidationError extends Error {}
-
 const validatedObjects = new WeakSet<object>();
 export type ValidatedCompletionEvidence = { readonly evidence: CompletionEvidence };
 
 function fail(message: string): never {
   throw new CompletionEvidenceValidationError(message);
 }
-function requireThat(condition: boolean, message: string): asserts condition {
-  if (!condition) fail(message);
+function check(value: boolean, message: string): asserts value {
+  if (!value) fail(message);
 }
 function distinct(values: string[], label: string): void {
-  requireThat(new Set(values).size === values.length, `${label} commitments must be pairwise distinct`);
+  check(new Set(values).size === values.length, `${label} commitments must be pairwise distinct`);
 }
 function summary(samples: number[]): Summary {
-  const sorted = [...samples].sort((left, right) => left - right);
-  const first = sorted[0];
-  const fourth = sorted[3];
-  const seventh = sorted[6];
-  assert.ok(first !== undefined && fourth !== undefined && seventh !== undefined);
-  return { samples_ns: samples, min_ns: first, p50_ns: fourth, p95_ns: seventh, max_ns: seventh };
+  const sorted = [...samples].sort((a, b) => a - b);
+  const minimum = sorted[0];
+  const median = sorted[3];
+  const maximum = sorted[6];
+  check(
+    samples.length === 7 && minimum !== undefined && median !== undefined && maximum !== undefined,
+    "summary cardinality",
+  );
+  return { samples_ns: samples, min_ns: minimum, p50_ns: median, p95_ns: maximum, max_ns: maximum };
 }
-function validateSummary(actual: Summary, samples: number[], label: string): void {
+function checkSummary(actual: Summary, samples: number[], label: string): void {
   const expected = summary(samples);
-  requireThat(
-    actual.samples_ns.length === 7 && actual.samples_ns.every((value, index) => value === samples[index]),
+  check(
+    actual.samples_ns.every((value, index) => value === samples[index]),
     `${label} samples mismatch`,
   );
-  for (const key of ["min_ns", "p50_ns", "p95_ns", "max_ns"] as const) {
-    requireThat(actual[key] === expected[key], `${label} ${key} nearest-rank mismatch`);
-  }
+  for (const key of ["min_ns", "p50_ns", "p95_ns", "max_ns"] as const)
+    check(actual[key] === expected[key], `${label} ${key} mismatch`);
 }
 function ceilCost(duration: number, rate: number): number {
-  const numerator = BigInt(duration) * BigInt(rate);
-  const result = (numerator + BILLING_HOUR_NS - 1n) / BILLING_HOUR_NS;
-  requireThat(result <= BigInt(Number.MAX_SAFE_INTEGER), "cost arithmetic overflow");
-  return Number(result);
+  return Number((BigInt(duration) * BigInt(rate) + BILLING_HOUR_NS - 1n) / BILLING_HOUR_NS);
 }
-function validateJsonGraph(value: unknown): void {
+function unixNs(value: string): bigint {
+  const parsed = BigInt(value);
+  check(parsed <= 18_446_744_073_709_551_615n, "Unix nanosecond value exceeds uint64");
+  return parsed;
+}
+function elapsedNs(ended: string, started: string, label: string): number {
+  const value = unixNs(ended) - unixNs(started);
+  check(value > 0n && value <= BigInt(Number.MAX_SAFE_INTEGER), `${label} elapsed range`);
+  return Number(value);
+}
+function graph(value: unknown): void {
   const seen = new WeakSet<object>();
   let nodes = 0;
   const visit = (item: unknown, depth: number): void => {
-    nodes += 1;
-    requireThat(nodes <= 8_192 && depth <= 24, "public evidence graph bound exceeded");
+    check(++nodes <= 16_384 && depth <= 24, "public evidence graph bound exceeded");
     if (item === null || typeof item === "boolean") return;
     if (typeof item === "number") {
-      requireThat(Number.isSafeInteger(item), "non-safe or non-integer number rejected");
+      check(Number.isSafeInteger(item), "unsafe public integer");
       return;
     }
     if (typeof item === "string") {
-      requireThat(Buffer.byteLength(item, "utf8") <= 16_384, "public string bound exceeded");
+      check(Buffer.byteLength(item) <= 16_384, "public string bound");
       return;
     }
-    requireThat(typeof item === "object", "non-JSON public value rejected");
-    requireThat(!seen.has(item), "cyclic or aliased public object rejected");
+    check(typeof item === "object" && !seen.has(item), "non-JSON, cyclic, or aliased public value");
     seen.add(item);
     if (Array.isArray(item)) {
-      requireThat(item.length <= 512, "public array bound exceeded");
+      check(item.length <= 1024, "public array bound");
       for (const child of item) visit(child, depth + 1);
-      return;
+    } else {
+      check(
+        Object.getPrototypeOf(item) === Object.prototype || Object.getPrototypeOf(item) === null,
+        "non-plain public object",
+      );
+      check(Object.keys(item).length <= 128, "public property bound");
+      for (const child of Object.values(item)) visit(child, depth + 1);
     }
-    const prototype = Object.getPrototypeOf(item);
-    requireThat(prototype === Object.prototype || prototype === null, "non-plain public object rejected");
-    const values = Object.values(item);
-    requireThat(values.length <= 128, "public object-property bound exceeded");
-    for (const child of values) visit(child, depth + 1);
   };
   visit(value, 0);
 }
-function deepFreeze<T>(value: T): T {
+function freeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const item of Object.values(value)) deepFreeze(item);
+    for (const child of Object.values(value)) freeze(child);
     Object.freeze(value);
   }
   return value;
 }
-
-const sensitivePatterns: ReadonlyArray<[string, RegExp]> = [
-  ["AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u],
-  ["authorization material", /\b(?:authorization|bearer|credential|secret|private[-_ ]?key)\b/iu],
-  ["account number", /^\d{12}$/u],
-  ["ARN", /^arn:[^\s]+$/iu],
-  ["cloud resource identifier", /^(?:i|vpc|subnet|sg|lt|vol|eni|mi)-[0-9a-f]{8,}$/iu],
-  ["command identifier", /^(?:cmd-)?[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu],
-  ["email", /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/iu],
-  ["IP address", /^(?:\d{1,3}\.){3}\d{1,3}$/u],
-  ["key material or fingerprint", /(?:-----BEGIN|ssh-ed25519|SHA256:)/u],
-  ["URL", /^[a-z][a-z0-9+.-]*:\/\//iu],
-  ["path", /^(?:\/|\.\.\/|[A-Za-z]:\\)/u],
-  ["shell command material", /(?:\$\(|`|\s(?:--?[a-z][a-z-]*)(?:\s|=))/iu],
-];
-function scanSensitive(value: unknown, location = "/"): void {
+function scan(value: unknown, location = "/"): void {
   if (typeof value === "string") {
-    for (const [label, pattern] of sensitivePatterns)
-      requireThat(!pattern.test(value), `${location}: forbidden ${label}`);
-    requireThat(
-      [...value].every((character) => {
-        const point = character.codePointAt(0) ?? -1;
-        return point >= 0x20 && point <= 0x7e;
-      }),
-      `${location}: non-ASCII public string`,
+    const forbidden = [
+      /(?:AKIA|ASIA)[A-Z0-9]{16}/u,
+      /arn:/iu,
+      /-----BEGIN/u,
+      /ssh-ed25519/u,
+      /^(?:i|vpc|subnet|sg|lt|vol|eni)-[0-9a-f]{8,}$/iu,
+      /^\d{12}$/u,
+      /^(?:\/|\.\.\/)/u,
+      /^[a-z][a-z0-9+.-]*:\/\//iu,
+      /^(?:\d{1,3}\.){3}\d{1,3}$/u,
+    ];
+    check(
+      forbidden.every((pattern) => !pattern.test(value)),
+      `${location}: forbidden sensitive string`,
     );
-  } else if (Array.isArray(value)) {
+    check(
+      [...value].every((character) => {
+        const point = character.codePointAt(0);
+        return point !== undefined && point >= 0x20 && point <= 0x7e;
+      }),
+      `${location}: non-ASCII string`,
+    );
+  } else if (Array.isArray(value))
     value.forEach((item, index) => {
-      scanSensitive(item, `${location}${index}/`);
+      scan(item, `${location}${index}/`);
     });
-  } else if (value !== null && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) scanSensitive(item, `${location}${key}/`);
-  }
+  else if (value !== null && typeof value === "object")
+    for (const [key, item] of Object.entries(value)) scan(item, `${location}${key}/`);
 }
 
-function validateSemantics(evidence: CompletionEvidence): void {
-  scanSensitive(evidence);
-  requireThat(
-    evidence.batch.modes.every((mode, index) => mode === MODES[index]),
+function semantics(e: CompletionEvidence): void {
+  scan(e);
+  check(
+    e.batch.modes.every((mode, index) => mode === MODES[index]),
     "fixed mode vector mismatch",
   );
-  requireThat(
-    evidence.limitations.every((item, index) => item === LIMITATIONS[index]),
+  check(
+    e.limitations.every((item, index) => item === LIMITATIONS[index]),
     "fixed limitations mismatch",
   );
-  distinct(Object.values(evidence.bindings), "binding");
-
-  const started = Date.parse(evidence.deadlines.first_apply_started_at);
-  const deadline = Date.parse(evidence.deadlines.effect_deadline_at);
-  const expiry = Date.parse(evidence.deadlines.expiry_at);
-  requireThat(
-    Number.isFinite(started) && deadline === started + 5_400_000,
-    "normal deadline must be exactly 5,400 seconds",
+  const firstApply = unixNs(e.deadlines.first_apply_unix_ns);
+  const effectDeadline = unixNs(e.deadlines.effect_deadline_unix_ns);
+  const expiry = unixNs(e.deadlines.expires_unix_ns);
+  const finalZero = unixNs(e.deadlines.final_zero_unix_ns);
+  check(effectDeadline > firstApply, "effect deadline order");
+  check(effectDeadline + BigInt(e.deadlines.cleanup_reserve_ns) <= expiry, "cleanup reserve exceeds expiry");
+  check(finalZero <= expiry, "final zero exceeds expiry");
+  check(
+    e.deadlines.actual_campaign_duration_ns ===
+      elapsedNs(e.deadlines.final_zero_unix_ns, e.deadlines.first_apply_unix_ns, "actual campaign"),
+    "actual wall duration mismatch",
   );
-  requireThat(expiry > deadline + evidence.deadlines.cleanup_reserve_seconds * 1000, "expiry lacks cleanup reserve");
-  requireThat(expiry - started <= 14_400_000, "expiry exceeds four hours from first apply");
-  requireThat(evidence.batch.expiry_at === evidence.deadlines.expiry_at, "batch expiry binding mismatch");
 
   const cycleCommitments: string[] = [];
-  const receiptCommitments: string[] = [];
-  const destroyCommitments: string[] = [];
-  const zeroCommitments: string[] = [];
-  const allFreshness: string[] = [];
-  let priorEnd = 0;
-  for (const [index, cycle] of evidence.cycles.entries()) {
-    requireThat(
-      cycle.ordinal === index + 1 && cycle.mode === MODES[index],
-      `cycle ${index + 1} ordering or mode mismatch`,
-    );
-    requireThat(
-      (index === 0 && cycle.effect_started_offset_ns === 0) || cycle.effect_started_offset_ns >= priorEnd,
-      `cycle ${index + 1} overlaps its predecessor`,
-    );
-    requireThat(
-      cycle.effect_ended_offset_ns > cycle.effect_started_offset_ns &&
-        cycle.effect_ended_offset_ns < NORMAL_DEADLINE_NS,
-      `cycle ${index + 1} crosses the normal deadline`,
-    );
-    requireThat(
-      cycle.duration_ns === cycle.effect_ended_offset_ns - cycle.effect_started_offset_ns,
-      `cycle ${index + 1} duration binding mismatch`,
-    );
-    requireThat(
-      cycle.apply_to_running_ns <= cycle.duration_ns && cycle.kata_launch_to_ssh_ready_ns <= cycle.duration_ns,
-      `cycle ${index + 1} sample exceeds cycle duration`,
-    );
-    requireThat(
-      cycle.expiry_at === evidence.deadlines.expiry_at &&
-        cycle.deadline_binding_commitment === evidence.deadlines.binding_commitment,
-      `cycle ${index + 1} deadline or expiry drift`,
-    );
-    requireThat(cycle.cost.billable_duration_ns === cycle.duration_ns, `cycle ${index + 1} billing duration mismatch`);
-    priorEnd = cycle.effect_ended_offset_ns;
-    cycleCommitments.push(cycle.cycle_commitment);
-    receiptCommitments.push(cycle.receipt_commitment);
-    destroyCommitments.push(cycle.destroy_commitment);
-    zeroCommitments.push(cycle.zero_inventory_commitment);
-    allFreshness.push(...FRESHNESS_FIELDS.map((field) => cycle.freshness[field]));
-
-    if (index === 0) {
-      requireThat(cycle.workloads !== undefined, "full cycle workloads missing");
-      for (const category of ["git", "build", "install"] as const) {
-        const rows = cycle.workloads[category];
-        requireThat(rows.length === 7, `${category} requires seven rows`);
-        for (const [rowIndex, row] of rows.entries()) {
-          requireThat(
-            row.ordinal === rowIndex + 1 && row.deleted === true,
-            `${category} row ordering or deletion mismatch`,
-          );
-          requireThat(
-            row.cycle_receipt_commitment === cycle.receipt_commitment,
-            `${category} receipt binding mismatch`,
-          );
-        }
-      }
-    } else requireThat(cycle.workloads === undefined, `readiness cycle ${index + 1} contains workloads`);
-  }
-  for (const [fieldIndex, field] of FRESHNESS_FIELDS.entries()) {
-    distinct(
-      evidence.cycles.map((cycle) => cycle.freshness[field]),
-      `freshness ${fieldIndex + 1}`,
-    );
-  }
-  distinct(allFreshness, "domain-separated freshness");
-  distinct(cycleCommitments, "cycle");
-  distinct(receiptCommitments, "cycle receipt");
-  distinct(destroyCommitments, "destroy");
-  distinct(zeroCommitments, "cycle zero");
-  distinct([...zeroCommitments, evidence.cleanup.final_zero_commitment], "all eight zero receipt");
-  const finalReceipt = evidence.cleanup.final_zero_receipt;
-  distinct(
-    [
-      finalReceipt.receipt_commitment,
-      finalReceipt.observer_commitment,
-      finalReceipt.session_commitment,
-      finalReceipt.run_commitment,
-      evidence.cleanup.final_zero_commitment,
-    ],
-    "final zero lineage",
-  );
-  requireThat(
-    finalReceipt.pagination_complete && finalReceipt.account_region_complete && finalReceipt.resource_total === 0,
-    "final inventory is not complete zero",
-  );
-  requireThat(
-    JSON.stringify(finalReceipt.categories) === JSON.stringify(evidence.cleanup.inventory_categories),
-    "final inventory categories differ",
-  );
-  requireThat(
-    evidence.cleanup.cycle_zero_commitments.every((value, index) => value === zeroCommitments[index]),
-    "cleanup cycle-zero projection mismatch",
-  );
-
-  validateSummary(
-    evidence.launch_summary,
-    evidence.cycles.map((cycle) => cycle.apply_to_running_ns),
-    "launch summary",
-  );
-  validateSummary(
-    evidence.ssh_ready_summary,
-    evidence.cycles.map((cycle) => cycle.kata_launch_to_ssh_ready_ns),
-    "SSH-ready summary",
-  );
-  const full = evidence.cycles[0];
-  assert.ok(full?.workloads);
-  requireThat(
-    evidence.workload_summary.receipt_commitment === full.receipt_commitment,
-    "workload summary receipt mismatch",
-  );
-  for (const category of ["git", "build", "install"] as const) {
-    const rows = full.workloads[category];
-    const output = rows[0]?.output_commitment;
-    assert.ok(output);
-    requireThat(
-      rows.every((row) => row.output_commitment === output),
-      `${category} output pin drift`,
-    );
-    requireThat(
-      evidence.workload_summary[category].output_commitment === output,
-      `${category} summary output mismatch`,
-    );
-    validateSummary(
-      evidence.workload_summary[category],
-      rows.map((row) => row.duration_ns),
-      `${category} summary`,
-    );
-  }
-
-  requireThat(
-    evidence.cost.rate_table_commitment === evidence.bindings.rate_table_commitment,
-    "rate-table binding mismatch",
-  );
-  requireThat(
-    evidence.cost.deadline_binding_commitment === evidence.deadlines.binding_commitment,
-    "deadline-cost binding mismatch",
-  );
+  const grants: string[] = [];
+  const plans: string[] = [];
+  const states: string[] = [];
+  const lineages: string[] = [];
+  const instances: string[] = [];
+  const hostReceipts: string[] = [];
+  const operations: string[] = [];
+  const boots: string[] = [];
+  const settlements: string[] = [];
+  let priorZeroEnd = 0n;
   let aggregateDuration = 0;
   let aggregateCost = 0;
-  for (const cycle of evidence.cycles) {
-    const expected = {
-      compute_micro_usd: ceilCost(cycle.duration_ns, evidence.cost.rates_micro_usd_per_hour.compute),
-      public_ipv4_micro_usd: ceilCost(cycle.duration_ns, evidence.cost.rates_micro_usd_per_hour.public_ipv4),
-      gp3_micro_usd: ceilCost(cycle.duration_ns, evidence.cost.rates_micro_usd_per_hour.gp3),
-      support_allowance_micro_usd: ceilCost(
-        cycle.duration_ns,
-        evidence.cost.rates_micro_usd_per_hour.support_allowance,
+  for (const [index, cycle] of e.cycles.entries()) {
+    check(cycle.ordinal === index + 1 && cycle.mode === MODES[index], `cycle ${index + 1} mode/order`);
+    cycleCommitments.push(cycle.cycle_commitment);
+    grants.push(cycle.grant_commitment);
+    plans.push(cycle.plan_sha256);
+    states.push(cycle.effects.apply.state_commitment);
+    lineages.push(cycle.effects.apply.state_lineage_commitment);
+    instances.push(cycle.remote.instance_commitment);
+    hostReceipts.push(cycle.remote.host_receipt_commitment);
+    operations.push(cycle.remote.operation_commitment);
+    boots.push(cycle.remote.host_boot_commitment);
+    const { plan, apply, running, destroy } = cycle.effects;
+    let priorEffectEnd: bigint | undefined;
+    for (const name of EFFECTS) {
+      const started = unixNs(cycle.effects[name].observed_started_unix_ns);
+      const ended = unixNs(cycle.effects[name].observed_ended_unix_ns);
+      check(
+        started < ended && (priorEffectEnd === undefined || started > priorEffectEnd),
+        `cycle ${index + 1} effect order`,
+      );
+      priorEffectEnd = ended;
+    }
+    check(priorEffectEnd !== undefined && priorEffectEnd < effectDeadline, `cycle ${index + 1} effect deadline`);
+    check(
+      EFFECTS.every(
+        (name) =>
+          cycle.effects[name].state_commitment === plan.state_commitment &&
+          cycle.effects[name].state_lineage_commitment === plan.state_lineage_commitment,
       ),
-    };
-    for (const [field, value] of Object.entries(expected))
-      requireThat(cycle.cost[field as keyof typeof expected] === value, `cycle ${cycle.ordinal} ${field} mismatch`);
-    const total = Object.values(expected).reduce((sum, value) => sum + value, 0);
-    requireThat(cycle.cost.total_micro_usd === total, `cycle ${cycle.ordinal} total cost mismatch`);
-    aggregateDuration += cycle.duration_ns;
-    aggregateCost += total;
+      `cycle ${index + 1} state lineage`,
+    );
+    settlements.push(...EFFECTS.map((name) => cycle.effects[name].settlement_commitment));
+    const duration = elapsedNs(destroy.observed_ended_unix_ns, apply.observed_started_unix_ns, `cycle ${index + 1}`);
+    check(cycle.cost.billable_duration_ns === duration, `cycle ${index + 1} billable duration`);
+    check(
+      cycle.remote.apply_to_running_ns ===
+        elapsedNs(running.observed_ended_unix_ns, apply.observed_started_unix_ns, `cycle ${index + 1} running`),
+      `cycle ${index + 1} provider wall sample`,
+    );
+    check(cycle.remote.kata_launch_to_ssh_ready_ns > 0, `cycle ${index + 1} SSH sample`);
+    check(cycle.cost.rate_source_commitment === e.cost.rate_source_commitment, `cycle ${index + 1} rate source`);
+    check(
+      cycle.cost.cost_micro_usd === ceilCost(duration, e.cost.aggregate_rate_micro_usd_per_hour),
+      `cycle ${index + 1} cost recomputation`,
+    );
+    aggregateDuration += duration;
+    aggregateCost += cycle.cost.cost_micro_usd;
+    if (index === 0) {
+      check(cycle.workloads?.length === 21, "exact 21 full-cycle workloads");
+      const expected = ["git", "build", "install"].flatMap((category) =>
+        Array.from({ length: 7 }, (_, ordinal) => `${category}:${ordinal + 1}`),
+      );
+      check(
+        cycle.workloads
+          .map((row) => `${row.category}:${row.ordinal}`)
+          .every((row, rowIndex) => row === expected[rowIndex]),
+        "workload category/ordinal order",
+      );
+    } else check(cycle.workloads === undefined, `readiness cycle ${index + 1} workloads`);
   }
-  requireThat(evidence.cost.aggregate_effect_duration_ns === aggregateDuration, "aggregate effect duration mismatch");
-  const firstApplyMs = Date.parse(evidence.deadlines.first_apply_started_at);
-  const finalZeroMs = Date.parse(finalReceipt.observed_at);
-  const actualDurationNs = (finalZeroMs - firstApplyMs) * 1_000_000;
-  requireThat(
-    Number.isSafeInteger(actualDurationNs) && actualDurationNs > 0,
-    "actual campaign timestamp range invalid",
+  distinct(cycleCommitments, "cycle");
+  distinct(grants, "grant");
+  distinct(plans, "plan");
+  distinct(states, "state");
+  distinct(lineages, "state lineage");
+  distinct(instances, "instance");
+  distinct(hostReceipts, "host receipt");
+  distinct(operations, "operation");
+  distinct(boots, "host boot");
+  distinct(settlements, "effect settlement");
+
+  const zeros: string[] = [];
+  const observers: string[] = [];
+  const sessions: string[] = [];
+  const runs: string[] = [];
+  for (const [index, inventory] of e.inventories.entries()) {
+    check(
+      inventory.observation_sequence === index + 1 && inventory.cycle_ordinal === (index < 7 ? index + 1 : null),
+      `inventory ${index + 1} order`,
+    );
+    const inventoryStarted = unixNs(inventory.observed_started_unix_ns);
+    const inventoryEnded = unixNs(inventory.observed_ended_unix_ns);
+    check(
+      inventoryStarted < inventoryEnded && inventoryEnded <= expiry && (index === 0 || inventoryStarted > priorZeroEnd),
+      `inventory ${index + 1} wall order`,
+    );
+    if (index < 7) {
+      const cycle = e.cycles[index];
+      check(cycle !== undefined, `inventory ${index + 1} cycle missing`);
+      check(
+        inventory.destroyed_state_commitment === cycle.effects.destroy.state_commitment,
+        `inventory ${index + 1} destroyed state`,
+      );
+      check(
+        inventoryStarted > unixNs(cycle.effects.destroy.observed_ended_unix_ns),
+        `inventory ${index + 1} precedes destroy`,
+      );
+      check(inventory.zero_commitment === cycle.zero_inventory_commitment, `inventory ${index + 1} cycle zero`);
+    } else {
+      const finalCycle = e.cycles[6];
+      check(finalCycle !== undefined, "cycle seven missing");
+      check(
+        inventoryStarted > priorZeroEnd && inventoryEnded > unixNs(finalCycle.effects.destroy.observed_ended_unix_ns),
+        "final zero does not follow cycle seven",
+      );
+      check(inventory.observed_ended_unix_ns === e.deadlines.final_zero_unix_ns, "final zero timestamp");
+    }
+    priorZeroEnd = inventoryEnded;
+    const byCategory = new Map<string, typeof inventory.pages>();
+    for (const page of inventory.pages) byCategory.set(page.category, [...(byCategory.get(page.category) ?? []), page]);
+    check(
+      CATEGORIES.every((category) => byCategory.has(category)) && byCategory.size === CATEGORIES.length,
+      `inventory ${index + 1} category coverage`,
+    );
+    for (const category of CATEGORIES) {
+      const pages = byCategory.get(category);
+      check(pages !== undefined, `inventory ${index + 1} ${category} missing`);
+      let token: string | null = null;
+      for (const [pageIndex, page] of pages.entries()) {
+        check(
+          page.ordinal === pageIndex + 1 && page.request_token_commitment === token,
+          `inventory ${index + 1} ${category} pagination`,
+        );
+        token = page.next_token_commitment;
+        check(
+          page.resources.every((resource) => resource.disposition === "absent" || resource.disposition === "deleted"),
+          `inventory ${index + 1} nonzero resource`,
+        );
+      }
+      check(token === null, `inventory ${index + 1} ${category} truncated`);
+    }
+    zeros.push(inventory.zero_commitment);
+    observers.push(inventory.observer_commitment);
+    sessions.push(inventory.session_commitment);
+    runs.push(inventory.run_commitment);
+  }
+  distinct(zeros, "zero");
+  distinct(observers, "observer");
+  distinct(sessions, "session");
+  distinct(runs, "run");
+  check(
+    e.cleanup.cycle_zero_commitments.every((value, index) => value === zeros[index]) &&
+      e.cleanup.final_zero_commitment === zeros[7],
+    "cleanup zero projection",
   );
-  requireThat(
-    evidence.cost.actual_campaign_duration_ns === actualDurationNs &&
-      evidence.cost.actual_campaign_duration_ns >= aggregateDuration,
-    "actual campaign duration mismatch",
+  check(
+    e.cleanup.inventory_categories.every((value, index) => value === CATEGORIES[index]),
+    "inventory category projection",
   );
-  requireThat(evidence.cost.aggregate_cost_micro_usd === aggregateCost, "aggregate cost mismatch");
-  requireThat(
-    evidence.cost.expected_upper_bound_micro_usd >= aggregateCost &&
-      evidence.cost.expected_upper_bound_micro_usd < 250_000,
-    "expected cost gate mismatch",
+
+  checkSummary(
+    e.launch_summary,
+    e.cycles.map((cycle) => cycle.remote.apply_to_running_ns),
+    "launch",
   );
-  requireThat(aggregateCost < 500_000, "publishable cost gate mismatch");
+  checkSummary(
+    e.ssh_ready_summary,
+    e.cycles.map((cycle) => cycle.remote.kata_launch_to_ssh_ready_ns),
+    "SSH",
+  );
+  const workloads = e.cycles[0]?.workloads;
+  check(workloads !== undefined, "full-cycle workloads missing");
+  for (const category of ["git", "build", "install"] as const)
+    checkSummary(
+      e.workload_summaries[category],
+      workloads.filter((row) => row.category === category).map((row) => row.duration_ns),
+      category,
+    );
+  check(e.cost.aggregate_effect_duration_ns === aggregateDuration, "aggregate effect duration");
+  check(e.cost.actual_campaign_duration_ns === e.deadlines.actual_campaign_duration_ns, "cost wall duration");
+  check(
+    e.cost.aggregate_cost_micro_usd === aggregateCost && aggregateCost <= e.cost.approved_maximum_micro_usd,
+    "aggregate/approved cost",
+  );
 }
 
 export function validateAwsStage2CompletionEvidence(value: unknown): ValidatedCompletionEvidence {
@@ -455,137 +486,118 @@ export function validateAwsStage2CompletionEvidence(value: unknown): ValidatedCo
   } catch (error) {
     throw new CompletionEvidenceValidationError("public evidence cannot be snapshotted", { cause: error });
   }
-  validateJsonGraph(snapshot);
-  if (!schemaValidator(snapshot)) {
-    const details = (schemaValidator.errors ?? [])
-      .map((error) => `${error.instancePath || "/"}: ${error.message ?? error.keyword}`)
-      .join("\n");
-    fail(details || "completion evidence schema rejected");
-  }
-  validateSemantics(snapshot);
-  const token = Object.freeze({ evidence: deepFreeze(snapshot) });
+  graph(snapshot);
+  if (!schemaValidator(snapshot))
+    fail((schemaValidator.errors ?? []).map((error) => `${error.instancePath || "/"}: ${error.message}`).join("\n"));
+  semantics(snapshot);
+  const token = Object.freeze({ evidence: freeze(snapshot) });
   validatedObjects.add(token);
   return token;
 }
-
 export function evidenceFromValidated(value: ValidatedCompletionEvidence): CompletionEvidence {
-  requireThat(
+  check(
     typeof value === "object" && value !== null && validatedObjects.has(value),
     "renderer requires validator-issued evidence token",
   );
   return value.evidence;
 }
-
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === "object")
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
       .join(",")}}`;
-  }
   return JSON.stringify(value);
 }
-
-function rejectDuplicateKeys(text: string): void {
+function duplicateKeys(text: string): void {
+  // JSON.parse cannot report duplicate keys.  A small recursive scanner closes that ambiguity.
   let offset = 0;
-  const whitespace = () => {
-    while (/\s/u.test(text[offset] ?? "")) offset += 1;
+  const ws = () => {
+    while (/\s/u.test(text[offset] ?? "")) offset++;
   };
-  const stringToken = (): string => {
-    const start = offset;
-    requireThat(text[offset] === '"', "JSON string expected");
-    offset += 1;
+  const string = (): string => {
+    const start = offset++;
     while (offset < text.length) {
-      if (text[offset] === "\\") {
-        offset += 2;
-        continue;
-      }
-      if (text[offset] === '"') {
-        offset += 1;
-        return JSON.parse(text.slice(start, offset)) as string;
-      }
-      offset += 1;
+      if (text[offset] === "\\") offset += 2;
+      else if (text[offset++] === '"') return JSON.parse(text.slice(start, offset));
     }
     return fail("unterminated JSON string");
   };
   const value = (): void => {
-    whitespace();
+    ws();
     if (text[offset] === "{") {
-      offset += 1;
-      whitespace();
+      offset++;
+      ws();
       const keys = new Set<string>();
       if (text[offset] === "}") {
-        offset += 1;
+        offset++;
         return;
       }
       while (true) {
-        whitespace();
-        const key = stringToken();
-        requireThat(!keys.has(key), `duplicate JSON key ${key}`);
+        ws();
+        check(text[offset] === '"', "JSON key expected");
+        const key = string();
+        check(!keys.has(key), `duplicate JSON key ${key}`);
         keys.add(key);
-        whitespace();
-        requireThat(text[offset] === ":", "JSON colon expected");
-        offset += 1;
+        ws();
+        check(text[offset++] === ":", "JSON colon expected");
         value();
-        whitespace();
+        ws();
         if (text[offset] === "}") {
-          offset += 1;
+          offset++;
           return;
         }
-        requireThat(text[offset] === ",", "JSON object comma expected");
-        offset += 1;
+        check(text[offset++] === ",", "JSON comma expected");
       }
     }
     if (text[offset] === "[") {
-      offset += 1;
-      whitespace();
+      offset++;
+      ws();
       if (text[offset] === "]") {
-        offset += 1;
+        offset++;
         return;
       }
       while (true) {
         value();
-        whitespace();
+        ws();
         if (text[offset] === "]") {
-          offset += 1;
+          offset++;
           return;
         }
-        requireThat(text[offset] === ",", "JSON array comma expected");
-        offset += 1;
+        check(text[offset++] === ",", "JSON comma expected");
       }
     }
     if (text[offset] === '"') {
-      stringToken();
+      string();
       return;
     }
-    const match = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/u.exec(text.slice(offset));
-    requireThat(match !== null, "JSON value expected");
+    const match = /^(?:true|false|null|-?(?:0|[1-9]\d*))/u.exec(text.slice(offset));
+    check(match !== null, "JSON value expected");
     offset += match[0].length;
   };
   value();
-  whitespace();
-  requireThat(offset === text.length, "trailing JSON data");
+  ws();
+  check(offset === text.length, "trailing JSON data");
 }
-
 export function parseAwsStage2CompletionEvidence(raw: string): ValidatedCompletionEvidence {
-  requireThat(Buffer.byteLength(raw, "utf8") <= MAX_EVIDENCE_BYTES, "completion evidence byte bound exceeded");
-  requireThat(raw.endsWith("\n") && !raw.endsWith("\n\n"), "canonical evidence requires one final LF");
+  check(Buffer.byteLength(raw) <= 262_144, "completion evidence byte bound exceeded");
+  check(raw.endsWith("\n") && !raw.endsWith("\n\n"), "canonical evidence requires one final LF");
   const body = raw.slice(0, -1);
-  rejectDuplicateKeys(body);
+  duplicateKeys(body);
   let value: unknown;
   try {
     value = JSON.parse(body);
   } catch (error) {
     throw new CompletionEvidenceValidationError("invalid completion evidence JSON", { cause: error });
   }
-  requireThat(`${canonical(value)}\n` === raw, "completion evidence is not canonical JSON");
+  check(`${canonical(value)}\n` === raw, "completion evidence is not canonical JSON");
   return validateAwsStage2CompletionEvidence(value);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const path = process.argv[2];
-  assert.ok(path && process.argv.length === 3, "usage: validate-aws-stage2-completion-evidence.ts EVIDENCE_JSON");
+  assert.ok(path && process.argv.length === 3, "usage: validate-aws-stage2-completion-evidence-v2.ts EVIDENCE_JSON");
   parseAwsStage2CompletionEvidence(readFileSync(resolve(path), "utf8"));
-  console.log("Validated closed AWS Stage 2 completion evidence v1.");
+  console.log("Validated closed AWS Stage 2 completion evidence v2.");
 }

@@ -4,64 +4,45 @@ import { resolve } from "node:path";
 import {
   evidenceFromValidated,
   parseAwsStage2CompletionEvidence,
-  type Summary,
   type ValidatedCompletionEvidence,
 } from "./validate-aws-stage2-completion-evidence-v2.ts";
 
-function formatSummary(value: Summary): string {
-  return `min ${value.min_ns} ns; p50 ${value.p50_ns} ns; p95 ${value.p95_ns} ns; max ${value.max_ns} ns`;
-}
-
+/** Deterministic human projection; only a validator-issued token is accepted. */
 export function renderAwsStage2CompletionReport(validated: ValidatedCompletionEvidence): string {
-  const evidence = evidenceFromValidated(validated);
+  const value = evidenceFromValidated(validated);
   const lines = [
     "# AWS Stage 2 completion report",
     "",
     "Status: pass-only rendering of validated, redacted completion evidence.",
     "",
-    "## Batch and fixed bindings",
+    "## Batch",
     "",
-    `- Source revision: \`${evidence.batch.source_revision}\``,
-    `- Batch commitment: \`${evidence.batch.commitment}\``,
-    `- Common expiry: \`${evidence.batch.expiry_at}\``,
-    `- Normal effect deadline: ${evidence.deadlines.normal_effect_deadline_seconds} seconds`,
-    `- Deadline binding: \`${evidence.deadlines.binding_commitment}\``,
+    `- Implementation revision: \`${value.batch.implementation_revision}\``,
+    `- Batch commitment: \`${value.batch.commitment}\``,
+    "- Cycles: 7 (one full, six readiness)",
     "",
-    "## Seven fresh sequential cycles",
+    "## Measurements",
     "",
-    "| Cycle | Mode | Apply to running | Kata launch to authenticated SSH-ready | Duration | Cost |",
-    "| ---: | --- | ---: | ---: | ---: | ---: |",
-    ...evidence.cycles.map(
+    "| Cycle | Mode | Apply to running | Kata launch to SSH ready | Cost |",
+    "| ---: | --- | ---: | ---: | ---: |",
+    ...value.cycles.map(
       (cycle) =>
-        `| ${cycle.ordinal} | ${cycle.mode} | ${cycle.apply_to_running_ns} ns | ${cycle.kata_launch_to_ssh_ready_ns} ns | ${cycle.duration_ns} ns | ${cycle.cost.total_micro_usd} micro-USD |`,
+        `| ${cycle.ordinal} | ${cycle.mode} | ${cycle.remote.apply_to_running_ns} ns | ${cycle.remote.kata_launch_to_ssh_ready_ns} ns | ${cycle.cost.cost_micro_usd} micro-USD |`,
     ),
     "",
-    `- Apply-to-running summary: ${formatSummary(evidence.launch_summary)}`,
-    `- Kata-launch-to-SSH-ready summary: ${formatSummary(evidence.ssh_ready_summary)}`,
+    "- Full-cycle workload measurements: 21",
+    `- Actual first-apply through final-zero duration: ${value.deadlines.actual_campaign_duration_ns} ns`,
     "",
-    "## Full-cycle representative workload",
+    "## Cleanup and cost",
     "",
-    `- Git (7 samples): ${formatSummary(evidence.workload_summary.git)}`,
-    `- Package build (7 samples): ${formatSummary(evidence.workload_summary.build)}`,
-    `- Package install (7 samples): ${formatSummary(evidence.workload_summary.install)}`,
-    "- Workload samples exist only in cycle 1; every sample records immediate deletion.",
+    "- State-bound destroy attempts: 7",
+    "- Detailed inventory observations: 8",
+    `- Final zero commitment: \`${value.cleanup.final_zero_commitment}\``,
+    `- Aggregate cost: ${value.cost.aggregate_cost_micro_usd} micro-USD`,
     "",
-    "## Cleanup and bounded cost",
+    "## Limitations",
     "",
-    `- State-bound destroy attempts: ${evidence.cleanup.destroy_attempts}`,
-    `- Distinct independently observed zero receipts: ${evidence.cleanup.zero_receipt_count}`,
-    `- Local teardown phases per cycle: ${evidence.cleanup.teardown_phase_count}`,
-    `- Aggregate effect duration: ${evidence.cost.aggregate_effect_duration_ns} ns`,
-    `- Actual first-apply through final-zero duration: ${evidence.cost.actual_campaign_duration_ns} ns`,
-    `- Final independent zero observed at: ${evidence.cleanup.final_zero_receipt.observed_at}`,
-    `- Final inventory categories: ${evidence.cleanup.inventory_categories.join(", ")}`,
-    `- Aggregate cost: ${evidence.cost.aggregate_cost_micro_usd} micro-USD`,
-    `- Expected upper bound: ${evidence.cost.expected_upper_bound_micro_usd} micro-USD (strictly below 250000)`,
-    "",
-    "## Limitations and non-claims",
-    "",
-    ...evidence.limitations.map((limitation) => `- ${limitation}`),
-    "",
+    ...value.limitations.map((item) => `- ${item}`),
   ];
   return `${lines.join("\n")}\n`;
 }

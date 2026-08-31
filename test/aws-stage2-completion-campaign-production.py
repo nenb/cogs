@@ -4,7 +4,11 @@
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import json
+import os
+import stat
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
@@ -137,11 +141,14 @@ class Harness:
             production._commit(b"cogs.stage2-zero-inventory/v2", fields), True)
 
     def cost(self, grant, apply, destroy):
+        duration = destroy.observed_ended_unix_ns - apply.observed_started_unix_ns
+        rate = 118_000
         fields = {"grant_commitment": grant.grant_commitment,
                   "cycle_ordinal": grant.ordinal,
-                  "rate_source_commitment": d("rate"),
+                  "rate_source_commitment": production._commit(
+                      b"cogs.stage2-fixed-rate/v1", {"micro_usd_per_hour": rate}),
                   "usage_commitment": d(f"usage-{grant.ordinal}"),
-                  "cost_micro_usd": 100}
+                  "cost_micro_usd": (duration * rate + 3_600_000_000_000 - 1) // 3_600_000_000_000}
         return production.CostReceipt(**fields, receipt_commitment=production._commit(
             b"cogs.stage2-cost-receipt/v1", fields))
 
@@ -167,11 +174,43 @@ class Harness:
 h = Harness(); controller = production.ProductionCampaignController(h.ports())
 candidate = controller.run()
 assert candidate.actual_duration_ns == candidate.final_zero_unix_ns - candidate.first_apply_unix_ns
-assert candidate.total_cost_micro_usd == 700 and len(candidate.cycle_commitments) == 7
+assert candidate.total_cost_micro_usd == 7 and len(candidate.cycle_commitments) == 7
 assert len(candidate.launch_ready_samples_ns) == len(candidate.ssh_ready_samples_ns) == 7
 assert len(candidate.workload_measurements) == 21 and len(candidate.inventories) == 8
 assert h.inventory_count == 8 and not h.active and h.cleanup_count == 0
 assert [row[2] for row in h.calls if row[0] == "remote"] == list(production.CYCLE_MODES)
+
+# The closure-private issuer consumes this exact candidate, publishes canonical
+# machine/human/receipt bytes with no-replace semantics, and reads all three back.
+import completion_campaign_evidence_issuer as issuer
+with tempfile.TemporaryDirectory() as directory:
+    os.chmod(directory, 0o700)
+    parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        custody = issuer.open_publication_custody(parent_fd)
+        forged = replace(candidate)
+        try: issuer.issue_completion_evidence(forged, custody)
+        except issuer.EvidenceIssuanceError: pass
+        else: raise AssertionError("reconstructed candidate minted evidence")
+        # A rejected caller consumed its own publication custody, never the real
+        # candidate; obtain a fresh held capability for the authentic issuance.
+        custody = issuer.open_publication_custody(parent_fd)
+        issued = issuer.issue_completion_evidence(candidate, custody)
+        evidence_raw = Path(directory, issuer.EVIDENCE_NAME).read_bytes()
+        report_raw = Path(directory, issuer.REPORT_NAME).read_bytes()
+        evidence = json.loads(evidence_raw)
+        assert evidence_raw.endswith(b"\n") and evidence["result"] == "pass"
+        assert evidence["deadlines"]["actual_campaign_duration_ns"] == candidate.actual_duration_ns
+        assert len(evidence["cycles"]) == 7 and len(evidence["inventories"]) == 8
+        assert len(evidence["cycles"][0]["workloads"]) == 21
+        assert sum(row["cost"]["cost_micro_usd"] for row in evidence["cycles"]) == 7
+        assert issued.evidence_sha256 == hashlib.sha256(evidence_raw).hexdigest()
+        for name in (issuer.EVIDENCE_NAME, issuer.REPORT_NAME, issuer.RECEIPT_NAME):
+            assert stat.S_IMODE(os.stat(Path(directory, name)).st_mode) == 0o400
+        try: issuer.issue_completion_evidence(candidate, custody)
+        except issuer.EvidenceIssuanceError: pass
+        else: raise AssertionError("candidate/publication custody replay accepted")
+    finally: os.close(parent_fd)
 try: controller.run()
 except production.ProductionCampaignError: pass
 else: raise AssertionError("controller replay accepted")
@@ -204,10 +243,35 @@ for change in ({"phrase": "wrong"}, {"batch_commitment": d("wrong")},
     except production.ProductionCampaignError: pass
     else: raise AssertionError("hostile approval accepted")
 
+# No-replace publication failure is sticky: existing bytes are preserved and
+# the consumed candidate cannot be retried through fresh publication custody.
+h = Harness(); publication_candidate = production.ProductionCampaignController(h.ports()).run()
+with tempfile.TemporaryDirectory() as directory:
+    os.chmod(directory, 0o700)
+    occupied = Path(directory, issuer.EVIDENCE_NAME)
+    occupied.write_bytes(b"occupied\n"); occupied.chmod(0o400)
+    parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try: issuer.issue_completion_evidence(
+            publication_candidate, issuer.open_publication_custody(parent_fd))
+        except issuer.EvidencePublicationUncertain: pass
+        else: raise AssertionError("no-replace publication overwrote an artifact")
+        assert occupied.read_bytes() == b"occupied\n"
+        try: issuer.issue_completion_evidence(
+            publication_candidate, issuer.open_publication_custody(parent_fd))
+        except issuer.EvidenceIssuanceError: pass
+        else: raise AssertionError("uncertain publication candidate was retried")
+    finally: os.close(parent_fd)
+
 # Two controller instances cannot reuse one durable approval consumption.
 h = Harness(); production.ProductionCampaignController(h.ports()).run()
 try: production.ProductionCampaignController(h.ports()).run()
 except production.ProductionApprovalError: pass
 else: raise AssertionError("durably consumed approval was reused")
 
-print("stage2 provider-free production campaign controller checks passed")
+if os.environ.get("COGS_TEST_EMIT_EVIDENCE") == "1":
+    sys.stdout.buffer.write(evidence_raw)
+elif os.environ.get("COGS_TEST_EMIT_REPORT") == "1":
+    sys.stdout.buffer.write(report_raw)
+else:
+    print("stage2 provider-free production campaign controller checks passed")
