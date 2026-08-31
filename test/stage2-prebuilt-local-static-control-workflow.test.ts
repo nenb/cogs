@@ -15,6 +15,7 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   assert.match(workflow, /artifact-ids: \$\{\{ inputs\.rootfs_control_artifact_id \}\}/u);
   assert.match(workflow, /test "\$\(find "\$RUNNER_TEMP\/rootfs-control" -type f \| wc -l\)" = 6/u);
   assert.match(workflow, /COGS_STAGE2_CONTROL_REVISION="\$GITHUB_SHA"/u);
+  assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py/u);
   assert.match(workflow, /completion_kata_immutable_preparation\.py/u);
   assert.match(workflow, /stage2-local-static-control-v2\.json/u);
   assert.doesNotMatch(workflow, /\/dev\/kvm|containerd|\bctr\b|qmp|run-stage2-completion-(?:full|readiness)/u);

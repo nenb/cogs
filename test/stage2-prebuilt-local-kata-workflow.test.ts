@@ -5,6 +5,7 @@ import test from "node:test";
 const workflow = readFileSync(".github/workflows/stage2-prebuilt-local-kata-qualification.yml", "utf8");
 const guard = readFileSync("scripts/stage2-prebuilt-local-qualification-guard.py", "utf8");
 const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
+const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
 
 test("corrected qualification is additive, exact H-then-G, and first-created", () => {
   assert.match(workflow, /^name: Stage 2 prebuilt local Kata qualification$/mu);
@@ -14,6 +15,9 @@ test("corrected qualification is additive, exact H-then-G, and first-created", (
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
   assert.match(workflow, /test "\$EXACT_CONTROL_HEAD" = "\$GITHUB_SHA"/u);
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
+  assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
+  assert.match(staging, /stage2-completion-local-control-v3/u);
+  assert.match(staging, /stage2-local-static-control-v2\.json/u);
   assert.match(guard, /Reviewed directional binding/u);
   assert.match(guard, /WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification\.yml"/u);
 });

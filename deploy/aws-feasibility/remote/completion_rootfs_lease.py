@@ -347,65 +347,6 @@ def _reference(owned, active):
          prebuilt._canonical(body["prebuilt_descriptor"])),
     )
 
-def _acquire(approval, outer):
-    # Historical producer-only route. Production imports no build/input modules.
-    import completion_rootfs_build as build
-    import completion_rootfs_publish as publication
-    _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
-    retained = None
-    boundary = False
-    stage = "bootstrap"
-    try:
-        _bootstrap_state(approval, outer)
-        stage = "pins"
-        pins = publication._load_pins()
-        _fail(type(pins) is publication.RootfsPins)
-        stage = "build-first"
-        first_token = secrets.token_hex(32)
-        first = build._build_once(approval, first_token, outer)
-        stage = "build-second"
-        second_token = secrets.token_hex(32)
-        _fail(second_token != first_token)
-        second, retained = build._build_once_retained(approval, second_token, outer)
-        stage = "equality"
-        build._require_equal_builds(first, second)
-        stage = "pin-check"
-        build._require_pinned(first, pins)
-        build._require_pinned(second, pins)
-        stage = "topology"
-        _topology(retained)
-        _stable_graph(retained, None, outer, "active")
-        boundary = True
-        retained.disposition = "uncertain"
-        stage = "lease-mark"
-        refreshed = builder._mark_leased(
-            retained.owned, pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256,
-            pins.ustar_size, pins.entry_count, outer,
-        )
-        retained.owned = refreshed
-        _topology(retained)
-        reference = _reference(refreshed, refreshed.active)
-        retained.disposition = "transferred"
-        lease = RetainedRootfsLease(reference, retained)
-        stage = "lease-verify"
-        _stable_lease_pass(lease, outer)
-        first = second = None
-        return lease
-    except BaseException as error:
-        if stage in {"build-first", "build-second"} and type(error) is build.BuildAttemptError:
-            detail = (error.work_stage if error.work_stage != "internal"
-                      else ROOTFS_BUILD_OUTCOMES[error.work_outcome])
-            stage = f"{stage}-{detail}"
-        if retained is None:
-            raise RootfsAcquireError(stage) from error
-        try:
-            if boundary:
-                _close_preserving(retained, error)
-            _abandon_active(retained, error)
-        except BaseException as settled:
-            raise RootfsAcquireError(stage) from settled
-        raise RootfsAcquireError(stage) from error
-
 def _acquire_prebuilt(approval, authority, outer):
     """Import one authenticated prebuilt ustar; never enter the build route."""
     _fail(type(approval) is fs.SourceApproval and type(authority) is prebuilt.PrebuiltRootfsAuthority)
@@ -997,6 +938,7 @@ def _recover_kata_release(authority, control):
         raise
 
 def _verify(lease, control):
+    _fail(lease.reference.prebuilt_descriptor_raw is not None)
     terminal = builder._terminal_record(lease.retained.owned.active).record_type
     _fail(terminal in {"leased", "release-authorized", "prestage-release-authorized"})
     expected_status = terminal if terminal != "leased" else "leased"
@@ -1004,43 +946,26 @@ def _verify(lease, control):
         _stable_lease_pass(lease, control)
     else:
         _stable_graph(lease.retained, lease.reference, control, expected_status)
-    legacy = lease.reference.prebuilt_descriptor_raw is None
-    if legacy:
-        import completion_rootfs_canonical as canonical
-        import completion_rootfs_plan as plan
-        import completion_rootfs_publish as publication
-        authority = plan.load_verified_build_inputs()
-    else:
-        candidate = fs._open_path_node(
-            lease.retained.owned.operation, builder.CANDIDATE_TAR_NAME, "file", control)
-        try:
-            raw = fs._read_regular(candidate, lease.reference.ustar_size, control)
-            authority = prebuilt.load_authority(lease.reference.prebuilt_descriptor_raw, raw)
-        finally:
-            fs._close_node(candidate)
-    count = materializer._postwalk(lease.retained.owned, lease.retained.owned.root, authority, control)
+    candidate = fs._open_path_node(
+        lease.retained.owned.operation, builder.CANDIDATE_TAR_NAME, "file", control)
+    try:
+        raw = fs._read_regular(candidate, lease.reference.ustar_size, control)
+        authority = prebuilt.load_authority(
+            lease.reference.prebuilt_descriptor_raw, raw)
+    finally:
+        fs._close_node(candidate)
+    count = materializer._postwalk(
+        lease.retained.owned, lease.retained.owned.root, authority, control)
     _fail(count == lease.reference.entry_count)
-    if legacy:
-        fresh = plan.revalidate_build_inputs(authority)
-        _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
-        manifest = canonical._manifest(fresh.plan)
-    else:
-        fresh = prebuilt.revalidate_authority(authority)
-        manifest = fresh.manifest
+    fresh = prebuilt.revalidate_authority(authority)
     reference = lease.reference
-    _fail(len(manifest) == reference.manifest_size and hashlib.sha256(manifest).hexdigest() == reference.manifest_sha256)
-    _fail(len(fresh.plan.entries) == reference.entry_count)
-    if legacy:
-        pins = publication._load_pins()
-        _fail(type(pins) is publication.RootfsPins)
-        _fail((pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256,
-               pins.ustar_size, pins.entry_count) == (
-            reference.manifest_sha256, reference.manifest_size,
-            reference.ustar_sha256, reference.ustar_size, reference.entry_count,
-        ))
+    _fail(len(fresh.manifest) == reference.manifest_size
+          and hashlib.sha256(fresh.manifest).hexdigest() ==
+              reference.manifest_sha256
+          and len(fresh.plan.entries) == reference.entry_count)
     if expected_status == "leased":
         _stable_lease_pass(lease, control)
     else:
         _stable_graph(lease.retained, lease.reference, control, expected_status)
-    _fail(type(lease.reference) is RuntimeRootfsReference)
-    return lease.reference
+    _fail(type(reference) is RuntimeRootfsReference)
+    return reference

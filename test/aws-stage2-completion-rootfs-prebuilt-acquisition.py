@@ -40,6 +40,8 @@ def descriptor_raw(blob):
     manifest = json.dumps({
         "schemaVersion": 2, "mediaType": prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE,
         "artifactType": "application/vnd.cogs.stage2.rootfs.package.v1",
+        "config": {"mediaType": "application/vnd.unknown.config.v1+json",
+                   "digest": "sha256:" + "9" * 64, "size": 2},
         "layers": [{"mediaType": prebuilt.REGISTRY_LAYER_MEDIA_TYPE,
                     "digest": "sha256:" + digest, "size": len(blob)}],
     }, sort_keys=True, separators=(",", ":")).encode()

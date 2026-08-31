@@ -217,7 +217,16 @@ def _manifest(transport, descriptor, token, deadline):
     except (UnicodeError, ValueError, TypeError, RecursionError) as error:
         raise PrebuiltAcquisitionError() from error
     _require(type(value) is dict and value.get("schemaVersion") == 2
-             and value.get("mediaType") == prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE)
+             and value.get("mediaType") == prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE
+             and value.get("artifactType") ==
+                 "application/vnd.cogs.stage2.rootfs.package.v1")
+    config = value.get("config")
+    _require(type(config) is dict
+             and {"mediaType", "digest", "size"} <= set(config)
+             and set(config) <= {"mediaType", "digest", "size", "annotations"}
+             and type(config["mediaType"]) is str
+             and re.fullmatch(r"sha256:[0-9a-f]{64}", config["digest"]) is not None
+             and type(config["size"]) is int and config["size"] >= 0)
     layers = value.get("layers")
     _require(type(layers) is list and 1 <= len(layers) <= 16)
     matches = []

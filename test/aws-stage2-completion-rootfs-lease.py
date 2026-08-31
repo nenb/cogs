@@ -26,6 +26,7 @@ if sys.argv[1:] != ["--real"]:
     import completion_rootfs_fs as fs
     import completion_rootfs_ledger as ledger
     import completion_rootfs_lease as lease
+    import completion_rootfs_lease_legacy as legacy_lease
     import completion_rootfs_materializer as materializer
     import completion_rootfs_plan as plan
     import completion_rootfs_publish as publication
@@ -798,10 +799,10 @@ def acquisition_boundary_tests():
             (lease, "_abandon_active", abandon),
         ):
             if fault is None:
-                result = lease._acquire(approval, control)
+                result = legacy_lease.acquire(approval, control)
                 assert result.reference is reference and result.retained is retained
             else:
-                try: lease._acquire(approval, control)
+                try: legacy_lease.acquire(approval, control)
                 except lease.RootfsAcquireError as error:
                     expected = {
                         "bootstrap": "bootstrap", "pins": "pins",
@@ -923,9 +924,9 @@ def verify_order_and_drift_tests():
             (publication, "_load_pins", load_pins),
         ):
             if fault is None:
-                assert lease._verify(held, control) is reference
+                assert legacy_lease.verify(held, control) is reference
             else:
-                rejected(lambda: lease._verify(held, control))
+                rejected(lambda: legacy_lease.verify(held, control))
         return events
 
     assert run() == ["A", "load", "postwalk", "revalidate", "manifest", "pins", "B"]
@@ -960,7 +961,7 @@ def verify_order_and_drift_tests():
         (canonical, "_manifest", lambda value: manifest),
         (publication, "_load_pins", lambda: exact_pins),
     ):
-        assert lease._verify(held, control) is reference
+        assert legacy_lease.verify(held, control) is reference
     assert phases == ["release-authorized", "release-authorized"]
     matrix_case()
     close_graph_nodes(retained)
@@ -1836,12 +1837,17 @@ def retired_prelease_recovery_test():
 def source_tests():
     source = (REMOTE / "completion_rootfs_lease.py").read_text()
     builder_source = (REMOTE / "completion_rootfs_builder.py").read_text()
-    assert "def _acquire(" in source and "def _verify(" in source
+    legacy_source = (REMOTE / "completion_rootfs_lease_legacy.py").read_text()
+    assert "def _acquire(" not in source and "def _verify(" in source
+    assert "def acquire(" in legacy_source
     verify_source = source.split("def _verify(", 1)[1]
     assert verify_source.count("_stable_lease_pass(lease, control)") == 2
     assert "retained.disposition = \"uncertain\"" in source
     assert source.index("retained.disposition = \"uncertain\"") < source.index("builder._mark_leased(")
-    assert "publication._load_pins()" in source and "publication._publish" not in source
+    assert "publication._load_pins()" not in source and "publication._publish" not in source
+    assert "publication._load_pins()" in legacy_source
+    assert "completion_rootfs_build as build" not in source
+    assert "completion_rootfs_build as build" in legacy_source
     assert "def _authorize_kata_release(" in source
     assert "def _recover_kata_release(" in source
     assert "authority.reserve_rootfs()" in source and "authority.reserve_rootfs_release()" in source
@@ -1910,6 +1916,7 @@ def source_tests():
         ("completion_rootfs_lease.py", "_verify"),
         ("completion_rootfs_lease.py", "rootfs_route"),
         ("completion_rootfs_lease.py", "route"),
+        ("completion_rootfs_lease_legacy.py", "verify"),
         ("completion_rootfs_ledger.py", "<module>"),
         ("completion_rootfs_ledger.py", "__post_init__"),
         ("completion_rootfs_ledger.py", "_append_leased_record"),
@@ -1948,6 +1955,7 @@ def docker_real_lease_test():
     build_module = load("completion_rootfs_build", fixed_remote / "completion_rootfs_build.py")
     operation_module = load("completion_kata_operation", fixed_remote / "completion_kata_operation.py")
     lease_module = load("completion_rootfs_lease", fixed_remote / "completion_rootfs_lease.py")
+    legacy_lease_module = load("completion_rootfs_lease_legacy", fixed_remote / "completion_rootfs_lease_legacy.py")
     assert Path(operation_module.__file__).parent == Path(lease_module.__file__).parent == fixed_remote
     assert lease_module.kata_operation is operation_module
     harness.accommodate_docker_overlay(fs_module)
@@ -1955,7 +1963,7 @@ def docker_real_lease_test():
 
     approval = fs_module.SourceApproval(revision, source_digest)
     control = fs_module.OperationControl(time.monotonic_ns() + 3600 * 1_000_000_000, lambda: False)
-    held = lease_module._acquire(approval, control)
+    held = legacy_lease_module.acquire(approval, control)
     reference = held.reference
     pins = publication_module._load_pins()
     assert reference.entry_count == len(plan_module.load_verified_build_inputs().plan.entries) == 4353
@@ -1964,7 +1972,7 @@ def docker_real_lease_test():
     )
     assert reference.path == lease_module.FIXED_PREFIX + reference.operation_name + "/rootfs"
     assert Path(reference.path).is_dir()
-    assert lease_module._verify(held, control) == reference
+    assert legacy_lease_module.verify(held, control) == reference
 
     ledger_path = harness.FIXED / "deploy/aws-feasibility/.state/completion-v1/rootfs-v1" / builder_module.LEDGER_NAME.text
     root_path = Path(reference.path)

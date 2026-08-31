@@ -105,6 +105,8 @@ class Harness:
 
     def inventory(self, grant, destroyed, sequence):
         self.inventory_count += 1
+        if self.fail == ("inventory", sequence):
+            raise production.ProductionUncertainty()
         cycle = sequence if sequence <= 7 else None
         source = 1 if self.mutate == "observer" and sequence == 2 else sequence
         start = self.tick(); end = self.tick(); page_rows = pages(sequence)
@@ -173,7 +175,8 @@ for mutation in ("state", "instance", "operation", "rootfs", "observer"):
     except production.ProductionCampaignError: pass
     else: raise AssertionError(f"{mutation} drift accepted")
 
-for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1), ("destroy", 1)):
+for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1),
+                ("destroy", 1), ("inventory", 8)):
     h = Harness(fail=failure)
     try: production.ProductionCampaignController(h.ports()).run()
     except production.ProductionCampaignError: pass

@@ -29,7 +29,7 @@ test("prebuilt consumer module has no producer, tar command, selector, or fallba
 
 test("production lease import does not load producer or original-input modules", () => {
   const remote = join(root, "deploy/aws-feasibility/remote");
-  const code = `import sys;sys.path.insert(0,${JSON.stringify(remote)});import completion_rootfs_lease;forbidden={'completion_rootfs_build','completion_rootfs_candidate','completion_rootfs_plan','completion_rootfs_publish'};assert not forbidden & set(sys.modules)`;
+  const code = `import sys;sys.path.insert(0,${JSON.stringify(remote)});import completion_rootfs_lease,completion_runtime_closure,completion_prebuilt_runtime_contract;forbidden={'completion_rootfs_build','completion_rootfs_candidate','completion_rootfs_plan','completion_rootfs_publish','completion_rootfs_lease_legacy','completion_runtime_closure_legacy'};assert not forbidden & set(sys.modules)`;
   const result = spawnSync("python3", ["-I", "-B", "-c", code], {
     cwd: root,
     encoding: "utf8",

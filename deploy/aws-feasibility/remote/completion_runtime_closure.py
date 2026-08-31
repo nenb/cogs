@@ -273,12 +273,9 @@ def _fixed_runtime_closure(authority, revalidate, expected_sources):
 
 
 def fixed_runtime_closure(authority):
-    from completion_rootfs_plan import PACKAGE_ORDER, RootfsBuildInputs, revalidate_build_inputs
-
-    _fail(type(authority) is RootfsBuildInputs)
-    return _fixed_runtime_closure(
-        authority, revalidate_build_inputs, ("oci-layer",) + PACKAGE_ORDER,
-    )
+    """Compatibility entry delegated to the producer-only legacy module."""
+    from completion_runtime_closure_legacy import fixed_runtime_closure as producer_only
+    return producer_only(authority)
 
 
 def prebuilt_runtime_closure(authority):

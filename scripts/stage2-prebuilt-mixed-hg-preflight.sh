@@ -86,10 +86,10 @@ v=json.loads(sys.stdin.buffer.read()); assert (v["revision"],v["manifest_sha256"
   phase control
   staged=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
     env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-    "$CONTROL_CHECKOUT/scripts/stage2-stage-reviewed-control.py") || return
+    "$CONTROL_CHECKOUT/scripts/stage2-stage-prebuilt-control.py") || return
   test "$staged" = "control_sha256=$CONTROL" || return
   observed=$(sudo -n /usr/bin/sha256sum \
-    /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v1.json \
+    /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v2.json \
     | /usr/bin/cut -d' ' -f1) || return
   test "$observed" = "$CONTROL" || return
   phase immutable

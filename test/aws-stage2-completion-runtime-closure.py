@@ -25,6 +25,7 @@ def load(name, path):
 
 plan = load("completion_rootfs_plan", REMOTE / "completion_rootfs_plan.py")
 closure = load("completion_runtime_closure_test", REMOTE / "completion_runtime_closure.py")
+import completion_runtime_closure_legacy as legacy_closure
 
 
 def elf(names=("libalpha.so.1",), interp=True, soname=None, extra_tags=(), extra_phdrs=(), tail=b""):
@@ -268,7 +269,7 @@ else:
 def real_exact_cache_test():
     """Load all 16 fixed artifacts; absence or drift is an explicit failure."""
     authority = plan.load_verified_build_inputs()
-    first = closure.fixed_runtime_closure(authority)
+    first = legacy_closure.fixed_runtime_closure(authority)
     assert first.object_count == len(first.records) == 35
     expected_hash = "4c11dee4e0cba15c7a4bf7ef76937796abbdebf7a93b395ef47b14659a50b850"
     assert first.manifest_sha256 == expected_hash
@@ -306,7 +307,7 @@ def real_exact_cache_test():
             authority,
             plan=dataclasses.replace(authority.plan, entries=tuple(reversed(authority.plan.entries))),
         )
-        assert closure.fixed_runtime_closure(reversed_authority) == first
+        assert legacy_closure.fixed_runtime_closure(reversed_authority) == first
         entries = list(authority.plan.entries)
         index = next(
             i for i, item in enumerate(entries) if item.source == "libwrap0" and item.record.kind == "file"
@@ -315,7 +316,7 @@ def real_exact_cache_test():
         changed_plan = dataclasses.replace(authority.plan, entries=tuple(entries))
         changed_authority = dataclasses.replace(authority, plan=changed_plan)
         try:
-            closure.fixed_runtime_closure(changed_authority)
+            legacy_closure.fixed_runtime_closure(changed_authority)
         except closure.RuntimeClosureError:
             pass
         else:

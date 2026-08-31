@@ -89,7 +89,7 @@ jobs:
           test ! -e /opt/kata
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-            "$GITHUB_WORKSPACE/scripts/stage2-static-control-runtime-boundary.py" pre
+            "$GITHUB_WORKSPACE/scripts/stage2-prebuilt-static-control-runtime-boundary.py" pre
 
       - name: Materialize exact H source
         timeout-minutes: 3
@@ -208,10 +208,10 @@ jobs:
             /tmp/cogs-stage2-immutable-preparation.json /tmp/cogs-stage2-static-candidate.json \
             || status=1
           if test -e /tmp/cogs-stage2-static-runtime-boundary-v1.json; then
-            test -f "$GITHUB_WORKSPACE/scripts/stage2-static-control-runtime-boundary.py" \
+            test -f "$GITHUB_WORKSPACE/scripts/stage2-prebuilt-static-control-runtime-boundary.py" \
               && sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
                 env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-                "$GITHUB_WORKSPACE/scripts/stage2-static-control-runtime-boundary.py" post \
+                "$GITHUB_WORKSPACE/scripts/stage2-prebuilt-static-control-runtime-boundary.py" post \
               || status=1
           fi
           sudo -n /bin/rm -f -- /tmp/cogs-stage2-static-runtime-boundary-v1.json || status=1

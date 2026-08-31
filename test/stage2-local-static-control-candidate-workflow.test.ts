@@ -7,7 +7,7 @@ import { test } from "node:test";
 const path = ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml";
 const workflow = readFileSync(path, "utf8");
 const dispatchGuard = readFileSync("scripts/stage2-static-control-dispatch-guard.py", "utf8");
-const runtimeBoundary = readFileSync("scripts/stage2-static-control-runtime-boundary.py", "utf8");
+const runtimeBoundary = readFileSync("scripts/stage2-prebuilt-static-control-runtime-boundary.py", "utf8");
 const preparation = readFileSync("deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py", "utf8");
 const settlement = readFileSync("scripts/stage2-local-settlement.py", "utf8");
 
@@ -71,8 +71,8 @@ test("reviewed H itself binds corrected immutable and producer sources in the ru
 });
 
 test("static-only cleanup uses reviewed source policy and owned process-fd censuses", () => {
-  assert.match(workflow, /stage2-static-control-runtime-boundary\.py" pre/u);
-  assert.match(workflow, /stage2-static-control-runtime-boundary\.py" post/u);
+  assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" pre/u);
+  assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" post/u);
   assert.match(workflow, /Remove owned fixtures and verify the static-only runtime boundary/u);
   assert.match(workflow, /chmod 0711 "\$root" "\$stage" "\$observation"/u);
   assert.match(workflow, /test -r "\$candidate\/stage2-local-static-control-v2\.json"/u);
@@ -83,9 +83,9 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "f1ca4c5abb2a0c6d97411ce9894b8b24d641966219b23a463d2f78d477b81ef7"/u,
+    /REVIEWED_WORKFLOW_SHA256 = "99dce41f7a2601325cbc5566d411c3060a9e6fcc78a95b5a24f2dcc031ef29af"/u,
   );
-  assert.match(runtimeBoundary, /replacements == 1/u);
+  assert.doesNotMatch(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
   assert.match(runtimeBoundary, /owned-qmp-or-runtime-socket/u);
   assert.match(runtimeBoundary, /owned-network-namespace/u);
@@ -97,14 +97,14 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   ]) {
     assert.match(runtimeBoundary, new RegExp(path.replaceAll("/", "\\/"), "u"));
   }
-  const result = spawnSync("python3", ["-B", "test/stage2-static-control-runtime-boundary.py"], {
+  const result = spawnSync("python3", ["-B", "test/stage2-prebuilt-static-control-runtime-boundary.py"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /static-control runtime boundary hostile tests passed/u);
+  assert.match(result.stdout, /stage2 prebuilt static boundary checks passed/u);
 });
 
 test("final G preparation acquires one prebuilt rootfs plus two runtimes and cleans Kata", () => {

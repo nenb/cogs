@@ -392,6 +392,7 @@ class CleanupReceipt:
 
 @dataclass(frozen=True)
 class CampaignCandidate:
+    execution_authority: str
     approval: ProductionApproval
     consumption: ApprovalConsumptionReceipt
     grants: tuple[CycleLaunchGrant, ...]
@@ -403,7 +404,8 @@ class CampaignCandidate:
     custody_root: str
 
     def __post_init__(self):
-        _require(type(self.approval) is ProductionApproval
+        _require(self.execution_authority in {"authenticated-aws-adapter", "test-only"}
+                 and type(self.approval) is ProductionApproval
                  and type(self.consumption) is ApprovalConsumptionReceipt
                  and len(self.grants) == len(self.effects) == len(self.remotes)
                      == len(self.costs) == len(self.cycle_commitments) == 7
@@ -411,6 +413,17 @@ class CampaignCandidate:
                  and tuple(item.ordinal for item in self.grants) == tuple(range(1, 8))
                  and len(set(self.cycle_commitments)) == 7, ProductionReceiptError)
         _digest(self.custody_root)
+        approval_commitment = _commit(
+            b"cogs.stage2-production-approval/v2", asdict(self.approval))
+        expected = _commit(b"cogs.stage2-production-custody/v2", {
+            "execution_authority": self.execution_authority,
+            "approval": approval_commitment,
+            "consumption": self.consumption.durable_record_commitment,
+            "cycles": list(self.cycle_commitments),
+            "inventories": [item.zero_commitment for item in self.inventories],
+            "costs": [item.receipt_commitment for item in self.costs],
+        })
+        _require(self.custody_root == expected, ProductionReceiptError)
 
     @property
     def first_apply_unix_ns(self): return self.effects[0][1].observed_started_unix_ns
@@ -436,17 +449,19 @@ class CampaignCandidate:
 class ProductionPorts:
     """Sealed concrete effect boundary; only the AWS adapter receives its seal."""
     __slots__ = ("approval", "now", "consume", "effect", "remote", "inventory",
-                 "cost", "recover", "journal", "_seal")
+                 "cost", "recover", "journal", "classification", "_seal")
     def __init_subclass__(cls, **_kwargs): raise TypeError("production ports are sealed")
-    def __init__(self, seal, approval, now, consume, effect, remote, inventory,
-                 cost, recover, journal):
-        _require(seal is _PORT_SEAL and type(approval) is ProductionApproval)
+    def __init__(self, seal, classification, approval, now, consume, effect,
+                 remote, inventory, cost, recover, journal):
+        _require(seal is _PORT_SEAL
+                 and classification in {"authenticated-aws-adapter", "test-only"}
+                 and type(approval) is ProductionApproval)
         for callback in (now, consume, effect, remote, inventory, cost, recover, journal):
             _require(callable(callback))
         self.approval, self.now, self.consume = approval, now, consume
         self.effect, self.remote, self.inventory = effect, remote, inventory
         self.cost, self.recover, self.journal = cost, recover, journal
-        self._seal = seal
+        self.classification, self._seal = classification, seal
 
 
 _PORT_SEAL = object()
@@ -458,16 +473,17 @@ def _issue_adapter_ports(authority, approval, now, consume, effect, remote,
     # Imported lazily to avoid granting a seal to arbitrary callers.
     import completion_campaign_aws_adapter as adapter
     _require(adapter._validate_port_authority(authority))
-    return ProductionPorts(_PORT_SEAL, approval, now, consume, effect, remote,
-                           inventory, cost, recover, journal)
+    return ProductionPorts(_PORT_SEAL, "authenticated-aws-adapter", approval,
+                           now, consume, effect, remote, inventory, cost,
+                           recover, journal)
 
 
 def _issue_test_ports(approval, now, consume, effect, remote, inventory,
                       cost, recover, journal):
     """Explicit non-production issuer used only by the hostile contract suite."""
     _require(__name__ != "__main__")
-    return ProductionPorts(_PORT_SEAL, approval, now, consume, effect, remote,
-                           inventory, cost, recover, journal)
+    return ProductionPorts(_PORT_SEAL, "test-only", approval, now, consume,
+                           effect, remote, inventory, cost, recover, journal)
 
 
 def _grant(approval, ordinal):
@@ -612,6 +628,9 @@ class ProductionCampaignController:
                 boots.append(remote.host_boot_commitment)
                 active_grant = active_state = last_certain = None
                 self.ports.journal("cycle", "sealed", ordinal, mode, cycle)
+            active_grant = grants[-1]
+            active_state = effects[-1][-1].state_commitment
+            last_certain = effects[-1][-1]
             final = self.ports.inventory(None, effects[-1][-1], 8)
             _require(type(final) is InventoryReceipt
                      and final.batch_commitment == approval.batch_commitment
@@ -623,6 +642,7 @@ class ProductionCampaignController:
                      and final.observed_ended_unix_ns < approval.expires_unix_ns,
                      ProductionReceiptError)
             inventories.append(final)
+            active_grant = active_state = last_certain = None
             _require(all(len(set(values)) == 7 for values in
                          (states, lineages, instances, operations, boots)),
                      ProductionReceiptError)
@@ -631,6 +651,7 @@ class ProductionCampaignController:
                 _require(len({getattr(item, name) for item in inventories}) == 8,
                          ProductionReceiptError)
             custody = _commit(b"cogs.stage2-production-custody/v2", {
+                "execution_authority": self.ports.classification,
                 "approval": approval_commitment,
                 "consumption": consumption.durable_record_commitment,
                 "cycles": cycles,
@@ -638,8 +659,9 @@ class ProductionCampaignController:
                 "costs": [item.receipt_commitment for item in costs],
             })
             candidate = CampaignCandidate(
-                approval, consumption, tuple(grants), tuple(effects), tuple(remotes),
-                tuple(inventories), tuple(costs), tuple(cycles), custody)
+                self.ports.classification, approval, consumption, tuple(grants),
+                tuple(effects), tuple(remotes), tuple(inventories), tuple(costs),
+                tuple(cycles), custody)
             _require(candidate.actual_duration_ns > 0
                      and candidate.total_cost_micro_usd <= approval.maximum_cost_micro_usd
                      and len(candidate.workload_measurements) == 21,

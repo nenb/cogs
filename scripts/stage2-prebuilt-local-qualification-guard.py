@@ -9,8 +9,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v2"
-CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v1.json"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v3"
+CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
