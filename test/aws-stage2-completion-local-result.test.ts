@@ -56,6 +56,11 @@ for (const optimized of [false, true]) {
 
 test("schema registry and codec accept the same canonical shared fixtures", () => {
   const validate = compile();
+  const currentV3 = readFileSync(schemaPath);
+  assert.equal(
+    createHash("sha256").update(currentV3).digest("hex"),
+    "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27",
+  );
   const historicalV2 = readFileSync(join(root, "schemas/stage2-workload-local-qualification-v2.json"));
   assert.equal(
     createHash("sha256").update(historicalV2).digest("hex"),
