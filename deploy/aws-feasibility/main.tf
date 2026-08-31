@@ -20,13 +20,16 @@ locals {
   purpose       = "stage-2-nested-virtualization"
   resolver_cidr = "10.77.0.2/32"
   tags = {
-    "cogs:owner"           = "nenb"
-    "cogs:purpose"         = local.purpose
-    "cogs:source-revision" = var.source_revision
-    "cogs:batch"           = var.batch_commitment
-    "cogs:cycle-ordinal"   = tostring(var.cycle_ordinal)
-    "cogs:expires-at"      = var.expires_at
-    "cogs:managed-by"      = "opentofu"
+    "cogs:owner"             = "nenb"
+    "cogs:purpose"           = local.purpose
+    "cogs:source-revision"   = var.source_revision
+    "cogs:control-revision"  = var.control_revision
+    "cogs:rootfs-descriptor" = var.rootfs_descriptor_sha256
+    "cogs:ami-commitment"    = var.ami_commitment
+    "cogs:batch"             = var.batch_commitment
+    "cogs:cycle-ordinal"     = tostring(var.cycle_ordinal)
+    "cogs:expires-at"        = var.expires_at
+    "cogs:managed-by"        = "opentofu"
   }
 }
 
@@ -213,6 +216,11 @@ resource "aws_launch_template" "host" {
 
   tag_specifications {
     resource_type = "volume"
+    tags          = merge(local.tags, { Name = local.name })
+  }
+
+  tag_specifications {
+    resource_type = "network-interface"
     tags          = merge(local.tags, { Name = local.name })
   }
 

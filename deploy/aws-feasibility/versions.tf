@@ -8,9 +8,9 @@ terraform {
     }
   }
 
-  backend "local" {
-    path = ".state/terraform.tfstate"
-  }
+  # Production initializes this backend with one fixed cycle-N state path.
+  # No two ordinals can share provider state or a generation lineage.
+  backend "local" {}
 }
 
 provider "aws" {

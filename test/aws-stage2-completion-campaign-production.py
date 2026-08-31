@@ -23,8 +23,10 @@ def approval():
         source_manifest_sha256=d("source"), static_control_sha256=d("control"),
         pre_aws_package_sha256=d("preaws"), rootfs_descriptor_sha256=d("rootfs"),
         runtime_commitment=d("runtime"), fixture_commitment=d("fixture"),
-        account_commitment=d("account"), region="us-east-1",
-        ami_id="ami-" + "a" * 17, ami_commitment=d("ami"),
+        account_commitment=d("account"), partition="aws", region="us-east-1",
+        ami_id="ami-" + "a" * 17, ami_owner_id="099720109477",
+        ami_architecture="x86_64", ami_virtualization_type="hvm",
+        ami_root_device_type="ebs", ami_state="available",
         plan_sha256s=tuple(d(f"plan-{index}") for index in range(1, 8)),
         not_before_unix_ns=1, effect_deadline_ns=90 * 60 * 10**9,
         cleanup_reserve_ns=10 * 60 * 10**9,
@@ -33,6 +35,7 @@ def approval():
         issuer_commitment=d("issuer"), authentication_receipt_sha256=d("auth"),
         one_attempt=True,
     )
+    values["ami_commitment"] = production.resolved_ami_commitment(values)
     values["batch_commitment"] = production.approval_batch_commitment(values)
     return production.ProductionApproval(**values)
 
@@ -40,12 +43,16 @@ def approval():
 def pages(sequence):
     result = []
     for category in production.INVENTORY_CATEGORIES:
-        value = {"category": category, "ordinal": 1,
-                 "request_token_commitment": None, "next_token_commitment": None,
+        public = category in {"network_interfaces", "eni_public_associations", "elastic_ips"}
+        value = {"category": category, "service": "fake", "operation": "observe",
+                 "query_scope": ("account-region-wide-public-address" if public else "campaign-graph"),
+                 "ordinal": 1, "request_token_commitment": None,
+                 "next_token_commitment": None, "response_commitment": d(f"response-{category}"),
                  "resources": []}
+        constructor = dict(value); constructor["resources"] = ()
         result.append(production.InventoryPage(
-            category, 1, None, None, (),
-            production._commit(b"cogs.stage2-inventory-page/v1", value)))
+            **constructor, page_commitment=production._commit(
+                b"cogs.stage2-inventory-page/v2", value)))
     return tuple(result)
 
 
@@ -183,7 +190,7 @@ for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1),
     else: raise AssertionError(f"{failure} unexpectedly passed")
     destroy_calls = [row for row in h.calls if row[:2] == ("destroy", 1)]
     assert len(destroy_calls) <= 1
-    if failure[0] != "plan": assert h.cleanup_count == 1
+    assert h.cleanup_count == 1
 
 h = Harness(fail=("remote", 1), uncertain_cleanup=True)
 try: production.ProductionCampaignController(h.ports()).run()

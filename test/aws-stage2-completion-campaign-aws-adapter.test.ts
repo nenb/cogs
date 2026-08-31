@@ -21,6 +21,9 @@ test("concrete AWS adapter is import-inert and owns the sole production port iss
   assert.match(source, /os\.O_EXCL/u);
   assert.match(source, /os\.fsync/u);
   assert.match(source, /def recover\(/u);
+  assert.match(source, /def recover_fixed_campaign\(/u);
+  assert.match(source, /LOCK = ROOT/u);
+  assert.match(source, /ACTIVE = ROOT/u);
   assert.doesNotMatch(source.slice(source.indexOf("def recover(")), /self\.effect\(/u);
 });
 

@@ -52,6 +52,16 @@ variable "ami_id" {
   }
 }
 
+variable "ami_commitment" {
+  description = "Domain-separated resolved-AMI receipt shared by all seven cycle states."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.ami_commitment))
+    error_message = "ami_commitment must be one lowercase SHA-256."
+  }
+}
+
 variable "ami_owner_id" {
   description = "Canonical owner identity bound by the resolved-AMI approval receipt."
   type        = string
@@ -90,6 +100,26 @@ variable "source_revision" {
   validation {
     condition     = can(regex("^[0-9a-f]{40}$", var.source_revision))
     error_message = "source_revision must be one lowercase 40-character Git revision."
+  }
+}
+
+variable "control_revision" {
+  description = "Exact independently produced control revision shared by every cycle."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.control_revision))
+    error_message = "control_revision must be one lowercase 40-character Git revision."
+  }
+}
+
+variable "rootfs_descriptor_sha256" {
+  description = "Exact authenticated prebuilt rootfs descriptor shared by every cycle."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.rootfs_descriptor_sha256))
+    error_message = "rootfs_descriptor_sha256 must be one lowercase SHA-256."
   }
 }
 

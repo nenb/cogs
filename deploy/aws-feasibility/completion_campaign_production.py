@@ -63,6 +63,22 @@ def approval_batch_commitment(value):
     return _commit(b"cogs.stage2-production-approved-batch/v2", _approval_fields(value))
 
 
+def resolved_ami_commitment(value):
+    fields = {
+        "partition": value.partition if hasattr(value, "partition") else value["partition"],
+        "owner_id": value.ami_owner_id if hasattr(value, "ami_owner_id") else value["ami_owner_id"],
+        "region": value.region if hasattr(value, "region") else value["region"],
+        "image_id": value.ami_id if hasattr(value, "ami_id") else value["ami_id"],
+        "architecture": value.ami_architecture if hasattr(value, "ami_architecture") else value["ami_architecture"],
+        "virtualization_type": (value.ami_virtualization_type if hasattr(value, "ami_virtualization_type")
+                                else value["ami_virtualization_type"]),
+        "root_device_type": (value.ami_root_device_type if hasattr(value, "ami_root_device_type")
+                             else value["ami_root_device_type"]),
+        "state": value.ami_state if hasattr(value, "ami_state") else value["ami_state"],
+    }
+    return _commit(b"cogs.stage2-resolved-ami/v1", fields)
+
+
 @dataclass(frozen=True)
 class ProductionApproval:
     version: str
@@ -77,8 +93,14 @@ class ProductionApproval:
     runtime_commitment: str
     fixture_commitment: str
     account_commitment: str
+    partition: str
     region: str
     ami_id: str
+    ami_owner_id: str
+    ami_architecture: str
+    ami_virtualization_type: str
+    ami_root_device_type: str
+    ami_state: str
     ami_commitment: str
     plan_sha256s: tuple[str, ...]
     not_before_unix_ns: int
@@ -102,9 +124,17 @@ class ProductionApproval:
             self.ami_commitment, self.issuer_commitment,
             self.authentication_receipt_sha256,
         ): _digest(item)
-        _require(type(self.region) is str and 3 <= len(self.region) <= 32
+        _require(self.partition in {"aws", "aws-us-gov"}
+                 and type(self.region) is str and 3 <= len(self.region) <= 32
                  and type(self.ami_id) is str and self.ami_id.startswith("ami-")
-                 and len(self.ami_id) == 21, ProductionApprovalError)
+                 and len(self.ami_id) == 21
+                 and self.ami_owner_id == "099720109477"
+                 and self.ami_architecture == "x86_64"
+                 and self.ami_virtualization_type == "hvm"
+                 and self.ami_root_device_type == "ebs"
+                 and self.ami_state == "available"
+                 and self.ami_commitment == resolved_ami_commitment(self),
+                 ProductionApprovalError)
         _require(type(self.plan_sha256s) is tuple and len(self.plan_sha256s) == 7
                  and len(set(self.plan_sha256s)) == 7, ProductionApprovalError)
         for item in self.plan_sha256s: _digest(item)
@@ -265,27 +295,39 @@ class InventoryResource:
 @dataclass(frozen=True)
 class InventoryPage:
     category: str
+    service: str
+    operation: str
+    query_scope: str
     ordinal: int
     request_token_commitment: str | None
     next_token_commitment: str | None
+    response_commitment: str
     resources: tuple[InventoryResource, ...]
     page_commitment: str
 
     def __post_init__(self):
         _require(self.category in INVENTORY_CATEGORIES and 1 <= self.ordinal <= 32
+                 and type(self.service) is str and self.service
+                 and type(self.operation) is str and self.operation
+                 and self.query_scope in {"campaign-graph", "account-region-wide",
+                     "account-region-wide-public-address", "account-wide-campaign-prefix",
+                     "account-region-wide-campaign-prefix", "account-region-wide-related-instance"}
                  and type(self.resources) is tuple, ProductionReceiptError)
         for item in (self.request_token_commitment, self.next_token_commitment):
             if item is not None: _digest(item)
-        _digest(self.page_commitment)
+        _digest(self.response_commitment); _digest(self.page_commitment)
         _require(all(type(item) is InventoryResource and item.category == self.category
                      for item in self.resources), ProductionReceiptError)
         value = {
-            "category": self.category, "ordinal": self.ordinal,
+            "category": self.category, "service": self.service,
+            "operation": self.operation, "query_scope": self.query_scope,
+            "ordinal": self.ordinal,
             "request_token_commitment": self.request_token_commitment,
             "next_token_commitment": self.next_token_commitment,
+            "response_commitment": self.response_commitment,
             "resources": [asdict(item) for item in self.resources],
         }
-        _require(self.page_commitment == _commit(b"cogs.stage2-inventory-page/v1", value),
+        _require(self.page_commitment == _commit(b"cogs.stage2-inventory-page/v2", value),
                  ProductionReceiptError)
 
 
@@ -324,6 +366,10 @@ class InventoryReceipt:
         for category, rows in by_category.items():
             _require(tuple(page.ordinal for page in rows) == tuple(range(1, len(rows) + 1)),
                      ProductionReceiptError)
+            if category in {"network_interfaces", "eni_public_associations", "elastic_ips"}:
+                _require(all(page.query_scope in {"account-region-wide",
+                    "account-region-wide-public-address"} for page in rows),
+                    ProductionReceiptError)
             expected = None
             for page in rows:
                 _require(page.request_token_commitment == expected, ProductionReceiptError)
@@ -547,6 +593,10 @@ class ProductionCampaignController:
             for ordinal, mode in enumerate(CYCLE_MODES, 1):
                 self._now(approval)
                 grant = _grant(approval, ordinal); active_grant = grant
+                # The grant commitment is a conservative recovery key until a
+                # provider state slot has been certainly observed.  Therefore a
+                # plan failure still enters independent cleanup/inventory.
+                active_state = grant.grant_commitment
                 self.ports.journal("cycle", "opened", ordinal, mode,
                                    grant.grant_commitment)
                 plan = self._effect("plan", grant, None)
