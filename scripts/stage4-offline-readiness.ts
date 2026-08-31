@@ -238,10 +238,10 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
   authenticatedRuntimeArtifacts: "cd87233d2f3e6be755e78ce63a4b3e85c088fe75997dfe22943bb890317844e3",
-  localValidationNormalized: "ab95009b36ef1ee69edc5605cfb1cbb9cc1db374cdb71ffacc78aa3c6bb93586",
+  localValidationNormalized: "08d894a6e1c1600bb0ff64510645c6ee26520ba9e182f829bfef3c6c8bdb1f86",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
   schemaInventory: "ca8a324816c2ab45f96aafb0c916b3b12d4b1b15eeb51bf63ac69b45b143e683",
-  sourceInventoryNormalized: "71e5885209be755ae70f3baf9044ceccb79b499d50c127f03d1c3e4202e2baea",
+  sourceInventoryNormalized: "88a5eaa4be60844ba0e3d47621e249f583ceb900eccf2e1d8520c674e381acaa",
 });
 /* stage4-readiness-anchor-end */
 
