@@ -58,8 +58,8 @@ const steps = [
 ];
 
 test("terminal receipt diagnostic is exact, consumed in memory, and never published", () => {
-  assert.match(diagnostic, /95151289288631bfc047983af1f499df2cf7a202/u);
-  assert.match(diagnostic, /bf0479a012b39c074ecb623ea83e85b3dc3ebe36/u);
+  assert.match(diagnostic, /9a525719bed23e3a948f760862722e8e4864a575/u);
+  assert.match(diagnostic, /1fc2dea2dcefea2aaf71a80356e0f5ed946e9991/u);
   assert.match(diagnostic, /_consume_local_receipt\(receipt\)/u);
   assert.match(diagnostic, /traceback\.extract_tb\(error\.__traceback__\)/u);
   assert.match(diagnostic, /frames\[-8:\]/u);
