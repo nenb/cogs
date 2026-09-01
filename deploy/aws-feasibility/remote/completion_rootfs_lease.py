@@ -463,11 +463,13 @@ def _admit_operation_parent_transition(held, control):
           and locked.chain.components[index].node is base.components[index].node)
     before = base.components[index].node.generation
     snapshot = fs._enumerate_stable(base.components[index].node, control)
-    expected = tuple(sorted(name.raw for name in (
-        kata_operation.ARTIFACTS_NAME, kata_operation.ROOTFS_NAME,
-        kata_operation.IMMUTABLE_PREPARATION_NAME, kata_operation.RUNTIME_NAME,
-        kata_operation.STATE_NAME,
-    )))
+    expected_names = [
+        kata_operation.ROOTFS_NAME, kata_operation.IMMUTABLE_PREPARATION_NAME,
+        kata_operation.RUNTIME_NAME, kata_operation.STATE_NAME,
+    ]
+    if held.reference.prebuilt_descriptor_raw is None:
+        expected_names.append(kata_operation.ARTIFACTS_NAME)
+    expected = tuple(sorted(name.raw for name in expected_names))
     after = snapshot.generation
     _fail(snapshot.raw_names == expected and after.key == before.key
           and (after.mode, after.uid, after.gid) == (before.mode, before.uid, before.gid)
