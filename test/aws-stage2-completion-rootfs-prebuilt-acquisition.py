@@ -35,13 +35,14 @@ class Transport:
         return self.responses.pop(0)
 
 
-def descriptor_raw(blob):
+def descriptor_raw(blob, config=None):
     digest = hashlib.sha256(blob).hexdigest(); d = "1" * 64
     manifest = json.dumps({
         "schemaVersion": 2, "mediaType": prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE,
         "artifactType": "application/vnd.cogs.stage2.rootfs.package.v1",
-        "config": {"mediaType": "application/vnd.unknown.config.v1+json",
-                   "digest": "sha256:" + "9" * 64, "size": 2},
+        "config": config or {"mediaType": "application/vnd.oci.empty.v1+json",
+                             "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                             "size": 2, "data": "e30="},
         "layers": [{"mediaType": prebuilt.REGISTRY_LAYER_MEDIA_TYPE,
                     "digest": "sha256:" + digest, "size": len(blob)}],
     }, sort_keys=True, separators=(",", ":")).encode()
@@ -121,6 +122,20 @@ with tempfile.TemporaryDirectory() as temporary:
     changed = responses(blob, digest, manifest)
     changed[2].headers = (("Location", "https://example.com/latest?sig=x"), ("Content-Length", "0"))
     rejected(lambda: acquisition._acquire(raw, Transport(changed), root))
+
+for hostile_config in (
+    {"mediaType": "application/vnd.oci.empty.v1+json",
+     "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+     "size": 2},
+    {"mediaType": "application/vnd.oci.empty.v1+json",
+     "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+     "size": 2, "data": "e30=", "annotations": {}},
+):
+    hostile_raw, hostile_digest, hostile_manifest = descriptor_raw(blob, hostile_config)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "input"
+        rejected(lambda: acquisition._acquire(
+            hostile_raw, Transport(responses(blob, hostile_digest, hostile_manifest)), root))
 
 
 print("stage2 prebuilt rootfs acquisition fake-wire checks passed")
