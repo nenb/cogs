@@ -131,7 +131,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/stage2-prebuilt-rootfs-product"
           install -d -m 0700 "$out/accepted"
-          for name in rootfs.manifest.json rootfs.metadata.json rootfs.tar .cogs-stage2-rootfs-publication-v1; do
+          for name in rootfs.manifest.json rootfs.metadata.json rootfs.tar .cogs-rootfs-publication-v1; do
             sudo -n install -m 0400 "/var/lib/cogs/stage2-prebuilt-rootfs-product-v1/accepted/$name" "$out/accepted/$name"
           done
           for name in producer-receipt.json rootfs.package.json rootfs.provenance.json; do
@@ -182,4 +182,4 @@ jobs:
           echo "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397  $root/accepted/rootfs.tar" | sha256sum --check --strict
           echo "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1  $root/accepted/rootfs.manifest.json" | sha256sum --check --strict
           echo "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506  $root/accepted/rootfs.metadata.json" | sha256sum --check --strict
-          test "$(cat "$root/accepted/.cogs-stage2-rootfs-publication-v1")" = cogs-stage2-rootfs-publication-v1
+          test "$(cat "$root/accepted/.cogs-rootfs-publication-v1")" = cogs-rootfs-publication-v1
