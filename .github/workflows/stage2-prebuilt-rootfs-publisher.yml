@@ -69,7 +69,7 @@ jobs:
 
       - name: Check out only trusted publisher G without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with: { ref: "${{ github.sha }}", fetch-depth: 2, persist-credentials: false }
 
       - name: Require H to be the direct reviewed implementation ancestor
         run: |
@@ -128,7 +128,7 @@ jobs:
     steps:
       - name: Check out the same exact publisher G without persisted credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+        with: { ref: "${{ github.sha }}", fetch-depth: 2, persist-credentials: false }
 
       - name: Reauthenticate immutable artifact before entering credential-bearing work
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
