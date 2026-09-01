@@ -22,6 +22,7 @@ VERSION = "cogs.stage2-prebuilt-rootfs-producer-receipt/v1"
 sys.path.insert(0, str(REMOTE))
 import completion_artifact_acquisition as acquisition
 import completion_rootfs_build as build
+import completion_rootfs_builder as builder
 import completion_rootfs_fs as fs
 import completion_rootfs_prebuilt as prebuilt
 import completion_rootfs_publish as publication
