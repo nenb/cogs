@@ -18,6 +18,7 @@ test("diagnostic supply-chain identities cannot consume final first-created auth
   assert.match(publisher, /stage2-prebuilt-rootfs-diagnostic-publisher\.yml\/runs/u);
   assert.doesNotMatch(publisher, /actions\/workflows\/stage2-prebuilt-rootfs-publisher\.yml\/runs/u);
   assert.match(publisher, /test "\$\(git rev-parse HEAD\^\)" = "\$EXACT_H"/u);
+  assert.match(publisher, /fetch-depth: 2/u);
   assert.match(publisher, /stage2-prebuilt-rootfs-diagnostic-publisher\.yml@refs\/heads\/main/u);
 });
 
