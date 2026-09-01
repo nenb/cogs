@@ -71,6 +71,8 @@ test("rehearsal descriptor custody is directional and publication adjuncts follo
   assert.match(rehearsal, /test "\$\(git rev-parse HEAD\^\)" = "\$EXACT_H"/u);
   assert.match(rehearsal, /fetch-depth: 2/u);
   assert.match(rehearsal, /COGS_STAGE2_CONTROL_REVISION="\$GITHUB_SHA"/u);
+  assert.match(rehearsal, /sudo -n \/usr\/bin\/test -f \/var\/lib\/cogs\/stage2-completion-v1\/control/u);
+  assert.doesNotMatch(rehearsal, /^\s*test -f \/var\/lib\/cogs\/stage2-completion-v1\/control/mu);
   assert.match(rehearsal, /rootfs_artifact_count/u);
   assert.doesNotMatch(rehearsal, /aws-actions|opentofu|terraform|\bssm\b/u);
 });
