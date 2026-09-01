@@ -156,7 +156,7 @@ jobs:
           assert value["kvm_used"] is False and len(value["control_sha256"]) == 64'
           staged=$(sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-prebuilt-control.py provisional)
           [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
-          test -f /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v2.json
+          sudo -n /usr/bin/test -f /var/lib/cogs/stage2-completion-v1/control/stage2-local-static-control-v2.json
           test ! -e /run/vc
 
       - name: Provision fixed NFT writer owner after complete preparation
