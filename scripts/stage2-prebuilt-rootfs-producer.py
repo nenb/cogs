@@ -127,6 +127,8 @@ def main():
     chain = product_parent(control)
     try:
         approval = fs.SourceApproval(revision, source_manifest)
+        state = builder._bootstrap(chain, approval, control)
+        fs._close_node(state)
         published = build._pinned_publication(approval, chain.components[-1].node, control)
         require((published.manifest_sha256, published.manifest_size,
                  published.ustar_sha256, published.ustar_size, published.entry_count) ==
