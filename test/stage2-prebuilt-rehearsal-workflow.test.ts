@@ -50,6 +50,8 @@ test("one first-created rehearsal uses each authentic route once and mints nothi
   assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py full"), 1);
   assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py readiness"), 1);
   assert.equal(occurrences(rehearsal, "recover-stage2-completion-remote.sh"), 2);
+  assert.match(rehearsal, /steps\.preparation\.outcome != 'skipped'/u);
+  assert.doesNotMatch(rehearsal, /steps\.preparation\.outcome == 'success'/u);
   assert.match(rehearsal, /stage2-stage-prebuilt-control\.py provisional/u);
   assert.match(rehearsal, /Independently prove final zero lifecycle residue/u);
   assert.doesNotMatch(

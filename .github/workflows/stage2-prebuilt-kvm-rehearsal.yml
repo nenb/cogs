@@ -185,7 +185,7 @@ jobs:
 
       - name: Run cleanup-only recovery after the full route or a pre-entry refusal
         id: full_recovery
-        if: always() && steps.preparation.outcome == 'success'
+        if: always() && steps.preparation.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 13
         run: |
