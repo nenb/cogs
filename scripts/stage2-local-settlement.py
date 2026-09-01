@@ -280,10 +280,13 @@ def _valid_cleanup_root(path, observed):
 
 
 def cleanup(environ=os.environ):
+    global _SETTLEMENT_STAGE
     _run_paths(environ)
     _require(environ.get("RECOVERY_OUTCOME") == "success", "recovery success is required before deletion")
     _require(os.geteuid() == 0, "root cleanup is required")
+    _SETTLEMENT_STAGE = "process"
     _scan_fixed()
+    _SETTLEMENT_STAGE = "fixed-roots"
     for path in FIXED_ROOTS:
         observed = None
         try:
