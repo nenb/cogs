@@ -201,10 +201,14 @@ jobs:
         env: { SUBJECT: "${{ steps.oci.outputs.subject }}" }
         run: |
           set -euo pipefail
+          cosign_home="$RUNNER_TEMP/cosign-home"
+          install -d -m 0700 "$cosign_home/.docker"
+          install -m 0600 "$RUNNER_TEMP/docker-config/config.json" "$cosign_home/.docker/config.json"
           cosign() {
-            docker run --rm --network host \
-              -e COSIGN_EXPERIMENTAL=1 -e ACTIONS_ID_TOKEN_REQUEST_TOKEN -e ACTIONS_ID_TOKEN_REQUEST_URL \
-              -v "$RUNNER_TEMP/docker-config:/root/.docker:ro" "$COSIGN_IMAGE" "$@"
+            docker run --rm --user "$(id -u):$(id -g)" --network host \
+              -e HOME=/cosign-home -e COSIGN_EXPERIMENTAL=1 \
+              -e ACTIONS_ID_TOKEN_REQUEST_TOKEN -e ACTIONS_ID_TOKEN_REQUEST_URL \
+              -v "$cosign_home:/cosign-home" "$COSIGN_IMAGE" "$@"
           }
           cosign sign --yes --new-bundle-format=true "$SUBJECT"
           identity="https://github.com/nenb/cogs/.github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml@refs/heads/main"
@@ -271,4 +275,9 @@ jobs:
 
       - name: Remove publisher credentials
         if: always()
-        run: docker --config "$RUNNER_TEMP/docker-config" logout ghcr.io >/dev/null 2>&1 || true
+        run: |
+          set -euo pipefail
+          docker --config "$RUNNER_TEMP/docker-config" logout ghcr.io >/dev/null 2>&1 || true
+          rm -rf -- "$RUNNER_TEMP/docker-config" "$RUNNER_TEMP/cosign-home"
+          test ! -e "$RUNNER_TEMP/docker-config"
+          test ! -e "$RUNNER_TEMP/cosign-home"
