@@ -9,11 +9,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v2"
-PROVISIONAL_SOURCE = Path("/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
 DESTINATION = Path("/var/lib/cogs/stage2-completion-v1/control")
 CONTROL_MEMBER = "stage2-local-static-control-v1.json"
-PROVISIONAL_CONTROL_MEMBER = "stage2-local-static-control-v2.json"
 MAX_MEMBERS = 16
 
 
@@ -83,15 +81,13 @@ def _write_frozen(path, raw):
         os.close(descriptor)
 
 
-def _stage(source_path, source_control_member):
+def stage():
     _require(os.geteuid() == 0 and not DESTINATION.exists())
-    _require((source_path, source_control_member) in {
-        (SOURCE, CONTROL_MEMBER), (PROVISIONAL_SOURCE, PROVISIONAL_CONTROL_MEMBER)})
     preparation = _load_preparation()
-    source = os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    source = os.open(SOURCE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         source_identity = os.fstat(source)
-        control_raw = _read_regular(source, source_control_member, preparation.MAX_CONTROL_BYTES)
+        control_raw = _read_regular(source, CONTROL_MEMBER, preparation.MAX_CONTROL_BYTES)
         control = preparation.load_control(control_raw)
         rows = control.value["members"]
         _require(type(rows) is list and 1 <= len(rows) <= MAX_MEMBERS)
@@ -143,18 +139,9 @@ def _stage(source_path, source_control_member):
         raise
 
 
-def stage():
-    return _stage(SOURCE, CONTROL_MEMBER)
-
-
-def stage_provisional():
-    return _stage(PROVISIONAL_SOURCE, PROVISIONAL_CONTROL_MEMBER)
-
-
 def main():
-    _require(len(sys.argv) in {1, 2})
-    _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
-    digest = stage() if len(sys.argv) == 1 else stage_provisional()
+    _require(len(sys.argv) == 1)
+    digest = stage()
     raw = f"control_sha256={digest}\n".encode("ascii")
     _require(sys.stdout.buffer.write(raw) == len(raw))
 

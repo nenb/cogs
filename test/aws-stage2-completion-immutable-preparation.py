@@ -166,7 +166,8 @@ def configure(root, fail_at=None):
             parsed.layer_digest, parsed.layer_size, "a" * 64, "b" * 64,
             str(path), True)
 
-    def remove_prebuilt(_descriptor):
+    def remove_prebuilt(_descriptor, cleanup_descriptor_raw):
+        assert cleanup_descriptor_raw == module.preparation.canonical_bytes(descriptor)
         if prebuilt_root.exists():
             paths = list(prebuilt_root.iterdir())
             if paths:

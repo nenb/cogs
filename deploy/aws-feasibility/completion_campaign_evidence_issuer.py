@@ -322,7 +322,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         "fixture_commitment": approval.fixture_commitment,
         "account_commitment": approval.account_commitment,
         "ami_commitment": approval.ami_commitment,
-        "approval_authentication_commitment": approval.authentication_receipt_sha256,
+        "approval_authentication_commitment": candidate.consumption.authentication_receipt_sha256,
         "approval_issuer_commitment": approval.issuer_commitment,
     }
     return {

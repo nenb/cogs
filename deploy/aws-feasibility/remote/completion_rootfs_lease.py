@@ -25,8 +25,8 @@ ROOTFS_BUILD_DETAILS = (materializer.MATERIALIZE_STAGES - {"internal"}) | set(
     ROOTFS_BUILD_OUTCOMES.values())
 ROOTFS_ACQUIRE_STAGES = frozenset({
     "bootstrap", "pins", "build-first", "build-second", "equality", "pin-check", "topology",
-    "lease-mark", "lease-verify", "prebuilt-open", "prebuilt-materialize",
-    "prebuilt-manifest", "prebuilt-candidate", "prebuilt-pin-check", *(
+    "lease-mark", "lease-verify", "prebuilt-open", "prebuilt-import-intent",
+    "prebuilt-archive-custody", "prebuilt-materialize", "prebuilt-manifest", "prebuilt-candidate", "prebuilt-pin-check", *(
         f"{build_stage}-{detail}"
         for build_stage in ("build-first", "build-second")
         for detail in ROOTFS_BUILD_DETAILS

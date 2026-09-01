@@ -42,6 +42,7 @@ KATA_PARENT = Path("/opt")
 MAX_REDIRECTS = 3
 GLOBAL_SECONDS = 1_700
 CHUNK = 1024 * 1024
+MAX_RECEIPT_BYTES = 32 * 1024 * 1024
 EXTRACTORS = (Path("/usr/bin/tar"), Path("/usr/bin/zstd"))
 _OBSERVATION_STAGE = "entry"
 _DIAGNOSTIC_STAGES = frozenset({
@@ -115,7 +116,9 @@ def _sync_directory(path):
 
 
 def _write_owned_file(path, raw, mode):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    temporary = path.with_name("." + path.name + ".partial")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         offset = 0
         while offset < len(raw):
@@ -127,6 +130,7 @@ def _write_owned_file(path, raw, mode):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    os.rename(temporary, path); _sync_directory(path.parent)
 
 
 def _prepare_state_parents():
@@ -336,6 +340,12 @@ def _verify_extraction_filesystem():
 
 def _run_extract(archive, destination):
     destination.mkdir(mode=0o700)
+    intent = preparation.canonical_bytes({
+        "version": "cogs.stage2-runtime-extraction-intent/v1",
+        "archive_name": archive.name, "archive_size": archive.stat().st_size,
+        "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
+    marker = destination / ".extraction-intent.json"
+    _write_owned_file(marker, intent, 0o400)
     command = ["/usr/bin/tar", "--extract", "--file", str(archive), "--directory", str(destination),
                "--numeric-owner", "--same-owner", "--no-overwrite-dir", "--delay-directory-restore"]
     if archive.name.endswith(".tar.zst"):
@@ -346,6 +356,7 @@ def _run_extract(archive, destination):
                                         "PATH": "/usr/bin:/bin"},
         timeout=600, check=False, close_fds=True, start_new_session=True)
     _require(result.returncode == 0, "fixed runtime extraction failed")
+    _require(marker.read_bytes() == intent); marker.unlink(); _sync_directory(destination)
 
 
 def _expected_runtime():
@@ -405,7 +416,9 @@ def _archive_values(expected_runtime, archives, extracted):
 
 def _copy_fixed(source, destination, mode):
     raw = source.read_bytes()
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    temporary = destination.with_name("." + destination.name + ".partial")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         offset = 0
         while offset < len(raw):
@@ -417,6 +430,7 @@ def _copy_fixed(source, destination, mode):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    os.rename(temporary, destination); _sync_directory(destination.parent)
 
 
 def _publish_runtime(extracted):
@@ -440,6 +454,7 @@ def _publish_runtime(extracted):
         active, 0o400)
     os.chmod(IMMUTABLE_STAGING / "bin", 0o500)
     os.rename(IMMUTABLE_STAGING, STAGED_RUNTIME)
+    os.chmod(STAGED_RUNTIME, 0o500)
     _sync_directory(COMPLETION_ROOT)
     kata_source = extracted["kata"] / "opt/kata"
     _require(kata_source.is_dir())
@@ -504,7 +519,23 @@ def _same_row(left, right):
     return left == right
 
 
-def _remove_verified_tree(root, expected, root_row=None, subset=False):
+def _owned_subset_row(observed, expected, allow_truncated=False):
+    if observed.get("path") != expected.get("path") or observed.get("kind") != expected.get("kind"):
+        return False
+    for name in ("uid", "gid"):
+        if observed.get(name) != expected.get(name): return False
+    if observed.get("mode") != expected.get("mode"):
+        if not (observed["kind"] == "directory" and observed.get("mode") == 0o700):
+            return False
+    if observed["kind"] == "file":
+        return (0 <= observed["size"] <= expected["size"]
+                and ((allow_truncated and observed["size"] < expected["size"])
+                     or observed.get("sha256") == expected.get("sha256")))
+    return observed == expected
+
+
+def _remove_verified_tree(root, expected, root_row=None, subset=False,
+                          allow_truncated=False):
     """Remove only a complete verified transaction tree; never discover ownership."""
     if not root.exists() and not root.is_symlink():
         return False
@@ -513,13 +544,16 @@ def _remove_verified_tree(root, expected, root_row=None, subset=False):
     if root_row is not None:
         _require(root_row["kind"] == "directory" and seen.st_uid == root_row["uid"]
                  and seen.st_gid == root_row["gid"]
-                 and stat.S_IMODE(seen.st_mode) == root_row["mode"])
+                 and stat.S_IMODE(seen.st_mode) in (
+                    root_row["mode"] if type(root_row["mode"]) is tuple else
+                    (root_row["mode"],)))
     actual = preparation.extracted_postwalk(root)
     expected_by_path = {row["path"]: row for row in expected}
     actual_by_path = {row["path"]: row for row in actual}
     _require((set(actual_by_path) <= set(expected_by_path) if subset else
               set(actual_by_path) == set(expected_by_path)))
-    _require(all(_same_row(row, expected_by_path[path])
+    _require(all((_owned_subset_row(row, expected_by_path[path], allow_truncated) if subset else
+                  _same_row(row, expected_by_path[path]))
                  for path, row in actual_by_path.items()))
     directories = [row for row in actual if row["kind"] == "directory"]
     for row in sorted(directories, key=lambda item: item["path"].count("/")):
@@ -547,7 +581,8 @@ def _static_runtime_rows():
                      "link_target": None, "sha256": digest})
     active_path = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH)
     observed_active = next((path for path in (
-        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name)
+        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name,
+            IMMUTABLE_STAGING / ("." + active_path.name + ".partial"))
         if path.exists()), None)
     if observed_active is not None:
         base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
@@ -567,6 +602,26 @@ def _static_runtime_rows():
 def _remove_static_runtime(path, partial):
     rows = _static_runtime_rows()
     if partial and path.exists():
+        expected = {row["path"]: row for row in rows if row["kind"] == "file"}
+        for candidate in tuple(path.rglob(".*.partial")):
+            relative = candidate.relative_to(path)
+            final = relative.with_name(candidate.name[1:-8])
+            row = expected.get(str(final))
+            seen = candidate.lstat()
+            _require(row is not None and stat.S_ISREG(seen.st_mode)
+                     and seen.st_uid == row["uid"] and seen.st_gid == row["gid"]
+                     and seen.st_nlink == 1 and stat.S_IMODE(seen.st_mode) == row["mode"]
+                     and 0 <= seen.st_size <= row["size"])
+            active_name = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).name
+            if str(final) == active_name:
+                base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
+                base_source = EXTRACTED_ROOT / "kata" / base_relative
+                expected_raw = preparation.derive_observer_configuration(base_source.read_bytes())
+            else:
+                expected_raw = (EXTRACTED_ROOT / "containerd" / final).read_bytes()
+            _require(expected_raw.startswith(candidate.read_bytes()))
+            candidate.unlink(); _sync_directory(candidate.parent)
+    if partial and path.exists():
         # Before the final bin chmod, an exact partial staging directory has a
         # writable bin. Normalize that one reviewed intermediate generation.
         actual = preparation.extracted_postwalk(path)
@@ -574,7 +629,9 @@ def _remove_static_runtime(path, partial):
                 and actual[0]["mode"] == 0o700:
             expected = [dict(row, mode=0o700) if row["path"] == "bin" else row for row in rows]
             return _remove_verified_tree(path, expected, subset=True)
-    return _remove_verified_tree(path, rows, subset=partial)
+    return _remove_verified_tree(path, rows, {
+        "kind": "directory", "uid": os.geteuid(), "gid": os.getegid(),
+        "mode": (0o500, 0o700) if path == STAGED_RUNTIME else 0o700}, subset=True)
 
 
 def _remove_runtime_partial(path, quarantine, expected):
@@ -612,7 +669,7 @@ def _remove_runtime_partial(path, quarantine, expected):
         os.close(descriptor)
 
 
-def _remove_prebuilt_input(descriptor):
+def _remove_prebuilt_input(descriptor, descriptor_raw):
     import completion_rootfs_prebuilt_acquisition as acquisition
 
     root = preparation.PREBUILT_INPUT_ROOT
@@ -622,17 +679,26 @@ def _remove_prebuilt_input(descriptor):
     _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
              and stat.S_IMODE(seen.st_mode) == 0o700)
     names = set(os.listdir(root))
+    if not names:
+        root.rmdir(); _sync_directory(root.parent); return
     _require(acquisition.INTENT_NAME in names,
              "unbound prebuilt input generation must be preserved")
     _require(names <= {acquisition.FINAL_NAME, acquisition.PARTIAL_NAME,
                        acquisition.SENTINEL_NAME, acquisition.INTENT_NAME,
                        acquisition.SETTLEMENT_NAME}, "foreign prebuilt input entry")
-    intent = preparation.decode_canonical(
-        (root / acquisition.INTENT_NAME).read_bytes(), 8192)
+    try:
+        intent = preparation.decode_canonical(
+            (root / acquisition.INTENT_NAME).read_bytes(), 8192)
+    except BaseException:
+        _require(names == {acquisition.INTENT_NAME})
+        path = root / acquisition.INTENT_NAME; seen_intent = path.lstat()
+        _require(stat.S_ISREG(seen_intent.st_mode) and seen_intent.st_uid == seen_intent.st_gid == 0
+                 and seen_intent.st_nlink == 1 and stat.S_IMODE(seen_intent.st_mode) in {0o400, 0o600}
+                 and 0 <= seen_intent.st_size <= 8192)
+        path.unlink(); _sync_directory(root); root.rmdir(); _sync_directory(root.parent); return
     _require(intent == {
         "version": "cogs.stage2-prebuilt-rootfs-acquisition-intent/v1",
-        "descriptor_sha256": hashlib.sha256(
-            preparation.PREBUILT_DESCRIPTOR_PATH.read_bytes()).hexdigest(),
+        "descriptor_sha256": hashlib.sha256(descriptor_raw).hexdigest(),
         "manifest_digest": descriptor.manifest_digest,
         "blob_sha256": descriptor.layer_digest,
         "blob_size": descriptor.layer_size,
@@ -700,7 +766,7 @@ def _read_file_hash(descriptor, size):
     return digest.hexdigest()
 
 
-def _rollback_preparation(descriptor):
+def _rollback_preparation(descriptor, descriptor_raw):
     """Inspect every owned class and aggregate uncertainty; never report best effort."""
     if not PREPARATION_ROOT.exists():
         _require(not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists()
@@ -721,7 +787,11 @@ def _rollback_preparation(descriptor):
             wrapped.__cause__ = error
             errors.append(wrapped)
 
-    values = None if receipt is None else receipt[1]["runtime_archives"]
+    if receipt is not None:
+        values = receipt[1]["runtime_archives"]
+    else:
+        expected_runtime = _expected_runtime()
+        values = None if expected_runtime is None else expected_runtime.get("archives")
     kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
     # The staged observer derivative is authorized only by the still-present
     # pinned base generation, so verify/remove it before the Kata tree.
@@ -734,18 +804,39 @@ def _rollback_preparation(descriptor):
             root_row = next(row for row in rows if row["path"] == "opt/kata")
             children = [dict(row, path=row["path"][len("opt/kata/"):]) for row in rows
                         if row["path"].startswith("opt/kata/")]
-            _remove_verified_tree(KATA_ROOT, children, root_row)
+            _remove_verified_tree(KATA_ROOT, children, root_row, subset=True)
         cleanup(remove_kata)
 
-    if EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink():
+    if not errors and (EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink()):
         def remove_extracted():
             names = set(os.listdir(EXTRACTED_ROOT))
             if not names:
                 EXTRACTED_ROOT.rmdir()
                 return
             _require(values is not None, "extracted staging lacks durable manifest")
-            _require(names == {"kata", "containerd"})
+            _require((names <= {"kata", "containerd"} if receipt is None else
+                      names == {"kata", "containerd"}))
             for archive in values:
+                role_root = EXTRACTED_ROOT / archive["role"]
+                marker = role_root / ".extraction-intent.json"
+                partial_marker = role_root / "..extraction-intent.json.partial"
+                pin = next(item for item in preparation.ARCHIVES
+                           if item["role"] == archive["role"])
+                intent = preparation.canonical_bytes({
+                    "version": "cogs.stage2-runtime-extraction-intent/v1",
+                    "archive_name": pin["name"], "archive_size": pin["size"],
+                    "archive_sha256": pin["sha256"]})
+                interrupted = marker.exists()
+                if marker.exists():
+                    _require(marker.read_bytes() == intent); marker.unlink()
+                elif partial_marker.exists():
+                    seen_marker = partial_marker.lstat()
+                    _require(stat.S_ISREG(seen_marker.st_mode)
+                             and seen_marker.st_uid == seen_marker.st_gid == 0
+                             and seen_marker.st_nlink == 1
+                             and stat.S_IMODE(seen_marker.st_mode) == 0o400
+                             and intent.startswith(partial_marker.read_bytes()))
+                    partial_marker.unlink()
                 rows = archive["extracted"]["entries"]
                 kata_root = EXTRACTED_ROOT / "kata"
                 moved_before_recovery = (archive["role"] == "kata"
@@ -754,11 +845,12 @@ def _rollback_preparation(descriptor):
                     rows = [row for row in rows
                             if row["path"] != "opt/kata"
                             and not row["path"].startswith("opt/kata/")]
-                _remove_verified_tree(EXTRACTED_ROOT / archive["role"], rows)
+                _remove_verified_tree(role_root, rows, subset=True,
+                                      allow_truncated=interrupted)
             EXTRACTED_ROOT.rmdir()
         cleanup(remove_extracted)
 
-    if RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink():
+    if not errors and (RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink()):
         def remove_runtime_cache():
             _directory_identity(RUNTIME_CACHE)
             pins = {pin["name"]: pin for pin in preparation.ARCHIVES}
@@ -786,11 +878,21 @@ def _rollback_preparation(descriptor):
             RUNTIME_CACHE.rmdir()
         cleanup(remove_runtime_cache)
 
-    if receipt is not None:
+    receipt_partial = RECEIPT.with_name("." + RECEIPT.name + ".partial")
+    if not errors and (receipt_partial.exists() or receipt_partial.is_symlink()):
+        def remove_receipt_partial():
+            seen = receipt_partial.lstat()
+            _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and seen.st_nlink == 1 and stat.S_IMODE(seen.st_mode) == 0o400
+                     and 0 <= seen.st_size <= MAX_RECEIPT_BYTES)
+            receipt_partial.unlink(); _sync_directory(receipt_partial.parent)
+        cleanup(remove_receipt_partial, "partial receipt")
+    if not errors and receipt is not None:
         cleanup(lambda: (_require(RECEIPT.read_bytes() == receipt[0]), RECEIPT.unlink()),
                 "receipt")
-    if descriptor is not None:
-        cleanup(lambda: _remove_prebuilt_input(descriptor), "prebuilt rootfs input")
+    if not errors and descriptor is not None:
+        cleanup(lambda: _remove_prebuilt_input(descriptor, descriptor_raw),
+                "prebuilt rootfs input")
     if not errors:
         cleanup(lambda: PREPARATION_ROOT.rmdir(), "preparation root")
         if not errors:
@@ -829,7 +931,7 @@ def recover_failed_preparation():
     import completion_rootfs_prebuilt as rootfs_prebuilt
     descriptor_raw = _prebuilt_descriptor_bytes(expected_runtime)
     descriptor = rootfs_prebuilt.decode_fixed_descriptor(descriptor_raw)
-    _rollback_preparation(descriptor)
+    _rollback_preparation(descriptor, descriptor_raw)
     _require(not PREPARATION_ROOT.exists() and not preparation.PREBUILT_INPUT_ROOT.exists()
              and not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     return None
@@ -908,7 +1010,7 @@ def prepare():
         if not created:
             raise
         try:
-            _rollback_preparation(descriptor)
+            _rollback_preparation(descriptor, descriptor_raw)
         except BaseException as rollback:
             raise _error_group(
                 "immutable preparation failed with rollback uncertainty",

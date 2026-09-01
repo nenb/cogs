@@ -3,7 +3,9 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
@@ -19,7 +21,7 @@ def raw(value): return provider.canonical(value)
 
 def approval(plan_digests, account):
     value = {
-        "version": "cogs.stage2-completion-production-approval/v2",
+        "version": "cogs.stage2-completion-production-approval/v3",
         "phrase": production.APPROVAL_PHRASE,
         "implementation_revision": "1" * 40, "control_revision": "2" * 40,
         "source_manifest_sha256": d("source"), "static_control_sha256": d("control"),
@@ -29,6 +31,7 @@ def approval(plan_digests, account):
         "rootfs_qualification_receipt_sha256": d("rootfs-qualification"),
         "rootfs_publication_receipt_sha256": d("rootfs-publication"),
         "runtime_commitment": d("runtime"), "fixture_commitment": d("fixture"),
+        "provider_binary_sha256": d("provider"), "aws_cli_sha256": d("aws"),
         "account_commitment": hashlib.sha256(account.encode()).hexdigest(),
         "partition": "aws", "region": "us-east-1", "ami_id": "ami-" + "a" * 17,
         "ami_owner_id": "099720109477", "ami_architecture": "x86_64",
@@ -36,9 +39,15 @@ def approval(plan_digests, account):
         "ami_state": "available", "plan_sha256s": tuple(plan_digests),
         "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
         "cleanup_reserve_ns": 10 * 60 * 10**9,
-        "expires_unix_ns": 2_000_000_000_000_000_000, "maximum_cost_micro_usd": 499_999,
+        "expires_unix_ns": 2_000_000_000_000_000_000,
+        "maximum_cycle_duration_ns": 10 * 60 * 10**9,
+        "maximum_cost_micro_usd": 499_999,
         "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
-        "issuer_commitment": d("issuer"), "authentication_receipt_sha256": d("auth"),
+        "issuer_commitment": d("issuer"),
+        "executor_principal_commitment": production.executor_principal_commitment(
+            "aws", account, "executor"),
+        "inventory_observer_principal_commitment":
+            production.executor_principal_commitment("aws", account, "observer"),
         "one_attempt": True,
     }
     value["ami_commitment"] = production.resolved_ami_commitment(value)
@@ -65,13 +74,19 @@ class Fake:
     def __init__(self, account): self.account = account; self.calls = []
     def __call__(self, argv, timeout):
         self.calls.append((argv, timeout))
+        if argv[0] == str(provider.TOFU) and "show" in argv:
+            return provider.Completed(Path(argv[-1]).with_name("campaign.plan.json").read_bytes())
         if "get-caller-identity" in argv:
+            role = "observer" if "observer" in argv else "executor"
             return provider.Completed(raw({"Account": self.account,
-                "Arn": "arn:aws:iam::000000000000:role/inventory",
+                "Arn": f"arn:aws:iam::000000000000:role/{role}",
                 "UserId": "session:test"}))
         if argv[0] == str(provider.AWS):
             # Force a real two-page chain for EIP coverage. Both pages contain
             # unrelated account resources, which may not be relabelled campaign residue.
+            if "describe-instances" in argv:
+                return provider.Completed(raw({"Reservations": [{"Instances": [{
+                    "InstanceId": f"i-{1:017x}", "State": {"Name": "terminated"}}]}]}))
             if "describe-addresses" in argv and "--starting-token" not in argv:
                 return provider.Completed(raw({"Addresses": [{"AllocationId": "eipalloc-unrelated",
                     "PublicIp": "192.0.2.1", "Tags": []}], "NextToken": "opaque"}))
@@ -85,14 +100,22 @@ class Fake:
         return provider.Completed(b"checked\n")
 
 
+os.umask(0o077)
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
     provider.ROOT = root
     provider.APPROVAL = root / "approval.json"
     provider.BUDGET_EMAIL = root / "budget-alert-email.txt"
     provider.STATE_ROOT = root / "provider-state"
+    provider.AWS = root / "aws"
+    provider.TOFU = root / "tofu"
+    provider.TOFU_PROVIDER = root / "terraform-provider-aws_v6.54.0_x5"
+    provider.TOFU_SHA256 = d("tofu")
     root.mkdir(exist_ok=True)
     account = "000000000000"
+    provider.AWS.write_bytes(b"aws"); provider.AWS.chmod(0o700)
+    provider.TOFU.write_bytes(b"tofu"); provider.TOFU.chmod(0o700)
+    provider.TOFU_PROVIDER.write_bytes(b"provider"); provider.TOFU_PROVIDER.chmod(0o700)
     plan_bytes = b"reviewed-plan-bytes"
     plans = [hashlib.sha256(plan_bytes if index == 1 else f"plan-{index}".encode()).hexdigest()
              for index in range(1, 8)]
@@ -100,6 +123,11 @@ with tempfile.TemporaryDirectory() as temporary:
     provider.APPROVAL.write_bytes(raw({**current.__dict__, "plan_sha256s": list(current.plan_sha256s)}))
     provider.BUDGET_EMAIL.write_text("owner@example.invalid\n")
     fake = Fake(account)
+    approval_stat = provider.APPROVAL.stat()
+    approval_identity = (stat.S_IMODE(approval_stat.st_mode), approval_stat.st_uid,
+                         approval_stat.st_nlink, approval_stat.st_size)
+    assert approval_identity == (0o600, os.geteuid(), 1,
+                                 approval_stat.st_size), approval_identity
     boundary = provider.FixedProvider(fake)
 
     grants = {}
@@ -146,6 +174,7 @@ with tempfile.TemporaryDirectory() as temporary:
     except provider.ProviderBoundaryError: pass
     else: raise AssertionError("effect replay was accepted")
 
+    inventory_call_start = len(fake.calls)
     inventory_value = json.loads(boundary.inventory(1, grants[1].grant_commitment,
                                                      receipt.state_commitment))
     pages = inventory_value["pages"]
@@ -155,6 +184,16 @@ with tempfile.TemporaryDirectory() as temporary:
         assert all("account-region-wide" in row["query_scope"]
                    for row in pages if row["category"] == category)
     assert all(row["response_commitment"] != "0" * 64 for row in pages)
+    instance_rows = [resource for page in pages if page["category"] == "ec2_instances"
+                     for resource in page["resources"]]
+    assert len(instance_rows) == 1 and instance_rows[0]["disposition"] == "deleted"
+    inventory_aws_calls = [call for call, _ in fake.calls[inventory_call_start:]
+                           if call[0] == str(provider.AWS)]
+    assert inventory_aws_calls and all("observer" in call for call in inventory_aws_calls)
+    calls_after_inventory = len(fake.calls)
+    assert json.loads(boundary.inventory(1, grants[1].grant_commitment,
+                                         receipt.state_commitment)) == inventory_value
+    assert len(fake.calls) == calls_after_inventory
 
     # A claimed normal destroy is uncertain and may never be reissued by cleanup.
     cycle2 = provider.STATE_ROOT / "cycle-2"
@@ -168,6 +207,11 @@ with tempfile.TemporaryDirectory() as temporary:
     cleanup_commands = [call for call, _ in fake.calls if call[0] == str(provider.TOFU)
                         and "destroy" in call]
     assert len(cleanup_commands) == 1
+    second_cleanup = json.loads(boundary.recover(
+        2, "readiness", grants[2].grant_commitment, d("state-2")))
+    assert second_cleanup["certain_zero"] is True
+    assert len([call for call, _ in fake.calls if call[0] == str(provider.TOFU)
+                and "destroy" in call]) == 1
 
     # Cross-cycle and caller-selected authority are rejected before a command.
     try: boundary.inventory(8, grants[1].grant_commitment, d("state"))

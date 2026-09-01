@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-production-evidence-upload-receipt-v1.json",
+  "title": "Stage 2 production evidence exact-artifact readback receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "result",
+    "control_revision",
+    "run_id",
+    "run_attempt",
+    "artifact_id",
+    "artifact_digest",
+    "members",
+    "readback"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-production-evidence-upload-receipt/v1" },
+    "result": { "const": "pass" },
+    "control_revision": { "$ref": "#/$defs/gitSha" },
+    "run_id": { "$ref": "#/$defs/positive" },
+    "run_attempt": { "const": 1 },
+    "artifact_id": { "$ref": "#/$defs/positive" },
+    "artifact_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "members": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "$ref": "#/$defs/evidenceMember" },
+        { "$ref": "#/$defs/publicationMember" },
+        { "$ref": "#/$defs/reportMember" }
+      ],
+      "items": false
+    },
+    "readback": { "const": "byte-equal" }
+  },
+  "$defs": {
+    "positive": { "type": "integer", "minimum": 1 },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "bytes", "sha256"],
+      "properties": {
+        "name": { "type": "string" },
+        "bytes": { "$ref": "#/$defs/positive" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "evidenceMember": {
+      "allOf": [
+        { "$ref": "#/$defs/member" },
+        { "type": "object", "properties": { "name": { "const": "aws-stage2-completion-evidence-v2.json" } } }
+      ]
+    },
+    "publicationMember": {
+      "allOf": [
+        { "$ref": "#/$defs/member" },
+        { "type": "object", "properties": { "name": { "const": "aws-stage2-completion-publication-v1.json" } } }
+      ]
+    },
+    "reportMember": {
+      "allOf": [
+        { "$ref": "#/$defs/member" },
+        { "type": "object", "properties": { "name": { "const": "aws-stage2-completion-report-v2.md" } } }
+      ]
+    }
+  }
+}

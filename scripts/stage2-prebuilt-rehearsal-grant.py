@@ -10,7 +10,7 @@ import sys
 
 REMOTE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
 CONTROL_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control")
-CONTROL_PATH = CONTROL_ROOT / "stage2-local-static-control-v1.json"
+CONTROL_PATH = CONTROL_ROOT / "stage2-local-static-control-v2.json"
 GRANT_ROOT = Path("/var/lib/cogs/stage2-completion-v1/cycle-authority-v1")
 GRANT_PATH = GRANT_ROOT / "grant.json"
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -98,7 +98,7 @@ def grant_value(route, run_id, fixed):
                               batch_input + route.encode("ascii")),
     }
     fields["grant_commitment"] = digest(
-        b"cogs.stage2-cycle-launch-grant/v1", canonical(fields))
+        b"cogs.stage2-cycle-launch-grant/v1", canonical(fields)[:-1])
     return {"version": "cogs.stage2-cycle-launch-grant/v1", **fields}
 
 

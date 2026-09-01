@@ -8,6 +8,9 @@ const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", 
 const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
 
 test("corrected qualification is additive, exact H-then-G, and first-created", () => {
+  assert.match(workflow, /\n {2}local-kata:\n {4}needs: admission\n/u);
+  assert.match(workflow, /REPORT_STAGING: \/var\/tmp\/cogs-stage2-prebuilt-result-/u);
+  assert.match(workflow, /timeout-minutes: 201/u);
   assert.match(workflow, /^name: Stage 2 prebuilt local Kata qualification$/mu);
   assert.match(workflow, /reviewed_implementation_head:/u);
   assert.match(workflow, /reviewed_control_head:/u);

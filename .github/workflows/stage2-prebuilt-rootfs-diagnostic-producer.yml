@@ -47,7 +47,7 @@ jobs:
             'repos/nenb/cogs/actions/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/producer-runs.json"
           jq -e --arg h "$EXACT_H" --argjson current "$GITHUB_RUN_ID" \
-            '[.[][] | select(.head_sha == $h and .path == ".github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml")] | map(.id) == [$current]' \
+            '[.[].workflow_runs[] | select(.head_sha == $h and .path == ".github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml")] | map(.id) == [$current]' \
             "$RUNNER_TEMP/producer-runs.json" >/dev/null
 
   build:

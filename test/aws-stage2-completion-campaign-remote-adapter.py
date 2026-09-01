@@ -34,7 +34,8 @@ def effect(kind, grant, start, end, identity):
     ))) if kind == "running" else ())
     return production.EffectReceipt(
         kind, grant.grant_commitment, grant.batch_commitment, grant.ordinal,
-        grant.mode, d(f"state-{grant.ordinal}"), d(f"lineage-{grant.ordinal}"),
+        grant.mode, d(f"state-{grant.ordinal}"), d(f"state-bytes-{grant.ordinal}"),
+        d(f"lineage-{grant.ordinal}"),
         identity, d(f"intent-{kind}"), d(f"settlement-{kind}"),
         grant.ami_commitment, resources, start, end, 1, True)
 

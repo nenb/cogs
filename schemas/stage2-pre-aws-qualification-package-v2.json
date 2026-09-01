@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v2.json",
+  "title": "Corrected prebuilt Stage 2 pre-AWS qualification package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "implementation_revision",
+    "control_revision",
+    "source_manifest_sha256",
+    "static_control_sha256",
+    "report_sha256",
+    "receipt_sha256",
+    "rootfs",
+    "runtime_commitment",
+    "fixture_commitment",
+    "artifacts",
+    "claims",
+    "supersedes"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-pre-aws-qualification-package/v2" },
+    "authority": { "const": "non-aws-prerequisite-evidence-only" },
+    "implementation_revision": { "$ref": "#/$defs/gitSha" },
+    "control_revision": { "$ref": "#/$defs/gitSha" },
+    "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "static_control_sha256": { "$ref": "#/$defs/sha256" },
+    "report_sha256": { "$ref": "#/$defs/sha256" },
+    "receipt_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptor_sha256",
+        "package_manifest_sha256",
+        "provenance_sha256",
+        "qualification_receipt_sha256",
+        "publication_receipt_sha256"
+      ],
+      "properties": {
+        "descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "package_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "provenance_sha256": { "$ref": "#/$defs/sha256" },
+        "qualification_receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "publication_receipt_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtime_commitment": { "$ref": "#/$defs/sha256" },
+    "fixture_commitment": { "$ref": "#/$defs/sha256" },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report_id", "report_digest", "receipt_id", "receipt_digest"],
+      "properties": {
+        "report_id": { "$ref": "#/$defs/positive" },
+        "report_digest": { "$ref": "#/$defs/artifactDigest" },
+        "receipt_id": { "$ref": "#/$defs/positive" },
+        "receipt_digest": { "$ref": "#/$defs/artifactDigest" }
+      }
+    },
+    "supersedes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "package_sha256", "reason"],
+      "properties": {
+        "version": { "const": "cogs.stage2-pre-aws-qualification-package/v1" },
+        "package_sha256": { "const": "78f19b4fc4ac9d64d4f3a9a35d68850fd44122c61e00907eefcb19d6f86c0899" },
+        "reason": { "const": "historical-rebuild-based-evidence-does-not-authorize-prebuilt-production" }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_qualification_passed", "aws_authorized", "aws_executed", "promotion_authorized"],
+      "properties": {
+        "local_qualification_passed": { "const": true },
+        "aws_authorized": { "const": false },
+        "aws_executed": { "const": false },
+        "promotion_authorized": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "positive": { "type": "integer", "minimum": 1 },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifactDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

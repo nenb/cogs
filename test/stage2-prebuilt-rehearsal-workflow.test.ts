@@ -46,7 +46,7 @@ test("one first-created rehearsal uses each authentic route once and mints nothi
   assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py full"), 1);
   assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py readiness"), 1);
   assert.equal(occurrences(rehearsal, "recover-stage2-completion-remote.sh"), 2);
-  assert.match(rehearsal, /stage2-stage-reviewed-control\.py provisional/u);
+  assert.match(rehearsal, /stage2-stage-prebuilt-control\.py provisional/u);
   assert.match(rehearsal, /Independently prove final zero lifecycle residue/u);
   assert.doesNotMatch(
     rehearsal,
@@ -82,7 +82,7 @@ assert full['batch_commitment']==ready['batch_commitment'] and full['ami_commitm
 assert full['plan_sha256']!=ready['plan_sha256']
 for value in (full,ready):
  fields={key:item for key,item in value.items() if key not in {'version','grant_commitment'}}
- expected=hashlib.sha256(b'cogs.stage2-cycle-launch-grant/v1\0'+m.canonical(fields)).hexdigest()
+ expected=hashlib.sha256(b'cogs.stage2-cycle-launch-grant/v1\0'+m.canonical(fields)[:-1]).hexdigest()
  assert value['grant_commitment']==expected and m.canonical(value).endswith(b'\n')
 for args in [('other','19',fixed),('full','0',fixed),('full','19',{**fixed,'extra':'5'*64}),('full','19',{**fixed,'static_control_sha256':'x'*64})]:
  try:m.grant_value(*args)

@@ -31,6 +31,9 @@ test("concrete AWS adapter is import-inert and owns the sole production port iss
   assert.match(source, /os\.fsync/u);
   assert.match(source, /def recover\(/u);
   assert.match(source, /def recover_fixed_campaign\(/u);
+  assert.match(source, /if not ACTIVE\.exists\(\):/u);
+  assert.match(source, /_journal_state\(descriptor, True\)/u);
+  assert.match(source, /_retire_credentials\(\)/u);
   assert.match(source, /LOCK = ROOT/u);
   assert.match(source, /ACTIVE = ROOT/u);
   assert.doesNotMatch(source.slice(source.indexOf("def recover(")), /self\.effect\(/u);
@@ -48,4 +51,10 @@ test("adapter commands and custody paths are fixed rather than caller-selected",
   assert.match(source, /run_fixed_campaign/u);
   assert.match(source, /issue_completion_evidence\(candidate, custody\)/u);
   assert.match(source, /approval-authentication\.json/u);
+  assert.match(source, /approval-authentication\.bundle\.json/u);
+  assert.match(source, /COSIGN_SHA256/u);
+  assert.match(source, /"\/usr\/bin\/unshare", "--net"/u);
+  assert.match(source, /stage2-production-approval\.yml@refs\/heads\/main/u);
+  assert.match(source, /first_apply_started/u);
+  assert.match(source, /maximum_cycle_duration_ns/u);
 });

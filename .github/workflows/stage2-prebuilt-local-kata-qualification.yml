@@ -54,11 +54,27 @@ jobs:
           test "$EXACT_CONTROL_HEAD" = "$CONFIGURED_CONTROL_HEAD"
           test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
           gh api --paginate --slurp             'repos/nenb/cogs/actions/workflows/stage2-prebuilt-local-kata-qualification.yml/runs?event=workflow_dispatch&branch=main&per_page=100'             >"$RUNNER_TEMP/qualification-runs.json"
-          jq -e --arg h "$EXACT_IMPLEMENTATION_HEAD" --arg g "$EXACT_CONTROL_HEAD"             --arg title "Stage 2 prebuilt local Kata qualification H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD"             --argjson current "$GITHUB_RUN_ID"             '[.[][] | select(.head_sha == $g and .display_title == $title and
+          jq -e --arg h "$EXACT_IMPLEMENTATION_HEAD" --arg g "$EXACT_CONTROL_HEAD"             --arg title "Stage 2 prebuilt local Kata qualification H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD"             --argjson current "$GITHUB_RUN_ID"             '[.[].workflow_runs[] | select(.head_sha == $g and .display_title == $title and
                              .path == ".github/workflows/stage2-prebuilt-local-kata-qualification.yml" and
                              .run_attempt == 1)] | map(.id) == [$current]'             "$RUNNER_TEMP/qualification-runs.json" >/dev/null
           printf 'run_id=%s\n' "$GITHUB_RUN_ID" >>"$GITHUB_OUTPUT"
 
+  local-kata:
+    needs: admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 201
+    env:
+      EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
+      EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+      REPORT_STAGING: /var/tmp/cogs-stage2-prebuilt-result-${{ github.run_id }}-${{ github.run_attempt }}
+      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-prebuilt-result-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-prebuilt-receipt-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      PACKAGE_STAGING: /var/tmp/cogs-stage2-prebuilt-package-${{ github.run_id }}-${{ github.run_attempt }}
+      PACKAGE_READBACK_STAGING: /var/tmp/cogs-stage2-prebuilt-package-upload-${{ github.run_id }}-${{ github.run_attempt }}
+      CONTROL_PACKAGE: deploy/aws-feasibility/remote/stage2-completion-local-control-v3
+      REPORT_ARTIFACT_NAME: stage2-prebuilt-kata-report-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+      RECEIPT_ARTIFACT_NAME: stage2-prebuilt-kata-upload-receipt-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
       - name: Acquire exact control revision G without credentials
         timeout-minutes: 1
         run: |
@@ -393,6 +409,59 @@ jobs:
           /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/scripts/stage2-local-upload-receipt.py" receipt-readback
 
+      - name: Create corrected canonical pre-AWS package after both exact readbacks
+        id: package_create
+        if: always() && steps.receipt_readback.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          REPORT_ARTIFACT_ID: ${{ steps.report_upload.outputs.artifact-id }}
+          REPORT_ARTIFACT_DIGEST: ${{ steps.report_upload.outputs.artifact-digest }}
+          RECEIPT_ARTIFACT_ID: ${{ steps.receipt_upload.outputs.artifact-id }}
+          RECEIPT_ARTIFACT_DIGEST: ${{ steps.receipt_upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          test ! -e "$PACKAGE_STAGING"; install -d -m 0700 "$PACKAGE_STAGING"
+          /usr/bin/python3 -I -B scripts/stage2-pre-aws-package-v2.py \
+            "$REPORT_STAGING/report.json" "$REPORT_STAGING/receipt.json" \
+            "$CONTROL_PACKAGE/stage2-local-static-control-v2.json" \
+            "$CONTROL_PACKAGE/stage2-local-execution-envelope-v3.json" \
+            >"$PACKAGE_STAGING/pre-aws-package.json"
+
+      - name: Upload corrected pre-AWS package separately
+        id: package_upload
+        if: always() && steps.package_create.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stage2-prebuilt-pre-aws-package-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PACKAGE_STAGING }}/pre-aws-package.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Download and byte-compare exact pre-AWS package ID
+        id: package_readback
+        if: always() && steps.package_upload.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.package_upload.outputs.artifact-id }}
+          path: ${{ env.PACKAGE_READBACK_STAGING }}
+          digest-mismatch: error
+
+      - name: Require exact pre-AWS package bytes
+        id: package_compare
+        if: always() && steps.package_readback.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          cmp "$PACKAGE_STAGING/pre-aws-package.json" \
+            "$PACKAGE_READBACK_STAGING/pre-aws-package.json"
+
       - name: Remove all local report and readback staging
         id: output_cleanup
         if: always()
@@ -401,10 +470,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
-            /bin/rm -rf -- "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"
+            /bin/rm -rf -- "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING" \
+            "$PACKAGE_STAGING" "$PACKAGE_READBACK_STAGING"
           test ! -e "$REPORT_STAGING"
           test ! -e "$REPORT_READBACK_STAGING"
           test ! -e "$RECEIPT_READBACK_STAGING"
+          test ! -e "$PACKAGE_STAGING"
+          test ! -e "$PACKAGE_READBACK_STAGING"
 
       - name: Restore exact hosted scaffolding only after runtime removal
         id: host_scaffold_restore
@@ -442,6 +514,10 @@ jobs:
           RECEIPT_UPLOAD: ${{ steps.receipt_upload.outcome }}
           RECEIPT_DOWNLOAD: ${{ steps.receipt_download.outcome }}
           RECEIPT_READBACK: ${{ steps.receipt_readback.outcome }}
+          PACKAGE_CREATE: ${{ steps.package_create.outcome }}
+          PACKAGE_UPLOAD: ${{ steps.package_upload.outcome }}
+          PACKAGE_READBACK: ${{ steps.package_readback.outcome }}
+          PACKAGE_COMPARE: ${{ steps.package_compare.outcome }}
           OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
           HOST_SCAFFOLD_RESTORE: ${{ steps.host_scaffold_restore.outcome }}
         run: |
@@ -454,6 +530,7 @@ jobs:
           for outcome in "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" \
             "$PUBLICATION" "$REPORT_UPLOAD" "$REPORT_DOWNLOAD" "$REPORT_READBACK" \
             "$RECEIPT_CREATE" "$RECEIPT_UPLOAD" "$RECEIPT_DOWNLOAD" "$RECEIPT_READBACK" \
+            "$PACKAGE_CREATE" "$PACKAGE_UPLOAD" "$PACKAGE_READBACK" "$PACKAGE_COMPARE" \
             "$OUTPUT_CLEANUP" "$HOST_SCAFFOLD_RESTORE"
           do
             test "$outcome" = success

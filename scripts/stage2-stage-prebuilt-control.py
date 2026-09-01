@@ -9,6 +9,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v3"
+PROVISIONAL_SOURCE = Path(
+    "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
 DESTINATION = Path("/var/lib/cogs/stage2-completion-v1/control")
 CONTROL_MEMBER = "stage2-local-static-control-v2.json"
@@ -81,10 +83,11 @@ def _write_frozen(path, raw):
         os.close(descriptor)
 
 
-def stage():
+def _stage(source_path):
     _require(os.geteuid() == 0 and not DESTINATION.exists())
+    _require(source_path in {SOURCE, PROVISIONAL_SOURCE})
     preparation = _load_preparation()
-    source = os.open(SOURCE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    source = os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         source_identity = os.fstat(source)
         control_raw = _read_regular(source, CONTROL_MEMBER, preparation.MAX_CONTROL_BYTES)
@@ -139,9 +142,18 @@ def stage():
         raise
 
 
+def stage():
+    return _stage(SOURCE)
+
+
+def stage_provisional():
+    return _stage(PROVISIONAL_SOURCE)
+
+
 def main():
-    _require(len(sys.argv) == 1)
-    digest = stage()
+    _require(len(sys.argv) in {1, 2})
+    _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
+    digest = stage() if len(sys.argv) == 1 else stage_provisional()
     raw = f"control_sha256={digest}\n".encode("ascii")
     _require(sys.stdout.buffer.write(raw) == len(raw))
 

@@ -9,6 +9,7 @@ grant and durable intent/settlement identity.
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import re
 
 APPROVAL_PHRASE = "run-seven-sequential-stage2-completion-launches"
 VERSION = "cogs.stage2-completion-production-controller/v2"
@@ -55,7 +56,9 @@ def _commit(domain, value):
 
 def _approval_fields(value):
     result = asdict(value) if type(value) is ProductionApproval else dict(value)
-    result.pop("batch_commitment", None)
+    for name in ("batch_commitment", "plan_sha256s", "version", "phrase",
+                 "rate_source_commitment", "issuer_commitment", "one_attempt"):
+        result.pop(name, None)
     return result
 
 
@@ -66,7 +69,17 @@ RATE_SOURCE_COMMITMENT = _commit(
 
 
 def approval_batch_commitment(value):
-    return _commit(b"cogs.stage2-production-approved-batch/v2", _approval_fields(value))
+    return _commit(b"cogs.stage2-production-approved-batch/v3", _approval_fields(value))
+
+
+def executor_principal_commitment(partition, account_id, role_name):
+    _require(partition in {"aws", "aws-us-gov"}
+             and type(account_id) is str and re.fullmatch(r"[0-9]{12}", account_id)
+             and type(role_name) is str
+             and re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", role_name),
+             ProductionApprovalError)
+    return _commit(b"cogs.stage2-executor-principal/v1", {
+        "partition": partition, "account_id": account_id, "role_name": role_name})
 
 
 def resolved_ami_commitment(value):
@@ -102,6 +115,8 @@ class ProductionApproval:
     rootfs_publication_receipt_sha256: str
     runtime_commitment: str
     fixture_commitment: str
+    provider_binary_sha256: str
+    aws_cli_sha256: str
     account_commitment: str
     partition: str
     region: str
@@ -117,14 +132,16 @@ class ProductionApproval:
     effect_deadline_ns: int
     cleanup_reserve_ns: int
     expires_unix_ns: int
+    maximum_cycle_duration_ns: int
     maximum_cost_micro_usd: int
     rate_source_commitment: str
     issuer_commitment: str
-    authentication_receipt_sha256: str
+    executor_principal_commitment: str
+    inventory_observer_principal_commitment: str
     one_attempt: bool
 
     def __post_init__(self):
-        _require(self.version == "cogs.stage2-completion-production-approval/v2"
+        _require(self.version == "cogs.stage2-completion-production-approval/v3"
                  and self.phrase == APPROVAL_PHRASE and self.one_attempt is True,
                  ProductionApprovalError)
         _digest(self.batch_commitment); _sha1(self.implementation_revision); _sha1(self.control_revision)
@@ -133,14 +150,18 @@ class ProductionApproval:
             self.pre_aws_package_sha256, self.rootfs_descriptor_sha256,
             self.rootfs_package_manifest_sha256, self.rootfs_provenance_sha256,
             self.rootfs_qualification_receipt_sha256,
-            self.rootfs_publication_receipt_sha256, self.runtime_commitment, self.fixture_commitment, self.account_commitment,
+            self.rootfs_publication_receipt_sha256, self.runtime_commitment,
+            self.fixture_commitment, self.provider_binary_sha256, self.aws_cli_sha256,
+            self.account_commitment,
             self.ami_commitment, self.rate_source_commitment,
-            self.issuer_commitment, self.authentication_receipt_sha256,
+            self.issuer_commitment, self.executor_principal_commitment,
+            self.inventory_observer_principal_commitment,
         ): _digest(item)
         _require(self.partition in {"aws", "aws-us-gov"}
-                 and type(self.region) is str and 3 <= len(self.region) <= 32
-                 and type(self.ami_id) is str and self.ami_id.startswith("ami-")
-                 and len(self.ami_id) == 21
+                 and type(self.region) is str
+                 and re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-[1-9]", self.region)
+                 and type(self.ami_id) is str
+                 and re.fullmatch(r"ami-[0-9a-f]{17}", self.ami_id)
                  and self.ami_owner_id == "099720109477"
                  and self.ami_architecture == "x86_64"
                  and self.ami_virtualization_type == "hvm"
@@ -155,11 +176,17 @@ class ProductionApproval:
                  and type(self.effect_deadline_ns) is int
                  and type(self.cleanup_reserve_ns) is int
                  and type(self.expires_unix_ns) is int
-                 and 0 < self.effect_deadline_ns <= 90 * 60 * 1_000_000_000
+                 and 0 < self.effect_deadline_ns <= 320 * 60 * 1_000_000_000
                  and 5 * 60 * 1_000_000_000 <= self.cleanup_reserve_ns <= 30 * 60 * 1_000_000_000
                  and self.not_before_unix_ns + self.effect_deadline_ns + self.cleanup_reserve_ns
                      <= self.expires_unix_ns
+                 and type(self.maximum_cycle_duration_ns) is int
+                 and 0 < self.maximum_cycle_duration_ns <= 150 * 60 * 1_000_000_000
+                 and self.maximum_cycle_duration_ns <= self.effect_deadline_ns
                  and 0 < self.maximum_cost_micro_usd < 500_000
+                 and self.maximum_cost_micro_usd >= (
+                    (self.effect_deadline_ns + self.cleanup_reserve_ns)
+                    * FIXED_RATE_MICRO_USD_PER_HOUR + 3_600_000_000_000 - 1) // 3_600_000_000_000
                  and self.rate_source_commitment == RATE_SOURCE_COMMITMENT,
                  ProductionApprovalError)
         _require(self.batch_commitment == approval_batch_commitment(self),
@@ -169,12 +196,14 @@ class ProductionApproval:
 @dataclass(frozen=True)
 class ApprovalConsumptionReceipt:
     approval_commitment: str
+    authentication_receipt_sha256: str
     durable_record_commitment: str
     consumed_unix_ns: int
     first_created: bool
 
     def __post_init__(self):
-        _digest(self.approval_commitment); _digest(self.durable_record_commitment)
+        _digest(self.approval_commitment); _digest(self.authentication_receipt_sha256)
+        _digest(self.durable_record_commitment)
         _require(type(self.consumed_unix_ns) is int and self.consumed_unix_ns > 0
                  and self.first_created is True, ProductionReceiptError)
 
@@ -211,6 +240,7 @@ class EffectReceipt:
     ordinal: int
     mode: str
     state_commitment: str
+    state_bytes_sha256: str
     state_lineage_commitment: str
     identity_commitment: str
     intent_commitment: str
@@ -224,7 +254,7 @@ class EffectReceipt:
 
     def __post_init__(self):
         for item in (self.grant_commitment, self.batch_commitment,
-                     self.state_commitment, self.state_lineage_commitment,
+                     self.state_commitment, self.state_bytes_sha256, self.state_lineage_commitment,
                      self.identity_commitment, self.intent_commitment,
                      self.settlement_commitment, self.ami_commitment): _digest(item)
         _require(type(self.resource_commitments) is tuple
@@ -491,7 +521,7 @@ class CampaignCandidate:
                  and len(set(self.cycle_commitments)) == 7, ProductionReceiptError)
         _digest(self.custody_root)
         approval_commitment = _commit(
-            b"cogs.stage2-production-approval/v2", asdict(self.approval))
+            b"cogs.stage2-production-approval/v3", asdict(self.approval))
         expected = _commit(b"cogs.stage2-production-custody/v2", {
             "execution_authority": self.execution_authority,
             "approval": approval_commitment,
@@ -606,7 +636,7 @@ class ProductionCampaignController:
         _require(not self.used); self.used = True
         approval = self.ports.approval
         consumed_at = self._now(approval)
-        approval_commitment = _commit(b"cogs.stage2-production-approval/v2", asdict(approval))
+        approval_commitment = _commit(b"cogs.stage2-production-approval/v3", asdict(approval))
         consumption = self.ports.consume(approval, approval_commitment, consumed_at)
         _require(type(consumption) is ApprovalConsumptionReceipt
                  and consumption.approval_commitment == approval_commitment,
@@ -639,21 +669,26 @@ class ProductionCampaignController:
                 apply = self._effect("apply", grant, plan); active_state = apply.state_commitment
                 _require(apply.state_commitment == plan.state_commitment
                          and apply.state_lineage_commitment == plan.state_lineage_commitment
+                         and apply.state_bytes_sha256 != "0" * 64
                          and plan.observed_ended_unix_ns < apply.observed_started_unix_ns,
                          ProductionReceiptError)
                 if first_apply_start is None: first_apply_start = apply.observed_started_unix_ns
                 effect_deadline = first_apply_start + approval.effect_deadline_ns
                 cleanup_deadline = effect_deadline + approval.cleanup_reserve_ns
-                _require(apply.observed_ended_unix_ns < effect_deadline
+                cycle_deadline = min(
+                    effect_deadline,
+                    apply.observed_started_unix_ns + approval.maximum_cycle_duration_ns)
+                _require(apply.observed_ended_unix_ns < cycle_deadline
                          and cleanup_deadline <= approval.expires_unix_ns,
                          ProductionApprovalError)
                 running = self._effect("running", grant, apply)
                 _require(running.state_commitment == apply.state_commitment
                          and running.state_lineage_commitment == apply.state_lineage_commitment
+                         and running.state_bytes_sha256 == apply.state_bytes_sha256
                          and apply.observed_ended_unix_ns < running.observed_started_unix_ns
-                         and running.observed_ended_unix_ns < effect_deadline,
+                         and running.observed_ended_unix_ns < cycle_deadline,
                          ProductionReceiptError)
-                remote = self.ports.remote(grant, apply, running)
+                remote = self.ports.remote(grant, apply, running, cycle_deadline)
                 _require(type(remote) is RemoteReceipt
                          and remote.grant_commitment == grant.grant_commitment
                          and remote.batch_commitment == approval.batch_commitment
@@ -669,7 +704,7 @@ class ProductionCampaignController:
                 _require(destroy.state_commitment == apply.state_commitment
                          and destroy.state_lineage_commitment == apply.state_lineage_commitment
                          and running.observed_ended_unix_ns < destroy.observed_started_unix_ns
-                         and destroy.observed_ended_unix_ns < effect_deadline,
+                         and destroy.observed_ended_unix_ns < cycle_deadline,
                          ProductionReceiptError)
                 last_certain = destroy
                 zero = self.ports.inventory(grant, destroy, ordinal)
@@ -720,7 +755,7 @@ class ProductionCampaignController:
                      and final.region == approval.region
                      and final.destroyed_state_commitment == effects[-1][-1].state_commitment
                      and final.observed_started_unix_ns > previous_zero_end
-                     and final.observed_ended_unix_ns < approval.expires_unix_ns,
+                     and final.observed_ended_unix_ns < cleanup_deadline,
                      ProductionReceiptError)
             inventories.append(final)
             active_grant = active_state = last_certain = None

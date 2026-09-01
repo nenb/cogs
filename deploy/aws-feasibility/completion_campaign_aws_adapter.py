@@ -5,7 +5,7 @@ entry; ``recover_fixed_campaign`` is cleanup-only and cannot return a candidate.
 Both require the same root-owned custody directory and fixed repository scripts.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
 import json
@@ -21,6 +21,17 @@ import completion_campaign_remote_adapter as remote_adapter
 ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
 APPROVAL = ROOT / "approval.json"
 AUTHENTICATION = ROOT / "approval-authentication.json"
+AUTHENTICATION_BUNDLE = ROOT / "approval-authentication.bundle.json"
+COSIGN = ROOT / "cosign"
+TRUSTED_ROOT = ROOT / "sigstore-trusted-root.json"
+COSIGN_SHA256 = "5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68"
+TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e"
+AWS_CONFIG = ROOT / "aws-config"
+AWS_CREDENTIALS = ROOT / "aws-credentials"
+TOFU = ROOT / "tofu"
+TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
+TOFU_PROVIDER = ROOT / "terraform-provider-aws_v6.54.0_x5"
+TOFU_CONFIG = ROOT / "tofu-cli.tfrc"
 CONSUMED = ROOT / "approval-consumed.json"
 JOURNAL = ROOT / "campaign-journal.jsonl"
 LOCK = ROOT / "campaign.lock"
@@ -37,14 +48,30 @@ MAX_JOURNAL_BYTES = 64 * 1024 * 1024
 FIXED_ENV = {
     "HOME": "/root", "LANG": "C", "LC_ALL": "C",
     "PATH": "/usr/local/bin:/usr/bin:/bin", "TZ": "UTC",
-    "AWS_PROFILE": "nebula", "AWS_REGION": "us-east-1",
+    "AWS_CONFIG_FILE": str(AWS_CONFIG),
+    "AWS_SHARED_CREDENTIALS_FILE": str(AWS_CREDENTIALS),
+    "AWS_PROFILE": "nebula",
+    "AWS_REGION": "us-east-1",
     "AWS_DEFAULT_REGION": "us-east-1", "AWS_PAGER": "",
     "AWS_EC2_METADATA_DISABLED": "true",
+    "TF_CLI_CONFIG_FILE": str(TOFU_CONFIG), "TF_IN_AUTOMATION": "1",
 }
 
 
 class AwsAdapterError(production.ProductionCampaignError):
     pass
+
+
+@dataclass(frozen=True)
+class NoActiveCleanupReceipt:
+    version: str
+    reconciliation_commitment: str
+    certain_zero: bool
+
+    def __post_init__(self):
+        _require(self.version == "cogs.stage2-cleanup-complete/v1"
+                 and self.certain_zero is True)
+        production._digest(self.reconciliation_commitment)
 
 
 def _require(value):
@@ -129,14 +156,35 @@ def _replace_durable(path, raw):
 
 def _approval():
     raw = _read_fixed(APPROVAL, 64 * 1024)
+    _read_fixed(AWS_CONFIG, 4096); _read_fixed(AWS_CREDENTIALS, 16 * 1024)
     authentication_raw = _read_fixed(AUTHENTICATION, 64 * 1024)
+    bundle_raw = _read_fixed(AUTHENTICATION_BUNDLE, 1024 * 1024)
+    cosign_raw = _read_fixed(COSIGN, 160 * 1024 * 1024, (0o555,))
+    tofu_raw = _read_fixed(TOFU, 140 * 1024 * 1024, (0o555,))
+    provider_raw = _read_fixed(TOFU_PROVIDER, 1024 * 1024 * 1024, (0o555,))
+    _read_fixed(TOFU_CONFIG, 4096)
+    trusted_root_raw = _read_fixed(TRUSTED_ROOT, 64 * 1024)
+    _require(hashlib.sha256(cosign_raw).hexdigest() == COSIGN_SHA256
+             and hashlib.sha256(tofu_raw).hexdigest() == TOFU_SHA256
+             and hashlib.sha256(trusted_root_raw).hexdigest() == TRUSTED_ROOT_SHA256)
+    verification = subprocess.run(
+        ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
+         "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(AUTHENTICATION_BUNDLE),
+         "--certificate-identity",
+         "https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main",
+         "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+         str(AUTHENTICATION)), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, env={"HOME": "/nonexistent", "LANG": "C",
+        "LC_ALL": "C", "PATH": "/usr/bin:/bin"}, close_fds=True,
+        start_new_session=True, timeout=30, check=False)
+    _require(verification.returncode == 0)
     value = _decode(raw, 64 * 1024)
     authentication = _decode(authentication_raw, 64 * 1024)
     _require(set(authentication) == {
         "version", "result", "approval_sha256", "issuer_commitment",
         "workflow_sha256", "workflow_run_id", "workflow_run_attempt",
         "control_revision", "approver_principal_commitment",
-        "executor_principal_commitment", "signature_verification_commitment",
+        "executor_principal_commitment", "inventory_observer_principal_commitment",
         "first_created"}
         and authentication["version"] ==
             "cogs.stage2-production-approval-authentication/v1"
@@ -146,20 +194,28 @@ def _approval():
         and authentication["first_created"] is True)
     for key in ("issuer_commitment", "workflow_sha256",
                 "approver_principal_commitment", "executor_principal_commitment",
-                "signature_verification_commitment"):
+                "inventory_observer_principal_commitment"):
         production._digest(authentication[key])
-    _require(authentication["approver_principal_commitment"] !=
-             authentication["executor_principal_commitment"]
+    _require(len({authentication["approver_principal_commitment"],
+                  authentication["executor_principal_commitment"],
+                  authentication["inventory_observer_principal_commitment"]}) == 3
              and type(authentication["workflow_run_id"]) is int
              and authentication["workflow_run_id"] > 0)
     production._sha1(authentication["control_revision"])
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
     approval = production.ProductionApproval(**value)
-    _require(approval.authentication_receipt_sha256 ==
-             hashlib.sha256(authentication_raw).hexdigest()
-             and approval.issuer_commitment == authentication["issuer_commitment"]
-             and approval.control_revision == authentication["control_revision"])
-    return approval
+    _require(hashlib.sha256(provider_raw).hexdigest() == approval.provider_binary_sha256)
+    _require(approval.issuer_commitment == authentication["issuer_commitment"]
+             and approval.control_revision == authentication["control_revision"]
+             and approval.executor_principal_commitment ==
+                 authentication["executor_principal_commitment"]
+             and approval.inventory_observer_principal_commitment ==
+                 authentication["inventory_observer_principal_commitment"])
+    custody = production._commit(b"cogs.stage2-approval-authentication-custody/v1", {
+        "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+        "bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+        "cosign_sha256": COSIGN_SHA256, "trusted_root_sha256": TRUSTED_ROOT_SHA256})
+    return approval, custody
 
 
 class _Authority:
@@ -195,21 +251,34 @@ def _decode_inventory(value):
 
 
 class AwsCampaignCustodian:
-    def __init__(self, seal, approval, executor=subprocess.run):
+    def __init__(self, seal, approval, authentication_receipt_sha256,
+                 executor=subprocess.run):
         _require(seal is _ADAPTER_SEAL and type(approval) is production.ProductionApproval
+                 and production._digest(authentication_receipt_sha256) ==
+                     authentication_receipt_sha256
                  and callable(executor))
         self.approval = approval
+        self.authentication_receipt_sha256 = authentication_receipt_sha256
         self.executor = executor
+        self.apply_started = {}
+        self.first_apply_started = None
 
     def now(self):
         return time.time_ns()
 
-    def _journal_state(self, descriptor):
+    def _journal_state(self, descriptor, repair_tail=False):
         os.lseek(descriptor, 0, os.SEEK_SET)
         raw = b""
         while block := os.read(descriptor, 1024 * 1024):
             raw += block
             _require(len(raw) <= MAX_JOURNAL_BYTES)
+        if raw and not raw.endswith(b"\n"):
+            _require(repair_tail)
+            boundary = raw.rfind(b"\n") + 1; tail = raw[boundary:]
+            _require(0 < len(tail) <= 64 * 1024)
+            # An unterminated append never became an authoritative record. Cleanup-only
+            # recovery may truncate exactly that final tail; complete lines remain chained.
+            os.ftruncate(descriptor, boundary); os.fsync(descriptor); raw = raw[:boundary]
         tip = "0" * 64
         sequence = 0
         for line in raw.splitlines(keepends=True):
@@ -236,7 +305,7 @@ class AwsCampaignCustodian:
             _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
                      and stat.S_IMODE(seen.st_mode) == 0o600 and seen.st_nlink == 1
                      and seen.st_size <= MAX_JOURNAL_BYTES)
-            sequence, tip = self._journal_state(descriptor)
+            sequence, tip = self._journal_state(descriptor, category == "cleanup")
             row = {"version": "cogs.stage2-production-campaign-journal/v1",
                    "sequence": sequence, "previous_sha256": tip,
                    "category": category, "event": event, "ordinal": ordinal,
@@ -253,7 +322,11 @@ class AwsCampaignCustodian:
                  "batch_commitment": grant.batch_commitment,
                  "ordinal": grant.ordinal, "mode": grant.mode,
                  "grant_commitment": grant.grant_commitment,
-                 "state_commitment": state}
+                 "state_commitment": state,
+                 "cleanup_deadline_unix_ns": (
+                    self.approval.expires_unix_ns if self.first_apply_started is None else
+                    self.first_apply_started + self.approval.effect_deadline_ns +
+                    self.approval.cleanup_reserve_ns)}
         _replace_durable(ACTIVE, _canonical(value))
 
     def journal(self, category, event, ordinal, mode, commitment):
@@ -288,7 +361,8 @@ class AwsCampaignCustodian:
         raw = _canonical(value)
         _write_once(CONSUMED, raw)
         return production.ApprovalConsumptionReceipt(
-            approval_commitment, hashlib.sha256(raw).hexdigest(), observed, True)
+            approval_commitment, self.authentication_receipt_sha256,
+            hashlib.sha256(raw).hexdigest(), observed, True)
 
     def _run(self, command, arguments, timeout):
         _require(command in {EFFECT_COMMAND, REMOTE_COMMAND, INVENTORY_COMMAND,
@@ -297,7 +371,7 @@ class AwsCampaignCustodian:
                  and type(arguments) is tuple
                  and all(type(item) is str and "\0" not in item for item in arguments))
         result = self.executor(
-            ["/usr/bin/timeout", "--foreground", "--signal=TERM", "--kill-after=10s",
+            ["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s",
              f"{timeout}s", str(command), *arguments],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=FIXED_ENV, cwd=SOURCE, timeout=timeout + 15, check=False)
@@ -326,30 +400,66 @@ class AwsCampaignCustodian:
             "kind": kind, "grant": grant.grant_commitment,
             "previous": previous_commitment})
         self._append("effect", "intent", grant.ordinal, grant.mode, intent)
+        now = time.time_ns()
+        latest = self.approval.expires_unix_ns - self.approval.cleanup_reserve_ns
+        if self.first_apply_started is not None:
+            latest = min(latest, self.first_apply_started + self.approval.effect_deadline_ns)
+        if kind == "plan":
+            timeout = min(900, max(1, (latest - now) // 1_000_000_000))
+        elif kind == "apply":
+            if self.first_apply_started is None:
+                _require(now + self.approval.effect_deadline_ns +
+                         self.approval.cleanup_reserve_ns < self.approval.expires_unix_ns)
+            timeout = min(900, max(1, self.approval.maximum_cycle_duration_ns // 1_000_000_000),
+                          max(1, (latest - now) // 1_000_000_000))
+        else:
+            _require(grant.ordinal in self.apply_started)
+            cycle_latest = self.apply_started[grant.ordinal] + self.approval.maximum_cycle_duration_ns
+            _require(now < min(latest, cycle_latest))
+            timeout = min(900, max(1, (min(latest, cycle_latest) - now) // 1_000_000_000))
+        _require(now < latest and timeout > 0)
+        if kind == "apply" and self.first_apply_started is None:
+            self.first_apply_started = now
+            self.apply_started[grant.ordinal] = now
+            _require(previous is not None)
+            self._active(grant, previous.state_commitment)
         raw = self._run(EFFECT_COMMAND, (kind, str(grant.ordinal), grant.mode,
-                        grant.grant_commitment, intent), 900)
+                        grant.grant_commitment, intent), timeout)
         value = _decode(raw)
         value["resource_commitments"] = tuple(
             tuple(row) for row in value["resource_commitments"])
         receipt = production.EffectReceipt(**value)
         _require(receipt.intent_commitment == intent)
+        if kind == "apply":
+            self.apply_started[grant.ordinal] = receipt.observed_started_unix_ns
         if kind in {"plan", "apply", "running"}:
             self._active(grant, receipt.state_commitment)
+        if kind == "destroy":
+            self.apply_started.pop(grant.ordinal, None)
         self._append("effect", "settled", grant.ordinal, grant.mode,
                      receipt.settlement_commitment)
         return receipt
 
-    def remote(self, grant, apply, running):
+    def remote(self, grant, apply, running, effect_deadline):
         self._ensure_grant(grant)
+        _require(type(effect_deadline) is int)
+        remaining_ns = effect_deadline - time.time_ns()
+        _require(remaining_ns > 0)
+        timeout = max(1, min(7800, remaining_ns // 1_000_000_000))
         raw = self._run(REMOTE_COMMAND, (str(grant.ordinal), grant.mode,
-                        grant.grant_commitment), 7800)
+                        grant.grant_commitment, str(timeout)), timeout)
         return remote_adapter.remote_receipt(grant, apply, running, raw)
 
     def inventory(self, grant, destroyed, sequence):
         _require(type(destroyed) is production.EffectReceipt and 1 <= sequence <= 8)
         grant_commitment = "final" if grant is None else grant.grant_commitment
+        deadline = (self.approval.expires_unix_ns if self.first_apply_started is None else
+                    self.first_apply_started + self.approval.effect_deadline_ns +
+                    self.approval.cleanup_reserve_ns)
+        remaining = deadline - time.time_ns(); _require(remaining > 0)
+        timeout = min(600, max(1, remaining // 1_000_000_000))
         raw = self._run(INVENTORY_COMMAND, (str(sequence), grant_commitment,
-                        destroyed.state_commitment), 600)
+                        destroyed.state_commitment), timeout)
         return _decode_inventory(_decode(raw))
 
     def cost(self, grant, apply, destroy):
@@ -368,9 +478,17 @@ class AwsCampaignCustodian:
 
     def recover(self, grant, state, last_certain, primary):
         _require(type(grant) is production.CycleLaunchGrant)
-        self._active(grant, state)
+        default_deadline = (self.approval.expires_unix_ns
+                            if self.first_apply_started is None else
+                            self.first_apply_started + self.approval.effect_deadline_ns +
+                            self.approval.cleanup_reserve_ns)
+        deadline = getattr(self, "recovery_deadline", default_deadline)
+        remaining = deadline - time.time_ns()
+        _require(remaining > 0)
+        timeout = min(1200, self.approval.cleanup_reserve_ns // 1_000_000_000,
+                      max(1, remaining // 1_000_000_000))
         raw = self._run(RECOVERY_COMMAND, (str(grant.ordinal), grant.mode,
-                        grant.grant_commitment, state), 1200)
+                        grant.grant_commitment, state), timeout)
         value = _decode(raw)
         inventory = value.pop("inventory", None)
         parsed = None if inventory is None else _decode_inventory(inventory)
@@ -381,6 +499,26 @@ class AwsCampaignCustodian:
         return production._issue_adapter_ports(
             authority, self.approval, self.now, self.consume, self.effect,
             self.remote, self.inventory, self.cost, self.recover, self.journal)
+
+
+def _retire_credentials():
+    descriptor = os.open(AWS_CREDENTIALS, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                 and stat.S_IMODE(before.st_mode) == 0o400 and before.st_nlink == 1)
+        AWS_CREDENTIALS.unlink(); os.fsync(descriptor)
+        after = os.fstat(descriptor)
+        _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                  after.st_gid, after.st_size) ==
+                 (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                  before.st_gid, before.st_size) and after.st_nlink == 0)
+        directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW | os.O_CLOEXEC)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        os.close(descriptor)
 
 
 def _root_lock():
@@ -405,7 +543,8 @@ def _admit_root():
              and not (set(os.environ) & {
                  "PYTHONPATH", "PYTHONHOME", "PYTHONOPTIMIZE", "AWS_PROFILE",
                  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-                 "TF_VAR_credentials", "GOOGLE_APPLICATION_CREDENTIALS"}))
+                 "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+                 "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "TF_VAR_credentials", "GOOGLE_APPLICATION_CREDENTIALS"}))
 
 
 def run_fixed_campaign():
@@ -415,10 +554,21 @@ def run_fixed_campaign():
     try:
         _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
                  and not CLEANUP_COMPLETE.exists())
-        approval = _approval()
-        custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval)
-        candidate = production.ProductionCampaignController(
-            custodian.ports(_ADAPTER_SEAL)).run()
+        approval, authentication_sha256 = _approval()
+        custodian = AwsCampaignCustodian(
+            _ADAPTER_SEAL, approval, authentication_sha256)
+        try:
+            candidate = production.ProductionCampaignController(
+                custodian.ports(_ADAPTER_SEAL)).run()
+        except BaseException:
+            if CLEANUP_COMPLETE.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+                _retire_credentials()
+            raise
+        _write_once(CLEANUP_COMPLETE, _canonical({
+            "version": "cogs.stage2-cleanup-complete/v1",
+            "reconciliation_commitment": candidate.inventories[-1].zero_commitment,
+            "certain_zero": True}))
+        _retire_credentials()
         import completion_campaign_evidence_issuer as evidence_issuer
         evidence_root = ROOT / "evidence-publication"
         evidence_root.mkdir(mode=0o700, exist_ok=False)
@@ -430,6 +580,10 @@ def run_fixed_campaign():
             return evidence_issuer.issue_completion_evidence(candidate, custody)
         finally:
             os.close(parent_fd)
+    except BaseException:
+        if not CONSUMED.exists() and AWS_CREDENTIALS.exists():
+            _retire_credentials()
+        raise
     finally:
         os.close(lock)
 
@@ -439,21 +593,70 @@ def recover_fixed_campaign():
     _admit_root()
     lock = _root_lock()
     try:
-        _require(CONSUMED.exists() and JOURNAL.exists() and ACTIVE.exists())
-        approval = _approval()
+        approval, authentication_sha256 = _approval()
+        if not CONSUMED.exists():
+            _require(not JOURNAL.exists() and not ACTIVE.exists()
+                     and not any(STATE_ROOT.glob("cycle-*/[a-z]*.intent.json")))
+            complete_raw = _canonical({
+                "version": "cogs.stage2-cleanup-complete/v1",
+                "reconciliation_commitment": production._commit(
+                    b"cogs.stage2-unconsumed-approval-retirement/v1",
+                    {"batch": approval.batch_commitment}), "certain_zero": True})
+            if CLEANUP_COMPLETE.exists():
+                _require(_read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,)) == complete_raw)
+            else:
+                _write_once(CLEANUP_COMPLETE, complete_raw)
+            _retire_credentials(); return NoActiveCleanupReceipt(**_decode(complete_raw))
+        custodian = AwsCampaignCustodian(
+            _ADAPTER_SEAL, approval, authentication_sha256)
+        if not ACTIVE.exists():
+            if JOURNAL.exists():
+                descriptor = os.open(JOURNAL, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    custodian._journal_state(descriptor, True)
+                    os.lseek(descriptor, 0, os.SEEK_SET); rows = os.read(
+                        descriptor, MAX_JOURNAL_BYTES).splitlines(keepends=True)
+                    if rows:
+                        last = _decode(rows[-1], 64 * 1024)
+                        _require((last["category"], last["event"]) in {
+                            ("batch", "consumed"), ("batch", "candidate"),
+                            ("campaign", "opened"),
+                            ("cycle", "opened"), ("cycle", "sealed"),
+                            ("cleanup", "settled")})
+                finally:
+                    os.close(descriptor)
+            complete_raw = _canonical({
+                "version": "cogs.stage2-cleanup-complete/v1",
+                "reconciliation_commitment": production._commit(
+                    b"cogs.stage2-no-active-cleanup/v1", {"batch": approval.batch_commitment}),
+                "certain_zero": True})
+            if CLEANUP_COMPLETE.exists():
+                existing = _decode(_read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,)))
+                _require(existing.get("version") == "cogs.stage2-cleanup-complete/v1"
+                         and existing.get("certain_zero") is True)
+                production._digest(existing.get("reconciliation_commitment"))
+            else:
+                _write_once(CLEANUP_COMPLETE, complete_raw)
+            _retire_credentials()
+            return NoActiveCleanupReceipt(**_decode(
+                _read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,))))
         active = _decode(_read_fixed(ACTIVE, 64 * 1024, (0o600,)))
         _require(active.get("version") == "cogs.stage2-cleanup-active/v1"
-                 and active.get("batch_commitment") == approval.batch_commitment)
+                 and active.get("batch_commitment") == approval.batch_commitment
+                 and type(active.get("cleanup_deadline_unix_ns")) is int
+                 and time.time_ns() < active["cleanup_deadline_unix_ns"])
         grant = production._grant(approval, active["ordinal"])
         _require(active.get("mode") == grant.mode
                  and active.get("grant_commitment") == grant.grant_commitment)
-        custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval)
+        custodian.recovery_deadline = active["cleanup_deadline_unix_ns"]
         receipt = custodian.recover(grant, active["state_commitment"], None,
                                     production.ProductionUncertainty())
         custodian.journal("cleanup", "settled" if receipt.certain_zero else "uncertain",
                           grant.ordinal, grant.mode, receipt.reconciliation_commitment)
         if not receipt.certain_zero:
             raise production.ProductionUncertainty()
+        _retire_credentials()
         return receipt
     finally:
         os.close(lock)

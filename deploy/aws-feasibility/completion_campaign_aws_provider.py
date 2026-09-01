@@ -25,11 +25,16 @@ import completion_campaign_remote_adapter as remote_adapter
 
 ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
-TOFU = Path("/var/lib/cogs/stage2-completion-v1/tool/opentofu-1.12.4")
+TOFU = ROOT / "tofu"
+TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
+TOFU_PROVIDER = ROOT / "terraform-provider-aws_v6.54.0_x5"
 AWS = Path("/usr/local/bin/aws")
 PYTHON = Path("/usr/bin/python3")
 APPROVAL = ROOT / "approval.json"
 BUDGET_EMAIL = ROOT / "budget-alert-email.txt"
+AWS_CONFIG = ROOT / "aws-config"
+AWS_CREDENTIALS = ROOT / "aws-credentials"
+TOFU_CONFIG = ROOT / "tofu-cli.tfrc"
 STATE_ROOT = ROOT / "provider-state"
 MAX_OUTPUT = 32 * 1024 * 1024
 ZERO = "0" * 64
@@ -39,11 +44,14 @@ ENV = {
     "LC_ALL": "C",
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "TZ": "UTC",
+    "AWS_CONFIG_FILE": str(AWS_CONFIG),
+    "AWS_SHARED_CREDENTIALS_FILE": str(AWS_CREDENTIALS),
     "AWS_PROFILE": "nebula",
     "AWS_REGION": "us-east-1",
     "AWS_DEFAULT_REGION": "us-east-1",
     "AWS_EC2_METADATA_DISABLED": "true",
-    "AWS_PAGER": "",
+    "AWS_PAGER": "", "TF_CLI_CONFIG_FILE": str(TOFU_CONFIG),
+    "TF_IN_AUTOMATION": "1",
 }
 
 
@@ -115,6 +123,9 @@ def _read(path: Path, maximum: int = MAX_OUTPUT) -> bytes:
     try:
         before = os.fstat(descriptor)
         _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                 and before.st_uid == os.geteuid()
+                 and (os.geteuid() != 0 or before.st_gid == 0)
+                 and stat.S_IMODE(before.st_mode) in {0o400, 0o600}
                  and 0 < before.st_size <= maximum, "unsafe custody file")
         raw = os.read(descriptor, maximum + 1)
         after = os.fstat(descriptor)
@@ -181,7 +192,41 @@ class FixedProvider:
     def _approval(self) -> production.ProductionApproval:
         value = decode(_read(APPROVAL, 64 * 1024), 64 * 1024)
         value["plan_sha256s"] = tuple(value["plan_sha256s"])
-        return production.ProductionApproval(**value)
+        approval = production.ProductionApproval(**value)
+        resolved = AWS.resolve(); seen = resolved.stat()
+        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == os.geteuid()
+                 and (os.geteuid() != 0 or seen.st_gid == 0)
+                 and _sha256_file(resolved) == approval.aws_cli_sha256,
+                 "AWS CLI differs from authenticated planning bytes")
+        self.aws_identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
+                             seen.st_gid, seen.st_size, seen.st_mtime_ns, seen.st_ctime_ns)
+        self.tool_identities = {}
+        for path, digest in ((TOFU, TOFU_SHA256),
+                             (TOFU_PROVIDER, approval.provider_binary_sha256)):
+            tool = path.stat()
+            _require(stat.S_ISREG(tool.st_mode) and tool.st_uid == os.geteuid()
+                     and (os.geteuid() != 0 or tool.st_gid == 0)
+                     and _sha256_file(path) == digest)
+            self.tool_identities[path] = (tool.st_dev, tool.st_ino, tool.st_mode,
+                tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
+        return approval
+
+    def _principal(self, caller, expected, label):
+        account_id = caller.get("Account"); arn = caller.get("Arn")
+        _require(type(account_id) is str and len(account_id) == 12 and account_id.isdigit()
+                 and hashlib.sha256(account_id.encode()).hexdigest() ==
+                     self.approval.account_commitment and type(arn) is str)
+        prefix = f"arn:{self.approval.partition}:sts::{account_id}:assumed-role/"
+        iam_prefix = f"arn:{self.approval.partition}:iam::{account_id}:role/"
+        if arn.startswith(prefix):
+            role, separator, session = arn[len(prefix):].partition("/")
+            _require(bool(separator) and bool(session))
+        else:
+            _require(arn.startswith(iam_prefix)); role = arn[len(iam_prefix):]
+        _require(production.executor_principal_commitment(
+            self.approval.partition, account_id, role) ==
+            expected, f"{label} AWS principal differs from approval")
+        return account_id, arn
 
     def _cycle(self, ordinal: int, mode: str, grant_commitment: str):
         _require(type(ordinal) is int and 1 <= ordinal <= 7
@@ -202,13 +247,46 @@ class FixedProvider:
     def _run(self, argv: tuple[str, ...], timeout: int, json_output: bool = False):
         _require(type(argv) is tuple and argv and all(type(item) is str for item in argv)
                  and argv[0] in {str(TOFU), str(AWS), str(PYTHON)})
+        if argv[0] == str(TOFU):
+            for path, digest in ((TOFU, TOFU_SHA256),
+                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
+                    tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
+                _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
+                         "OpenTofu tool closure changed before invocation")
+        if argv[0] == str(AWS):
+            seen = AWS.resolve().stat()
+            identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
+                        seen.st_gid, seen.st_size, seen.st_mtime_ns, seen.st_ctime_ns)
+            _require(identity == self.aws_identity
+                     and _sha256_file(AWS.resolve()) == self.approval.aws_cli_sha256,
+                     "AWS CLI changed before invocation")
         result = self.runner(argv, timeout)
+        if argv[0] == str(AWS):
+            seen = AWS.resolve().stat()
+            identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
+                        seen.st_gid, seen.st_size, seen.st_mtime_ns, seen.st_ctime_ns)
+            _require(identity == self.aws_identity
+                     and _sha256_file(AWS.resolve()) == self.approval.aws_cli_sha256,
+                     "AWS CLI changed during invocation")
+        if argv[0] == str(TOFU):
+            for path, digest in ((TOFU, TOFU_SHA256),
+                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
+                    tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
+                _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
+                         "OpenTofu tool closure changed during invocation")
         _require(type(result) is Completed and result.returncode == 0
                  and len(result.stdout) <= MAX_OUTPUT and len(result.stderr) <= 64 * 1024,
                  "fixed provider command failed")
         if json_output:
-            raw = result.stdout if result.stdout.endswith(b"\n") else result.stdout + b"\n"
-            return decode(raw)
+            try:
+                value = json.loads(result.stdout, object_pairs_hook=_pairs,
+                    parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
+            except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+                raise ProviderBoundaryError("invalid AWS or OpenTofu JSON") from error
+            _require(type(value) is dict, "invalid AWS or OpenTofu JSON")
+            return value
         return result.stdout
 
     def _claim(self, directory: Path, name: str, intent: str) -> Path:
@@ -234,6 +312,7 @@ class FixedProvider:
             "mode": grant.mode,
             "state_commitment": _digest(b"cogs.stage2-provider-state-slot/v1", {
                 "batch_commitment": grant.batch_commitment, "ordinal": grant.ordinal}),
+            "state_bytes_sha256": state_digest,
             "state_lineage_commitment": lineage, "identity_commitment": identity,
             "intent_commitment": intent, "ami_commitment": grant.ami_commitment,
             "resource_commitments": resources,
@@ -306,9 +385,19 @@ class FixedProvider:
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         receipt_path = directory / f"{kind}.receipt.json"
         _require(not receipt_path.exists(), "effect receipt replay")
-        self._claim(directory, kind, intent)
         self._tfvars(directory, grant)
+        caller = self._run((str(AWS), "--region", self.approval.region, "sts",
+                            "get-caller-identity", "--output", "json", "--no-cli-pager"),
+                           60, True)
+        self._principal(caller, self.approval.executor_principal_commitment, "executor")
+        self._claim(directory, kind, intent)
         state = directory / "terraform.tfstate"
+        if kind in {"running", "destroy"}:
+            previous_kind = "apply" if kind == "running" else "running"
+            previous_receipt = decode(_read(directory / f"{previous_kind}.receipt.json"))
+            _require(state.is_file() and _sha256_file(state) ==
+                     previous_receipt.get("state_bytes_sha256"),
+                     "provider state bytes changed between effects")
         plan = directory / "campaign.tfplan"
         plan_json = directory / "campaign.plan.json"
         started = time.time_ns()
@@ -317,6 +406,11 @@ class FixedProvider:
             _require(plan.is_file() and plan_json.is_file()
                      and _sha256_file(plan) == grant.plan_sha256,
                      "approved plan bytes missing or changed")
+            rendered = self._run((str(TOFU),
+                f"-chdir={SOURCE / 'deploy/aws-feasibility'}", "show", "-json", str(plan)),
+                60, True)
+            _require(rendered == decode(_read(plan_json)),
+                     "approved plan JSON is not derived from approved binary")
             self._run((str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"),
                        str(plan_json)), 30)
             self._validate_plan_bindings(plan_json, grant)
@@ -325,7 +419,7 @@ class FixedProvider:
             _require((directory / "plan.receipt.json").is_file())
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "apply", "-input=false", "-lock-timeout=30s",
-                       "-auto-approve", str(plan)), 900)
+                       "-state=" + str(state), "-auto-approve", str(plan)), 900)
             output = self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                                 "output", "-state=" + str(state), "-json", "campaign"),
                                60, True)
@@ -392,7 +486,9 @@ class FixedProvider:
                  and value["control_revision"] == self.approval.control_revision
                  and value["rootfs_descriptor_sha256"] == self.approval.rootfs_descriptor_sha256)
 
-    def remote(self, ordinal: int, mode: str, grant_commitment: str) -> bytes:
+    def remote(self, ordinal: int, mode: str, grant_commitment: str,
+               authorized_timeout: int) -> bytes:
+        _require(type(authorized_timeout) is int and 1 <= authorized_timeout <= 7_800)
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         output = decode(_read(directory / "campaign-output.json"))
         self._validate_campaign_output(output, grant)
@@ -403,27 +499,49 @@ class FixedProvider:
         command = remote_adapter.invocation(grant).command
         encoded = base64.b64encode(grant_raw).decode("ascii")
         remote_shell = (
-            "set -eu; umask 077; d=/var/lib/cogs/stage2-completion-v1/"
-            "cycle-authority-v1; install -d -m 700 \"$d\"; "
+            "set -eu; umask 077; test ! -e /var/lib/cogs; "
+            "for x in git python3 tar zstd; do command -v \"$x\" >/dev/null; done; "
+            "w=/var/tmp/cogs-stage2-bootstrap; test ! -e \"$w\"; install -d -m 700 \"$w\"; "
+            "git init -q \"$w/H\"; git -C \"$w/H\" remote add origin https://github.com/nenb/cogs.git; "
+            f"git -C \"$w/H\" fetch -q --no-tags --depth=1 origin {self.approval.implementation_revision}; "
+            "git -C \"$w/H\" checkout -q --detach FETCH_HEAD; "
+            "git init -q \"$w/G\"; git -C \"$w/G\" remote add origin https://github.com/nenb/cogs.git; "
+            f"git -C \"$w/G\" fetch -q --no-tags --depth=1 origin {self.approval.control_revision}; "
+            "git -C \"$w/G\" checkout -q --detach FETCH_HEAD; "
+            "install -d -m 755 /run/netns; chmod 755 /opt; "
+            "python3 -I -B \"$w/H/scripts/prepare-stage2-fixed-source.py\" >/dev/null; "
+            "python3 -I -B \"$w/G/scripts/stage2-stage-prebuilt-control.py\" >/dev/null; "
+            "python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/"
+            "completion_kata_immutable_preparation.py >/dev/null; "
+            "python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/"
+            "provision-stage2-nft-owner.py; rm -rf \"$w\"; "
+            "d=/var/lib/cogs/stage2-completion-v1/cycle-authority-v1; install -d -m 700 \"$d\"; "
             f"printf '%s' '{encoded}' | base64 -d >\"$d/grant.json\"; "
             "chmod 400 \"$d/grant.json\"; " + command)
         parameters = directory / "ssm-parameters.json"
-        _write_once(parameters, canonical({"commands": [remote_shell]}))
+        _write_once(parameters, canonical({
+            "commands": [remote_shell], "executionTimeout": [str(authorized_timeout)]}))
         sent = self._run((str(AWS), "--region", self.approval.region, "ssm",
                           "send-command", "--instance-ids", output["instance_id"],
-                          "--document-name", "AWS-RunShellScript", "--timeout-seconds", "7800",
+                          "--document-name", "AWS-RunShellScript", "--timeout-seconds",
+                          str(authorized_timeout),
                           "--parameters", "file://" + str(parameters), "--output", "json",
                           "--no-cli-pager"), 60, True)
         command_id = sent.get("Command", {}).get("CommandId")
         _require(type(command_id) is str and 8 <= len(command_id) <= 128)
-        self._run((str(AWS), "--region", self.approval.region, "ssm", "wait",
-                   "command-executed", "--command-id", command_id,
-                   "--instance-id", output["instance_id"]), 7800)
-        observed = self._run((str(AWS), "--region", self.approval.region, "ssm",
-                              "get-command-invocation", "--command-id", command_id,
-                              "--instance-id", output["instance_id"], "--output", "json",
-                              "--no-cli-pager"), 60, True)
-        _require(observed.get("Status") == "Success" and not observed.get("StandardErrorContent"))
+        deadline = time.monotonic() + max(1, authorized_timeout - 10)
+        while True:
+            observed = self._run((str(AWS), "--region", self.approval.region, "ssm",
+                                  "get-command-invocation", "--command-id", command_id,
+                                  "--instance-id", output["instance_id"], "--output", "json",
+                                  "--no-cli-pager"), 60, True)
+            status = observed.get("Status")
+            if status == "Success": break
+            _require(status in {"Pending", "InProgress", "Delayed"}
+                     and time.monotonic() < deadline,
+                     "remote SSM command failed or exceeded its fixed observation deadline")
+            time.sleep(5)
+        _require(not observed.get("StandardErrorContent"))
         raw = observed.get("StandardOutputContent", "").encode("ascii")
         _require(raw.endswith(b"\n") and len(raw) <= remote_adapter.MAX_RECEIPT_BYTES)
         _write_once(directory / "remote-owner-receipt.json", raw, 0o400)
@@ -433,7 +551,8 @@ class FixedProvider:
         token = None
         seen = set()
         while True:
-            argv = [str(AWS), "--region", self.approval.region, service, operation,
+            argv = [str(AWS), "--profile", "observer", "--region",
+                    self.approval.region, service, operation,
                     "--output", "json", "--no-cli-pager", "--max-items", "100"]
             if service == "budgets": argv.extend(("--account-id", account_id))
             if token is not None: argv.extend(("--starting-token", token))
@@ -454,23 +573,48 @@ class FixedProvider:
 
     @staticmethod
     def _tags(row):
-        tags = row.get("Tags", row.get("tags", []))
+        tags = row.get("Tags", row.get("TagSet", row.get("tags", [])))
         return {item.get("Key"): item.get("Value") for item in tags
                 if type(item) is dict and type(item.get("Key")) is str}
 
-    def _resource_rows(self, category: str, response: dict, grant, graph: dict):
-        ids = {value for key, value in graph.items() if key.endswith("_id") and type(value) is str}
-        keys = ("InstanceId", "VolumeId", "NetworkInterfaceId", "AllocationId", "GroupId",
-                "VpcId", "SubnetId", "InternetGatewayId", "RouteTableId", "LaunchTemplateId",
-                "KeyPairId", "RoleId", "InstanceProfileId", "ScheduleArn", "BudgetName")
+    def _resource_rows(self, category: str, response: dict, grant, graph: dict,
+                       related_ids: set[str]):
+        related_ids.update(value for key, value in graph.items()
+                           if key.endswith("_id") and type(value) is str)
+        ids = related_ids
+        category_keys = {
+            "ec2_instances": ("InstanceId",), "ebs_volumes": ("VolumeId",),
+            "network_interfaces": ("NetworkInterfaceId",),
+            "eni_public_associations": ("NetworkInterfaceId",),
+            "elastic_ips": ("AllocationId", "PublicIp"),
+            "security_groups": ("GroupId",), "vpcs": ("VpcId",),
+            "subnets": ("SubnetId",), "internet_gateways": ("InternetGatewayId",),
+            "route_tables": ("RouteTableId",), "routes": ("RouteTableId",),
+            "launch_templates": ("LaunchTemplateId",),
+            "key_pairs": ("KeyPairId", "KeyName"), "iam_roles": ("RoleId", "RoleName"),
+            "iam_role_policies": ("RoleId", "RoleName"),
+            "iam_policy_attachments": ("RoleId", "RoleName"),
+            "iam_instance_profiles": ("InstanceProfileId", "InstanceProfileName"),
+            "eventbridge_schedules": ("ScheduleArn", "Name"),
+            "eventbridge_targets": ("ScheduleArn", "Name"),
+            "budgets": ("BudgetName",), "ssm_managed_instances": ("InstanceId",),
+        }
         rows = []
         for item in self._walk(response):
-            identity = next((item.get(key) for key in keys if type(item.get(key)) is str), None)
-            name = next((item.get(key) for key in ("RoleName", "InstanceProfileName", "Name")
+            identity = next((item.get(key) for key in category_keys[category]
+                             if type(item.get(key)) is str), None)
+            if identity is None: continue
+            name = next((item.get(key) for key in ("RoleName", "InstanceProfileName", "BudgetName", "GroupName",
+                             "LaunchTemplateName", "KeyName", "ScheduleName", "Name")
                          if type(item.get(key)) is str), None)
             tags = self._tags(item)
+            relations = (item.get("VpcId"), item.get("SubnetId"), item.get("InternetGatewayId"),
+                         item.get("RouteTableId"), item.get("GroupId"), item.get("InstanceId"))
             related = (tags.get("cogs:batch") == grant.batch_commitment
-                       or identity in ids or (name is not None and name.startswith("cogs-s2-")))
+                       or identity in ids or any(value in ids for value in relations)
+                       or (name is not None and name.startswith("cogs-s2-"))
+                       or (category == "vpcs" and item.get("CidrBlock") == "10.77.0.0/24")
+                       or (category == "subnets" and item.get("CidrBlock") == "10.77.0.0/26"))
             public = None
             if category in {"network_interfaces", "eni_public_associations"}:
                 public = item.get("Association", {}).get("PublicIp")
@@ -481,18 +625,22 @@ class FixedProvider:
                 public = item.get("PublicIp")
                 related = related or item.get("InstanceId") in ids or item.get("NetworkInterfaceId") in ids
             if not related: continue
+            if identity is not None: related_ids.add(identity)
             identity_value = identity or name or _digest(b"cogs.stage2-inventory-row/v1", item)
+            disposition = ("deleted" if category == "ec2_instances"
+                           and item.get("State", {}).get("Name") == "terminated"
+                           else "unexpected-live")
             rows.append(production.InventoryResource(
                 category,
                 _digest(b"cogs.stage2-inventory-resource-identity/v1", {"value": identity_value}),
-                "unexpected-live",
+                disposition,
                 None if public is None else _digest(
                     b"cogs.stage2-public-address/v1", {"address": public}),
             ))
         return tuple(rows)
 
     def inventory(self, sequence: int, grant_commitment: str,
-                  destroyed_state_commitment: str) -> bytes:
+                  destroyed_state_commitment: str, recovery_directory=None) -> bytes:
         _require(type(sequence) is int and 1 <= sequence <= 8)
         production._digest(destroyed_state_commitment)
         ordinal = sequence if sequence <= 7 else 7
@@ -503,31 +651,49 @@ class FixedProvider:
         claim = _digest(b"cogs.stage2-inventory-intent/v1", {
             "batch": grant.batch_commitment, "sequence": sequence,
             "destroyed_state": destroyed_state_commitment})
-        inventory_dir = ROOT / "inventory" / f"observation-{sequence}"
-        self._claim(inventory_dir, "inventory", claim)
+        inventory_dir = (ROOT / "inventory" / f"observation-{sequence}"
+                         if recovery_directory is None else recovery_directory)
+        claim_path = inventory_dir / "inventory.intent.json"
+        claim_raw = canonical({
+            "version": "cogs.stage2-provider-invocation-intent/v1",
+            "operation": "inventory", "intent_commitment": claim,
+            "invocation_count": 1})
+        if claim_path.exists():
+            _require(_read(claim_path, 64 * 1024) == claim_raw,
+                     "inventory intent changed during reconciliation")
+            settled = inventory_dir / "inventory.receipt.json"
+            if settled.exists():
+                return _read(settled)
+        else:
+            _write_once(claim_path, claim_raw)
         started = time.time_ns()
-        caller = self._run((str(AWS), "--region", self.approval.region, "sts",
-                            "get-caller-identity", "--output", "json", "--no-cli-pager"), 60, True)
-        account_id = caller.get("Account"); arn = caller.get("Arn"); user_id = caller.get("UserId")
-        _require(type(account_id) is str and len(account_id) == 12 and account_id.isdigit()
-                 and hashlib.sha256(account_id.encode()).hexdigest() == self.approval.account_commitment
-                 and type(arn) is str and type(user_id) is str)
-        graph = decode(_read(directory / "campaign-output.json"))
+        caller = self._run((str(AWS), "--profile", "observer", "--region",
+                            self.approval.region, "sts", "get-caller-identity",
+                            "--output", "json", "--no-cli-pager"), 60, True)
+        account_id, arn = self._principal(
+            caller, self.approval.inventory_observer_principal_commitment,
+            "inventory observer"); user_id = caller.get("UserId")
+        _require(type(user_id) is str)
+        graph_path = directory / "campaign-output.json"
+        graph = decode(_read(graph_path)) if graph_path.exists() else {}
         pages = []
         response_commitments = []
+        related_ids = {value for key, value in graph.items()
+                       if key.endswith("_id") and type(value) is str}
         for category, service, operation, scope in INVENTORY_QUERIES:
             for page_ordinal, (requested, returned, response) in enumerate(
                     self._api_pages(service, operation, account_id), 1):
                 response_raw = canonical(response)
                 response_commitment = _digest(
                     b"cogs.stage2-inventory-api-response/v1", response)
-                _write_once(
-                    inventory_dir / f"{category}-{page_ordinal:02d}.response.json",
-                    response_raw, 0o400)
-                _require(_sha256_file(
-                    inventory_dir / f"{category}-{page_ordinal:02d}.response.json") ==
-                    hashlib.sha256(response_raw).hexdigest())
-                resources = self._resource_rows(category, response, grant, graph)
+                response_path = inventory_dir / f"{category}-{page_ordinal:02d}.response.json"
+                if response_path.exists():
+                    _require(_read(response_path) == response_raw,
+                             "inventory response changed during reconciliation")
+                else:
+                    _write_once(response_path, response_raw, 0o400)
+                _require(_sha256_file(response_path) == hashlib.sha256(response_raw).hexdigest())
+                resources = self._resource_rows(category, response, grant, graph, related_ids)
                 value = {
                     "category": category, "service": service, "operation": operation,
                     "query_scope": scope, "ordinal": page_ordinal,
@@ -551,7 +717,8 @@ class FixedProvider:
             "batch_commitment": self.approval.batch_commitment,
             "observation_sequence": sequence,
             "cycle_ordinal": sequence if sequence <= 7 else None,
-            "observer_commitment": _digest(b"cogs.stage2-inventory-observer/v1", {"arn": arn}),
+            "observer_commitment": _digest(b"cogs.stage2-inventory-observer/v1", {
+                "arn": arn, "sequence": sequence, "responses": response_commitments}),
             "session_commitment": _digest(b"cogs.stage2-inventory-session/v1", {
                 "user_id": user_id, "sequence": sequence, "started": started}),
             "run_commitment": _digest(b"cogs.stage2-inventory-run/v1", {
@@ -577,31 +744,50 @@ class FixedProvider:
         # Recovery never calls ``effect`` and never reissues a claimed normal destroy.
         destroy_claimed = (directory / "destroy.intent.json").exists()
         reconcile = directory / "cleanup-reconciliation.intent.json"
-        _write_once(reconcile, canonical({
+        reconcile_raw = canonical({
             "version": "cogs.stage2-cleanup-reconciliation-intent/v1",
             "grant_commitment": grant.grant_commitment,
             "state_commitment": state_commitment,
             "normal_destroy_reissued": False,
             "destroy_was_previously_claimed": destroy_claimed,
-        }))
+        })
+        if reconcile.exists():
+            _require(_read(reconcile, 64 * 1024) == reconcile_raw,
+                     "cleanup reconciliation intent changed")
+        else:
+            _write_once(reconcile, reconcile_raw)
         certain = False
         inventory = None
         # Cleanup uses its own durable authority and invocation name.  This is
         # not a second normal destroy settlement: even after an ambiguous normal
         # destroy, only this cleanup-only transition may reconcile remaining state.
         cleanup_claim = directory / "cleanup-destroy.invocation.json"
-        if not cleanup_claim.exists():
-            _write_once(cleanup_claim, canonical({"invocation_count": 1,
-                "grant_commitment": grant.grant_commitment,
-                "normal_destroy_was_ambiguous": destroy_claimed,
-                "cleanup_only": True}))
+        cleanup_raw = canonical({"invocation_count": 1,
+            "grant_commitment": grant.grant_commitment,
+            "normal_destroy_was_ambiguous": destroy_claimed, "cleanup_only": True})
+        if cleanup_claim.exists():
+            _require(_read(cleanup_claim, 64 * 1024) == cleanup_raw,
+                     "cleanup destroy invocation changed")
+        else:
+            _write_once(cleanup_claim, cleanup_raw)
+        cleanup_settled = directory / "cleanup-destroy.settlement.json"
+        if not cleanup_settled.exists():
             state = directory / "terraform.tfstate"
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve", "-input=false",
                        "-lock-timeout=30s", "-var-file=" +
                        str(directory / "campaign.auto.tfvars.json")), 1200)
+            _write_once(cleanup_settled, canonical({
+                "version": "cogs.stage2-cleanup-destroy-settlement/v1",
+                "grant_commitment": grant.grant_commitment, "certain": True}))
         try:
-            raw = self.inventory(ordinal, grant.grant_commitment, state_commitment)
+            recovery_root = directory / "cleanup-inventory"
+            recovery_root.mkdir(mode=0o700, exist_ok=True)
+            attempts = sorted(path for path in recovery_root.iterdir() if path.is_dir())
+            _require(len(attempts) < 3)
+            recovery_directory = recovery_root / f"attempt-{len(attempts) + 1}"
+            raw = self.inventory(ordinal, grant.grant_commitment, state_commitment,
+                                 recovery_directory)
             value = decode(raw); page_values = value.pop("pages")
             parsed_pages = []
             for row in page_values:
@@ -634,8 +820,8 @@ def main(argv: tuple[str, ...] | None = None) -> None:
     provider = FixedProvider()
     if len(args) == 6 and args[0] == "effect":
         raw = provider.effect(args[1], int(args[2]), args[3], args[4], args[5])
-    elif len(args) == 4 and args[0] == "remote":
-        raw = provider.remote(int(args[1]), args[2], args[3])
+    elif len(args) == 5 and args[0] == "remote":
+        raw = provider.remote(int(args[1]), args[2], args[3], int(args[4]))
     elif len(args) == 4 and args[0] == "inventory":
         raw = provider.inventory(int(args[1]), args[2], args[3])
     elif len(args) == 5 and args[0] == "recover":

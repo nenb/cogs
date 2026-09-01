@@ -55,7 +55,7 @@ jobs:
             "$RUNNER_TEMP/producer-run.json" >/dev/null
           gh api --paginate --slurp "repos/nenb/cogs/actions/runs/$PRODUCER_RUN_ID/jobs?per_page=100" \
             >"$RUNNER_TEMP/producer-jobs.json"
-          jq -e '[.[][] | select(.name == "admit" or .name == "build" or .name == "readback") |
+          jq -e '[.[].jobs[] | select(.name == "admit" or .name == "build" or .name == "readback") |
                     select(.status == "completed" and .conclusion == "success") | .name] | sort == ["admit","build","readback"]' \
             "$RUNNER_TEMP/producer-jobs.json" >/dev/null
           gh api --paginate --slurp \
@@ -63,7 +63,7 @@ jobs:
             >"$RUNNER_TEMP/publisher-runs.json"
           jq -e --arg h "$GITHUB_SHA" --arg title "Trusted prebuilt rootfs publication H=$EXACT_H artifact=$PRODUCER_ARTIFACT_ID" \
             --argjson current "$GITHUB_RUN_ID" \
-            '[.[][] | select(.head_sha == $h and .display_title == $title and
+            '[.[].workflow_runs[] | select(.head_sha == $h and .display_title == $title and
                              .path == ".github/workflows/stage2-prebuilt-rootfs-publisher.yml")] |
              map(.id) == [$current]' "$RUNNER_TEMP/publisher-runs.json" >/dev/null
 
