@@ -69,8 +69,8 @@ def main():
     except (TypeError, ValueError):
         fail("expiry is not parseable RFC3339")
     remaining = (expiry - datetime.now(timezone.utc)).total_seconds()
-    if not 30 * 60 < remaining < 5 * 60 * 60:
-        fail("expiry is not between 30 minutes and five hours from now")
+    if not 30 * 60 < remaining < 8 * 60 * 60:
+        fail("expiry is not between 30 minutes and eight hours from now")
 
     changes = [change for change in plan.get("resource_changes", []) if change.get("mode") == "managed"]
     counts = Counter(change.get("type") for change in changes)

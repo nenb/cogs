@@ -8,9 +8,10 @@ import hashlib
 import json
 import sys
 
-VERSION = "cogs.stage2-workload-local-qualification/v3"
+VERSION = "cogs.stage2-workload-local-qualification/v4"
 SCHEMA_REGISTRY = (
-    (VERSION, "schemas/stage2-workload-local-qualification-v3.json"),
+    (VERSION, "schemas/stage2-workload-local-qualification-v4.json"),
+    ("cogs.stage2-workload-local-qualification/v3", "schemas/stage2-workload-local-qualification-v3.json"),
     ("cogs.stage2-workload-local-qualification/v2", "schemas/stage2-workload-local-qualification-v2.json"),
 )
 MAX_RESULT_BYTES = 32 * 1024
@@ -22,9 +23,16 @@ LIMITATIONS = (
     "not-aws-evidence", "not-production-evidence", "not-release-evidence",
     "no-seven-cycle-controller-authority", "no-retry-or-promotion-authority",
 )
-DIGEST_FIELDS = (
+HISTORICAL_DIGEST_FIELDS = (
     "source_manifest_sha256", "host_attestation_sha256", "runtime_attestation_sha256",
     "rootfs_sha256", "artifact_sha256", "candidate_sha256", "final_pin_sha256",
+    "guest_program_sha256", "owner_implementation_sha256",
+)
+DIGEST_FIELDS = (
+    "source_manifest_sha256", "host_attestation_sha256", "runtime_attestation_sha256",
+    "rootfs_sha256", "rootfs_descriptor_sha256", "rootfs_package_manifest_sha256",
+    "rootfs_provenance_sha256", "rootfs_publication_receipt_sha256",
+    "artifact_sha256", "candidate_sha256", "final_pin_sha256",
     "guest_program_sha256", "owner_implementation_sha256",
 )
 ADMISSION_PHASES = ("preflight", "source_binding", "attestation", "kvm")
@@ -57,8 +65,9 @@ FAILURE_CODES = frozenset((*ADMISSION_CODES, "lifecycle-start", "ssh", "git-samp
 ROOT_KEYS = {
     "version", "result", "failure_code", "qualified", "authority", "limitations",
     "validation_classification", "bindings", "admission", "platform", "lifecycle",
-    "operation", "timings", "timing_summaries", "teardown", "zero_residue",
+    "operation", "rootfs_input", "timings", "timing_summaries", "teardown", "zero_residue",
 }
+HISTORICAL_ROOT_KEYS = ROOT_KEYS - {"rootfs_input"}
 
 
 class LocalResultError(Exception):
@@ -201,21 +210,44 @@ def _teardown_failure(teardown, binding, operation_status, residue, phases):
 
 def validate_result(value):
     """Validate one closed execution history and recompute its first failure."""
-    _keys(value, ROOT_KEYS)
-    _require(value["version"] in dict(SCHEMA_REGISTRY) and value["result"] in ("pass", "failure"))
-    teardown_phases = (TEARDOWN_PHASES if value["version"] == VERSION
-                       else HISTORICAL_V2_TEARDOWN_PHASES)
+    _require(value.get("version") in dict(SCHEMA_REGISTRY))
+    current = value["version"] == VERSION
+    _keys(value, ROOT_KEYS if current else HISTORICAL_ROOT_KEYS)
+    _require(value["result"] in ("pass", "failure"))
+    teardown_phases = (HISTORICAL_V2_TEARDOWN_PHASES
+                       if value["version"] == "cogs.stage2-workload-local-qualification/v2"
+                       else TEARDOWN_PHASES)
     _require(type(value["qualified"]) is bool and value["authority"] == AUTHORITY)
     _require(value["validation_classification"] == VALIDATION_CLASSIFICATION)
     _require(type(value["limitations"]) is list and tuple(value["limitations"]) == LIMITATIONS)
 
     bindings = value["bindings"]
-    _keys(bindings, {"source_head", *DIGEST_FIELDS})
+    digest_fields = DIGEST_FIELDS if current else HISTORICAL_DIGEST_FIELDS
+    _keys(bindings, {"source_head", *digest_fields})
     head = bindings["source_head"]
     _require(type(head) is str and len(head) == 40 and all(c in "0123456789abcdef" for c in head))
-    for name in DIGEST_FIELDS:
+    for name in digest_fields:
         _digest(bindings[name])
     first_failure = _admission_failure(value["admission"])
+
+    rootfs_input = value.get("rootfs_input")
+    if current:
+        _keys(rootfs_input, {"mode", "descriptor_sha256", "ustar_sha256",
+                             "package_manifest_sha256", "provenance_sha256",
+                             "publication_receipt_sha256", "acquisition_attempts",
+                             "import_attempts", "build_attempts", "fallback_used", "outcome"})
+        _require(rootfs_input["mode"] == "prebuilt-versioned-hash-pinned")
+        _require(rootfs_input["descriptor_sha256"] == bindings["rootfs_descriptor_sha256"])
+        _require(rootfs_input["ustar_sha256"] == bindings["rootfs_sha256"])
+        _require(rootfs_input["package_manifest_sha256"] == bindings["rootfs_package_manifest_sha256"])
+        _require(rootfs_input["provenance_sha256"] == bindings["rootfs_provenance_sha256"])
+        _require(rootfs_input["publication_receipt_sha256"] == bindings["rootfs_publication_receipt_sha256"])
+        for name in ("acquisition_attempts", "import_attempts", "build_attempts"):
+            _integer(rootfs_input[name], 0, 1)
+        _require(type(rootfs_input["fallback_used"]) is bool
+                 and rootfs_input["fallback_used"] is False)
+        _require(rootfs_input["build_attempts"] == 0 and rootfs_input["outcome"] in
+                 {"pass", "failure", "not-reached"})
 
     platform = value["platform"]
     _keys(platform, {"observation", "kvm_api", "qmp_present", "qmp_enabled"})
@@ -319,7 +351,10 @@ def validate_result(value):
     if first_failure is None:
         first_failure = teardown_failure
 
-    qualified = first_failure is None
+    qualified = (first_failure is None and (not current or (
+                 rootfs_input["acquisition_attempts"] == 1
+                 and rootfs_input["import_attempts"] == 1
+                 and rootfs_input["outcome"] == "pass")))
     _require(value["qualified"] == qualified)
     if value["result"] == "pass":
         _require(qualified and value["failure_code"] is None)

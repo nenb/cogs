@@ -84,19 +84,31 @@ def _route_realm():
     def readiness_route(): return readiness
     def synthetic_full_route(): return synthetic_full
     def synthetic_readiness_route(): return synthetic_readiness
-    def launch_authorized(route):
-        describe(route)
-        return route in authorized
+    def launch_authorized(route, grant=None):
+        name, _capability, _program, _marker = describe(route)
+        if route in authorized:
+            return grant is None
+        import completion_cycle_authority as cycle_authority
+        return (type(grant) is cycle_authority.campaign.CycleLaunchGrant
+                and grant.mode == name)
     def describe(route):
         value = registry.get(route)
         _require((type(route) is _FullRoute or type(route) is _ReadinessRoute)
                  and value is not None, "closure-issued cycle route required")
         return value
-    def bind(route, journal):
+    def bind(route, journal, grant=None):
         name, capability, program, marker = describe(route)
         _require(operation._cycle_route(journal) is None,
                  "cycle route already durably bound")
-        operation._record_cycle_route(journal, name, capability, program, marker)
+        if route not in authorized:
+            import completion_cycle_authority as cycle_authority
+            _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
+                     and grant.mode == name,
+                     "complete production grant required before route binding")
+        else:
+            _require(grant is None, "synthetic route cannot carry production grant")
+        operation._record_cycle_route(
+            journal, name, capability, program, marker, grant)
         return route
     return (_FullRoute, _ReadinessRoute, full_route, readiness_route,
             synthetic_full_route, synthetic_readiness_route,
@@ -198,6 +210,10 @@ def _receipt_realm():
                   route_record.body["program_sha256"],
                   route_record.body["marker_sha256"]) ==
                  (name, capability, program, marker))
+        production_grant = route_record.body["grant_authority"] == "production"
+        _require(production_grant == (route not in {
+            _synthetic_full_route_for_tests(), _synthetic_readiness_route_for_tests()}),
+            "route/grant authority differs")
         launch = by_kind["CTR_LAUNCH_ISSUED_V1"][0]
         observed = by_kind["SSH_MARKER_OBSERVED_V1"][0]
         settled = by_kind["SSH_COMMAND_SETTLED_V1"][0]
@@ -223,6 +239,19 @@ def _receipt_realm():
                                if row.record_type in PRIVATE_TEARDOWN_RECORDS)
         _require(teardown_kinds == PRIVATE_TEARDOWN_RECORDS)
         bindings = admission._static_custody_binding(lifecycle.static_custody)
+        settled_key_grants = [row.body for row in records
+                              if row.record_type == "INPUT_GRANT"
+                              and row.body["action"] == "settled"]
+        def key_commitment(path):
+            rows = [row for row in settled_key_grants if row["path"] == path]
+            _require(len(rows) == 1, "exact fresh SSH key grant required")
+            return hashlib.sha256(
+                b"cogs.stage2-ssh-key-generation/v1\0" + _canonical(rows[0])).hexdigest()
+        key_freshness = {
+            "client_key_commitment": key_commitment("@key-stage/client"),
+            "host_key_commitment": key_commitment("@key-stage/server"),
+        }
+        _require(len(set(key_freshness.values())) == 2)
         timing = {
             "host_boot_id": launch.body["host_boot_id"],
             "launch_record_sha256": launch.line_sha256,
@@ -238,13 +267,21 @@ def _receipt_realm():
         return {
             "version": PRIVATE_VERSION, "route": name,
             "cycle_capability_sha256": capability,
+            "cycle_grant": ({name: route_record.body[name] for name in (
+                "batch_commitment", "cycle_ordinal", "implementation_revision",
+                "control_revision", "static_control_sha256",
+                "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
+                "grant_commitment")} if production_grant else None),
             "production_publication_authorized": False,
-            "provider_execution_observed": False, "aws_authority": None,
+            "provider_execution_observed": False,
+            "aws_authority": (route_record.body["grant_commitment"]
+                              if production_grant else None),
             "source_bindings": bindings,
             "operation_token": records[0].body["operation_token"],
             "journal_sha256": hashlib.sha256(lifecycle.retired.raw).hexdigest(),
             "program_sha256": program, "marker_sha256": marker,
             "launch_attempts": 1, "ssh_attempts": 1, "timing": timing,
+            "key_freshness": key_freshness,
             "runtime_network_sha256": next(
                 row.body["proof_sha256"] for row in records
                 if row.record_type == "NETWORK_SNAPSHOT_V2"

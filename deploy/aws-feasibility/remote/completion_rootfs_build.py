@@ -1,6 +1,6 @@
 """Two independent fixed rootfs builds and pinned publication coordination."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import secrets
 import sys
 import time
@@ -19,7 +19,7 @@ BUILD_SECONDS = 900
 NATIVE_PACKAGE_BUILD_SECONDS = 1_200
 NATIVE_PACKAGE_CLEANUP_RESERVE_SECONDS = 600
 OUTER_SECONDS = 2400
-MANIFEST_NAME = fs._name(b".cogs-rootfs-candidate-manifest-v1.json")
+MANIFEST_NAME = builder.MANIFEST_NAME
 _start_phase_structural_counters, _read_phase_structural_counters = fs._phase_structural_counter_provider((
     "first-build-work", "first-inline-cleanup", "second-build-work", "second-inline-cleanup",
     "equality", "pin", "post-verification", "settlement",
@@ -64,11 +64,8 @@ class TwoBuildCandidate:
     cache_count: int
 
 
-@dataclass
-class RetainedBuild:
-    owned: builder.OwnedOperation
-    base_chain: fs.HeldChain
-    disposition: str = field(default="owned", init=False)
+# Historical producer name remains an alias; the ownership type is consumer-neutral.
+RetainedBuild = builder.RetainedOperation
 
 
 def _fixed_build_control(outer, seconds):

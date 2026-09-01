@@ -11,14 +11,14 @@ import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 const root = process.cwd();
 const portable = join(root, "test/aws-stage2-completion-local-result.py");
 const producer = join(root, "deploy/aws-feasibility/remote/completion_local_full.py");
-const schemaName = "stage2-workload-local-qualification-v3.json";
+const schemaName = "stage2-workload-local-qualification-v4.json";
 const schemaPath = join(root, "schemas", schemaName);
 const fixture = (name: string): Record<string, any> =>
   JSON.parse(readFileSync(join(root, "test/fixtures/stage2-completion", name), "utf8")) as Record<string, any>;
 const clone = (value: Record<string, any>): Record<string, any> => structuredClone(value);
 
 const LOCAL_RESULT_SCHEMA_REGISTRY = [
-  { version: "cogs.stage2-workload-local-qualification/v3", file: schemaName },
+  { version: "cogs.stage2-workload-local-qualification/v4", file: schemaName },
 ] as const;
 
 function codecAccepts(value: unknown): boolean {
@@ -56,10 +56,10 @@ for (const optimized of [false, true]) {
 
 test("schema registry and codec accept the same canonical shared fixtures", () => {
   const validate = compile();
-  const currentV3 = readFileSync(schemaPath);
+  const currentV4 = readFileSync(schemaPath);
   assert.equal(
-    createHash("sha256").update(currentV3).digest("hex"),
-    "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27",
+    createHash("sha256").update(currentV4).digest("hex"),
+    "e77754237db66f1742b491c7c30708f5f8e65301cf61388eb2a55a062b3c1045",
   );
   const historicalV2 = readFileSync(join(root, "schemas/stage2-workload-local-qualification-v2.json"));
   assert.equal(
@@ -76,7 +76,7 @@ test("schema registry and codec accept the same canonical shared fixtures", () =
     };
     assert.equal(schema.properties.version.const, entry.version);
   }
-  for (const name of ["local-result-v3-pass.json", "local-result-v3-failure.json"]) {
+  for (const name of ["local-result-v4-pass.json", "local-result-v4-failure.json"]) {
     const value = fixture(name);
     assert.equal(validate(value), true, `${name}: ${JSON.stringify(validate.errors)}`);
     assert.equal(codecAccepts(value), true, name);
@@ -95,7 +95,7 @@ test("schema registry and codec accept the same canonical shared fixtures", () =
 
 test("schema prefix structure and codec reject the same structural hostile matrix", () => {
   const validate = compile();
-  const pass = fixture("local-result-v3-pass.json");
+  const pass = fixture("local-result-v4-pass.json");
   const cases: Array<[string, (value: Record<string, any>) => void]> = [
     [
       "root extra",
@@ -182,7 +182,7 @@ test("schema prefix structure and codec reject the same structural hostile matri
     assert.equal(validate(value), false, `schema accepted ${name}`);
     assert.equal(codecAccepts(value), false, `codec accepted ${name}`);
   }
-  const stopped = fixture("local-result-v3-failure.json");
+  const stopped = fixture("local-result-v4-failure.json");
   for (const [name, platform] of [
     ["partial KVM after stop", { observation: "failure", kvm_api: 12, qmp_present: true, qmp_enabled: false }],
     ["QMP after stop", { observation: "failure", kvm_api: null, qmp_present: true, qmp_enabled: true }],
@@ -204,8 +204,8 @@ test("schema prefix structure and codec reject the same structural hostile matri
 
 test("schema-only semantic relations are explicitly classified and codec-required", () => {
   const validate = compile();
-  const pass = fixture("local-result-v3-pass.json");
-  const failure = fixture("local-result-v3-failure.json");
+  const pass = fixture("local-result-v4-pass.json");
+  const failure = fixture("local-result-v4-failure.json");
   const semanticCases: Array<[string, Record<string, any>]> = [];
   const add = (name: string, base: Record<string, any>, mutate: (value: Record<string, any>) => void): void => {
     const value = clone(base);
@@ -265,7 +265,7 @@ test("schema-only semantic relations are explicitly classified and codec-require
 
 test("every workload ordinal follows Git then build then install and stops monotonically", () => {
   const validate = compile();
-  const pass = fixture("local-result-v3-pass.json");
+  const pass = fixture("local-result-v4-pass.json");
   const groups = ["git", "build", "install"] as const;
   const stop = (rows: Record<string, any>[], start: number): void => {
     for (let index = start; index < rows.length; index += 1) {
@@ -325,8 +325,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   const retained = spawnSync("python3", ["-B", budgetPath], { cwd: root, encoding: "utf8" });
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
-  assert.equal(budget.preferred_limit, 76_000);
-  assert.equal(budget.hard_limit, 78_000);
+  assert.equal(budget.preferred_limit, 90_000);
+  assert.equal(budget.hard_limit, 94_000);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -349,7 +349,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     budget.current_lines,
     Number(budget.deployment_lines) + Number(budget.retained_schema_script_lines) + Number(budget.workflow_lines),
   );
-  assert.equal(budget.workflow_files, 14);
+  assert.equal(budget.workflow_files, 25);
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(
     Number(budget.correction_global_gross_added_lines),
@@ -377,6 +377,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     "schemas/stage2-local-execution-envelope-v1.json",
     "schemas/stage2-local-runtime-manifest-v1.json",
     "schemas/stage2-workload-local-qualification-v3.json",
+    "schemas/stage2-workload-local-qualification-v4.json",
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
   ]) {
     assert.match(budgetSource, new RegExp(retainedPath.replaceAll(".", String.raw`\.`), "u"));

@@ -48,6 +48,7 @@ RECORD_TYPES = frozenset(
         "operation-create-observed",
         "operation-create-settled",
         "operation-abort",
+        "prebuilt-import-intent",
         "create-intent",
         "create-abort",
         "create-observed",
@@ -838,8 +839,22 @@ def _validate_body(record_type, body):
     elif record_type in {"genesis-settled", "genesis-abort", "retired"}:
         _exact_keys(body, ("token", "state_parent"))
         _parse_parent(body["state_parent"])
+    elif record_type == "prebuilt-import-intent":
+        _exact_keys(body, ("token", "descriptor_sha256", "manifest_sha256",
+                           "manifest_size", "ustar_sha256", "ustar_size",
+                           "entry_count"))
+        for name in ("descriptor_sha256", "manifest_sha256", "ustar_sha256"):
+            _digest(body[name])
+        _integer(body["manifest_size"], 1)
+        _fail(_integer(body["ustar_size"], 1) % 512 == 0)
+        _integer(body["entry_count"], 1)
     elif record_type == "leased":
-        _exact_keys(body, ("token", "operation_name", "state_parent", "operation", "root", "ledger_key", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count"))
+        ordinary = ("token", "operation_name", "state_parent", "operation", "root", "ledger_key", "manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size", "entry_count")
+        _fail(set(body) == set(ordinary) or set(body) == set((*ordinary, "prebuilt_descriptor")))
+        if "prebuilt_descriptor" in body:
+            import completion_rootfs_prebuilt as prebuilt
+            descriptor_raw = prebuilt._canonical(body["prebuilt_descriptor"])
+            prebuilt.decode_fixed_descriptor(descriptor_raw)
         _fail(body["operation_name"] == _operation_name(token))
         _parse_parent(body["state_parent"])
         _fail(_parse_generation(body["operation"]).key.kind == "directory")
@@ -1284,7 +1299,11 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
         _fail(body == previous_body)
         phase = "active"
     elif phase in {"active", "release-authorized", "prestage-release-authorized"}:
-        if kind == "leased":
+        if kind == "prebuilt-import-intent":
+            _fail(phase == "active" and pending is None and lease_snapshot is None)
+            _fail(not any(item.record_type == "prebuilt-import-intent"
+                          for item in _history_records(history)))
+        elif kind == "leased":
             _fail(phase == "active" and pending is None and lease_snapshot is None)
             _fail(_parse_parent(body["state_parent"]) == state_parent)
             _fail(operation_parent is not None and _parse_generation(body["operation"]) == operation_parent.generation)
@@ -1292,6 +1311,25 @@ def _advance_history(history, record, count_incremental=True, replay_records=Non
                 replay_records = _history_with_record(history, record)
             else:
                 _fail(type(replay_records) is tuple and replay_records[record.sequence] == record)
+            import_intents = tuple(item for item in replay_records
+                                   if item.record_type == "prebuilt-import-intent")
+            if "prebuilt_descriptor" in body:
+                import completion_rootfs_prebuilt as prebuilt
+                _fail(len(import_intents) == 1)
+                intent = _body(import_intents[0])
+                descriptor_raw = prebuilt._canonical(body["prebuilt_descriptor"])
+                descriptor = prebuilt.decode_fixed_descriptor(descriptor_raw)
+                _fail(intent == {
+                    "token": body["token"],
+                    "descriptor_sha256": hashlib.sha256(descriptor_raw).hexdigest(),
+                    "manifest_sha256": descriptor.rootfs_manifest_sha256,
+                    "manifest_size": descriptor.rootfs_manifest_size,
+                    "ustar_sha256": descriptor.ustar_sha256,
+                    "ustar_size": descriptor.ustar_size,
+                    "entry_count": descriptor.entry_count,
+                })
+            else:
+                _fail(not import_intents)
             lease_snapshot = _lease_from_record(replay_records, record)
             phase = "leased"
         elif kind == "operation-remove-intent":
@@ -1809,6 +1847,7 @@ def _append_capabilities():
     def _append_leased_record(
         writer_state, token, operation_name, state_parent, operation, root,
         manifest_sha256, manifest_size, ustar_sha256, ustar_size, entry_count, control,
+        prebuilt_descriptor=None,
     ):
         _fail(type(writer_state) is LedgerWriterState and type(state_parent) is LedgerParent)
         _fail(type(operation) is HostGeneration and type(root) is HostGeneration)
@@ -1820,6 +1859,8 @@ def _append_capabilities():
             "manifest_sha256": manifest_sha256, "manifest_size": manifest_size,
             "ustar_sha256": ustar_sha256, "ustar_size": ustar_size, "entry_count": entry_count,
         }
+        if prebuilt_descriptor is not None:
+            body["prebuilt_descriptor"] = prebuilt_descriptor
         return _write_record(writer_state, LedgerProposal.create("leased", body), control, route_seal)
 
     def _append_prestage_authorized_record(writer_state, token, operation_name, lease,
@@ -1919,12 +1960,12 @@ def _settle_hardlink(state, transition):
 
 
 def _plan_hardlink_groups(fresh_fixed_authority):
-    from completion_rootfs_plan import RootfsBuildInputs
+    from completion_rootfs_canonical import _authority_plan
 
-    _fail(type(fresh_fixed_authority) is RootfsBuildInputs)
-    entries = {entry.record.path: entry for entry in fresh_fixed_authority.plan.entries}
+    rootfs_plan = _authority_plan(fresh_fixed_authority)
+    entries = {entry.record.path: entry for entry in rootfs_plan.entries}
     aliases = {}
-    for entry in fresh_fixed_authority.plan.entries:
+    for entry in rootfs_plan.entries:
         if entry.record.kind == "hardlink":
             aliases.setdefault(entry.record.hardlink_target, []).append(entry.record.path)
     plans = []

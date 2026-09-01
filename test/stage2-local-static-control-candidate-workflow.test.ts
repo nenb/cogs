@@ -4,15 +4,15 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const path = ".github/workflows/stage2-local-static-control-candidate.yml";
+const path = ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml";
 const workflow = readFileSync(path, "utf8");
 const dispatchGuard = readFileSync("scripts/stage2-static-control-dispatch-guard.py", "utf8");
-const runtimeBoundary = readFileSync("scripts/stage2-static-control-runtime-boundary.py", "utf8");
+const runtimeBoundary = readFileSync("scripts/stage2-prebuilt-static-control-runtime-boundary.py", "utf8");
 const preparation = readFileSync("deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py", "utf8");
 const settlement = readFileSync("scripts/stage2-local-settlement.py", "utf8");
 
 test("control candidate workflow is manual reviewed-H one-shot and expressly non-authoritative", () => {
-  assert.match(workflow, /^name: Stage 2 no-KVM static control candidate$/mu);
+  assert.match(workflow, /^name: Stage 2 prebuilt no-KVM static control candidate$/mu);
   assert.match(workflow, /on:\n {2}workflow_dispatch:/u);
   assert.doesNotMatch(workflow, /\n {2}(?:push|pull_request|schedule|workflow_run):/u);
   assert.match(workflow, /permissions:\n {2}actions: read\n\n/u);
@@ -24,171 +24,21 @@ test("control candidate workflow is manual reviewed-H one-shot and expressly non
   assert.match(workflow, /^ {4}timeout-minutes: 45$/mu);
   assert.match(workflow, /Step bounds total 42 minutes with a three-minute cleanup\/runner reserve/u);
   assert.doesNotMatch(workflow, /aws-actions|amazon|terraform|opentofu/u);
-  assert.doesNotMatch(workflow, /(?:GITHUB_TOKEN|GH_TOKEN)\s*[:=]/u);
+  assert.match(workflow, /Authenticate exact trusted rootfs control input/u);
+  assert.match(workflow, /artifact-ids: \$\{\{ inputs\.rootfs_control_artifact_id \}\}/u);
+  assert.doesNotMatch(workflow, /packages:\s*write|id-token:\s*write/u);
   assert.match(workflow, /test ! -e \/run\/netns\/cogs-stage2-ssh/u);
   assert.doesNotMatch(workflow, /completion_local_full|ctr run|systemctl|containerd --/u);
 });
 
-test("event-contract replacement guard is exact source and precedes every source effect", () => {
-  const guardAt = workflow.indexOf("Admit only the authorized event-contract replacement generation");
-  const checkoutAt = workflow.indexOf("Check out exact reviewed implementation head");
-  const materializeAt = workflow.indexOf("Materialize exact H source");
-  const acquireAt = workflow.indexOf("Acquire verify and install immutable fixtures");
-  assert.ok(0 <= guardAt && guardAt < checkoutAt && checkoutAt < materializeAt && materializeAt < acquireAt);
-  const match = workflow.match(/\/usr\/bin\/python3 -I -B - <<'PY'\n([\s\S]*?)^ {10}PY$/mu);
-  assert.ok(match?.[1]);
-  const embedded = match[1].replace(/^ {10}/gmu, "");
-  assert.equal(embedded, dispatchGuard);
-
-  const guardStep = workflow.slice(guardAt, checkoutAt);
-  const outsideGuard = workflow.slice(0, guardAt) + workflow.slice(checkoutAt);
-  assert.match(guardStep, /ACTIONS_READ_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/u);
-  assert.equal(workflow.match(/\$\{\{ secrets\.GITHUB_TOKEN \}\}/gu)?.length, 1);
-  assert.doesNotMatch(workflow, /github\.token/u);
-  assert.doesNotMatch(outsideGuard, /ACTIONS_READ_TOKEN|secrets\.GITHUB_TOKEN|Authorization/u);
-  assert.doesNotMatch(
-    workflow.slice(0, checkoutAt),
-    /actions\/checkout|prepare-stage2-fixed-source|immutable_preparation/u,
-  );
-
-  assert.match(dispatchGuard, /GUARD_VERSION = "cogs\.stage2-static-control-dispatch-guard\/v24"/u);
-  assert.match(dispatchGuard, /MAX_RUNS = 100/u);
-  assert.match(dispatchGuard, /MAX_TOKEN_BYTES = 1024/u);
-  assert.match(dispatchGuard, /"Authorization": f"Bearer \{token\}"/u);
-  assert.match(dispatchGuard, /ProxyHandler\(\{\}\)/u);
-  assert.match(dispatchGuard, /class _RejectRedirect/u);
-  assert.match(dispatchGuard, /len\(runs\) == total/u);
-  assert.match(dispatchGuard, /_require\(not link, "HISTORY_INCOMPLETE"\)/u);
-  assert.match(dispatchGuard, /PREDECESSOR_RUN_ID = 32558263561/u);
-  assert.match(dispatchGuard, /PREDECESSOR_WORKFLOW_HEAD = "a201d5688013377069b6fb4a36159360dc307cae"/u);
-  assert.match(dispatchGuard, /PREDECESSOR_REVIEWED_HEAD = "62bcfbcd58f90d0e329683e3297693c32bb71877"/u);
-  assert.match(dispatchGuard, /SECOND_PREDECESSOR_RUN_ID = 32560385792/u);
-  assert.match(dispatchGuard, /SECOND_PREDECESSOR_WORKFLOW_HEAD = "7ccb35d14d749a0ef14602889ce2b52934c03d4d"/u);
-  assert.match(dispatchGuard, /SECOND_PREDECESSOR_REVIEWED_HEAD = "67b1ca45f101f98c56b2717549e9252a38a9f2a1"/u);
-  assert.match(dispatchGuard, /THIRD_PREDECESSOR_RUN_ID = 32561859288/u);
-  assert.match(dispatchGuard, /THIRD_PREDECESSOR_WORKFLOW_HEAD = "549126bd7ba72d571d53113722e766967aaa0d23"/u);
-  assert.match(dispatchGuard, /THIRD_PREDECESSOR_REVIEWED_HEAD = "5f8c04899422ccf546c0f500b3647a5816b2675c"/u);
-  assert.match(dispatchGuard, /FOURTH_PREDECESSOR_RUN_ID = 32563007701/u);
-  assert.match(dispatchGuard, /FOURTH_PREDECESSOR_WORKFLOW_HEAD = "7f43d9acc5897b11b5d9794eb2e184767446aa48"/u);
-  assert.match(dispatchGuard, /FOURTH_PREDECESSOR_REVIEWED_HEAD = "d05bbc5928bda9b6bd27da1c290b0238219fd185"/u);
-  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_RUN_ID = 32564546902/u);
-  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_WORKFLOW_HEAD = "dd0e604afabe32f184ede5ec5c3ae2bbecdf464c"/u);
-  assert.match(dispatchGuard, /FIFTH_PREDECESSOR_REVIEWED_HEAD = "a263b7eb38b1b0aa4a3732cf3d7a2d72db243109"/u);
-  assert.match(dispatchGuard, /SIXTH_PREDECESSOR_RUN_ID = 32565389560/u);
-  assert.match(dispatchGuard, /SIXTH_PREDECESSOR_WORKFLOW_HEAD = "b5fc2996695d8b9fb0621df556cf4c3e66b5c526"/u);
-  assert.match(dispatchGuard, /SIXTH_PREDECESSOR_REVIEWED_HEAD = "fdd4b82d07a218d10c7bce11c8146689e4cafdc1"/u);
-  assert.match(dispatchGuard, /SEVENTH_PREDECESSOR_RUN_ID = 32566515932/u);
-  assert.match(dispatchGuard, /SEVENTH_PREDECESSOR_WORKFLOW_HEAD = "0bbb7047e451d1957302b705242d0fa6e8058006"/u);
-  assert.match(dispatchGuard, /SEVENTH_PREDECESSOR_REVIEWED_HEAD = "130832252da16efa1772e76b07051d50f20973ca"/u);
-  assert.match(dispatchGuard, /EIGHTH_PREDECESSOR_RUN_ID = 32568536415/u);
-  assert.match(dispatchGuard, /EIGHTH_PREDECESSOR_WORKFLOW_HEAD = "9642dcd247aedc0a29068be3aa4e8873db89de3a"/u);
-  assert.match(dispatchGuard, /EIGHTH_PREDECESSOR_REVIEWED_HEAD = "94ad8206c696f950fdcdbba2a6ea2bb0136e76d9"/u);
-  assert.match(dispatchGuard, /NINTH_PREDECESSOR_RUN_ID = 32569177840/u);
-  assert.match(dispatchGuard, /NINTH_PREDECESSOR_WORKFLOW_HEAD = "0da45c37b0a0cf73e288eb9c3f8b23c436f25ac6"/u);
-  assert.match(dispatchGuard, /NINTH_PREDECESSOR_REVIEWED_HEAD = "25bfbb4277c9051da352e9c699d4ca98dcb248e2"/u);
-  assert.match(dispatchGuard, /TENTH_PREDECESSOR_RUN_ID = 32569932861/u);
-  assert.match(dispatchGuard, /TENTH_PREDECESSOR_WORKFLOW_HEAD = "ee789aecc77319909186b4a7d769227896fb3c66"/u);
-  assert.match(dispatchGuard, /TENTH_PREDECESSOR_REVIEWED_HEAD = "dd676027801370f7bf025539b8c2c14991689afa"/u);
-  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_RUN_ID = 32574273244/u);
-  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_WORKFLOW_HEAD = "c727b167cea2f470807588df913d815148fbb858"/u);
-  assert.match(dispatchGuard, /ELEVENTH_PREDECESSOR_REVIEWED_HEAD = "7b1dcc045182616cf657bcf941ba8aee7108eb76"/u);
-  assert.match(dispatchGuard, /TWELFTH_PREDECESSOR_RUN_ID = 32576106736/u);
-  assert.match(dispatchGuard, /TWELFTH_PREDECESSOR_WORKFLOW_HEAD = "8dd6d58f4f9e24a2f1bcccbd4719fbf03e72bbb2"/u);
-  assert.match(dispatchGuard, /TWELFTH_PREDECESSOR_REVIEWED_HEAD = "4a3beae8683309f3fef30cecce3187262efc4b23"/u);
-  assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_RUN_ID = 32577727971/u);
-  assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c2540af5cb85e2845de1eebfad3475d28c0483e5"/u);
-  assert.match(dispatchGuard, /SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "59d992b305cfd243f2d7b9c770fe24b0a36cc053"/u);
-  assert.match(dispatchGuard, /SECOND_SUCCESSFUL_PREDECESSOR_RUN_ID = 32590966571/u);
-  assert.match(
-    dispatchGuard,
-    /SECOND_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "acb99d5d6ba4cbd94ad40c9bbe4520d2f8905368"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /SECOND_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "33314a9999cbe1e0eb927ba4a1e6f1ee10fcd5df"/u,
-  );
-  assert.match(dispatchGuard, /THIRD_SUCCESSFUL_PREDECESSOR_RUN_ID = 32594176203/u);
-  assert.match(
-    dispatchGuard,
-    /THIRD_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "7759346c281b45a3d98476abdfaa820109601547"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /THIRD_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "a2c25f34c35d778965ab7b125fd3b8b4460b0617"/u,
-  );
-  assert.match(dispatchGuard, /FOURTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32600501461/u);
-  assert.match(
-    dispatchGuard,
-    /FOURTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "e9e4ea6aef35c9d4cb821e2fcc6adf480eec87f3"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /FOURTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "1eaec52dd4e2f1222548362e92adc780a2169025"/u,
-  );
-  assert.match(dispatchGuard, /FIFTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32620087277/u);
-  assert.match(
-    dispatchGuard,
-    /FIFTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "0c4c698ed7c8a4d28f350293102012a1dd9d869c"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /FIFTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "4bced3fb4b768f5dc67f919ae8d579059739b126"/u,
-  );
-  assert.match(dispatchGuard, /SIXTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32627151171/u);
-  assert.match(
-    dispatchGuard,
-    /SIXTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "aee6966c2977258d310affa0c3b63d0863d090fd"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /SIXTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "e2854b30549ade94e34755dddc0fb2c83f4dacc0"/u,
-  );
-  assert.match(dispatchGuard, /SEVENTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 32633570406/u);
-  assert.match(
-    dispatchGuard,
-    /SEVENTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "c16f3168a2b14ed0b88acf5753ef106940af1b73"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /SEVENTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "892c3fc44e37d74792fe552107839b920ea98e8e"/u,
-  );
-  assert.match(dispatchGuard, /EIGHTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 33290514426/u);
-  assert.match(
-    dispatchGuard,
-    /EIGHTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "b6a6f4613ded73d0496602eb5dd9b5db7520e04a"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /EIGHTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "89243c8d9f7a946aefdaa4c445a5cfe1e0fe7e14"/u,
-  );
-  assert.match(dispatchGuard, /NINTH_SUCCESSFUL_PREDECESSOR_RUN_ID = 33320343092/u);
-  assert.match(
-    dispatchGuard,
-    /NINTH_SUCCESSFUL_PREDECESSOR_WORKFLOW_HEAD = "73a5067bdc4ea6941097651beb00ebcc78e2dd9b"/u,
-  );
-  assert.match(
-    dispatchGuard,
-    /NINTH_SUCCESSFUL_PREDECESSOR_REVIEWED_HEAD = "bf0479a012b39c074ecb623ea83e85b3dc3ebe36"/u,
-  );
-  assert.match(dispatchGuard, /token\.encode\("ascii"\)/u);
-  assert.match(dispatchGuard, /all\(0x21 <= byte <= 0x7e for byte in raw\)/u);
-  assert.match(dispatchGuard, /"TOKEN_BOUND", "TOKEN_CHAR", "TOKEN_MISSING"/u);
-  assert.match(dispatchGuard, /status in \(401, 403\)[\s\S]+"API_AUTH_REJECTED"/u);
-  assert.match(dispatchGuard, /predecessor_ids == \(set\(PREDECESSORS\) \| set\(REJECTED_BRANCH_PREDECESSORS\)/u);
-  assert.match(dispatchGuard, /REJECTED_BRANCH_PREDECESSOR_RUN_ID = 33267664208/u);
-  assert.match(dispatchGuard, /REJECTED_BRANCH_PREDECESSOR_BRANCH = "fix\/issue42-static-event-contract"/u);
-  assert.match(dispatchGuard, /run\.get\("status"\) == "completed"[\s\S]+run\.get\("conclusion"\) == conclusion/u);
-  assert.match(dispatchGuard, /current_run_id == min\(current_ids\)/u);
-  assert.match(dispatchGuard, /len\(current_ids\) == 1/u);
-  assert.match(dispatchGuard, /raise GuardError\("UNKNOWN_HISTORY_REJECTED"\)/u);
-  assert.match(dispatchGuard, /REVIEWED_IMPLEMENTATION_HEAD = "1fc2dea2dcefea2aaf71a80356e0f5ed946e9991"/u);
-  assert.match(dispatchGuard, /head_repository\.get\("full_name"\) == REPOSITORY/u);
-  assert.match(dispatchGuard, /_read_event\(_required\(environ, "GITHUB_EVENT_PATH", "EVENT_PATH_REJECTED"\)\)/u);
-  assert.match(dispatchGuard, /"EVENT_BOUND_REJECTED", "EVENT_IO_REJECTED", "EVENT_JSON_REJECTED"/u);
-  assert.doesNotMatch(dispatchGuard, /event\.get\("(?:ref|repository|inputs)"\)/u);
-  assert.doesNotMatch(dispatchGuard, /def guard\(environ=os\.environ, event=/u);
-  assert.match(dispatchGuard, /message = f"\{GUARD_VERSION\}: \{code\}\\n"/u);
-  assert.doesNotMatch(dispatchGuard, /print\(|logging|response\.read\([^M]/u);
+test("prebuilt guard is first-created and precedes every source effect", () => {
+  const guard = workflow.indexOf("Admit sole first-created prebuilt static-control generation");
+  const checkout = workflow.indexOf("Check out exact reviewed implementation head without credentials");
+  assert.ok(guard >= 0 && checkout > guard);
+  assert.match(workflow, /stage2-local-static-control-prebuilt-candidate\.yml\/runs/u);
+  assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
+  assert.match(workflow, /test "\$GITHUB_RUN_ATTEMPT" = 1/u);
+  assert.match(workflow, /test "\$GITHUB_REF_PROTECTED" = true/u);
 });
 
 test("static dispatch guard hostile suite covers event parsing, predecessors, redaction, and API failure", () => {
@@ -221,11 +71,11 @@ test("reviewed H itself binds corrected immutable and producer sources in the ru
 });
 
 test("static-only cleanup uses reviewed source policy and owned process-fd censuses", () => {
-  assert.match(workflow, /stage2-static-control-runtime-boundary\.py" pre/u);
-  assert.match(workflow, /stage2-static-control-runtime-boundary\.py" post/u);
+  assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" pre/u);
+  assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" post/u);
   assert.match(workflow, /Remove owned fixtures and verify the static-only runtime boundary/u);
   assert.match(workflow, /chmod 0711 "\$root" "\$stage" "\$observation"/u);
-  assert.match(workflow, /test -r "\$candidate\/stage2-local-static-control-v1\.json"/u);
+  assert.match(workflow, /test -r "\$candidate\/stage2-local-static-control-v2\.json"/u);
   assert.match(workflow, /stat -c '%U:%G:%a'.*root:root:711/u);
   assert.match(workflow, /stat -c '%U:%G:%a'.*"\$stage\/source".*root:root:700/su);
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
@@ -233,9 +83,9 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /NORMALIZED_WORKFLOW_SHA256 = "f1ca4c5abb2a0c6d97411ce9894b8b24d641966219b23a463d2f78d477b81ef7"/u,
+    /REVIEWED_WORKFLOW_SHA256 = "9aa8cccf885e2aeb49678881685850c416583de207e8f61c63fc9637ed739bc9"/u,
   );
-  assert.match(runtimeBoundary, /replacements == 1/u);
+  assert.doesNotMatch(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
   assert.match(runtimeBoundary, /owned-qmp-or-runtime-socket/u);
   assert.match(runtimeBoundary, /owned-network-namespace/u);
@@ -247,22 +97,23 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   ]) {
     assert.match(runtimeBoundary, new RegExp(path.replaceAll("/", "\\/"), "u"));
   }
-  const result = spawnSync("python3", ["-B", "test/stage2-static-control-runtime-boundary.py"], {
+  const result = spawnSync("python3", ["-B", "test/stage2-prebuilt-static-control-runtime-boundary.py"], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /static-control runtime boundary hostile tests passed/u);
+  assert.match(result.stdout, /stage2 prebuilt static boundary checks passed/u);
 });
 
-test("final G preparation is fixed, verifies 16+2, installs before custody, and cleans Kata", () => {
+test("final G preparation acquires one prebuilt rootfs plus two runtimes and cleans Kata", () => {
   assert.match(preparation, /def prepare\(\):/u);
-  assert.match(preparation, /_acquire_rootfs_assets\(contract\)[\s\S]+_download_runtime/u);
+  assert.match(preparation, /prebuilt_acquisition\.acquire_fixed\(descriptor_raw\)[\s\S]+_download_runtime/u);
   assert.match(preparation, /_archive_values\(expected_runtime, archives, extracted\)/u);
   assert.match(preparation, /_publish_runtime\(extracted\)[\s\S]+_verify_installed\(expected_runtime\)/u);
-  assert.match(preparation, /rootfs_artifact_count": 16/u);
+  assert.match(preparation, /"rootfs_artifact_count": 1/u);
+  assert.doesNotMatch(preparation, /_acquire_rootfs_assets\(contract\)/u);
   assert.match(preparation, /runtime_archive_count": 2/u);
   assert.match(preparation, /CONTROL_ROOT = Path\("\/var\/lib\/cogs\/stage2-completion-v1\/control"\)/u);
   assert.doesNotMatch(preparation, /argparse|sys\.argv\[1\]|os\.getenv\(/u);

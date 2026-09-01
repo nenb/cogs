@@ -1,0 +1,611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.invalid/schemas/stage2-local-runtime-manifest-v3.json",
+  "title": "Static reviewed Stage 2 runtime manifest without live identities",
+  "$comment": "This description contains fixed QMP launch policy but no live inode, device, ctime, PID, or mapping. Admission derives live identities later.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "authority", "architecture", "archives", "rootfs", "launch", "executables"],
+  "properties": {
+    "version": {
+      "const": "cogs.stage2-local-runtime-manifest/v3"
+    },
+    "authority": {
+      "const": "non-authoritative-reviewed-static-control-data"
+    },
+    "architecture": {
+      "const": "x86_64"
+    },
+    "archives": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/archive"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "kata"
+                },
+                "version": {
+                  "const": "3.32.0"
+                },
+                "name": {
+                  "const": "kata-static-3.32.0-amd64.tar.zst"
+                },
+                "size": {
+                  "const": 1547940938
+                },
+                "sha256": {
+                  "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/archive"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "containerd"
+                },
+                "version": {
+                  "const": "2.2.1"
+                },
+                "name": {
+                  "const": "containerd-static-2.2.1-linux-amd64.tar.gz"
+                },
+                "size": {
+                  "const": 33645699
+                },
+                "sha256": {
+                  "const": "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "rootfs": {
+      "$ref": "#/$defs/rootfs"
+    },
+    "launch": {
+      "$ref": "#/$defs/launch"
+    },
+    "executables": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/executable"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 512,
+      "pattern": "^/(?!.*(?:^|/)\\.\\.?(/|$))[A-Za-z0-9._+/-]+$"
+    },
+    "nullableText": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "bounds": {
+      "const": {
+        "max_entries": 100000,
+        "max_file_bytes": 2147483648,
+        "max_total_file_bytes": 8589934592
+      }
+    },
+    "layoutEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "mode", "uid", "gid", "size", "link_target", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "kind": {
+          "enum": ["directory", "file", "symlink", "hardlink"]
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483648
+        },
+        "link_target": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_count", "total_file_bytes", "manifest_sha256", "bounds", "entries"],
+      "properties": {
+        "entry_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "total_file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100000,
+          "items": {
+            "$ref": "#/$defs/layoutEntry"
+          }
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "version", "name", "url", "size", "sha256", "layout", "extracted"],
+      "properties": {
+        "role": {
+          "enum": ["kata", "containerd"]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github.com/"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "layout": {
+          "$ref": "#/$defs/layout"
+        },
+        "extracted": {
+          "$ref": "#/$defs/layout"
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "bytes", "version"],
+      "properties": {
+        "name": {
+          "enum": ["git", "dpkg-deb", "dpkg"]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      }
+    },
+    "staticObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "path",
+        "source",
+        "mode",
+        "size",
+        "content_sha256",
+        "interpreter",
+        "soname",
+        "needed",
+        "resolved"
+      ],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-completion-runtime-object/v1"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 134217728
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "interpreter": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "soname": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "needed": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "resolved": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "staticClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "manifest_sha256", "object_count", "tools", "objects"],
+      "properties": {
+        "version": {
+          "const": "cogs.stage2-runtime-tool-closure/v1"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "object_count": {
+          "const": 35
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        },
+        "objects": {
+          "type": "array",
+          "minItems": 35,
+          "maxItems": 35,
+          "items": {
+            "$ref": "#/$defs/staticObject"
+          }
+        }
+      }
+    },
+    "rootfs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_sha256",
+        "manifest_size",
+        "ustar_sha256",
+        "ustar_size",
+        "entry_count",
+        "prebuilt_descriptor",
+        "prebuilt_descriptor_sha256",
+        "static_mapping_policy",
+        "static_closure"
+      ],
+      "properties": {
+        "manifest_sha256": {
+          "const": "59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1"
+        },
+        "manifest_size": {
+          "const": 1049443
+        },
+        "ustar_sha256": {
+          "const": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397"
+        },
+        "ustar_size": {
+          "const": 136905728
+        },
+        "entry_count": {
+          "const": 4353
+        },
+        "static_mapping_policy": {
+          "const": {
+            "uid": 0,
+            "gid": 0,
+            "nlink": 1,
+            "distinct_file_identities": true,
+            "path_basis": "rootfs-relative-no-symlink"
+          }
+        },
+        "static_closure": {
+          "$ref": "#/$defs/staticClosure"
+        },
+        "prebuilt_descriptor": {
+          "$ref": "https://cogs.dev/schemas/stage2-prebuilt-rootfs-descriptor-v1.json"
+        },
+        "prebuilt_descriptor_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "launchArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "kind", "mode", "size", "sha256", "link_target"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "enum": ["file", "symlink"]
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483648
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "link_target": {
+          "$ref": "#/$defs/nullableText"
+        }
+      }
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "configuration",
+        "active_configuration",
+        "observer",
+        "containerd_configuration_sha256",
+        "mount_list_sha256",
+        "shared_filesystem",
+        "hypervisor",
+        "fallback",
+        "artifacts",
+        "artifacts_sha256"
+      ],
+      "properties": {
+        "runtime": {
+          "const": "io.containerd.kata.v2"
+        },
+        "configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "size", "sha256"],
+          "properties": {
+            "path": {
+              "const": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+            },
+            "size": {
+              "const": 32218
+            },
+            "sha256": {
+              "const": "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae"
+            }
+          }
+        },
+        "active_configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "size", "sha256", "base_path", "base_size", "base_sha256", "substitutions"],
+          "properties": {
+            "path": {
+              "const": "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/configuration-qemu-observer.toml"
+            },
+            "size": {
+              "const": 32220
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "base_path": {
+              "const": "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+            },
+            "base_size": {
+              "const": 32218
+            },
+            "base_sha256": {
+              "const": "7ecd072a35da55f5abc76d604a610cf3f2d543c7de0cefc4d1a81028facd2cae"
+            },
+            "substitutions": {
+              "const": [
+                {
+                  "from": "enable_debug = false",
+                  "to": "enable_debug = true"
+                },
+                {
+                  "from": "extra_monitor_socket = \"\"",
+                  "to": "extra_monitor_socket = \"qmp\""
+                }
+              ]
+            }
+          }
+        },
+        "observer": {
+          "const": {
+            "private_socket": "/run/vc/vm/cogs-stage2-ssh-v1/qmp.sock",
+            "observer_socket": "/run/vc/vm/cogs-stage2-ssh-v1/extra-monitor.sock",
+            "qmp_frontends": 2,
+            "commands": ["qmp_capabilities", "query-status", "query-kvm"],
+            "client_policy": "closed-query-only-full-control-endpoint",
+            "debug_effect": "hypervisor-debug-kernel-parameters-and-debug-threads"
+          }
+        },
+        "containerd_configuration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "mount_list_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "shared_filesystem": {
+          "const": "virtio-fs"
+        },
+        "hypervisor": {
+          "const": "qemu"
+        },
+        "fallback": {
+          "const": "none"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/launchArtifact"
+          }
+        },
+        "artifacts_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "source_class",
+        "path",
+        "contract_member",
+        "contract_sha256",
+        "executable_sha256",
+        "tool_closure_sha256"
+      ],
+      "properties": {
+        "role": {
+          "enum": ["ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"]
+        },
+        "source_class": {
+          "enum": ["host-path", "staged-runtime", "kata-runtime"]
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "contract_member": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tool_closure_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

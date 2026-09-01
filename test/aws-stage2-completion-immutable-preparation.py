@@ -17,6 +17,28 @@ spec = importlib.util.spec_from_file_location(
     REMOTE / "completion_kata_immutable_preparation.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+import completion_rootfs_prebuilt as prebuilt
+import completion_rootfs_prebuilt_acquisition as prebuilt_acquisition
+
+
+def descriptor_value():
+    digest = "1" * 64
+    return {
+        "version": prebuilt.VERSION, "authority": prebuilt.AUTHORITY,
+        "artifact": {"version": prebuilt.ARTIFACT_VERSION, "os": "linux", "architecture": prebuilt.ARCHITECTURE, "format": prebuilt.FORMAT},
+        "registry": {"host": prebuilt.REGISTRY_HOST, "repository": prebuilt.REGISTRY_REPOSITORY,
+                     "manifest_media_type": prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE,
+                     "manifest_digest": digest, "layer_media_type": prebuilt.REGISTRY_LAYER_MEDIA_TYPE,
+                     "layer_digest": prebuilt.USTAR_SHA256, "layer_size": prebuilt.USTAR_SIZE},
+        "rootfs": {"metadata_sha256": prebuilt.METADATA_SHA256, "metadata_size": prebuilt.METADATA_SIZE,
+                   "manifest_sha256": prebuilt.MANIFEST_SHA256, "manifest_size": prebuilt.MANIFEST_SIZE,
+                   "ustar_sha256": prebuilt.USTAR_SHA256, "ustar_size": prebuilt.USTAR_SIZE,
+                   "entry_count": prebuilt.ENTRY_COUNT, "source_date_epoch": prebuilt.model.SOURCE_DATE_EPOCH},
+        "producer": {"revision": "2" * 40, "source_manifest_sha256": digest,
+                     "input_contract_sha256": prebuilt.INPUT_CONTRACT_SHA256,
+                     "package_manifest_sha256": digest, "provenance_sha256": digest,
+                     "qualification_receipt_sha256": digest, "publication_receipt_sha256": digest},
+    }
 
 # Extractor admission closes every ownership/mode/executable predicate and
 # observes capacity on the actual fixed-source filesystem.
@@ -100,6 +122,12 @@ def configure(root, fail_at=None):
     module.IMMUTABLE_STAGING = completion / ".kata-runtime-v1.immutable-staging"
     module.KATA_PARENT = opt
     module.KATA_ROOT = opt / "kata"
+    prebuilt_root = root / "var/lib/cogs/stage2-completion-v1/prebuilt-rootfs-input-v1"
+    module.preparation.PREBUILT_INPUT_ROOT = prebuilt_root
+    module.preparation.PREBUILT_DESCRIPTOR_ROOT = root / "var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1"
+    module.preparation.PREBUILT_DESCRIPTOR_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "descriptor.json"
+    module.preparation.PREBUILT_USTAR_PATH = prebuilt_root / "rootfs.tar"
+    prebuilt_acquisition.ROOT = prebuilt_root
     events = []
     module._reject_ambient_authority = lambda: events.append("gate")
     module._chown_root = lambda _descriptor: None
@@ -108,7 +136,12 @@ def configure(root, fail_at=None):
                           for index in range(16))
     module._fixed_contract = lambda: {"bounds": {"artifact_count": 16}}
     module._artifact_rows = lambda _contract: artifact_rows
-    module._expected_runtime = lambda: None
+    descriptor = descriptor_value()
+    module._expected_runtime = lambda: {
+        "rootfs": {"prebuilt_descriptor": descriptor,
+                   "prebuilt_descriptor_sha256": hashlib.sha256(
+                       module.preparation.canonical_bytes(descriptor)).hexdigest()}}
+    prebuilt.load_authority = lambda _descriptor, _raw: object()
 
     def stable(path, expected, mode=0o400):
         raw = path.read_bytes()
@@ -119,19 +152,33 @@ def configure(root, fail_at=None):
         assert raw == wanted and len(raw) == expected["size"]
         assert hashlib.sha256(raw).hexdigest() == expected["sha256"]
 
-    def acquisition(_contract):
-        events.append("rootfs-16")
-        cache = module.ARTIFACT_ROOT / "cache"
-        created_count = 0
-        for row in artifact_rows:
-            path = cache / row["cache_name"]
-            if path.exists():
-                continue
-            path.write_bytes(path.name.encode())
-            path.chmod(0o400)
-            created_count += 1
-            if fail_at == "rootfs" and created_count == 4:
-                raise module.ImmutablePreparationError()
+    def acquisition(descriptor_raw):
+        events.append("rootfs-one")
+        prebuilt_root.mkdir(mode=0o700)
+        path = prebuilt_root / "rootfs.tar"
+        path.write_bytes(b"prebuilt-test")
+        path.chmod(0o400)
+        if fail_at == "rootfs":
+            raise module.ImmutablePreparationError()
+        parsed = prebuilt.decode_fixed_descriptor(descriptor_raw)
+        return prebuilt_acquisition.AcquisitionReceipt(
+            hashlib.sha256(descriptor_raw).hexdigest(), parsed.manifest_digest,
+            parsed.layer_digest, parsed.layer_size, "a" * 64, "b" * 64,
+            str(path), True)
+
+    def remove_prebuilt(_descriptor, cleanup_descriptor_raw):
+        assert cleanup_descriptor_raw == module.preparation.canonical_bytes(descriptor)
+        if prebuilt_root.exists():
+            paths = list(prebuilt_root.iterdir())
+            if paths:
+                assert len(paths) == 1 and paths[0].name == "rootfs.tar"
+                assert paths[0].read_bytes() == b"prebuilt-test"
+                assert stat.S_IMODE(paths[0].stat().st_mode) == 0o400
+                paths[0].unlink()
+            prebuilt_root.rmdir()
+
+    prebuilt_acquisition.acquire_fixed = acquisition
+    module._remove_prebuilt_input = remove_prebuilt
 
     def download(pin, _deadline):
         events.append("download-" + pin["role"])
@@ -202,13 +249,11 @@ def configure(root, fail_at=None):
 
     module._stable_file = stable
     module._extractor_preflight = lambda: events.append("extractor-preflight")
-    module._acquire_rootfs_assets = acquisition
     module._download_runtime = download
     module._run_extract = extract
     module._archive_values = values
     module._publish_runtime = publish
     module._verify_installed = verify
-    module.artifact_verifier.verify_package_archives = lambda *_args: events.append("rootfs-readback")
     return events
 
 
@@ -216,13 +261,13 @@ with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
     events = configure(root)
     result = module.prepare()
-    assert result["rootfs_artifact_count"] == 16
+    assert result["rootfs_artifact_count"] == 1
     assert result["runtime_archive_count"] == 2
-    assert result["control_verified"] is False
+    assert result["control_verified"] is True
     assert events == [
-        "gate", "extractor-preflight", "rootfs-16", "download-kata", "download-containerd",
+        "gate", "extractor-preflight", "rootfs-one", "download-kata", "download-containerd",
         "extract-kata", "extract-containerd", "layout-readback",
-        "publish-static", "installed-readback", "rootfs-readback",
+        "publish-static", "installed-readback",
     ]
     receipt = json.loads(module.RECEIPT.read_bytes())
     assert receipt["forbidden_surfaces"] == [
@@ -360,7 +405,7 @@ with tempfile.TemporaryDirectory() as temporary:
 with tempfile.TemporaryDirectory() as temporary:
     configure(Path(temporary))
     module.prepare()
-    changed_asset = module.ARTIFACT_ROOT / "cache/asset-00"
+    changed_asset = module.preparation.PREBUILT_USTAR_PATH
     changed_asset.chmod(0o600)
     changed_asset.write_bytes(b"changed")
     try:
@@ -374,7 +419,7 @@ with tempfile.TemporaryDirectory() as temporary:
 with tempfile.TemporaryDirectory() as temporary:
     configure(Path(temporary))
     module.prepare()
-    foreign = module.ARTIFACT_ROOT / "cache/foreign"
+    foreign = module.preparation.PREBUILT_INPUT_ROOT / "foreign"
     foreign.write_bytes(b"foreign")
     try:
         module.recover_failed_preparation()
@@ -406,7 +451,8 @@ assert "subprocess.Popen" not in source
 assert "containerd --" not in source and "ctr --" not in source
 assert "AWS_" in source and "DENIED_ENV" in source
 assert "ignore_errors" not in source and "shutil.rmtree" not in source
-assert "_remove_verified_tree" in source and "artifact_cache_created" in source
+assert "_remove_verified_tree" in source and "completion_artifact_acquisition" not in source
+assert "rootfs_artifact_count\": 16" not in source
 if os.environ.get("COGS_EXPECT_NO_KVM") == "1":
     assert not Path("/dev/kvm").exists()
     recovered = subprocess.run(

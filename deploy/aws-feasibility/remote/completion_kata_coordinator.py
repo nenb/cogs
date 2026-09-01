@@ -7,6 +7,7 @@ replace the module-held facade with typed recorders.
 """
 from dataclasses import dataclass
 
+import completion_cycle_authority as cycle_authority
 import completion_kata_admission as admission
 import completion_kata_execution_bridge as execution_bridge
 import completion_kata_network as network
@@ -126,6 +127,7 @@ def _safe_failure_diagnostic(error):
 class _Lifecycle:
     recovery: bool = False
     cycle_route: object = None
+    cycle_grant: object = None
     static_custody: object = None
     static_gate: object = None
     source_approval: object = None
@@ -263,6 +265,12 @@ class _PackagePrivateOwners:
         return (self.admission.claim_recovery_static() if lifecycle.recovery
                 else self.admission.claim_static())
 
+    def validate_cycle_grant(self, lifecycle):
+        if lifecycle.cycle_grant is None:
+            return None
+        return preparation_bridge._validate_fixed_cycle_grant(
+            lifecycle.static_custody, lifecycle.cycle_grant)
+
     def acquire_rootfs(self, lifecycle):
         if lifecycle.source_approval is not lifecycle.static_gate:
             raise CoordinatorBlocked("exact preparation SourceApproval required")
@@ -284,7 +292,7 @@ class _PackagePrivateOwners:
         if lifecycle.cycle_route is None:
             return None
         return cycle_evidence._bind_operation_route(
-            lifecycle.cycle_route, lifecycle.operation)
+            lifecycle.cycle_route, lifecycle.operation, lifecycle.cycle_grant)
 
     def create_inputs(self, lifecycle):
         return operation_bridge._create_inputs(self.operation, lifecycle)
@@ -479,10 +487,14 @@ def _raise_failures(message, errors):
     raise BaseExceptionGroup(message, errors)
 
 
-def _finish(lifecycle):
+def _finish(lifecycle, mint=True):
     if lifecycle.cycle_route is not None:
         if lifecycle.primary_failure is not None:
             raise CoordinatorBlocked("failed cycle cannot mint a receipt")
+        if not mint:
+            _owners.abort_custody(lifecycle)
+            lifecycle.custody_settled = True
+            return None
         lifecycle.custody_settled = True
         return cycle_evidence._issue_cycle_receipt(lifecycle.cycle_route, lifecycle)
     evidence = _owners.owner_evidence(lifecycle)
@@ -493,17 +505,20 @@ def _finish(lifecycle):
     return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
-def _run_cycle(route=None):
-    """Compose one lifecycle; only closure-issued route capabilities are accepted."""
+def _run_cycle(route=None, grant=None, mint=True):
+    """Compose one lifecycle; production routes require a consumed batch grant."""
+    if type(mint) is not bool:
+        raise CoordinatorBlocked("exact receipt policy required")
     if route is not None:
         cycle_evidence._describe_route(route)
-        if not cycle_evidence._cycle_launch_authorized(route):
-            raise CoordinatorBlocked(
-                "cycle batch/ordinal authority is not implemented; no effects admitted")
-    lifecycle = _Lifecycle(cycle_route=route)
+        if not cycle_evidence._cycle_launch_authorized(route, grant):
+            raise CoordinatorBlocked("exact cycle batch/ordinal authority required")
+    lifecycle = _Lifecycle(cycle_route=route, cycle_grant=grant)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
+        if lifecycle.cycle_grant is not None:
+            _owners.validate_cycle_grant(lifecycle)
         lifecycle.failure_stage = "rootfs-acquire"
         lifecycle.rootfs = _owners.acquire_rootfs(lifecycle)
         lifecycle.failure_stage = "operation-open"
@@ -551,7 +566,7 @@ def _run_cycle(route=None):
         _raise_failures("fixed lifecycle cleanup was not exact", errors)
 
     try:
-        return _finish(lifecycle)
+        return _finish(lifecycle, mint)
     except BaseException as error:
         errors = [error]
         _abort_custody(lifecycle, errors)
@@ -564,13 +579,25 @@ def _run_fixed_local_qualification():
 
 
 def _run_fixed_full_cycle():
-    """Zero-argument sealed full owner route."""
-    return _run_cycle(cycle_evidence._fixed_full_route())
+    """Zero-argument full owner consuming one fixed controller grant."""
+    return _run_cycle(cycle_evidence._fixed_full_route(), cycle_authority.claim_full())
 
 
 def _run_fixed_readiness_cycle():
-    """Zero-argument sealed marker-only readiness owner route."""
-    return _run_cycle(cycle_evidence._fixed_readiness_route())
+    """Zero-argument readiness owner consuming one fixed controller grant."""
+    return _run_cycle(cycle_evidence._fixed_readiness_route(), cycle_authority.claim_readiness())
+
+
+def _run_fixed_full_rehearsal():
+    """Real full production route with receipt issuance intentionally unreachable."""
+    return _run_cycle(cycle_evidence._fixed_full_route(),
+                      cycle_authority.claim_full(), False)
+
+
+def _run_fixed_readiness_rehearsal():
+    """Real readiness production route with receipt issuance intentionally unreachable."""
+    return _run_cycle(cycle_evidence._fixed_readiness_route(),
+                      cycle_authority.claim_readiness(), False)
 
 
 def _recover_fixed_local_qualification():

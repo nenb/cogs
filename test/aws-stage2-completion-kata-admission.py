@@ -196,7 +196,7 @@ with tempfile.TemporaryDirectory() as directory:
         "/usr/sbin/escape", 64, identity.st_uid, identity.st_gid, str(root)))
 
 assert admission.committed_status() == {"envelope_reviewed": False, "runtime_manifest_reviewed": False, "custody_issued": False}
-assert admission.static_status()["v2_static_only"] is True
+assert admission.static_status()["v3_static_only"] is True
 assert admission.static_status()["kvm_permit"] is False
 reject(preparation_bridge._claim_fixed_static_preparation)
 reject(preparation_bridge._claim_fixed_static_preparation, admission.AdmissionUnavailable)
@@ -209,7 +209,9 @@ assert "REVIEWED_ENVELOPE_SHA256 = None" in source and "REVIEWED_RUNTIME_MANIFES
 assert "candidate_contract_sha256" in source and "candidate_result_sha256" in source
 assert "workload_contract.REVIEWED_ROOTFS_SHA256" not in source
 assert 'COMPLETION_ROOTFS_SHA256 = "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506"' in source
-assert "fixed_runtime_closure(load_verified_build_inputs())" in source
+assert "fixed_runtime_closure(load_verified_build_inputs())" not in source
+assert "prebuilt_runtime_closure(authority)" in source
+assert "_fixed_prebuilt_rootfs_authority" in source
 assert "_derived_elf(raw)" in source and "sorted(needed)" in source
 assert 'item["kind"] == "executable"' in source
 assert "time.monotonic_ns() + 300_000_000_000" in source

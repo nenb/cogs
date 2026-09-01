@@ -42,6 +42,57 @@ variable "instance_type" {
   }
 }
 
+variable "ami_id" {
+  description = "One discovery-resolved immutable AMI ID shared by all seven cycles."
+  type        = string
+
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]{17}$", var.ami_id))
+    error_message = "ami_id must be one exact long-form AMI identity."
+  }
+}
+
+variable "ami_commitment" {
+  description = "Domain-separated resolved-AMI receipt shared by all seven cycle states."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.ami_commitment))
+    error_message = "ami_commitment must be one lowercase SHA-256."
+  }
+}
+
+variable "ami_owner_id" {
+  description = "Canonical owner identity bound by the resolved-AMI approval receipt."
+  type        = string
+  default     = "099720109477"
+
+  validation {
+    condition     = var.ami_owner_id == "099720109477"
+    error_message = "Only the reviewed Canonical AMI owner is allowed."
+  }
+}
+
+variable "batch_commitment" {
+  description = "Authenticated seven-cycle batch commitment attached to every resource."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.batch_commitment))
+    error_message = "batch_commitment must be one lowercase SHA-256."
+  }
+}
+
+variable "cycle_ordinal" {
+  description = "Independent create/measure/destroy cycle ordinal."
+  type        = number
+
+  validation {
+    condition     = floor(var.cycle_ordinal) == var.cycle_ordinal && var.cycle_ordinal >= 1 && var.cycle_ordinal <= 7
+    error_message = "cycle_ordinal must be an integer from one through seven."
+  }
+}
+
 variable "source_revision" {
   description = "Exact reviewed Git source revision attached to every resource."
   type        = string
@@ -49,6 +100,26 @@ variable "source_revision" {
   validation {
     condition     = can(regex("^[0-9a-f]{40}$", var.source_revision))
     error_message = "source_revision must be one lowercase 40-character Git revision."
+  }
+}
+
+variable "control_revision" {
+  description = "Exact independently produced control revision shared by every cycle."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.control_revision))
+    error_message = "control_revision must be one lowercase 40-character Git revision."
+  }
+}
+
+variable "rootfs_descriptor_sha256" {
+  description = "Exact authenticated prebuilt rootfs descriptor shared by every cycle."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.rootfs_descriptor_sha256))
+    error_message = "rootfs_descriptor_sha256 must be one lowercase SHA-256."
   }
 }
 

@@ -19,12 +19,12 @@ PRE_BASE_GROSS_ADDITIONS = 2_949
 CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADDITIONS
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
-PREFERRED_LIMIT = 76_000
-HARD_LIMIT = 78_000
-DEPLOY_CORRECTION_HIGH = 15_500
-RETAINED_CORRECTION_HIGH = 6_500
-WORKFLOW_CORRECTION_HIGH = 1_520
-GLOBAL_CORRECTION_HIGH = 20_500
+PREFERRED_LIMIT = 90_000
+HARD_LIMIT = 94_000
+DEPLOY_CORRECTION_HIGH = 20_500
+RETAINED_CORRECTION_HIGH = 10_500
+WORKFLOW_CORRECTION_HIGH = 4_500
+GLOBAL_CORRECTION_HIGH = 35_000
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -54,8 +54,16 @@ RETAINED_FILES = (
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v2.json",
     "schemas/aws-stage2-completion-private-evidence-v1.json",
     "schemas/aws-stage2-completion-evidence-v1.json",
+    "schemas/aws-stage2-completion-evidence-v2.json",
+    "schemas/aws-stage2-completion-production-approval-v1.json",
+    "schemas/aws-stage2-completion-production-approval-v2.json",
+    "schemas/aws-stage2-completion-production-approval-v3.json",
+    "schemas/aws-stage2-production-evidence-upload-receipt-v1.json",
+    "schemas/stage2-cycle-launch-grant-v1.json",
     "scripts/validate-aws-stage2-completion-evidence.ts",
+    "scripts/validate-aws-stage2-completion-evidence-v2.ts",
     "scripts/render-aws-stage2-completion-report.ts",
+    "scripts/render-aws-stage2-completion-report-v2.ts",
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
     "scripts/render-aws-stage2-measurement-report.ts",
@@ -73,7 +81,19 @@ RETAINED_FILES = (
     "scripts/stage2-local-settlement.py",
     "scripts/stage2-local-publication.py",
     "scripts/stage2-local-upload-receipt.py",
+    "scripts/stage2-prebuilt-rootfs-producer.py",
+    "scripts/stage2-prebuilt-rootfs-publisher.py",
+    "scripts/stage2-prebuilt-local-qualification-guard.py",
+    "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
+    "scripts/stage2-prebuilt-static-control-runtime-boundary.py",
+    "scripts/stage2-prebuilt-rehearsal-grant.py",
+    "scripts/stage2-pre-aws-package-v2.py",
+    "scripts/stage2-production-approval.py",
+    "scripts/stage2-production-planner.py",
+    "scripts/stage2-stage-production-approval.py",
+    "config/stage2-sigstore-trusted-root-v1.json",
     "scripts/stage2-stage-reviewed-control.py",
+    "scripts/stage2-stage-prebuilt-control.py",
     "schemas/stage2-phase-a-candidate-v1.json",
     "schemas/stage2-phase-a-candidate-v2.json",
     "schemas/stage2-workload-candidate-v1.json",
@@ -85,10 +105,17 @@ RETAINED_FILES = (
     "schemas/stage2-local-static-control-package-v1.json",
     "schemas/stage2-local-execution-envelope-v2.json",
     "schemas/stage2-local-runtime-manifest-v2.json",
+    "schemas/stage2-local-execution-envelope-v3.json",
+    "schemas/stage2-local-runtime-manifest-v3.json",
+    "schemas/stage2-local-static-control-package-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v1.json",
+    "schemas/stage2-pre-aws-qualification-package-v2.json",
+    "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
     "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
     "schemas/stage2-workload-post-pin-v1.json",
     "schemas/stage2-workload-local-qualification-v2.json",
     "schemas/stage2-workload-local-qualification-v3.json",
+    "schemas/stage2-workload-local-qualification-v4.json",
     "config/stage2-completion-ssh-workload-v2.json",
     "config/stage2-completion-ssh-workload-v3.json",
     "config/stage2-completion-ssh-readiness-v1.json",

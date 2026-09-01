@@ -21,12 +21,18 @@ from completion_archive_preflight import (
     preflight_fixed_deb,
     preflight_oci_layer_bytes,
 )
+from completion_rootfs_model import (
+    EntryIdentity,
+    PlannedEntry,
+    ROOT_POLICY,
+    RootfsPlan,
+    SOURCE_DATE_EPOCH,
+    Transition,
+)
 
 VERSION = "cogs.stage2-completion-rootfs-plan/v1"
-SOURCE_DATE_EPOCH = 1782172800
 REMOTE = Path(__file__).resolve().parent
 VERIFIER_PATH = REMOTE / "verify-completion-artifacts.py"
-ROOT_POLICY = ArchiveRoot("directory", 0o755, 0, 0, SOURCE_DATE_EPOCH, 0)
 PACKAGE_ORDER = (
     "git",
     "openssh-server",
@@ -48,52 +54,6 @@ class RootfsPlanError(Exception):
 def _fail(condition):
     if not condition:
         raise RootfsPlanError()
-
-
-@dataclass(frozen=True)
-class EntryIdentity:
-    kind: str
-    mode: int
-    uid: int
-    gid: int
-    mtime: int
-    archive_size: int
-    link_text: str | None
-    resolved_link_path: str | None
-    hardlink_target: str | None
-    content_sha256: str | None
-
-
-@dataclass(frozen=True)
-class PlannedEntry:
-    source: str
-    owner: PreflightedTar | None
-    record: MaterialRecord
-    generated_content: bytes | None = None
-
-    def content(self):
-        _fail(self.record.kind == "file")
-        if self.generated_content is not None:
-            _fail(len(self.generated_content) == self.record.archive_size)
-            return memoryview(self.generated_content)
-        _fail(self.owner is not None)
-        return self.owner.content(self.record)
-
-
-@dataclass(frozen=True)
-class Transition:
-    path: str
-    action: str
-    expected: EntryIdentity | None
-    result: PlannedEntry | None
-
-
-@dataclass(frozen=True)
-class RootfsPlan:
-    root: ArchiveRoot
-    source_order: tuple[str, ...]
-    entries: tuple[PlannedEntry, ...]
-    transitions: tuple[Transition, ...]
 
 
 @dataclass(frozen=True)

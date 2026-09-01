@@ -62,7 +62,11 @@ def passing():
     bindings = {
         "source_head": "a" * 40, "source_manifest_sha256": "1" * 64,
         "host_attestation_sha256": "2" * 64, "runtime_attestation_sha256": "3" * 64,
-        "rootfs_sha256": "4" * 64, "artifact_sha256": "5" * 64,
+        "rootfs_sha256": "4" * 64, "rootfs_descriptor_sha256": "a" * 64,
+        "rootfs_package_manifest_sha256": "b" * 64,
+        "rootfs_provenance_sha256": "c" * 64,
+        "rootfs_publication_receipt_sha256": "d" * 64,
+        "artifact_sha256": "5" * 64,
         "candidate_sha256": "6" * 64, "final_pin_sha256": "7" * 64,
         "guest_program_sha256": "8" * 64, "owner_implementation_sha256": "9" * 64,
     }
@@ -86,6 +90,15 @@ def passing():
             "source_head": bindings["source_head"],
             "source_manifest_sha256": bindings["source_manifest_sha256"],
             "final_pin_sha256": bindings["final_pin_sha256"], "status": "retired"},
+        "rootfs_input": {
+            "mode": "prebuilt-versioned-hash-pinned",
+            "descriptor_sha256": bindings["rootfs_descriptor_sha256"],
+            "ustar_sha256": bindings["rootfs_sha256"],
+            "package_manifest_sha256": bindings["rootfs_package_manifest_sha256"],
+            "provenance_sha256": bindings["rootfs_provenance_sha256"],
+            "publication_receipt_sha256": bindings["rootfs_publication_receipt_sha256"],
+            "acquisition_attempts": 1, "import_attempts": 1,
+            "build_attempts": 0, "fallback_used": False, "outcome": "pass"},
         "timings": timings,
         "teardown": [{"phase": phase, "outcome": "pass", "binding_sha256": binding}
                      for phase in local.TEARDOWN_PHASES],
@@ -172,6 +185,9 @@ def ordinal_failure(group, ordinal, deletion=False):
     return refresh(value)
 
 
+if sys.argv[1:] == ["--samples-v4"]:
+    sys.stdout.write(json.dumps({"pass": passing(), "failure": failing()}, separators=(",", ":")))
+    raise SystemExit(0)
 if sys.argv[1:] == ["--catalog"]:
     catalog = [failing(code) for code in local.ADMISSION_CODES]
     catalog.extend(categorical_failure(code) for code in (
@@ -188,10 +204,14 @@ if sys.argv[1:] == ["--probe"]:
 check(not sys.argv[1:], "unexpected test selector")
 
 pass_value, fail_value = passing(), failing()
-for name, expected in (("local-result-v3-pass.json", pass_value), ("local-result-v3-failure.json", fail_value)):
+for name in ("local-result-v3-pass.json", "local-result-v3-failure.json"):
     raw = (FIXTURES / name).read_bytes()
-    check(raw == local.canonical_result(expected), f"shared fixture {name}")
-    check(local.load_result(raw) == expected and raw.isascii() and len(raw) <= 32768, f"load {name}")
+    historical = json.loads(raw)
+    check(raw == local.canonical_result(historical), f"historical fixture {name}")
+    check(local.load_result(raw) == historical and raw.isascii() and len(raw) <= 32768, f"load {name}")
+for current in (pass_value, fail_value):
+    raw = local.canonical_result(current)
+    check(local.load_result(raw) == current, "current V4 round trip")
 for code in local.ADMISSION_CODES:
     check(local.validate_result(failing(code)) is False, f"admission {code}")
 for code in local.ADMISSION_CODES[:-1]:
@@ -286,7 +306,7 @@ check(line_report["conservative_baseline_lines"] == line_report["inherited_prede
       + line_report["pre_base_gross_additions"] == 36_861, "inherited no-deletion baseline")
 check(line_report["current_lines"] == line_report["deployment_lines"]
       + line_report["retained_schema_script_lines"] + line_report["workflow_lines"]
-      and line_report["workflow_files"] == 14, "complete retained and workflow count")
+      and line_report["workflow_files"] == 25, "complete retained and workflow count")
 check(line_report["inherited_post_base_gross_additions"] == 0
       and line_report["gross_added_lines_no_deletion_credit"] > 0,
       "gross additions were not measured from the fixed base")

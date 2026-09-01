@@ -9,7 +9,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import completion_rootfs_fs as fs
-import completion_rootfs_plan as plan
+import completion_rootfs_model as model
 
 VERSION = "cogs.stage2-rootfs-canonical/v1"
 BLOCK = 512
@@ -61,7 +61,7 @@ def _entry_value(entry):
 
 
 def _manifest(rootfs_plan):
-    _fail(type(rootfs_plan) is plan.RootfsPlan)
+    _fail(type(rootfs_plan) is model.RootfsPlan)
     paths = tuple(entry.record.path for entry in rootfs_plan.entries)
     _fail(paths == tuple(sorted(paths, key=lambda value: value.encode("utf-8"))))
     _fail(len(paths) == len(set(paths)))
@@ -221,14 +221,25 @@ def _write_ustar(root, rootfs_plan, descriptor, control):
     return digest.hexdigest(), total
 
 
+def _authority_plan(authority):
+    import completion_rootfs_prebuilt as prebuilt
+
+    if type(authority) in {prebuilt.PrebuiltRootfsAuthority, prebuilt.PrebuiltRootfsView}:
+        return authority.plan
+    import completion_rootfs_plan as producer
+
+    _fail(type(authority) is producer.RootfsBuildInputs)
+    return authority.plan
+
+
 def _canonical_metadata(root, authority, descriptor, control):
-    _fail(type(authority) is plan.RootfsBuildInputs)
-    manifest = _manifest(authority.plan)
-    ustar_sha256, ustar_size = _write_ustar(root, authority.plan, descriptor, control)
+    rootfs_plan = _authority_plan(authority)
+    manifest = _manifest(rootfs_plan)
+    ustar_sha256, ustar_size = _write_ustar(root, rootfs_plan, descriptor, control)
     return CanonicalMetadata(
         manifest,
         hashlib.sha256(manifest).hexdigest(),
         ustar_sha256,
         ustar_size,
-        len(authority.plan.entries),
+        len(rootfs_plan.entries),
     )

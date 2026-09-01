@@ -11,7 +11,7 @@ import completion_rootfs_builder as builder
 import completion_rootfs_canonical as canonical
 import completion_rootfs_fs as fs
 import completion_rootfs_ledger as ledger
-import completion_rootfs_plan as plan
+import completion_rootfs_model as model
 
 CANDIDATE_NAME = fs._name(b".cogs-rootfs-candidate-v1.tar")
 EXPECTED_ENTRIES = 4_353
@@ -54,7 +54,7 @@ def _verified_anonymous(owned, authority, manifest, operation, control):
     _fault("emission-complete")
     os.fchown(operation.number, 0, 0)
     os.fchmod(operation.number, 0o600)
-    stamp = plan.SOURCE_DATE_EPOCH * 1_000_000_000
+    stamp = model.SOURCE_DATE_EPOCH * 1_000_000_000
     os.utime(operation.number, ns=(stamp, stamp))
     os.fsync(operation.number)
     generation = fs._observe_anonymous(operation, control)
@@ -74,7 +74,8 @@ def _verified_anonymous(owned, authority, manifest, operation, control):
 
 def _create_candidate(active, owned, authority, manifest, control):
     _fail(type(active) is builder.ActiveLedger and type(owned) is builder.OwnedOperation)
-    _fail(type(authority) is plan.RootfsBuildInputs and type(manifest) is bytes)
+    _fail(type(manifest) is bytes)
+    canonical._authority_plan(authority)
     _fail(type(control) is fs.OperationControl)
     operation = named = None
     try:

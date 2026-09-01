@@ -9,7 +9,6 @@ containerd, ctr, SSH, task, or guest-network surfaces.
 
 import hashlib
 import http.client
-import importlib.util
 import os
 from pathlib import Path
 import ssl
@@ -28,33 +27,22 @@ if not _REMOTE_MODULE_ROOT.is_dir():
 sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 import completion_kata_preparation as preparation
 
-_VERIFIER_PATH = Path(__file__).with_name("verify-completion-artifacts.py")
-_verifier_spec = importlib.util.spec_from_file_location(
-    "completion_fixed_artifact_verifier", _VERIFIER_PATH)
-_require_verifier = _verifier_spec is not None and _verifier_spec.loader is not None
-if not _require_verifier:
-    raise ImportError("fixed artifact verifier is unavailable")
-artifact_verifier = importlib.util.module_from_spec(_verifier_spec)
-_verifier_spec.loader.exec_module(artifact_verifier)
-
-VERSION = "cogs.stage2-local-immutable-preparation/v1"
+VERSION = "cogs.stage2-local-immutable-preparation/v2"
 SOURCE_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
 CONTROL_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control")
 COMPLETION_ROOT = SOURCE_ROOT / "deploy/aws-feasibility/.state/completion-v1"
-ARTIFACT_ROOT = COMPLETION_ROOT / "artifacts"
 PREPARATION_ROOT = COMPLETION_ROOT / "immutable-preparation-v1"
 RUNTIME_CACHE = PREPARATION_ROOT / "runtime-cache"
 EXTRACTED_ROOT = PREPARATION_ROOT / "extracted"
 RECEIPT = PREPARATION_ROOT / "receipt.json"
-OWNERSHIP = PREPARATION_ROOT / "ownership.json"
 STAGED_RUNTIME = COMPLETION_ROOT / "kata-runtime-v1"
 IMMUTABLE_STAGING = COMPLETION_ROOT / ".kata-runtime-v1.immutable-staging"
-OWNERSHIP_VERSION = "cogs.stage2-local-immutable-preparation-ownership/v1"
 KATA_ROOT = Path("/opt/kata")
 KATA_PARENT = Path("/opt")
 MAX_REDIRECTS = 3
 GLOBAL_SECONDS = 1_700
 CHUNK = 1024 * 1024
+MAX_RECEIPT_BYTES = 32 * 1024 * 1024
 EXTRACTORS = (Path("/usr/bin/tar"), Path("/usr/bin/zstd"))
 _OBSERVATION_STAGE = "entry"
 _DIAGNOSTIC_STAGES = frozenset({
@@ -128,7 +116,9 @@ def _sync_directory(path):
 
 
 def _write_owned_file(path, raw, mode):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    temporary = path.with_name("." + path.name + ".partial")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         offset = 0
         while offset < len(raw):
@@ -140,68 +130,7 @@ def _write_owned_file(path, raw, mode):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _prepare_artifact_custody(contract):
-    """Durably distinguish retained cache entries from transaction entries."""
-    owned = not ARTIFACT_ROOT.exists()
-    cache = ARTIFACT_ROOT / "cache"
-    if owned:
-        ARTIFACT_ROOT.mkdir(mode=0o700)
-        cache.mkdir(mode=0o700)
-        _sync_directory(ARTIFACT_ROOT.parent)
-    artifact_identity = _directory_identity(ARTIFACT_ROOT)
-    cache_identity = _directory_identity(cache)
-    rows = {row["cache_name"]: row for row in _artifact_rows(contract)}
-    baseline = set(os.listdir(cache))
-    _require(baseline <= set(rows), "foreign retained artifact cache entry")
-    for name in sorted(baseline):
-        _stable_file(cache / name, rows[name])
-    import completion_artifact_acquisition as acquisition
-    sentinel = ARTIFACT_ROOT / acquisition.SENTINEL
-    sentinel_existed = sentinel.exists() or sentinel.is_symlink()
-    allowed = {"cache"} | ({acquisition.SENTINEL} if sentinel_existed else set())
-    _require(set(os.listdir(ARTIFACT_ROOT)) == allowed,
-             "foreign retained artifact root entry")
-    if sentinel_existed:
-        seen = sentinel.lstat()
-        _require(stat.S_ISREG(seen.st_mode) and stat.S_IMODE(seen.st_mode) == 0o600
-                 and seen.st_uid == os.geteuid() and seen.st_nlink == 1
-                 and sentinel.read_bytes() == acquisition.SENTINEL_BYTES)
-    value = {
-        "version": OWNERSHIP_VERSION,
-        "artifact_cache_created": owned,
-        "artifact_root_identity": artifact_identity,
-        "artifact_cache_identity": cache_identity,
-        "artifact_baseline": sorted(baseline),
-        "artifact_sentinel_existed": sentinel_existed,
-    }
-    raw = preparation.canonical_bytes(value)
-    _write_owned_file(OWNERSHIP, raw, 0o400)
-    _sync_directory(PREPARATION_ROOT)
-    return value
-
-
-def _load_ownership():
-    raw = OWNERSHIP.read_bytes()
-    value = preparation.decode_canonical(raw, 4096)
-    _require(set(value) == {"version", "artifact_cache_created", "artifact_root_identity",
-                            "artifact_cache_identity", "artifact_baseline",
-                            "artifact_sentinel_existed"}
-             and value["version"] == OWNERSHIP_VERSION
-             and type(value["artifact_cache_created"]) is bool
-             and type(value["artifact_sentinel_existed"]) is bool
-             and type(value["artifact_baseline"]) is list
-             and value["artifact_baseline"] == sorted(set(value["artifact_baseline"]))
-             and all(type(name) is str and 0 < len(name) <= 255 and "/" not in name
-                     for name in value["artifact_baseline"]))
-    for name in ("artifact_root_identity", "artifact_cache_identity"):
-        identity = value[name]
-        _require(type(identity) is dict and set(identity) == {"device", "inode"}
-                 and all(type(item) is int and item >= 0 for item in identity.values()))
-    _require(not value["artifact_cache_created"] or
-             (not value["artifact_baseline"] and not value["artifact_sentinel_existed"]))
-    return raw, value
+    os.rename(temporary, path); _sync_directory(path.parent)
 
 
 def _prepare_state_parents():
@@ -225,26 +154,6 @@ def _reject_ambient_authority():
         upper = name.upper()
         _require(upper not in DENIED_ENV and not upper.startswith("AWS_"),
                  "ambient acquisition authority is forbidden")
-
-
-def _fixed_contract():
-    contract = artifact_verifier.verify_contract(artifact_verifier.FIXED_CONTRACT_PATH)
-    _require(contract["bounds"]["artifact_count"] == 16)
-    return contract
-
-
-def _acquire_rootfs_assets(contract):
-    """Use the existing hardened immutable acquisition with internally fixed authority."""
-    import completion_artifact_acquisition as acquisition
-
-    context = acquisition._tls_context()
-    routes = acquisition._artifact_routes(contract)
-    _require(len(routes) == 16)
-    acquisition._acquire_rows(
-        routes, ARTIFACT_ROOT, acquisition._HttpsTransport(context),
-        contract["timeouts_seconds"])
-    artifact_verifier.verify_package_archives(
-        artifact_verifier.FIXED_CONTRACT_PATH, ARTIFACT_ROOT)
 
 
 def _strict_url(value):
@@ -431,6 +340,12 @@ def _verify_extraction_filesystem():
 
 def _run_extract(archive, destination):
     destination.mkdir(mode=0o700)
+    intent = preparation.canonical_bytes({
+        "version": "cogs.stage2-runtime-extraction-intent/v1",
+        "archive_name": archive.name, "archive_size": archive.stat().st_size,
+        "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
+    marker = destination / ".extraction-intent.json"
+    _write_owned_file(marker, intent, 0o400)
     command = ["/usr/bin/tar", "--extract", "--file", str(archive), "--directory", str(destination),
                "--numeric-owner", "--same-owner", "--no-overwrite-dir", "--delay-directory-restore"]
     if archive.name.endswith(".tar.zst"):
@@ -441,6 +356,7 @@ def _run_extract(archive, destination):
                                         "PATH": "/usr/bin:/bin"},
         timeout=600, check=False, close_fds=True, start_new_session=True)
     _require(result.returncode == 0, "fixed runtime extraction failed")
+    _require(marker.read_bytes() == intent); marker.unlink(); _sync_directory(destination)
 
 
 def _expected_runtime():
@@ -453,6 +369,36 @@ def _expected_runtime():
         members[row["name"]] = (CONTROL_ROOT / row["name"]).read_bytes()
     _envelope, runtime, _contracts = preparation.validate_control_members(control, members)
     return runtime.value
+
+
+def _prebuilt_descriptor_bytes(expected_runtime):
+    if expected_runtime is not None:
+        _require(not preparation.PREBUILT_DESCRIPTOR_ROOT.exists(),
+                 "external descriptor competes with reviewed control")
+        raw = preparation.canonical_bytes(
+            expected_runtime["rootfs"]["prebuilt_descriptor"])
+        _require(hashlib.sha256(raw).hexdigest() ==
+                 expected_runtime["rootfs"]["prebuilt_descriptor_sha256"])
+        return raw
+    root = preparation.PREBUILT_DESCRIPTOR_ROOT
+    seen = root.lstat()
+    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+             and stat.S_IMODE(seen.st_mode) == 0o700
+             and set(os.listdir(root)) == {"descriptor.json"})
+    path = preparation.PREBUILT_DESCRIPTOR_PATH
+    before = path.lstat()
+    _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+             and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o400
+             and 0 < before.st_size <= 8192)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        raw = os.read(descriptor, 8193); after = os.fstat(descriptor)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                                  value.st_gid, value.st_nlink, value.st_size,
+                                  value.st_mtime_ns, value.st_ctime_ns)
+        _require(len(raw) == before.st_size and identity(before) == identity(after))
+        return raw
+    finally: os.close(descriptor)
 
 
 def _archive_values(expected_runtime, archives, extracted):
@@ -470,7 +416,9 @@ def _archive_values(expected_runtime, archives, extracted):
 
 def _copy_fixed(source, destination, mode):
     raw = source.read_bytes()
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    temporary = destination.with_name("." + destination.name + ".partial")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         offset = 0
         while offset < len(raw):
@@ -482,6 +430,7 @@ def _copy_fixed(source, destination, mode):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    os.rename(temporary, destination); _sync_directory(destination.parent)
 
 
 def _publish_runtime(extracted):
@@ -505,6 +454,7 @@ def _publish_runtime(extracted):
         active, 0o400)
     os.chmod(IMMUTABLE_STAGING / "bin", 0o500)
     os.rename(IMMUTABLE_STAGING, STAGED_RUNTIME)
+    os.chmod(STAGED_RUNTIME, 0o500)
     _sync_directory(COMPLETION_ROOT)
     kata_source = extracted["kata"] / "opt/kata"
     _require(kata_source.is_dir())
@@ -542,13 +492,22 @@ def _verify_installed(expected_runtime):
 def _receipt_value():
     raw = RECEIPT.read_bytes()
     value = preparation.decode_canonical(raw, preparation.MAX_RUNTIME_BYTES)
-    _require(set(value) == {"version", "authority", "rootfs_artifact_count",
+    _require(set(value) == {"version", "authority", "rootfs_artifact",
                             "runtime_archives", "forbidden_surfaces"}
              and value["version"] == VERSION
              and value["authority"] == "immutable-public-input-preparation-only"
-             and value["rootfs_artifact_count"] == 16
              and value["forbidden_surfaces"] ==
              ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"])
+    artifact = value["rootfs_artifact"]
+    _require(type(artifact) is dict and set(artifact) == {
+        "descriptor_sha256", "manifest_digest", "blob_sha256", "blob_size",
+        "intent_sha256", "settlement_sha256", "downloaded"})
+    for name in ("descriptor_sha256", "manifest_digest", "blob_sha256",
+                 "intent_sha256", "settlement_sha256"):
+        _require(type(artifact[name]) is str and len(artifact[name]) == 64
+                 and set(artifact[name]) <= set("0123456789abcdef"))
+    _require(artifact["blob_sha256"] == "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397"
+             and artifact["blob_size"] == 136_905_728 and artifact["downloaded"] is True)
     _require(type(value["runtime_archives"]) is list
              and len(value["runtime_archives"]) == len(preparation.ARCHIVES))
     for row, pin in zip(value["runtime_archives"], preparation.ARCHIVES):
@@ -560,7 +519,23 @@ def _same_row(left, right):
     return left == right
 
 
-def _remove_verified_tree(root, expected, root_row=None, subset=False):
+def _owned_subset_row(observed, expected, allow_truncated=False):
+    if observed.get("path") != expected.get("path") or observed.get("kind") != expected.get("kind"):
+        return False
+    for name in ("uid", "gid"):
+        if observed.get(name) != expected.get(name): return False
+    if observed.get("mode") != expected.get("mode"):
+        if not (observed["kind"] == "directory" and observed.get("mode") == 0o700):
+            return False
+    if observed["kind"] == "file":
+        return (0 <= observed["size"] <= expected["size"]
+                and ((allow_truncated and observed["size"] < expected["size"])
+                     or observed.get("sha256") == expected.get("sha256")))
+    return observed == expected
+
+
+def _remove_verified_tree(root, expected, root_row=None, subset=False,
+                          allow_truncated=False):
     """Remove only a complete verified transaction tree; never discover ownership."""
     if not root.exists() and not root.is_symlink():
         return False
@@ -569,13 +544,16 @@ def _remove_verified_tree(root, expected, root_row=None, subset=False):
     if root_row is not None:
         _require(root_row["kind"] == "directory" and seen.st_uid == root_row["uid"]
                  and seen.st_gid == root_row["gid"]
-                 and stat.S_IMODE(seen.st_mode) == root_row["mode"])
+                 and stat.S_IMODE(seen.st_mode) in (
+                    root_row["mode"] if type(root_row["mode"]) is tuple else
+                    (root_row["mode"],)))
     actual = preparation.extracted_postwalk(root)
     expected_by_path = {row["path"]: row for row in expected}
     actual_by_path = {row["path"]: row for row in actual}
     _require((set(actual_by_path) <= set(expected_by_path) if subset else
               set(actual_by_path) == set(expected_by_path)))
-    _require(all(_same_row(row, expected_by_path[path])
+    _require(all((_owned_subset_row(row, expected_by_path[path], allow_truncated) if subset else
+                  _same_row(row, expected_by_path[path]))
                  for path, row in actual_by_path.items()))
     directories = [row for row in actual if row["kind"] == "directory"]
     for row in sorted(directories, key=lambda item: item["path"].count("/")):
@@ -603,7 +581,8 @@ def _static_runtime_rows():
                      "link_target": None, "sha256": digest})
     active_path = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH)
     observed_active = next((path for path in (
-        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name)
+        STAGED_RUNTIME / active_path.name, IMMUTABLE_STAGING / active_path.name,
+            IMMUTABLE_STAGING / ("." + active_path.name + ".partial"))
         if path.exists()), None)
     if observed_active is not None:
         base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
@@ -623,6 +602,26 @@ def _static_runtime_rows():
 def _remove_static_runtime(path, partial):
     rows = _static_runtime_rows()
     if partial and path.exists():
+        expected = {row["path"]: row for row in rows if row["kind"] == "file"}
+        for candidate in tuple(path.rglob(".*.partial")):
+            relative = candidate.relative_to(path)
+            final = relative.with_name(candidate.name[1:-8])
+            row = expected.get(str(final))
+            seen = candidate.lstat()
+            _require(row is not None and stat.S_ISREG(seen.st_mode)
+                     and seen.st_uid == row["uid"] and seen.st_gid == row["gid"]
+                     and seen.st_nlink == 1 and stat.S_IMODE(seen.st_mode) == row["mode"]
+                     and 0 <= seen.st_size <= row["size"])
+            active_name = Path(preparation.KATA_ACTIVE_CONFIGURATION_PATH).name
+            if str(final) == active_name:
+                base_relative = preparation.KATA_BASE_CONFIGURATION_PATH.removeprefix("/")
+                base_source = EXTRACTED_ROOT / "kata" / base_relative
+                expected_raw = preparation.derive_observer_configuration(base_source.read_bytes())
+            else:
+                expected_raw = (EXTRACTED_ROOT / "containerd" / final).read_bytes()
+            _require(expected_raw.startswith(candidate.read_bytes()))
+            candidate.unlink(); _sync_directory(candidate.parent)
+    if partial and path.exists():
         # Before the final bin chmod, an exact partial staging directory has a
         # writable bin. Normalize that one reviewed intermediate generation.
         actual = preparation.extracted_postwalk(path)
@@ -630,67 +629,9 @@ def _remove_static_runtime(path, partial):
                 and actual[0]["mode"] == 0o700:
             expected = [dict(row, mode=0o700) if row["path"] == "bin" else row for row in rows]
             return _remove_verified_tree(path, expected, subset=True)
-    return _remove_verified_tree(path, rows, subset=partial)
-
-
-def _artifact_rows(contract):
-    import completion_artifact_acquisition as acquisition
-    return tuple(route.row for route in acquisition._artifact_routes(contract))
-
-
-def _remove_artifact_cache(contract, custody):
-    cache = ARTIFACT_ROOT / "cache"
-    owned_empty = (custody["artifact_cache_created"]
-                   and not custody["artifact_baseline"]
-                   and not custody["artifact_sentinel_existed"])
-    if not ARTIFACT_ROOT.exists() and not ARTIFACT_ROOT.is_symlink():
-        _require(owned_empty, "retained artifact root disappeared")
-        return
-    seen = _directory_identity(ARTIFACT_ROOT)
-    _require(seen == custody["artifact_root_identity"],
-             "transaction artifact root identity changed")
-    if not cache.exists() and not cache.is_symlink():
-        _require(owned_empty and not os.listdir(ARTIFACT_ROOT),
-                 "artifact cache disappeared before settlement")
-        ARTIFACT_ROOT.rmdir()
-        _sync_directory(ARTIFACT_ROOT.parent)
-        return
-    seen = _directory_identity(cache)
-    _require(seen == custody["artifact_cache_identity"],
-             "transaction artifact cache identity changed")
-    rows = _artifact_rows(contract)
-    by_name = {row["cache_name"]: row for row in rows}
-    names = set(os.listdir(cache))
-    baseline = set(custody["artifact_baseline"])
-    _require(baseline <= names <= set(by_name),
-             "foreign or missing transaction cache entry")
-    for name in sorted(names):
-        _stable_file(cache / name, by_name[name])
-    sentinel = ARTIFACT_ROOT / __import__("completion_artifact_acquisition").SENTINEL
-    sentinel_present = sentinel.exists() or sentinel.is_symlink()
-    if sentinel_present:
-        seen = sentinel.lstat()
-        expected_raw = __import__("completion_artifact_acquisition").SENTINEL_BYTES
-        _require(stat.S_ISREG(seen.st_mode) and stat.S_IMODE(seen.st_mode) == 0o600
-                 and seen.st_uid == os.geteuid() and seen.st_nlink == 1
-                 and sentinel.read_bytes() == expected_raw)
-    _require(sentinel_present or not custody["artifact_sentinel_existed"],
-             "retained artifact sentinel missing")
-    allowed = {"cache"} | ({sentinel.name} if sentinel_present else set())
-    _require(set(os.listdir(ARTIFACT_ROOT)) == allowed,
-             "foreign transaction artifact entry")
-    os.chmod(cache, 0o700)
-    for name in sorted(names - baseline):
-        (cache / name).unlink()
-    _sync_directory(cache)
-    if sentinel_present and not custody["artifact_sentinel_existed"]:
-        sentinel.unlink()
-        _sync_directory(ARTIFACT_ROOT)
-    if custody["artifact_cache_created"]:
-        _require(not baseline and not os.listdir(cache))
-        cache.rmdir()
-        ARTIFACT_ROOT.rmdir()
-    _sync_directory(ARTIFACT_ROOT.parent)
+    return _remove_verified_tree(path, rows, {
+        "kind": "directory", "uid": os.geteuid(), "gid": os.getegid(),
+        "mode": (0o500, 0o700) if path == STAGED_RUNTIME else 0o700}, subset=True)
 
 
 def _remove_runtime_partial(path, quarantine, expected):
@@ -728,13 +669,109 @@ def _remove_runtime_partial(path, quarantine, expected):
         os.close(descriptor)
 
 
-def _rollback_preparation(contract):
+def _remove_prebuilt_input(descriptor, descriptor_raw):
+    import completion_rootfs_prebuilt_acquisition as acquisition
+
+    root = preparation.PREBUILT_INPUT_ROOT
+    if not root.exists():
+        return
+    seen = root.lstat()
+    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+             and stat.S_IMODE(seen.st_mode) == 0o700)
+    names = set(os.listdir(root))
+    if not names:
+        root.rmdir(); _sync_directory(root.parent); return
+    _require(acquisition.INTENT_NAME in names,
+             "unbound prebuilt input generation must be preserved")
+    _require(names <= {acquisition.FINAL_NAME, acquisition.PARTIAL_NAME,
+                       acquisition.SENTINEL_NAME, acquisition.INTENT_NAME,
+                       acquisition.SETTLEMENT_NAME}, "foreign prebuilt input entry")
+    try:
+        intent = preparation.decode_canonical(
+            (root / acquisition.INTENT_NAME).read_bytes(), 8192)
+    except BaseException:
+        _require(names == {acquisition.INTENT_NAME})
+        path = root / acquisition.INTENT_NAME; seen_intent = path.lstat()
+        _require(stat.S_ISREG(seen_intent.st_mode) and seen_intent.st_uid == seen_intent.st_gid == 0
+                 and seen_intent.st_nlink == 1 and stat.S_IMODE(seen_intent.st_mode) in {0o400, 0o600}
+                 and 0 <= seen_intent.st_size <= 8192)
+        path.unlink(); _sync_directory(root); root.rmdir(); _sync_directory(root.parent); return
+    _require(intent == {
+        "version": "cogs.stage2-prebuilt-rootfs-acquisition-intent/v1",
+        "descriptor_sha256": hashlib.sha256(descriptor_raw).hexdigest(),
+        "manifest_digest": descriptor.manifest_digest,
+        "blob_sha256": descriptor.layer_digest,
+        "blob_size": descriptor.layer_size,
+        "root_device": seen.st_dev, "root_inode": seen.st_ino,
+    }, "prebuilt acquisition intent differs")
+    intent_sha256 = hashlib.sha256(preparation.canonical_bytes(intent)).hexdigest()
+    order = (acquisition.SETTLEMENT_NAME, acquisition.SENTINEL_NAME,
+             acquisition.FINAL_NAME, acquisition.PARTIAL_NAME,
+             acquisition.INTENT_NAME)
+    for name in (item for item in order if item in names):
+        path = root / name
+        before = path.lstat()
+        expected_mode = (0o400 if name in {acquisition.FINAL_NAME,
+                                          acquisition.INTENT_NAME,
+                                          acquisition.SETTLEMENT_NAME} else 0o600)
+        maximum = (descriptor.layer_size if name in {acquisition.FINAL_NAME,
+                                                     acquisition.PARTIAL_NAME}
+                   else len(acquisition.SENTINEL) if name == acquisition.SENTINEL_NAME
+                   else 8192)
+        _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                 and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == expected_mode
+                 and 0 <= before.st_size <= maximum)
+        descriptor_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            current = os.fstat(descriptor_fd)
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                                      value.st_gid, value.st_nlink, value.st_size, value.st_mtime_ns)
+            _require(identity(current) == identity(before))
+            if name == acquisition.FINAL_NAME:
+                _require(before.st_size == descriptor.layer_size
+                         and _read_file_hash(descriptor_fd, descriptor.layer_size) == descriptor.layer_digest)
+            elif name == acquisition.SENTINEL_NAME:
+                _require(os.pread(descriptor_fd, len(acquisition.SENTINEL), 0) == acquisition.SENTINEL)
+            elif name == acquisition.INTENT_NAME:
+                _require(preparation.decode_canonical(
+                    os.pread(descriptor_fd, 8192, 0), 8192) == intent)
+            elif name == acquisition.SETTLEMENT_NAME:
+                settlement = preparation.decode_canonical(
+                    os.pread(descriptor_fd, 8192, 0), 8192)
+                _require(set(settlement) == {"version", "intent_sha256",
+                         "descriptor_sha256", "blob_sha256", "blob_size",
+                         "file_device", "file_inode"}
+                         and settlement.get("version") ==
+                         "cogs.stage2-prebuilt-rootfs-acquisition-settlement/v1"
+                         and settlement.get("intent_sha256") == intent_sha256
+                         and settlement.get("descriptor_sha256") ==
+                             intent["descriptor_sha256"]
+                         and settlement.get("blob_sha256") == descriptor.layer_digest
+                         and settlement.get("blob_size") == descriptor.layer_size)
+                if acquisition.FINAL_NAME in names:
+                    final_seen = (root / acquisition.FINAL_NAME).lstat()
+                    _require((settlement["file_device"], settlement["file_inode"]) ==
+                             (final_seen.st_dev, final_seen.st_ino))
+            path.unlink(); _sync_directory(root)
+            _require(os.fstat(descriptor_fd).st_nlink == 0)
+        finally: os.close(descriptor_fd)
+    root.rmdir(); _sync_directory(root.parent)
+
+
+def _read_file_hash(descriptor, size):
+    digest = hashlib.sha256(); offset = 0
+    while offset < size:
+        part = os.pread(descriptor, min(CHUNK, size - offset), offset)
+        _require(part); digest.update(part); offset += len(part)
+    return digest.hexdigest()
+
+
+def _rollback_preparation(descriptor, descriptor_raw):
     """Inspect every owned class and aggregate uncertainty; never report best effort."""
     if not PREPARATION_ROOT.exists():
         _require(not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists()
                  and not KATA_ROOT.exists())
         return
-    ownership_raw, custody = _load_ownership()
     receipt = None
     if RECEIPT.exists() or RECEIPT.is_symlink():
         receipt = _receipt_value()
@@ -750,7 +787,11 @@ def _rollback_preparation(contract):
             wrapped.__cause__ = error
             errors.append(wrapped)
 
-    values = None if receipt is None else receipt[1]["runtime_archives"]
+    if receipt is not None:
+        values = receipt[1]["runtime_archives"]
+    else:
+        expected_runtime = _expected_runtime()
+        values = None if expected_runtime is None else expected_runtime.get("archives")
     kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
     # The staged observer derivative is authorized only by the still-present
     # pinned base generation, so verify/remove it before the Kata tree.
@@ -763,18 +804,39 @@ def _rollback_preparation(contract):
             root_row = next(row for row in rows if row["path"] == "opt/kata")
             children = [dict(row, path=row["path"][len("opt/kata/"):]) for row in rows
                         if row["path"].startswith("opt/kata/")]
-            _remove_verified_tree(KATA_ROOT, children, root_row)
+            _remove_verified_tree(KATA_ROOT, children, root_row, subset=True)
         cleanup(remove_kata)
 
-    if EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink():
+    if not errors and (EXTRACTED_ROOT.exists() or EXTRACTED_ROOT.is_symlink()):
         def remove_extracted():
             names = set(os.listdir(EXTRACTED_ROOT))
             if not names:
                 EXTRACTED_ROOT.rmdir()
                 return
             _require(values is not None, "extracted staging lacks durable manifest")
-            _require(names == {"kata", "containerd"})
+            _require((names <= {"kata", "containerd"} if receipt is None else
+                      names == {"kata", "containerd"}))
             for archive in values:
+                role_root = EXTRACTED_ROOT / archive["role"]
+                marker = role_root / ".extraction-intent.json"
+                partial_marker = role_root / "..extraction-intent.json.partial"
+                pin = next(item for item in preparation.ARCHIVES
+                           if item["role"] == archive["role"])
+                intent = preparation.canonical_bytes({
+                    "version": "cogs.stage2-runtime-extraction-intent/v1",
+                    "archive_name": pin["name"], "archive_size": pin["size"],
+                    "archive_sha256": pin["sha256"]})
+                interrupted = marker.exists()
+                if marker.exists():
+                    _require(marker.read_bytes() == intent); marker.unlink()
+                elif partial_marker.exists():
+                    seen_marker = partial_marker.lstat()
+                    _require(stat.S_ISREG(seen_marker.st_mode)
+                             and seen_marker.st_uid == seen_marker.st_gid == 0
+                             and seen_marker.st_nlink == 1
+                             and stat.S_IMODE(seen_marker.st_mode) == 0o400
+                             and intent.startswith(partial_marker.read_bytes()))
+                    partial_marker.unlink()
                 rows = archive["extracted"]["entries"]
                 kata_root = EXTRACTED_ROOT / "kata"
                 moved_before_recovery = (archive["role"] == "kata"
@@ -783,11 +845,12 @@ def _rollback_preparation(contract):
                     rows = [row for row in rows
                             if row["path"] != "opt/kata"
                             and not row["path"].startswith("opt/kata/")]
-                _remove_verified_tree(EXTRACTED_ROOT / archive["role"], rows)
+                _remove_verified_tree(role_root, rows, subset=True,
+                                      allow_truncated=interrupted)
             EXTRACTED_ROOT.rmdir()
         cleanup(remove_extracted)
 
-    if RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink():
+    if not errors and (RUNTIME_CACHE.exists() or RUNTIME_CACHE.is_symlink()):
         def remove_runtime_cache():
             _directory_identity(RUNTIME_CACHE)
             pins = {pin["name"]: pin for pin in preparation.ARCHIVES}
@@ -815,13 +878,22 @@ def _rollback_preparation(contract):
             RUNTIME_CACHE.rmdir()
         cleanup(remove_runtime_cache)
 
-    if receipt is not None:
+    receipt_partial = RECEIPT.with_name("." + RECEIPT.name + ".partial")
+    if not errors and (receipt_partial.exists() or receipt_partial.is_symlink()):
+        def remove_receipt_partial():
+            seen = receipt_partial.lstat()
+            _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and seen.st_nlink == 1 and stat.S_IMODE(seen.st_mode) == 0o400
+                     and 0 <= seen.st_size <= MAX_RECEIPT_BYTES)
+            receipt_partial.unlink(); _sync_directory(receipt_partial.parent)
+        cleanup(remove_receipt_partial, "partial receipt")
+    if not errors and receipt is not None:
         cleanup(lambda: (_require(RECEIPT.read_bytes() == receipt[0]), RECEIPT.unlink()),
                 "receipt")
-    cleanup(lambda: _remove_artifact_cache(contract, custody), "artifact cache")
+    if not errors and descriptor is not None:
+        cleanup(lambda: _remove_prebuilt_input(descriptor, descriptor_raw),
+                "prebuilt rootfs input")
     if not errors:
-        cleanup(lambda: (_require(OWNERSHIP.read_bytes() == ownership_raw), OWNERSHIP.unlink()),
-                "ownership")
         cleanup(lambda: PREPARATION_ROOT.rmdir(), "preparation root")
         if not errors:
             _sync_directory(PREPARATION_ROOT.parent)
@@ -855,10 +927,13 @@ def recover_failed_preparation():
     if rootfs_state.exists() or rootfs_state.is_symlink():
         _require(_rootfs_state_idle(),
                  "active rootfs state blocks immutable recovery")
-    contract = _fixed_contract()
-    _rollback_preparation(contract)
-    _require(not PREPARATION_ROOT.exists() and not IMMUTABLE_STAGING.exists()
-             and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
+    expected_runtime = _expected_runtime()
+    import completion_rootfs_prebuilt as rootfs_prebuilt
+    descriptor_raw = _prebuilt_descriptor_bytes(expected_runtime)
+    descriptor = rootfs_prebuilt.decode_fixed_descriptor(descriptor_raw)
+    _rollback_preparation(descriptor, descriptor_raw)
+    _require(not PREPARATION_ROOT.exists() and not preparation.PREBUILT_INPUT_ROOT.exists()
+             and not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     return None
 
 
@@ -870,24 +945,26 @@ def prepare():
     _extractor_preflight()
     _prepare_state_parents()
     _verify_extraction_filesystem()
-    _require(not PREPARATION_ROOT.exists()
+    _require(not PREPARATION_ROOT.exists() and not preparation.PREBUILT_INPUT_ROOT.exists()
              and not IMMUTABLE_STAGING.exists()
              and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
-    contract = _fixed_contract()
     _OBSERVATION_STAGE = "expected-control"
     expected_runtime = _expected_runtime()
+    import completion_rootfs_prebuilt as rootfs_prebuilt
+    import completion_rootfs_prebuilt_acquisition as prebuilt_acquisition
+    descriptor_raw = _prebuilt_descriptor_bytes(expected_runtime)
+    descriptor = rootfs_prebuilt.decode_fixed_descriptor(descriptor_raw)
     created = False
     try:
         _OBSERVATION_STAGE = "ownership"
         PREPARATION_ROOT.mkdir(mode=0o700)
         created = True
         _sync_directory(PREPARATION_ROOT.parent)
-        _prepare_artifact_custody(contract)
         RUNTIME_CACHE.mkdir(mode=0o700)
         EXTRACTED_ROOT.mkdir(mode=0o700)
         deadline = time.monotonic() + GLOBAL_SECONDS
         _OBSERVATION_STAGE = "rootfs-acquisition"
-        _acquire_rootfs_assets(contract)
+        rootfs_receipt = prebuilt_acquisition.acquire_fixed(descriptor_raw)
         _require(time.monotonic() < deadline)
         _OBSERVATION_STAGE = "runtime-acquisition"
         archives = {pin["role"]: _download_runtime(pin, deadline) for pin in preparation.ARCHIVES}
@@ -902,7 +979,15 @@ def prepare():
         raw = preparation.canonical_bytes({
             "version": VERSION,
             "authority": "immutable-public-input-preparation-only",
-            "rootfs_artifact_count": 16,
+            "rootfs_artifact": {
+                "descriptor_sha256": rootfs_receipt.descriptor_sha256,
+                "manifest_digest": rootfs_receipt.manifest_digest,
+                "blob_sha256": rootfs_receipt.blob_sha256,
+                "blob_size": rootfs_receipt.blob_size,
+                "intent_sha256": rootfs_receipt.intent_sha256,
+                "settlement_sha256": rootfs_receipt.settlement_sha256,
+                "downloaded": rootfs_receipt.downloaded,
+            },
             "runtime_archives": values,
             "forbidden_surfaces": ["containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"],
         })
@@ -914,9 +999,9 @@ def prepare():
         _OBSERVATION_STAGE = "installed-verification"
         _verify_installed(expected_runtime)
         _OBSERVATION_STAGE = "package-verification"
-        artifact_verifier.verify_package_archives(
-            artifact_verifier.FIXED_CONTRACT_PATH, ARTIFACT_ROOT)
-        return {"version": VERSION, "rootfs_artifact_count": 16,
+        rootfs_prebuilt.load_authority(
+            descriptor_raw, preparation.PREBUILT_USTAR_PATH.read_bytes())
+        return {"version": VERSION, "rootfs_artifact_count": 1,
                 "runtime_archive_count": 2,
                 "receipt_sha256": hashlib.sha256(raw).hexdigest(),
                 "control_verified": expected_runtime is not None,
@@ -925,7 +1010,7 @@ def prepare():
         if not created:
             raise
         try:
-            _rollback_preparation(contract)
+            _rollback_preparation(descriptor, descriptor_raw)
         except BaseException as rollback:
             raise _error_group(
                 "immutable preparation failed with rollback uncertainty",

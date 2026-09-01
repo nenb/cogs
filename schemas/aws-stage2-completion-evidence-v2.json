@@ -1,0 +1,481 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/aws-stage2-completion-evidence-v2.json",
+  "title": "Cogs closure-issued AWS Stage 2 completion evidence v2",
+  "description": "Redacted pass-only projection. Schema conformance is not issuance authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "result",
+    "batch",
+    "bindings",
+    "deadlines",
+    "cycles",
+    "inventories",
+    "launch_summary",
+    "ssh_ready_summary",
+    "workload_summaries",
+    "cleanup",
+    "cost",
+    "limitations"
+  ],
+  "properties": {
+    "version": { "const": "cogs.aws-stage2-completion-evidence/v2" },
+    "authority": { "const": "aws-stage2-completion" },
+    "result": { "const": "pass" },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitment",
+        "implementation_revision",
+        "control_revision",
+        "consumption_commitment",
+        "custody_root",
+        "cycle_count",
+        "modes"
+      ],
+      "properties": {
+        "commitment": { "$ref": "#/$defs/digest" },
+        "implementation_revision": { "$ref": "#/$defs/gitSha" },
+        "control_revision": { "$ref": "#/$defs/gitSha" },
+        "consumption_commitment": { "$ref": "#/$defs/digest" },
+        "custody_root": { "$ref": "#/$defs/digest" },
+        "cycle_count": { "const": 7 },
+        "modes": { "$ref": "#/$defs/modes" }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_manifest_commitment",
+        "static_control_commitment",
+        "pre_aws_package_commitment",
+        "rootfs_descriptor_commitment",
+        "rootfs_package_manifest_commitment",
+        "rootfs_provenance_commitment",
+        "rootfs_qualification_receipt_commitment",
+        "rootfs_publication_receipt_commitment",
+        "runtime_commitment",
+        "fixture_commitment",
+        "account_commitment",
+        "ami_commitment",
+        "approval_authentication_commitment",
+        "approval_issuer_commitment"
+      ],
+      "properties": {
+        "source_manifest_commitment": { "$ref": "#/$defs/digest" },
+        "static_control_commitment": { "$ref": "#/$defs/digest" },
+        "pre_aws_package_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_descriptor_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_package_manifest_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_provenance_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_qualification_receipt_commitment": { "$ref": "#/$defs/digest" },
+        "rootfs_publication_receipt_commitment": { "$ref": "#/$defs/digest" },
+        "runtime_commitment": { "$ref": "#/$defs/digest" },
+        "fixture_commitment": { "$ref": "#/$defs/digest" },
+        "account_commitment": { "$ref": "#/$defs/digest" },
+        "ami_commitment": { "$ref": "#/$defs/digest" },
+        "approval_authentication_commitment": { "$ref": "#/$defs/digest" },
+        "approval_issuer_commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "deadlines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first_apply_unix_ns",
+        "effect_deadline_unix_ns",
+        "cleanup_reserve_ns",
+        "expires_unix_ns",
+        "final_zero_unix_ns",
+        "actual_campaign_duration_ns"
+      ],
+      "properties": {
+        "first_apply_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "effect_deadline_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "cleanup_reserve_ns": { "type": "integer", "minimum": 300000000000, "maximum": 1800000000000 },
+        "expires_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "final_zero_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "actual_campaign_duration_ns": { "$ref": "#/$defs/positive" }
+      }
+    },
+    "cycles": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/cycle" },
+            {
+              "type": "object",
+              "properties": { "ordinal": { "const": 1 }, "mode": { "const": "full" }, "workloads": {} },
+              "required": ["workloads"]
+            }
+          ]
+        },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness2" }] },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness3" }] },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness4" }] },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness5" }] },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness6" }] },
+        { "allOf": [{ "$ref": "#/$defs/cycle" }, { "$ref": "#/$defs/readiness7" }] }
+      ],
+      "items": false
+    },
+    "inventories": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/inventory" } },
+    "launch_summary": { "$ref": "#/$defs/summary" },
+    "ssh_ready_summary": { "$ref": "#/$defs/summary" },
+    "workload_summaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git", "build", "install"],
+      "properties": {
+        "git": { "$ref": "#/$defs/summary" },
+        "build": { "$ref": "#/$defs/summary" },
+        "install": { "$ref": "#/$defs/summary" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destroy_attempts",
+        "inventory_observations",
+        "cycle_zero_commitments",
+        "final_zero_commitment",
+        "inventory_categories"
+      ],
+      "properties": {
+        "destroy_attempts": { "const": 7 },
+        "inventory_observations": { "const": 8 },
+        "cycle_zero_commitments": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "final_zero_commitment": { "$ref": "#/$defs/digest" },
+        "inventory_categories": { "$ref": "#/$defs/categories" }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "rate_components_micro_usd_per_hour",
+        "aggregate_rate_micro_usd_per_hour",
+        "rate_source_commitment",
+        "aggregate_effect_duration_ns",
+        "actual_campaign_duration_ns",
+        "aggregate_cost_micro_usd",
+        "approved_maximum_micro_usd"
+      ],
+      "properties": {
+        "currency": { "const": "micro-USD" },
+        "rate_components_micro_usd_per_hour": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["compute", "gp3", "public_ipv4", "support_allowance"],
+          "properties": {
+            "compute": { "const": 90000 },
+            "gp3": { "const": 3000 },
+            "public_ipv4": { "const": 5000 },
+            "support_allowance": { "const": 20000 }
+          }
+        },
+        "aggregate_rate_micro_usd_per_hour": { "const": 118000 },
+        "rate_source_commitment": { "$ref": "#/$defs/digest" },
+        "aggregate_effect_duration_ns": { "$ref": "#/$defs/positive" },
+        "actual_campaign_duration_ns": { "$ref": "#/$defs/positive" },
+        "aggregate_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "approved_maximum_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 }
+      }
+    },
+    "limitations": {
+      "const": [
+        "standalone-stage-2-only",
+        "not-eks-or-kubernetes",
+        "not-production-release-or-general-availability",
+        "not-stage-4-under-30-second-readiness",
+        "not-general-capacity",
+        "no-isolation-claim-beyond-measured-sandbox",
+        "custody-is-local-tamper-evidence-not-external-worm"
+      ]
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "positive": { "type": "integer", "minimum": 1 },
+    "unixNs": { "type": "string", "pattern": "^[1-9][0-9]{0,19}$" },
+    "nullableDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "modes": { "const": ["full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness"] },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples_ns", "min_ns", "p50_ns", "p95_ns", "max_ns"],
+      "properties": {
+        "samples_ns": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/positive" } },
+        "min_ns": { "$ref": "#/$defs/positive" },
+        "p50_ns": { "$ref": "#/$defs/positive" },
+        "p95_ns": { "$ref": "#/$defs/positive" },
+        "max_ns": { "$ref": "#/$defs/positive" }
+      }
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_commitment",
+        "settlement_commitment",
+        "identity_commitment",
+        "state_commitment",
+        "state_lineage_commitment",
+        "observed_started_unix_ns",
+        "observed_ended_unix_ns"
+      ],
+      "properties": {
+        "intent_commitment": { "$ref": "#/$defs/digest" },
+        "settlement_commitment": { "$ref": "#/$defs/digest" },
+        "identity_commitment": { "$ref": "#/$defs/digest" },
+        "state_commitment": { "$ref": "#/$defs/digest" },
+        "state_lineage_commitment": { "$ref": "#/$defs/digest" },
+        "observed_started_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "observed_ended_unix_ns": { "$ref": "#/$defs/unixNs" }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "ordinal", "duration_ns", "commitment"],
+      "properties": {
+        "category": { "enum": ["git", "build", "install"] },
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "duration_ns": { "$ref": "#/$defs/positive" },
+        "commitment": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "mode",
+        "grant_commitment",
+        "cycle_commitment",
+        "plan_sha256",
+        "effects",
+        "freshness",
+        "remote",
+        "zero_inventory_commitment",
+        "cost"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "mode": { "enum": ["full", "readiness"] },
+        "grant_commitment": { "$ref": "#/$defs/digest" },
+        "cycle_commitment": { "$ref": "#/$defs/digest" },
+        "plan_sha256": { "$ref": "#/$defs/digest" },
+        "effects": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["plan", "apply", "running", "destroy"],
+          "properties": {
+            "plan": { "$ref": "#/$defs/effect" },
+            "apply": { "$ref": "#/$defs/effect" },
+            "running": { "$ref": "#/$defs/effect" },
+            "destroy": { "$ref": "#/$defs/effect" }
+          }
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instance", "root_volume", "launch_template_generation",
+            "host_boot", "operation", "client_key", "host_key",
+            "pre_destroy_receipt"
+          ],
+          "properties": {
+            "instance": { "$ref": "#/$defs/digest" },
+            "root_volume": { "$ref": "#/$defs/digest" },
+            "launch_template_generation": { "$ref": "#/$defs/digest" },
+            "host_boot": { "$ref": "#/$defs/digest" },
+            "operation": { "$ref": "#/$defs/digest" },
+            "client_key": { "$ref": "#/$defs/digest" },
+            "host_key": { "$ref": "#/$defs/digest" },
+            "pre_destroy_receipt": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "remote": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host_receipt_commitment",
+            "instance_commitment",
+            "operation_commitment",
+            "host_boot_commitment",
+            "apply_to_running_ns",
+            "kata_launch_to_ssh_ready_ns"
+          ],
+          "properties": {
+            "host_receipt_commitment": { "$ref": "#/$defs/digest" },
+            "instance_commitment": { "$ref": "#/$defs/digest" },
+            "operation_commitment": { "$ref": "#/$defs/digest" },
+            "host_boot_commitment": { "$ref": "#/$defs/digest" },
+            "apply_to_running_ns": { "$ref": "#/$defs/positive" },
+            "kata_launch_to_ssh_ready_ns": { "$ref": "#/$defs/positive" }
+          }
+        },
+        "workloads": { "type": "array", "minItems": 21, "maxItems": 21, "items": { "$ref": "#/$defs/workload" } },
+        "zero_inventory_commitment": { "$ref": "#/$defs/digest" },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "receipt_commitment",
+            "rate_source_commitment",
+            "usage_commitment",
+            "billable_duration_ns",
+            "cost_micro_usd"
+          ],
+          "properties": {
+            "receipt_commitment": { "$ref": "#/$defs/digest" },
+            "rate_source_commitment": { "$ref": "#/$defs/digest" },
+            "usage_commitment": { "$ref": "#/$defs/digest" },
+            "billable_duration_ns": { "$ref": "#/$defs/positive" },
+            "cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 }
+          }
+        }
+      }
+    },
+    "readiness2": { "$ref": "#/$defs/readinessBase2" },
+    "readiness3": { "$ref": "#/$defs/readinessBase3" },
+    "readiness4": { "$ref": "#/$defs/readinessBase4" },
+    "readiness5": { "$ref": "#/$defs/readinessBase5" },
+    "readiness6": { "$ref": "#/$defs/readinessBase6" },
+    "readiness7": { "$ref": "#/$defs/readinessBase7" },
+    "readinessBase2": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 2 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "readinessBase3": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 3 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "readinessBase4": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 4 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "readinessBase5": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 5 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "readinessBase6": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 6 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "readinessBase7": {
+      "type": "object",
+      "properties": { "ordinal": { "const": 7 }, "mode": { "const": "readiness" }, "workloads": {} },
+      "not": { "type": "object", "properties": { "workloads": {} }, "required": ["workloads"] }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_commitment", "disposition", "public_address_commitment"],
+      "properties": {
+        "identity_commitment": { "$ref": "#/$defs/digest" },
+        "disposition": { "enum": ["absent", "deleted"] },
+        "public_address_commitment": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "ordinal",
+        "request_token_commitment",
+        "next_token_commitment",
+        "page_commitment",
+        "resources"
+      ],
+      "properties": {
+        "category": { "type": "string" },
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "request_token_commitment": { "$ref": "#/$defs/nullableDigest" },
+        "next_token_commitment": { "$ref": "#/$defs/nullableDigest" },
+        "page_commitment": { "$ref": "#/$defs/digest" },
+        "resources": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/resource" } }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_sequence",
+        "cycle_ordinal",
+        "observer_commitment",
+        "session_commitment",
+        "run_commitment",
+        "account_commitment",
+        "region_commitment",
+        "destroyed_state_commitment",
+        "observed_started_unix_ns",
+        "observed_ended_unix_ns",
+        "zero_commitment",
+        "pages"
+      ],
+      "properties": {
+        "observation_sequence": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "cycle_ordinal": { "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 7 }, { "type": "null" }] },
+        "observer_commitment": { "$ref": "#/$defs/digest" },
+        "session_commitment": { "$ref": "#/$defs/digest" },
+        "run_commitment": { "$ref": "#/$defs/digest" },
+        "account_commitment": { "$ref": "#/$defs/digest" },
+        "region_commitment": { "$ref": "#/$defs/digest" },
+        "destroyed_state_commitment": { "$ref": "#/$defs/digest" },
+        "observed_started_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "observed_ended_unix_ns": { "$ref": "#/$defs/unixNs" },
+        "zero_commitment": { "$ref": "#/$defs/digest" },
+        "pages": { "type": "array", "minItems": 21, "maxItems": 672, "items": { "$ref": "#/$defs/page" } }
+      }
+    },
+    "categories": {
+      "const": [
+        "ec2_instances",
+        "ebs_volumes",
+        "network_interfaces",
+        "eni_public_associations",
+        "elastic_ips",
+        "security_groups",
+        "vpcs",
+        "subnets",
+        "internet_gateways",
+        "route_tables",
+        "routes",
+        "launch_templates",
+        "key_pairs",
+        "iam_roles",
+        "iam_role_policies",
+        "iam_policy_attachments",
+        "iam_instance_profiles",
+        "eventbridge_schedules",
+        "eventbridge_targets",
+        "budgets",
+        "ssm_managed_instances"
+      ]
+    }
+  }
+}

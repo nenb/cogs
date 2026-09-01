@@ -1,16 +1,12 @@
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-data "aws_ssm_parameter" "ubuntu_ami" {
-  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-}
-
 data "aws_ami" "ubuntu" {
-  owners = ["099720109477"]
+  owners = [var.ami_owner_id]
 
   filter {
     name   = "image-id"
-    values = [nonsensitive(data.aws_ssm_parameter.ubuntu_ami.value)]
+    values = [var.ami_id]
   }
 
   filter {
@@ -20,15 +16,20 @@ data "aws_ami" "ubuntu" {
 }
 
 locals {
-  name          = "cogs-s2-${substr(var.source_revision, 0, 8)}"
+  name          = "cogs-s2-${substr(var.source_revision, 0, 8)}-c${var.cycle_ordinal}"
   purpose       = "stage-2-nested-virtualization"
   resolver_cidr = "10.77.0.2/32"
   tags = {
-    "cogs:owner"           = "nenb"
-    "cogs:purpose"         = local.purpose
-    "cogs:source-revision" = var.source_revision
-    "cogs:expires-at"      = var.expires_at
-    "cogs:managed-by"      = "opentofu"
+    "cogs:owner"             = "nenb"
+    "cogs:purpose"           = local.purpose
+    "cogs:source-revision"   = var.source_revision
+    "cogs:control-revision"  = var.control_revision
+    "cogs:rootfs-descriptor" = var.rootfs_descriptor_sha256
+    "cogs:ami-commitment"    = var.ami_commitment
+    "cogs:batch"             = var.batch_commitment
+    "cogs:cycle-ordinal"     = tostring(var.cycle_ordinal)
+    "cogs:expires-at"        = var.expires_at
+    "cogs:managed-by"        = "opentofu"
   }
 }
 
@@ -43,9 +44,9 @@ check "bounded_expiry" {
   assert {
     condition = (
       timecmp(var.expires_at, timeadd(timestamp(), "30m")) > 0 &&
-      timecmp(var.expires_at, timeadd(timestamp(), "5h")) < 0
+      timecmp(var.expires_at, timeadd(timestamp(), "8h")) < 0
     )
-    error_message = "Expiry must be more than 30 minutes and less than five hours from plan/apply."
+    error_message = "Expiry must be more than 30 minutes and less than eight hours from plan/apply."
   }
 }
 
@@ -65,12 +66,12 @@ resource "aws_vpc" "campaign" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_internet_gateway" "campaign" {
   vpc_id = aws_vpc.campaign.id
-  tags   = { Name = local.name }
+  tags   = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_subnet" "campaign" {
@@ -79,12 +80,12 @@ resource "aws_subnet" "campaign" {
   availability_zone       = var.availability_zone
   map_public_ip_on_launch = false
 
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_route_table" "campaign" {
   vpc_id = aws_vpc.campaign.id
-  tags   = { Name = local.name }
+  tags   = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_route" "internet" {
@@ -135,7 +136,7 @@ resource "aws_security_group" "host" {
     cidr_blocks = [local.resolver_cidr]
   }
 
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_iam_role" "host" {
@@ -150,7 +151,7 @@ resource "aws_iam_role" "host" {
       Action = "sts:AssumeRole"
     }]
   })
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
@@ -161,7 +162,7 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 resource "aws_iam_instance_profile" "host" {
   name = "${local.name}-host"
   role = aws_iam_role.host.name
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_launch_template" "host" {
@@ -218,9 +219,14 @@ resource "aws_launch_template" "host" {
     tags          = merge(local.tags, { Name = local.name })
   }
 
+  tag_specifications {
+    resource_type = "network-interface"
+    tags          = merge(local.tags, { Name = local.name })
+  }
+
   user_data = base64encode("#!/usr/bin/env bash\nset -eu\nlogger -t cogs-stage-2 'arming guest-local termination fallback'\nshutdown -P +220\n")
 
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_instance" "host" {
@@ -230,7 +236,7 @@ resource "aws_instance" "host" {
   }
 
   instance_initiated_shutdown_behavior = "terminate"
-  tags                                 = { Name = local.name }
+  tags                                 = merge(local.tags, { Name = local.name })
 
   lifecycle {
     precondition {
@@ -262,7 +268,7 @@ resource "aws_iam_role" "terminator" {
       }
     }]
   })
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }
 
 resource "aws_iam_role_policy" "terminator" {
@@ -333,5 +339,5 @@ resource "aws_budgets_budget" "campaign" {
     }
   }
 
-  tags = { Name = local.name }
+  tags = merge(local.tags, { Name = local.name })
 }

@@ -3,19 +3,17 @@ from dataclasses import dataclass, field
 import errno
 import fcntl
 import hashlib
+import json
 import os
 import secrets
 import sys
 sys.dont_write_bytecode = True
 import completion_kata_operation as kata_operation
-import completion_rootfs_build as build
 import completion_rootfs_builder as builder
-import completion_rootfs_canonical as canonical
 import completion_rootfs_fs as fs
 import completion_rootfs_ledger as ledger
 import completion_rootfs_materializer as materializer
-import completion_rootfs_plan as plan
-import completion_rootfs_publish as publication
+import completion_rootfs_prebuilt as prebuilt
 FIXED_PREFIX = "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/.state/completion-v1/rootfs-v1/"
 class LeaseError(Exception):
     pass
@@ -27,7 +25,8 @@ ROOTFS_BUILD_DETAILS = (materializer.MATERIALIZE_STAGES - {"internal"}) | set(
     ROOTFS_BUILD_OUTCOMES.values())
 ROOTFS_ACQUIRE_STAGES = frozenset({
     "bootstrap", "pins", "build-first", "build-second", "equality", "pin-check", "topology",
-    "lease-mark", "lease-verify", *(
+    "lease-mark", "lease-verify", "prebuilt-open", "prebuilt-import-intent",
+    "prebuilt-archive-custody", "prebuilt-materialize", "prebuilt-manifest", "prebuilt-candidate", "prebuilt-pin-check", *(
         f"{build_stage}-{detail}"
         for build_stage in ("build-first", "build-second")
         for detail in ROOTFS_BUILD_DETAILS
@@ -57,6 +56,7 @@ class RuntimeRootfsReference:
     ustar_sha256: str
     ustar_size: int
     entry_count: int
+    prebuilt_descriptor_raw: bytes | None = field(default=None, repr=False)
     def __post_init__(self):
         ledger._token(self.token)
         _fail(type(self.path) is str and type(self.operation_name) is str)
@@ -72,11 +72,17 @@ class RuntimeRootfsReference:
         _fail(type(self.manifest_size) is int and self.manifest_size > 0)
         _fail(type(self.ustar_size) is int and self.ustar_size > 0 and self.ustar_size % 512 == 0)
         _fail(type(self.entry_count) is int and self.entry_count > 0)
+        if self.prebuilt_descriptor_raw is not None:
+            descriptor = prebuilt.decode_fixed_descriptor(self.prebuilt_descriptor_raw)
+            _fail((descriptor.rootfs_manifest_sha256, descriptor.rootfs_manifest_size,
+                   descriptor.ustar_sha256, descriptor.ustar_size, descriptor.entry_count) ==
+                  (self.manifest_sha256, self.manifest_size, self.ustar_sha256,
+                   self.ustar_size, self.entry_count))
 
 @dataclass
 class RetainedRootfsLease:
     reference: RuntimeRootfsReference
-    retained: build.RetainedBuild = field(repr=False)
+    retained: builder.RetainedOperation = field(repr=False)
     disposition: str = field(default="held", init=False)
 
 def _descriptors(node):
@@ -86,7 +92,7 @@ def _descriptors(node):
     return values
 
 def _topology(retained, reference=None):
-    _fail(type(retained) is build.RetainedBuild and type(retained.base_chain) is fs.HeldChain)
+    _fail(type(retained) is builder.RetainedOperation and type(retained.base_chain) is fs.HeldChain)
     _fail(type(retained.disposition) is str and retained.disposition in {"owned", "transferred", "uncertain", "retired"})
     owned = retained.owned
     _fail(type(owned) is builder.OwnedOperation and type(owned.locked) is builder.LockedState)
@@ -322,7 +328,7 @@ def _stable_graph(retained, reference, control, expected_status):
 
 def _stable_lease_pass(lease, control):
     _fail(type(lease) is RetainedRootfsLease and lease.disposition == "held")
-    _fail(type(lease.reference) is RuntimeRootfsReference and type(lease.retained) is build.RetainedBuild)
+    _fail(type(lease.reference) is RuntimeRootfsReference and type(lease.retained) is builder.RetainedOperation)
     _fail(lease.retained.disposition == "transferred")
     _stable_graph(lease.retained, lease.reference, control, "leased")
     return lease.reference
@@ -337,63 +343,100 @@ def _reference(owned, active):
         FIXED_PREFIX + owned.operation_name + "/rootfs", body["token"], owned.operation_name,
         snapshot.ledger_key, snapshot.settled, snapshot.state_parent.generation, snapshot.operation, snapshot.root,
         body["manifest_sha256"], body["manifest_size"], body["ustar_sha256"], body["ustar_size"], body["entry_count"],
+        (None if "prebuilt_descriptor" not in body else
+         prebuilt._canonical(body["prebuilt_descriptor"])),
     )
 
-def _acquire(approval, outer):
-    _fail(type(approval) is fs.SourceApproval and type(outer) is fs.OperationControl)
+def _acquire_prebuilt(approval, authority, outer):
+    """Import one authenticated prebuilt ustar; never enter the build route."""
+    _fail(type(approval) is fs.SourceApproval and type(authority) is prebuilt.PrebuiltRootfsAuthority)
+    _fail(type(outer) is fs.OperationControl)
     retained = None
+    owned = None
+    chain = None
     boundary = False
     stage = "bootstrap"
     try:
         _bootstrap_state(approval, outer)
-        stage = "pins"
-        pins = publication._load_pins()
-        _fail(type(pins) is publication.RootfsPins)
-        stage = "build-first"
-        first_token = secrets.token_hex(32)
-        first = build._build_once(approval, first_token, outer)
-        stage = "build-second"
-        second_token = secrets.token_hex(32)
-        _fail(second_token != first_token)
-        second, retained = build._build_once_retained(approval, second_token, outer)
-        stage = "equality"
-        build._require_equal_builds(first, second)
-        stage = "pin-check"
-        build._require_pinned(first, pins)
-        build._require_pinned(second, pins)
-        stage = "topology"
+        stage = "prebuilt-open"
+        fresh = prebuilt.revalidate_authority(authority)
+        descriptor = fresh.descriptor
+        chain = builder._open_base_chain(outer)
+        owned = builder._begin_operation(chain, approval, secrets.token_hex(32), outer)
+        stage = "prebuilt-import-intent"
+        import_intent = {
+            "token": builder._token(owned.active),
+            "descriptor_sha256": hashlib.sha256(authority.descriptor_raw).hexdigest(),
+            "manifest_sha256": descriptor.rootfs_manifest_sha256,
+            "manifest_size": descriptor.rootfs_manifest_size,
+            "ustar_sha256": descriptor.ustar_sha256,
+            "ustar_size": descriptor.ustar_size,
+            "entry_count": descriptor.entry_count,
+        }
+        active = builder._append(
+            owned.active, "prebuilt-import-intent", import_intent, outer)
+        owned = builder.OwnedOperation(
+            owned.locked, active, owned.operation, owned.root, owned.operation_name)
+        stage = "prebuilt-materialize"
+        try:
+            result = materializer._materialize_prebuilt(authority, owned, outer)
+        except materializer.MaterializerWorkError:
+            owned = None
+            raise
+        owned = result.owned
+        stage = "prebuilt-manifest"
+        active, manifest_node = builder._create_ledger_entry(
+            result.active, builder._operation_chain(owned, outer),
+            builder.MANIFEST_NAME.text, builder.MANIFEST_NAME, "file", fresh.manifest, outer,
+        )
+        fs._close_node(manifest_node)
+        stage = "prebuilt-archive-custody"
+        active, candidate_node = builder._create_ledger_entry(
+            active, builder._operation_chain(owned, outer),
+            builder.CANDIDATE_TAR_NAME.text, builder.CANDIDATE_TAR_NAME,
+            "file", authority.ustar, outer,
+        )
+        fs._close_node(candidate_node)
+        refreshed = builder.OwnedOperation(
+            owned.locked, active, owned.operation, owned.root, owned.operation_name)
+        retained = builder.RetainedOperation(refreshed, chain)
+        owned = None; chain = None
+        stage = "prebuilt-pin-check"
         _topology(retained)
         _stable_graph(retained, None, outer, "active")
         boundary = True
         retained.disposition = "uncertain"
         stage = "lease-mark"
         refreshed = builder._mark_leased(
-            retained.owned, pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256,
-            pins.ustar_size, pins.entry_count, outer,
-        )
+            retained.owned, descriptor.rootfs_manifest_sha256, descriptor.rootfs_manifest_size,
+            descriptor.ustar_sha256, descriptor.ustar_size, descriptor.entry_count, outer,
+            json.loads(authority.descriptor_raw))
         retained.owned = refreshed
-        _topology(retained)
         reference = _reference(refreshed, refreshed.active)
         retained.disposition = "transferred"
         lease = RetainedRootfsLease(reference, retained)
         stage = "lease-verify"
-        _stable_lease_pass(lease, outer)
-        first = second = None
+        _verify(lease, outer)
         return lease
     except BaseException as error:
-        if stage in {"build-first", "build-second"} and type(error) is build.BuildAttemptError:
-            detail = (error.work_stage if error.work_stage != "internal"
-                      else ROOTFS_BUILD_OUTCOMES[error.work_outcome])
-            stage = f"{stage}-{detail}"
+        if owned is not None:
+            try:
+                materializer._reload_and_cleanup(owned, materializer._fresh_cleanup_control())
+                owned = None
+            except BaseException as cleanup_error:
+                error = fs.RootfsFsError(error, cleanup_error)
+        if chain is not None:
+            try: fs._close_chain(chain)
+            except BaseException as close_error: error = fs.RootfsFsError(error, close_error)
         if retained is None:
             raise RootfsAcquireError(stage) from error
         try:
-            if boundary:
-                _close_preserving(retained, error)
+            if boundary: _close_preserving(retained, error)
             _abandon_active(retained, error)
         except BaseException as settled:
             raise RootfsAcquireError(stage) from settled
         raise RootfsAcquireError(stage) from error
+
 
 def _abandon(lease, control):
     """Drop live custody of a verified lease without deleting durable state."""
@@ -447,7 +490,7 @@ def _begin_kata_operation(authority, held, approval, control):
           and type(approval) is fs.SourceApproval and type(control) is fs.OperationControl)
     _admit_operation_parent_transition(held, control)
     reference = _verify(held, control)
-    baseline = hashlib.sha256(kata_operation._canonical({
+    baseline_value = {
         "entry_count": reference.entry_count,
         "manifest_sha256": reference.manifest_sha256,
         "manifest_size": reference.manifest_size,
@@ -455,7 +498,16 @@ def _begin_kata_operation(authority, held, approval, control):
         "rootfs_token": reference.token,
         "ustar_sha256": reference.ustar_sha256,
         "ustar_size": reference.ustar_size,
-    })).hexdigest()
+    }
+    if reference.prebuilt_descriptor_raw is not None:
+        descriptor = prebuilt.decode_fixed_descriptor(reference.prebuilt_descriptor_raw)
+        baseline_value["prebuilt_descriptor_sha256"] = hashlib.sha256(
+            reference.prebuilt_descriptor_raw).hexdigest()
+        baseline_value["prebuilt_manifest_digest"] = descriptor.manifest_digest
+        baseline_value["prebuilt_package_manifest_sha256"] = descriptor.package_manifest_sha256
+        baseline_value["prebuilt_provenance_sha256"] = descriptor.provenance_sha256
+        baseline_value["prebuilt_publication_receipt_sha256"] = descriptor.publication_receipt_sha256
+    baseline = hashlib.sha256(kata_operation._canonical(baseline_value)).hexdigest()
     kata_operation._begin_production_operation(
         authority, approval, reference.token, baseline)
     _attach_kata_operation(authority.reserve_rootfs(), held, control)
@@ -530,7 +582,7 @@ def _reopen_kata_reserved(permit, control):
             root = fs._open_path_node(operation, builder.ROOT_NAME, "directory", route_control)
             _fail(type(reconciled.lease_snapshot) is ledger.LeaseSnapshot and root.generation == reconciled.lease_snapshot.root)
             owned = builder.OwnedOperation(locked, active, operation, root, ledger._operation_name(token))
-            retained = build.RetainedBuild(owned, chain)
+            retained = builder.RetainedOperation(owned, chain)
             retained.disposition = "transferred"
             routed = RetainedRootfsLease(_reference(owned, active), retained)
             if reconciled.release_authorized:
@@ -808,7 +860,7 @@ def _recover_unadmitted_kata_operation(prestage_permit, approval, control):
                   and root.generation == reconciled.lease_snapshot.root)
             owned = builder.OwnedOperation(locked, active, operation, root,
                                            ledger._operation_name(leased_body["token"]))
-            retained = build.RetainedBuild(owned, chain); retained.disposition = "transferred"
+            retained = builder.RetainedOperation(owned, chain); retained.disposition = "transferred"
             held = RetainedRootfsLease(_reference(owned, active), retained)
             _verify(held, control)
             reference = held.reference
@@ -886,6 +938,7 @@ def _recover_kata_release(authority, control):
         raise
 
 def _verify(lease, control):
+    _fail(lease.reference.prebuilt_descriptor_raw is not None)
     terminal = builder._terminal_record(lease.retained.owned.active).record_type
     _fail(terminal in {"leased", "release-authorized", "prestage-release-authorized"})
     expected_status = terminal if terminal != "leased" else "leased"
@@ -893,23 +946,26 @@ def _verify(lease, control):
         _stable_lease_pass(lease, control)
     else:
         _stable_graph(lease.retained, lease.reference, control, expected_status)
-    authority = plan.load_verified_build_inputs()
-    count = materializer._postwalk(lease.retained.owned, lease.retained.owned.root, authority, control)
+    candidate = fs._open_path_node(
+        lease.retained.owned.operation, builder.CANDIDATE_TAR_NAME, "file", control)
+    try:
+        raw = fs._read_regular(candidate, lease.reference.ustar_size, control)
+        authority = prebuilt.load_authority(
+            lease.reference.prebuilt_descriptor_raw, raw)
+    finally:
+        fs._close_node(candidate)
+    count = materializer._postwalk(
+        lease.retained.owned, lease.retained.owned.root, authority, control)
     _fail(count == lease.reference.entry_count)
-    fresh = plan.revalidate_build_inputs(authority)
-    _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
-    manifest = canonical._manifest(fresh.plan)
+    fresh = prebuilt.revalidate_authority(authority)
     reference = lease.reference
-    _fail(len(manifest) == reference.manifest_size and hashlib.sha256(manifest).hexdigest() == reference.manifest_sha256)
-    _fail(len(fresh.plan.entries) == reference.entry_count)
-    pins = publication._load_pins()
-    _fail(type(pins) is publication.RootfsPins)
-    _fail((pins.manifest_sha256, pins.manifest_size, pins.ustar_sha256, pins.ustar_size, pins.entry_count) == (
-        reference.manifest_sha256, reference.manifest_size, reference.ustar_sha256, reference.ustar_size, reference.entry_count,
-    ))
+    _fail(len(fresh.manifest) == reference.manifest_size
+          and hashlib.sha256(fresh.manifest).hexdigest() ==
+              reference.manifest_sha256
+          and len(fresh.plan.entries) == reference.entry_count)
     if expected_status == "leased":
         _stable_lease_pass(lease, control)
     else:
         _stable_graph(lease.retained, lease.reference, control, expected_status)
-    _fail(type(lease.reference) is RuntimeRootfsReference)
-    return lease.reference
+    _fail(type(reference) is RuntimeRootfsReference)
+    return reference

@@ -191,6 +191,8 @@ for signature in (
     "def _claim_fixed_prepared_runtime(custody):",
 ):
     assert signature in source
-assert "rootfs_lease._acquire(_fixed_source_approval(custody), _control())" in source
+assert "rootfs_lease._acquire_prebuilt(" in source
+assert "admission._fixed_prebuilt_rootfs_authority(custody)" in source
+assert "rootfs_lease._acquire(_fixed_source_approval(custody), _control())" not in source
 assert "rootfs_lease._abandon(lease, _control())" in source
 print("real Linux no-KVM V2 preparation bridge descriptor/fault matrix passed")

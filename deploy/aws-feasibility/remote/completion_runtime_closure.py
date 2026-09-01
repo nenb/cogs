@@ -5,12 +5,7 @@ import hashlib
 import json
 import struct
 
-from completion_rootfs_plan import (
-    PACKAGE_ORDER,
-    PlannedEntry,
-    RootfsBuildInputs,
-    revalidate_build_inputs,
-)
+from completion_rootfs_model import PlannedEntry
 
 RECORD_VERSION = "cogs.stage2-completion-runtime-object/v1"
 _ROOTS = (
@@ -169,9 +164,11 @@ def _elf(raw):
     return interpreter, sonames[0] if sonames else None, tuple(needed)
 
 def _entries(authority):
-    _fail(type(authority) is RootfsBuildInputs)
+    import completion_rootfs_canonical as canonical
+
+    rootfs_plan = canonical._authority_plan(authority)
     entries = {}
-    for entry in authority.plan.entries:
+    for entry in rootfs_plan.entries:
         _fail(type(entry) is PlannedEntry and entry.record.path not in entries)
         entries[entry.record.path] = entry
     return entries
@@ -228,9 +225,9 @@ def _library(entries, name):
     _fail(len(candidates) == 1)
     return candidates[0]
 
-def fixed_runtime_closure(authority: RootfsBuildInputs) -> ClosureResult:
-    fresh = revalidate_build_inputs(authority)
-    _fail(type(fresh) is RootfsBuildInputs and fresh is not authority)
+def _fixed_runtime_closure(authority, revalidate, expected_sources):
+    fresh = revalidate(authority)
+    _fail(fresh is not authority)
     entries = _entries(fresh)
     root_paths = tuple(_regular(entries, path)[0] for path in _ROOTS)
     executable_roots = set(root_paths[:-1])
@@ -265,8 +262,7 @@ def fixed_runtime_closure(authority: RootfsBuildInputs) -> ClosureResult:
             )
         )
     result_records = tuple(records)
-    expected_sources = ("oci-layer",) + PACKAGE_ORDER
-    _fail(len(result_records) == 35)
+    _fail(type(expected_sources) is tuple and len(result_records) == 35)
     _fail({item.source for item in result_records} == set(expected_sources))
     stream = b"".join(
         json.dumps(asdict(item), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -274,3 +270,18 @@ def fixed_runtime_closure(authority: RootfsBuildInputs) -> ClosureResult:
         for item in result_records
     )
     return ClosureResult(result_records, hashlib.sha256(stream).hexdigest(), 35, expected_sources)
+
+
+def fixed_runtime_closure(authority):
+    """Compatibility entry delegated to the producer-only legacy module."""
+    from completion_runtime_closure_legacy import fixed_runtime_closure as producer_only
+    return producer_only(authority)
+
+
+def prebuilt_runtime_closure(authority):
+    from completion_rootfs_prebuilt import PrebuiltRootfsAuthority, revalidate_authority
+
+    _fail(type(authority) is PrebuiltRootfsAuthority)
+    return _fixed_runtime_closure(
+        authority, revalidate_authority, ("prebuilt-rootfs-v1",),
+    )

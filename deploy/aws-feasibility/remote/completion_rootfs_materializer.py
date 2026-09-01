@@ -12,7 +12,8 @@ sys.dont_write_bytecode = True
 import completion_rootfs_builder as builder
 import completion_rootfs_fs as fs
 import completion_rootfs_ledger as ledger
-import completion_rootfs_plan as plan
+import completion_rootfs_model as model
+from completion_archive_preflight import MaterialRecord
 
 MATERIALIZE_SECONDS = 900
 NATIVE_PACKAGE_MATERIALIZE_SECONDS = 1_200
@@ -740,16 +741,19 @@ def _reload_and_cleanup(owned, control):
         builder._cleanup_owned(refreshed, active, control)
 
 
-def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None):
+def _materialize_controlled(authority, owned, control, revalidate, cleanup_deadline_ns=None):
     _fail(type(owned) is builder.OwnedOperation and type(control) is fs.OperationControl)
-    _fail(cleanup_deadline_ns is None or type(cleanup_deadline_ns) is int)
+    _fail(callable(revalidate) and (cleanup_deadline_ns is None or type(cleanup_deadline_ns) is int))
     active = owned.active
     root = owned.root
     stage = "plan"
     try:
-        fresh = plan.revalidate_build_inputs(authority)
-        _fail(type(fresh) is plan.RootfsBuildInputs and fresh is not authority)
-        entries = fresh.plan.entries
+        fresh = revalidate(authority)
+        import completion_rootfs_canonical as canonical
+
+        rootfs_plan = canonical._authority_plan(fresh)
+        _fail(fresh is not authority)
+        entries = rootfs_plan.entries
         directories = [entry for entry in entries if entry.record.kind == "directory"]
         files = [entry for entry in entries if entry.record.kind == "file"]
         hardlinks = [entry for entry in entries if entry.record.kind == "hardlink"]
@@ -770,7 +774,7 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
         for entry in sorted(directories, key=lambda item: (-item.record.path.count("/"), item.record.path.encode("utf-8"))):
             active = _finalize_directory(active, owned, root, entry, control)
         stage = "rmeta"
-        root_entry = plan.PlannedEntry("root", None, plan.MaterialRecord("rootfs", "directory", fresh.plan.root.mode, fresh.plan.root.uid, fresh.plan.root.gid, fresh.plan.root.mtime, 0, None, None, None, None, -1))
+        root_entry = model.PlannedEntry("root", None, MaterialRecord("rootfs", "directory", rootfs_plan.root.mode, rootfs_plan.root.uid, rootfs_plan.root.gid, rootfs_plan.root.mtime, 0, None, None, None, None, -1))
         root_chain, _root_parent, root_opened = _fresh_chain_to_parent(owned, root, "", control)
         _fail(not root_opened and root_chain.components[-1].node.generation == _generation(root, control))
         metadata_root = replace(root, generation=root_chain.components[-1].node.generation)
@@ -787,19 +791,40 @@ def _materialize_controlled(authority, owned, control, cleanup_deadline_ns=None)
 
 
 def _materialize_unmasked(authority, owned, outer_control):
+    from completion_rootfs_plan import revalidate_build_inputs
+
     _fail(type(outer_control) is fs.OperationControl)
-    return _materialize_controlled(authority, owned, _materialize_control(outer_control))
+    return _materialize_controlled(
+        authority, owned, _materialize_control(outer_control), revalidate_build_inputs,
+    )
+
+
+def _materialize_prebuilt_unmasked(authority, owned, outer_control):
+    from completion_rootfs_prebuilt import revalidate_authority
+
+    _fail(type(outer_control) is fs.OperationControl)
+    return _materialize_controlled(
+        authority, owned, _materialize_control(outer_control), revalidate_authority,
+    )
 
 
 def _native_package_materialize_unmasked(authority, owned, controls):
+    from completion_rootfs_plan import revalidate_build_inputs
+
     _fail(type(controls) is NativePackageControls)
     return _materialize_controlled(
         authority, owned, _native_package_materialize_control(controls.work),
-        controls.cleanup_deadline_ns)
+        revalidate_build_inputs, controls.cleanup_deadline_ns)
 
 
 def _materialize(authority, owned, control):
     return builder._fixed_umask(_materialize_unmasked, authority, owned, control)
+
+
+def _materialize_prebuilt(authority, owned, control):
+    return builder._fixed_umask(
+        _materialize_prebuilt_unmasked, authority, owned, control,
+    )
 
 
 def _native_package_materialize(authority, owned, controls):
