@@ -456,6 +456,15 @@ for fixed_entry in ("run-stage2-completion-full.sh",
     assert rejected_argument.returncode == 64
 assert (REMOTE / "run-stage2-completion-full.sh").read_bytes() != (
        REMOTE / "run-stage2-completion-readiness.sh").read_bytes()
+for fixed_module in ("completion_cycle_full.py", "completion_cycle_readiness.py"):
+    isolated_import = subprocess.run(
+        [sys.executable, "-I", "-B", "-c",
+         "import importlib.util,pathlib;"
+         f"p=pathlib.Path({str(REMOTE / fixed_module)!r});"
+         "s=importlib.util.spec_from_file_location('fixed_cycle_entry',p);"
+         "m=importlib.util.module_from_spec(s);s.loader.exec_module(m)"],
+        capture_output=True, check=False, timeout=10)
+    assert isolated_import.returncode == 0, isolated_import.stderr
 assert coordinator.preflight_report() == actual
 reject(coordinator._run_fixed_full_cycle)
 reject(coordinator._run_fixed_readiness_cycle)
