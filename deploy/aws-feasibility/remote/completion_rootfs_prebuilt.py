@@ -203,11 +203,13 @@ def preflight(descriptor, descriptor_raw, ustar):
         archive = archive_preflight._preflight_material_tar(ustar, _archive_bounds(descriptor), "oci")
     except archive_preflight.ArchivePreflightError as error:
         raise PrebuiltRootfsError() from error
-    entries = tuple(model.PlannedEntry("prebuilt-rootfs-v1", archive, record) for record in archive.records)
-    paths = tuple(entry.record.path for entry in entries)
-    _require(archive.root == model.ROOT_POLICY and len(entries) == descriptor.entry_count)
-    _require(paths == tuple(sorted(paths, key=lambda item: item.encode("utf-8"))) and len(paths) == len(set(paths)))
+    archive_entries = tuple(model.PlannedEntry("prebuilt-rootfs-v1", archive, record) for record in archive.records)
+    paths = tuple(entry.record.path for entry in archive_entries)
+    _require(archive.root == model.ROOT_POLICY and len(archive_entries) == descriptor.entry_count)
+    _require(len(paths) == len(set(paths)))
+    entries = tuple(sorted(archive_entries, key=lambda entry: entry.record.path.encode("utf-8")))
     rootfs_plan = model.RootfsPlan(archive.root, ("prebuilt-rootfs-v1",), entries, ())
+    _require(archive_entries == canonical._ordered_entries(rootfs_plan))
     manifest = canonical._manifest(rootfs_plan)
     _require(len(manifest) == descriptor.rootfs_manifest_size and hashlib.sha256(manifest).hexdigest() == descriptor.rootfs_manifest_sha256)
     return PrebuiltRootfsView(descriptor, descriptor_raw, ustar, manifest, rootfs_plan)

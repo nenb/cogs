@@ -112,12 +112,15 @@ def _tiny_archive():
     content = b"prebuilt-rootfs\n"
     directory = archive.MaterialRecord("usr", "directory", 0o755, 0, 0, model.SOURCE_DATE_EPOCH, 0, None, None, None, None, -1)
     regular = archive.MaterialRecord("usr/proof", "file", 0o644, 0, 0, model.SOURCE_DATE_EPOCH, len(content), None, None, None, hashlib.sha256(content).hexdigest(), -1)
+    symlink = archive.MaterialRecord("bin", "symlink", 0o777, 0, 0, model.SOURCE_DATE_EPOCH, 0, "usr/bin", None, None, None, -1)
     raw = canonical._header("./", model.ROOT_POLICY, b"5", 0)
     raw += canonical._header(directory.path, directory, b"5", 0)
     raw += canonical._header(regular.path, regular, b"0", len(content))
-    raw += content + b"\0" * ((512 - len(content) % 512) % 512) + b"\0" * 1024
-    parsed = archive._preflight_material_tar(raw, {"max_entries": 3, "max_regular_bytes": len(raw), "max_file_bytes": len(content), "max_path_bytes": 4096, "max_component_bytes": 255}, "oci")
-    entries = tuple(model.PlannedEntry("test", parsed, record) for record in parsed.records)
+    raw += content + b"\0" * ((512 - len(content) % 512) % 512)
+    raw += canonical._header(symlink.path, symlink, b"2", 0, symlink.link_text.encode()) + b"\0" * 1024
+    parsed = archive._preflight_material_tar(raw, {"max_entries": 4, "max_regular_bytes": len(raw), "max_file_bytes": len(content), "max_path_bytes": 4096, "max_component_bytes": 255}, "oci")
+    archive_entries = tuple(model.PlannedEntry("test", parsed, record) for record in parsed.records)
+    entries = tuple(sorted(archive_entries, key=lambda entry: entry.record.path.encode("utf-8")))
     plan = model.RootfsPlan(parsed.root, ("test",), entries, ())
     manifest = canonical._manifest(plan)
     descriptor = prebuilt.PrebuiltRootfsDescriptor(
@@ -132,7 +135,8 @@ def preflight_checks():
     descriptor, descriptor_raw, raw, expected = _tiny_archive()
     view = prebuilt.preflight(descriptor, descriptor_raw, raw)
     require(canonical._manifest(view.plan) == canonical._manifest(expected))
-    require(bytes(view.plan.entries[1].content()) == b"prebuilt-rootfs\n")
+    proof = next(entry for entry in view.plan.entries if entry.record.path == "usr/proof")
+    require(bytes(proof.content()) == b"prebuilt-rootfs\n")
     for hostile in (raw[:-1], raw + b"\0", b"X" + raw[1:]):
         rejected(lambda hostile=hostile: prebuilt.preflight(descriptor, descriptor_raw, hostile))
     wrong_manifest = prebuilt.PrebuiltRootfsDescriptor(
