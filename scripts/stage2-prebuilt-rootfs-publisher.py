@@ -57,7 +57,7 @@ def value(raw):
 
 
 def validate_candidate():
-    expected = {"accepted/.cogs-stage2-rootfs-publication-v1", "accepted/rootfs.manifest.json",
+    expected = {"accepted/.cogs-rootfs-publication-v1", "accepted/rootfs.manifest.json",
                 "accepted/rootfs.metadata.json", "accepted/rootfs.tar", "producer-receipt.json",
                 "rootfs.package.json", "rootfs.provenance.json"}
     observed = {str(path.relative_to(CANDIDATE)): path for path in CANDIDATE.rglob("*")}
@@ -68,11 +68,11 @@ def validate_candidate():
     manifest = read("accepted/rootfs.manifest.json", prebuilt.MANIFEST_SIZE)
     metadata = read("accepted/rootfs.metadata.json", prebuilt.METADATA_SIZE)
     ustar = read("accepted/rootfs.tar", prebuilt.USTAR_SIZE)
-    sentinel = read("accepted/.cogs-stage2-rootfs-publication-v1", 128)
+    sentinel = read("accepted/.cogs-rootfs-publication-v1", 128)
     require((len(manifest),sha(manifest)) == (prebuilt.MANIFEST_SIZE,prebuilt.MANIFEST_SHA256))
     require((len(metadata),sha(metadata)) == (prebuilt.METADATA_SIZE,prebuilt.METADATA_SHA256))
     require((len(ustar),sha(ustar)) == (prebuilt.USTAR_SIZE,prebuilt.USTAR_SHA256))
-    require(sentinel == b"cogs-stage2-rootfs-publication-v1\n")
+    require(sentinel == b"cogs-rootfs-publication-v1\n")
     package_raw = read("rootfs.package.json", 64*1024); provenance_raw = read("rootfs.provenance.json", 128*1024)
     receipt_raw = read("producer-receipt.json", 64*1024)
     package, provenance, receipt = map(value,(package_raw,provenance_raw,receipt_raw))

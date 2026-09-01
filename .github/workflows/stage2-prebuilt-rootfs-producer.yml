@@ -131,7 +131,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/stage2-prebuilt-rootfs-product"
           install -d -m 0700 "$out/accepted"
-          for name in rootfs.manifest.json rootfs.metadata.json rootfs.tar .cogs-stage2-rootfs-publication-v1; do
+          for name in rootfs.manifest.json rootfs.metadata.json rootfs.tar .cogs-rootfs-publication-v1; do
             sudo -n install -m 0400 "/var/lib/cogs/stage2-prebuilt-rootfs-product-v1/accepted/$name" "$out/accepted/$name"
           done
           for name in producer-receipt.json rootfs.package.json rootfs.provenance.json; do
