@@ -17,6 +17,10 @@ test("trusted publisher is directional, numeric-artifact-bound, signed, and byte
   assert.match(workflow, /packages: write/u);
   assert.match(workflow, /id-token: write/u);
   assert.match(workflow, /cosign sign --yes --new-bundle-format=true "\$SUBJECT"/u);
+  assert.match(workflow, /--user "\$\(id -u\):\$\(id -g\)"/u);
+  assert.match(workflow, /-e HOME=\/cosign-home/u);
+  assert.match(workflow, /install -m 0600 "\$RUNNER_TEMP\/docker-config\/config\.json"/u);
+  assert.match(workflow, /rm -rf -- "\$RUNNER_TEMP\/docker-config" "\$RUNNER_TEMP\/cosign-home"/u);
   assert.match(workflow, /cosign verify --new-bundle-format=true/u);
   assert.match(
     workflow,

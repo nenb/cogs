@@ -26,6 +26,9 @@ test("diagnostic publisher separately signs, verifies, and reads back immutable 
   assert.match(publisher, /packages: write/u);
   assert.match(publisher, /id-token: write/u);
   assert.match(publisher, /cosign sign --yes --new-bundle-format=true "\$SUBJECT"/u);
+  assert.match(publisher, /--user "\$\(id -u\):\$\(id -g\)"/u);
+  assert.match(publisher, /-e HOME=\/cosign-home/u);
+  assert.match(publisher, /rm -rf -- "\$RUNNER_TEMP\/docker-config" "\$RUNNER_TEMP\/cosign-home"/u);
   assert.match(publisher, /cosign verify --new-bundle-format=true/u);
   assert.match(publisher, /subject="\$REPOSITORY:diagnostic-\$EXACT_H-\$GITHUB_RUN_ID"/u);
   assert.match(
