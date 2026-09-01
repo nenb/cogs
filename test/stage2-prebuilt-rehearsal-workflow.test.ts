@@ -79,11 +79,10 @@ test("rehearsal descriptor custody is directional and publication adjuncts follo
 
 test("isolated rehearsal entries import only their fixed sibling coordinator", () => {
   for (const name of ["completion_cycle_full_rehearsal.py", "completion_cycle_readiness_rehearsal.py"]) {
-    const result = spawnSync(
-      "python3",
-      ["-I", "-B", `deploy/aws-feasibility/remote/${name}`, "unexpected"],
-      { encoding: "utf8", timeout: 10_000 },
-    );
+    const result = spawnSync("python3", ["-I", "-B", `deploy/aws-feasibility/remote/${name}`, "unexpected"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
     assert.equal(result.status, 64, result.stderr);
     assert.doesNotMatch(result.stderr, /ModuleNotFoundError/u);
   }
