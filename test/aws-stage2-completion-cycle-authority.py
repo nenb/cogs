@@ -40,6 +40,8 @@ for mode,ordinal,route in (("full",1,evidence._fixed_full_route()),("readiness",
     route_name,capability,program,marker=evidence._describe_route(route)
     cycle_body={"operation_token":d("8"),"route":route_name,
                 "cycle_capability_sha256":capability,"program_sha256":program,
+                "parser_source_sha256": (operation.SSH_PARSER_SHA256 if route_name == "full"
+                                          else operation.guest_readiness.PARSER_SHA256),
                 "marker_sha256":marker,"grant_authority":"production",
                 "batch_commitment":value.batch_commitment,"cycle_ordinal":value.ordinal,
                 "implementation_revision":value.implementation_revision,
@@ -53,6 +55,12 @@ for mode,ordinal,route in (("full",1,evidence._fixed_full_route()),("readiness",
     try: operation._validate_body("CYCLE_ROUTE_V1",hostile)
     except operation.OperationError: pass
     else: raise AssertionError("hostile cycle commitment accepted")
+    hostile=dict(cycle_body)
+    hostile["parser_source_sha256"] = (operation.guest_readiness.PARSER_SHA256
+        if route_name == "full" else operation.SSH_PARSER_SHA256)
+    try: operation._validate_body("CYCLE_ROUTE_V1",hostile)
+    except operation.OperationError: pass
+    else: raise AssertionError("route parser source substitution accepted")
     with tempfile.TemporaryDirectory() as temporary:
         parent=Path(temporary)/"cycle";parent.mkdir(mode=0o700);parent.chmod(0o700);path=parent/"grant.json"
         path.write_bytes(encoded);path.chmod(0o400);authority._claimed=False
@@ -114,15 +122,19 @@ def terminal(route,raw_bytes,production=False):
     grant_names=("batch_commitment","cycle_ordinal","implementation_revision",
                  "control_revision","static_control_sha256","rootfs_descriptor_sha256",
                  "ami_commitment","plan_sha256","grant_commitment")
+    parser = (operation.SSH_PARSER_SHA256 if name == "full"
+              else operation.guest_readiness.PARSER_SHA256)
     route_body={"operation_token":token,"route":name,
                 "cycle_capability_sha256":capability,"program_sha256":program,
+                "parser_source_sha256":parser,
                 "marker_sha256":marker,"grant_authority":"production" if production else "synthetic",
                 **{key:None for key in grant_names}}
     rows=[rec(0,"GENESIS",{"operation_token":token,"host_boot_id":boot}),
           rec(1,"CYCLE_ROUTE_V1",route_body),
           rec(2,"CTR_LAUNCH_ISSUED_V1",{"kata_launch_started_boottime_ns":10,"host_boot_id":boot}),
           rec(3,"SSH_MARKER_OBSERVED_V1",{"ssh_marker_observed_boottime_ns":20,"host_boot_id":boot}),
-          rec(4,"SSH_COMMAND_SETTLED_V1",{"ssh_command_settled_boottime_ns":30,"host_boot_id":boot}),
+          rec(4,"SSH_COMMAND_SETTLED_V1",{"ssh_command_settled_boottime_ns":30,
+              "host_boot_id":boot,"parser_sha256":parser}),
           rec(5,"COMMAND_INTENT_V2",{"command_id":"CTR_RUN"}),
           rec(6,"COMMAND_INTENT_V2",{"command_id":"SSH_READY" if name=="full" else "SSH_READINESS"}),
           rec(7,"INPUT_GRANT",{"action":"settled","path":"@key-stage/client"}),

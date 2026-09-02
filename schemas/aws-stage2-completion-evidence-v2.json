@@ -52,6 +52,7 @@
       "additionalProperties": false,
       "required": [
         "source_manifest_commitment",
+        "source_bindings_commitment",
         "static_control_commitment",
         "pre_aws_package_commitment",
         "rootfs_descriptor_commitment",
@@ -68,6 +69,7 @@
       ],
       "properties": {
         "source_manifest_commitment": { "$ref": "#/$defs/digest" },
+        "source_bindings_commitment": { "$ref": "#/$defs/digest" },
         "static_control_commitment": { "$ref": "#/$defs/digest" },
         "pre_aws_package_commitment": { "$ref": "#/$defs/digest" },
         "rootfs_descriptor_commitment": { "$ref": "#/$defs/digest" },

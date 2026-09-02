@@ -8,6 +8,7 @@ publication authority and deliberately imports no workload implementation.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 GUEST_READY_MARKER = b"COGS_STAGE2_SSH_READINESS_V1\n"
 GUEST_OUTPUT_LIMIT = len(GUEST_READY_MARKER)
@@ -20,7 +21,10 @@ export HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=U
 GUEST_PROGRAM_SHA256 = hashlib.sha256(_GUEST_PROGRAM).hexdigest()
 MARKER_SHA256 = hashlib.sha256(GUEST_READY_MARKER).hexdigest()
 PARSER_ID = "completion_guest_readiness_v1.parse_guest_readiness_output/v1"
-PARSER_SHA256 = hashlib.sha256(PARSER_ID.encode("ascii")).hexdigest()
+# This is deliberately the complete module, not a stable label or a selected
+# function fragment: every executable parser-source mutation changes the
+# commitment carried through admission, result, and settlement records.
+PARSER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 class ReadinessProgramError(ValueError):

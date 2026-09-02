@@ -505,7 +505,8 @@ if native_supported:
             "operation_token": "a" * 64,
             "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
             "policy_version": policy.POLICY_VERSION,
-            "parser_source_sha256": operation.SSH_PARSER_SHA256})
+            "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+            "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256})
         cuts = {}
         def append_grant(value, path, name, kind, mode, serial, settled=False):
             grant_id = hashlib.sha256(f"{path}:{serial}".encode()).hexdigest()

@@ -1031,7 +1031,8 @@ def native_transaction_crashes(completion):
                  ("PRODUCTION_ADMISSION_V2", {"operation_token": "a" * 64,
                     "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                     "policy_version": operation.command_policy.POLICY_VERSION,
-                    "parser_source_sha256": operation.SSH_PARSER_SHA256}),
+                    "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                    "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),
                  ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
     for cut in ("intent", "create", "fork", "preexec", "release", "output"):
         fixture_journal(completion, lifecycle, host_boot_id=process._boot_id())
@@ -2484,7 +2485,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256})
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256})
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -2502,7 +2504,8 @@ def production_owner_test():
             admitted_suffix = (retained_deadline, ("PRODUCTION_ADMISSION_V2", {
                 "operation_token": "a" * 64, "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}))
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}))
             production_fixture(leased_records + admitted_suffix)
             expired_owner = operation._open_fixed_operation(); unchanged = fixture_journal_path(completion).read_bytes()
             with patch.object(operation, "_boottime_ns", return_value=edge - 1):
@@ -2598,7 +2601,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),)
             absence_intent = {
                 "operation_token": "a" * 64, "resource_id": "input-root", "action": "create",
                 "expected_parent_generation": parent_generation,
@@ -3179,7 +3183,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),)
             (completion / "kata-runtime-v1").mkdir(mode=0o700)
             production_fixture(recovery_prefix)
             recovery_authority = operation._open_fixed_operation()

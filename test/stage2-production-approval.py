@@ -19,7 +19,9 @@ def d(value): return hashlib.sha256(value.encode()).hexdigest()
 value = {
     "version": "cogs.stage2-production-approval-draft/v1",
     "implementation_revision": "1" * 40, "control_revision": "2" * 40,
-    "source_manifest_sha256": d("source"), "static_control_sha256": d("control"),
+    "source_manifest_sha256": d("source"),
+    "source_bindings_sha256": d("source-bindings"),
+    "static_control_sha256": d("control"),
     "pre_aws_package_sha256": d("preaws"), "rootfs_descriptor_sha256": d("rootfs"),
     "rootfs_package_manifest_sha256": d("package"),
     "rootfs_provenance_sha256": d("provenance"),

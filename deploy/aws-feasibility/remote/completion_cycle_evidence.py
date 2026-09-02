@@ -278,11 +278,14 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                      "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_NETWORK_RELEASED_V1"):
             _require(len(by_kind.get(kind, ())) == 1, f"exact {kind} required")
         route_record = by_kind["CYCLE_ROUTE_V1"][0]
+        parser_source = (operation.SSH_PARSER_SHA256 if name == "full"
+                         else readiness_guest.PARSER_SHA256)
         _require((route_record.body["route"],
                   route_record.body["cycle_capability_sha256"],
                   route_record.body["program_sha256"],
+                  route_record.body["parser_source_sha256"],
                   route_record.body["marker_sha256"]) ==
-                 (name, capability, program, marker))
+                 (name, capability, program, parser_source, marker))
         production_grant = route_record.body["grant_authority"] == "production"
         formal_grant = classification == "formal"
         _require(production_grant == (classification == "production")
@@ -303,6 +306,7 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
         _require(launch.body["kata_launch_started_boottime_ns"] <
                  observed.body["ssh_marker_observed_boottime_ns"] <=
                  settled.body["ssh_command_settled_boottime_ns"]
+                 and settled.body["parser_sha256"] == parser_source
                  and launch.body["host_boot_id"] == observed.body["host_boot_id"] ==
                      settled.body["host_boot_id"] == records[0].body["host_boot_id"])
         intents = [row for row in records if row.record_type == "COMMAND_INTENT_V2"]
@@ -376,7 +380,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                               if production_grant else None),
             "operation_token": records[0].body["operation_token"],
             "journal_sha256": hashlib.sha256(lifecycle.retired.raw).hexdigest(),
-            "program_sha256": program, "marker_sha256": marker,
+            "program_sha256": program, "parser_source_sha256": parser_source,
+            "marker_sha256": marker,
             "launch_attempts": 1, "ssh_attempts": 1, "timing": timing,
             "key_freshness": key_freshness,
             "runtime_network_sha256": next(
@@ -387,6 +392,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                 "qemu_process_sha256": qmp.qemu_process_sha256,
                 "qemu_argv_sha256": qmp.qemu_argv_sha256,
                 "qemu_pid": qmp.qemu_pid, "qemu_starttime": qmp.qemu_starttime,
+                "qemu_executable_device": qmp.qemu_executable_device,
+                "qemu_executable_inode": qmp.qemu_executable_inode,
                 "observer_qmp_device": qmp.observer_qmp_device,
                 "observer_qmp_inode": qmp.observer_qmp_inode,
                 "kvm_device": qmp.kvm_device, "kvm_inode": qmp.kvm_inode,

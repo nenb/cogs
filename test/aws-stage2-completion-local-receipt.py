@@ -64,7 +64,8 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
     rows.append(record(len(rows), "PRODUCTION_ADMISSION_V2", {
         "operation_token": token, "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
         "policy_version": operation.command_policy.POLICY_VERSION,
-        "parser_source_sha256": operation.SSH_PARSER_SHA256,
+        "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+        "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256,
     }))
     rows.append(record(len(rows), "RUNTIME_READY", {
         "operation_token": token, "proof_sha256": "0" * 64,

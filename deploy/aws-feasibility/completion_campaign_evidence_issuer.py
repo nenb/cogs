@@ -311,6 +311,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
              "aggregate cost gate")
     bindings = {
         "source_manifest_commitment": approval.source_manifest_sha256,
+        "source_bindings_commitment": approval.source_bindings_sha256,
         "static_control_commitment": approval.static_control_sha256,
         "pre_aws_package_commitment": approval.pre_aws_package_sha256,
         "rootfs_descriptor_commitment": approval.rootfs_descriptor_sha256,

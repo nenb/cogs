@@ -457,14 +457,17 @@ def _validate_body(kind, body):
               == body["admission_boottime_ns"] + JOURNAL_TOTAL_NS)
     elif kind == "PRODUCTION_ADMISSION_V2":
         _keys(body, ("operation_token", "admission_version", "policy_version",
-                     "parser_source_sha256"))
+                     "full_parser_source_sha256", "readiness_parser_source_sha256"))
         _hex(body["operation_token"])
         _fail(body["admission_version"] == PRODUCTION_ADMISSION_VERSION
               and body["policy_version"] == command_policy.POLICY_VERSION
-              and body["parser_source_sha256"] == SSH_PARSER_SHA256)
+              and body["full_parser_source_sha256"] == SSH_PARSER_SHA256
+              and body["readiness_parser_source_sha256"] ==
+                  guest_readiness.PARSER_SHA256)
     elif kind == "CYCLE_ROUTE_V1":
         base_keys = ("operation_token", "route", "cycle_capability_sha256",
-                     "program_sha256", "marker_sha256", "grant_authority")
+                     "program_sha256", "parser_source_sha256", "marker_sha256",
+                     "grant_authority")
         cloud_keys = ("batch_commitment", "cycle_ordinal", "implementation_revision",
                       "control_revision", "static_control_sha256",
                       "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
@@ -479,12 +482,14 @@ def _validate_body(kind, body):
                                       or set(body) == set((*base_keys, *formal_keys))))
         _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
         _hex(body["cycle_capability_sha256"]); _hex(body["program_sha256"])
-        _hex(body["marker_sha256"])
-        expected = ((guest_workloads.GUEST_PROGRAM_SHA256,
+        _hex(body["parser_source_sha256"]); _hex(body["marker_sha256"])
+        expected = ((guest_workloads.GUEST_PROGRAM_SHA256, SSH_PARSER_SHA256,
                      hashlib.sha256(guest_workloads.GUEST_READY_MARKER).hexdigest())
                     if body["route"] == "full" else
-                    (guest_readiness.GUEST_PROGRAM_SHA256, guest_readiness.MARKER_SHA256))
-        _fail((body["program_sha256"], body["marker_sha256"]) == expected)
+                    (guest_readiness.GUEST_PROGRAM_SHA256,
+                     guest_readiness.PARSER_SHA256, guest_readiness.MARKER_SHA256))
+        _fail((body["program_sha256"], body["parser_source_sha256"],
+               body["marker_sha256"]) == expected)
         _choice(body["grant_authority"], {
             "synthetic", "production", formal_cycle_authority.AUTHORITY})
         if body["grant_authority"] == "synthetic":
@@ -1354,10 +1359,14 @@ def _legal(records):
             continue
         if kind == "PRODUCTION_ADMISSION_V2":
             _fail(phase == "ROOTFS_LEASED" and not production_admitted and command_phase is None)
-            production_admitted = True
+            production_admitted = record
             continue
         if kind == "CYCLE_ROUTE_V1":
+            admission_parser = production_admitted.body[
+                "full_parser_source_sha256" if body["route"] == "full"
+                else "readiness_parser_source_sha256"] if production_admitted else None
             _fail(production_admitted and cycle_route is None and command_phase is None
+                  and body["parser_source_sha256"] == admission_parser
                   and phase in {"ROOTFS_LEASED", "FS_SETTLED"}
                   and not any(item.record_type in {"COMMAND_INTENT", "COMMAND_INTENT_V2"}
                               and item.body["command_id"] == "CTR_RUN"
@@ -1408,7 +1417,7 @@ def _legal(records):
             result = ssh_result if body["route"] == "full" else readiness_result
             parser = SSH_PARSER_SHA256 if body["route"] == "full" else guest_readiness.PARSER_SHA256
             _fail(result is not None and body["result_record_sha256"] == result.line_sha256
-                  and body["parser_sha256"] == parser
+                  and body["parser_sha256"] == parser == cycle_route.body["parser_source_sha256"]
                   and body["stdout_sha256"] == result.body["stdout_sha256"])
             settlement_observation = record
             continue
@@ -2879,7 +2888,8 @@ def _make_authority():
                     "operation_token": context.operation_token,
                     "admission_version": PRODUCTION_ADMISSION_VERSION,
                     "policy_version": command_policy.POLICY_VERSION,
-                    "parser_source_sha256": SSH_PARSER_SHA256})
+                    "full_parser_source_sha256": SSH_PARSER_SHA256,
+                    "readiness_parser_source_sha256": guest_readiness.PARSER_SHA256})
         def cycle_route(self):
             _io, records, status = reload(self, True); _fail(status == "exact")
             rows = [item.body for item in records if item.record_type == "CYCLE_ROUTE_V1"]
@@ -2888,9 +2898,13 @@ def _make_authority():
         def record_cycle_route(self, route, capability_sha256, program_sha256,
                                marker_sha256, grant=None):
             context = self.command_context()
+            parser_source_sha256 = (SSH_PARSER_SHA256 if route == "full"
+                                    else guest_readiness.PARSER_SHA256)
             body = {"operation_token": context.operation_token, "route": route,
                 "cycle_capability_sha256": capability_sha256,
-                "program_sha256": program_sha256, "marker_sha256": marker_sha256}
+                "program_sha256": program_sha256,
+                "parser_source_sha256": parser_source_sha256,
+                "marker_sha256": marker_sha256}
             if type(grant) is formal_cycle_authority.FormalCycleGrant:
                 body.update({"grant_authority": formal_cycle_authority.AUTHORITY,
                     "authority": grant.authority,

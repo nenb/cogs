@@ -45,6 +45,7 @@ def receipt(ordinal):
     grant_value = authority.asdict(grant); grant_value["cycle_ordinal"] = grant_value.pop("ordinal")
     qmp = {"qemu_process_sha256": d(f"runtime-{ordinal}"), "qemu_argv_sha256": d(f"argv-{ordinal}"),
         "qemu_pid": 100 + ordinal, "qemu_starttime": 200 + ordinal,
+        "qemu_executable_device": 250, "qemu_executable_inode": 260 + ordinal,
         "observer_qmp_device": 300, "observer_qmp_inode": 400 + ordinal,
         "kvm_device": 500, "kvm_inode": 600 + ordinal, "kvm_rdev": 700,
         "kvm_api": 12, "qmp_present": True, "qmp_enabled": True}
@@ -66,7 +67,8 @@ def receipt(ordinal):
         "operation_token": operation, "rootfs_token": rootfs,
         "lifecycle_objects": {"rootfs_leases": 1, "runtime_stages": 1, "task_launches": 1},
         "journal_sha256": d(f"journal-{ordinal}"), "program_sha256": program,
-        "marker_sha256": marker, "launch_attempts": 1, "ssh_attempts": 1,
+        "parser_source_sha256": formal.PARSERS[mode], "marker_sha256": marker,
+        "launch_attempts": 1, "ssh_attempts": 1,
         "timing": {"host_boot_id": f"0000000{ordinal}-0000-4000-8000-00000000000{ordinal}",
             "launch_record_sha256": d(f"launch-{ordinal}"), "marker_record_sha256": d(f"marker-record-{ordinal}"),
             "settlement_record_sha256": d(f"settled-{ordinal}"),
@@ -93,7 +95,8 @@ def receipt(ordinal):
             "runtime_network_sha256": value["runtime_network_sha256"],
             "live_mapping_sha256": d(f"mapping-{ordinal}"),
             "qemu_process_sha256": qmp["qemu_process_sha256"],
-            "qmp_identity": [qmp["qemu_pid"], qmp["qemu_starttime"], 0, 1,
+            "qmp_identity": [qmp["qemu_pid"], qmp["qemu_starttime"],
+                             qmp["qemu_executable_device"], qmp["qemu_executable_inode"],
                              qmp["observer_qmp_device"], qmp["observer_qmp_inode"],
                              qmp["kvm_device"], qmp["kvm_inode"], qmp["kvm_rdev"], 12]}
     return value
@@ -131,7 +134,8 @@ route_name, capability, program, marker = cycle_evidence._describe_route(route)
 journal_grant = canonical_authority.asdict(canonical_grant)
 journal_grant["cycle_ordinal"] = journal_grant.pop("ordinal"); journal_grant.pop("mode")
 body = {"operation_token": d("operation"), "route": route_name,
-    "cycle_capability_sha256": capability, "program_sha256": program, "marker_sha256": marker,
+    "cycle_capability_sha256": capability, "program_sha256": program,
+    "parser_source_sha256": operation.SSH_PARSER_SHA256, "marker_sha256": marker,
     "grant_authority": canonical_authority.AUTHORITY, **journal_grant}
 operation._validate_body("CYCLE_ROUTE_V1", body)
 hostile_body = {**body, "grant_authority": "production"}
@@ -191,12 +195,21 @@ with tempfile.TemporaryDirectory() as temporary:
     wrong = receipt(2); wrong["aws_authority"] = wrong["cycle_grant"]["grant_commitment"]; mutations.append(wrong)
     wrong = receipt(2); wrong["lifecycle_objects"]["task_launches"] = 2; mutations.append(wrong)
     wrong = receipt(2); wrong["cycle_grant"]["cycle_ordinal"] = 3; mutations.append(wrong)
+    wrong = receipt(2); wrong["parser_source_sha256"] = d("substituted-parser"); mutations.append(wrong)
     wrong = receipt(2); wrong["workloads"] = []; mutations.append(wrong)
     wrong = receipt(1); wrong["workloads"] = wrong["workloads"][:-1]; mutations.append(wrong)
     wrong = receipt(2); wrong["unexpected"] = True; mutations.append(wrong)
     for hostile in mutations:
         rejected(lambda hostile=hostile: formal.validate_receipt(formal.canonical(hostile), expected,
                                                                   hostile["cycle_grant"]["cycle_ordinal"]))
+    qmp_fields = ("qemu_pid", "qemu_starttime", "qemu_executable_device",
+                  "qemu_executable_inode", "observer_qmp_device", "observer_qmp_inode",
+                  "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api")
+    for index, name in enumerate(qmp_fields):
+        hostile = receipt(2)
+        hostile["runtime_readiness_lineage"]["qmp_identity"][index] += 1
+        rejected(lambda hostile=hostile: formal.validate_receipt(
+            formal.canonical(hostile), expected, 2))
 
     sample_raw = (Path(temporary) / "cycle-1/receipt.json").read_bytes()
     rejected(lambda: formal.validate_receipt(sample_raw[:-1], expected, 1))

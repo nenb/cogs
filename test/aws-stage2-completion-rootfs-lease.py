@@ -2095,7 +2095,9 @@ def docker_real_lease_test():
                 ("PRODUCTION_ADMISSION_V2", {"operation_token": token,
                  "admission_version": operation_module.PRODUCTION_ADMISSION_VERSION,
                  "policy_version": operation_module.command_policy.POLICY_VERSION,
-                 "parser_source_sha256": operation_module.SSH_PARSER_SHA256}),
+                 "full_parser_source_sha256": operation_module.SSH_PARSER_SHA256,
+                 "readiness_parser_source_sha256":
+                    operation_module.guest_readiness.PARSER_SHA256}),
                 ("BASELINES_CAPTURED", proof("1")), ("NETWORK_READY", proof("2")),
                 ("RUNTIME_READY", proof("3")), ("READINESS_REVOKED", {"operation_token": token}),
                 ("OWNERSHIP_OBSERVED", {**proof("4"), "task": "exact-owned", "container": "exact-owned",

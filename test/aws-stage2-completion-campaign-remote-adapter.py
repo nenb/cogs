@@ -20,14 +20,66 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
 
 
+SOURCE_BINDINGS = {
+    "source_head": "1" * 40,
+    "source_manifest_sha256": d("source-manifest"),
+    "host_attestation_sha256": d("host-attestation"),
+    "runtime_attestation_sha256": d("runtime-attestation"),
+    "rootfs_sha256": d("rootfs-content"),
+    "rootfs_descriptor_sha256": d("rootfs"),
+    "rootfs_package_manifest_sha256": d("rootfs-package-manifest"),
+    "rootfs_provenance_sha256": d("rootfs-provenance"),
+    "rootfs_publication_receipt_sha256": d("rootfs-publication"),
+    "artifact_sha256": d("artifact"), "candidate_sha256": d("candidate"),
+    "final_pin_sha256": d("final-pin"),
+    "guest_program_sha256": adapter.FULL_PROGRAM_SHA256,
+    "owner_implementation_sha256": d("owner-implementation"),
+}
+
+
+def approval():
+    value = {
+        "version": "cogs.stage2-completion-production-approval/v3",
+        "phrase": production.APPROVAL_PHRASE,
+        "implementation_revision": SOURCE_BINDINGS["source_head"],
+        "control_revision": "2" * 40,
+        "source_manifest_sha256": SOURCE_BINDINGS["source_manifest_sha256"],
+        "source_bindings_sha256": production._commit(
+            b"cogs.stage2-source-bindings/v1", SOURCE_BINDINGS),
+        "static_control_sha256": d("control"), "pre_aws_package_sha256": d("preaws"),
+        "rootfs_descriptor_sha256": SOURCE_BINDINGS["rootfs_descriptor_sha256"],
+        "rootfs_package_manifest_sha256": SOURCE_BINDINGS["rootfs_package_manifest_sha256"],
+        "rootfs_provenance_sha256": SOURCE_BINDINGS["rootfs_provenance_sha256"],
+        "rootfs_qualification_receipt_sha256": d("rootfs-qualification"),
+        "rootfs_publication_receipt_sha256": SOURCE_BINDINGS["rootfs_publication_receipt_sha256"],
+        "runtime_commitment": SOURCE_BINDINGS["runtime_attestation_sha256"],
+        "fixture_commitment": SOURCE_BINDINGS["final_pin_sha256"],
+        "provider_binary_sha256": d("provider"), "aws_cli_sha256": d("aws"),
+        "account_commitment": d("account"), "partition": "aws", "region": "us-east-1",
+        "ami_id": "ami-" + "a" * 17, "ami_owner_id": "099720109477",
+        "ami_architecture": "x86_64", "ami_virtualization_type": "hvm",
+        "ami_root_device_type": "ebs", "ami_state": "available",
+        "plan_sha256s": tuple(d(f"plan-{index}") for index in range(1, 8)),
+        "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
+        "cleanup_reserve_ns": 10 * 60 * 10**9, "expires_unix_ns": 101 * 60 * 10**9,
+        "maximum_cycle_duration_ns": 10 * 60 * 10**9,
+        "maximum_cost_micro_usd": 499_999,
+        "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
+        "issuer_commitment": d("issuer"), "executor_principal_commitment": d("executor"),
+        "inventory_observer_principal_commitment": d("observer"), "one_attempt": True,
+    }
+    value["ami_commitment"] = production.resolved_ami_commitment(value)
+    value["batch_commitment"] = production.approval_batch_commitment(value)
+    return production.ProductionApproval(**value)
+
+
+APPROVAL = approval()
+
+
 def grant(mode, ordinal):
-    value = {"batch_commitment": d("batch"), "ordinal": ordinal, "mode": mode,
-             "implementation_revision": "1" * 40, "control_revision": "2" * 40,
-             "static_control_sha256": d("control"),
-             "rootfs_descriptor_sha256": d("rootfs"), "ami_commitment": d("ami"),
-             "plan_sha256": d(f"plan-{ordinal}")}
-    return production.CycleLaunchGrant(**value, grant_commitment=production._commit(
-        b"cogs.stage2-cycle-launch-grant/v1", value))
+    current = production._grant(APPROVAL, ordinal)
+    assert current.mode == mode
+    return current
 
 
 def effect(kind, current, start, end, identity):
@@ -61,7 +113,9 @@ def owner(current):
     program, marker = adapter.PROGRAMS[current.mode]
     qmp = {
         "qemu_process_sha256": d("qemu-process"), "qemu_argv_sha256": d("qemu-argv"),
-        "qemu_pid": 100, "qemu_starttime": 200, "observer_qmp_device": 300,
+        "qemu_pid": 100, "qemu_starttime": 200,
+        "qemu_executable_device": 250, "qemu_executable_inode": 260,
+        "observer_qmp_device": 300,
         "observer_qmp_inode": 400, "kvm_device": 500, "kvm_inode": 600,
         "kvm_rdev": 700, "kvm_api": 12, "qmp_present": True, "qmp_enabled": True,
     }
@@ -83,24 +137,12 @@ def owner(current):
         "production_publication_authorized": False,
         "provider_execution_observed": False,
         "aws_authority": current.grant_commitment,
-        "source_bindings": {
-            "source_head": current.implementation_revision,
-            "source_manifest_sha256": d("source-manifest"),
-            "host_attestation_sha256": d("host-attestation"),
-            "runtime_attestation_sha256": d("runtime-attestation"),
-            "rootfs_sha256": d("rootfs-content"),
-            "rootfs_descriptor_sha256": current.rootfs_descriptor_sha256,
-            "rootfs_package_manifest_sha256": d("rootfs-package-manifest"),
-            "rootfs_provenance_sha256": d("rootfs-provenance"),
-            "rootfs_publication_receipt_sha256": d("rootfs-publication"),
-            "artifact_sha256": d("artifact"), "candidate_sha256": d("candidate"),
-            "final_pin_sha256": d("final-pin"),
-            "guest_program_sha256": adapter.FULL_PROGRAM_SHA256,
-            "owner_implementation_sha256": d("owner-implementation"),
-        },
+        "source_bindings": dict(SOURCE_BINDINGS),
         "operation_token": d(f"operation-{current.ordinal}"),
         "journal_sha256": d("journal"),
-        "program_sha256": program, "marker_sha256": marker,
+        "program_sha256": program,
+        "parser_source_sha256": adapter.PARSERS[current.mode],
+        "marker_sha256": marker,
         "launch_attempts": 1, "ssh_attempts": 1,
         "timing": {
             "host_boot_id": f"boot-{current.ordinal}",
@@ -170,7 +212,8 @@ def locate(value, path):
 
 def exhaustive_schema_mutations(current, apply, running, exact):
     def reject_value(mutated, label):
-        rejected(lambda: adapter.remote_receipt(current, apply, running, canonical(mutated)), label)
+        rejected(lambda: adapter.remote_receipt(
+            APPROVAL, current, apply, running, canonical(mutated)), label)
 
     # Every object is closed to missing and additional members.
     for path, item in list(containers(exact)):
@@ -204,7 +247,7 @@ for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
     apply = effect("apply", current, 1000, 1010, d(f"apply-{ordinal}"))
     running = effect("running", current, 1020, 1030, d(f"instance-{ordinal}"))
     exact = owner(current)
-    receipt = adapter.remote_receipt(current, apply, running, canonical(exact))
+    receipt = adapter.remote_receipt(APPROVAL, current, apply, running, canonical(exact))
     assert receipt.mode == mode and receipt.ami_commitment == current.ami_commitment
     assert receipt.provider_launch_started_unix_ns == 1000
     assert receipt.provider_running_observed_unix_ns == 1030
@@ -214,35 +257,52 @@ for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
 
     # Valid-looking substitutions at every external/cross-owner seam are denied.
     for path in (("aws_authority",), ("cycle_capability_sha256",),
-                 ("cycle_grant", "grant_commitment"),
-                 ("source_bindings", "rootfs_descriptor_sha256")):
-        mutated = copy.deepcopy(exact); locate(mutated, path[:-1])[path[-1]] = d("substitute")
+                 ("parser_source_sha256",), ("cycle_grant", "grant_commitment"),
+                 *(("source_bindings", name) for name in adapter.SOURCE_BINDING_KEYS)):
+        mutated = copy.deepcopy(exact)
+        locate(mutated, path[:-1])[path[-1]] = (
+            "f" * 40 if path == ("source_bindings", "source_head") else d("substitute"))
         rejected(lambda mutated=mutated: adapter.remote_receipt(
-            current, apply, running, canonical(mutated)), f"cross commitment accepted at {path}")
+            APPROVAL, current, apply, running, canonical(mutated)),
+            f"cross commitment accepted at {path}")
     if mode == "full":
         for path in (("route_after_sha256",), ("workloads", 0, "result_sha256")):
             mutated = copy.deepcopy(exact); locate(mutated, path[:-1])[path[-1]] = d("substitute")
             rejected(lambda mutated=mutated: adapter.remote_receipt(
-                current, apply, running, canonical(mutated)), f"full cross commitment accepted at {path}")
+                APPROVAL, current, apply, running, canonical(mutated)),
+                f"full cross commitment accepted at {path}")
     else:
         for path in (("runtime_readiness_lineage", "operation_token"),
                      ("runtime_readiness_lineage", "qemu_process_sha256")):
             mutated = copy.deepcopy(exact); locate(mutated, path[:-1])[path[-1]] = d("substitute")
             rejected(lambda mutated=mutated: adapter.remote_receipt(
-                current, apply, running, canonical(mutated)), f"readiness cross accepted at {path}")
+                APPROVAL, current, apply, running, canonical(mutated)),
+                f"readiness cross accepted at {path}")
+        qmp_fields = ("qemu_pid", "qemu_starttime", "qemu_executable_device",
+                      "qemu_executable_inode", "observer_qmp_device",
+                      "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev",
+                      "kvm_api")
+        for index, name in enumerate(qmp_fields):
+            mutated = copy.deepcopy(exact)
+            mutated["runtime_readiness_lineage"]["qmp_identity"][index] += 1
+            rejected(lambda mutated=mutated: adapter.remote_receipt(
+                APPROVAL, current, apply, running, canonical(mutated)),
+                f"QMP identity substitution accepted at {name}")
 
     for field in ("grant_commitment", "batch_commitment", "state_commitment",
                   "state_lineage_commitment", "ami_commitment", "settlement_commitment"):
         hostile = replace(apply, **{field: d("substitute-provider-lineage")})
         rejected(lambda hostile=hostile: adapter.remote_receipt(
-            current, hostile, running, canonical(exact)), f"provider {field} substitution accepted")
+            APPROVAL, current, hostile, running, canonical(exact)),
+            f"provider {field} substitution accepted")
 
 # Framing and parser ambiguity remain closed before semantic projection.
 current = grant("full", 1); exact = owner(current)
 apply = effect("apply", current, 1, 2, d("apply")); running = effect("running", current, 3, 4, d("running"))
 for raw in (canonical(exact)[:-1], canonical(exact) + b"\n",
             b'{"version":"x","version":"y"}\n', b'{"x":NaN}\n'):
-    rejected(lambda raw=raw: adapter.remote_receipt(current, apply, running, raw),
+    rejected(lambda raw=raw: adapter.remote_receipt(
+        APPROVAL, current, apply, running, raw),
              "noncanonical or ambiguous receipt accepted")
 
 print("stage2 provider-free remote adapter checks passed")

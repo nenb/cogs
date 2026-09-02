@@ -27,6 +27,10 @@ FULL_MARKER = "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
 READINESS_PROGRAM = "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab"
 READINESS_MARKER = "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010"
 PROGRAMS = {"full": (FULL_PROGRAM, FULL_MARKER), "readiness": (READINESS_PROGRAM, READINESS_MARKER)}
+PARSERS = {
+    "full": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py").read_bytes()).hexdigest(),
+    "readiness": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py").read_bytes()).hexdigest(),
+}
 NETWORK_MARKERS = ["route-baseline-no-default", "direct-tcp-denied", "direct-udp-denied",
     "default-route-added", "route-tcp-denied", "route-udp-denied",
     "default-route-removed", "route-restored-no-default"]
@@ -42,7 +46,8 @@ COMMON_RECEIPT_KEYS = {"version", "authority", "route", "cycle_capability_sha256
     "cycle_grant", "production_publication_authorized", "provider_execution_observed",
     "aws_authority", "formal_qualification_authority", "source_bindings",
     "operation_token", "rootfs_token", "lifecycle_objects", "journal_sha256",
-    "program_sha256", "marker_sha256", "launch_attempts", "ssh_attempts", "timing",
+    "program_sha256", "parser_source_sha256", "marker_sha256", "launch_attempts",
+    "ssh_attempts", "timing",
     "key_freshness", "runtime_network_sha256", "qmp_lineage", "teardown_projection",
     "private_teardown_records", "final_baselines_sha256", "independent_residue_absent"}
 FULL_KEYS = {"network_markers", "route_before_sha256", "route_after_sha256", "workloads",
@@ -203,7 +208,9 @@ def validate_receipt(raw, expected=None, ordinal=None):
     program, marker = PROGRAMS[mode]
     capability = hashlib.sha256(b"cogs.stage2-cycle-route/v1\0formal-non-cloud-qualification\0" +
                                 mode.encode("ascii") + bytes.fromhex(program) + bytes.fromhex(marker)).hexdigest()
-    require(value["program_sha256"] == program and value["marker_sha256"] == marker
+    require(value["program_sha256"] == program
+            and value["parser_source_sha256"] == PARSERS[mode]
+            and value["marker_sha256"] == marker
             and value["cycle_capability_sha256"] == capability)
     for name in ("cycle_capability_sha256", "operation_token", "rootfs_token", "journal_sha256",
                  "program_sha256", "marker_sha256", "runtime_network_sha256",
@@ -234,10 +241,14 @@ def validate_receipt(raw, expected=None, ordinal=None):
     require(keys["client_key_commitment"] != keys["host_key_commitment"])
     qmp = value["qmp_lineage"]
     exact_keys(qmp, {"qemu_process_sha256", "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
-        "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev",
+        "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device",
+        "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev",
         "kvm_api", "qmp_present", "qmp_enabled"})
     digest(qmp["qemu_process_sha256"]); digest(qmp["qemu_argv_sha256"])
     require(positive(qmp["qemu_pid"]) > 1 and positive(qmp["qemu_starttime"]) > 0
+            and type(qmp["qemu_executable_device"]) is int
+            and qmp["qemu_executable_device"] >= 0
+            and positive(qmp["qemu_executable_inode"]) > 0
             and type(qmp["observer_qmp_device"]) is int and qmp["observer_qmp_device"] >= 0
             and positive(qmp["observer_qmp_inode"]) > 0
             and type(qmp["kvm_device"]) is int and qmp["kvm_device"] >= 0
@@ -274,7 +285,9 @@ def validate_receipt(raw, expected=None, ordinal=None):
                 and type(identity) is list and len(identity) == 10
                 and all(type(item) is int and item >= 0 for item in identity)
                 and identity[0] == qmp["qemu_pid"] and identity[1] == qmp["qemu_starttime"]
-                and identity[3] > 0 and identity[4] == qmp["observer_qmp_device"]
+                and identity[2] == qmp["qemu_executable_device"]
+                and identity[3] == qmp["qemu_executable_inode"]
+                and identity[4] == qmp["observer_qmp_device"]
                 and identity[5] == qmp["observer_qmp_inode"]
                 and identity[6] == qmp["kvm_device"] and identity[7] == qmp["kvm_inode"]
                 and identity[8] == qmp["kvm_rdev"] and identity[9] == 12)

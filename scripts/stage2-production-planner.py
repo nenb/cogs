@@ -140,6 +140,8 @@ def main(arguments):
         "implementation_revision": bindings["source_head"],
         "control_revision": receipt["control"]["head"],
         "source_manifest_sha256": bindings["source_manifest_sha256"],
+        "source_bindings_sha256": production._commit(
+            b"cogs.stage2-source-bindings/v1", bindings),
         "static_control_sha256": receipt["control"]["sha256"],
         "pre_aws_package_sha256": hashlib.sha256(package_raw).hexdigest(),
         "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],

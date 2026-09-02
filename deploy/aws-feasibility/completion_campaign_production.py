@@ -106,6 +106,7 @@ class ProductionApproval:
     implementation_revision: str
     control_revision: str
     source_manifest_sha256: str
+    source_bindings_sha256: str
     static_control_sha256: str
     pre_aws_package_sha256: str
     rootfs_descriptor_sha256: str
@@ -146,7 +147,8 @@ class ProductionApproval:
                  ProductionApprovalError)
         _digest(self.batch_commitment); _sha1(self.implementation_revision); _sha1(self.control_revision)
         for item in (
-            self.source_manifest_sha256, self.static_control_sha256,
+            self.source_manifest_sha256, self.source_bindings_sha256,
+            self.static_control_sha256,
             self.pre_aws_package_sha256, self.rootfs_descriptor_sha256,
             self.rootfs_package_manifest_sha256, self.rootfs_provenance_sha256,
             self.rootfs_qualification_receipt_sha256,

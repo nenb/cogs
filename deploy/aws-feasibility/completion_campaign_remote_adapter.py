@@ -9,6 +9,7 @@ receipts.
 from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import Path
 
 import completion_campaign_production as production
 
@@ -22,6 +23,12 @@ FULL_PROGRAM_SHA256 = "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b
 FULL_MARKER_SHA256 = "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
 READINESS_PROGRAM_SHA256 = "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab"
 READINESS_MARKER_SHA256 = "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010"
+_REMOTE_SOURCE = Path(__file__).resolve().parent / "remote"
+FULL_PARSER_SHA256 = hashlib.sha256(
+    (_REMOTE_SOURCE / "completion_guest_workloads_v3.py").read_bytes()).hexdigest()
+READINESS_PARSER_SHA256 = hashlib.sha256(
+    (_REMOTE_SOURCE / "completion_guest_readiness_v1.py").read_bytes()).hexdigest()
+PARSERS = {"full": FULL_PARSER_SHA256, "readiness": READINESS_PARSER_SHA256}
 PROGRAMS = {
     "full": (FULL_PROGRAM_SHA256, FULL_MARKER_SHA256),
     "readiness": (READINESS_PROGRAM_SHA256, READINESS_MARKER_SHA256),
@@ -71,7 +78,8 @@ COMMON_KEYS = {
     "version", "route", "cycle_capability_sha256", "cycle_grant",
     "production_publication_authorized", "provider_execution_observed", "aws_authority",
     "source_bindings", "operation_token", "journal_sha256", "program_sha256",
-    "marker_sha256", "launch_attempts", "ssh_attempts", "timing", "key_freshness",
+    "parser_source_sha256", "marker_sha256", "launch_attempts", "ssh_attempts",
+    "timing", "key_freshness",
     "runtime_network_sha256", "qmp_lineage", "teardown_projection",
     "private_teardown_records", "final_baselines_sha256", "independent_residue_absent",
 }
@@ -193,7 +201,7 @@ def _validate_provider_lineage(grant, apply, running):
              and apply.observed_started_unix_ns < running.observed_ended_unix_ns)
 
 
-def _validate_common(value, grant):
+def _validate_common(value, grant, approval):
     expected_grant = {
         "batch_commitment": grant.batch_commitment,
         "cycle_ordinal": grant.ordinal,
@@ -205,18 +213,33 @@ def _validate_common(value, grant):
         "plan_sha256": grant.plan_sha256,
         "grant_commitment": grant.grant_commitment,
     }
-    _require(value["cycle_grant"] == expected_grant
+    _require(type(approval) is production.ProductionApproval
+             and grant == production._grant(approval, grant.ordinal)
+             and value["cycle_grant"] == expected_grant
              and value["aws_authority"] == grant.grant_commitment)
     program, marker = PROGRAMS[grant.mode]
-    _require(value["program_sha256"] == program and value["marker_sha256"] == marker
+    _require(value["program_sha256"] == program
+             and value["parser_source_sha256"] == PARSERS[grant.mode]
+             and value["marker_sha256"] == marker
              and value["cycle_capability_sha256"] ==
                  _cycle_capability(grant.mode, program, marker))
 
     bindings = value["source_bindings"]
     _keys(bindings, SOURCE_BINDING_KEYS)
     _require(bindings["source_head"] == grant.implementation_revision
+             and bindings["source_manifest_sha256"] == approval.source_manifest_sha256
+             and bindings["runtime_attestation_sha256"] == approval.runtime_commitment
              and bindings["rootfs_descriptor_sha256"] == grant.rootfs_descriptor_sha256
-             and bindings["guest_program_sha256"] == FULL_PROGRAM_SHA256)
+             and bindings["rootfs_package_manifest_sha256"] ==
+                 approval.rootfs_package_manifest_sha256
+             and bindings["rootfs_provenance_sha256"] ==
+                 approval.rootfs_provenance_sha256
+             and bindings["rootfs_publication_receipt_sha256"] ==
+                 approval.rootfs_publication_receipt_sha256
+             and bindings["final_pin_sha256"] == approval.fixture_commitment
+             and bindings["guest_program_sha256"] == FULL_PROGRAM_SHA256
+             and production._commit(b"cogs.stage2-source-bindings/v1", bindings) ==
+                 approval.source_bindings_sha256)
     for name, item in bindings.items():
         if name != "source_head":
             _digest(item)
@@ -248,11 +271,14 @@ def _validate_common(value, grant):
 
     qmp = value["qmp_lineage"]
     _keys(qmp, {"qemu_process_sha256", "qemu_argv_sha256", "qemu_pid",
-                "qemu_starttime", "observer_qmp_device", "observer_qmp_inode",
+                "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
+                "observer_qmp_device", "observer_qmp_inode",
                 "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api", "qmp_present",
                 "qmp_enabled"})
     _digest(qmp["qemu_process_sha256"]); _digest(qmp["qemu_argv_sha256"])
     _require(_integer(qmp["qemu_pid"]) > 1 and _integer(qmp["qemu_starttime"]) > 0
+             and _integer(qmp["qemu_executable_device"]) >= 0
+             and _integer(qmp["qemu_executable_inode"]) > 0
              and _integer(qmp["observer_qmp_device"]) >= 0
              and _integer(qmp["observer_qmp_inode"]) > 0
              and _integer(qmp["kvm_device"]) >= 0 and _integer(qmp["kvm_inode"]) > 0
@@ -304,16 +330,18 @@ def _validate_readiness(value, operation, runtime_network, qmp):
              and lineage["runtime_network_sha256"] == runtime_network
              and lineage["qemu_process_sha256"] == qmp["qemu_process_sha256"]
              and identity[0] == qmp["qemu_pid"] and identity[1] == qmp["qemu_starttime"]
+             and identity[2] == qmp["qemu_executable_device"]
+             and identity[3] == qmp["qemu_executable_inode"]
              and identity[4] == qmp["observer_qmp_device"]
              and identity[5] == qmp["observer_qmp_inode"]
              and identity[6] == qmp["kvm_device"] and identity[7] == qmp["kvm_inode"]
              and identity[8] == qmp["kvm_rdev"] and identity[9] == qmp["kvm_api"])
 
 
-def remote_receipt(grant, apply, running, raw):
+def remote_receipt(approval, grant, apply, running, raw):
     _validate_provider_lineage(grant, apply, running)
     value = _receipt(raw, grant.mode)
-    timing, freshness, qmp = _validate_common(value, grant)
+    timing, freshness, qmp = _validate_common(value, grant, approval)
     operation = value["operation_token"]
     workloads = (_validate_full(value) if grant.mode == "full" else [])
     if grant.mode == "readiness":
