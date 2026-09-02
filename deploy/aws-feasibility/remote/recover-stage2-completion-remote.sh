@@ -26,7 +26,7 @@ try:
  result = (c._recover_current_source_diagnostic()
            if os.environ["COGS_STAGE2_RECOVERY_PROFILE"] == "diagnostic"
            else c._recover_fixed_local_qualification())
-except BaseException:
+except c.CoordinatorNoOperationPath:
  import completion_kata_immutable_preparation as p
  result = p.recover_failed_preparation()
 raise SystemExit(0 if result is None else 70)'

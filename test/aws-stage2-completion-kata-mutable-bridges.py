@@ -23,7 +23,10 @@ import completion_kata_runtime as runtime
 def runtime_removal_crash(root):
     """Crash from the production bridge after daemon-tree removal returns."""
     root = Path(root)
-    lifecycle = coordinator._Lifecycle(recovery=True, operation=object())
+    history = {"runtime_prepared": ({},), "runtime_stage_intents": ({},),
+               "runtime_staged": ({},)}
+    journal = SimpleNamespace(runtime_recovery_history=lambda: history)
+    lifecycle = coordinator._Lifecycle(recovery=True, operation=journal)
     completion = object()
     chain = SimpleNamespace(components=(SimpleNamespace(node=completion),))
     daemon = object()
@@ -55,10 +58,12 @@ def runtime_removal_recovery(root):
     staged = root / "kata-runtime-v1"
     assert (root / "phase").read_text() == "FIREWALL_ABSENT\n" and not staged.exists()
     settlements = []
-    journal = SimpleNamespace(
-        runtime_recovery_history=lambda: {"runtime_network_released": True},
-        settle_runtime_phase=lambda phase, fact: settlements.append((phase, fact)),
-    )
+    history = {"runtime_network_released": True, "runtime_prepared": ({},),
+        "runtime_stage_intents": ({},), "runtime_staged": ({},),
+        "daemon_retained": (), "daemon_outcomes": (), "launches": (),
+        "runtime_ownership": ()}
+    journal = SimpleNamespace(runtime_recovery_history=lambda: history,
+        settle_runtime_phase=lambda phase, fact: settlements.append((phase, fact)))
     lifecycle = coordinator._Lifecycle(
         recovery=True, static_custody=object(), operation=journal, rootfs=object())
     lazy_owner = object()
@@ -107,7 +112,10 @@ def cleanup_only_recovery(root):
     assert (root / "phase").read_text() == "RUNTIME_CLEANUP_ONLY\n"
     assert not (root / "kata-runtime-v1").exists()
     history = {"runtime_network_released": (), "runtime_resumes": ({
-        "target_phase": "RUNTIME_CLEANUP_ONLY"},)}
+        "target_phase": "RUNTIME_CLEANUP_ONLY"},), "runtime_prepared": ({},),
+        "runtime_stage_intents": ({},), "runtime_staged": ({},),
+        "daemon_retained": (), "daemon_outcomes": (), "launches": (),
+        "runtime_ownership": ()}
     journal = SimpleNamespace(runtime_recovery_history=lambda: history)
     lifecycle = coordinator._Lifecycle(
         recovery=True, static_custody=object(), operation=journal, rootfs=object())

@@ -1674,7 +1674,7 @@ def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
     interrupted = state["term"] or state["kill"] or "absolute-deadline" in errors
     uncertain = (not leader_reaped or not descendants_reaped or not cgroup_empty
                  or not cgroup_removed or not pipes_eof or bool(errors) or interrupted)
-    if uncertain and outcome != "not-started":
+    if uncertain and outcome not in {"not-started", "recovery-no-effect"}:
         outcome, status, exec_errno = "uncertain", None, None
     body = {
         "operation_token": intent["operation_token"], "command_serial": intent["command_serial"],
@@ -2428,6 +2428,16 @@ def _recover_pending_fixed(journal):
     certain_daemon = (terminal is not None
                       and intent["command_id"] == CommandId.CONTAINERD_START.value
                       and terminal["uncertain"] is False)
+    baseline_no_effect = False
+    if (terminal is None
+            and intent["command_id"] in kata_operation.network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+            and kata_operation._is_production_recovery_operation(journal)):
+        context = kata_operation._command_context(journal)
+        history = kata_operation._network_history(journal)
+        baseline_no_effect = (context.lifecycle_phase == "FS_SETTLED"
+            and not kata_operation._network_records(journal)
+            and not any(kind in kata_operation.network_journal.RECORDS
+                        for kind, _body in history))
     if certain_daemon:
         return kata_operation.DurableCommandOutcome(
             terminal["command_serial"], terminal["command_id"],
@@ -2475,7 +2485,7 @@ def _recover_pending_fixed(journal):
     # therefore records uncertainty, unlike the live before-fork path which can
     # prove every pipe end closed and no child ever existed.
     body = _outcome_body(
-        intent, "uncertain", None, None,
+        intent, "recovery-no-effect" if baseline_no_effect else "uncertain", None, None,
         b"", b"", {"stdout": False, "stderr": False}, None, False,
         closure, state, errors, 0,
     )
@@ -2487,20 +2497,13 @@ def _recover_pending_production(journal):
     journal = kata_operation._claim_production_cleanup_operation(journal)
     intent, _preexec, _terminal = kata_operation._recovery_command(journal)
     command_id = intent["command_id"]
-    baseline_probe = False
-    if command_id in {action.value for action in kata_network._BASELINE_ACTIONS}:
-        context = kata_operation._command_context(journal)
-        history = kata_operation._network_history(journal)
-        baseline_probe = (context.lifecycle_phase == "FS_SETTLED"
-            and not kata_operation._network_records(journal)
-            and not any(kind in kata_operation.network_journal.RECORDS
-                        for kind, _body in history))
     outcome = _recover_pending_fixed(journal)
     if command_id == CommandId.CONTAINERD_START.value and not outcome.body["uncertain"]:
         if kata_operation._durable_phase(journal) != "UNCERTAIN":
             raise ProcessError("certain daemon rollback phase differs")
         journal.resume_runtime_cleanup()
-    elif (outcome.body["uncertain"] and not baseline_probe
+    elif (outcome.body["uncertain"]
+          and outcome.body.get("outcome") != "recovery-no-effect"
           and kata_operation._durable_phase(journal) != "UNCERTAIN"):
         kata_operation._record_uncertain(journal, "incomplete")
     return outcome

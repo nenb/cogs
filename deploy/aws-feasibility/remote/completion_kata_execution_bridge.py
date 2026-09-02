@@ -101,14 +101,23 @@ def _routes():
         # the reconstructed owner so cleanup can release it; a prior completed
         # release reconstructs as None and proceeds through ordinary FS cleanup.
         history = journal.runtime_recovery_history() if phase in runtime_phases else None
+        runtime_provenance = bool(history and (
+            history["runtime_prepared"] or history["runtime_stage_intents"]
+            or history["runtime_staged"] or history["daemon_retained"]
+            or history["daemon_outcomes"] or history["launches"]
+            or history["runtime_ownership"]))
         if (rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}
                 and phase != "RUNTIME_CLEANUP_ONLY"
                 and not (history and history["runtime_network_released"])):
             current["network_owner"] = network._reopen_runtime_network(journal)
             lifecycle.network_owner = current["network_owner"]
-        if phase in runtime_phases and (phase not in {"FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
-                                        or runtime_stage_present(current)):
+        if phase in runtime_phases and runtime_provenance and (
+                phase not in {"FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
+                or runtime_stage_present(current)):
             ensure_runtime(current, lifecycle)
+        elif phase in {"NETWORK_ABSENT", "FIREWALL_ABSENT"}:
+            _require(not runtime_stage_present(current),
+                     "setup-abort runtime tree lacks durable provenance")
         return phase
 
     def ensure_runtime(current, lifecycle):
@@ -435,7 +444,11 @@ def _routes():
         return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "CONTAINER_ABSENT")
     def remove_share(bridge, lifecycle):
         phase = operation._durable_phase(lifecycle.operation)
-        resumes = lifecycle.operation.runtime_recovery_history()["runtime_resumes"]
+        history = lifecycle.operation.runtime_recovery_history()
+        resumes = history["runtime_resumes"]
+        if (phase == "NETWORK_ABSENT" and not history["runtime_prepared"]
+                and not history["runtime_stage_intents"] and not history["runtime_staged"]):
+            return runtime._settle_setup_abort_absence(lifecycle.operation, "share")
         if (phase == "NETWORK_ABSENT"
                 and any(row["target_phase"] == "RUNTIME_CLEANUP_ONLY" for row in resumes)):
             return runtime._settle_cleanup_only_share_absence(lifecycle.operation)
@@ -464,8 +477,8 @@ def _routes():
                 operation._settle_network_phase(lifecycle.operation, "BASELINES_CAPTURED")
                 return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
             if not (current.get("recovery") and current.get("nft_owner") is None):
-                return network._abort_incomplete_baseline(lifecycle.operation)
-            return phase
+                network._abort_incomplete_baseline(lifecycle.operation)
+            return lifecycle.operation.record_snapshot_free_cleanup()
         if phase == "BASELINES_CAPTURED":
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
         if phase == "RUNTIME_ABSENT":
@@ -487,6 +500,13 @@ def _routes():
             _require(operation._durable_phase(lifecycle.operation) == "CONTAINERD_ABSENT",
                      "containerd absence settlement differs")
             return result
+        history = lifecycle.operation.runtime_recovery_history()
+        if (not history["runtime_prepared"] and not history["runtime_stage_intents"]
+                and not history["runtime_staged"]):
+            _require(not runtime_stage_present(current),
+                     "setup-abort runtime tree remains")
+            return runtime._settle_setup_abort_absence(
+                lifecycle.operation, "containerd")
         # A fresh process can arrive after shutdown durably recorded the daemon
         # outcome and removed kata-runtime-v1, after firewall settlement.
         # Reopen only the daemon cleanup identity: no containerd/ctr pathname or
@@ -548,9 +568,11 @@ def _routes():
         token = records[0].body["operation_token"]
         final = next(row for row in records if row.record_type == "FINAL_BASELINES")
         phases = {row.record_type for row in records}
-        required = {"NETWORK_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-                    "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
-                    "FINAL_BASELINES", "RETIRED"}
+        snapshot_free = "SNAPSHOT_FREE_CLEANUP_V1" in phases
+        required = {"INPUT_REMOVED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED"}
+        if not snapshot_free:
+            required |= {"NETWORK_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+                         "CONTAINERD_ABSENT"}
         if "RUNTIME_ROLE_IDENTITIES_V1" in phases:
             required |= {"TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1",
                          "RUNTIME_ABSENT", "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}

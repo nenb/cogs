@@ -214,7 +214,14 @@ UNCERTAIN_REASONS = frozenset({
     "malformed", "contradictory", "identity-mismatch", "old-boot", "unknown", "replaced", "incomplete",
 })
 OUTCOMES = frozenset({"not_started", "exec_failed", "exited", "signaled", "recovery_absent", "uncertain"})
-COMMAND_OUTCOMES_V2 = frozenset({"not-started", "exec-failed", "exited", "signaled", "uncertain"})
+COMMAND_OUTCOMES_V2 = frozenset({
+    "not-started", "exec-failed", "exited", "signaled", "uncertain",
+    "recovery-no-effect",
+})
+SNAPSHOT_FREE_CLEANUP_PROJECTION = (
+    "INPUT_REMOVED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED",
+    "INDEPENDENT_RESIDUE",
+)
 FIXED_ENV = (
     ("HOME", "/nonexistent"), ("LANG", "C"), ("LC_ALL", "C"),
     ("PATH", "/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin"), ("TZ", "UTC"),
@@ -761,6 +768,12 @@ def _validate_body(kind, body):
         elif body["outcome"] in {"exited", "signaled"}:
             _fail(body["release_count"] == 1)
             _fail(type(body["status"]) is int and body["errno"] is None)
+        elif body["outcome"] == "recovery-no-effect":
+            _fail(body["command_id"] in network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+                  and body["status"] is body["errno"] is None
+                  and body["release_count"] == 0 and body["uncertain"]
+                  and body["stdout_length"] == body["stderr_length"] == 0
+                  and not body["stdout_truncated"] and not body["stderr_truncated"])
         else:
             _fail(body["release_count"] in {0, 1} and body["uncertain"])
     elif kind == "RUNTIME_RESUME_V4":
@@ -1002,6 +1015,14 @@ def _validate_body(kind, body):
         _keys(body, ("operation_token", "reason"))
         _hex(body["operation_token"])
         _choice(body["reason"], UNCERTAIN_REASONS)
+    elif kind == "SNAPSHOT_FREE_CLEANUP_V1":
+        _keys(body, ("operation_token", "classification", "projection", "proof_sha256"))
+        _hex(body["operation_token"])
+        _fail(body["classification"] == "snapshot-free-fs-settled"
+              and body["projection"] == list(SNAPSHOT_FREE_CLEANUP_PROJECTION))
+        expected = hashlib.sha256(_canonical({name: body[name] for name in body
+                                              if name != "proof_sha256"})).hexdigest()
+        _fail(body["proof_sha256"] == expected)
     elif kind == "FINAL_BASELINES":
         _keys(body, ("operation_token", "final_baselines_sha256"))
         _hex(body["operation_token"])
@@ -1282,6 +1303,7 @@ def _legal(records):
     cleanup_mode = None
     runtime_prepared = False
     runtime_cleanup_only = False
+    snapshot_free_cleanup = None
     rootfs = False
     next_serial = 0
     input_grants = {}
@@ -1456,6 +1478,13 @@ def _legal(records):
                 _fail(prior and prior[-1]["action"] == "remove-intent")
             input_steps.setdefault(body["path"], []).append(body)
             continue
+        if kind == "SNAPSHOT_FREE_CLEANUP_V1":
+            _fail(production_admitted and command_phase is None and phase == "FS_SETTLED"
+                  and snapshot_free_cleanup is None and runtime_staged is None
+                  and not network_state["snapshots"] and not network_state["effects"]
+                  and network_state["pending"] is None)
+            snapshot_free_cleanup = record
+            continue
         if kind == "RUNTIME_PREPARED_V1":
             _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY"
                   and not runtime_prepared and not any(item.record_type in
@@ -1598,8 +1627,11 @@ def _legal(records):
                 network_state = network_journal.command_outcome(network_state, body)
             command_phase = command_intent_v2 = command_preexec_v2 = command_output_v3 = None
             command_b1 = False
-            if body["uncertain"]:
+            if body["uncertain"] and body["outcome"] != "recovery-no-effect":
                 phase = "UNCERTAIN"; ever_uncertain = True
+            elif body["outcome"] == "recovery-no-effect":
+                _fail(phase == "FS_SETTLED" and not network_state["snapshots"]
+                      and not network_state["effects"] and network_state["pending"] is None)
             continue
         if kind == "COMMAND_INTENT":
             if body["command_id"] == "CTR_RUN":
@@ -1813,6 +1845,7 @@ def _legal(records):
             elif kind == "INPUT_REMOVED":
                 by_path = {path: steps[-1] for path, steps in input_steps.items()}
                 early = (phase in {"ROOTFS_LEASED", "FS_SETTLED"}
+                         and (phase == "ROOTFS_LEASED" or snapshot_free_cleanup is not None)
                          and not network_state["snapshots"]
                          and not network_state["effects"]
                          and runtime_staged is None
@@ -1839,7 +1872,9 @@ def _legal(records):
             _fail(rootfs and phase == "ROOTFS_ABSENT" and not ever_uncertain)
             _fail(network_state["policy_version"] != network_journal.POLICY_VERSION
                   or network_state["snapshots"] and
-                     network_state["snapshots"][-1]["snapshot_kind"] == "final-absent")
+                     network_state["snapshots"][-1]["snapshot_kind"] == "final-absent"
+                  or snapshot_free_cleanup is not None and not network_state["snapshots"]
+                     and not network_state["effects"] and network_state["pending"] is None)
             phase = kind
             pending = record
         elif kind == "RETIRE_INTENT":
@@ -2409,11 +2444,13 @@ def _make_authority():
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
-            direct = {"record_command_intent", "record_runtime_prepared", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
+            direct = {"record_command_intent", "record_runtime_prepared", "record_snapshot_free_cleanup", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
             if name in direct: return object.__getattribute__(self, name)
             _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "record_runtime_role_identities", "record_runtime_role_absence", "record_runtime_share_identity", "record_runtime_network_released", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
         def record_runtime_prepared(self, grant): return cleanup_owners[self].record_runtime_prepared(grant)
+        def record_snapshot_free_cleanup(self):
+            return cleanup_owners[self].record_snapshot_free_cleanup()
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "CONTAINERD_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
         def settle_network_cleanup(self, target): return cleanup_owners[self].settle_network_cleanup(target)
@@ -2640,7 +2677,9 @@ def _make_authority():
             return terminal.record_type in {
                 "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3",
                 "SSH_MARKER_OBSERVED_V1",
-            } or (terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"]) or (
+            } or (terminal.record_type == "COMMAND_OUTCOME_V2"
+                  and terminal.body["uncertain"]
+                  and terminal.body["outcome"] != "recovery-no-effect") or (
                 terminal.record_type == "DAEMON_OUTCOME_V2"
                 and _legal(records) == "UNCERTAIN" and _daemon_closed(terminal.body))
         def runtime_recovery_history(self):
@@ -2724,7 +2763,7 @@ def _make_authority():
             intent, preexec = self.pending_command()
             _fail(_same_command_v2(body, intent))
             _fail((preexec is None
-                   and body["outcome"] in {"not-started", "uncertain"}) or
+                   and body["outcome"] in {"not-started", "uncertain", "recovery-no-effect"}) or
                   (preexec is not None and body["outcome"] != "not-started"))
             write_validated(self, "COMMAND_OUTCOME_V2", body)
             return DurableCommandOutcome(
@@ -2739,6 +2778,17 @@ def _make_authority():
             target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
             write_validated(self, "RUNTIME_RESUME_V4", {"operation_token": records[0].body["operation_token"], "target_phase": target,
                 "uncertain_serial": terminal["command_serial"], "binding_sha256": terminal["binding_sha256"]}); return target
+        def record_snapshot_free_cleanup(self):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            existing = [item.body for item in records
+                        if item.record_type == "SNAPSHOT_FREE_CLEANUP_V1"]
+            if existing: return existing[0]
+            body = {"operation_token": records[0].body["operation_token"],
+                    "classification": "snapshot-free-fs-settled",
+                    "projection": list(SNAPSHOT_FREE_CLEANUP_PROJECTION)}
+            body["proof_sha256"] = hashlib.sha256(_canonical(body)).hexdigest()
+            write_validated(self, "SNAPSHOT_FREE_CLEANUP_V1", body)
+            return body
         def record_runtime_prepared(self, grant):
             import completion_kata_admission as admission
             facts = admission._consume_prepared_runtime_custody(grant)

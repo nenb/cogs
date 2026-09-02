@@ -1497,6 +1497,35 @@ def _settle_cleanup_only_share_absence(journal):
     return fact
 
 
+def _settle_setup_abort_absence(journal, target):
+    """Settle owner absence after network-only setup abort; never prepare runtime."""
+    history = journal.runtime_recovery_history()
+    runtime_commands = {actions.CommandId.CONTAINERD_START.value,
+                        actions.CommandId.CTR_RUN.value}
+    _fail(not history["runtime_prepared"] and not history["runtime_stage_intents"]
+          and not history["runtime_staged"] and not history["daemon_retained"]
+          and not history["daemon_outcomes"] and not history["launches"]
+          and not history["runtime_ownership"] and not history["runtime_role_identities"]
+          and not history["runtime_share_identities"]
+          and not any(row["command_id"] in runtime_commands for row in history["intents"]),
+          "setup-abort runtime history differs")
+    if target == "share":
+        _fail(history["phase"] == "NETWORK_ABSENT", "setup-abort share order")
+        fact = _share_fact()
+        _fail(fact["state"] == "absent", "setup-abort share residue")
+        phase = "SHARE_ABSENT"
+    else:
+        _fail(target == "containerd" and history["phase"] == "FIREWALL_ABSENT",
+              "setup-abort containerd order")
+        _fail(_qmp_absent() == {"state": "absent", "private_socket": "absent",
+                                "observer_socket": "absent"},
+              "setup-abort runtime socket residue")
+        fact = {"containerd": "absent", "start_intent": "absent"}
+        phase = "CONTAINERD_ABSENT"
+    journal.settle_runtime_phase(phase, _canonical_fact(fact))
+    return fact
+
+
 def _remove_owned_empty_share(retained):
     parent_path, name = os.path.split(SHARE_ROOT)
     parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)

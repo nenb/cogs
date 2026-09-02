@@ -487,7 +487,15 @@ class PrestageOwners(FakeOwners):
 for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
             ("after", "PREPRODUCTION_RECOVERED")):
     fake = PrestageOwners(cut)
-    invoke(coordinator._recover_fixed_local_qualification, fake)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._recover_fixed_local_qualification()
+        except coordinator.CoordinatorNoOperationPath:
+            pass
+        except BaseException as error:
+            if cut is None:
+                raise AssertionError("exact no-operation classification changed") from error
+        else:
+            raise AssertionError("no-operation recovery returned ordinary success")
     expected = ["STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
                 "RECOVERY_OPERATION_OPENED"]
     if cut is None or cut[0] == "after": expected.append("PREPRODUCTION_RECOVERED")
@@ -499,12 +507,25 @@ for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
         "OWNER_EVIDENCE", "RECOVERY_EVIDENCE", "RECEIPT_ISSUED"))
     assert fake.events.count("CUSTODY_ABORTED") == 1
 
+# Only the fully settled no-operation route requests preparation fallback.
+for cut, expected in ((None, coordinator.CoordinatorNoOperationPath),
+                      (("after", "PREPRODUCTION_RECOVERED"), coordinator.CoordinatorError),
+                      (("after", "CUSTODY_ABORTED"), coordinator.CoordinatorError)):
+    fake = PrestageOwners(cut)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._recover_fixed_local_qualification()
+        except BaseException as error:
+            assert type(error) is expected
+            if cut is not None: assert type(error.__cause__) is Cut
+        else: raise AssertionError("no-operation recovery returned without classification")
+
 # The real coordinator-held execution bridge reconstructs an ACTIVE,
 # snapshot-free FS_SETTLED owner and routes it to the no-effect baseline abort;
 # this is not merely behavior of the fake coordinator facade above.
 reconstructed_owner = object(); reconstructed_tools = tuple(object() for _index in range(3))
 reconstruction_events = []
-reconstruction_journal = SimpleNamespace()
+reconstruction_journal = SimpleNamespace(
+    record_snapshot_free_cleanup=lambda: reconstruction_events.append("projection") or "CLEANUP_ONLY")
 reconstruction_lifecycle = SimpleNamespace(
     operation=reconstruction_journal, executables=None, static_custody=object(),
     network_owner=None, staged_runtime=None)
@@ -522,12 +543,75 @@ with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLE
      patch.object(execution.network, "_abort_incomplete_baseline",
                   side_effect=lambda journal: reconstruction_events.append(journal) or "FREE"):
     check(execution._remove_network(coordinator._owners.execution,
-        reconstruction_lifecycle) == "FREE", "real coordinator omitted baseline abort")
-check(reconstruction_events == [reconstruction_journal],
+        reconstruction_lifecycle) == "CLEANUP_ONLY", "real coordinator omitted cleanup-only projection")
+check(reconstruction_events == [reconstruction_journal, "projection"],
       "real coordinator repeated or changed baseline abort owner")
+
+# A crashed read-only baseline probe records exact no-effect semantics while
+# preserving process-outcome uncertainty; it neither poisons nor reissues.
+baseline_intent = {"operation_token": "a" * 64, "command_serial": 7,
+    "command_id": "IP_ALL_LINKS", "binding_sha256": "b" * 64,
+    "host_boot_id": "boot", "deadline_boottime_ns": 10_000,
+    "cleanup_reserve_ns": 100}
+baseline_outcomes = []
+baseline_journal = SimpleNamespace(
+    recovery_command=lambda: (baseline_intent, None, None),
+    recovery_lifecycle_deadline=lambda: ("boot", 10_000),
+    runtime_recovery_history=lambda: {},
+)
+with patch.object(coordinator.process.kata_operation, "_is_production_recovery_operation",
+                  return_value=True), \
+     patch.object(coordinator.process.kata_operation, "_command_context",
+                  return_value=SimpleNamespace(lifecycle_phase="FS_SETTLED")), \
+     patch.object(coordinator.process.kata_operation, "_network_history", return_value=()), \
+     patch.object(coordinator.process.kata_operation, "_network_records", return_value=()), \
+     patch.object(coordinator.process.kata_operation, "_record_command_outcome",
+                  side_effect=lambda _journal, body: baseline_outcomes.append(body) or
+                  coordinator.process.kata_operation.DurableCommandOutcome(
+                      body["command_serial"], body["command_id"], body["binding_sha256"], body)), \
+     patch.object(coordinator.process, "_recover_cgroup", return_value=(True, True)), \
+     patch.object(coordinator.process, "_boottime_ns", side_effect=(1, 1)), \
+     patch.object(coordinator.process, "_boot_id", return_value="boot"):
+    outcome = coordinator.process._recover_pending_fixed(baseline_journal)
+check(outcome.body["outcome"] == "recovery-no-effect" and outcome.body["uncertain"] is True,
+      "pending baseline probe became sticky operation uncertainty")
+check(len(baseline_outcomes) == 1, "pending baseline probe was retried or reissued")
+
+# NETWORK_ABSENT after a network-only setup abort settles share and containerd
+# absence directly. No runtime preparation or reconstruction can be reached.
+setup_phase = ["NETWORK_ABSENT"]
+def setup_history():
+    return {"phase": setup_phase[0], "runtime_prepared": (), "runtime_stage_intents": (),
+            "runtime_staged": (), "daemon_retained": (), "daemon_outcomes": (),
+            "launches": (), "runtime_ownership": (), "runtime_role_identities": (),
+            "runtime_share_identities": (), "runtime_resumes": (), "intents": ()}
+def settle_setup(_journal, target):
+    setup_phase[0] = "SHARE_ABSENT" if target == "share" else "CONTAINERD_ABSENT"
+    return {target: "absent"}
+reconstruction_journal.runtime_recovery_history = setup_history
+with patch.object(execution.operation, "_durable_phase", side_effect=lambda _journal: setup_phase[0]), \
+     patch.object(execution.runtime, "_settle_setup_abort_absence", side_effect=settle_setup), \
+     patch.object(execution.runtime, "_reconstruct_fixed_runtime",
+                  side_effect=AssertionError("runtime reconstruction reached")), \
+     patch.object(execution.preparation, "_claim_fixed_prepared_runtime",
+                  side_effect=AssertionError("runtime preparation reached")), \
+     patch.object(execution.operation, "_open_base_chain", return_value=SimpleNamespace(
+                  components=(SimpleNamespace(node=object()),))), \
+     patch.object(execution.fs, "_enumerate_stable",
+                  return_value=SimpleNamespace(raw_names=())):
+    check(execution._remove_share(coordinator._owners.execution,
+        reconstruction_lifecycle) == {"share": "absent"}, "setup-abort share not settled")
+    setup_phase[0] = "FIREWALL_ABSENT"
+    current = execution._stop_containerd(coordinator._owners.execution,
+                                         reconstruction_lifecycle)
+    check(current == {"containerd": "absent"}, "setup-abort containerd not settled")
 
 # Source shape keeps both production entries zero argument and recovery cannot
 # name any work-opening method. Public openers and arbitrary receipts stay shut.
+recovery_shell = (REMOTE / "recover-stage2-completion-remote.sh").read_text()
+assert "except BaseException" not in recovery_shell
+assert "except c.CoordinatorNoOperationPath" in recovery_shell
+assert recovery_shell.count("recover_failed_preparation") == 1
 source = (REMOTE / "completion_kata_coordinator.py").read_text()
 tree = ast.parse(source)
 functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}

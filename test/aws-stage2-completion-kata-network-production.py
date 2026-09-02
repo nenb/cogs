@@ -145,11 +145,13 @@ with patch.object(network.nft_owner, "acquire", side_effect=lambda _j: gate_even
 check(gate_events == ["acquire", "require"], "baseline command preceded persistent NFT admission")
 # An ambiguous crashed baseline child remains a read-only no-effect prefix;
 # ambiguous setup/runtime children retain sticky operation uncertainty.
-uncertain_outcome = type("Outcome", (), {"body": {"uncertain": True}})()
 for phase, command_id, expected_poison in (
         ("FS_SETTLED", "IP_ALL_LINKS", False),
         ("BASELINES_CAPTURED", "IP_VETH_ADD_ATOMIC", True)):
     poison_calls = []
+    outcome_name = "recovery-no-effect" if phase == "FS_SETTLED" else "uncertain"
+    uncertain_outcome = type("Outcome", (), {"body": {
+        "uncertain": True, "outcome": outcome_name}})()
     context = type("Context", (), {"lifecycle_phase": phase})()
     with patch.object(operation, "_claim_production_cleanup_operation", side_effect=lambda value: value), \
          patch.object(operation, "_command_context", return_value=context), \

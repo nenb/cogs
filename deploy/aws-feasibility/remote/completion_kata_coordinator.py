@@ -110,6 +110,10 @@ class CoordinatorBlocked(CoordinatorError):
     """An immutable prerequisite or package-private integration refusal."""
 
 
+class CoordinatorNoOperationPath(CoordinatorBlocked):
+    """Exact pre-operation classification after coordinator cleanup and custody close."""
+
+
 class CoordinatorTerminal(CoordinatorError):
     """Bounded terminal class retaining private ordered causes without rendering them."""
     def __init__(self, stage, errors):
@@ -156,6 +160,7 @@ class _Lifecycle:
     primary_failure: BaseException = None
     failure_stage: str = "entry"
     custody_settlement_claimed: bool = False
+    no_operation_path: bool = False
 
 
 class _AdmissionBoundary:
@@ -662,6 +667,7 @@ def _recover(recovery_diagnostic=False):
             _owners.recover_pending(lifecycle)
             _owners.reconstruct_cleanup(lifecycle)
         else:
+            lifecycle.no_operation_path = True
             _owners.recover_preproduction(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
@@ -680,6 +686,8 @@ def _recover(recovery_diagnostic=False):
     _abort_custody(lifecycle, errors)
     if errors:
         _raise_failures("fixed recovery custody close was not exact", errors)
+    if lifecycle.no_operation_path:
+        raise CoordinatorNoOperationPath("no operation path before ownership")
     return None
 
 
