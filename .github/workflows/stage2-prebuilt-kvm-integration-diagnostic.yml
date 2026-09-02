@@ -2,8 +2,7 @@ name: Stage 2 reusable prebuilt KVM integration diagnostic
 run-name: Reusable prebuilt KVM integration diagnostic source=${{ github.sha }} run=${{ github.run_id }}
 on:
   workflow_dispatch:
-permissions:
-  contents: read
+permissions: {}
 env:
   DIAGNOSTIC_CONTROL_VERSION: cogs.stage2-current-source-prebuilt-diagnostic-control/v1
   PUBLICATION_CONTROL: 3a3499f0f452bf0fe893a0214cf0c0bbd0cd0e99
@@ -25,9 +24,18 @@ jobs:
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_REF_PROTECTED" = true
           test "$GITHUB_RUN_ATTEMPT" = 1
-      - name: Check out the protected diagnostic workflow source without credentials
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - name: Acquire the protected diagnostic workflow source without credentials
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -c credential.helper= -C "$GITHUB_WORKSPACE" \
+            fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
       - name: Verify the fixed non-authorizing publication lock
         run: |
           set -euo pipefail
@@ -155,9 +163,18 @@ jobs:
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_REF_PROTECTED" = true
           test "$GITHUB_RUN_ATTEMPT" = 1
-      - name: Check out the protected diagnostic workflow source without credentials
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - name: Acquire the protected diagnostic workflow source without credentials
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -c credential.helper= -C "$GITHUB_WORKSPACE" \
+            fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
       - name: Verify the fixed non-authorizing publication lock
         run: |
           set -euo pipefail
@@ -281,5 +298,7 @@ jobs:
           FULL: ${{ needs.full.result }}
           READINESS: ${{ needs.readiness.result }}
         run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
           test "$FULL" = success
           test "$READINESS" = success

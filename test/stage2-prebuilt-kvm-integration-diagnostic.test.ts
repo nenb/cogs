@@ -5,29 +5,36 @@ import test from "node:test";
 
 const workflowPath = ".github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml";
 const workflow = readFileSync(workflowPath, "utf8");
+const acquisition = readFileSync("deploy/aws-feasibility/remote/completion_rootfs_prebuilt_acquisition.py", "utf8");
 const lock = readFileSync("config/stage2-prebuilt-kvm-diagnostic-lock-v1.json", "utf8");
 const occurrences = (source: string, value: string) => source.split(value).length - 1;
 const oldImplementation = "5bced6bdc54756761f28a393970301b9b24341cc";
 const profile = "cogs.stage2-current-source-prebuilt-diagnostic-control/v1";
 
-test("reusable diagnostic is protected, repeatable, read-only, and independently fresh", () => {
+test("reusable diagnostic is protected, repeatable, permissionless, and independently fresh", () => {
   assert.match(workflow, /^name: Stage 2 reusable prebuilt KVM integration diagnostic$/mu);
   assert.match(workflow, /^\s{2}workflow_dispatch:\s*$/mu);
   assert.doesNotMatch(workflow, /workflow_dispatch:\s*\n\s+inputs:|concurrency:|workflow_runs|first-created/u);
   assert.equal(occurrences(workflow, 'test "$GITHUB_REF_PROTECTED" = true'), 2);
-  assert.equal(occurrences(workflow, 'test "$GITHUB_RUN_ATTEMPT" = 1'), 4);
-  assert.equal(occurrences(workflow, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"), 2);
-  assert.equal(occurrences(workflow, "persist-credentials: false"), 2);
-  assert.match(workflow, /permissions:\n\s{2}contents: read/u);
+  assert.match(workflow, /^permissions: \{\}$/mu);
+  assert.doesNotMatch(workflow, /actions\/checkout|persist-credentials|github\.token|GITHUB_TOKEN|secrets\./u);
+  assert.equal(occurrences(workflow, "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0"), 2);
+  assert.equal(occurrences(workflow, "/usr/bin/git -c credential.helper="), 2);
+  assert.equal(occurrences(workflow, "remote add origin https://github.com/nenb/cogs.git"), 2);
+  assert.equal(occurrences(workflow, 'fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"'), 2);
   assert.doesNotMatch(
     workflow,
     /actions\/(?:upload|download)-artifact|aws-actions|configure-aws|opentofu|terraform|packages:\s*write|id-token:\s*write/u,
   );
 });
 
-test("both jobs materialize and execute GITHUB_SHA, never the prior producer implementation", () => {
-  assert.match(workflow, /^ {2}full:\n/mu);
-  assert.match(workflow, /^ {2}readiness:\n/mu);
+test("both attempt-one jobs materialize and execute GITHUB_SHA, never the prior producer implementation", () => {
+  const full = workflow.slice(workflow.indexOf("  full:"), workflow.indexOf("  readiness:"));
+  const readiness = workflow.slice(workflow.indexOf("  readiness:"), workflow.indexOf("  aggregate:"));
+  for (const route of [full, readiness]) {
+    assert.equal(occurrences(route, 'test "$GITHUB_RUN_ATTEMPT" = 1'), 2);
+    assert.equal(occurrences(route, 'fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"'), 1);
+  }
   assert.equal(occurrences(workflow, "scripts/prepare-stage2-fixed-source.py"), 2);
   assert.equal(occurrences(workflow, ')["revision"])\')" = "$GITHUB_SHA"'), 2);
   assert.equal(occurrences(workflow, "completion_kata_diagnostic_control.py"), 2);
@@ -36,9 +43,20 @@ test("both jobs materialize and execute GITHUB_SHA, never the prior producer imp
   assert.equal(occurrences(workflow, `provisional "$DIAGNOSTIC_CONTROL_VERSION"`), 2);
   assert.equal(occurrences(workflow, profile), 1);
   assert.doesNotMatch(workflow, new RegExp(oldImplementation, "u"));
-  assert.doesNotMatch(
-    workflow,
-    /stage2-implementation|git (?:fetch|init)|rehearsal-grant|full-rehearsal|readiness-rehearsal/u,
+  assert.doesNotMatch(workflow, /stage2-implementation|rehearsal-grant|full-rehearsal|readiness-rehearsal/u);
+});
+
+test("GHCR uses anonymous bearer protocol authentication with no ambient workflow secret", () => {
+  const tokenStage = acquisition.slice(acquisition.indexOf("def _token("), acquisition.indexOf("def _pairs("));
+  assert.match(tokenStage, /https:\/\/\{TOKEN_HOST\}\/token\?service=ghcr\.io&scope=\{scope\}/u);
+  assert.doesNotMatch(tokenStage, /Authorization/u);
+  assert.equal(occurrences(acquisition, '("Authorization", "Bearer " + token)'), 2);
+  assert.equal(
+    occurrences(
+      workflow,
+      "env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \\\n            /usr/bin/python3 -I -B \\\n            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py",
+    ),
+    2,
   );
 });
 
@@ -52,6 +70,7 @@ test("fixed rootfs custody is acquired twice while mint, report, and publication
   assert.doesNotMatch(workflow, /completion_local_full|stage2-local-publication|stage2-local-upload-receipt/u);
   const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
   assert.match(aggregate, /^ {4}permissions: \{\}$/mu);
+  assert.equal(occurrences(aggregate, 'test "$GITHUB_RUN_ATTEMPT" = 1'), 1);
   assert.doesNotMatch(aggregate, /checkout|artifact|REPORT_|sudo/u);
   assert.match(
     aggregate,
