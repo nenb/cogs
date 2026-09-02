@@ -12,8 +12,11 @@ SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v
 PROVISIONAL_SOURCE = Path(
     "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
+DIAGNOSTIC_CONTROL = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_diagnostic_control.py")
 DESTINATION = Path("/var/lib/cogs/stage2-completion-v1/control")
 CONTROL_MEMBER = "stage2-local-static-control-v2.json"
+DIAGNOSTIC_VERSION = "cogs.stage2-current-source-prebuilt-diagnostic-control/v1"
+DIAGNOSTIC_MEMBER = "stage2-current-source-prebuilt-diagnostic-control-v1.json"
 MAX_MEMBERS = 16
 
 
@@ -26,8 +29,8 @@ def _require(condition, message="reviewed control staging failed"):
         raise ControlStagingError(message)
 
 
-def _load_preparation():
-    spec = importlib.util.spec_from_file_location("completion_kata_preparation_staging", H_PREPARATION)
+def _load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
     _require(spec is not None and spec.loader is not None)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -83,15 +86,21 @@ def _write_frozen(path, raw):
         os.close(descriptor)
 
 
-def _stage(source_path):
+def _stage(source_path, diagnostic_version=None):
     _require(os.geteuid() == 0 and not DESTINATION.exists())
     _require(source_path in {SOURCE, PROVISIONAL_SOURCE})
-    preparation = _load_preparation()
+    _require(diagnostic_version is None or (
+        source_path == PROVISIONAL_SOURCE and diagnostic_version == DIAGNOSTIC_VERSION))
+    codec = (_load_module(DIAGNOSTIC_CONTROL, "completion_kata_diagnostic_control_staging")
+             if diagnostic_version is not None else
+             _load_module(H_PREPARATION, "completion_kata_preparation_staging"))
+    control_member = DIAGNOSTIC_MEMBER if diagnostic_version is not None else CONTROL_MEMBER
+    maximum = codec.MAX_BYTES if diagnostic_version is not None else codec.MAX_CONTROL_BYTES
     source = os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         source_identity = os.fstat(source)
-        control_raw = _read_regular(source, CONTROL_MEMBER, preparation.MAX_CONTROL_BYTES)
-        control = preparation.load_control(control_raw)
+        control_raw = _read_regular(source, control_member, maximum)
+        control = codec.load_control(control_raw)
         rows = control.value["members"]
         _require(type(rows) is list and 1 <= len(rows) <= MAX_MEMBERS)
         members = {}
@@ -99,7 +108,7 @@ def _stage(source_path):
             name = row["name"]
             _require(type(name) is str and name not in members)
             members[name] = _read_regular(source, name, row["size"])
-        preparation.validate_control_members(control, members)
+        codec.validate_control_members(control, members)
         _require(os.fstat(source) == source_identity, "control package directory changed")
     finally:
         os.close(source)
@@ -107,7 +116,7 @@ def _stage(source_path):
     try:
         DESTINATION.mkdir(mode=0o500)
         created_directories.append(DESTINATION)
-        for name, raw in [(CONTROL_MEMBER, control_raw), *sorted(members.items())]:
+        for name, raw in [(control_member, control_raw), *sorted(members.items())]:
             target = DESTINATION / name
             missing = []
             parent = target.parent
@@ -146,14 +155,16 @@ def stage():
     return _stage(SOURCE)
 
 
-def stage_provisional():
-    return _stage(PROVISIONAL_SOURCE)
+def stage_provisional(diagnostic_version=None):
+    return _stage(PROVISIONAL_SOURCE, diagnostic_version)
 
 
 def main():
-    _require(len(sys.argv) in {1, 2})
+    _require(len(sys.argv) in {1, 2, 3})
     _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
-    digest = stage() if len(sys.argv) == 1 else stage_provisional()
+    _require(len(sys.argv) < 3 or sys.argv[2] == DIAGNOSTIC_VERSION)
+    digest = (stage() if len(sys.argv) == 1 else
+              stage_provisional(None if len(sys.argv) == 2 else sys.argv[2]))
     raw = f"control_sha256={digest}\n".encode("ascii")
     _require(sys.stdout.buffer.write(raw) == len(raw))
 

@@ -118,6 +118,7 @@ MAPPING_KEYS = (
 
 CONTROL_ROOT = preparation.CONTROL_ROOT
 CONTROL_PATH = CONTROL_ROOT / preparation.CONTROL_MEMBER
+DIAGNOSTIC_CONTROL_MEMBER = "stage2-current-source-prebuilt-diagnostic-control-v1.json"
 MAX_CONTROL_BYTES = preparation.MAX_CONTROL_BYTES
 
 
@@ -733,6 +734,34 @@ def _read_control_package():
         _close_all(descriptors, error)
 
 
+def _read_diagnostic_control_package():
+    import completion_kata_diagnostic_control as diagnostic
+
+    descriptors = []
+    try:
+        control_fd, control_parent, control_status = _open_fixed_relative(
+            CONTROL_ROOT, DIAGNOSTIC_CONTROL_MEMBER, diagnostic.MAX_BYTES)
+        descriptors.extend((control_parent, control_fd))
+        control_raw = _read_held_raw(control_fd, control_status, diagnostic.MAX_BYTES)
+        control = diagnostic.load_control(control_raw)
+        members = {}
+        for row in control.value["members"]:
+            maximum = (preparation.MAX_RUNTIME_BYTES if row["kind"] == "runtime-manifest"
+                       else preparation.MAX_CONTRACT_BYTES)
+            descriptor, parent, status_value = _open_fixed_relative(
+                CONTROL_ROOT, row["name"], maximum)
+            descriptors.extend((parent, descriptor))
+            raw = _read_held_raw(descriptor, status_value, maximum)
+            _require(len(raw) == row["size"] and _sha(raw) == row["sha256"],
+                     "diagnostic control member differs")
+            members[row["name"]] = raw
+        runtime, contracts = diagnostic.validate_control_members(control, members)
+        envelope = diagnostic.normalized_envelope(control, runtime)
+        return control, envelope, runtime, contracts, descriptors
+    except BaseException as error:
+        _close_all(descriptors, error)
+
+
 def _verify_complete_source(implementation, descriptors):
     manifest_fd, manifest_parent, manifest_status = _open_fixed_relative(
         FIXED_ROOT, preparation.SOURCE_MANIFEST, preparation.MAX_SOURCE_MANIFEST_BYTES)
@@ -971,6 +1000,17 @@ def _static_routes():
             _require(key is seal, "sealed static preparation custody")
             return super().__new__(cls)
 
+    class _DiagnosticPreparationCustody:
+        __slots__ = ()
+        def __new__(cls, key=None):
+            _require(key is seal, "sealed diagnostic preparation custody")
+            return super().__new__(cls)
+
+    def live_custody(custody, state):
+        expected = (_DiagnosticPreparationCustody if state and state["diagnostic"]
+                    else _StaticPreparationCustody)
+        return type(custody) is expected and state is not None
+
     class _ExecutableRoleCustody:
         __slots__ = ()
 
@@ -991,16 +1031,19 @@ def _static_routes():
             _require(key is seal, "sealed prepared runtime custody")
             return super().__new__(cls)
 
-    def claim_static(recovery=False):
+    def claim_static(recovery=False, diagnostic=False):
         nonlocal issuance_started
         if issuance_started:
             raise AdmissionUnavailable("static preparation issuance is globally one-shot")
+        _require(type(recovery) is bool and type(diagnostic) is bool)
         issuance_started = True
         descriptors = []
         try:
             _require(platform.system() == "Linux" and platform.machine() == "x86_64" and os.geteuid() == 0,
                      "static preparation platform differs")
-            control, envelope, runtime, contracts, held = _read_control_package()
+            control, envelope, runtime, contracts, held = (
+                _read_diagnostic_control_package() if diagnostic else
+                _read_control_package())
             descriptors.extend(held)
             source_start = len(descriptors)
             _verify_complete_source(envelope.value["implementation"], descriptors)
@@ -1028,7 +1071,8 @@ def _static_routes():
                 if recovery and not os.path.lexists(active_path) else
                 _retain_observer_configuration(runtime, descriptors))
             final = _validate_final_and_rootfs(envelope, runtime, rootfs_authority)
-            custody = _StaticPreparationCustody(seal)
+            custody = (_DiagnosticPreparationCustody(seal) if diagnostic
+                       else _StaticPreparationCustody(seal))
             custody_states[custody] = {
                 "control": control,
                 "envelope": envelope,
@@ -1045,6 +1089,7 @@ def _static_routes():
                 "roles": set(),
                 "mapping": None,
                 "recovery": recovery,
+                "diagnostic": diagnostic,
             }
             return custody
         except BaseException as error:
@@ -1053,15 +1098,17 @@ def _static_routes():
                 primary.__cause__ = error
             _close_all(descriptors, primary)
 
-    def take_issuer(recovery=False):
-        _require(recovery in {False, True} and recovery not in issuers_taken,
+    def take_issuer(recovery=False, diagnostic=False):
+        key = (recovery, diagnostic)
+        _require(type(recovery) is bool and type(diagnostic) is bool
+                 and key not in issuers_taken,
                  "static preparation issuer already taken")
-        issuers_taken.add(recovery)
-        return lambda: claim_static(recovery)
+        issuers_taken.add(key)
+        return lambda: claim_static(recovery, diagnostic)
 
     def claim_role(custody, role):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None, "live static custody required")
+        _require(live_custody(custody, state), "live static custody required")
         _verify_held_observer_configuration(state["configuration_identity"])
         _require(type(role) is str and role in {row[0] for row in EXECUTABLES} and role not in state["roles"],
                  "executable role claim is not exact one-shot")
@@ -1089,7 +1136,7 @@ def _static_routes():
 
     def mapping_from_root(custody, root_descriptor, lease_identity):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None and state["mapping"] is None)
+        _require(live_custody(custody, state) and state["mapping"] is None)
         _require(type(root_descriptor) is int and root_descriptor >= 0)
         _require(type(lease_identity) is dict and set(lease_identity) == {"path", "ustar_sha256", "token"})
         runtime_rootfs = state["runtime"].value["rootfs"]
@@ -1173,7 +1220,7 @@ def _static_routes():
 
     def claim_prepared(custody):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None
+        _require(live_custody(custody, state)
                  and not any(item["custody"] is custody for item in prepared_states.values()))
         import completion_kata_prestage_runtime as prepared
         active = state["runtime"].value["launch"]["active_configuration"]
@@ -1201,7 +1248,7 @@ def _static_routes():
 
     def retire_claims(custody, recovery):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None
+        _require(live_custody(custody, state)
                  and state["recovery"] is recovery)
         claims = [(claim, item) for claim, item in role_states.items()
                   if item["custody"] is custody]
@@ -1247,9 +1294,10 @@ def _static_routes():
         """Retire only descriptor claims issued by sealed recovery custody."""
         retire_claims(custody, True)
 
-    def rootfs_authority(custody):
+    def rootfs_authority(custody, diagnostic=False):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None,
+        _require(live_custody(custody, state)
+                 and state["diagnostic"] is diagnostic,
                  "live exact static custody required")
         import completion_rootfs_prebuilt as rootfs_prebuilt
         _require(_read_held(state["rootfs_fd"], state["rootfs_status"],
@@ -1260,7 +1308,7 @@ def _static_routes():
 
     def source_approval(custody):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None,
+        _require(live_custody(custody, state),
                  "live exact static custody required")
         _verify_held_observer_configuration(state["configuration_identity"])
         implementation = state["envelope"].value["implementation"]
@@ -1270,8 +1318,9 @@ def _static_routes():
 
     def cycle_grant_binding(custody):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None,
-                 "live exact static custody required")
+        _require(live_custody(custody, state)
+                 and not state["diagnostic"],
+                 "live exact formal static custody required")
         envelope = state["envelope"].value
         return {
             "implementation_revision": envelope["implementation"]["revision"],
@@ -1282,7 +1331,8 @@ def _static_routes():
 
     def binding(custody):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None, "live exact static custody required")
+        _require(live_custody(custody, state)
+                 and not state["diagnostic"], "live exact formal static custody required")
         _verify_held_observer_configuration(state["configuration_identity"])
         return _host_bound_binding(
             state["envelope"].value["result_binding_base"],
@@ -1290,7 +1340,7 @@ def _static_routes():
 
     def abort(custody):
         state = custody_states.pop(custody, None)
-        _require(type(custody) is _StaticPreparationCustody and state is not None)
+        _require(live_custody(custody, state))
         for claim in [claim for claim, item in role_states.items() if item["custody"] is custody]:
             role_states.pop(claim)
         for claim in [claim for claim, item in mapping_states.items() if item["custody"] is custody]:
@@ -1299,14 +1349,17 @@ def _static_routes():
             prepared_states.pop(claim)
         _close_all(state["descriptors"])
 
-    return (take_issuer(False), take_issuer(True), source_approval, rootfs_authority,
+    return (take_issuer(False), take_issuer(True),
+            take_issuer(False, True), take_issuer(True, True),
+            source_approval, rootfs_authority,
             claim_role, consume_role, retire_consumed_roles, retire_recovery_claims,
             claim_live_mapping, consume_mapping, claim_prepared, prepared_facts,
             binding, cycle_grant_binding, abort)
 
 
 (_claim_static_preparation, _claim_recovery_static_preparation,
- _fixed_source_approval, _fixed_prebuilt_rootfs_authority,
+ _claim_diagnostic_static_preparation, _claim_diagnostic_recovery_static_preparation,
+ _fixed_source_approval, _rootfs_authority,
  _claim_executable_role_custody,
  _consume_executable_role_custody,
  _retire_consumed_executable_role_custody,
@@ -1316,6 +1369,15 @@ def _static_routes():
  _static_custody_binding, _cycle_grant_binding,
  _abort_static_preparation) = _static_routes()
 del _static_routes
+
+
+def _fixed_prebuilt_rootfs_authority(custody):
+    return _rootfs_authority(custody, False)
+
+
+def _diagnostic_prebuilt_rootfs_authority(custody):
+    return _rootfs_authority(custody, True)
+
 
 def _take_static_preparation_issuer():
     raise AdmissionUnavailable("static preparation issuer already taken")

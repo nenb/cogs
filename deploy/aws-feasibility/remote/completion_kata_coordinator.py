@@ -126,6 +126,7 @@ def _safe_failure_diagnostic(error):
 @dataclass
 class _Lifecycle:
     recovery: bool = False
+    diagnostic: bool = False
     cycle_route: object = None
     cycle_grant: object = None
     static_custody: object = None
@@ -175,6 +176,17 @@ class _AdmissionBoundary:
         except (admission.AdmissionError,
                 preparation_bridge.PreparationBridgeError) as error:
             raise CoordinatorBlocked(BLOCKED_REASON) from error
+        return custody, approval
+
+    def claim_diagnostic_static(self, recovery=False):
+        try:
+            custody = (preparation_bridge._claim_diagnostic_recovery_static_preparation()
+                       if recovery else
+                       preparation_bridge._claim_diagnostic_static_preparation())
+            approval = preparation_bridge._fixed_source_approval(custody)
+        except (admission.AdmissionError,
+                preparation_bridge.PreparationBridgeError) as error:
+            raise CoordinatorBlocked("sealed diagnostic preparation required") from error
         return custody, approval
 
     def claim_live(self, lifecycle):
@@ -262,6 +274,8 @@ class _PackagePrivateOwners:
         self.evidence = _PrivateEvidenceBoundary()
 
     def claim_static_custody(self, lifecycle):
+        if lifecycle.diagnostic:
+            return self.admission.claim_diagnostic_static(lifecycle.recovery)
         return (self.admission.claim_recovery_static() if lifecycle.recovery
                 else self.admission.claim_static())
 
@@ -516,11 +530,14 @@ def _run_cycle(route=None, grant=None, mint=True):
     """Compose one lifecycle; production routes require a consumed batch grant."""
     if type(mint) is not bool:
         raise CoordinatorBlocked("exact receipt policy required")
+    diagnostic = route is not None and cycle_evidence._is_diagnostic_route(route)
+    if diagnostic and (mint or grant is not None):
+        raise CoordinatorBlocked("diagnostic route requires sealed no-mint policy")
     if route is not None:
         cycle_evidence._describe_route(route)
         if not cycle_evidence._cycle_launch_authorized(route, grant):
             raise CoordinatorBlocked("exact cycle batch/ordinal authority required")
-    lifecycle = _Lifecycle(cycle_route=route, cycle_grant=grant)
+    lifecycle = _Lifecycle(diagnostic=diagnostic, cycle_route=route, cycle_grant=grant)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -607,9 +624,19 @@ def _run_fixed_readiness_rehearsal():
                       cycle_authority.claim_readiness(), False)
 
 
-def _recover_fixed_local_qualification():
+def _run_current_source_full_diagnostic():
+    """Current source plus fixed prior rootfs; receipt issuance is structurally refused."""
+    return _run_cycle(cycle_evidence._diagnostic_full_route(), None, False)
+
+
+def _run_current_source_readiness_diagnostic():
+    """Current source readiness plus fixed prior rootfs; never mint evidence."""
+    return _run_cycle(cycle_evidence._diagnostic_readiness_route(), None, False)
+
+
+def _recover(recovery_diagnostic=False):
     """Open durable ownership and clean only; work construction is unreachable."""
-    lifecycle = _Lifecycle(recovery=True)
+    lifecycle = _Lifecycle(recovery=True, diagnostic=recovery_diagnostic)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -641,6 +668,14 @@ def _recover_fixed_local_qualification():
     if errors:
         _raise_failures("fixed recovery custody close was not exact", errors)
     return None
+
+
+def _recover_fixed_local_qualification():
+    return _recover(False)
+
+
+def _recover_current_source_diagnostic():
+    return _recover(True)
 
 
 def _consume_local_receipt(receipt):

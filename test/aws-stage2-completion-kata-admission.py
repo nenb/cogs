@@ -213,7 +213,8 @@ reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
 retire_recovery = admission._retire_recovery_executable_role_custody
 retire_claims = inspect.getclosurevars(retire_recovery).nonlocals["retire_claims"]
 routes = inspect.getclosurevars(retire_claims).nonlocals
-custody_type = routes["_StaticPreparationCustody"]
+custody_type = inspect.getclosurevars(routes["live_custody"]).nonlocals[
+    "_StaticPreparationCustody"]
 seal = inspect.getclosurevars(custody_type.__new__).nonlocals["seal"]
 for with_prepared in (False, True):
     custody = custody_type(seal)
@@ -221,7 +222,8 @@ for with_prepared in (False, True):
     role_claims = (object(), object())
     roles = {"ssh", "ssh-keygen"}
     routes["custody_states"][custody] = {
-        "recovery": True, "roles": roles, "descriptors": list(descriptors),
+        "diagnostic": False, "recovery": True, "roles": roles,
+        "descriptors": list(descriptors),
         "source_descriptors": (descriptors[2],), "source_anchor": descriptors[3],
         "configuration_identity": {"active_sha256": "a" * 64},
     }

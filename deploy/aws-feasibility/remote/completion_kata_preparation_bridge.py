@@ -17,6 +17,8 @@ import completion_rootfs_lease as rootfs_lease
 _ROOTFS_DEADLINE_NS = 3_600_000_000_000
 _claim_static = admission._claim_static_preparation
 _claim_recovery_static = admission._claim_recovery_static_preparation
+_claim_diagnostic_static = admission._claim_diagnostic_static_preparation
+_claim_diagnostic_recovery_static = admission._claim_diagnostic_recovery_static_preparation
 _states = {}
 
 
@@ -34,8 +36,9 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _record_static_custody(custody, recovery):
+def _record_static_custody(custody, recovery, diagnostic=False):
     _states[custody] = {
+        "diagnostic": diagnostic,
         "approval": None, "rootfs_authority": None, "cycle_grant": None,
         "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
@@ -54,6 +57,16 @@ def _claim_fixed_recovery_static_preparation():
     return _record_static_custody(_claim_recovery_static(), True)
 
 
+def _claim_diagnostic_static_preparation():
+    """Authenticate the explicit current-source split-lineage profile."""
+    return _record_static_custody(_claim_diagnostic_static(), False, True)
+
+
+def _claim_diagnostic_recovery_static_preparation():
+    """Authenticate that profile for cleanup-only reconstruction."""
+    return _record_static_custody(_claim_diagnostic_recovery_static(), True, True)
+
+
 def _fixed_source_approval(custody):
     """Return SourceApproval derived from the verified complete source manifest."""
     state = _states.get(custody)
@@ -66,10 +79,20 @@ def _fixed_source_approval(custody):
 
 
 def _acquire_fixed_rootfs(custody):
-    """Import the one descriptor-bound prebuilt rootfs; no build fallback exists."""
+    return _acquire_rootfs(custody, False)
+
+
+def _acquire_diagnostic_rootfs(custody):
+    return _acquire_rootfs(custody, True)
+
+
+def _acquire_rootfs(custody, diagnostic=False):
+    """Import only the descriptor-bound rootfs selected by the custody profile."""
     state = _states.get(custody)
-    _require(state is not None and state["lease"] is None and not state["abandoned"])
-    authority = admission._fixed_prebuilt_rootfs_authority(custody)
+    _require(state is not None and state["diagnostic"] is diagnostic
+             and state["lease"] is None and not state["abandoned"])
+    authority = (admission._diagnostic_prebuilt_rootfs_authority(custody)
+                 if diagnostic else admission._fixed_prebuilt_rootfs_authority(custody))
     state["rootfs_authority"] = authority
     lease = rootfs_lease._acquire_prebuilt(
         _fixed_source_approval(custody), authority, _control())
@@ -82,7 +105,7 @@ def _acquire_fixed_rootfs(custody):
 def _validate_fixed_cycle_grant(custody, grant):
     """Bind controller-issued batch authority to exact H/G control and rootfs."""
     state = _states.get(custody)
-    _require(state is not None)
+    _require(state is not None and not state["diagnostic"])
     binding = admission._cycle_grant_binding(custody)
     _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
              and state["cycle_grant"] is None

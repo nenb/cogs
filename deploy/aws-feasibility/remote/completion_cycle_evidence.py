@@ -79,7 +79,11 @@ def _route_realm():
     full, readiness = _FullRoute(seal), _ReadinessRoute(seal)
     synthetic_full = _FullRoute(seal)
     synthetic_readiness = _ReadinessRoute(seal)
+    diagnostic_full = _FullRoute(seal)
+    diagnostic_readiness = _ReadinessRoute(seal)
     authorized = {synthetic_full, synthetic_readiness}
+    diagnostics = {diagnostic_full, diagnostic_readiness}
+    no_grant = authorized | diagnostics
     for route, name, program, marker, domain in (
         (full, "full", full_guest.GUEST_PROGRAM_SHA256,
          hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"production"),
@@ -89,6 +93,10 @@ def _route_realm():
          hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"synthetic"),
         (synthetic_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
          readiness_guest.MARKER_SHA256, b"synthetic"),
+        (diagnostic_full, "full", full_guest.GUEST_PROGRAM_SHA256,
+         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"diagnostic-current-source"),
+        (diagnostic_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
+         readiness_guest.MARKER_SHA256, b"diagnostic-current-source"),
     ):
         capability = hashlib.sha256(
             b"cogs.stage2-cycle-route/v1\0" + domain + b"\0" + name.encode("ascii") +
@@ -99,9 +107,12 @@ def _route_realm():
     def readiness_route(): return readiness
     def synthetic_full_route(): return synthetic_full
     def synthetic_readiness_route(): return synthetic_readiness
+    def diagnostic_full_route(): return diagnostic_full
+    def diagnostic_readiness_route(): return diagnostic_readiness
+    def is_diagnostic(route): return route in diagnostics
     def launch_authorized(route, grant=None):
         name, _capability, _program, _marker = describe(route)
-        if route in authorized:
+        if route in no_grant:
             return grant is None
         import completion_cycle_authority as cycle_authority
         return (type(grant) is cycle_authority.campaign.CycleLaunchGrant
@@ -115,23 +126,25 @@ def _route_realm():
         name, capability, program, marker = describe(route)
         _require(operation._cycle_route(journal) is None,
                  "cycle route already durably bound")
-        if route not in authorized:
+        if route not in no_grant:
             import completion_cycle_authority as cycle_authority
             _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
                      and grant.mode == name,
                      "complete production grant required before route binding")
         else:
-            _require(grant is None, "synthetic route cannot carry production grant")
+            _require(grant is None, "non-production route cannot carry production grant")
         operation._record_cycle_route(
             journal, name, capability, program, marker, grant)
         return route
     return (_FullRoute, _ReadinessRoute, full_route, readiness_route,
             synthetic_full_route, synthetic_readiness_route,
+            diagnostic_full_route, diagnostic_readiness_route, is_diagnostic,
             launch_authorized, describe, bind)
 
 
 (_FullRoute, _ReadinessRoute, _fixed_full_route, _fixed_readiness_route,
  _synthetic_full_route_for_tests, _synthetic_readiness_route_for_tests,
+ _diagnostic_full_route, _diagnostic_readiness_route, _is_diagnostic_route,
  _cycle_launch_authorized, _describe_route, _bind_operation_route) = _route_realm()
 del _route_realm
 
@@ -376,6 +389,8 @@ def _receipt_realm():
             raise CycleEvidenceError("cycle receipt commit failed; nothing minted") from error
 
     def issue(route, lifecycle):
+        _require(not _is_diagnostic_route(route),
+                 "diagnostic route can never mint cycle evidence")
         return settle(route, lifecycle, True)
 
     def validate_and_discard(route, lifecycle):

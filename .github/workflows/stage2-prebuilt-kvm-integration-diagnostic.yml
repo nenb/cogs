@@ -5,8 +5,8 @@ on:
 permissions:
   contents: read
 env:
-  EXACT_IMPLEMENTATION: 5bced6bdc54756761f28a393970301b9b24341cc
-  EXACT_CONTROL: 3a3499f0f452bf0fe893a0214cf0c0bbd0cd0e99
+  DIAGNOSTIC_CONTROL_VERSION: cogs.stage2-current-source-prebuilt-diagnostic-control/v1
+  PUBLICATION_CONTROL: 3a3499f0f452bf0fe893a0214cf0c0bbd0cd0e99
 jobs:
   full:
     name: full
@@ -36,17 +36,6 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py verify
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
-      - name: Acquire the exact lock-bound implementation without credentials
-        run: |
-          set -euo pipefail
-          destination=$RUNNER_TEMP/stage2-implementation
-          clean=(env -i HOME=/nonexistent PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
-          "${clean[@]}" /usr/bin/git init --quiet "$destination"
-          "${clean[@]}" /usr/bin/git -C "$destination" remote add origin https://github.com/nenb/cogs.git
-          "${clean[@]}" /usr/bin/git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$EXACT_IMPLEMENTATION"
-          "${clean[@]}" /usr/bin/git -C "$destination" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$destination" rev-parse HEAD)" = "$EXACT_IMPLEMENTATION"
       - id: preparation
         name: Independently materialize and prepare the immutable publication
         timeout-minutes: 35
@@ -57,8 +46,8 @@ jobs:
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
           sudo -n chmod 0755 /opt
           prepared=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-            "$RUNNER_TEMP/stage2-implementation/scripts/prepare-stage2-fixed-source.py")
-          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$EXACT_IMPLEMENTATION"
+            scripts/prepare-stage2-fixed-source.py)
+          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$GITHUB_SHA"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py descriptor
           immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1950s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
@@ -67,30 +56,29 @@ jobs:
           test "$(RESULT="$immutable" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["rootfs_artifact_count"])')" = 1
           sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py adjuncts
           provisional=$(sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            COGS_STAGE2_CONTROL_REVISION="$EXACT_CONTROL" /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py)
-          RESULT="$provisional" /usr/bin/python3 -I -c 'import json,os
+            COGS_STAGE2_DIAGNOSTIC_CONTROL_VERSION="$DIAGNOSTIC_CONTROL_VERSION" \
+            COGS_STAGE2_CURRENT_REVISION="$GITHUB_SHA" \
+            COGS_STAGE2_CONTROL_REVISION="$PUBLICATION_CONTROL" /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_diagnostic_control.py)
+          RESULT="$provisional" VERSION="$DIAGNOSTIC_CONTROL_VERSION" /usr/bin/python3 -I -c 'import json,os
           value=json.loads(os.environ["RESULT"])
-          assert value["authority"] == "non-authoritative-discovery-candidate"
+          assert value["version"] == os.environ["VERSION"]
+          assert value["authority"] == "diagnostic-only-split-lineage-no-mint"
           assert value["kvm_used"] is False and len(value["control_sha256"]) == 64'
           staged=$(sudo -n /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py provisional)
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
+            provisional "$DIAGNOSTIC_CONTROL_VERSION")
           [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
-      - name: Issue the fixed no-mint full diagnostic grant
-        run: |
-          sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
-            /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py full
       - id: route
         name: Execute the actual production-shaped full route without minting
         continue-on-error: true
         timeout-minutes: 132
         run: |
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_cycle_full_diagnostic.py
       - id: recovery
         name: Run cleanup-only recovery after every preparation attempt
         if: always() && steps.preparation.outcome != 'skipped'
@@ -99,6 +87,7 @@ jobs:
         run: |
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 720s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            COGS_STAGE2_DIAGNOSTIC_CONTROL_VERSION="$DIAGNOSTIC_CONTROL_VERSION" \
             /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
       - id: settlement
         name: Settle fixed roots after recovery
@@ -177,17 +166,6 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py verify
           test ! -e /var/lib/cogs
           test ! -e /opt/kata
-      - name: Acquire the exact lock-bound implementation without credentials
-        run: |
-          set -euo pipefail
-          destination=$RUNNER_TEMP/stage2-implementation
-          clean=(env -i HOME=/nonexistent PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
-          "${clean[@]}" /usr/bin/git init --quiet "$destination"
-          "${clean[@]}" /usr/bin/git -C "$destination" remote add origin https://github.com/nenb/cogs.git
-          "${clean[@]}" /usr/bin/git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$EXACT_IMPLEMENTATION"
-          "${clean[@]}" /usr/bin/git -C "$destination" checkout --quiet --detach FETCH_HEAD
-          test "$(git -C "$destination" rev-parse HEAD)" = "$EXACT_IMPLEMENTATION"
       - id: preparation
         name: Independently materialize and prepare the immutable publication
         timeout-minutes: 35
@@ -198,8 +176,8 @@ jobs:
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
           sudo -n chmod 0755 /opt
           prepared=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
-            "$RUNNER_TEMP/stage2-implementation/scripts/prepare-stage2-fixed-source.py")
-          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$EXACT_IMPLEMENTATION"
+            scripts/prepare-stage2-fixed-source.py)
+          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$GITHUB_SHA"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py descriptor
           immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1950s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
@@ -208,30 +186,29 @@ jobs:
           test "$(RESULT="$immutable" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["rootfs_artifact_count"])')" = 1
           sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py adjuncts
           provisional=$(sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            COGS_STAGE2_CONTROL_REVISION="$EXACT_CONTROL" /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py)
-          RESULT="$provisional" /usr/bin/python3 -I -c 'import json,os
+            COGS_STAGE2_DIAGNOSTIC_CONTROL_VERSION="$DIAGNOSTIC_CONTROL_VERSION" \
+            COGS_STAGE2_CURRENT_REVISION="$GITHUB_SHA" \
+            COGS_STAGE2_CONTROL_REVISION="$PUBLICATION_CONTROL" /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_diagnostic_control.py)
+          RESULT="$provisional" VERSION="$DIAGNOSTIC_CONTROL_VERSION" /usr/bin/python3 -I -c 'import json,os
           value=json.loads(os.environ["RESULT"])
-          assert value["authority"] == "non-authoritative-discovery-candidate"
+          assert value["version"] == os.environ["VERSION"]
+          assert value["authority"] == "diagnostic-only-split-lineage-no-mint"
           assert value["kvm_used"] is False and len(value["control_sha256"]) == 64'
           staged=$(sudo -n /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py provisional)
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
+            provisional "$DIAGNOSTIC_CONTROL_VERSION")
           [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
-      - name: Issue the fixed no-mint readiness diagnostic grant
-        run: |
-          sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
-            /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py readiness
       - id: route
         name: Execute the actual production-shaped readiness route without minting
         continue-on-error: true
         timeout-minutes: 35
         run: |
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1980s \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_cycle_readiness_diagnostic.py
       - id: recovery
         name: Run cleanup-only recovery after every preparation attempt
         if: always() && steps.preparation.outcome != 'skipped'
@@ -240,6 +217,7 @@ jobs:
         run: |
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 720s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            COGS_STAGE2_DIAGNOSTIC_CONTROL_VERSION="$DIAGNOSTIC_CONTROL_VERSION" \
             /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
       - id: settlement
         name: Settle fixed roots after recovery
