@@ -2483,14 +2483,23 @@ def _recover_pending_fixed(journal):
 
 
 def _recover_pending_production(journal):
-    """Production family adapter: exact admission and sticky uncertain closure."""
+    """Production family adapter: preserve ambiguous effects, not read-only probes."""
     journal = kata_operation._claim_production_cleanup_operation(journal)
+    context = kata_operation._command_context(journal)
+    intent, _preexec, _terminal = kata_operation._recovery_command(journal)
+    history = kata_operation._network_history(journal)
+    baseline_probe = (context.lifecycle_phase == "FS_SETTLED"
+        and intent["command_id"] in {action.value for action in kata_network._BASELINE_ACTIONS}
+        and not kata_operation._network_records(journal)
+        and not any(kind in kata_operation.network_journal.RECORDS
+                    for kind, _body in history))
     outcome = _recover_pending_fixed(journal)
     if outcome.command_id == CommandId.CONTAINERD_START.value and not outcome.body["uncertain"]:
         if kata_operation._durable_phase(journal) != "UNCERTAIN":
             raise ProcessError("certain daemon rollback phase differs")
         journal.resume_runtime_cleanup()
-    elif outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
+    elif (outcome.body["uncertain"] and not baseline_probe
+          and kata_operation._durable_phase(journal) != "UNCERTAIN"):
         kata_operation._record_uncertain(journal, "incomplete")
     return outcome
 

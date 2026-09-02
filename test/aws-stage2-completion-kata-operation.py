@@ -1746,6 +1746,65 @@ def production_owner_test():
                         retained_tools.append(process.RetainedExecutable(role, path, descriptor,
                             process._digest_fd(descriptor, identity.size), "d" * 64,
                             process._host_generation(descriptor)))
+                    # Every baseline admission/observer/snapshot/settlement cut
+                    # is reopened by a distinct process. Read-only prefixes
+                    # release ACTIVE without manufacturing BASELINES_CAPTURED;
+                    # a durable snapshot is first settled, then torn down.
+                    baseline_cuts = ("acquire", *(f"command-{index}" for index in
+                        range(len(network._BASELINE_ACTIONS))), "snapshot", "settlement")
+                    for cut_index, cut_name in enumerate(baseline_cuts):
+                        production_network.close(); production_fixture(network_prefix)
+                        production_network = operation._open_fixed_operation()
+                        child = os.fork()
+                        if child == 0:
+                            exit_code = 81 + cut_index
+                            real_perform = network._perform_fixed
+                            performed = [0]
+                            def cut_perform(*args, **kwargs):
+                                result = real_perform(*args, **kwargs)
+                                current = performed[0]; performed[0] += 1
+                                if cut_name == f"command-{current}": os._exit(exit_code)
+                                return result
+                            real_snapshot = network._snapshot
+                            def cut_snapshot(*args, **kwargs):
+                                result = real_snapshot(*args, **kwargs)
+                                if cut_name == "snapshot": os._exit(exit_code)
+                                return result
+                            real_settle = operation._settle_network_phase
+                            def cut_settlement(*args, **kwargs):
+                                result = real_settle(*args, **kwargs)
+                                if cut_name == "settlement": os._exit(exit_code)
+                                return result
+                            active = network.nft_owner.require_active
+                            def cut_acquire(*args, **kwargs):
+                                if cut_name == "acquire": os._exit(exit_code)
+                                return active(*args, **kwargs)
+                            with patch.object(network, "_perform_fixed", side_effect=cut_perform), \
+                                 patch.object(network, "_snapshot", side_effect=cut_snapshot), \
+                                 patch.object(operation, "_settle_network_phase", side_effect=cut_settlement), \
+                                 patch.object(network.nft_owner, "require_active", side_effect=cut_acquire):
+                                network._capture_fixed_baselines(production_network, *retained_tools)
+                            os._exit(119)
+                        _pid, status = os.waitpid(child, 0)
+                        assert os.waitstatus_to_exitcode(status) == 81 + cut_index
+                        production_network.close(); production_network = operation._open_fixed_operation()
+                        network.nft_owner.reopen_cleanup(production_network)
+                        rows = operation._network_records(production_network)
+                        if rows:
+                            if operation._durable_phase(production_network) == "FS_SETTLED":
+                                operation._settle_network_phase(production_network, "BASELINES_CAPTURED")
+                            network._abort_fixed_setup(production_network, *retained_tools)
+                            assert production_network.durable_phase() == "NETWORK_ABSENT"
+                        else:
+                            network._abort_incomplete_baseline(production_network)
+                            assert production_network.durable_phase() == "FS_SETTLED"
+                        state = network.nft_owner._parse_state(
+                            Path(network.nft_owner.OWNER_DIR, network.nft_owner.STATE_NAME).read_bytes())
+                        assert state["phase"] == "FREE"
+                        assert not any(Path(path).exists() for path in
+                            (network.PRESERVED_DIR, network.PARENT_STAGE_DIR))
+                    production_network.close(); production_fixture(network_prefix)
+                    production_network = operation._open_fixed_operation()
                     baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
                     assert baseline_body["snapshot_kind"] == "baseline"
                     assert any(kind == operation.network_journal.OUTPUT_RECORD
@@ -1871,6 +1930,60 @@ def production_owner_test():
                         assert aborted["snapshot_kind"] == "network-absent"
                         assert production_network.durable_phase() == "NETWORK_ABSENT"
                         assert all(aborted["identity"][name] is None for name in ("netns", "host_link", "peer_link", "nft", "tap", "tc"))
+                        production_network.close()
+                    # For every command-backed setup effect, a crash after the
+                    # certain status-zero outcome is observer-only on reopen.
+                    # Every setup effect also survives the observed/settled cut.
+                    setup_effect_cuts = tuple(
+                        (action, cut) for action in network._SETUP_ACTIONS
+                        for cut in (("observed",) if action is network.Action.IP_NETNS_ADD
+                                    else ("outcome", "observed")))
+                    for cut_index, (cut_action, cut_kind) in enumerate(setup_effect_cuts):
+                        production_fixture(setup_prefix)
+                        production_network = operation._open_fixed_operation()
+                        baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
+                        identity = baseline_body["identity"]
+                        position = network._SETUP_ACTIONS.index(cut_action)
+                        for action in network._SETUP_ACTIONS[:position]:
+                            identity = network._effect(production_network, action, *retained_tools, identity)
+                        child = os.fork()
+                        if child == 0:
+                            exit_code = 101 + cut_index
+                            real_observation = network._record_observation
+                            real_effect_record = network._record_effect
+                            def outcome_cut(owner, source, raw, serial=None):
+                                if cut_kind == "outcome" and source == cut_action.value:
+                                    os._exit(exit_code)
+                                return real_observation(owner, source, raw, serial)
+                            def observed_cut(owner, kind, body):
+                                result = real_effect_record(owner, kind, body)
+                                if (cut_kind == "observed"
+                                        and kind == "NETWORK_EFFECT_OBSERVED_V2"
+                                        and body["action"] == cut_action.value):
+                                    os._exit(exit_code)
+                                return result
+                            with patch.object(network, "_record_observation", side_effect=outcome_cut), \
+                                 patch.object(network, "_record_effect", side_effect=observed_cut):
+                                network._effect(production_network, cut_action, *retained_tools, identity)
+                            os._exit(120)
+                        _pid, status = os.waitpid(child, 0)
+                        assert os.waitstatus_to_exitcode(status) == 101 + cut_index
+                        token = production_network.command_context().operation_token
+                        production_network.close()
+                        live = network.nft_owner._OWNERS.pop(token)
+                        for descriptor in (live.lock_fd, *reversed(live.descriptors)):
+                            try: os.close(descriptor)
+                            except OSError: pass
+                        production_network = operation._open_fixed_operation()
+                        network.nft_owner.reopen_cleanup(production_network)
+                        aborted = network._abort_fixed_setup(production_network, *retained_tools)
+                        assert aborted["snapshot_kind"] == "network-absent"
+                        intents = production_network.runtime_recovery_history()["intents"]
+                        assert sum(row["command_id"] == cut_action.value for row in intents) == (
+                            0 if cut_action is network.Action.IP_NETNS_ADD else 1)
+                        assert production_network.durable_phase() == "NETWORK_ABSENT"
+                        assert network.nft_owner._parse_state(Path(
+                            network.nft_owner.OWNER_DIR, network.nft_owner.STATE_NAME).read_bytes())["phase"] == "FREE"
                         production_network.close()
                     # A fresh owner removes durable detached placeholders without setup retry.
                     production_fixture(setup_prefix)

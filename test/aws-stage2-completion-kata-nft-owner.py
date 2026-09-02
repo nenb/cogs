@@ -48,6 +48,13 @@ assert journal_model.effect_command_trace(
 assert journal_model.effect_command_trace(
     "NFT_REMOVE_ATOMIC", {"nft": {}}, journal_model.POLICY_VERSION
 )[:2] == ("NFT_TABLE", "NFT_REMOVE_ATOMIC")
+baseline_history = {"phase": "FS_SETTLED", "intents": tuple(
+    {"command_id": name} for name in owner._BASELINE_COMMANDS[:3])}
+assert owner._incomplete_baseline(baseline_history, (("COMMAND_OUTCOME_V2", {
+    "command_id": owner._BASELINE_COMMANDS[0]}),))
+assert not owner._incomplete_baseline({**baseline_history, "intents": (
+    *baseline_history["intents"], {"command_id": "NFT_INSTALL_OWNED"})}, ())
+assert not owner._incomplete_baseline(baseline_history, (("NETWORK_EFFECT_INTENT_V2", {}),))
 
 # The production route derives a repeated global census itself. A paused old
 # source owner is visible before it creates a child or command cgroup.

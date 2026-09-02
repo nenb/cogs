@@ -4,6 +4,7 @@ import ast
 import io
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -442,6 +443,33 @@ for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
         "PENDING_OWNER_RECOVERED", "DURABLE_OWNERS_RECONSTRUCTED",
         "OWNER_EVIDENCE", "RECOVERY_EVIDENCE", "RECEIPT_ISSUED"))
     assert fake.events.count("CUSTODY_ABORTED") == 1
+
+# The real coordinator-held execution bridge reconstructs an ACTIVE,
+# snapshot-free FS_SETTLED owner and routes it to the no-effect baseline abort;
+# this is not merely behavior of the fake coordinator facade above.
+reconstructed_owner = object(); reconstructed_tools = tuple(object() for _index in range(3))
+reconstruction_events = []
+reconstruction_journal = SimpleNamespace()
+reconstruction_lifecycle = SimpleNamespace(
+    operation=reconstruction_journal, executables=None, static_custody=object(),
+    network_owner=None, staged_runtime=None)
+execution = coordinator.execution_bridge
+with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLED"), \
+     patch.object(execution.operation, "_network_records", return_value=[]), \
+     patch.object(execution.preparation, "_reconstruct_fixed_executable_owner", return_value=object()), \
+     patch.object(execution.process, "_claim_attested_executable", side_effect=reconstructed_tools), \
+     patch.object(execution.nft_owner, "reopen_cleanup", return_value=reconstructed_owner):
+    check(execution._reconstruct_execution_cleanup(
+        coordinator._owners.execution, reconstruction_lifecycle) == "FS_SETTLED",
+        "real execution reconstruction rejected incomplete baseline")
+with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLED"), \
+     patch.object(execution.operation, "_network_records", return_value=[]), \
+     patch.object(execution.network, "_abort_incomplete_baseline",
+                  side_effect=lambda journal: reconstruction_events.append(journal) or "FREE"):
+    check(execution._remove_network(coordinator._owners.execution,
+        reconstruction_lifecycle) == "FREE", "real coordinator omitted baseline abort")
+check(reconstruction_events == [reconstruction_journal],
+      "real coordinator repeated or changed baseline abort owner")
 
 # Source shape keeps both production entries zero argument and recovery cannot
 # name any work-opening method. Public openers and arbitrary receipts stay shut.

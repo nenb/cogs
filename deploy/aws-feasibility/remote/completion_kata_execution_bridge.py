@@ -97,8 +97,9 @@ def _routes():
                                                  "ROOTFS_RELEASE_READY",
                                                  "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"}
                                 else None)
-        if phase == "FS_SETTLED" and current["nft_owner"] is not None and not rows:
-            raise ExecutionBridgeError("incomplete baseline capture is preserved")
+        # ACTIVE with no snapshot is an exact read-only baseline prefix.  Keep
+        # the reconstructed owner so cleanup can release it; a prior completed
+        # release reconstructs as None and proceeds through ordinary FS cleanup.
         history = journal.runtime_recovery_history() if phase in runtime_phases else None
         if (rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}
                 and phase != "RUNTIME_CLEANUP_ONLY"
@@ -455,6 +456,16 @@ def _routes():
             _require(not runtime_stage_present(current),
                      "cleanup-only runtime tree remains")
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
+        if phase == "FS_SETTLED":
+            rows = operation._network_records(lifecycle.operation)
+            if rows:
+                _require(len(rows) == 1 and rows[0]["snapshot_kind"] == "baseline",
+                         "pre-settlement baseline snapshot differs")
+                operation._settle_network_phase(lifecycle.operation, "BASELINES_CAPTURED")
+                return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
+            if not (current.get("recovery") and current.get("nft_owner") is None):
+                return network._abort_incomplete_baseline(lifecycle.operation)
+            return phase
         if phase == "BASELINES_CAPTURED":
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
         if phase == "RUNTIME_ABSENT":

@@ -3093,6 +3093,81 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
     return value, baselines
 
 
+def _cleanup_baseline_support(journal, incomplete=False):
+    """Remove only support directories whose exact identities were journaled."""
+    import completion_kata_operation as operation
+    history = operation._network_history(journal)
+    forbidden = ({*operation.network_journal.RECORDS,
+                  operation.network_journal.PARENT_MOUNT_RECORD,
+                  operation.network_journal.ORIGINAL_PLACEHOLDER_RECORD,
+                  operation.network_journal.CREATED_NSFS_RECORD,
+                  *operation.network_journal.QUARANTINE_RECORDS,
+                  operation.network_journal.DETACHED_CLEANUP_INTENT,
+                  operation.network_journal.DETACHED_CLEANUP_STEP})
+    if (any(kind in forbidden for kind, _body in history)
+            or incomplete and any(kind == "NETWORK_SNAPSHOT_V2" for kind, _body in history)):
+        raise NetworkError("baseline support has mutable network history")
+    supports = [body["support"] for kind, body in history
+                if kind == operation.network_journal.SUPPORT_RECORD]
+    if len(supports) > 1:
+        raise NetworkError("incomplete baseline support cardinality")
+    pairs = ((PRESERVED_DIR, os.path.join(os.path.dirname(PRESERVED_DIR), PRESERVED_REMOVING),
+              None if not supports else supports[0]["preserved_directory"]),
+             (PARENT_STAGE_DIR, os.path.join(os.path.dirname(PARENT_STAGE_DIR), PARENT_STAGE_REMOVING),
+              None if not supports else supports[0]["parent_stage_directory"]))
+    if not supports:
+        if any(os.path.lexists(path) for pair in pairs for path in pair[:2]):
+            raise NetworkError("unjournaled baseline support is preserved")
+        return
+    for path, removing, expected in pairs:
+        parent_path, name = os.path.split(path)
+        removing_parent, removing_name = os.path.split(removing)
+        if parent_path != removing_parent:
+            raise NetworkError("baseline support staging parent")
+        parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        held = None
+        try:
+            source_exists = os.path.lexists(path); removing_exists = os.path.lexists(removing)
+            if source_exists and removing_exists:
+                raise NetworkError("baseline support replacement is preserved")
+            if source_exists:
+                held = _open_owned(parent, name, expected, True, True)
+                _rename_noreplace(parent, name, parent, removing_name)
+                os.fsync(parent)
+            elif removing_exists:
+                held = _open_owned(parent, removing_name, expected, True, True)
+            else:
+                continue
+            target = _open_owned(parent, removing_name, expected, True, True)
+            os.close(target)
+            if os.path.lexists(path):
+                raise NetworkError("baseline support source replacement is preserved")
+            os.rmdir(removing_name, dir_fd=parent)
+            os.fsync(parent)
+            if os.path.lexists(removing):
+                raise NetworkError("baseline support removal uncertainty")
+        finally:
+            if held is not None: os.close(held)
+            os.close(parent)
+
+
+def _abort_incomplete_baseline(journal):
+    """Release ACTIVE after an exact read-only baseline prefix, without a snapshot."""
+    import completion_kata_operation as operation
+    nft_owner.require_active(journal)
+    if operation._durable_phase(journal) != "FS_SETTLED" or operation._network_records(journal):
+        raise NetworkError("incomplete baseline abort order")
+    _cleanup_baseline_support(journal, True)
+    if (_netns_parent_mount() is not None
+            or any(os.path.lexists(path) for path in (
+                "/run/netns/" + _bound_names(journal)[0],
+                "/run/netns/" + _quarantine_name(journal),
+                PRESERVED_DIR, "/run/netns/" + PRESERVED_REMOVING,
+                PARENT_STAGE_DIR, "/run/" + PARENT_STAGE_REMOVING))):
+        raise NetworkError("incomplete baseline cleanup residue")
+    return nft_owner.settle_free(journal, "baseline")
+
+
 def _fresh_baseline_outputs(journal, ip, nft, tc):
     raws = tuple(_perform_fixed(journal, action, ip, nft, tc) for action in _BASELINE_ACTIONS)
     mountinfo = _read_mountinfo()
@@ -3347,8 +3422,20 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         history = operation._network_history(journal)
         effect_rows = [(kind, body) for kind, body in history
                        if kind in operation.network_journal.RECORDS]
+        journal.begin_network_cleanup("network")
         if effect_rows and effect_rows[-1][0] != "NETWORK_EFFECT_SETTLED_V2":
-            if effect_rows[-1][1]["action"] not in {item.value for item in
+            pending_action = effect_rows[-1][1]["action"]
+            if pending_action in {item.value for item in _SETUP_ACTIONS}:
+                if effect_rows[-1][0] == "NETWORK_EFFECT_INTENT_V2":
+                    outcomes = [body for kind, body in history if kind == "COMMAND_OUTCOME_V2"
+                                and body["command_id"] == pending_action]
+                    certain = (pending_action != Action.IP_NETNS_ADD.value and outcomes
+                               and outcomes[-1]["outcome"] == "exited"
+                               and outcomes[-1]["status"] == 0
+                               and not outcomes[-1]["uncertain"])
+                    if not certain:
+                        raise NetworkError("ambiguous setup effect cannot abort")
+            elif pending_action not in {item.value for item in
                     (Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC)}:
                 raise NetworkError("unsettled setup effect cannot abort")
             _resume_effect(journal, ip, nft, tc)
@@ -3362,7 +3449,7 @@ def _abort_fixed_setup(journal, ip, nft, tc):
         if not setup:
             if effect_rows:
                 raise NetworkError("identity-free setup effect")
-            journal.begin_network_cleanup("network")
+            _cleanup_baseline_support(journal)
             raws, mountinfo, fresh = _fresh_baseline_outputs(journal, ip, nft, tc)
             if fresh != baselines or _netns_identity(journal, mountinfo) is not None:
                 raise NetworkError("zero-prefix setup baseline changed")
@@ -3377,7 +3464,6 @@ def _abort_fixed_setup(journal, ip, nft, tc):
             expected_suffix.append(Action.NFT_REMOVE_ATOMIC.value)
         if suffix != expected_suffix[:len(suffix)]:
             raise NetworkError("setup abort effect order")
-        journal.begin_network_cleanup("network")
         current = _setup_abort_observed(journal, ip, nft, tc, setup)
         retained = setup[-1]["identity"]
         for name in ("netns", "host_link", "peer_link", "nft"):
