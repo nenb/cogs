@@ -2,11 +2,13 @@
 """Portable hostile matrix for corrected custody and receipt boundaries."""
 import copy
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -204,6 +206,84 @@ reject(admission._take_static_preparation_issuer)
 assert not hasattr(admission, "_claim_committed_execution_custody")
 assert not hasattr(receipt, "_issue_local_receipt")
 reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
+
+# Recovery retirement is separately sealed and closes exactly the role and
+# optional prepared-runtime claims issued in this process. The forward route
+# still rejects the same partial claim set.
+retire_recovery = admission._retire_recovery_executable_role_custody
+retire_claims = inspect.getclosurevars(retire_recovery).nonlocals["retire_claims"]
+routes = inspect.getclosurevars(retire_claims).nonlocals
+custody_type = routes["_StaticPreparationCustody"]
+seal = inspect.getclosurevars(custody_type.__new__).nonlocals["seal"]
+for with_prepared in (False, True):
+    custody = custody_type(seal)
+    descriptors = [os.open(os.devnull, os.O_RDONLY) for _index in range(8 + with_prepared)]
+    role_claims = (object(), object())
+    roles = {"ssh", "ssh-keygen"}
+    routes["custody_states"][custody] = {
+        "recovery": True, "roles": roles, "descriptors": list(descriptors),
+        "source_descriptors": (descriptors[2],), "source_anchor": descriptors[3],
+        "configuration_identity": {"active_sha256": "a" * 64},
+    }
+    for index, (claim, role) in enumerate(zip(role_claims, sorted(roles))):
+        routes["role_states"][claim] = {"custody": custody, "role": role,
+            "descriptors": (descriptors[index],), "consumed": True}
+    prepared_claim = object()
+    if with_prepared:
+        routes["prepared_states"][prepared_claim] = {
+            "custody": custody, "descriptors": (descriptors[4],),
+            "consumed": True, "verified": True}
+    configuration = descriptors[5:8]
+    with patch.object(admission, "_verify_retiring_observer_configuration",
+                      return_value=tuple(configuration)):
+        retire_recovery(custody)
+    retired = {*descriptors[:2], descriptors[2], descriptors[3], *configuration}
+    if with_prepared: retired.add(descriptors[4])
+    assert all(descriptor not in routes["custody_states"][custody]["descriptors"]
+               for descriptor in retired)
+    for descriptor in retired:
+        try: os.fstat(descriptor)
+        except OSError: pass
+        else: raise AssertionError("recovery retirement leaked a descriptor")
+    assert not any(item["custody"] is custody for item in routes["role_states"].values())
+    assert not any(item["custody"] is custody for item in routes["prepared_states"].values())
+    admission._abort_static_preparation(custody)
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    base_path = root / "base.toml"
+    base_path.write_bytes(b"base")
+    base_parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    base_fd = os.open(base_path, os.O_RDONLY)
+    runtime_parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    retired_configuration = {
+        "retired": True, "active_sha256": sha(b"base-derived"),
+        "base_parent": base_parent, "base_fd": base_fd,
+        "base_status": os.fstat(base_fd), "runtime_parent": runtime_parent,
+        "runtime_parent_status": os.fstat(runtime_parent),
+    }
+    with patch.object(admission.preparation, "KATA_BASE_CONFIGURATION_SIZE", 4), \
+         patch.object(admission.preparation, "derive_observer_configuration",
+                      side_effect=lambda value: value + b"-derived"):
+        assert admission._verify_retiring_observer_configuration(
+            retired_configuration) == (base_parent, base_fd, runtime_parent)
+        (root / "settled-sibling").mkdir()
+        assert admission._verify_retiring_observer_configuration(
+            retired_configuration) == (base_parent, base_fd, runtime_parent)
+        (root / "kata-runtime-v1").mkdir()
+        reject(lambda: admission._verify_retiring_observer_configuration(
+            retired_configuration))
+    os.close(runtime_parent); os.close(base_fd); os.close(base_parent)
+
+partial_forward = custody_type(seal)
+routes["custody_states"][partial_forward] = {
+    "recovery": False, "roles": set(), "descriptors": [],
+    "source_descriptors": (), "source_anchor": None,
+    "configuration_identity": {"active_sha256": "a" * 64},
+}
+reject(lambda: admission._retire_consumed_executable_role_custody(partial_forward))
+admission._abort_static_preparation(partial_forward)
+
 source = (REMOTE / "completion_kata_admission.py").read_text()
 assert "REVIEWED_ENVELOPE_SHA256 = None" in source and "REVIEWED_RUNTIME_MANIFEST_SHA256 = None" in source
 assert "candidate_contract_sha256" in source and "candidate_result_sha256" in source

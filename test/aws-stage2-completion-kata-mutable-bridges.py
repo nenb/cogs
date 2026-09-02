@@ -101,6 +101,56 @@ def runtime_removal_recovery(root):
     (root / "firewall-transition").write_text("FIREWALL_ABSENT\n")
 
 
+def cleanup_only_recovery(root):
+    """Fresh cleanup-only reconstruction never reopens removed runtime roles."""
+    root = Path(root)
+    assert (root / "phase").read_text() == "RUNTIME_CLEANUP_ONLY\n"
+    assert not (root / "kata-runtime-v1").exists()
+    history = {"runtime_network_released": (), "runtime_resumes": ({
+        "target_phase": "RUNTIME_CLEANUP_ONLY"},)}
+    journal = SimpleNamespace(runtime_recovery_history=lambda: history)
+    lifecycle = coordinator._Lifecycle(
+        recovery=True, static_custody=object(), operation=journal, rootfs=object())
+    lazy_owner = object()
+    roles = []
+    completion = object()
+    chain = SimpleNamespace(components=(SimpleNamespace(node=completion),))
+
+    def claim(owner, role):
+        assert owner is lazy_owner
+        roles.append(role)
+        if role in {"containerd", "ctr", "shim", "qemu", "virtiofsd"}:
+            raise AssertionError("removed runtime executable role was reopened")
+        return SimpleNamespace(role=role)
+
+    with patch.object(execution.operation, "_durable_phase",
+                      return_value="RUNTIME_CLEANUP_ONLY"), \
+         patch.object(execution.operation, "_network_records",
+                      return_value=({"snapshot_kind": "ready"},)), \
+         patch.object(execution.operation, "_open_base_chain", return_value=chain), \
+         patch.object(execution.fs, "_enumerate_stable",
+                      return_value=SimpleNamespace(raw_names=())), \
+         patch.object(execution.nft_owner, "reopen_cleanup", return_value=object()), \
+         patch.object(execution.preparation, "_reconstruct_fixed_executable_owner",
+                      return_value=lazy_owner), \
+         patch.object(execution.process, "_claim_attested_executable", side_effect=claim), \
+         patch.object(execution.runtime, "_reconstruct_fixed_runtime",
+                      side_effect=AssertionError("removed runtime was reconstructed")), \
+         patch.object(execution.runtime, "_start_composed_runtime",
+                      side_effect=AssertionError("containerd was relaunched")), \
+         patch.object(execution.network, "_reopen_runtime_network",
+                      side_effect=AssertionError("runtime network grant was reopened")), \
+         patch.object(execution.network, "_abort_fixed_setup",
+                      return_value={"snapshot_kind": "network-absent"}) as cleanup:
+        assert execution._reconstruct_execution_cleanup(
+            coordinator._owners.execution, lifecycle) == "RUNTIME_CLEANUP_ONLY"
+        assert execution._remove_network(coordinator._owners.execution, lifecycle) == {
+            "snapshot_kind": "network-absent"}
+    cleanup.assert_called_once()
+    assert roles == ["ip", "nft", "tc"]
+    (root / "cleanup-only-transition").write_text("NETWORK_ABSENT\n")
+
+
 def runtime_removal_parent():
     assert sys.platform.startswith("linux") and not Path("/dev/kvm").exists()
     with tempfile.TemporaryDirectory() as temporary:
@@ -121,6 +171,13 @@ def runtime_removal_parent():
             timeout=20, check=False)
         assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
         assert (root / "firewall-transition").read_text() == "FIREWALL_ABSENT\n"
+        (root / "phase").write_text("RUNTIME_CLEANUP_ONLY\n")
+        recovered = subprocess.run(
+            (sys.executable, "-B", __file__, "--recover-cleanup-only", str(root)),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20, check=False)
+        assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+        assert (root / "cleanup-only-transition").read_text() == "NETWORK_ABSENT\n"
     print("fresh-process post-containerd-removal no-KVM recovery passed")
 
 
@@ -129,6 +186,9 @@ if len(sys.argv) == 3 and sys.argv[1] == "--remove-runtime-crash":
     raise SystemExit(1)
 if len(sys.argv) == 3 and sys.argv[1] == "--recover-after-runtime-removal":
     runtime_removal_recovery(sys.argv[2])
+    raise SystemExit(0)
+if len(sys.argv) == 3 and sys.argv[1] == "--recover-cleanup-only":
+    cleanup_only_recovery(sys.argv[2])
     raise SystemExit(0)
 if sys.argv[1:] == ["--runtime-removal-parent"]:
     runtime_removal_parent()
@@ -231,6 +291,29 @@ with patch.object(preparation, "_claim_fixed_executable_owner",
                   side_effect=lambda custody: (claimed if custody is lifecycle.static_custody else None)) as call:
     assert owners.claim_executables(lifecycle) is claimed
     call.assert_called_once_with(lifecycle.static_custody)
+
+# Forward retirement remains strict, while sealed recovery retires only the
+# role/prepared claims actually issued in that fresh process.
+for recovery, selected in (
+        (False, "_retire_consumed_executable_role_custody"),
+        (True, "_retire_recovery_executable_role_custody")):
+    custody, executable_owner = object(), object()
+    preparation._states[custody] = {"executables": executable_owner,
+                                    "recovery": recovery}
+    with patch.object(preparation.process, "AttestedExecutableOwner", object), \
+         patch.object(preparation.process, "_abort_attested_executable_owner") as close_owner, \
+         patch.object(preparation.admission,
+                      "_retire_consumed_executable_role_custody") as strict, \
+         patch.object(preparation.admission,
+                      "_retire_recovery_executable_role_custody") as cleanup_only:
+        preparation._retire_fixed_executable_owner(custody, executable_owner)
+    close_owner.assert_called_once_with(executable_owner)
+    expected = cleanup_only if selected.endswith("recovery_executable_role_custody") else strict
+    other = strict if expected is cleanup_only else cleanup_only
+    expected.assert_called_once_with(custody)
+    other.assert_not_called()
+    assert preparation._states[custody]["executables"] is None
+    preparation._states.pop(custody)
 
 # Linux no-KVM foundation: an absent QEMU proves QMP absence without opening
 # /dev/kvm. KVM-present success remains exclusively in the real QMP path.

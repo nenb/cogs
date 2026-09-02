@@ -762,6 +762,27 @@ for required in ('state[9][name][1] == name', 'process._host_generation(fresh, "
                  'not _runtime_alias(), "private runtime absence"'):
     check(required in runtime_source, "exact retained socket cleanup route missing")
 
+# Cleanup-only post-network settlement observes the never-created share
+# directly and does not require any removed runtime executable role.
+cleanup_history = {"phase": "NETWORK_ABSENT", "runtime_resumes": ({
+    "target_phase": "RUNTIME_CLEANUP_ONLY"},), "runtime_staged": ({},),
+    "launches": (), "runtime_ownership": (), "runtime_role_identities": (),
+    "runtime_share_identities": (), "intents": ()}
+settled_share = []
+cleanup_journal = SimpleNamespace(
+    runtime_recovery_history=lambda: cleanup_history,
+    settle_runtime_phase=lambda phase, proof: settled_share.append((phase, proof)))
+with patch.object(runtime, "_share_fact",
+                  return_value={"state": "absent", "mount_sha256": "a" * 64}):
+    assert runtime._settle_cleanup_only_share_absence(cleanup_journal) == {
+        "state": "absent", "mount_sha256": "a" * 64}
+assert settled_share == [("SHARE_ABSENT", runtime._canonical_fact({
+    "state": "absent", "mount_sha256": "a" * 64}))]
+cleanup_history["intents"] = ({"command_id": "CTR_RUN"},)
+try: runtime._settle_cleanup_only_share_absence(cleanup_journal)
+except runtime.KataRuntimeError: pass
+else: raise AssertionError("launched runtime entered cleanup-only share settlement")
+
 # Incomplete retained and pre-retention daemon terminals remain fail-only; no
 # retry, qualification, socket mutation, or runtime-tree mutation is attempted.
 uncertain_outcome = {"uncertain": True, "leader_reaped": False, "descendants_reaped": False,

@@ -83,6 +83,12 @@ def _stage_candidates(names, allowed=()):
         token = suffix[:-len(b".quarantine")] if suffix.endswith(b".quarantine") else suffix
         _fail(len(token) == 64 and set(token) <= set(b"0123456789abcdef"))
     return candidates
+def _daemon_closed(body):
+    return (body["uncertain"] is False and not body.get("errors", ())
+            and all(body[name] for name in (
+                "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+
+
 def _validate_runtime_layout(names, records, phase):
     present = names & RUNTIME_NAMES
     _fail(len(present) <= 1)
@@ -96,9 +102,7 @@ def _validate_runtime_layout(names, records, phase):
     elif phase == "FIREWALL_ABSENT":
         terminal = records[-1] if records else None
         daemon_closed = (terminal is not None and terminal.record_type == "DAEMON_OUTCOME_V2"
-                         and terminal.body["uncertain"] is False
-                         and all(terminal.body[name] for name in (
-                             "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+                         and _daemon_closed(terminal.body))
         _fail(runtime_present == staged or staged and not runtime_present and daemon_closed)
     elif staged and phase not in {"UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
         _fail(runtime_present)
@@ -1253,6 +1257,7 @@ def _legal(records):
     network_state = network_journal.initial()
     cleanup_mode = None
     runtime_prepared = False
+    runtime_cleanup_only = False
     rootfs = False
     next_serial = 0
     input_grants = {}
@@ -1275,12 +1280,16 @@ def _legal(records):
             intent = next(item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == serial)
             recoverable = {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}
             daemon = prior.record_type == "DAEMON_OUTCOME_V2" and intent.body["command_id"] == "CONTAINERD_START"
+            terminal = (_daemon_closed(prior.body) if daemon else
+                        prior.record_type == "COMMAND_OUTCOME_V2" and prior.body["uncertain"])
             target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent.body["command_id"] == "CTR_RUN" else intent.body["lifecycle_phase"]
-            _fail(prior.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"} and prior.body["uncertain"] and
+            _fail(terminal and
                   prior.body["command_serial"] == serial and prior.body["binding_sha256"] == body["binding_sha256"] == intent.body["binding_sha256"] and
                   (daemon or intent.body["command_id"] in recoverable) and body["target_phase"] == target and
                   intent.body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION)
-            phase = target; continue
+            phase = target
+            runtime_cleanup_only = daemon
+            continue
         if phase == "RETIRED" or (phase == "UNCERTAIN" and kind not in {
                 "INPUT_GRANT", "INPUT_WA", "INPUT_STEP"}):
             raise OperationError()
@@ -1532,8 +1541,12 @@ def _legal(records):
             _fail(body["proc_start_time"] == daemon_preexec.body["proc_start_time"])
             residue = not all(body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
             if not residue: retained_daemon = None
-            if body["uncertain"] or phase != "FIREWALL_ABSENT":
+            if body["uncertain"]:
                 phase = "UNCERTAIN"; ever_uncertain = True
+            elif phase != "FIREWALL_ABSENT":
+                # A fully reaped pre-KVM rollback needs an explicit cleanup-only
+                # transition, but is not sticky uncertainty.
+                phase = "UNCERTAIN"
             continue
         if kind == "COMMAND_OUTPUT_V3":
             _fail(command_phase == "COMMAND_PREEXEC_V2" and command_intent_v2 is not None and
@@ -1696,7 +1709,8 @@ def _legal(records):
         elif kind in LIFECYCLE:
             _fail(rootfs)
             seen = {item.record_type for item in records[:index]}; setup_abort = bool(
-                runtime_staged is None and network_state["snapshots"]
+                (runtime_staged is None or runtime_cleanup_only)
+                and network_state["snapshots"]
                 and network_journal.setup_abort_complete(network_state))
             if network_state["snapshots"]:
                 requirement = (phase if setup_abort else
@@ -2598,11 +2612,13 @@ def _make_authority():
             }
         def has_recovery_command(self):
             _io, records, status = reload(self); _fail(status == "exact")
-            return records[-1].record_type in {
+            terminal = records[-1]
+            return terminal.record_type in {
                 "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3",
                 "SSH_MARKER_OBSERVED_V1",
-            } or (
-                records[-1].record_type == "COMMAND_OUTCOME_V2" and records[-1].body["uncertain"])
+            } or (terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"]) or (
+                terminal.record_type == "DAEMON_OUTCOME_V2"
+                and _legal(records) == "UNCERTAIN" and _daemon_closed(terminal.body))
         def runtime_recovery_history(self):
             _io, records, status = reload(self); _fail(status == "exact" and records and records[-1].record_type != "RETIRED")
             result = {"operation_token": records[0].body["operation_token"], "phase": _legal(records),
@@ -2646,9 +2662,10 @@ def _make_authority():
                 preexec = matches[0] if matches else None
             else:
                 terminal = records[-1]
-                _fail(terminal.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"}
-                      and terminal.body["uncertain"])
-                if terminal.record_type == "DAEMON_OUTCOME_V2": _fail(not all(terminal.body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+                _fail((terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"])
+                      or (terminal.record_type == "DAEMON_OUTCOME_V2"
+                          and _legal(records) == "UNCERTAIN"
+                          and _daemon_closed(terminal.body)))
                 serial = terminal.body["command_serial"]
                 intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
                               and item.body["command_serial"] == serial)
@@ -2692,8 +2709,10 @@ def _make_authority():
         def resume_runtime_cleanup(self):
             _io, records, status = reload(self); _fail(status == "exact" and _legal(records) == "UNCERTAIN"); terminal = records[-1].body
             intent = next(item.body for item in records if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == terminal["command_serial"])
-            _fail(records[-1].record_type == "DAEMON_OUTCOME_V2" or intent["command_id"] in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"})
-            target = "RUNTIME_CLEANUP_ONLY" if records[-1].record_type == "DAEMON_OUTCOME_V2" else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
+            daemon = records[-1].record_type == "DAEMON_OUTCOME_V2"
+            _fail((_daemon_closed(terminal) if daemon else terminal["uncertain"])
+                  and (daemon or intent["command_id"] in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}))
+            target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
             write_validated(self, "RUNTIME_RESUME_V4", {"operation_token": records[0].body["operation_token"], "target_phase": target,
                 "uncertain_serial": terminal["command_serial"], "binding_sha256": terminal["binding_sha256"]}); return target
         def record_runtime_prepared(self, grant):

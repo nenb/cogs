@@ -852,7 +852,35 @@ def _retain_retired_observer_configuration(runtime, descriptors):
         descriptors.append(parent)
     except BaseException:
         os.close(parent); raise
-    return {"retired": True, "active_sha256": active_row["sha256"]}
+    return {"retired": True, "active_sha256": active_row["sha256"],
+            "base_parent": base_parent, "base_fd": base_fd,
+            "base_status": base_status, "runtime_parent": parent,
+            "runtime_parent_status": after}
+
+
+def _verify_retired_observer_configuration(value):
+    _require(type(value) is dict and set(value) == {
+        "retired", "active_sha256", "base_parent", "base_fd", "base_status",
+        "runtime_parent", "runtime_parent_status"})
+    _require(value["retired"] is True and type(value["active_sha256"]) is str
+             and len(value["active_sha256"]) == 64
+             and set(value["active_sha256"]) <= HEX)
+    base = _read_held_raw(value["base_fd"], value["base_status"],
+                          preparation.KATA_BASE_CONFIGURATION_SIZE)
+    _require(_sha(preparation.derive_observer_configuration(base))
+             == value["active_sha256"])
+    identity = lambda item: (item.st_dev, item.st_ino, item.st_mode,
+                             item.st_uid, item.st_gid)
+    stable = lambda item: (*identity(item), item.st_nlink,
+                           item.st_mtime_ns, item.st_ctime_ns)
+    before = os.fstat(value["runtime_parent"])
+    names = os.listdir(value["runtime_parent"])
+    after = os.fstat(value["runtime_parent"])
+    _require(stable(before) == stable(after)
+             and identity(after) == identity(value["runtime_parent_status"])
+             and after.st_nlink > 0 and "kata-runtime-v1" not in names,
+             "retired active Kata configuration changed")
+    return (value["base_parent"], value["base_fd"], value["runtime_parent"])
 
 
 def _verify_held_observer_configuration(value):
@@ -860,6 +888,9 @@ def _verify_held_observer_configuration(value):
         _require(value["retired"] is True and type(value["active_sha256"]) is str
                  and len(value["active_sha256"]) == 64
                  and set(value["active_sha256"]) <= HEX)
+        return
+    if type(value) is dict and value.get("retired") is True:
+        _verify_retired_observer_configuration(value)
         return
     _require(type(value) is dict and set(value) == {
         "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
@@ -874,6 +905,8 @@ def _verify_held_observer_configuration(value):
 
 
 def _verify_retiring_observer_configuration(value):
+    if type(value) is dict and value.get("retired") is True:
+        return _verify_retired_observer_configuration(value)
     _require(type(value) is dict and set(value) == {
         "base_parent", "base_fd", "base_status", "active_parent", "active_fd",
         "active_status", "active_sha256"})
@@ -892,6 +925,8 @@ def _verify_retiring_observer_configuration(value):
     _require(active == preparation.derive_observer_configuration(base)
              and _sha(active) == value["active_sha256"],
              "retiring active Kata configuration changed")
+    return (value["base_parent"], value["base_fd"],
+            value["active_parent"], value["active_fd"])
 
 
 def _validate_final_and_rootfs(envelope, runtime, authority):
@@ -1009,6 +1044,7 @@ def _static_routes():
                 "source_anchor": source_anchor,
                 "roles": set(),
                 "mapping": None,
+                "recovery": recovery,
             }
             return custody
         except BaseException as error:
@@ -1163,28 +1199,32 @@ def _static_routes():
         if action is not None: item[{"consume": "consumed", "verify": "verified"}[action]] = True
         return dict(item["facts"])
 
-    def retire_consumed_roles(custody):
+    def retire_claims(custody, recovery):
         state = custody_states.get(custody)
-        _require(type(custody) is _StaticPreparationCustody and state is not None)
+        _require(type(custody) is _StaticPreparationCustody and state is not None
+                 and state["recovery"] is recovery)
         claims = [(claim, item) for claim, item in role_states.items()
                   if item["custody"] is custody]
-        _require(len(claims) == len(EXECUTABLES)
-                 and all(item["consumed"] for _claim, item in claims)
-                 and state["roles"] == {row[0] for row in EXECUTABLES})
+        claimed_roles = {item["role"] for _claim, item in claims}
+        _require(all(item["consumed"] for _claim, item in claims)
+                 and claimed_roles == state["roles"]
+                 and len(claims) == len(claimed_roles))
+        if not recovery:
+            _require(len(claims) == len(EXECUTABLES)
+                     and claimed_roles == {row[0] for row in EXECUTABLES})
         role_descriptors = [descriptor for _claim, item in claims
                             for descriptor in item["descriptors"]]
         prepared_claims = [(claim, item) for claim, item in prepared_states.items()
                            if item["custody"] is custody]
-        _require(len(prepared_claims) == 1
-                 and prepared_claims[0][1]["consumed"]
-                 and prepared_claims[0][1]["verified"])
-        prepared_claim, prepared_state = prepared_claims[0]
-        prepared_descriptors = list(prepared_state["descriptors"])
+        _require((len(prepared_claims) <= 1 if recovery else len(prepared_claims) == 1)
+                 and all(item["consumed"] and item["verified"]
+                         for _claim, item in prepared_claims))
+        prepared_descriptors = [descriptor for _claim, item in prepared_claims
+                                for descriptor in item["descriptors"]]
         source_descriptors = [*state["source_descriptors"], state["source_anchor"]]
         configuration = state["configuration_identity"]
-        _verify_retiring_observer_configuration(configuration)
-        configuration_descriptors = [configuration[name] for name in
-                                     ("base_parent", "base_fd", "active_parent", "active_fd")]
+        configuration_descriptors = list(
+            _verify_retiring_observer_configuration(configuration))
         descriptors = [*role_descriptors, *prepared_descriptors, *source_descriptors,
                        *configuration_descriptors]
         _require(len(descriptors) == len(set(descriptors))
@@ -1197,8 +1237,15 @@ def _static_routes():
         state["source_descriptors"] = ()
         state["source_anchor"] = None
         for claim, _item in claims: role_states.pop(claim)
-        prepared_states.pop(prepared_claim)
+        for claim, _item in prepared_claims: prepared_states.pop(claim)
         _close_all(descriptors)
+
+    def retire_consumed_roles(custody):
+        retire_claims(custody, False)
+
+    def retire_recovery_claims(custody):
+        """Retire only descriptor claims issued by sealed recovery custody."""
+        retire_claims(custody, True)
 
     def rootfs_authority(custody):
         state = custody_states.get(custody)
@@ -1253,7 +1300,7 @@ def _static_routes():
         _close_all(state["descriptors"])
 
     return (take_issuer(False), take_issuer(True), source_approval, rootfs_authority,
-            claim_role, consume_role, retire_consumed_roles,
+            claim_role, consume_role, retire_consumed_roles, retire_recovery_claims,
             claim_live_mapping, consume_mapping, claim_prepared, prepared_facts,
             binding, cycle_grant_binding, abort)
 
@@ -1263,6 +1310,7 @@ def _static_routes():
  _claim_executable_role_custody,
  _consume_executable_role_custody,
  _retire_consumed_executable_role_custody,
+ _retire_recovery_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
  _static_custody_binding, _cycle_grant_binding,

@@ -76,13 +76,13 @@ def _routes():
                           "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
                           "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT",
                           "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-                          "CONTAINERD_ABSENT", "INPUT_REMOVED",
+                          "CONTAINERD_ABSENT", "RUNTIME_CLEANUP_ONLY", "INPUT_REMOVED",
                           "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
                           "ROOTFS_ABSENT"}
         runtime_phases = {"NETWORK_READY", "RUNTIME_READY", "SSH_READY",
                           "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED",
                           "TASK_ABSENT", "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT",
-                          "SHARE_ABSENT", "FIREWALL_ABSENT"}
+                          "SHARE_ABSENT", "FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
         if phase not in network_phases:
             return phase
         lifecycle.executables = preparation._reconstruct_fixed_executable_owner(
@@ -101,10 +101,11 @@ def _routes():
             raise ExecutionBridgeError("incomplete baseline capture is preserved")
         history = journal.runtime_recovery_history() if phase in runtime_phases else None
         if (rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}
+                and phase != "RUNTIME_CLEANUP_ONLY"
                 and not (history and history["runtime_network_released"])):
             current["network_owner"] = network._reopen_runtime_network(journal)
             lifecycle.network_owner = current["network_owner"]
-        if phase in runtime_phases and (phase != "FIREWALL_ABSENT"
+        if phase in runtime_phases and (phase not in {"FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
                                         or runtime_stage_present(current)):
             ensure_runtime(current, lifecycle)
         return phase
@@ -433,12 +434,27 @@ def _routes():
         return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "CONTAINER_ABSENT")
     def remove_share(bridge, lifecycle):
         phase = operation._durable_phase(lifecycle.operation)
+        resumes = lifecycle.operation.runtime_recovery_history()["runtime_resumes"]
+        if (phase == "NETWORK_ABSENT"
+                and any(row["target_phase"] == "RUNTIME_CLEANUP_ONLY" for row in resumes)):
+            return runtime._settle_cleanup_only_share_absence(lifecycle.operation)
         source = "NETWORK_ABSENT" if phase == "NETWORK_ABSENT" else "CONTAINER_ABSENT"
         return runtime_cleanup(bridge, lifecycle, source, "SHARE_ABSENT")
 
     def remove_network(bridge, lifecycle):
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
+        if phase == "RUNTIME_CLEANUP_ONLY":
+            owner = current.get("runtime")
+            if owner is not None:
+                runtime._cleanup_fixed_runtime(owner)
+                current["runtime"] = None
+                lifecycle.staged_runtime = None
+                for node in reversed(current.pop("config_nodes", ())):
+                    fs._close_node(node)
+            _require(not runtime_stage_present(current),
+                     "cleanup-only runtime tree remains")
+            return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
         if phase == "BASELINES_CAPTURED":
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
         if phase == "RUNTIME_ABSENT":

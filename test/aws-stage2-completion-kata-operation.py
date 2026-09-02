@@ -728,21 +728,33 @@ def runtime_v2_intent(raw, command_id):
     records = operation._parse(raw); genesis = records[0].body
     phase = operation._legal(records); serial = sum(row.record_type == "COMMAND_INTENT_V2" for row in records)
     command = command_id.value; policy = operation.command_policy
-    argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS, "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
-    deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-    duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+    if command == "CONTAINERD_START":
+        argv = [policy.STAGED_CONTAINERD, "--address", policy.CONTAINERD_ADDRESS,
+                "--root", policy.CONTAINERD_ROOT, "--state", policy.CONTAINERD_STATE,
+                "--config", operation.BASE + "/kata-runtime-v1/containerd.toml"]
+        deadline_class, duration, grammar = "runtime-start", 60_000_000_000, "empty"
+        role, executable_path, executable_digest, executable_inode = (
+            "containerd", policy.STAGED_CONTAINERD, policy.CONTAINERD_EXTRACTION[0][2], 103)
+    else:
+        argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS,
+                "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
+        deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
+        duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+        grammar = "text"
+        role, executable_path, executable_digest, executable_inode = (
+            "ctr", policy.STAGED_CTR, policy.CONTAINERD_EXTRACTION[1][2], 102)
     environment = [list(row) for row in operation.FIXED_ENV]
     body = {"operation_token": genesis["operation_token"], "command_serial": serial, "command_id": command,
         "binding_sha256": operation.ZERO, "journal_key": genesis["journal_key"], "host_boot_id": genesis["host_boot_id"],
-        "source_revision": genesis["source_revision"], "lifecycle_phase": phase, "executable_role": "ctr",
-        "executable_path": policy.STAGED_CTR, "executable_sha256": policy.CONTAINERD_EXTRACTION[1][2],
-        "executable_generation": generation(102, "file", 0o500), "tool_closure_sha256": "d" * 64,
+        "source_revision": genesis["source_revision"], "lifecycle_phase": phase, "executable_role": role,
+        "executable_path": executable_path, "executable_sha256": executable_digest,
+        "executable_generation": generation(executable_inode, "file", 0o500), "tool_closure_sha256": "d" * 64,
         "argv": argv, "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(), "stdin_hex": "",
         "stdin_sha256": hashlib.sha256(b"").hexdigest(), "stdin_length": 0, "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(), "inherited_fds": [],
         "policy_version": policy.RUNTIME_POLICY_VERSION, "deadline_class": deadline_class, "duration_ns": duration,
         "cleanup_reserve_ns": min(policy.CLEANUP_RESERVE_NS, duration // 2),
-        "deadline_boottime_ns": duration * 2, "output_grammar": "text",
+        "deadline_boottime_ns": duration * 2, "output_grammar": grammar,
         "stdout_limit": 65536, "stderr_limit": 65536}
     body["binding_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items() if name != "binding_sha256"})).hexdigest()
     return body
@@ -790,18 +802,23 @@ def staged_runtime_prefix():
     return append(raw, "RUNTIME_STAGED_V3", stage)
 
 
+def runtime_preexec(intent):
+    serial = intent["command_serial"]
+    body = {name: intent[name] for name in (
+        "operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
+    body.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial, "sid": 100 + serial,
+        "proc_start_time": 1, "pidfd_supported": True,
+        "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
+        "cgroup_generation": generation(200 + serial), "executable_sha256": intent["executable_sha256"],
+        "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
+        "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
+    return body
+
+
 def append_runtime_command(raw, command_id, uncertain=False, status=0):
     intent = runtime_v2_intent(raw, command_id); raw = append(raw, "COMMAND_INTENT_V2", intent)
     if not uncertain:
-        serial = intent["command_serial"]
-        preexec = {name: intent[name] for name in ("operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
-        preexec.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial, "sid": 100 + serial,
-            "proc_start_time": 1, "pidfd_supported": True,
-            "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
-            "cgroup_generation": generation(200 + serial), "executable_sha256": intent["executable_sha256"],
-            "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
-            "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
-        raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
+        raw = append(raw, "COMMAND_PREEXEC_V2", runtime_preexec(intent))
     return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
 
@@ -821,6 +838,56 @@ legacy_intent = append(prepared_prefix, "RUNTIME_STAGE_INTENT_V4", intent_body)
 rejected(lambda: append(legacy_intent, "RUNTIME_PREPARED_V1", prepared))
 operation._validate_runtime_layout(set(), operation._parse(prepared_raw), "NETWORK_READY")
 rejected(lambda: operation._validate_runtime_layout(set(), operation._parse(prepared_prefix), "NETWORK_READY"))
+
+# A fully reaped daemon rollback before KVM is cleanup-only rather than sticky
+# uncertainty. Recovery appends one resume without another process operation.
+daemon_raw = staged_runtime_prefix()
+daemon_intent = runtime_v2_intent(daemon_raw, process.CommandId.CONTAINERD_START)
+daemon_raw = append(daemon_raw, "COMMAND_INTENT_V2", daemon_intent)
+daemon_preexec = runtime_preexec(daemon_intent)
+daemon_raw = append(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
+sockets = {name: {"generation": generation(600 + index, "socket", 0o700, 1),
+                  "fd_inode": 700 + index}
+           for index, name in enumerate(("s", "s.ttrpc"))}
+daemon_raw = append(daemon_raw, "DAEMON_RETAINED_V2", {**daemon_preexec,
+                    "socket_generations": sockets})
+daemon_outcome = {name: daemon_intent[name] for name in (
+    "operation_token", "command_serial", "command_id", "binding_sha256")}
+daemon_outcome.update({"pid": daemon_preexec["pid"], "proc_start_time": 1,
+    "status": 0, "leader_reaped": True, "descendants_reaped": True,
+    "cgroup_empty": True, "cgroup_removed": True, "uncertain": False, "errors": []})
+daemon_raw = append(daemon_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
+assert operation._legal(operation._parse(daemon_raw)) == "UNCERTAIN"
+daemon_resume = {"operation_token": "a" * 64, "target_phase": "RUNTIME_CLEANUP_ONLY",
+    "uncertain_serial": daemon_intent["command_serial"],
+    "binding_sha256": daemon_intent["binding_sha256"]}
+daemon_cleanup = append(daemon_raw, "RUNTIME_RESUME_V4", daemon_resume)
+assert operation._legal(operation._parse(daemon_cleanup)) == "RUNTIME_CLEANUP_ONLY"
+class ClosedDaemonJournal:
+    def recovery_command(self):
+        return daemon_intent, daemon_preexec, daemon_outcome
+closed_journal = ClosedDaemonJournal()
+with patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("certain daemon cleanup retried")), \
+     patch.object(process, "_recover_daemon_reap",
+                  side_effect=AssertionError("certain daemon reap retried")):
+    recovered = process._recover_pending_fixed(closed_journal)
+assert recovered.body == daemon_outcome and recovered.command_id == "CONTAINERD_START"
+closed_journal.resumes = 0
+closed_journal.resume_runtime_cleanup = lambda: setattr(
+    closed_journal, "resumes", closed_journal.resumes + 1)
+with patch.object(operation, "_claim_production_cleanup_operation",
+                  return_value=closed_journal), \
+     patch.object(operation, "_durable_phase", return_value="UNCERTAIN"), \
+     patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("certain daemon cleanup retried")):
+    recovered = process._recover_pending_production(closed_journal)
+assert recovered.body == daemon_outcome and closed_journal.resumes == 1
+wrong_daemon = {**daemon_outcome, "leader_reaped": False, "uncertain": True,
+                "errors": ["daemon-not-reaped"]}
+wrong_raw = append(daemon_raw[:operation._parse(daemon_raw)[-1].previous_offset],
+                   "DAEMON_OUTCOME_V2", wrong_daemon)
+rejected(lambda: append(wrong_raw, "RUNTIME_RESUME_V4", daemon_resume))
 
 # Runtime uncertainty is historical and sticky: observers are never resumable
 # or retryable, while a consumed TERM uncertainty can finish teardown but never retire.

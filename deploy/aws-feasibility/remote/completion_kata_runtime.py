@@ -1479,6 +1479,24 @@ def _share_fact(retained=None):
     finally:
         for descriptor in reversed(held): os.close(descriptor)
 
+def _settle_cleanup_only_share_absence(journal):
+    """Settle the never-launched share without reopening removed runtime roles."""
+    history = journal.runtime_recovery_history()
+    resumes = [row for row in history["runtime_resumes"]
+               if row["target_phase"] == "RUNTIME_CLEANUP_ONLY"]
+    _fail(history["phase"] == "NETWORK_ABSENT" and len(resumes) == 1
+          and history["runtime_staged"] and not history["launches"]
+          and not history["runtime_ownership"]
+          and not history["runtime_role_identities"]
+          and not history["runtime_share_identities"]
+          and not any(row["command_id"] == "CTR_RUN" for row in history["intents"]),
+          "cleanup-only launch history differs")
+    fact = _share_fact()
+    _fail(fact["state"] == "absent", "cleanup-only share residue")
+    journal.settle_runtime_phase("SHARE_ABSENT", _canonical_fact(fact))
+    return fact
+
+
 def _remove_owned_empty_share(retained):
     parent_path, name = os.path.split(SHARE_ROOT)
     parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)

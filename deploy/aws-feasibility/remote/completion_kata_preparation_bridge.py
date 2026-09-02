@@ -34,23 +34,24 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _record_static_custody(custody):
+def _record_static_custody(custody, recovery):
     _states[custody] = {
         "approval": None, "rootfs_authority": None, "cycle_grant": None,
         "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
+        "recovery": recovery,
     }
     return custody
 
 
 def _claim_fixed_static_preparation():
     """Authenticate the sole forward V3 package and retain its source files."""
-    return _record_static_custody(_claim_static())
+    return _record_static_custody(_claim_static(), False)
 
 
 def _claim_fixed_recovery_static_preparation():
     """Authenticate the sole cleanup-only V3 package."""
-    return _record_static_custody(_claim_recovery_static())
+    return _record_static_custody(_claim_recovery_static(), True)
 
 
 def _fixed_source_approval(custody):
@@ -240,7 +241,10 @@ def _retire_fixed_executable_owner(custody, owner):
              and type(owner) is process.AttestedExecutableOwner)
     process._abort_attested_executable_owner(owner)
     state["executables"] = None
-    admission._retire_consumed_executable_role_custody(custody)
+    retire = (admission._retire_recovery_executable_role_custody
+              if state["recovery"] else
+              admission._retire_consumed_executable_role_custody)
+    retire(custody)
 
 
 def _abandon_fixed_rootfs(custody, lease):

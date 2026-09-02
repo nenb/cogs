@@ -2425,6 +2425,14 @@ def _recover_pending_fixed(journal):
     else:
         intent, preexec = kata_operation._pending_command(journal)
         terminal = None
+    certain_daemon = (terminal is not None
+                      and intent["command_id"] == CommandId.CONTAINERD_START.value
+                      and terminal["uncertain"] is False)
+    if certain_daemon:
+        return kata_operation.DurableCommandOutcome(
+            terminal["command_serial"], terminal["command_id"],
+            terminal["binding_sha256"], terminal,
+        )
     errors = ["crash-continuation"]
     state = {"term": False, "kill": False}
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
@@ -2478,7 +2486,11 @@ def _recover_pending_production(journal):
     """Production family adapter: exact admission and sticky uncertain closure."""
     journal = kata_operation._claim_production_cleanup_operation(journal)
     outcome = _recover_pending_fixed(journal)
-    if outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
+    if outcome.command_id == CommandId.CONTAINERD_START.value and not outcome.body["uncertain"]:
+        if kata_operation._durable_phase(journal) != "UNCERTAIN":
+            raise ProcessError("certain daemon rollback phase differs")
+        journal.resume_runtime_cleanup()
+    elif outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
         kata_operation._record_uncertain(journal, "incomplete")
     return outcome
 
