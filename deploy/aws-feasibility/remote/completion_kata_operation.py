@@ -812,7 +812,7 @@ def _validate_body(kind, body):
                command_policy.CONTAINERD_EXTRACTION_SHA256))
         for name in names[6:]: _generation(body[name])
         _fail(tuple((body[name]["kind"], body[name]["mode"]) for name in names[6:]) ==
-              (("directory", 0o700), ("file", 0o500), ("file", 0o500), ("file", 0o600),
+              (("directory", 0o500), ("file", 0o500), ("file", 0o500), ("file", 0o600),
                ("directory", 0o700), ("directory", 0o700)))
     elif kind == "DAEMON_RETAINED_V2":
         extra = {"socket_generations"}
