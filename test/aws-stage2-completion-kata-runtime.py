@@ -708,7 +708,7 @@ generation_requests = []
 def host_generation(descriptor, requested_kind=None):
     generation_requests.append((descriptor, requested_kind))
     kind = requested_kind or ("directory" if descriptor in {105, 106} else "file")
-    mode = 0o700 if descriptor == 105 else 0o400 if descriptor == 109 else 0o500
+    mode = 0o400 if descriptor == 109 else 0o500
     nlink = 3 if descriptor == 105 else 2 if descriptor == 106 else 1
     size = 0 if kind == "directory" else 32_220 if descriptor == 109 else extraction[descriptor - 107][1]
     return {"mount_id": 1, "device": 2, "inode": descriptor, "kind": kind,
