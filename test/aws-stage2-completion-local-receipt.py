@@ -125,11 +125,18 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         elif phase in ("RETIRE_INTENT", "RETIRED"):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
         rows.append(record(len(rows), phase, body))
+    qemu_identity = hashlib.sha256(b"cogs.stage2-qemu-runtime-identity/v1\0" + local._canonical({
+        "qemu_argv_sha256": "a" * 64, "qemu_pid": 101, "qemu_starttime": 102,
+        "qemu_executable_device": 8, "qemu_executable_inode": 9,
+        "observer_qmp_device": 10, "observer_qmp_inode": 11,
+        "kvm_device": 12, "kvm_inode": 13, "kvm_rdev": 14, "kvm_api": 12,
+        "qmp_present": True, "qmp_enabled": True})).hexdigest()
     runtime = evidence._RuntimeOwnerResult(
         operation_token=token,
         runtime_mount_record_sha256=mount.body["issuance_sha256"],
         network_causal_proof_sha256=causal.body["causal_proof_sha256"],
         live_mapping_sha256="9" * 64,
+        runtime_identity_sha256=qemu_identity,
         qemu_process_sha256="d" * 64,
         qemu_argv_sha256="a" * 64, qemu_pid=101, qemu_starttime=102,
         qemu_executable_device=8, qemu_executable_inode=9,
@@ -138,6 +145,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         kvm_api=12, qmp_present=True, qmp_enabled=True)
     platform = evidence._PlatformOwnerResult(
         operation_token=token, live_mapping_sha256=runtime.live_mapping_sha256,
+        runtime_identity_sha256=runtime.runtime_identity_sha256,
         qemu_process_sha256="e" * 64,
         qemu_argv_sha256=runtime.qemu_argv_sha256,
         qemu_pid=runtime.qemu_pid, qemu_starttime=runtime.qemu_starttime,

@@ -252,6 +252,63 @@
         "observed_ended_unix_ns": { "$ref": "#/$defs/unixNs" }
       }
     },
+    "remoteBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_bindings", "cycle_capability_sha256", "program_sha256", "parser_source_sha256", "marker_sha256", "qemu"],
+      "properties": {
+        "source_bindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_head", "source_manifest_sha256", "host_attestation_sha256", "runtime_attestation_sha256", "rootfs_sha256", "rootfs_descriptor_sha256", "rootfs_package_manifest_sha256", "rootfs_provenance_sha256", "rootfs_publication_receipt_sha256", "artifact_sha256", "candidate_sha256", "final_pin_sha256", "guest_program_sha256", "owner_implementation_sha256"],
+          "properties": {
+            "source_head": { "$ref": "#/$defs/gitSha" },
+            "source_manifest_sha256": { "$ref": "#/$defs/digest" },
+            "host_attestation_sha256": { "$ref": "#/$defs/digest" },
+            "runtime_attestation_sha256": { "$ref": "#/$defs/digest" },
+            "rootfs_sha256": { "$ref": "#/$defs/digest" },
+            "rootfs_descriptor_sha256": { "$ref": "#/$defs/digest" },
+            "rootfs_package_manifest_sha256": { "$ref": "#/$defs/digest" },
+            "rootfs_provenance_sha256": { "$ref": "#/$defs/digest" },
+            "rootfs_publication_receipt_sha256": { "$ref": "#/$defs/digest" },
+            "artifact_sha256": { "$ref": "#/$defs/digest" },
+            "candidate_sha256": { "$ref": "#/$defs/digest" },
+            "final_pin_sha256": { "$ref": "#/$defs/digest" },
+            "guest_program_sha256": { "$ref": "#/$defs/digest" },
+            "owner_implementation_sha256": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "cycle_capability_sha256": { "$ref": "#/$defs/digest" },
+        "program_sha256": { "$ref": "#/$defs/digest" },
+        "parser_source_sha256": { "$ref": "#/$defs/digest" },
+        "marker_sha256": { "$ref": "#/$defs/digest" },
+        "qemu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation_token", "live_mapping_sha256", "runtime_identity_sha256", "pre_ssh_runtime_fact_sha256", "post_ssh_runtime_fact_sha256", "qemu_argv_sha256", "qemu_pid", "qemu_starttime", "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api", "qmp_present", "qmp_enabled"],
+          "properties": {
+            "operation_token": { "$ref": "#/$defs/digest" },
+            "live_mapping_sha256": { "$ref": "#/$defs/digest" },
+            "runtime_identity_sha256": { "$ref": "#/$defs/digest" },
+            "pre_ssh_runtime_fact_sha256": { "$ref": "#/$defs/digest" },
+            "post_ssh_runtime_fact_sha256": { "$ref": "#/$defs/nullableDigest" },
+            "qemu_argv_sha256": { "$ref": "#/$defs/digest" },
+            "qemu_pid": { "$ref": "#/$defs/positive" },
+            "qemu_starttime": { "$ref": "#/$defs/positive" },
+            "qemu_executable_device": { "type": "integer", "minimum": 0 },
+            "qemu_executable_inode": { "$ref": "#/$defs/positive" },
+            "observer_qmp_device": { "type": "integer", "minimum": 0 },
+            "observer_qmp_inode": { "$ref": "#/$defs/positive" },
+            "kvm_device": { "type": "integer", "minimum": 0 },
+            "kvm_inode": { "$ref": "#/$defs/positive" },
+            "kvm_rdev": { "type": "integer", "minimum": 0 },
+            "kvm_api": { "const": 12 },
+            "qmp_present": { "const": true },
+            "qmp_enabled": { "const": true }
+          }
+        }
+      }
+    },
     "workload": {
       "type": "object",
       "additionalProperties": false,
@@ -323,7 +380,8 @@
             "operation_commitment",
             "host_boot_commitment",
             "apply_to_running_ns",
-            "kata_launch_to_ssh_ready_ns"
+            "kata_launch_to_ssh_ready_ns",
+            "bindings"
           ],
           "properties": {
             "host_receipt_commitment": { "$ref": "#/$defs/digest" },
@@ -331,7 +389,8 @@
             "operation_commitment": { "$ref": "#/$defs/digest" },
             "host_boot_commitment": { "$ref": "#/$defs/digest" },
             "apply_to_running_ns": { "$ref": "#/$defs/positive" },
-            "kata_launch_to_ssh_ready_ns": { "$ref": "#/$defs/positive" }
+            "kata_launch_to_ssh_ready_ns": { "$ref": "#/$defs/positive" },
+            "bindings": { "$ref": "#/$defs/remoteBindings" }
           }
         },
         "workloads": { "type": "array", "minItems": 21, "maxItems": 21, "items": { "$ref": "#/$defs/workload" } },

@@ -245,6 +245,7 @@ runtime_owner = evidence._RuntimeOwnerResult(
     runtime_mount_record_sha256="b" * 64,
     network_causal_proof_sha256="c" * 64,
     live_mapping_sha256="d" * 64,
+    runtime_identity_sha256="1" * 64,
     qemu_process_sha256="e" * 64, qemu_argv_sha256="f" * 64,
     qemu_pid=101, qemu_starttime=102, qemu_executable_device=8,
     qemu_executable_inode=9, observer_qmp_device=10, observer_qmp_inode=11,

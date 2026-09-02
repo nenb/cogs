@@ -19,16 +19,18 @@ FULL_COMMAND = SOURCE + "/deploy/aws-feasibility/remote/run-stage2-completion-fu
 READINESS_COMMAND = SOURCE + "/deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh"
 MAX_RECEIPT_BYTES = 256 * 1024
 PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v1"
-FULL_PROGRAM_SHA256 = "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406"
-FULL_MARKER_SHA256 = "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
-READINESS_PROGRAM_SHA256 = "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab"
-READINESS_MARKER_SHA256 = "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010"
+FULL_PROGRAM_SHA256 = production.FULL_PROGRAM_SHA256
+FULL_MARKER_SHA256 = production.FULL_MARKER_SHA256
+READINESS_PROGRAM_SHA256 = production.READINESS_PROGRAM_SHA256
+READINESS_MARKER_SHA256 = production.READINESS_MARKER_SHA256
 _REMOTE_SOURCE = Path(__file__).resolve().parent / "remote"
 FULL_PARSER_SHA256 = hashlib.sha256(
     (_REMOTE_SOURCE / "completion_guest_workloads_v3.py").read_bytes()).hexdigest()
 READINESS_PARSER_SHA256 = hashlib.sha256(
     (_REMOTE_SOURCE / "completion_guest_readiness_v1.py").read_bytes()).hexdigest()
 PARSERS = {"full": FULL_PARSER_SHA256, "readiness": READINESS_PARSER_SHA256}
+_require_parser_constants = PARSERS == production.REMOTE_PARSERS
+if not _require_parser_constants: raise RuntimeError("remote parser commitments differ")
 PROGRAMS = {
     "full": (FULL_PROGRAM_SHA256, FULL_MARKER_SHA256),
     "readiness": (READINESS_PROGRAM_SHA256, READINESS_MARKER_SHA256),
@@ -125,6 +127,16 @@ def _cycle_capability(mode, program, marker):
     return hashlib.sha256(
         b"cogs.stage2-cycle-route/v1\0production\0" + mode.encode("ascii")
         + bytes.fromhex(program) + bytes.fromhex(marker)).hexdigest()
+
+
+def _runtime_identity(qmp):
+    fields = {name: qmp[name] for name in (
+        "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+        "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device",
+        "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api",
+        "qmp_present", "qmp_enabled")}
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + _canonical(fields)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -270,12 +282,15 @@ def _validate_common(value, grant, approval):
     _require(freshness["client_key_commitment"] != freshness["host_key_commitment"])
 
     qmp = value["qmp_lineage"]
-    _keys(qmp, {"qemu_process_sha256", "qemu_argv_sha256", "qemu_pid",
+    _keys(qmp, {"live_mapping_sha256", "runtime_identity_sha256",
+                "qemu_process_sha256", "qemu_argv_sha256", "qemu_pid",
                 "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
                 "observer_qmp_device", "observer_qmp_inode",
                 "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api", "qmp_present",
                 "qmp_enabled"})
+    _digest(qmp["live_mapping_sha256"]); _digest(qmp["runtime_identity_sha256"])
     _digest(qmp["qemu_process_sha256"]); _digest(qmp["qemu_argv_sha256"])
+    _require(qmp["runtime_identity_sha256"] == _runtime_identity(qmp))
     _require(_integer(qmp["qemu_pid"]) > 1 and _integer(qmp["qemu_starttime"]) > 0
              and _integer(qmp["qemu_executable_device"]) >= 0
              and _integer(qmp["qemu_executable_inode"]) > 0
@@ -317,9 +332,10 @@ def _validate_readiness(value, operation, runtime_network, qmp):
     lineage = value["runtime_readiness_lineage"]
     _keys(lineage, {"operation_token", "runtime_mount_record_sha256",
                     "runtime_network_sha256", "live_mapping_sha256",
-                    "qemu_process_sha256", "qmp_identity"})
+                    "runtime_identity_sha256", "qemu_process_sha256", "qmp_identity"})
     for name in ("operation_token", "runtime_mount_record_sha256",
-                 "runtime_network_sha256", "live_mapping_sha256", "qemu_process_sha256"):
+                 "runtime_network_sha256", "live_mapping_sha256",
+                 "runtime_identity_sha256", "qemu_process_sha256"):
         _digest(lineage[name])
     identity = lineage["qmp_identity"]
     _require(type(identity) is list and len(identity) == 10
@@ -328,7 +344,9 @@ def _validate_readiness(value, operation, runtime_network, qmp):
              and identity[5] > 0 and identity[7] > 0 and identity[9] == 12
              and lineage["operation_token"] == operation
              and lineage["runtime_network_sha256"] == runtime_network
-             and lineage["qemu_process_sha256"] == qmp["qemu_process_sha256"]
+             and lineage["live_mapping_sha256"] == qmp["live_mapping_sha256"]
+             and lineage["runtime_identity_sha256"] == qmp["runtime_identity_sha256"]
+             and lineage["qemu_process_sha256"] != qmp["qemu_process_sha256"]
              and identity[0] == qmp["qemu_pid"] and identity[1] == qmp["qemu_starttime"]
              and identity[2] == qmp["qemu_executable_device"]
              and identity[3] == qmp["qemu_executable_inode"]
@@ -351,6 +369,19 @@ def remote_receipt(approval, grant, apply, running, raw):
         b"cogs.stage2-cycle-private-owner-receipt/v1\0" + raw).hexdigest()
     host_boot_commitment = production._commit(
         b"cogs.stage2-host-boot/v1", {"host_boot_id": timing["host_boot_id"]})
+    source = production.RemoteSourceBindings(**value["source_bindings"])
+    post_fact = (value["runtime_readiness_lineage"]["qemu_process_sha256"]
+                 if grant.mode == "readiness" else None)
+    qemu_bindings = production.RemoteQemuBindings(
+        operation, qmp["live_mapping_sha256"], qmp["runtime_identity_sha256"],
+        qmp["qemu_process_sha256"], post_fact, qmp["qemu_argv_sha256"],
+        qmp["qemu_pid"], qmp["qemu_starttime"], qmp["qemu_executable_device"],
+        qmp["qemu_executable_inode"], qmp["observer_qmp_device"],
+        qmp["observer_qmp_inode"], qmp["kvm_device"], qmp["kvm_inode"],
+        qmp["kvm_rdev"], qmp["kvm_api"], qmp["qmp_present"], qmp["qmp_enabled"])
+    bindings = production.RemoteBindingProjection(
+        source, value["cycle_capability_sha256"], value["program_sha256"],
+        value["parser_source_sha256"], value["marker_sha256"], qemu_bindings)
     return production.RemoteReceipt(
         grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
         apply.state_commitment, apply.state_lineage_commitment,
@@ -360,4 +391,4 @@ def remote_receipt(approval, grant, apply, running, raw):
         grant.ami_commitment, apply.observed_started_unix_ns,
         running.observed_ended_unix_ns,
         timing["kata_launch_started_boottime_ns"],
-        timing["ssh_marker_observed_boottime_ns"], tuple(workloads), True)
+        timing["ssh_marker_observed_boottime_ns"], tuple(workloads), bindings, True)

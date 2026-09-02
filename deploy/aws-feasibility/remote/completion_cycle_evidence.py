@@ -61,6 +61,16 @@ def _canonical(value):
                       separators=(",", ":"), allow_nan=False).encode("ascii") + b"\n"
 
 
+def _runtime_identity_sha256(value):
+    fields = {name: getattr(value, name) for name in (
+        "qemu_argv_sha256", "qemu_pid",
+        "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
+        "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode",
+        "kvm_rdev", "kvm_api", "qmp_present", "qmp_enabled")}
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + _canonical(fields)).hexdigest()
+
+
 def _route_realm():
     seal = object()
     registry = {}
@@ -192,7 +202,7 @@ def _runtime_readiness_realm():
     class _RuntimeReadinessOwnerResult:
         __slots__ = ("operation_token", "runtime_mount_record_sha256",
                      "runtime_network_sha256", "live_mapping_sha256",
-                     "qemu_process_sha256", "qmp_identity")
+                     "runtime_identity_sha256", "qemu_process_sha256", "qmp_identity")
         def __new__(cls, key=None, **values):
             _require(key is seal, "runtime readiness result is sealed")
             value = super().__new__(cls)
@@ -205,7 +215,7 @@ def _runtime_readiness_realm():
         _require(set(values) == set(_RuntimeReadinessOwnerResult.__slots__))
         for name in ("operation_token", "runtime_mount_record_sha256",
                      "runtime_network_sha256", "live_mapping_sha256",
-                     "qemu_process_sha256"):
+                     "runtime_identity_sha256", "qemu_process_sha256"):
             _digest(values[name])
         qmp = values["qmp_identity"]
         _require(type(qmp) is tuple and len(qmp) == 10
@@ -358,6 +368,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                             launch.body["kata_launch_started_boottime_ns"],
         }
         qmp = lifecycle.runtime_observation
+        _require(qmp.runtime_identity_sha256 == _runtime_identity_sha256(qmp),
+                 "pre-SSH runtime identity commitment differs")
         production_cycle_grant = ({field: route_record.body[field] for field in (
             "batch_commitment", "cycle_ordinal", "implementation_revision",
             "control_revision", "static_control_sha256", "rootfs_descriptor_sha256",
@@ -389,6 +401,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                 if row.record_type == "NETWORK_SNAPSHOT_V2"
                 and row.body["snapshot_kind"] == "runtime"),
             "qmp_lineage": {
+                "live_mapping_sha256": qmp.live_mapping_sha256,
+                "runtime_identity_sha256": qmp.runtime_identity_sha256,
                 "qemu_process_sha256": qmp.qemu_process_sha256,
                 "qemu_argv_sha256": qmp.qemu_argv_sha256,
                 "qemu_pid": qmp.qemu_pid, "qemu_starttime": qmp.qemu_starttime,
@@ -451,6 +465,10 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
         else:
             _require(type(lifecycle.session) is ssh.ReadinessAuthenticatedSession)
             runtime = _validate_runtime_readiness_owner_result(lifecycle.runtime_proof)
+            observed = lifecycle.runtime_observation
+            _require(runtime.runtime_identity_sha256 == observed.runtime_identity_sha256
+                     and runtime.qemu_process_sha256 != observed.qemu_process_sha256,
+                     "ordered post-SSH runtime observation or immutable identity differs")
             value["runtime_readiness_lineage"] = runtime.canonical_value()
             cls = _ReadinessCycleReceipt
         raw = _canonical(value)

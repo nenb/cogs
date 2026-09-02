@@ -151,19 +151,30 @@ def terminal(route,raw_bytes,production=False):
     readiness_session=ssh.ReadinessAuthenticatedSession(
         1,d("d"),evidence.readiness_guest.GUEST_PROGRAM_SHA256,
         evidence.readiness_guest.MARKER_SHA256,evidence.readiness_guest.MARKER_SHA256)
+    identity_value={"qemu_argv_sha256":d("3"),"qemu_pid":101,"qemu_starttime":102,
+        "qemu_executable_device":8,"qemu_executable_inode":9,
+        "observer_qmp_device":10,"observer_qmp_inode":11,"kvm_device":12,
+        "kvm_inode":13,"kvm_rdev":14,"kvm_api":12,"qmp_present":True,"qmp_enabled":True}
+    runtime_identity=hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0"+evidence._canonical(identity_value)).hexdigest()
+    pre_runtime_fact=hashlib.sha256(evidence._canonical(
+        {"journal":d("a"),"qmp":identity_value})).hexdigest()
+    post_runtime_fact=hashlib.sha256(evidence._canonical(
+        {"journal":d("b"),"qmp":identity_value})).hexdigest()
     observed=owner_evidence._PlatformOwnerResult(
-        token,d("1"),d("2"),d("3"),101,102,8,9,10,11,12,13,14,12,True,True)
+        token,d("1"),runtime_identity,pre_runtime_fact,d("3"),101,102,8,9,10,11,12,13,14,12,True,True)
     residue=owner_evidence._ResidueOwnerResult(token,d("4"),local.RESIDUE_FACTS)
     if name=="full":
         runtime=owner_evidence._RuntimeOwnerResult(
-            token,d("5"),d("6"),d("1"),d("2"),d("3"),101,102,
+            token,d("5"),d("6"),d("1"),runtime_identity,post_runtime_fact,d("3"),101,102,
             8,9,10,11,12,13,14,12,True,True)
         session=full_session
     else:
         runtime=evidence._issue_runtime_readiness_owner_result(
             operation_token=token,runtime_mount_record_sha256=d("5"),
             runtime_network_sha256=d("9"),live_mapping_sha256=d("1"),
-            qemu_process_sha256=d("2"),qmp_identity=(101,102,8,9,10,11,12,13,14,12))
+            runtime_identity_sha256=runtime_identity,
+            qemu_process_sha256=post_runtime_fact,qmp_identity=(101,102,8,9,10,11,12,13,14,12))
         session=readiness_session
     lifecycle=SimpleNamespace(
         retired=owner_evidence._RetiredJournalOwnerResult(raw_bytes),residue=residue,
@@ -177,6 +188,7 @@ _receipt_types,_,issue_diagnostic,validate_diagnostic,consume_diagnostic=evidenc
     parse_terminal,formal_binding,diagnostic_lineage,close_custody)
 assert validate_diagnostic.__code__ is evidence._validate_and_discard_cycle_receipt.__code__
 settle=inspect.getclosurevars(validate_diagnostic).nonlocals["settle"]
+prepare=inspect.getclosurevars(settle).nonlocals["prepare"]
 registry=inspect.getclosurevars(settle).nonlocals["receipts"]
 production_settle=inspect.getclosurevars(
     evidence._validate_and_discard_cycle_receipt).nonlocals["settle"]
@@ -185,6 +197,13 @@ assert not registry and not production_registry
 for route,label in ((evidence._diagnostic_full_route(),b"diagnostic-full\n"),
                     (evidence._diagnostic_readiness_route(),b"diagnostic-readiness\n")):
     records,lifecycle=terminal(route,label);fixture_records[label]=records
+    if label == b"diagnostic-readiness\n":
+        # Exercise the real receipt preparation path with the actual pre/post
+        # journal observations: their fact hashes differ while immutable QEMU
+        # identity remains one commitment.
+        _cls,value,_raw,_commitment,_domain=prepare(route,lifecycle)
+        assert value["qmp_lineage"]["qemu_process_sha256"] != value["runtime_readiness_lineage"]["qemu_process_sha256"]
+        assert value["qmp_lineage"]["runtime_identity_sha256"] == value["runtime_readiness_lineage"]["runtime_identity_sha256"]
     try:issue_diagnostic(route,lifecycle)
     except evidence.CycleEvidenceError:pass
     else:raise AssertionError("diagnostic mint path accepted")

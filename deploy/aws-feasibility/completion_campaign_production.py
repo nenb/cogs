@@ -22,6 +22,18 @@ INVENTORY_CATEGORIES = (
     "eventbridge_schedules", "eventbridge_targets", "budgets", "ssm_managed_instances",
 )
 EFFECT_KINDS = ("plan", "apply", "running", "destroy")
+FULL_PROGRAM_SHA256 = "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406"
+FULL_MARKER_SHA256 = "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
+READINESS_PROGRAM_SHA256 = "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab"
+READINESS_MARKER_SHA256 = "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010"
+REMOTE_PARSERS = {
+    "full": "a134e1b00791b4cccf37206284f36dc685056f8a57aebc13173f09285292a35c",
+    "readiness": "500423ea45a3c12da1eaf107281a966e88f21f77701524f2d8617d0456f68e4c",
+}
+REMOTE_PROGRAMS = {
+    "full": (FULL_PROGRAM_SHA256, FULL_MARKER_SHA256),
+    "readiness": (READINESS_PROGRAM_SHA256, READINESS_MARKER_SHA256),
+}
 _DIGEST_CHARS = frozenset("0123456789abcdef")
 
 
@@ -52,6 +64,22 @@ def _canonical(value):
 
 def _commit(domain, value):
     return hashlib.sha256(domain + b"\0" + _canonical(value)).hexdigest()
+
+
+def _runtime_identity(value):
+    fields = {name: getattr(value, name) for name in (
+        "qemu_argv_sha256", "qemu_pid",
+        "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
+        "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode",
+        "kvm_rdev", "kvm_api", "qmp_present", "qmp_enabled")}
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + _canonical(fields) + b"\n").hexdigest()
+
+
+def _cycle_capability(mode, program, marker):
+    return hashlib.sha256(b"cogs.stage2-cycle-route/v1\0production\0" +
+                          mode.encode("ascii") + bytes.fromhex(program) +
+                          bytes.fromhex(marker)).hexdigest()
 
 
 def _approval_fields(value):
@@ -294,6 +322,84 @@ class WorkloadMeasurement:
 
 
 @dataclass(frozen=True)
+class RemoteSourceBindings:
+    source_head: str
+    source_manifest_sha256: str
+    host_attestation_sha256: str
+    runtime_attestation_sha256: str
+    rootfs_sha256: str
+    rootfs_descriptor_sha256: str
+    rootfs_package_manifest_sha256: str
+    rootfs_provenance_sha256: str
+    rootfs_publication_receipt_sha256: str
+    artifact_sha256: str
+    candidate_sha256: str
+    final_pin_sha256: str
+    guest_program_sha256: str
+    owner_implementation_sha256: str
+
+    def __post_init__(self):
+        _sha1(self.source_head)
+        for name, item in asdict(self).items():
+            if name != "source_head": _digest(item)
+
+
+@dataclass(frozen=True)
+class RemoteQemuBindings:
+    operation_token: str
+    live_mapping_sha256: str
+    runtime_identity_sha256: str
+    pre_ssh_runtime_fact_sha256: str
+    post_ssh_runtime_fact_sha256: str | None
+    qemu_argv_sha256: str
+    qemu_pid: int
+    qemu_starttime: int
+    qemu_executable_device: int
+    qemu_executable_inode: int
+    observer_qmp_device: int
+    observer_qmp_inode: int
+    kvm_device: int
+    kvm_inode: int
+    kvm_rdev: int
+    kvm_api: int
+    qmp_present: bool
+    qmp_enabled: bool
+
+    def __post_init__(self):
+        for item in (self.operation_token, self.live_mapping_sha256,
+                     self.runtime_identity_sha256, self.pre_ssh_runtime_fact_sha256,
+                     self.qemu_argv_sha256): _digest(item)
+        if self.post_ssh_runtime_fact_sha256 is not None:
+            _digest(self.post_ssh_runtime_fact_sha256)
+        _require(self.runtime_identity_sha256 == _runtime_identity(self)
+                 and type(self.qemu_pid) is int and self.qemu_pid > 1
+                 and type(self.qemu_starttime) is int and self.qemu_starttime > 0
+                 and all(type(item) is int and item >= 0 for item in (
+                     self.qemu_executable_device, self.observer_qmp_device,
+                     self.kvm_device, self.kvm_rdev))
+                 and all(type(item) is int and item > 0 for item in (
+                     self.qemu_executable_inode, self.observer_qmp_inode, self.kvm_inode))
+                 and self.kvm_api == 12 and self.qmp_present is True
+                 and self.qmp_enabled is True, ProductionReceiptError)
+
+
+@dataclass(frozen=True)
+class RemoteBindingProjection:
+    source: RemoteSourceBindings
+    cycle_capability_sha256: str
+    program_sha256: str
+    parser_source_sha256: str
+    marker_sha256: str
+    qemu: RemoteQemuBindings
+
+    def __post_init__(self):
+        _require(type(self.source) is RemoteSourceBindings
+                 and type(self.qemu) is RemoteQemuBindings, ProductionReceiptError)
+        for item in (self.cycle_capability_sha256, self.program_sha256,
+                     self.parser_source_sha256, self.marker_sha256): _digest(item)
+
+
+@dataclass(frozen=True)
 class RemoteReceipt:
     grant_commitment: str
     batch_commitment: str
@@ -314,6 +420,7 @@ class RemoteReceipt:
     kata_launch_started_boottime_ns: int
     ssh_ready_observed_boottime_ns: int
     workloads: tuple[WorkloadMeasurement, ...]
+    bindings: RemoteBindingProjection
     certain: bool
 
     def __post_init__(self):
@@ -331,6 +438,13 @@ class RemoteReceipt:
                  and self.client_key_commitment != self.host_key_commitment
                  and type(self.workloads) is tuple
                  and len(self.workloads) == (21 if self.mode == "full" else 0)
+                 and type(self.bindings) is RemoteBindingProjection
+                 and self.bindings.qemu.operation_token == self.operation_commitment
+                 and (self.bindings.qemu.post_ssh_runtime_fact_sha256 is not None) ==
+                     (self.mode == "readiness")
+                 and (self.mode != "readiness" or
+                      self.bindings.qemu.post_ssh_runtime_fact_sha256 !=
+                      self.bindings.qemu.pre_ssh_runtime_fact_sha256)
                  and self.certain is True, ProductionReceiptError)
         if self.mode == "full":
             _require(tuple((item.category, item.ordinal) for item in self.workloads) ==
@@ -610,6 +724,38 @@ def _grant(approval, ordinal):
         b"cogs.stage2-cycle-launch-grant/v1", fields))
 
 
+def _validate_remote_bindings(remote, grant, approval):
+    bindings = remote.bindings
+    source, qemu = bindings.source, bindings.qemu
+    program, marker = REMOTE_PROGRAMS[grant.mode]
+    _require(type(bindings) is RemoteBindingProjection
+             and type(source) is RemoteSourceBindings
+             and type(qemu) is RemoteQemuBindings
+             and _commit(b"cogs.stage2-source-bindings/v1", asdict(source)) ==
+                 approval.source_bindings_sha256
+             and source.source_head == grant.implementation_revision
+             and source.source_manifest_sha256 == approval.source_manifest_sha256
+             and source.runtime_attestation_sha256 == approval.runtime_commitment
+             and source.rootfs_descriptor_sha256 == grant.rootfs_descriptor_sha256
+             and source.rootfs_package_manifest_sha256 == approval.rootfs_package_manifest_sha256
+             and source.rootfs_provenance_sha256 == approval.rootfs_provenance_sha256
+             and source.rootfs_publication_receipt_sha256 ==
+                 approval.rootfs_publication_receipt_sha256
+             and source.final_pin_sha256 == approval.fixture_commitment
+             and source.guest_program_sha256 == FULL_PROGRAM_SHA256
+             and bindings.program_sha256 == program
+             and bindings.parser_source_sha256 == REMOTE_PARSERS[grant.mode]
+             and bindings.marker_sha256 == marker
+             and bindings.cycle_capability_sha256 == _cycle_capability(
+                 grant.mode, program, marker)
+             and qemu.operation_token == remote.operation_commitment
+             and qemu.runtime_identity_sha256 == _runtime_identity(qemu)
+             and (qemu.post_ssh_runtime_fact_sha256 is not None) ==
+                 (grant.mode == "readiness")
+             and (grant.mode != "readiness" or qemu.post_ssh_runtime_fact_sha256 !=
+                  qemu.pre_ssh_runtime_fact_sha256), ProductionReceiptError)
+
+
 class ProductionCampaignController:
     def __init__(self, ports):
         _require(type(ports) is ProductionPorts and ports._seal is _PORT_SEAL)
@@ -646,7 +792,7 @@ class ProductionCampaignController:
         self.ports.journal("batch", "consumed", None, None,
                            consumption.durable_record_commitment)
         grants = []; effects = []; remotes = []; inventories = []; costs = []; cycles = []
-        states = []; lineages = []; instances = []; operations = []; boots = []
+        states = []; lineages = []; instances = []; operations = []; boots = []; runtimes = []
         previous_zero_end = None
         first_apply_start = None
         active_grant = None
@@ -702,6 +848,7 @@ class ProductionCampaignController:
                          and remote.rootfs_descriptor_sha256 == approval.rootfs_descriptor_sha256
                          and remote.ami_commitment == approval.ami_commitment,
                          ProductionReceiptError)
+                _validate_remote_bindings(remote, grant, approval)
                 destroy = self._effect("destroy", grant, running)
                 _require(destroy.state_commitment == apply.state_commitment
                          and destroy.state_lineage_commitment == apply.state_lineage_commitment
@@ -744,6 +891,7 @@ class ProductionCampaignController:
                 instances.append(remote.instance_commitment)
                 operations.append(remote.operation_commitment)
                 boots.append(remote.host_boot_commitment)
+                runtimes.append(remote.bindings.qemu.runtime_identity_sha256)
                 active_grant = active_state = last_certain = None
                 self.ports.journal("cycle", "sealed", ordinal, mode, cycle)
             active_grant = grants[-1]
@@ -762,7 +910,7 @@ class ProductionCampaignController:
             inventories.append(final)
             active_grant = active_state = last_certain = None
             _require(all(len(set(values)) == 7 for values in
-                         (states, lineages, instances, operations, boots)),
+                         (states, lineages, instances, operations, boots, runtimes)),
                      ProductionReceiptError)
             for name in ("observer_commitment", "session_commitment",
                          "run_commitment", "zero_commitment"):

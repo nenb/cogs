@@ -25,6 +25,18 @@ def _require(condition, message="fixed mutable execution bridge"):
         raise ExecutionBridgeError(message)
 
 
+def _runtime_identity(qmp):
+    """Commit only immutable QEMU/QMP/KVM identity, never the journal tip."""
+    value = {name: qmp[name] for name in (
+                 "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+                 "qemu_executable_device", "qemu_executable_inode",
+                 "observer_qmp_device", "observer_qmp_inode", "kvm_device",
+                 "kvm_inode", "kvm_rdev", "kvm_api")}
+    value.update(qmp_present=qmp["kvm_present"], qmp_enabled=qmp["kvm_enabled"])
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + operation._canonical(value)).hexdigest()
+
+
 def _routes():
     seal, states = object(), {}
     issued = False
@@ -285,9 +297,11 @@ def _routes():
         _require(mapping is lifecycle.execution_mapping,
                  "runtime observation mapping lineage differs")
         import completion_local_evidence as evidence
+        operation_token = operation._command_context(lifecycle.operation).operation_token
         typed = evidence._PlatformOwnerResult(
-            operation_token=operation._command_context(lifecycle.operation).operation_token,
+            operation_token=operation_token,
             live_mapping_sha256=mapping["live_mapping_sha256"],
+            runtime_identity_sha256=_runtime_identity(qmp),
             qemu_process_sha256=hashlib.sha256(operation._canonical(fact)).hexdigest(),
             qemu_argv_sha256=qmp["qemu_argv_sha256"],
             qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],
@@ -360,9 +374,12 @@ def _routes():
         qmp = fact["qmp"]
         qemu_sha256 = hashlib.sha256(operation._canonical(fact)).hexdigest()
         import completion_local_evidence as evidence
+        operation_token = operation._command_context(lifecycle.operation).operation_token
+        runtime_identity_sha256 = _runtime_identity(qmp)
         _require(type(platform) is evidence._PlatformOwnerResult
-                 and platform.live_mapping_sha256 == mapping["live_mapping_sha256"],
-                 "pre-workload runtime mapping changed during cleanup")
+                 and platform.live_mapping_sha256 == mapping["live_mapping_sha256"]
+                 and platform.runtime_identity_sha256 == runtime_identity_sha256,
+                 "pre-workload runtime identity changed during cleanup")
         identity_fields = (
             "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
             "qemu_executable_device", "qemu_executable_inode",
@@ -381,6 +398,7 @@ def _routes():
                     runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
                     runtime_network_sha256=current["runtime_network"]["proof_sha256"],
                     live_mapping_sha256=mapping["live_mapping_sha256"],
+                    runtime_identity_sha256=runtime_identity_sha256,
                     qemu_process_sha256=qemu_sha256,
                     qmp_identity=(qmp["qemu_pid"], qmp["qemu_starttime"],
                         qmp["qemu_executable_device"], qmp["qemu_executable_inode"],
@@ -397,6 +415,7 @@ def _routes():
             runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
             network_causal_proof_sha256=causal["causal_proof_sha256"],
             live_mapping_sha256=mapping["live_mapping_sha256"],
+            runtime_identity_sha256=runtime_identity_sha256,
             qemu_process_sha256=qemu_sha256,
             qemu_argv_sha256=qmp["qemu_argv_sha256"],
             qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],

@@ -165,6 +165,7 @@ class _PlatformOwnerResult:
     """Typed pre-workload independent-observer fact retained through teardown."""
     operation_token: str
     live_mapping_sha256: str
+    runtime_identity_sha256: str
     qemu_process_sha256: str
     qemu_argv_sha256: str
     qemu_pid: int
@@ -182,8 +183,8 @@ class _PlatformOwnerResult:
 
     def __post_init__(self):
         _token(self.operation_token)
-        for value in (self.live_mapping_sha256, self.qemu_process_sha256,
-                      self.qemu_argv_sha256):
+        for value in (self.live_mapping_sha256, self.runtime_identity_sha256,
+                      self.qemu_process_sha256, self.qemu_argv_sha256):
             _digest(value)
         _require(type(self.qemu_pid) is int and self.qemu_pid > 1
                  and type(self.qemu_starttime) is int and self.qemu_starttime > 0)
@@ -205,6 +206,7 @@ class _RuntimeOwnerResult:
     runtime_mount_record_sha256: str
     network_causal_proof_sha256: str
     live_mapping_sha256: str
+    runtime_identity_sha256: str
     qemu_process_sha256: str
     qemu_argv_sha256: str
     qemu_pid: int
@@ -224,7 +226,8 @@ class _RuntimeOwnerResult:
         _token(self.operation_token)
         for value in (self.runtime_mount_record_sha256,
                       self.network_causal_proof_sha256, self.live_mapping_sha256,
-                      self.qemu_process_sha256, self.qemu_argv_sha256):
+                      self.runtime_identity_sha256, self.qemu_process_sha256,
+                      self.qemu_argv_sha256):
             _digest(value)
         _require(type(self.qemu_pid) is int and self.qemu_pid > 1
                  and type(self.qemu_starttime) is int and self.qemu_starttime > 0)
@@ -266,6 +269,7 @@ def _runtime_attestation_value(result):
         "qemu_executable_device": result.qemu_executable_device,
         "qemu_executable_inode": result.qemu_executable_inode,
         "qemu_pid": result.qemu_pid,
+        "runtime_identity_sha256": result.runtime_identity_sha256,
         "qemu_process_sha256": result.qemu_process_sha256,
         "qemu_starttime": result.qemu_starttime,
         "kvm_device": result.kvm_device,
@@ -296,7 +300,11 @@ def _validate_runtime_identity(records, platform, runtime):
         "observer_qmp_device", "observer_qmp_inode",
         "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api",
         "qmp_present", "qmp_enabled")
-    _require(all(getattr(platform, name) == getattr(runtime, name) for name in fields))
+    identity_value = {name: getattr(platform, name) for name in fields}
+    identity = hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + local._canonical(identity_value)).hexdigest()
+    _require(all(getattr(platform, name) == getattr(runtime, name) for name in fields)
+             and platform.runtime_identity_sha256 == runtime.runtime_identity_sha256 == identity)
     roles = _one(records, "RUNTIME_ROLE_IDENTITIES_V1").body["roles"]
     qemu = [row for row in roles if row.get("role") == "qemu"]
     _require(len(qemu) == 1)

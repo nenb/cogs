@@ -166,6 +166,30 @@ test("seven cycles, 21 measurements, eight detailed inventories, common bindings
   }, "within-cycle SSH key graft");
 });
 
+test("serialized evidence independently revalidates exact remote source, parser, and QEMU bindings", () => {
+  const value = fixture();
+  const readiness = value.cycles[1].remote.bindings;
+  assert.notEqual(readiness.qemu.pre_ssh_runtime_fact_sha256, readiness.qemu.post_ssh_runtime_fact_sha256);
+  assert.equal(readiness.source_bindings.source_head, value.batch.implementation_revision);
+  reject((item) => {
+    item.cycles[1].remote.bindings.source_bindings.host_attestation_sha256 = "0".repeat(64);
+  }, "authenticated source projection drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.parser_source_sha256 = "0".repeat(64);
+  }, "authenticated parser projection drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.qemu.qemu_pid += 1;
+  }, "immutable QEMU identity drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.qemu.post_ssh_runtime_fact_sha256 =
+      item.cycles[1].remote.bindings.qemu.pre_ssh_runtime_fact_sha256;
+  }, "post-SSH observation replay");
+  reject((item) => {
+    item.cycles[2].remote.bindings.qemu.runtime_identity_sha256 =
+      item.cycles[1].remote.bindings.qemu.runtime_identity_sha256;
+  }, "cross-cycle QEMU identity replay");
+});
+
 test("summaries and every typed receipt cost are independently recomputed", () => {
   for (const field of ["min_ns", "p50_ns", "p95_ns", "max_ns"])
     reject((value) => {

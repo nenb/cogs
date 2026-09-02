@@ -252,11 +252,17 @@ def validate_receipt(raw, expected=None, ordinal=None):
     digest(keys["client_key_commitment"]); digest(keys["host_key_commitment"])
     require(keys["client_key_commitment"] != keys["host_key_commitment"])
     qmp = value["qmp_lineage"]
-    exact_keys(qmp, {"qemu_process_sha256", "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+    exact_keys(qmp, {"live_mapping_sha256", "runtime_identity_sha256", "qemu_process_sha256", "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
         "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device",
         "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev",
         "kvm_api", "qmp_present", "qmp_enabled"})
+    digest(qmp["live_mapping_sha256"]); digest(qmp["runtime_identity_sha256"])
     digest(qmp["qemu_process_sha256"]); digest(qmp["qemu_argv_sha256"])
+    identity_value = {name: item for name, item in qmp.items()
+                      if name not in {"live_mapping_sha256", "runtime_identity_sha256",
+                                      "qemu_process_sha256"}}
+    require(qmp["runtime_identity_sha256"] == hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + canonical(identity_value)).hexdigest())
     require(positive(qmp["qemu_pid"]) > 1 and positive(qmp["qemu_starttime"]) > 0
             and type(qmp["qemu_executable_device"]) is int
             and qmp["qemu_executable_device"] >= 0
@@ -287,13 +293,15 @@ def validate_receipt(raw, expected=None, ordinal=None):
     else:
         lineage = value["runtime_readiness_lineage"]
         exact_keys(lineage, {"operation_token", "runtime_mount_record_sha256",
-            "runtime_network_sha256", "live_mapping_sha256", "qemu_process_sha256", "qmp_identity"})
+            "runtime_network_sha256", "live_mapping_sha256", "runtime_identity_sha256",
+            "qemu_process_sha256", "qmp_identity"})
         for name in ("operation_token", "runtime_mount_record_sha256", "runtime_network_sha256",
-                     "live_mapping_sha256", "qemu_process_sha256"): digest(lineage[name])
+                     "live_mapping_sha256", "runtime_identity_sha256", "qemu_process_sha256"): digest(lineage[name])
         identity = lineage["qmp_identity"]
         require(lineage["operation_token"] == value["operation_token"]
                 and lineage["runtime_network_sha256"] == value["runtime_network_sha256"]
-                and lineage["qemu_process_sha256"] == qmp["qemu_process_sha256"]
+                and lineage["runtime_identity_sha256"] == qmp["runtime_identity_sha256"]
+                and lineage["qemu_process_sha256"] != qmp["qemu_process_sha256"]
                 and type(identity) is list and len(identity) == 10
                 and all(type(item) is int and item >= 0 for item in identity)
                 and identity[0] == qmp["qemu_pid"] and identity[1] == qmp["qemu_starttime"]
@@ -316,7 +324,7 @@ def status_value(receipt_raw, expected, ordinal, artifact_name):
         "receipt": {"sha256": hashlib.sha256(receipt_raw).hexdigest(), "bytes": len(receipt_raw)},
         "identities": {"host_boot_id": receipt["timing"]["host_boot_id"],
             "operation": receipt["operation_token"], "rootfs": receipt["rootfs_token"],
-            "runtime": receipt["qmp_lineage"]["qemu_process_sha256"],
+            "runtime": receipt["qmp_lineage"]["runtime_identity_sha256"],
             "client_key": receipt["key_freshness"]["client_key_commitment"],
             "host_key": receipt["key_freshness"]["host_key_commitment"]},
         "lifecycle_objects": receipt["lifecycle_objects"], "workload_measurements": measurements,

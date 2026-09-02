@@ -20,6 +20,14 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
 
 
+def qemu_identity(qmp):
+    value = {name: item for name, item in qmp.items()
+             if name not in {"live_mapping_sha256", "runtime_identity_sha256",
+                             "qemu_process_sha256"}}
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + canonical(value)).hexdigest()
+
+
 SOURCE_BINDINGS = {
     "source_head": "1" * 40,
     "source_manifest_sha256": d("source-manifest"),
@@ -111,14 +119,17 @@ def effect(kind, current, start, end, identity):
 
 def owner(current):
     program, marker = adapter.PROGRAMS[current.mode]
+    operation_token = d(f"operation-{current.ordinal}")
     qmp = {
-        "qemu_process_sha256": d("qemu-process"), "qemu_argv_sha256": d("qemu-argv"),
+        "live_mapping_sha256": d("live-mapping"),
+        "qemu_process_sha256": d("qemu-pre-ssh-fact"), "qemu_argv_sha256": d("qemu-argv"),
         "qemu_pid": 100, "qemu_starttime": 200,
         "qemu_executable_device": 250, "qemu_executable_inode": 260,
         "observer_qmp_device": 300,
         "observer_qmp_inode": 400, "kvm_device": 500, "kvm_inode": 600,
         "kvm_rdev": 700, "kvm_api": 12, "qmp_present": True, "qmp_enabled": True,
     }
+    qmp["runtime_identity_sha256"] = qemu_identity(qmp)
     value = {
         "version": adapter.PRIVATE_VERSION,
         "route": current.mode,
@@ -138,7 +149,7 @@ def owner(current):
         "provider_execution_observed": False,
         "aws_authority": current.grant_commitment,
         "source_bindings": dict(SOURCE_BINDINGS),
-        "operation_token": d(f"operation-{current.ordinal}"),
+        "operation_token": operation_token,
         "journal_sha256": d("journal"),
         "program_sha256": program,
         "parser_source_sha256": adapter.PARSERS[current.mode],
@@ -184,8 +195,9 @@ def owner(current):
             "operation_token": value["operation_token"],
             "runtime_mount_record_sha256": d("runtime-mount-record"),
             "runtime_network_sha256": value["runtime_network_sha256"],
-            "live_mapping_sha256": d("live-mapping"),
-            "qemu_process_sha256": qmp["qemu_process_sha256"],
+            "live_mapping_sha256": qmp["live_mapping_sha256"],
+            "runtime_identity_sha256": qmp["runtime_identity_sha256"],
+            "qemu_process_sha256": d("qemu-post-ssh-fact"),
             "qmp_identity": [100, 200, 250, 260, 300, 400, 500, 600, 700, 12],
         }
     return value
@@ -253,6 +265,11 @@ for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
     assert receipt.provider_running_observed_unix_ns == 1030
     assert receipt.ssh_ready_observed_boottime_ns - receipt.kata_launch_started_boottime_ns == 100
     assert len(receipt.workloads) == (21 if mode == "full" else 0)
+    assert receipt.bindings.source == production.RemoteSourceBindings(**SOURCE_BINDINGS)
+    assert receipt.bindings.parser_source_sha256 == adapter.PARSERS[mode]
+    assert receipt.bindings.qemu.runtime_identity_sha256 == exact["qmp_lineage"]["runtime_identity_sha256"]
+    if mode == "readiness":
+        assert receipt.bindings.qemu.pre_ssh_runtime_fact_sha256 != receipt.bindings.qemu.post_ssh_runtime_fact_sha256
     exhaustive_schema_mutations(current, apply, running, exact)
 
     # Valid-looking substitutions at every external/cross-owner seam are denied.
@@ -273,8 +290,12 @@ for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
                 f"full cross commitment accepted at {path}")
     else:
         for path in (("runtime_readiness_lineage", "operation_token"),
+                     ("runtime_readiness_lineage", "runtime_identity_sha256"),
                      ("runtime_readiness_lineage", "qemu_process_sha256")):
-            mutated = copy.deepcopy(exact); locate(mutated, path[:-1])[path[-1]] = d("substitute")
+            mutated = copy.deepcopy(exact)
+            locate(mutated, path[:-1])[path[-1]] = (
+                mutated["qmp_lineage"]["qemu_process_sha256"]
+                if path[-1] == "qemu_process_sha256" else d("substitute"))
             rejected(lambda mutated=mutated: adapter.remote_receipt(
                 APPROVAL, current, apply, running, canonical(mutated)),
                 f"readiness cross accepted at {path}")

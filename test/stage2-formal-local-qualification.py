@@ -45,13 +45,19 @@ def rejected(action):
 def receipt(ordinal):
     grant = formal.issue_grant(ordinal, expected, authority)
     grant_value = authority.asdict(grant); grant_value["cycle_ordinal"] = grant_value.pop("ordinal")
-    qmp = {"qemu_process_sha256": d(f"runtime-{ordinal}"), "qemu_argv_sha256": d(f"argv-{ordinal}"),
+    operation, rootfs = d(f"operation-{ordinal}"), d(f"rootfs-{ordinal}")
+    live_mapping = d(f"mapping-{ordinal}")
+    qmp = {"live_mapping_sha256": live_mapping,
+        "qemu_process_sha256": d(f"runtime-pre-ssh-{ordinal}"), "qemu_argv_sha256": d(f"argv-{ordinal}"),
         "qemu_pid": 100 + ordinal, "qemu_starttime": 200 + ordinal,
         "qemu_executable_device": 250, "qemu_executable_inode": 260 + ordinal,
         "observer_qmp_device": 300, "observer_qmp_inode": 400 + ordinal,
         "kvm_device": 500, "kvm_inode": 600 + ordinal, "kvm_rdev": 700,
         "kvm_api": 12, "qmp_present": True, "qmp_enabled": True}
-    operation, rootfs = d(f"operation-{ordinal}"), d(f"rootfs-{ordinal}")
+    identity_value = {name: item for name, item in qmp.items()
+                      if name not in {"live_mapping_sha256", "qemu_process_sha256"}}
+    qmp["runtime_identity_sha256"] = hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + formal.canonical(identity_value)).hexdigest()
     mode = formal.CYCLE_MODES[ordinal - 1]; program, marker = formal.PROGRAMS[mode]
     capability = hashlib.sha256(b"cogs.stage2-cycle-route/v1\0formal-non-cloud-qualification\0" +
         mode.encode() + bytes.fromhex(program) + bytes.fromhex(marker)).hexdigest()
@@ -95,8 +101,9 @@ def receipt(ordinal):
         value["runtime_readiness_lineage"] = {"operation_token": operation,
             "runtime_mount_record_sha256": d(f"mount-{ordinal}"),
             "runtime_network_sha256": value["runtime_network_sha256"],
-            "live_mapping_sha256": d(f"mapping-{ordinal}"),
-            "qemu_process_sha256": qmp["qemu_process_sha256"],
+            "live_mapping_sha256": live_mapping,
+            "runtime_identity_sha256": qmp["runtime_identity_sha256"],
+            "qemu_process_sha256": d(f"runtime-post-ssh-{ordinal}"),
             "qmp_identity": [qmp["qemu_pid"], qmp["qemu_starttime"],
                              qmp["qemu_executable_device"], qmp["qemu_executable_inode"],
                              qmp["observer_qmp_device"], qmp["observer_qmp_inode"],
@@ -217,8 +224,14 @@ with tempfile.TemporaryDirectory() as temporary:
         hostile = receipt(2); prior = receipt(1)
         if identity == "host_boot_id": hostile["timing"][identity] = prior["timing"][identity]
         elif identity == "runtime":
-            hostile["qmp_lineage"]["qemu_process_sha256"] = prior["qmp_lineage"]["qemu_process_sha256"]
-            hostile["runtime_readiness_lineage"]["qemu_process_sha256"] = prior["qmp_lineage"]["qemu_process_sha256"]
+            qmp_names = ("qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+                "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device",
+                "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api")
+            for name in qmp_names: hostile["qmp_lineage"][name] = prior["qmp_lineage"][name]
+            hostile["qmp_lineage"]["runtime_identity_sha256"] = prior["qmp_lineage"]["runtime_identity_sha256"]
+            hostile["runtime_readiness_lineage"]["runtime_identity_sha256"] = prior["qmp_lineage"]["runtime_identity_sha256"]
+            hostile["runtime_readiness_lineage"]["qmp_identity"] = [
+                hostile["qmp_lineage"][name] for name in qmp_names[1:]]
         elif identity.endswith("key_commitment"):
             hostile["key_freshness"][identity] = prior["key_freshness"][identity]
         else:
