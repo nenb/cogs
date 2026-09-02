@@ -184,7 +184,8 @@ jobs:
             EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" EXPECTED_CONTROL_SHA256="$EXPECTED_CONTROL_SHA256" \
             EXPECTED_WORKFLOW_SHA256="$EXPECTED_WORKFLOW_SHA256" EXPECTED_RESULT_SCHEMA_SHA256="$EXPECTED_RESULT_SCHEMA_SHA256" \
             EXPECTED_ROOTFS_DESCRIPTOR_SHA256="$EXPECTED_ROOTFS_DESCRIPTOR_SHA256" \
-            /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py grant >>"$GITHUB_OUTPUT"
+            /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py grant \
+            | /usr/bin/tee -a "$GITHUB_OUTPUT" >/dev/null
 
       - name: Provision the fresh-host NFT writer owner
         timeout-minutes: 1
@@ -212,7 +213,7 @@ jobs:
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             /usr/bin/python3 -I -B "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/$entry" \
-            >"$CYCLE_STAGING/receipt.partial"
+            | /usr/bin/tee "$CYCLE_STAGING/receipt.partial" >/dev/null
 
       - name: Invoke cleanup-only recovery after every cycle outcome
         id: recovery
