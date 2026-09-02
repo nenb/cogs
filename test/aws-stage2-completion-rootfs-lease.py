@@ -574,40 +574,45 @@ def stable_terminal_replacement_test():
 
 def operation_parent_transition_tests():
     control = fs.OperationControl(time.monotonic_ns() + 30_000_000_000, lambda: False)
-    retained, reference, _parent = graph_fixture()
-    held = lease.RetainedRootfsLease(reference, retained)
-    old_prefix = retained.base_chain.components[0].node
-    nodes = tuple(held_node(200 + index, f"prefix-{index}") for index in range(9))
-    base = fs.HeldChain(retained.base_chain.anchor, tuple(
-        fs.ChainComponent(fs._name(f"p{index}"), node) for index, node in enumerate(nodes)))
-    owned = retained.owned
-    locked_chain = fs.HeldChain(base.anchor, base.components + (
-        fs.ChainComponent(builder.STATE_NAME, owned.locked.state),))
-    retained.base_chain = base
-    retained.owned = builder.OwnedOperation(
-        builder.LockedState(locked_chain, owned.locked.state, owned.locked.lock),
-        owned.active, owned.operation, owned.root, owned.operation_name)
-    fs._close_node(old_prefix)
-    before = nodes[builder.COMPLETION_INDEX].generation
-    expected_names = tuple(sorted(name.raw for name in (
-        lease.kata_operation.ARTIFACTS_NAME, lease.kata_operation.ROOTFS_NAME,
-        lease.kata_operation.IMMUTABLE_PREPARATION_NAME,
-        lease.kata_operation.RUNTIME_NAME, lease.kata_operation.STATE_NAME)))
-    def snapshot(nlink):
-        return SimpleNamespace(raw_names=expected_names, generation=fs.HostGeneration(
-            before.key, before.mode, before.uid, before.gid, nlink,
-            before.size, before.mtime_ns, before.ctime_ns + 1))
-    with patched((fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink))):
-        rejected(lambda: lease._admit_operation_parent_transition(held, control))
-    with patched(
-        (fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink + 1)),
-        (fs, "_revalidate_chain", lambda *_args: None),
-    ):
-        lease._admit_operation_parent_transition(held, control)
-    assert retained.base_chain.components[builder.COMPLETION_INDEX].node.generation.nlink == before.nlink + 1
-    assert retained.owned.locked.chain.components[-1].node is retained.owned.locked.state
-    close_graph_nodes(retained)
-    matrix_case(2)
+    for ordinal, is_prebuilt in enumerate((False, True)):
+        retained, reference, _parent = graph_fixture()
+        if is_prebuilt:
+            object.__setattr__(reference, "prebuilt_descriptor_raw", b"prebuilt-test-marker")
+        held = lease.RetainedRootfsLease(reference, retained)
+        old_prefix = retained.base_chain.components[0].node
+        nodes = tuple(held_node(200 + ordinal * 20 + index, f"prefix-{ordinal}-{index}") for index in range(9))
+        base = fs.HeldChain(retained.base_chain.anchor, tuple(
+            fs.ChainComponent(fs._name(f"p{index}"), node) for index, node in enumerate(nodes)))
+        owned = retained.owned
+        locked_chain = fs.HeldChain(base.anchor, base.components + (
+            fs.ChainComponent(builder.STATE_NAME, owned.locked.state),))
+        retained.base_chain = base
+        retained.owned = builder.OwnedOperation(
+            builder.LockedState(locked_chain, owned.locked.state, owned.locked.lock),
+            owned.active, owned.operation, owned.root, owned.operation_name)
+        fs._close_node(old_prefix)
+        before = nodes[builder.COMPLETION_INDEX].generation
+        names = [lease.kata_operation.ROOTFS_NAME,
+                 lease.kata_operation.IMMUTABLE_PREPARATION_NAME,
+                 lease.kata_operation.RUNTIME_NAME, lease.kata_operation.STATE_NAME]
+        if not is_prebuilt:
+            names.append(lease.kata_operation.ARTIFACTS_NAME)
+        expected_names = tuple(sorted(name.raw for name in names))
+        def snapshot(nlink):
+            return SimpleNamespace(raw_names=expected_names, generation=fs.HostGeneration(
+                before.key, before.mode, before.uid, before.gid, nlink,
+                before.size, before.mtime_ns, before.ctime_ns + 1))
+        with patched((fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink))):
+            rejected(lambda: lease._admit_operation_parent_transition(held, control))
+        with patched(
+            (fs, "_enumerate_stable", lambda *_args: snapshot(before.nlink + 1)),
+            (fs, "_revalidate_chain", lambda *_args: None),
+        ):
+            lease._admit_operation_parent_transition(held, control)
+        assert retained.base_chain.components[builder.COMPLETION_INDEX].node.generation.nlink == before.nlink + 1
+        assert retained.owned.locked.chain.components[-1].node is retained.owned.locked.state
+        close_graph_nodes(retained)
+    matrix_case(4)
 
 
 def alias_and_close_tests():
