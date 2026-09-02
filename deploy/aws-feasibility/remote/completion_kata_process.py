@@ -2432,9 +2432,8 @@ def _recover_pending_fixed(journal):
     if (terminal is None
             and kata_operation._recovery_no_effect_classification(intent) is not None
             and kata_operation._is_production_recovery_operation(journal)):
-        context = kata_operation._command_context(journal)
         history = kata_operation._network_history(journal)
-        baseline_no_effect = (context.lifecycle_phase == "FS_SETTLED"
+        baseline_no_effect = (intent["lifecycle_phase"] == "FS_SETTLED"
             and not kata_operation._network_records(journal)
             and not any(kind in kata_operation.network_journal.RECORDS
                         for kind, _body in history))

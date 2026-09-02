@@ -839,6 +839,30 @@ assert not operation._snapshot_free_baseline_prefix((
     SimpleNamespace(record_type="COMMAND_INTENT", body={"command_id": "CTR_RUN"}),))
 assert not operation._snapshot_free_baseline_prefix((
     SimpleNamespace(record_type="CTR_LAUNCH_ISSUED_V1", body={}),))
+snapshot_free_runtime_records = tuple(SimpleNamespace(record_type=kind, body={}) for kind in (
+    "LIFECYCLE_DEADLINE_V1", "PRODUCTION_ADMISSION_V2"))
+assert operation._snapshot_free_runtime_absence(snapshot_free_runtime_records, "FS_SETTLED")
+operation._validate_runtime_layout(set(), snapshot_free_runtime_records, "FS_SETTLED")
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, snapshot_free_runtime_records, "FS_SETTLED")
+pending_baseline_records = snapshot_free_runtime_records + (
+    SimpleNamespace(record_type="COMMAND_INTENT_V2", body={
+        "command_id": next(iter(classified)), "command_serial": 0}),)
+assert not operation._snapshot_free_baseline_prefix(pending_baseline_records)
+assert operation._snapshot_free_baseline_prefix(pending_baseline_records, pending=True)
+assert operation._snapshot_free_runtime_absence(pending_baseline_records, "FS_SETTLED")
+operation._validate_runtime_layout(set(), pending_baseline_records, "FS_SETTLED")
+prepared_runtime_records = snapshot_free_runtime_records + (
+    SimpleNamespace(record_type="RUNTIME_PREPARED_V1", body={}),)
+assert not operation._snapshot_free_runtime_absence(prepared_runtime_records, "FS_SETTLED")
+for denied_runtime_records in (
+    snapshot_free_runtime_records[:1],
+    snapshot_free_runtime_records + (SimpleNamespace(record_type="COMMAND_INTENT_V2",
+        body={"command_id": "IP_HOST_LINKS", "command_serial": 0}),),
+):
+    assert not operation._snapshot_free_runtime_absence(denied_runtime_records, "FS_SETTLED")
+    rejected(lambda denied_runtime_records=denied_runtime_records:
+             operation._validate_runtime_layout(set(), denied_runtime_records, "FS_SETTLED"))
 
 # Prepared custody is a non-phase event with exact bytes and strict one-shot ordering.
 prepared_prefix, _unused, _leased = leased_prefix()

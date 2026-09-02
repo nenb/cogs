@@ -100,7 +100,7 @@ def _recovery_no_effect_classification(intent):
             or command_id in command_policy.SSH_COMMANDS):
         return None
     return classification
-def _snapshot_free_baseline_prefix(records):
+def _snapshot_free_baseline_prefix(records, pending=False):
     if any(row.record_type in _V1_COMMAND_RECORDS for row in records):
         return False
     intents = [row.body for row in records if row.record_type == "COMMAND_INTENT_V2"
@@ -109,10 +109,22 @@ def _snapshot_free_baseline_prefix(records):
     approved = network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
     outcomes = {row.body["command_serial"] for row in records
                 if row.record_type == "COMMAND_OUTCOME_V2"}
+    unsettled = [row for row in intents if row["command_serial"] not in outcomes]
+    pending_prefix = (not unsettled or pending and len(unsettled) == 1
+                      and unsettled[0] is intents[-1]
+                      and records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2"})
     return (command_ids == approved[:len(command_ids)]
             and all(_recovery_no_effect_classification(row) is not None for row in intents)
-            and all(row["command_serial"] in outcomes for row in intents)
+            and pending_prefix
             and not any(row.record_type == "CTR_LAUNCH_ISSUED_V1" for row in records))
+def _snapshot_free_runtime_absence(records, phase):
+    kinds = [row.record_type for row in records]
+    return (phase == "FS_SETTLED"
+            and kinds.count("PRODUCTION_ADMISSION_V2") == 1
+            and kinds.count("LIFECYCLE_DEADLINE_V1") == 1
+            and not any(kind in {"RUNTIME_PREPARED_V1", "RUNTIME_STAGE_INTENT_V4",
+                                 "RUNTIME_STAGED_V3"} for kind in kinds)
+            and _snapshot_free_baseline_prefix(records, pending=True))
 
 
 def _validate_runtime_layout(names, records, phase):
@@ -134,6 +146,8 @@ def _validate_runtime_layout(names, records, phase):
         _fail(runtime_present)
     elif intent and not staged:
         _fail(runtime_present)
+    elif not runtime_present and _snapshot_free_runtime_absence(records, phase):
+        pass
     elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY", *KEY_INPUT_PHASES}:
         _fail(runtime_present or prepared and not intent)
 def _validate_stage_layout(raw_names, records, phase, completion_key):
@@ -2241,13 +2255,17 @@ def _make_authority():
                 absent_settlement = (phase == "FS_SETTLED" and settlements
                                      and settlements[-1] > 0
                                      and records[settlements[-1] - 1].record_type == "FS_ABSENT")
+                snapshot_free_input_cleanup = (phase == "FS_SETTLED"
+                    and any(item.record_type == "SNAPSHOT_FREE_CLEANUP_V1" for item in records)
+                    and _snapshot_free_baseline_prefix(records))
                 if phase == "FS_SETTLED" and not absent_settlement:
                     input_required.add("FS_SETTLED")
                 terminal_input_absent = (phase == "CONTAINERD_ABSENT"
                     and records[-1].record_type == "INPUT_STEP"
                     and records[-1].body["action"] == "absent"
                     and records[-1].body["path"] == ".")
-                if phase in input_required and phase != "FS_INTENT" and not terminal_input_absent:
+                if (phase in input_required and phase != "FS_INTENT"
+                        and not terminal_input_absent and not snapshot_free_input_cleanup):
                     _fail(INPUT_NAME.raw in names)
                 if (phase == "FS_ABSENT" or absent_settlement or terminal_input_absent
                         or phase in set(LIFECYCLE[LIFECYCLE.index("INPUT_REMOVED"):])
@@ -2458,6 +2476,8 @@ def _make_authority():
                 try:
                     os.fsync(self.state.operation_fd.number)
                     _fail(self.read() is None)
+                    self.classification = None
+                    self._probe_inventory = None
                 except BaseException as caught:
                     error = caught
             if error is not None:
@@ -2645,6 +2665,7 @@ def _make_authority():
             "SNAPSHOT_FREE_CLEANUP_V1", "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
             "RUNTIME_SHARE_IDENTITY_V1", "RUNTIME_NETWORK_RELEASED_V1",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
+            "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED",
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
             kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
         if (admitted or kind == "PRODUCTION_ADMISSION_V2") and not cleanup_record: _require_live_production_deadline(records)
