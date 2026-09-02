@@ -273,6 +273,8 @@ with tempfile.TemporaryDirectory() as temporary:
     assert receipt["forbidden_surfaces"] == [
         "containerd", "ctr", "kvm", "qmp", "ssh", "task", "guest-network"]
     assert module.STAGED_RUNTIME.exists() and module.KATA_ROOT.exists()
+    assert stat.S_IMODE(module.STAGED_RUNTIME.lstat().st_mode) == 0o500
+    assert stat.S_IMODE((module.STAGED_RUNTIME / "bin").lstat().st_mode) == 0o500
     module.recover_failed_preparation()
     assert not module.PREPARATION_ROOT.exists()
     assert not module.STAGED_RUNTIME.exists() and not module.KATA_ROOT.exists()

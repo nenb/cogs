@@ -81,7 +81,7 @@ def _claim_exact(contracts, source_anchor, active_expected):
                        _host_generation(active_fd)]
         _require((generations[0]["mode"], generations[1]["mode"], generations[2]["mode"],
                   generations[0]["nlink"], generations[1]["nlink"],
-                  generations[2]["nlink"]) == (0o700, 0o500, 0o400, 3, 2, 1)
+                  generations[2]["nlink"]) == (0o500, 0o500, 0o400, 3, 2, 1)
                  and generations[2]["kind"] == "file"
                  and generations[2]["size"] == active_expected["size"]
                  and _digest(active_fd, generations[2]["size"]) == active_expected["sha256"]
