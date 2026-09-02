@@ -1221,6 +1221,10 @@ def _v2_occurrence(records, index, phase, body, ownership=None):
     else:
         _fail(phase == "BASELINES_CAPTURED"
               and not any(item.body["command_id"] == command_id for item in prior))
+def _require_cycle_launch(cycle_route, launch_observation):
+    _fail(cycle_route is None or launch_observation is not None)
+
+
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
     genesis = records[0].body
@@ -1719,6 +1723,7 @@ def _legal(records):
                       [row["action"] for row in network_state["effects"]] == list(network_journal.SETUP))
             elif kind == "RUNTIME_READY":
                 _fail(phase == "NETWORK_READY")
+                _require_cycle_launch(cycle_route, launch_observation)
                 if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
             elif kind == "SSH_READY":
                 # Historical fake record only: any v2 SSH intent requires the
@@ -1813,12 +1818,6 @@ def _legal(records):
             raise OperationError()
     if phase in {"INPUT_REMOVED", *LIFECYCLE[14:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
         _fail(retained_daemon is None)
-    if cycle_route is not None and phase == "RETIRED":
-        _fail(launch_observation is not None and marker_observation is not None
-              and settlement_observation is not None
-              and (ssh_result is not None) == (cycle_route.body["route"] == "full")
-              and (readiness_result is not None) ==
-                  (cycle_route.body["route"] == "readiness"))
     return phase
 def _parse_untrusted(raw):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)

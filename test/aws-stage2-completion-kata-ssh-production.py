@@ -265,6 +265,65 @@ with patch.object(inputs, "_ProductionInputCleanup", FakeCleanup), \
           "cleanup SSH recovery result")
 check(cleanup.called and recovery_calls == [cleanup_journal], "cleanup SSH recovery ordering")
 
+# The real full producer passes the operation validator's source binding, not
+# its local parser-ID digest. The readiness failure aggregator retains its
+# initiating error before every descriptor/revocation settlement error.
+full_realm = inspect.getclosurevars(ssh._compose_production_ssh).nonlocals
+full_owner = full_realm["_ProductionSsh"](full_realm["seal"])
+full_session = ssh.AuthenticatedSession(7, "b" * 64, guest.GUEST_PROGRAM_SHA256,
+                                        "c" * 64, "d" * 64, object())
+full_realm["states"][full_owner] = {
+    "journal": object(), "session": full_session,
+    "pending_result": (7, "b" * 64, "e" * 64, b"stdout", b"canonical"),
+    "finalized": False, "revoked": False,
+}
+producer_sequence = []
+def validate_settlement(_journal, command_id, serial, binding, stdout_sha256,
+                        parser_sha256, _settled_ns):
+    check(producer_sequence == ["result"], "settlement preceded parsed result")
+    check((command_id, serial, binding, stdout_sha256) ==
+          ("SSH_READY", 7, "b" * 64, "c" * 64), "full settlement lineage")
+    check(parser_sha256 == operation.SSH_PARSER_SHA256,
+          "producer parser source binding differs from journal validator")
+    producer_sequence.append("settled")
+with patch.object(operation, "_record_ssh_result",
+                  side_effect=lambda *_args: producer_sequence.append("result")), \
+     patch.object(operation, "_cycle_route", return_value={"route": "full"}), \
+     patch.object(operation, "_record_ssh_settled", side_effect=validate_settlement), \
+     patch.object(operation, "_record_ssh_ready",
+                  side_effect=lambda *_args: producer_sequence.append("ready")), \
+     patch.object(operation, "_boottime_ns", return_value=99):
+    check(full_owner.finalize_authenticated(full_session) is full_session,
+          "full producer finalization failed")
+check(producer_sequence == ["result", "settled", "ready"],
+      "full producer/validator sequence differs")
+
+readiness_realm = inspect.getclosurevars(ssh._compose_production_readiness_ssh).nonlocals
+readiness_owner = readiness_realm["_ProductionReadinessSsh"](readiness_realm["seal"])
+primary = RuntimeError("readiness-primary")
+revocation_error = RuntimeError("readiness-revocation")
+close_error = OSError(5, "readiness-executable-close")
+class FailingReadinessInputs:
+    def prepare_launch(self): raise primary
+readiness_realm["states"][readiness_owner] = {
+    "journal": object(), "inputs": FailingReadinessInputs(), "executable": object(),
+    "executable_released": False, "issued": False, "revoked": False,
+    "finalized": False, "pending": None,
+}
+class PortableBaseExceptionGroup(BaseException):
+    def __init__(self, message, exceptions):
+        super().__init__(message); self.exceptions = tuple(exceptions)
+with patch.object(operation, "_command_context",
+                  return_value=type("Context", (), {"lifecycle_phase": "RUNTIME_READY"})()), \
+     patch.object(operation, "_revoke_or_require_terminal", side_effect=revocation_error), \
+     patch.object(process, "_release_attested_executable", side_effect=close_error), \
+     patch.object(ssh, "BaseExceptionGroup", PortableBaseExceptionGroup, create=True):
+    try: readiness_owner.authenticate()
+    except PortableBaseExceptionGroup as error:
+        check(error.exceptions == (primary, revocation_error, close_error),
+              "readiness settlement lost primary-first ordering")
+    else: raise AssertionError("readiness primary/cleanup aggregation was accepted")
+
 # Exact guest parser and canonical typed result: marker plus all 21 fixed rows.
 lines = [guest.GUEST_READY_MARKER]
 for ordinal, marker in enumerate(guest.GUEST_NETWORK_MARKERS, 1):

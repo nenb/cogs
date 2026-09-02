@@ -60,7 +60,11 @@ def _read_fixed(path,mode,owner):
         _require(stat.S_ISREG(before.st_mode) and stat.S_IMODE(before.st_mode)==0o400
                  and (before.st_uid,before.st_gid)==owner and before.st_nlink==1
                  and 0<before.st_size<=MAX_BYTES)
-        raw=os.read(descriptor,MAX_BYTES+1);after=os.fstat(descriptor)
+        raw=b""
+        while len(raw)<before.st_size:
+            part=os.read(descriptor,min(MAX_BYTES+1-len(raw),before.st_size-len(raw)))
+            _require(part);raw+=part
+        _require(not os.read(descriptor,1));after=os.fstat(descriptor)
         stable=lambda item:(item.st_dev,item.st_ino,item.st_mode,item.st_uid,item.st_gid,item.st_nlink,item.st_size,item.st_mtime_ns,item.st_ctime_ns)
         _require(len(raw)==before.st_size and stable(before)==stable(after))
         grant=decode(raw);_require(grant.mode==mode)

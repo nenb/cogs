@@ -478,6 +478,27 @@ def _timestamp(value):
         "timestamp")
 
 
+def _successful_cycle_launch(journal, durable):
+    """Require exact durable launch lineage; never infer or replay a launch."""
+    route = kata_operation._cycle_route(journal)
+    if route is None:
+        return None
+    body = durable.body
+    _fail(durable.command_id == "CTR_RUN" and body["outcome"] == "exited"
+          and body["status"] == 0 and not body["uncertain"],
+          "successful CTR_RUN outcome required")
+    history = journal.runtime_recovery_history()
+    matches = [row for row in history["launches"]
+               if row["command_serial"] == durable.command_serial
+               and row["binding_sha256"] == durable.binding_sha256]
+    if not matches:
+        journal.revoke_readiness()
+        raise KataRuntimeError("successful CTR_RUN launch lineage absent")
+    _fail(len(matches) == 1 and matches[0]["route"] == route["route"],
+          "CTR_RUN launch lineage differs")
+    return matches[0]
+
+
 def _durable_ctr_launch_path(history):
     """Select the sole successful durable CTR_RUN preexec fd binding."""
     runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]
@@ -1878,6 +1899,7 @@ def _runtime_owner_routes():
         if not success:
             _fail(not durable.body["uncertain"], "uncertain CTR_RUN preserved")
             state[0].revoke_readiness(); raise KataRuntimeError("certain CTR_RUN failure")
+        _successful_cycle_launch(state[0], durable)
         _fail(verify_daemon(state[6]) == retained, "retained daemon changed during launch")
         fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_sockets": {name: _canonical_fact(retained["socket_generations"][name]) for name, _quarantine in socket_contract}, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact

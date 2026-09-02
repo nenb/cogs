@@ -918,6 +918,28 @@ rejected(lambda: append(sticky, "RETIRE_INTENT", retire_body))
 rejected(lambda: append(sticky, "RETIRED", retire_body))
 rejected(lambda: operation._make_fake_lifecycle_for_tests(sticky))
 
+# Cycle success is a receipt condition, not generic cleanup authority. The
+# coordinator cut matrix proves failed routes retire with receipt denial, while
+# this state-machine gate forbids RUNTIME_READY without durable launch lineage.
+operation._require_cycle_launch(None, None)
+operation._require_cycle_launch(object(), object())
+rejected(lambda: operation._require_cycle_launch(object(), None))
+
+successful_run = operation.DurableCommandOutcome(8, "CTR_RUN", "7" * 64, {
+    "outcome": "exited", "status": 0, "uncertain": False})
+class CycleLaunchJournal:
+    def __init__(self, launches): self.launches, self.revocations = launches, 0
+    def runtime_recovery_history(self): return {"launches": self.launches}
+    def revoke_readiness(self): self.revocations += 1
+launch = {"route": "full", "command_serial": 8, "binding_sha256": "7" * 64}
+with patch.object(operation, "_cycle_route", return_value={"route": "full"}):
+    exact_launch = CycleLaunchJournal((launch,))
+    assert runtime._successful_cycle_launch(exact_launch, successful_run) == launch
+    missing_launch = CycleLaunchJournal(())
+    rejected(lambda: runtime._successful_cycle_launch(missing_launch, successful_run))
+    assert missing_launch.revocations == 1
+    assert missing_launch.runtime_recovery_history()["launches"] == ()
+
 # The durable deadline uses strict admission/claim semantics at its exact edge.
 deadline_raw, _unused, _unused = leased_prefix(); edge = 100 + operation.JOURNAL_TOTAL_NS
 edge_body = {"operation_token": token, "admission_boottime_ns": 100,

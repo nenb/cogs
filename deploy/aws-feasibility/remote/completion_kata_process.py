@@ -782,6 +782,15 @@ def _retain_parent_ssh_inputs(bindings):
         raise
 
 
+def _close_parent_ssh_inputs(descriptors, errors):
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            errors.append(f"parent-ssh-fd-{descriptor}-close:{error.errno}")
+    return ()
+
+
 def _write_child_error(descriptor, value):
     try:
         os.write(descriptor, struct.pack("!I", min(max(int(value), 1), 65535)))
@@ -1924,6 +1933,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             retained_pidfd = pidfd
             pidfd = None
             _close_and_prove_absent(retained_pidfd, "leader-pidfd", errors)
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, errors)
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
@@ -2000,6 +2010,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             retained_pidfd = pidfd
             pidfd = None
             _close_and_prove_absent(retained_pidfd, "leader-pidfd", settlement_errors)
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, settlement_errors)
         known_not_started = pid is None and not preexec_recorded
         if not known_not_started and not settlement_errors:
             settlement_errors.append("launch-boundary-uncertain")
@@ -2019,9 +2030,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             settlement_errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join((*diagnostics, *settlement_errors))) from primary
     finally:
-        for descriptor in parent_ssh_fds:
-            try: os.close(descriptor)
-            except OSError: pass
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, errors)
         if network_fd is not None:
             try: os.close(network_fd)
             except OSError: pass

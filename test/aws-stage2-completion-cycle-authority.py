@@ -4,12 +4,15 @@
 import json,os
 from pathlib import Path
 import sys,tempfile
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"deploy/aws-feasibility/remote"))
 sys.path.insert(0,str(ROOT/"deploy/aws-feasibility"))
 import completion_campaign_production as campaign
 import completion_cycle_authority as authority
 import completion_cycle_evidence as evidence
+import completion_cycle_full as full_entry
+import completion_cycle_readiness as readiness_entry
 import completion_kata_operation as operation
 
 
@@ -49,8 +52,26 @@ for mode,ordinal,route in (("full",1,evidence._fixed_full_route()),("readiness",
     with tempfile.TemporaryDirectory() as temporary:
         parent=Path(temporary)/"cycle";parent.mkdir(mode=0o700);parent.chmod(0o700);path=parent/"grant.json"
         path.write_bytes(encoded);path.chmod(0o400);authority._claimed=False
-        seen=parent.lstat();observed=authority._claim(path,mode,(seen.st_uid,seen.st_gid))
+        seen=parent.lstat();real_read=os.read
+        with patch.object(authority.os,"read",side_effect=lambda fd,size:real_read(fd,min(size,7))):
+            observed=authority._claim(path,mode,(seen.st_uid,seen.st_gid))
         assert observed==value and not parent.exists()
+
+for entry,run_name in ((full_entry,"_run_fixed_full_cycle"),(readiness_entry,"_run_fixed_readiness_cycle")):
+    writes=[]
+    def short_write(descriptor,value):
+        written=min(3,len(value));writes.append((descriptor,value[:written]));return written
+    with patch.object(entry.coordinator,run_name,return_value=object()), patch.object(
+            entry.evidence,"_consume_cycle_receipt",return_value=b"receipt\n"), patch.object(
+            entry.os,"write",side_effect=short_write):
+        entry.main()
+    assert b"".join(value for descriptor,value in writes if descriptor==1)==b"receipt\n"
+    with patch.object(entry.coordinator,run_name,return_value=object()), patch.object(
+            entry.evidence,"_consume_cycle_receipt",return_value=b"receipt\n"), patch.object(
+            entry.os,"write",return_value=0):
+        try:entry.main()
+        except OSError:pass
+        else:raise AssertionError("zero-progress cycle receipt write accepted")
 
 synthetic=evidence._synthetic_full_route_for_tests()
 assert evidence._cycle_launch_authorized(synthetic,None)

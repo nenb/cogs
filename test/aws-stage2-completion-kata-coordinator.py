@@ -232,6 +232,28 @@ for route, grant, ssh_event in (
     assert fake.events[-1] == "CUSTODY_ABORTED"
     assert "OWNER_EVIDENCE" not in fake.events and "RECEIPT_ISSUED" not in fake.events
 
+# Every failed no-mint cycle cut after operation assignment still reaches exact
+# retirement/removal/residue, while cycle receipt issuance remains unreachable.
+for route, grant in (
+        (coordinator.cycle_evidence._fixed_full_route(), rehearsal_grant("full", 1)),
+        (coordinator.cycle_evidence._fixed_readiness_route(),
+         rehearsal_grant("readiness", 2))):
+    cycle_forward = (coordinator.FORWARD_ORDER[3:] if grant.mode == "full" else
+                     (*coordinator.FORWARD_ORDER[3:-2],
+                      "READINESS_SSH_AUTHENTICATED"))
+    for event in cycle_forward:
+        for side in ("before", "after"):
+            fake = FakeOwners((side, event))
+            with patch.object(coordinator, "_owners", fake), patch.object(
+                    coordinator.cycle_evidence, "_issue_cycle_receipt") as issuer:
+                try: coordinator._run_cycle(route, grant)
+                except BaseException: pass
+                else: raise AssertionError("failed cycle minted a receipt")
+            issuer.assert_not_called()
+            assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+            assert "RETIRED" in fake.events and "OPERATION_REMOVED" in fake.events
+            assert fake.events[-1] == "CUSTODY_ABORTED"
+
 # Every before/after forward cut stops forward progress. Once an operation was
 # returned, all cleanup phases are attempted in order. Before that, only the
 # retained preparation can be abandoned.
