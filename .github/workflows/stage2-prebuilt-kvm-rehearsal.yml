@@ -18,10 +18,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rehearse:
+  route_rehearsal:
+    name: Authentic no-mint ${{ matrix.route }} route on a fresh runner
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        route: [full, readiness]
     runs-on: ubuntu-24.04
     timeout-minutes: 250
     env:
+      ROUTE: ${{ matrix.route }}
       EXACT_H: ${{ inputs.exact_implementation_head }}
       PUBLISHER_RUN_ID: ${{ inputs.publisher_run_id }}
       PUBLISHER_ARTIFACT_ID: ${{ inputs.publisher_artifact_id }}
@@ -34,6 +41,7 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
+          case "$ROUTE" in full|readiness) ;; *) exit 64 ;; esac
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -166,25 +174,36 @@ jobs:
             PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
 
-      - name: Issue the sole non-cloud full-route rehearsal grant
-        id: full_grant
+      - name: Issue the sole mode-bound non-cloud rehearsal grant on this fresh host
+        id: route_grant
         run: |
           set -euo pipefail
           sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
             /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py full
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py "$ROUTE"
 
-      - name: Execute exactly one authentic full-route lifecycle without minting
-        id: full_entry
+      - name: Execute exactly one authentic mode-bound lifecycle without minting
+        id: route_entry
         continue-on-error: true
-        timeout-minutes: 132
+        timeout-minutes: ${{ matrix.route == 'full' && 132 || 35 }}
         run: |
           set -euo pipefail
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh
+          case "$ROUTE" in
+            full)
+              entry=run-stage2-completion-full-rehearsal.sh
+              deadline=7800s
+              ;;
+            readiness)
+              entry=run-stage2-completion-readiness-rehearsal.sh
+              deadline=1980s
+              ;;
+            *) exit 64 ;;
+          esac
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s "$deadline" \
+            "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/$entry"
 
-      - name: Run cleanup-only recovery after the full route or a pre-entry refusal
-        id: full_recovery
+      - name: Run cleanup-only recovery after this route or a pre-entry refusal
+        id: route_recovery
         if: always() && steps.preparation.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 13
@@ -193,48 +212,16 @@ jobs:
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
             /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
 
-      - name: Issue the sole non-cloud readiness-route rehearsal grant
-        id: readiness_grant
-        if: steps.full_entry.outcome == 'success' && steps.full_recovery.outcome == 'success'
-        run: |
-          set -euo pipefail
-          sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
-            /usr/bin/python3 -I -B \
-            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py readiness
-
-      - name: Execute exactly one authentic readiness-route lifecycle without minting
-        id: readiness_entry
-        if: steps.readiness_grant.outcome == 'success'
-        continue-on-error: true
-        timeout-minutes: 35
-        run: |
-          set -euo pipefail
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1980s \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh
-
-      - name: Run cleanup-only recovery after the readiness route or grant refusal
-        id: readiness_recovery
-        if: always() && steps.readiness_grant.outcome != 'skipped'
-        continue-on-error: true
-        timeout-minutes: 13
-        run: |
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 720s \
-            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
-
-      - name: Settle fixed roots only after the last applicable recovery
+      - name: Settle this fresh host's fixed roots only after recovery
         id: fixed_cleanup
         if: always()
         continue-on-error: true
         timeout-minutes: 3
         env:
-          FULL_RECOVERY: ${{ steps.full_recovery.outcome }}
-          READINESS_GRANT: ${{ steps.readiness_grant.outcome }}
-          READINESS_RECOVERY: ${{ steps.readiness_recovery.outcome }}
+          RECOVERY: ${{ steps.route_recovery.outcome }}
         run: |
           set -euo pipefail
-          test "$FULL_RECOVERY" = success
-          test "$READINESS_GRANT" = skipped || test "$READINESS_RECOVERY" = success
+          test "$RECOVERY" = success
           sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
             REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
@@ -262,23 +249,36 @@ jobs:
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:755
           sudo -n chmod 0777 /opt
 
-      - name: Enforce singular no-mint route and cleanup outcomes
+      - name: Enforce this job's singular no-mint route and cleanup outcomes
         if: always()
         env:
-          FULL_ENTRY: ${{ steps.full_entry.outcome }}
-          FULL_RECOVERY: ${{ steps.full_recovery.outcome }}
-          READINESS_ENTRY: ${{ steps.readiness_entry.outcome }}
-          READINESS_RECOVERY: ${{ steps.readiness_recovery.outcome }}
+          ROUTE_ENTRY: ${{ steps.route_entry.outcome }}
+          ROUTE_RECOVERY: ${{ steps.route_recovery.outcome }}
           FIXED_CLEANUP: ${{ steps.fixed_cleanup.outcome }}
           RESIDUE: ${{ steps.residue.outcome }}
           SCAFFOLD: ${{ steps.scaffold.outcome }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
-          for outcome in "$FULL_ENTRY" "$FULL_RECOVERY" "$READINESS_ENTRY" \
-            "$READINESS_RECOVERY" "$FIXED_CLEANUP" "$RESIDUE" "$SCAFFOLD"; do
+          for outcome in "$ROUTE_ENTRY" "$ROUTE_RECOVERY" "$FIXED_CLEANUP" "$RESIDUE" "$SCAFFOLD"; do
             test "$outcome" = success
           done
           test ! -e "$REPORT_STAGING"
           test ! -e "$REPORT_READBACK_STAGING"
           test ! -e "$RECEIPT_READBACK_STAGING"
+
+  aggregate:
+    name: Require both independent no-mint route jobs
+    needs: route_rehearsal
+    if: ${{ always() }}
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Aggregate route status only
+        env:
+          ROUTE_RESULT: ${{ needs.route_rehearsal.result }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$ROUTE_RESULT" = success
