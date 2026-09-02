@@ -20,6 +20,7 @@ import completion_local_evidence as evidence
 import completion_local_full as local
 
 PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v1"
+FORMAL_PRIVATE_VERSION = "cogs.stage2-formal-local-cycle-receipt/v1"
 TEARDOWN_PROJECTION = local.TEARDOWN_PHASES
 PRIVATE_TEARDOWN_RECORDS = evidence.JOURNAL_TEARDOWN_ORDER
 RESIDUE_FACTS = local.RESIDUE_FACTS
@@ -81,8 +82,11 @@ def _route_realm():
     synthetic_readiness = _ReadinessRoute(seal)
     diagnostic_full = _FullRoute(seal)
     diagnostic_readiness = _ReadinessRoute(seal)
+    formal_full = _FullRoute(seal)
+    formal_readiness = _ReadinessRoute(seal)
     authorized = {synthetic_full, synthetic_readiness}
     diagnostics = {diagnostic_full, diagnostic_readiness}
+    formal = {formal_full, formal_readiness}
     no_grant = authorized | diagnostics
     classifications = {}
     for route, name, program, marker, classification, domain in (
@@ -101,6 +105,11 @@ def _route_realm():
          "diagnostic", b"diagnostic-current-source"),
         (diagnostic_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
          readiness_guest.MARKER_SHA256, "diagnostic", b"diagnostic-current-source"),
+        (formal_full, "full", full_guest.GUEST_PROGRAM_SHA256,
+         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(),
+         "formal", b"formal-non-cloud-qualification"),
+        (formal_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
+         readiness_guest.MARKER_SHA256, "formal", b"formal-non-cloud-qualification"),
     ):
         capability = hashlib.sha256(
             b"cogs.stage2-cycle-route/v1\0" + domain + b"\0" + name.encode("ascii") +
@@ -114,17 +123,25 @@ def _route_realm():
     def synthetic_readiness_route(): return synthetic_readiness
     def diagnostic_full_route(): return diagnostic_full
     def diagnostic_readiness_route(): return diagnostic_readiness
+    def formal_full_route(): return formal_full
+    def formal_readiness_route(): return formal_readiness
     def classify(route):
         describe(route)
         value = classifications.get(route)
-        _require(value in {"production", "synthetic", "diagnostic"},
+        _require(value in {"production", "synthetic", "diagnostic", "formal"},
                  "exact cycle route classification required")
         return value
     def is_diagnostic(route): return route in diagnostics
+    def is_formal(route): return route in formal
     def launch_authorized(route, grant=None):
         name, _capability, _program, _marker = describe(route)
         if route in no_grant:
             return grant is None
+        if route in formal:
+            import completion_formal_cycle_authority as formal_authority
+            return (type(grant) is formal_authority.FormalCycleGrant
+                    and grant.authority == formal_authority.AUTHORITY
+                    and grant.mode == name)
         import completion_cycle_authority as cycle_authority
         return (type(grant) is cycle_authority.campaign.CycleLaunchGrant
                 and grant.mode == name)
@@ -137,7 +154,13 @@ def _route_realm():
         name, capability, program, marker = describe(route)
         _require(operation._cycle_route(journal) is None,
                  "cycle route already durably bound")
-        if route not in no_grant:
+        if route in formal:
+            import completion_formal_cycle_authority as formal_authority
+            _require(type(grant) is formal_authority.FormalCycleGrant
+                     and grant.authority == formal_authority.AUTHORITY
+                     and grant.mode == name,
+                     "complete non-cloud formal grant required before route binding")
+        elif route not in no_grant:
             import completion_cycle_authority as cycle_authority
             _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
                      and grant.mode == name,
@@ -149,15 +172,17 @@ def _route_realm():
         return route
     return (_FullRoute, _ReadinessRoute, full_route, readiness_route,
             synthetic_full_route, synthetic_readiness_route,
-            diagnostic_full_route, diagnostic_readiness_route, classify,
-            is_diagnostic, launch_authorized, describe, bind)
+            diagnostic_full_route, diagnostic_readiness_route,
+            formal_full_route, formal_readiness_route, classify,
+            is_diagnostic, is_formal, launch_authorized, describe, bind)
 
 
 (_FullRoute, _ReadinessRoute, _fixed_full_route, _fixed_readiness_route,
  _synthetic_full_route_for_tests, _synthetic_readiness_route_for_tests,
- _diagnostic_full_route, _diagnostic_readiness_route, _classify_route,
- _is_diagnostic_route, _cycle_launch_authorized, _describe_route,
- _bind_operation_route) = _route_realm()
+ _diagnostic_full_route, _diagnostic_readiness_route,
+ _formal_full_route, _formal_readiness_route, _classify_route,
+ _is_diagnostic_route, _is_formal_route, _cycle_launch_authorized,
+ _describe_route, _bind_operation_route) = _route_realm()
 del _route_realm
 
 
@@ -259,9 +284,12 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                   route_record.body["marker_sha256"]) ==
                  (name, capability, program, marker))
         production_grant = route_record.body["grant_authority"] == "production"
-        _require(production_grant == (classification == "production"),
+        formal_grant = classification == "formal"
+        _require(production_grant == (classification == "production")
+                 and (not formal_grant or route_record.body["grant_authority"] ==
+                      "non-cloud-formal-qualification-cycle-only"),
                  "route/grant authority differs")
-        if not production_grant:
+        if classification in {"synthetic", "diagnostic"}:
             _require(route_record.body["grant_authority"] == "synthetic"
                      and all(route_record.body[name] is None for name in (
                          "batch_commitment", "cycle_ordinal", "implementation_revision",
@@ -326,14 +354,22 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                             launch.body["kata_launch_started_boottime_ns"],
         }
         qmp = lifecycle.runtime_observation
+        production_cycle_grant = ({field: route_record.body[field] for field in (
+            "batch_commitment", "cycle_ordinal", "implementation_revision",
+            "control_revision", "static_control_sha256", "rootfs_descriptor_sha256",
+            "ami_commitment", "plan_sha256", "grant_commitment")}
+            if production_grant else None)
+        formal_cycle_grant = ({
+            **{field: route_record.body[field] for field in (
+                "authority", "batch_commitment", "cycle_ordinal",
+                "implementation_revision", "control_revision", "source_manifest_sha256",
+                "static_control_sha256", "workflow_sha256", "result_schema_sha256",
+                "rootfs_descriptor_sha256", "workflow_run_id", "workflow_run_attempt",
+                "grant_commitment")}, "mode": name} if formal_grant else None)
         value = {
             "version": PRIVATE_VERSION, "route": name,
             "cycle_capability_sha256": capability,
-            "cycle_grant": ({name: route_record.body[name] for name in (
-                "batch_commitment", "cycle_ordinal", "implementation_revision",
-                "control_revision", "static_control_sha256",
-                "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
-                "grant_commitment")} if production_grant else None),
+            "cycle_grant": production_cycle_grant,
             "production_publication_authorized": False,
             "provider_execution_observed": False,
             "aws_authority": (route_record.body["grant_commitment"]
@@ -366,6 +402,23 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
             value["diagnostic_custody_lineage"] = custody_projection
         else:
             value["source_bindings"] = custody_projection
+        if formal_grant:
+            lifecycle_objects = {
+                "rootfs_leases": len(by_kind.get("ROOTFS_LEASED", ())),
+                "runtime_stages": len(by_kind.get("RUNTIME_STAGED_V3", ())),
+                "task_launches": len(by_kind.get("CTR_LAUNCH_ISSUED_V1", ())),
+            }
+            _require(set(lifecycle_objects.values()) == {1},
+                     "exact rootfs lease, runtime, and task required")
+            value.update({
+                "version": FORMAL_PRIVATE_VERSION,
+                "authority": "non-aws-formal-qualification-owner-evidence-only",
+                "cycle_grant": formal_cycle_grant,
+                "aws_authority": None,
+                "formal_qualification_authority": route_record.body["grant_commitment"],
+                "rootfs_token": records[0].body["rootfs_token"],
+                "lifecycle_objects": lifecycle_objects,
+            })
         return value
 
     def prepare(route, lifecycle):
@@ -394,9 +447,11 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
             value["runtime_readiness_lineage"] = runtime.canonical_value()
             cls = _ReadinessCycleReceipt
         raw = _canonical(value)
-        commitment = hashlib.sha256(
-            b"cogs.stage2-cycle-private-owner-receipt/v1\0" + raw).hexdigest()
-        return cls, value, raw, commitment
+        domain = (b"cogs.stage2-formal-local-cycle-receipt/v1\0"
+                  if _is_formal_route(route)
+                  else b"cogs.stage2-cycle-private-owner-receipt/v1\0")
+        commitment = hashlib.sha256(domain + raw).hexdigest()
+        return cls, value, raw, commitment, domain
 
     def settle(route, lifecycle, mint):
         """Validate exact receipt bytes, then close custody once before any mint."""
@@ -419,10 +474,10 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                 "cycle receipt transaction failed; nothing minted") from cause
         if not mint:
             return None
-        cls, value, raw, commitment = prepared
+        cls, value, raw, commitment, domain = prepared
         try:
             receipt = cls(seal, value, commitment)
-            receipts[receipt] = (raw, commitment)
+            receipts[receipt] = (raw, commitment, domain)
             return receipt
         except BaseException as error:
             raise CycleEvidenceError("cycle receipt commit failed; nothing minted") from error
@@ -440,10 +495,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
         _require((type(receipt) is _FullCycleReceipt or
                   type(receipt) is _ReadinessCycleReceipt) and state is not None,
                  "issued one-shot cycle receipt required")
-        raw, commitment = state
-        _require(hashlib.sha256(
-            b"cogs.stage2-cycle-private-owner-receipt/v1\0" + raw).hexdigest() ==
-                 commitment)
+        raw, commitment, domain = state
+        _require(hashlib.sha256(domain + raw).hexdigest() == commitment)
         return raw
 
     return (_FullCycleReceipt, _ReadinessCycleReceipt, issue,

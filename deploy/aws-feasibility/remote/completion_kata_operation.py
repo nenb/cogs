@@ -14,6 +14,7 @@ import time
 import unicodedata
 import completion_guest_workloads_v3 as guest_workloads
 import completion_guest_readiness_v1 as guest_readiness
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_network_journal as network_journal
@@ -455,12 +456,20 @@ def _validate_body(kind, body):
               and body["policy_version"] == command_policy.POLICY_VERSION
               and body["parser_source_sha256"] == SSH_PARSER_SHA256)
     elif kind == "CYCLE_ROUTE_V1":
-        grant_keys = ("grant_authority", "batch_commitment", "cycle_ordinal",
-                      "implementation_revision", "control_revision",
-                      "static_control_sha256", "rootfs_descriptor_sha256",
-                      "ami_commitment", "plan_sha256", "grant_commitment")
-        _keys(body, ("operation_token", "route", "cycle_capability_sha256",
-                     "program_sha256", "marker_sha256", *grant_keys))
+        base_keys = ("operation_token", "route", "cycle_capability_sha256",
+                     "program_sha256", "marker_sha256", "grant_authority")
+        cloud_keys = ("batch_commitment", "cycle_ordinal", "implementation_revision",
+                      "control_revision", "static_control_sha256",
+                      "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
+                      "grant_commitment")
+        formal_keys = ("authority", "batch_commitment", "cycle_ordinal",
+                       "implementation_revision", "control_revision",
+                       "source_manifest_sha256", "static_control_sha256",
+                       "workflow_sha256", "result_schema_sha256",
+                       "rootfs_descriptor_sha256", "workflow_run_id",
+                       "workflow_run_attempt", "grant_commitment")
+        _fail(type(body) is dict and (set(body) == set((*base_keys, *cloud_keys))
+                                      or set(body) == set((*base_keys, *formal_keys))))
         _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
         _hex(body["cycle_capability_sha256"]); _hex(body["program_sha256"])
         _hex(body["marker_sha256"])
@@ -469,30 +478,45 @@ def _validate_body(kind, body):
                     if body["route"] == "full" else
                     (guest_readiness.GUEST_PROGRAM_SHA256, guest_readiness.MARKER_SHA256))
         _fail((body["program_sha256"], body["marker_sha256"]) == expected)
-        _choice(body["grant_authority"], {"synthetic", "production"})
+        _choice(body["grant_authority"], {
+            "synthetic", "production", formal_cycle_authority.AUTHORITY})
         if body["grant_authority"] == "synthetic":
-            _fail(all(body[name] is None for name in grant_keys[1:]))
-        else:
+            _fail(set(body) == set((*base_keys, *cloud_keys))
+                  and all(body[name] is None for name in cloud_keys))
+        elif body["grant_authority"] == "production":
+            _fail(set(body) == set((*base_keys, *cloud_keys)))
             for name in ("batch_commitment", "static_control_sha256",
                          "rootfs_descriptor_sha256", "ami_commitment",
                          "plan_sha256", "grant_commitment"):
                 _hex(body[name])
-            _hex(body["implementation_revision"], 40)
-            _hex(body["control_revision"], 40)
+            _hex(body["implementation_revision"], 40); _hex(body["control_revision"], 40)
             _uint(body["cycle_ordinal"], 7, 1)
             _fail(body["route"] == ("full" if body["cycle_ordinal"] == 1 else "readiness"))
-            fields = {
-                "batch_commitment": body["batch_commitment"],
+            fields = {"batch_commitment": body["batch_commitment"],
                 "ordinal": body["cycle_ordinal"], "mode": body["route"],
                 "implementation_revision": body["implementation_revision"],
                 "control_revision": body["control_revision"],
                 "static_control_sha256": body["static_control_sha256"],
                 "rootfs_descriptor_sha256": body["rootfs_descriptor_sha256"],
-                "ami_commitment": body["ami_commitment"],
-                "plan_sha256": body["plan_sha256"],
-            }
+                "ami_commitment": body["ami_commitment"], "plan_sha256": body["plan_sha256"]}
             _fail(body["grant_commitment"] == hashlib.sha256(
                 b"cogs.stage2-cycle-launch-grant/v1\0" + _canonical(fields)[:-1]).hexdigest())
+        else:
+            _fail(set(body) == set((*base_keys, *formal_keys)))
+            fields = {"authority": body["authority"],
+                "batch_commitment": body["batch_commitment"],
+                "ordinal": body["cycle_ordinal"], "mode": body["route"],
+                "implementation_revision": body["implementation_revision"],
+                "control_revision": body["control_revision"],
+                "source_manifest_sha256": body["source_manifest_sha256"],
+                "static_control_sha256": body["static_control_sha256"],
+                "workflow_sha256": body["workflow_sha256"],
+                "result_schema_sha256": body["result_schema_sha256"],
+                "rootfs_descriptor_sha256": body["rootfs_descriptor_sha256"],
+                "workflow_run_id": body["workflow_run_id"],
+                "workflow_run_attempt": body["workflow_run_attempt"],
+                "grant_commitment": body["grant_commitment"]}
+            _fail(formal_cycle_authority.FormalCycleGrant(**fields).mode == body["route"])
     elif kind == "CTR_LAUNCH_ISSUED_V1":
         _keys(body, ("operation_token", "route", "command_serial", "binding_sha256",
                      "host_boot_id", "kata_launch_started_boottime_ns"))
@@ -2814,29 +2838,41 @@ def _make_authority():
         def record_cycle_route(self, route, capability_sha256, program_sha256,
                                marker_sha256, grant=None):
             context = self.command_context()
-            body = {
-                "operation_token": context.operation_token, "route": route,
+            body = {"operation_token": context.operation_token, "route": route,
                 "cycle_capability_sha256": capability_sha256,
-                "program_sha256": program_sha256, "marker_sha256": marker_sha256,
-                "grant_authority": "synthetic" if grant is None else "production",
-                "batch_commitment": None, "cycle_ordinal": None,
-                "implementation_revision": None, "control_revision": None,
-                "static_control_sha256": None, "rootfs_descriptor_sha256": None,
-                "ami_commitment": None, "plan_sha256": None,
-                "grant_commitment": None,
-            }
-            if grant is not None:
-                body.update({
+                "program_sha256": program_sha256, "marker_sha256": marker_sha256}
+            if type(grant) is formal_cycle_authority.FormalCycleGrant:
+                body.update({"grant_authority": formal_cycle_authority.AUTHORITY,
+                    "authority": grant.authority,
                     "batch_commitment": grant.batch_commitment,
                     "cycle_ordinal": grant.ordinal,
                     "implementation_revision": grant.implementation_revision,
                     "control_revision": grant.control_revision,
+                    "source_manifest_sha256": grant.source_manifest_sha256,
                     "static_control_sha256": grant.static_control_sha256,
+                    "workflow_sha256": grant.workflow_sha256,
+                    "result_schema_sha256": grant.result_schema_sha256,
                     "rootfs_descriptor_sha256": grant.rootfs_descriptor_sha256,
-                    "ami_commitment": grant.ami_commitment,
-                    "plan_sha256": grant.plan_sha256,
-                    "grant_commitment": grant.grant_commitment,
-                })
+                    "workflow_run_id": grant.workflow_run_id,
+                    "workflow_run_attempt": grant.workflow_run_attempt,
+                    "grant_commitment": grant.grant_commitment})
+            else:
+                body.update({"grant_authority": "synthetic" if grant is None else "production",
+                    "batch_commitment": None, "cycle_ordinal": None,
+                    "implementation_revision": None, "control_revision": None,
+                    "static_control_sha256": None, "rootfs_descriptor_sha256": None,
+                    "ami_commitment": None, "plan_sha256": None,
+                    "grant_commitment": None})
+                if grant is not None:
+                    body.update({"batch_commitment": grant.batch_commitment,
+                        "cycle_ordinal": grant.ordinal,
+                        "implementation_revision": grant.implementation_revision,
+                        "control_revision": grant.control_revision,
+                        "static_control_sha256": grant.static_control_sha256,
+                        "rootfs_descriptor_sha256": grant.rootfs_descriptor_sha256,
+                        "ami_commitment": grant.ami_commitment,
+                        "plan_sha256": grant.plan_sha256,
+                        "grant_commitment": grant.grant_commitment})
             write_validated(self, "CYCLE_ROUTE_V1", body)
         def record_launch_issued(self, serial, binding, started_ns):
             _io, records, status = reload(self, True); _fail(status == "exact")

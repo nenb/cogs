@@ -9,6 +9,7 @@ import os
 import time
 
 import completion_cycle_authority as cycle_authority
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_admission as admission
 import completion_kata_process as process
 import completion_rootfs_fs as rootfs_fs
@@ -107,7 +108,8 @@ def _validate_fixed_cycle_grant(custody, grant):
     state = _states.get(custody)
     _require(state is not None and not state["diagnostic"])
     binding = admission._cycle_grant_binding(custody)
-    _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
+    _require(type(grant) in {cycle_authority.campaign.CycleLaunchGrant,
+                            formal_cycle_authority.FormalCycleGrant}
              and state["cycle_grant"] is None
              and grant.implementation_revision == binding["implementation_revision"]
              and grant.control_revision == binding["control_revision"]

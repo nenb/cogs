@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-formal-local-cycle-grant-v1.json",
+  "title": "One-shot non-cloud formal qualification cycle grant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "batch_commitment",
+    "ordinal",
+    "mode",
+    "implementation_revision",
+    "control_revision",
+    "source_manifest_sha256",
+    "static_control_sha256",
+    "workflow_sha256",
+    "result_schema_sha256",
+    "rootfs_descriptor_sha256",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "grant_commitment"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-formal-local-cycle-grant/v1" },
+    "authority": { "const": "non-cloud-formal-qualification-cycle-only" },
+    "batch_commitment": { "$ref": "#/$defs/sha256" },
+    "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+    "mode": { "enum": ["full", "readiness"] },
+    "implementation_revision": { "$ref": "#/$defs/gitSha" },
+    "control_revision": { "$ref": "#/$defs/gitSha" },
+    "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "static_control_sha256": { "$ref": "#/$defs/sha256" },
+    "workflow_sha256": { "$ref": "#/$defs/sha256" },
+    "result_schema_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+    "workflow_run_id": { "type": "integer", "minimum": 1 },
+    "workflow_run_attempt": { "const": 1 },
+    "grant_commitment": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

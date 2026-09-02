@@ -8,6 +8,7 @@ replace the module-held facade with typed recorders.
 from dataclasses import dataclass
 
 import completion_cycle_authority as cycle_authority
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_admission as admission
 import completion_kata_execution_bridge as execution_bridge
 import completion_kata_network as network
@@ -610,6 +611,18 @@ def _run_fixed_full_cycle():
 def _run_fixed_readiness_cycle():
     """Zero-argument readiness owner consuming one fixed controller grant."""
     return _run_cycle(cycle_evidence._fixed_readiness_route(), cycle_authority.claim_readiness())
+
+
+def _run_formal_local_full_cycle():
+    """One non-cloud formal full cycle consuming its fixed ordinal-one grant."""
+    return _run_cycle(cycle_evidence._formal_full_route(),
+                      formal_cycle_authority.claim_full())
+
+
+def _run_formal_local_readiness_cycle():
+    """One non-cloud formal readiness cycle consuming its fixed ordinal grant."""
+    return _run_cycle(cycle_evidence._formal_readiness_route(),
+                      formal_cycle_authority.claim_readiness())
 
 
 def _run_fixed_full_rehearsal():

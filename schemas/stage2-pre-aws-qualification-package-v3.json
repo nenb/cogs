@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v3.json",
+  "title": "Seven-independent-cycle non-AWS qualification package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "implementation_revision",
+    "control_revision",
+    "source_manifest_sha256",
+    "static_control_sha256",
+    "workflow_sha256",
+    "result_schema_sha256",
+    "rootfs_descriptor_sha256",
+    "runtime_commitment",
+    "fixture_commitment",
+    "batch_commitment",
+    "cycle_count",
+    "workload_measurements",
+    "cycles",
+    "predecessor_versions",
+    "claims"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-pre-aws-qualification-package/v3" },
+    "authority": { "const": "non-aws-prerequisite-evidence-only" },
+    "implementation_revision": { "$ref": "#/$defs/gitSha" },
+    "control_revision": { "$ref": "#/$defs/gitSha" },
+    "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "static_control_sha256": { "$ref": "#/$defs/sha256" },
+    "workflow_sha256": { "$ref": "#/$defs/sha256" },
+    "result_schema_sha256": { "$ref": "#/$defs/sha256" },
+    "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+    "runtime_commitment": { "$ref": "#/$defs/sha256" },
+    "fixture_commitment": { "$ref": "#/$defs/sha256" },
+    "batch_commitment": { "$ref": "#/$defs/sha256" },
+    "cycle_count": { "const": 7 },
+    "workload_measurements": { "const": 21 },
+    "cycles": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "$ref": "#/$defs/fullCycle" },
+        { "$ref": "#/$defs/readinessCycle2" },
+        { "$ref": "#/$defs/readinessCycle3" },
+        { "$ref": "#/$defs/readinessCycle4" },
+        { "$ref": "#/$defs/readinessCycle5" },
+        { "$ref": "#/$defs/readinessCycle6" },
+        { "$ref": "#/$defs/readinessCycle7" }
+      ],
+      "items": false
+    },
+    "predecessor_versions": {
+      "const": ["cogs.stage2-pre-aws-qualification-package/v1", "cogs.stage2-pre-aws-qualification-package/v2"]
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "formal_non_aws_qualification_passed",
+        "aws_authorized",
+        "aws_executed",
+        "provider_executed",
+        "promotion_authorized"
+      ],
+      "properties": {
+        "formal_non_aws_qualification_passed": { "const": true },
+        "aws_authorized": { "const": false },
+        "aws_executed": { "const": false },
+        "provider_executed": { "const": false },
+        "promotion_authorized": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key"],
+      "properties": {
+        "host_boot_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": { "$ref": "#/$defs/sha256" },
+        "rootfs": { "$ref": "#/$defs/sha256" },
+        "runtime": { "$ref": "#/$defs/sha256" },
+        "client_key": { "$ref": "#/$defs/sha256" },
+        "host_key": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "cycleBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "mode",
+        "grant_commitment",
+        "receipt_sha256",
+        "status_sha256",
+        "artifact_name",
+        "identities"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "mode": { "enum": ["full", "readiness"] },
+        "grant_commitment": { "$ref": "#/$defs/sha256" },
+        "receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "status_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "identities": { "$ref": "#/$defs/identities" }
+      }
+    },
+    "fullCycle": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 1 }, "mode": { "const": "full" } } }
+      ]
+    },
+    "readinessCycle2": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 2 }, "mode": { "const": "readiness" } } }
+      ]
+    },
+    "readinessCycle3": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 3 }, "mode": { "const": "readiness" } } }
+      ]
+    },
+    "readinessCycle4": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 4 }, "mode": { "const": "readiness" } } }
+      ]
+    },
+    "readinessCycle5": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 5 }, "mode": { "const": "readiness" } } }
+      ]
+    },
+    "readinessCycle6": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 6 }, "mode": { "const": "readiness" } } }
+      ]
+    },
+    "readinessCycle7": {
+      "allOf": [
+        { "$ref": "#/$defs/cycleBase" },
+        { "type": "object", "properties": { "ordinal": { "const": 7 }, "mode": { "const": "readiness" } } }
+      ]
+    }
+  }
+}
