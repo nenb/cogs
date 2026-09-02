@@ -88,6 +88,31 @@ def _daemon_closed(body):
     return (body["uncertain"] is False and not body.get("errors", ())
             and all(body[name] for name in (
                 "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+def _recovery_no_effect_classification(intent):
+    if type(intent) is not dict:
+        return None
+    command_id = intent.get("command_id")
+    classification = RECOVERY_NO_EFFECT_CLASSIFICATIONS.get(command_id)
+    if (classification != "approved-read-only-baseline-probe"
+            or command_id in network_journal.EFFECTS
+            or command_id in command_policy.KEY_COMMANDS
+            or command_id in command_policy.RUNTIME_EXTENSION_COMMANDS
+            or command_id in command_policy.SSH_COMMANDS):
+        return None
+    return classification
+def _snapshot_free_baseline_prefix(records):
+    if any(row.record_type in _V1_COMMAND_RECORDS for row in records):
+        return False
+    intents = [row.body for row in records if row.record_type == "COMMAND_INTENT_V2"
+               and row.body["command_id"] not in command_policy.KEY_COMMANDS]
+    command_ids = tuple(row["command_id"] for row in intents)
+    approved = network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+    outcomes = {row.body["command_serial"] for row in records
+                if row.record_type == "COMMAND_OUTCOME_V2"}
+    return (command_ids == approved[:len(command_ids)]
+            and all(_recovery_no_effect_classification(row) is not None for row in intents)
+            and all(row["command_serial"] in outcomes for row in intents)
+            and not any(row.record_type == "CTR_LAUNCH_ISSUED_V1" for row in records))
 
 
 def _validate_runtime_layout(names, records, phase):
@@ -217,6 +242,10 @@ OUTCOMES = frozenset({"not_started", "exec_failed", "exited", "signaled", "recov
 COMMAND_OUTCOMES_V2 = frozenset({
     "not-started", "exec-failed", "exited", "signaled", "uncertain",
     "recovery-no-effect",
+})
+RECOVERY_NO_EFFECT_CLASSIFICATIONS = MappingProxyType({
+    command_id: "approved-read-only-baseline-probe"
+    for command_id in network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
 })
 SNAPSHOT_FREE_CLEANUP_PROJECTION = (
     "INPUT_REMOVED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED",
@@ -1491,7 +1520,8 @@ def _legal(records):
             _fail(production_admitted and command_phase is None and phase == "FS_SETTLED"
                   and snapshot_free_cleanup is None and runtime_staged is None
                   and not network_state["snapshots"] and not network_state["effects"]
-                  and network_state["pending"] is None)
+                  and network_state["pending"] is None
+                  and _snapshot_free_baseline_prefix(records[:index]))
             snapshot_free_cleanup = record
             continue
         if kind == "RUNTIME_PREPARED_V1":
@@ -1628,6 +1658,9 @@ def _legal(records):
             )
             _fail((command_preexec_v2 is None
                    and body["outcome"] in {"not-started", "uncertain"}) or
+                  (command_preexec_v2 is None and body["outcome"] == "recovery-no-effect"
+                   and production_admitted
+                   and _recovery_no_effect_classification(command_intent_v2.body) is not None) or
                   (command_preexec_v2 is not None and body["outcome"] != "not-started"))
             if command_output_v3 is not None and not body["uncertain"]:
                 _fail(body["stdout_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stdout_hex"])).hexdigest()
@@ -1639,8 +1672,10 @@ def _legal(records):
             if body["uncertain"] and body["outcome"] != "recovery-no-effect":
                 phase = "UNCERTAIN"; ever_uncertain = True
             elif body["outcome"] == "recovery-no-effect":
-                _fail(phase == "FS_SETTLED" and not network_state["snapshots"]
-                      and not network_state["effects"] and network_state["pending"] is None)
+                _fail(production_admitted and phase == "FS_SETTLED" and command_b1
+                      and _recovery_no_effect_classification(body) is not None
+                      and not network_state["snapshots"] and not network_state["effects"]
+                      and network_state["pending"] is None and launch_observation is None)
             continue
         if kind == "COMMAND_INTENT":
             if body["command_id"] == "CTR_RUN":
@@ -1854,13 +1889,15 @@ def _legal(records):
             elif kind == "INPUT_REMOVED":
                 by_path = {path: steps[-1] for path, steps in input_steps.items()}
                 early = (phase in {"ROOTFS_LEASED", "FS_SETTLED"}
-                         and (phase == "ROOTFS_LEASED" or snapshot_free_cleanup is not None)
+                         and (phase == "ROOTFS_LEASED" and all(
+                                  item.body["command_id"] in command_policy.KEY_COMMANDS
+                                  for item in records[:index]
+                                  if item.record_type == "COMMAND_INTENT_V2")
+                              or phase == "FS_SETTLED" and snapshot_free_cleanup is not None
+                                  and _snapshot_free_baseline_prefix(records[:index]))
                          and not network_state["snapshots"]
                          and not network_state["effects"]
                          and runtime_staged is None
-                         and all(item.body["command_id"] in command_policy.KEY_COMMANDS
-                                 for item in records[:index]
-                                 if item.record_type == "COMMAND_INTENT_V2")
                          and all(step["action"] == "absent" for step in by_path.values()))
                 _fail(phase == "CONTAINERD_ABSENT" or runtime_staged is None and phase == "FIREWALL_ABSENT" or early)
             elif kind == "ROOTFS_RELEASE_READY":
@@ -2604,7 +2641,7 @@ def _make_authority():
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
         cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
-            "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
+            "SNAPSHOT_FREE_CLEANUP_V1", "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
             "RUNTIME_SHARE_IDENTITY_V1", "RUNTIME_NETWORK_RELEASED_V1",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
@@ -2772,8 +2809,11 @@ def _make_authority():
             intent, preexec = self.pending_command()
             _fail(_same_command_v2(body, intent))
             _fail((preexec is None
-                   and body["outcome"] in {"not-started", "uncertain", "recovery-no-effect"}) or
-                  (preexec is not None and body["outcome"] != "not-started"))
+                   and body["outcome"] in {"not-started", "uncertain"}) or
+                  (body["outcome"] == "recovery-no-effect"
+                   and _recovery_no_effect_classification(intent) is not None) or
+                  (preexec is not None and body["outcome"] not in {
+                      "not-started", "recovery-no-effect"}))
             write_validated(self, "COMMAND_OUTCOME_V2", body)
             return DurableCommandOutcome(
                 body["command_serial"], body["command_id"], body["binding_sha256"], body,

@@ -547,36 +547,6 @@ with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLE
 check(reconstruction_events == [reconstruction_journal, "projection"],
       "real coordinator repeated or changed baseline abort owner")
 
-# A crashed read-only baseline probe records exact no-effect semantics while
-# preserving process-outcome uncertainty; it neither poisons nor reissues.
-baseline_intent = {"operation_token": "a" * 64, "command_serial": 7,
-    "command_id": "IP_ALL_LINKS", "binding_sha256": "b" * 64,
-    "host_boot_id": "boot", "deadline_boottime_ns": 10_000,
-    "cleanup_reserve_ns": 100}
-baseline_outcomes = []
-baseline_journal = SimpleNamespace(
-    recovery_command=lambda: (baseline_intent, None, None),
-    recovery_lifecycle_deadline=lambda: ("boot", 10_000),
-    runtime_recovery_history=lambda: {},
-)
-with patch.object(coordinator.process.kata_operation, "_is_production_recovery_operation",
-                  return_value=True), \
-     patch.object(coordinator.process.kata_operation, "_command_context",
-                  return_value=SimpleNamespace(lifecycle_phase="FS_SETTLED")), \
-     patch.object(coordinator.process.kata_operation, "_network_history", return_value=()), \
-     patch.object(coordinator.process.kata_operation, "_network_records", return_value=()), \
-     patch.object(coordinator.process.kata_operation, "_record_command_outcome",
-                  side_effect=lambda _journal, body: baseline_outcomes.append(body) or
-                  coordinator.process.kata_operation.DurableCommandOutcome(
-                      body["command_serial"], body["command_id"], body["binding_sha256"], body)), \
-     patch.object(coordinator.process, "_recover_cgroup", return_value=(True, True)), \
-     patch.object(coordinator.process, "_boottime_ns", side_effect=(1, 1)), \
-     patch.object(coordinator.process, "_boot_id", return_value="boot"):
-    outcome = coordinator.process._recover_pending_fixed(baseline_journal)
-check(outcome.body["outcome"] == "recovery-no-effect" and outcome.body["uncertain"] is True,
-      "pending baseline probe became sticky operation uncertainty")
-check(len(baseline_outcomes) == 1, "pending baseline probe was retried or reissued")
-
 # NETWORK_ABSENT after a network-only setup abort settles share and containerd
 # absence directly. No runtime preparation or reconstruction can be reached.
 setup_phase = ["NETWORK_ABSENT"]

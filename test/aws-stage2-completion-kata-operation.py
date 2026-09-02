@@ -822,6 +822,24 @@ def append_runtime_command(raw, command_id, uncertain=False, status=0):
     return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
 
+# Recovery-no-effect is an explicit closed classification, not a synonym for
+# any observer or command that happened to be pending before PREEXEC.
+classified = operation.RECOVERY_NO_EFFECT_CLASSIFICATIONS
+assert tuple(classified) == operation.network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+assert all(operation._recovery_no_effect_classification({"command_id": command_id}) ==
+           "approved-read-only-baseline-probe" for command_id in classified)
+for denied_id in ({*operation.network_journal.EFFECTS,
+                   *operation.command_policy.KEY_COMMANDS,
+                   *operation.command_policy.RUNTIME_EXTENSION_COMMANDS,
+                   *operation.command_policy.SSH_COMMANDS,
+                   "IP_HOST_LINKS"} - set(classified)):
+    assert operation._recovery_no_effect_classification({"command_id": denied_id}) is None
+assert operation._recovery_no_effect_classification({}) is None
+assert not operation._snapshot_free_baseline_prefix((
+    SimpleNamespace(record_type="COMMAND_INTENT", body={"command_id": "CTR_RUN"}),))
+assert not operation._snapshot_free_baseline_prefix((
+    SimpleNamespace(record_type="CTR_LAUNCH_ISSUED_V1", body={}),))
+
 # Prepared custody is a non-phase event with exact bytes and strict one-shot ordering.
 prepared_prefix, _unused, _leased = leased_prefix()
 prepared_prefix = append(prepared_prefix, "BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "1" * 64})
@@ -1747,6 +1765,7 @@ def production_owner_test():
                         retained_tools.append(process.RetainedExecutable(role, path, descriptor,
                             process._digest_fd(descriptor, identity.size), "d" * 64,
                             process._host_generation(descriptor)))
+
                     # Every baseline admission/observer/snapshot/settlement cut
                     # is reopened by a distinct process. Read-only prefixes
                     # release ACTIVE without manufacturing BASELINES_CAPTURED;
@@ -2780,6 +2799,67 @@ def production_owner_test():
                 synthetic_generation_patch.start()
                 executable_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
+
+                # A distinct interpreter replays the real fsynced journal at
+                # the exact expired-deadline edge. Zero-command, intent-only,
+                # and PREEXEC baseline cuts all reach input/rootfs retirement
+                # through the snapshot-free residue projection without a
+                # fabricated network lifecycle record. The intent-only case is
+                # the regression that replay rejected before this correction.
+                (completion / "kata-runtime-v1").rmdir()
+                snapshot_helper = str(ROOT / "test/aws-stage2-completion-kata-native-recover.py")
+                for baseline_cut in ("zero-command", "intent-only", "preexec"):
+                    def add_baseline_cut(raw, cut=baseline_cut):
+                        if cut == "zero-command": return raw
+                        records = operation._parse(raw); genesis = records[0].body
+                        context = SimpleNamespace(operation_token=genesis["operation_token"],
+                            command_serial=sum(row.record_type == "COMMAND_INTENT_V2"
+                                               for row in records),
+                            journal_key=genesis["journal_key"],
+                            host_boot_id=genesis["host_boot_id"],
+                            source_revision=genesis["source_revision"],
+                            lifecycle_phase="FS_SETTLED")
+                        command = fixed_v2_intent(context, process.CommandId.IP_ALL_LINKS)
+                        raw = append(raw, "COMMAND_INTENT_V2", command)
+                        return (append(raw, "COMMAND_PREEXEC_V2", runtime_preexec(command))
+                                if cut == "preexec" else raw)
+                    input_root.mkdir(mode=0o700)
+                    production_fixture(leased_records + (release_deadline, release_admission,
+                        settle_production_fs, add_baseline_cut))
+                    recovery = os.fork()
+                    if recovery == 0:
+                        os.execve("/usr/bin/python3", ["/usr/bin/python3", "-I", "-B",
+                            snapshot_helper, str(completion)], {"HOME": "/root", "LC_ALL": "C",
+                            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                            "PYTHONDONTWRITEBYTECODE": "1",
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V3": "1",
+                            "COGS_KATA_SNAPSHOT_FREE_RECOVERY_V1": "1"})
+                    _pid, recovery_status = os.waitpid(recovery, 0)
+                    assert os.waitstatus_to_exitcode(recovery_status) == 0, baseline_cut
+                    result_path = completion.parent / "snapshot-free-recovery-result.jsonl"
+                    recovered = operation._parse(result_path.read_bytes())
+                    result_path.unlink()
+                    assert not fixture_journal_path(completion).exists()
+                    assert not input_root.exists() and not os.path.exists(process.CGROUP_BASE)
+                    kinds = [row.record_type for row in recovered]
+                    assert operation._legal(recovered) == "RETIRED"
+                    assert kinds.count("SNAPSHOT_FREE_CLEANUP_V1") == 1
+                    assert {"INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+                            "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
+                            "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"} <= set(kinds)
+                    assert not {"BASELINES_CAPTURED", "NETWORK_READY", "NETWORK_ABSENT",
+                                "SHARE_ABSENT", "FIREWALL_ABSENT",
+                                "CONTAINERD_ABSENT"} & set(kinds)
+                    projection = next(row.body for row in recovered
+                                      if row.record_type == "SNAPSHOT_FREE_CLEANUP_V1")
+                    assert "INDEPENDENT_RESIDUE" in projection["projection"]
+                    terminals = [row.body for row in recovered
+                                 if row.record_type == "COMMAND_OUTCOME_V2"
+                                 and row.body["command_id"] in
+                                     operation.RECOVERY_NO_EFFECT_CLASSIFICATIONS]
+                    assert ((not terminals and baseline_cut == "zero-command") or
+                            len(terminals) == 1 and
+                            terminals[0]["outcome"] == "recovery-no-effect")
 
                 # Build expired cleanup fixtures only after the exact production
                 # key-command policy has been issued, and advance through the

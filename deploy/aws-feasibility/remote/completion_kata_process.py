@@ -2430,7 +2430,7 @@ def _recover_pending_fixed(journal):
                       and terminal["uncertain"] is False)
     baseline_no_effect = False
     if (terminal is None
-            and intent["command_id"] in kata_operation.network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+            and kata_operation._recovery_no_effect_classification(intent) is not None
             and kata_operation._is_production_recovery_operation(journal)):
         context = kata_operation._command_context(journal)
         history = kata_operation._network_history(journal)
