@@ -761,7 +761,7 @@ def runtime_outcome(intent, uncertain=False, status=0):
 
 def runtime_prepared_body(token="a" * 64):
     extraction = operation.command_policy.CONTAINERD_EXTRACTION
-    body = {"operation_token": token, "runtime_generation": generation(90, nlink=3),
+    body = {"operation_token": token, "runtime_generation": generation(90, mode=0o500, nlink=3),
         "bin_generation": generation(91, mode=0o500),
         "observer_configuration_generation": generation(94, "file", 0o400, 1, 32_220),
         "containerd_generation": generation(92, "file", 0o500, 1, extraction[0][1]),
@@ -784,7 +784,7 @@ def staged_runtime_prefix():
     stage = {"operation_token": token, "policy_version": policy.RUNTIME_POLICY_VERSION,
         "policy_sha256": policy.RUNTIME_POLICY_SHA256, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
         "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction_sha256": policy.CONTAINERD_EXTRACTION_SHA256,
-        "runtime_generation": generation(101), "containerd_generation": generation(103, "file", 0o500),
+        "runtime_generation": generation(101, mode=0o500), "containerd_generation": generation(103, "file", 0o500),
         "ctr_generation": generation(102, "file", 0o500), "config_generation": generation(104, "file", 0o600),
         "root_generation": generation(105), "state_generation": generation(106)}
     return append(raw, "RUNTIME_STAGED_V3", stage)
@@ -1065,12 +1065,14 @@ def native_runtime_daemon_foundations(completion):
                 Path(runtime_base + "/containerd.toml").write_bytes(runtime.CONTAINERD_CONFIG_BYTES)
                 os.chmod(runtime_base + "/containerd.toml", 0o600)
                 if graceful: Path(runtime_base + "/t/term-responsive").write_bytes(b"1")
+                os.chmod(runtime_base, 0o500)
                 if runtime._runtime_alias(): runtime._set_runtime_alias(False)
                 runtime._set_runtime_alias(True)
             stage = {"operation_token": "a" * 64, "policy_version": policy.RUNTIME_POLICY_VERSION,
                 "policy_sha256": policy.RUNTIME_POLICY_SHA256, "archive_sha256": policy.CONTAINERD_ARCHIVE_SHA256,
                 "archive_size": policy.CONTAINERD_ARCHIVE_SIZE, "extraction_sha256": policy.CONTAINERD_EXTRACTION_SHA256,
-                "runtime_generation": path_generation(runtime_base, "directory") if tree else generation(101),
+                "runtime_generation": (path_generation(runtime_base, "directory")
+                                       if tree else generation(101, mode=0o500)),
                 "containerd_generation": executable_generation, "ctr_generation": executable_generation,
                 "config_generation": path_generation(runtime_base + "/containerd.toml", "file") if tree else generation(103, "file", 0o600),
                 "root_generation": path_generation(runtime_base + "/r", "directory") if tree else generation(104),
