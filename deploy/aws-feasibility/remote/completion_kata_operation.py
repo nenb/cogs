@@ -488,7 +488,7 @@ def _validate_body(kind, body):
                 "plan_sha256": body["plan_sha256"],
             }
             _fail(body["grant_commitment"] == hashlib.sha256(
-                b"cogs.stage2-cycle-launch-grant/v1\0" + _canonical(fields)).hexdigest())
+                b"cogs.stage2-cycle-launch-grant/v1\0" + _canonical(fields)[:-1]).hexdigest())
     elif kind == "CTR_LAUNCH_ISSUED_V1":
         _keys(body, ("operation_token", "route", "command_serial", "binding_sha256",
                      "host_boot_id", "kata_launch_started_boottime_ns"))
