@@ -1665,6 +1665,7 @@ def _legal(records):
             if command_output_v3 is not None and not body["uncertain"]:
                 _fail(body["stdout_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stdout_hex"])).hexdigest()
                       and body["stderr_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stderr_hex"])).hexdigest())
+            settled_command_b1 = command_b1
             if command_b1:
                 network_state = network_journal.command_outcome(network_state, body)
             command_phase = command_intent_v2 = command_preexec_v2 = command_output_v3 = None
@@ -1672,7 +1673,7 @@ def _legal(records):
             if body["uncertain"] and body["outcome"] != "recovery-no-effect":
                 phase = "UNCERTAIN"; ever_uncertain = True
             elif body["outcome"] == "recovery-no-effect":
-                _fail(production_admitted and phase == "FS_SETTLED" and command_b1
+                _fail(production_admitted and phase == "FS_SETTLED" and settled_command_b1
                       and _recovery_no_effect_classification(body) is not None
                       and not network_state["snapshots"] and not network_state["effects"]
                       and network_state["pending"] is None and launch_observation is None)
