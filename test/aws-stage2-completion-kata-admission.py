@@ -279,7 +279,7 @@ with tempfile.TemporaryDirectory() as directory:
 
 partial_forward = custody_type(seal)
 routes["custody_states"][partial_forward] = {
-    "recovery": False, "roles": set(), "descriptors": [],
+    "diagnostic": False, "recovery": False, "roles": set(), "descriptors": [],
     "source_descriptors": (), "source_anchor": None,
     "configuration_identity": {"active_sha256": "a" * 64},
 }
