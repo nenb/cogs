@@ -86,6 +86,21 @@ assert before_fork["outcome"] == "not-started" and not before_fork["uncertain"] 
 assert crash_unknown["outcome"] == "uncertain" and crash_unknown["uncertain"] \
        and not crash_unknown["pipes_eof"]
 process_source = (REMOTE / "completion_kata_process.py").read_text()
+cycle_route = object()
+with patch.object(process.kata_operation, "_is_production_recovery_operation", return_value=False), \
+     patch.object(process.kata_operation, "_cycle_route", return_value=cycle_route) as claim_route:
+    for command_id in (process.CommandId.CTR_RUN, process.CommandId.SSH_READY,
+                       process.CommandId.SSH_READINESS):
+        assert process._active_cycle_route(object(), command_id) is cycle_route
+    assert claim_route.call_count == 3
+with patch.object(process.kata_operation, "_is_production_recovery_operation", return_value=True), \
+     patch.object(process.kata_operation, "_cycle_route") as claim_route:
+    assert process._active_cycle_route(object(), process.CommandId.CTR_RUN) is None
+    claim_route.assert_not_called()
+with patch.object(process.kata_operation, "_is_production_recovery_operation") as recovery, \
+     patch.object(process.kata_operation, "_cycle_route") as claim_route:
+    assert process._active_cycle_route(object(), process.CommandId.IP_HOST_LINKS) is None
+    recovery.assert_not_called(); claim_route.assert_not_called()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
 rejected(lambda: process._start_fixed_daemon(object(), object()))

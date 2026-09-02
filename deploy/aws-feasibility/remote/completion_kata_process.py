@@ -1730,6 +1730,14 @@ def _active_fixed_daemon_profile(_journal):
     return None
 
 
+def _active_cycle_route(journal, command_id):
+    if command_id not in {CommandId.CTR_RUN, CommandId.SSH_READY, CommandId.SSH_READINESS}:
+        return None
+    if kata_operation._is_production_recovery_operation(journal):
+        return None
+    return kata_operation._cycle_route(journal)
+
+
 def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None, consumption_owner=None, launch_permit=None):
     """Private T1 transaction over one registered fixed table identity."""
     context = kata_operation._command_context(journal)
@@ -1777,9 +1785,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
     marker_bytes = (kata_ssh.MARKER if fixed.command_id is CommandId.SSH_READY else
                     guest_readiness.GUEST_READY_MARKER
                     if fixed.command_id is CommandId.SSH_READINESS else None)
-    route = (None if marker_bytes is None
-             or kata_operation._is_production_recovery_operation(journal)
-             else kata_operation._cycle_route(journal))
+    route = _active_cycle_route(journal, fixed.command_id)
     deadline = _boottime_ns() + fixed.duration_ns
     work_cutoff = deadline - _cleanup_reserve_ns(fixed)
     intent = _intent_body(context, fixed, executable, bindings, deadline, runtime_fixed)
