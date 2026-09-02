@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const coordinator = readFileSync("deploy/aws-feasibility/remote/completion_kata_coordinator.py", "utf8");
+const cycleEvidence = readFileSync("deploy/aws-feasibility/remote/completion_cycle_evidence.py", "utf8");
 const full = readFileSync("deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py", "utf8");
 const readiness = readFileSync("deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py", "utf8");
 const fullWrapper = readFileSync("deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh", "utf8");
@@ -21,12 +22,23 @@ test("authentic full and readiness rehearsals enter production routes but cannot
     /def _run_fixed_readiness_rehearsal\(\):[\s\S]*?_run_cycle\(cycle_evidence\._fixed_readiness_route\(\),[\s\S]*?False\)/u,
   );
   const finish = coordinator.slice(coordinator.indexOf("def _finish("), coordinator.indexOf("def _run_cycle("));
-  assert.match(finish, /if not mint:[\s\S]*?_owners\.abort_custody/u);
+  assert.match(finish, /if not mint:[\s\S]*?_validate_and_discard_cycle_receipt/u);
   assert.match(finish, /return cycle_evidence\._issue_cycle_receipt/u);
+  assert.match(finish, /_claim_custody_settlement/u);
   for (const source of [full, readiness]) {
     assert.doesNotMatch(source, /_issue_cycle_receipt|_consume_cycle_receipt|completion_cycle_evidence/u);
     assert.match(source, /is not None/u);
   }
+});
+
+test("sealed rehearsal validation constructs exact bytes, closes once, and cannot register", () => {
+  const start = cycleEvidence.indexOf("    def settle(");
+  const settle = cycleEvidence.slice(start, cycleEvidence.indexOf("    def issue(", start));
+  assert.ok(settle.indexOf("prepared = prepare(route, lifecycle)") < settle.indexOf("_abort_fixed_static_preparation"));
+  assert.ok(settle.indexOf("if not mint:") < settle.indexOf("receipt = cls("));
+  assert.ok(settle.indexOf("if not mint:") < settle.indexOf("receipts[receipt]"));
+  assert.match(settle, /if not mint:\n\s+return None/u);
+  assert.equal((settle.match(/_abort_fixed_static_preparation/g) ?? []).length, 1);
 });
 
 test("rehearsal wrappers are zero-argument, isolated, and credential-denying", () => {

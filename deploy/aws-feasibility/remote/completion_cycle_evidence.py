@@ -29,6 +29,21 @@ class CycleEvidenceError(ValueError):
     pass
 
 
+class _CycleEvidenceErrorGroup(CycleEvidenceError):
+    """Portable ordered aggregate for hosts predating native exception groups."""
+    def __init__(self, message, errors):
+        self.errors = tuple(errors)
+        super().__init__(message)
+
+
+def _error_group(message, errors):
+    try:
+        group = BaseExceptionGroup
+    except NameError:
+        return _CycleEvidenceErrorGroup(message, errors)
+    return group(message, tuple(errors))
+
+
 def _require(condition, message="exact sealed cycle owner evidence required"):
     if not condition:
         raise CycleEvidenceError(message)
@@ -302,7 +317,7 @@ def _receipt_realm():
             "independent_residue_absent": list(residue.absent_facts),
         }
 
-    def issue(route, lifecycle):
+    def prepare(route, lifecycle):
         value = common(route, lifecycle)
         if type(route) is _FullRoute:
             _require(type(lifecycle.session) is ssh.AuthenticatedSession
@@ -330,14 +345,41 @@ def _receipt_realm():
         raw = _canonical(value)
         commitment = hashlib.sha256(
             b"cogs.stage2-cycle-private-owner-receipt/v1\0" + raw).hexdigest()
+        return cls, value, raw, commitment
+
+    def settle(route, lifecycle, mint):
+        """Validate exact receipt bytes, then close custody once before any mint."""
+        prepared, primary = None, None
+        try:
+            prepared = prepare(route, lifecycle)
+        except BaseException as error:
+            primary = error
         close_error = None
-        try: preparation._abort_fixed_static_preparation(lifecycle.static_custody)
-        except BaseException as error: close_error = error
-        if close_error is not None:
-            raise CycleEvidenceError("custody close failed; cycle receipt not minted") from close_error
-        receipt = cls(seal, value, commitment)
-        receipts[receipt] = (raw, commitment)
-        return receipt
+        try:
+            preparation._abort_fixed_static_preparation(lifecycle.static_custody)
+        except BaseException as error:
+            close_error = error
+        if primary is not None or close_error is not None:
+            causes = [error for error in (primary, close_error) if error is not None]
+            cause = causes[0] if len(causes) == 1 else _error_group(
+                "cycle receipt validation and custody close failed", causes)
+            raise CycleEvidenceError(
+                "cycle receipt transaction failed; nothing minted") from cause
+        if not mint:
+            return None
+        cls, value, raw, commitment = prepared
+        try:
+            receipt = cls(seal, value, commitment)
+            receipts[receipt] = (raw, commitment)
+            return receipt
+        except BaseException as error:
+            raise CycleEvidenceError("cycle receipt commit failed; nothing minted") from error
+
+    def issue(route, lifecycle):
+        return settle(route, lifecycle, True)
+
+    def validate_and_discard(route, lifecycle):
+        return settle(route, lifecycle, False)
 
     def consume(receipt):
         state = receipts.pop(receipt, None)
@@ -350,9 +392,10 @@ def _receipt_realm():
                  commitment)
         return raw
 
-    return _FullCycleReceipt, _ReadinessCycleReceipt, issue, consume
+    return (_FullCycleReceipt, _ReadinessCycleReceipt, issue,
+            validate_and_discard, consume)
 
 
-(_FullCycleReceipt, _ReadinessCycleReceipt,
- _issue_cycle_receipt, _consume_cycle_receipt) = _receipt_realm()
+(_FullCycleReceipt, _ReadinessCycleReceipt, _issue_cycle_receipt,
+ _validate_and_discard_cycle_receipt, _consume_cycle_receipt) = _receipt_realm()
 del _receipt_realm

@@ -255,6 +255,52 @@ for route, grant in (
             assert "RETIRED" in fake.events and "OPERATION_REMOVED" in fake.events
             assert fake.events[-1] == "CUSTODY_ABORTED"
 
+# Both sealed cycle transaction facades close once even when exact semantic
+# construction fails, and preserve validation before close in ordered causes.
+class MalformedCycleLifecycle:
+    static_custody = object()
+for transaction in (coordinator.cycle_evidence._issue_cycle_receipt,
+                    coordinator.cycle_evidence._validate_and_discard_cycle_receipt):
+    close_failure = Cut("close-after-validation")
+    with patch.object(coordinator.cycle_evidence.preparation,
+                      "_abort_fixed_static_preparation",
+                      side_effect=close_failure) as close:
+        try:
+            transaction(coordinator.cycle_evidence._fixed_full_route(),
+                        MalformedCycleLifecycle())
+        except coordinator.cycle_evidence.CycleEvidenceError as error:
+            causes = getattr(error.__cause__, "exceptions",
+                             getattr(error.__cause__, "errors", ()))
+            check(len(causes) == 2 and isinstance(causes[0], AttributeError)
+                  and causes[1] is close_failure,
+                  "cycle transaction did not preserve validation-first causes")
+        else: raise AssertionError("malformed cycle transaction was accepted")
+    close.assert_called_once_with(MalformedCycleLifecycle.static_custody)
+
+# Once the cycle facade claims settlement, issuer-validation and no-mint-close
+# failures remain primary and cannot trigger a coordinator abort retry.
+for mint, failure_name in ((True, "issuer-validation"), (False, "no-mint-close")):
+    route = coordinator.cycle_evidence._fixed_full_route()
+    current_grant = rehearsal_grant("full", 1)
+    class SettlementFailureOwners(FakeOwners):
+        def abort_custody(self, lifecycle):
+            self.events.append("CUSTODY_ABORTED")
+            if not mint: raise Cut(failure_name)
+    fake = SettlementFailureOwners()
+    def failed_transaction(_route, lifecycle):
+        fake.abort_custody(lifecycle)
+        if mint: raise Cut(failure_name)
+    patch_name = ("_issue_cycle_receipt" if mint
+                  else "_validate_and_discard_cycle_receipt")
+    with patch.object(coordinator, "_owners", fake), patch.object(
+            coordinator.cycle_evidence, patch_name, side_effect=failed_transaction):
+        try: coordinator._run_cycle(route, current_grant, mint)
+        except coordinator.CoordinatorError as error:
+            assert isinstance(error.__cause__, Cut)
+            assert str(error.__cause__) == failure_name
+        else: raise AssertionError("failed cycle settlement was accepted")
+    assert fake.events.count("CUSTODY_ABORTED") == 1
+
 # Every before/after forward cut stops forward progress. Once an operation was
 # returned, all cleanup phases are attempted in order. Before that, only the
 # retained preparation can be abandoned.

@@ -153,7 +153,7 @@ class _Lifecycle:
     residue: object = None
     primary_failure: BaseException = None
     failure_stage: str = "entry"
-    custody_settled: bool = False
+    custody_settlement_claimed: bool = False
 
 
 class _AdmissionBoundary:
@@ -472,11 +472,19 @@ def _cleanup(lifecycle):
     return []
 
 
+def _claim_custody_settlement(lifecycle):
+    if lifecycle.static_custody is None or lifecycle.custody_settlement_claimed:
+        raise CoordinatorBlocked("static custody settlement is not fresh")
+    # The selected facade owns the one and only close attempt from this point,
+    # including validation and close failures whose effect may be uncertain.
+    lifecycle.custody_settlement_claimed = True
+
+
 def _abort_custody(lifecycle, errors):
-    if lifecycle.static_custody is not None and not lifecycle.custody_settled:
+    if lifecycle.static_custody is not None and not lifecycle.custody_settlement_claimed:
+        _claim_custody_settlement(lifecycle)
         try:
             _owners.abort_custody(lifecycle)
-            lifecycle.custody_settled = True
         except BaseException as error:
             errors.append(error)
 
@@ -491,17 +499,16 @@ def _finish(lifecycle, mint=True):
     if lifecycle.cycle_route is not None:
         if lifecycle.primary_failure is not None:
             raise CoordinatorBlocked("failed cycle cannot mint a receipt")
+        _claim_custody_settlement(lifecycle)
         if not mint:
-            _owners.abort_custody(lifecycle)
-            lifecycle.custody_settled = True
-            return None
-        lifecycle.custody_settled = True
+            return cycle_evidence._validate_and_discard_cycle_receipt(
+                lifecycle.cycle_route, lifecycle)
         return cycle_evidence._issue_cycle_receipt(lifecycle.cycle_route, lifecycle)
     evidence = _owners.owner_evidence(lifecycle)
     # From this call onward the receipt transaction exclusively owns custody
     # close, including every no-mint failure. The coordinator must never retry
     # an uncertain or already-effective descriptor close.
-    lifecycle.custody_settled = True
+    _claim_custody_settlement(lifecycle)
     return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
