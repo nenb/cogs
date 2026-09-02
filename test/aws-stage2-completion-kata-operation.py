@@ -2888,7 +2888,7 @@ def production_owner_test():
                 # Build expired cleanup fixtures only after the exact production
                 # key-command policy has been issued, and advance through the
                 # required production FS_SETTLED phase before network setup.
-                (completion / "kata-runtime-v1").rmdir()
+                assert not (completion / "kata-runtime-v1").exists()
                 production_fixture(release_rows[:2] + (release_deadline, release_admission,
                     settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
                 expired_release_owner = operation._open_fixed_operation()
