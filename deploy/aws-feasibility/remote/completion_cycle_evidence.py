@@ -84,24 +84,29 @@ def _route_realm():
     authorized = {synthetic_full, synthetic_readiness}
     diagnostics = {diagnostic_full, diagnostic_readiness}
     no_grant = authorized | diagnostics
-    for route, name, program, marker, domain in (
+    classifications = {}
+    for route, name, program, marker, classification, domain in (
         (full, "full", full_guest.GUEST_PROGRAM_SHA256,
-         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"production"),
+         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(),
+         "production", b"production"),
         (readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
-         readiness_guest.MARKER_SHA256, b"production"),
+         readiness_guest.MARKER_SHA256, "production", b"production"),
         (synthetic_full, "full", full_guest.GUEST_PROGRAM_SHA256,
-         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"synthetic"),
+         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(),
+         "synthetic", b"synthetic"),
         (synthetic_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
-         readiness_guest.MARKER_SHA256, b"synthetic"),
+         readiness_guest.MARKER_SHA256, "synthetic", b"synthetic"),
         (diagnostic_full, "full", full_guest.GUEST_PROGRAM_SHA256,
-         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(), b"diagnostic-current-source"),
+         hashlib.sha256(full_guest.GUEST_READY_MARKER).hexdigest(),
+         "diagnostic", b"diagnostic-current-source"),
         (diagnostic_readiness, "readiness", readiness_guest.GUEST_PROGRAM_SHA256,
-         readiness_guest.MARKER_SHA256, b"diagnostic-current-source"),
+         readiness_guest.MARKER_SHA256, "diagnostic", b"diagnostic-current-source"),
     ):
         capability = hashlib.sha256(
             b"cogs.stage2-cycle-route/v1\0" + domain + b"\0" + name.encode("ascii") +
             bytes.fromhex(program) + bytes.fromhex(marker)).hexdigest()
         registry[route] = (name, capability, program, marker)
+        classifications[route] = classification
 
     def full_route(): return full
     def readiness_route(): return readiness
@@ -109,6 +114,12 @@ def _route_realm():
     def synthetic_readiness_route(): return synthetic_readiness
     def diagnostic_full_route(): return diagnostic_full
     def diagnostic_readiness_route(): return diagnostic_readiness
+    def classify(route):
+        describe(route)
+        value = classifications.get(route)
+        _require(value in {"production", "synthetic", "diagnostic"},
+                 "exact cycle route classification required")
+        return value
     def is_diagnostic(route): return route in diagnostics
     def launch_authorized(route, grant=None):
         name, _capability, _program, _marker = describe(route)
@@ -138,14 +149,15 @@ def _route_realm():
         return route
     return (_FullRoute, _ReadinessRoute, full_route, readiness_route,
             synthetic_full_route, synthetic_readiness_route,
-            diagnostic_full_route, diagnostic_readiness_route, is_diagnostic,
-            launch_authorized, describe, bind)
+            diagnostic_full_route, diagnostic_readiness_route, classify,
+            is_diagnostic, launch_authorized, describe, bind)
 
 
 (_FullRoute, _ReadinessRoute, _fixed_full_route, _fixed_readiness_route,
  _synthetic_full_route_for_tests, _synthetic_readiness_route_for_tests,
- _diagnostic_full_route, _diagnostic_readiness_route, _is_diagnostic_route,
- _cycle_launch_authorized, _describe_route, _bind_operation_route) = _route_realm()
+ _diagnostic_full_route, _diagnostic_readiness_route, _classify_route,
+ _is_diagnostic_route, _cycle_launch_authorized, _describe_route,
+ _bind_operation_route) = _route_realm()
 del _route_realm
 
 
@@ -191,7 +203,13 @@ def _runtime_readiness_realm():
 del _runtime_readiness_realm
 
 
-def _receipt_realm():
+def _receipt_realm(parse_journal=None, formal_custody_binding=None,
+                   diagnostic_custody_lineage=None, close_custody=None):
+    """Build an isolated realm; alternate realms cannot mint production receipts."""
+    _require(all(value is None or callable(value) for value in (
+        parse_journal, formal_custody_binding,
+        diagnostic_custody_lineage, close_custody)),
+        "exact cycle receipt dependencies required")
     seal, receipts = object(), {}
 
     class _FullCycleReceipt:
@@ -221,10 +239,12 @@ def _receipt_realm():
 
     def common(route, lifecycle):
         name, capability, program, marker = _describe_route(route)
+        classification = _classify_route(route)
         _require(type(lifecycle.retired) is evidence._RetiredJournalOwnerResult
                  and type(lifecycle.residue) is evidence._ResidueOwnerResult,
                  "retired journal and independent residue owners required")
-        records = operation._parse(lifecycle.retired.raw)
+        records = ((operation._parse if parse_journal is None else parse_journal)
+                   (lifecycle.retired.raw))
         _require(records[-1].record_type == "RETIRED")
         by_kind = records_by_kind(records)
         for kind in ("CYCLE_ROUTE_V1", "CTR_LAUNCH_ISSUED_V1",
@@ -239,9 +259,16 @@ def _receipt_realm():
                   route_record.body["marker_sha256"]) ==
                  (name, capability, program, marker))
         production_grant = route_record.body["grant_authority"] == "production"
-        _require(production_grant == (route not in {
-            _synthetic_full_route_for_tests(), _synthetic_readiness_route_for_tests()}),
-            "route/grant authority differs")
+        _require(production_grant == (classification == "production"),
+                 "route/grant authority differs")
+        if not production_grant:
+            _require(route_record.body["grant_authority"] == "synthetic"
+                     and all(route_record.body[name] is None for name in (
+                         "batch_commitment", "cycle_ordinal", "implementation_revision",
+                         "control_revision", "static_control_sha256",
+                         "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
+                         "grant_commitment")),
+                     "non-production route requires exact no-grant journal fields")
         launch = by_kind["CTR_LAUNCH_ISSUED_V1"][0]
         observed = by_kind["SSH_MARKER_OBSERVED_V1"][0]
         settled = by_kind["SSH_COMMAND_SETTLED_V1"][0]
@@ -266,7 +293,14 @@ def _receipt_realm():
         teardown_kinds = tuple(row.record_type for row in records
                                if row.record_type in PRIVATE_TEARDOWN_RECORDS)
         _require(teardown_kinds == PRIVATE_TEARDOWN_RECORDS)
-        bindings = admission._static_custody_binding(lifecycle.static_custody)
+        custody_projection = (
+            (admission._diagnostic_custody_lineage
+             if diagnostic_custody_lineage is None else diagnostic_custody_lineage)(
+                 lifecycle.static_custody)
+            if classification == "diagnostic" else
+            (admission._static_custody_binding
+             if formal_custody_binding is None else formal_custody_binding)(
+                 lifecycle.static_custody))
         settled_key_grants = [row.body for row in records
                               if row.record_type == "INPUT_GRANT"
                               and row.body["action"] == "settled"]
@@ -292,7 +326,7 @@ def _receipt_realm():
                             launch.body["kata_launch_started_boottime_ns"],
         }
         qmp = lifecycle.runtime_observation
-        return {
+        value = {
             "version": PRIVATE_VERSION, "route": name,
             "cycle_capability_sha256": capability,
             "cycle_grant": ({name: route_record.body[name] for name in (
@@ -304,7 +338,6 @@ def _receipt_realm():
             "provider_execution_observed": False,
             "aws_authority": (route_record.body["grant_commitment"]
                               if production_grant else None),
-            "source_bindings": bindings,
             "operation_token": records[0].body["operation_token"],
             "journal_sha256": hashlib.sha256(lifecycle.retired.raw).hexdigest(),
             "program_sha256": program, "marker_sha256": marker,
@@ -329,6 +362,11 @@ def _receipt_realm():
             "final_baselines_sha256": residue.final_baselines_sha256,
             "independent_residue_absent": list(residue.absent_facts),
         }
+        if classification == "diagnostic":
+            value["diagnostic_custody_lineage"] = custody_projection
+        else:
+            value["source_bindings"] = custody_projection
+        return value
 
     def prepare(route, lifecycle):
         value = common(route, lifecycle)
@@ -369,7 +407,8 @@ def _receipt_realm():
             primary = error
         close_error = None
         try:
-            preparation._abort_fixed_static_preparation(lifecycle.static_custody)
+            (preparation._abort_fixed_static_preparation
+             if close_custody is None else close_custody)(lifecycle.static_custody)
         except BaseException as error:
             close_error = error
         if primary is not None or close_error is not None:
@@ -411,6 +450,7 @@ def _receipt_realm():
             validate_and_discard, consume)
 
 
+_new_cycle_receipt_routes = _receipt_realm
 (_FullCycleReceipt, _ReadinessCycleReceipt, _issue_cycle_receipt,
  _validate_and_discard_cycle_receipt, _consume_cycle_receipt) = _receipt_realm()
 del _receipt_realm

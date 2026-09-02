@@ -119,6 +119,8 @@ MAPPING_KEYS = (
 CONTROL_ROOT = preparation.CONTROL_ROOT
 CONTROL_PATH = CONTROL_ROOT / preparation.CONTROL_MEMBER
 DIAGNOSTIC_CONTROL_MEMBER = "stage2-current-source-prebuilt-diagnostic-control-v1.json"
+DIAGNOSTIC_CUSTODY_LINEAGE_VERSION = (
+    "cogs.stage2-current-source-prebuilt-diagnostic-custody-lineage/v1")
 MAX_CONTROL_BYTES = preparation.MAX_CONTROL_BYTES
 
 
@@ -1338,6 +1340,34 @@ def _static_routes():
             state["envelope"].value["result_binding_base"],
             state["runtime"].value["executables"])
 
+    def diagnostic_lineage(custody):
+        """Project only the exact split current-source/prior-publication lineage."""
+        state = custody_states.get(custody)
+        _require(live_custody(custody, state) and state["diagnostic"],
+                 "live exact diagnostic static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
+        import completion_kata_diagnostic_control as diagnostic
+        control = state["control"]
+        value = control.value
+        _require(value["version"] == diagnostic.VERSION
+                 and value["authority"] == diagnostic.AUTHORITY
+                 and value["profile"] == diagnostic.PROFILE)
+        rootfs = value["rootfs"]
+        return {
+            "version": DIAGNOSTIC_CUSTODY_LINEAGE_VERSION,
+            "authority": diagnostic.AUTHORITY,
+            "profile": diagnostic.PROFILE,
+            "diagnostic_control_sha256": control.sha256,
+            "runtime_implementation": dict(value["runtime_implementation"]),
+            "publication_producer": dict(value["publication_producer"]),
+            "rootfs_descriptor_sha256": rootfs["prebuilt_descriptor_sha256"],
+            "rootfs_custody_sha256": _sha(_canonical(rootfs["custody"])),
+            "runtime_executables_sha256": _sha(_canonical(
+                state["runtime"].value["executables"])),
+            "host_attestation_sha256": _attestation_digest(
+                state["runtime"].value["executables"][:5]),
+        }
+
     def abort(custody):
         state = custody_states.pop(custody, None)
         _require(live_custody(custody, state))
@@ -1354,7 +1384,7 @@ def _static_routes():
             source_approval, rootfs_authority,
             claim_role, consume_role, retire_consumed_roles, retire_recovery_claims,
             claim_live_mapping, consume_mapping, claim_prepared, prepared_facts,
-            binding, cycle_grant_binding, abort)
+            binding, diagnostic_lineage, cycle_grant_binding, abort)
 
 
 (_claim_static_preparation, _claim_recovery_static_preparation,
@@ -1366,7 +1396,7 @@ def _static_routes():
  _retire_recovery_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
- _static_custody_binding, _cycle_grant_binding,
+ _static_custody_binding, _diagnostic_custody_lineage, _cycle_grant_binding,
  _abort_static_preparation) = _static_routes()
 del _static_routes
 

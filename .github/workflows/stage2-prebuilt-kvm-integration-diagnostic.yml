@@ -270,6 +270,7 @@ jobs:
           test ! -e "$RECEIPT_READBACK_STAGING"
   aggregate:
     name: aggregate statuses only
+    permissions: {}
     if: always()
     needs: [full, readiness]
     runs-on: ubuntu-24.04

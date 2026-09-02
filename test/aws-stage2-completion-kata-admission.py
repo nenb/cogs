@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_admission as admission
+import completion_kata_diagnostic_control as diagnostic_control
 import completion_kata_preparation_bridge as preparation_bridge
 import completion_local_receipt as receipt
 
@@ -213,9 +214,57 @@ reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
 retire_recovery = admission._retire_recovery_executable_role_custody
 retire_claims = inspect.getclosurevars(retire_recovery).nonlocals["retire_claims"]
 routes = inspect.getclosurevars(retire_claims).nonlocals
-custody_type = inspect.getclosurevars(routes["live_custody"]).nonlocals[
-    "_StaticPreparationCustody"]
+custody_classes = inspect.getclosurevars(routes["live_custody"]).nonlocals
+custody_type = custody_classes["_StaticPreparationCustody"]
+diagnostic_custody_type = custody_classes["_DiagnosticPreparationCustody"]
 seal = inspect.getclosurevars(custody_type.__new__).nonlocals["seal"]
+
+# Formal and split-lineage custody projections are mutually exclusive. The
+# diagnostic projection names only diagnostic authority and the exact current
+# source, prior publication, rootfs custody, and held executable lineages.
+diagnostic_custody = diagnostic_custody_type(seal)
+formal_substitution = custody_type(seal)
+control_value = {
+    "version": diagnostic_control.VERSION,
+    "authority": diagnostic_control.AUTHORITY,
+    "profile": diagnostic_control.PROFILE,
+    "runtime_implementation": {"revision": "1" * 40,
+                               "source_manifest_sha256": "2" * 64},
+    "publication_producer": {
+        "implementation_revision": diagnostic_control.PRODUCER_IMPLEMENTATION,
+        "source_manifest_sha256": diagnostic_control.PRODUCER_SOURCE_MANIFEST,
+        "control_revision": diagnostic_control.PUBLICATION_CONTROL,
+        "descriptor_sha256": diagnostic_control.DESCRIPTOR_SHA256,
+        "oci_manifest_sha256": diagnostic_control.OCI_MANIFEST_SHA256,
+        "ustar_sha256": diagnostic_control.USTAR_SHA256,
+        "signature_verification_sha256": diagnostic_control.SIGNATURE_SHA256,
+    },
+    "rootfs": {"prebuilt_descriptor_sha256": diagnostic_control.DESCRIPTOR_SHA256,
+               "custody": {"signature_verification_sha256":
+                           diagnostic_control.SIGNATURE_SHA256}},
+}
+executables = [{"role": f"diagnostic-role-{index}"} for index in range(5)]
+for custody, is_diagnostic in ((diagnostic_custody, True),
+                               (formal_substitution, False)):
+    routes["custody_states"][custody] = {
+        "diagnostic": is_diagnostic, "descriptors": [],
+        "configuration_identity": {"retired": True, "active_sha256": "a" * 64},
+        "control": admission.preparation.StaticDescription(
+            b"", "3" * 64, control_value),
+        "runtime": admission.preparation.StaticDescription(
+            b"", "4" * 64, {"executables": executables}),
+    }
+lineage = admission._diagnostic_custody_lineage(diagnostic_custody)
+assert lineage["version"] == admission.DIAGNOSTIC_CUSTODY_LINEAGE_VERSION
+assert lineage["authority"] == diagnostic_control.AUTHORITY
+assert lineage["runtime_implementation"] == control_value["runtime_implementation"]
+assert lineage["publication_producer"] == control_value["publication_producer"]
+assert "production" not in canonical(lineage).decode("ascii")
+reject(lambda: admission._static_custody_binding(diagnostic_custody))
+reject(lambda: admission._diagnostic_custody_lineage(formal_substitution))
+admission._abort_static_preparation(diagnostic_custody)
+admission._abort_static_preparation(formal_substitution)
+
 for with_prepared in (False, True):
     custody = custody_type(seal)
     descriptors = [os.open(os.devnull, os.O_RDONLY) for _index in range(8 + with_prepared)]

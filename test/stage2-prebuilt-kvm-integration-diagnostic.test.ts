@@ -51,6 +51,7 @@ test("fixed rootfs custody is acquired twice while mint, report, and publication
   assert.equal(occurrences(workflow, "stage2-local-settlement.py residue"), 2);
   assert.doesNotMatch(workflow, /completion_local_full|stage2-local-publication|stage2-local-upload-receipt/u);
   const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
+  assert.match(aggregate, /^ {4}permissions: \{\}$/mu);
   assert.doesNotMatch(aggregate, /checkout|artifact|REPORT_|sudo/u);
   assert.match(
     aggregate,
