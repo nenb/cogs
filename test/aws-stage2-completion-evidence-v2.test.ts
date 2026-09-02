@@ -14,20 +14,28 @@ const root = join(import.meta.dirname, "..");
 let rawFixture: string | undefined;
 function raw(): string {
   if (rawFixture !== undefined) return rawFixture;
-  const result = spawnSync("python3", ["-I", join(root, "test/aws-stage2-completion-campaign-production.py")], {
+  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
     cwd: root,
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COGS_TEST_EMIT_EVIDENCE: "1" },
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PYTHONDONTWRITEBYTECODE: "1",
+      COGS_TEST_EMIT_EVIDENCE: "1",
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   rawFixture = result.stdout;
   return rawFixture;
 }
 function issuerReport(): string {
-  const result = spawnSync("python3", ["-I", join(root, "test/aws-stage2-completion-campaign-production.py")], {
+  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
     cwd: root,
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COGS_TEST_EMIT_REPORT: "1" },
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PYTHONDONTWRITEBYTECODE: "1",
+      COGS_TEST_EMIT_REPORT: "1",
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;

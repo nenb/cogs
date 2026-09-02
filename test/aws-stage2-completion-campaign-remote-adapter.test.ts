@@ -7,11 +7,19 @@ import test from "node:test";
 const root = join(import.meta.dirname, "..");
 test("provider-free adapter reaches exact fixed full and readiness wrappers", () => {
   for (const optimize of ["", "1", "2"]) {
-    const result = spawnSync("python3", ["-I", join(root, "test/aws-stage2-completion-campaign-remote-adapter.py")], {
-      cwd: root,
-      encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONOPTIMIZE: optimize },
-    });
+    const result = spawnSync(
+      "python3",
+      ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-remote-adapter.py")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          PYTHONDONTWRITEBYTECODE: "1",
+          PYTHONOPTIMIZE: optimize,
+        },
+      },
+    );
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "stage2 provider-free remote adapter checks passed\n");
   }
