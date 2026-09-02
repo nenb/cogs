@@ -297,12 +297,21 @@ jobs:
           path: ${{ env.REPORT_READBACK_STAGING }}
           digest-mismatch: error
 
-      - name: Validate exact-ID cycle readback
+      - name: Validate exact-ID and exact-archive-digest cycle readback
         id: cycle_readback
         if: always() && steps.cycle_download.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 1
-        env: *formal_expected
+        env:
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+          EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+          EXPECTED_ROOTFS_DESCRIPTOR_SHA256: ${{ steps.gate.outputs.rootfs_descriptor_sha256 }}
+          CYCLE_ARTIFACT_ID: ${{ steps.cycle_upload.outputs.artifact-id }}
+          CYCLE_ARTIFACT_DIGEST: ${{ steps.cycle_upload.outputs.artifact-digest }}
         run: |
           /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py readback
 
@@ -367,6 +376,8 @@ jobs:
       CYCLE_AGGREGATE_ROOT: /var/tmp/cogs-stage2-formal-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
       PACKAGE_STAGING: /var/tmp/cogs-stage2-formal-package-${{ github.run_id }}-${{ github.run_attempt }}
       PACKAGE_READBACK: /var/tmp/cogs-stage2-formal-package-readback-${{ github.run_id }}-${{ github.run_attempt }}
+      CYCLE_CUSTODY_API_RESPONSE: /var/tmp/cogs-stage2-formal-artifact-api-${{ github.run_id }}-${{ github.run_attempt }}.json
+      CYCLE_CUSTODY_MAP: /var/tmp/cogs-stage2-formal-artifact-custody-${{ github.run_id }}-${{ github.run_attempt }}.json
     steps:
       - name: Acquire exact control revision G without credentials
         run: |
@@ -388,12 +399,32 @@ jobs:
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-prebuilt-local-qualification-guard.py >>"$GITHUB_OUTPUT"
 
-      - name: Download all seven cycle artifacts
+      - name: Materialize authenticated exact custody for all seven cycle uploads
+        id: cycle_custody
+        if: always() && needs.local-kata.result == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
+          EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
+          EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
+          EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
+          EXPECTED_ROOTFS_DESCRIPTOR_SHA256: ${{ steps.gate.outputs.rootfs_descriptor_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" >"$CYCLE_CUSTODY_API_RESPONSE"
+          /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py custody >>"$GITHUB_OUTPUT"
+
+      - name: Download all seven cycle artifacts by exact numeric IDs
         id: cycle_download
+        if: always() && steps.cycle_custody.outcome == 'success'
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: stage2-formal-cycle-*-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ steps.cycle_custody.outputs.artifact_ids }}
           path: ${{ env.CYCLE_AGGREGATE_ROOT }}
           merge-multiple: true
           digest-mismatch: error
@@ -414,6 +445,7 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 0700 "$PACKAGE_STAGING"
+          install -m 0600 "$CYCLE_CUSTODY_MAP" "$PACKAGE_STAGING/cycle-artifact-custody-v1.json"
           /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py aggregate >"$PACKAGE_STAGING/pre-aws-package-v3.json"
 
       - name: Upload non-AWS prerequisite package
@@ -423,7 +455,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-formal-non-aws-package-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-1
-          path: ${{ env.PACKAGE_STAGING }}/pre-aws-package-v3.json
+          path: ${{ env.PACKAGE_STAGING }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
@@ -441,14 +473,21 @@ jobs:
       - name: Byte-compare package and fail closed
         if: always()
         env:
+          CUSTODY: ${{ steps.cycle_custody.outcome }}
           CREATE: ${{ steps.package_create.outcome }}
           UPLOAD: ${{ steps.package_upload.outcome }}
           DOWNLOAD: ${{ steps.package_download.outcome }}
           CYCLE_JOB_RESULT: ${{ needs.local-kata.result }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package_upload.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ steps.package_upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$CYCLE_JOB_RESULT" = success
-          test "$CREATE:$UPLOAD:$DOWNLOAD" = success:success:success
+          test "$CUSTODY:$CREATE:$UPLOAD:$DOWNLOAD" = success:success:success:success
+          [[ "$PACKAGE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PACKAGE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           cmp "$PACKAGE_STAGING/pre-aws-package-v3.json" "$PACKAGE_READBACK/pre-aws-package-v3.json"
-          rm -rf -- "$CYCLE_AGGREGATE_ROOT" "$PACKAGE_STAGING" "$PACKAGE_READBACK"
+          cmp "$PACKAGE_STAGING/cycle-artifact-custody-v1.json" "$PACKAGE_READBACK/cycle-artifact-custody-v1.json"
+          rm -rf -- "$CYCLE_AGGREGATE_ROOT" "$PACKAGE_STAGING" "$PACKAGE_READBACK" \
+            "$CYCLE_CUSTODY_API_RESPONSE" "$CYCLE_CUSTODY_MAP"

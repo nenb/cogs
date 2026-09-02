@@ -14,13 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 FORMAL_MODULE = ROOT / "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py"
 MAX_RECEIPT_BYTES = 96 * 1024
 MAX_STATUS_BYTES = 8 * 1024
+MAX_CUSTODY_BYTES = 16 * 1024
+MAX_API_BYTES = 1024 * 1024
 AUTHORITY = "non-cloud-formal-qualification-cycle-only"
 CYCLE_AUTHORITY = "non-aws-formal-qualification-owner-evidence-only"
 STATUS_AUTHORITY = "non-aws-formal-qualification-cycle-status-only"
 PACKAGE_AUTHORITY = "non-aws-prerequisite-evidence-only"
+CUSTODY_AUTHORITY = "authenticated-github-actions-api-cycle-artifact-custody-only"
+CUSTODY_VERSION = "cogs.stage2-formal-local-artifact-custody/v1"
+REPOSITORY = "nenb/cogs"
 CYCLE_MODES = ("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness")
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+ARCHIVE_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 FULL_PROGRAM = "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406"
 FULL_MARKER = "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
@@ -134,6 +140,12 @@ def digest(value):
 
 def positive(value):
     require(type(value) is int and value > 0, "positive integer required")
+    return value
+
+
+def archive_digest(value):
+    require(type(value) is str and ARCHIVE_SHA256.fullmatch(value) is not None,
+            "sha256-prefixed Actions artifact archive digest required")
     return value
 
 
@@ -321,15 +333,83 @@ def validate_status(raw, receipt_raw, expected, ordinal):
     return value
 
 
+def expected_artifact_name(expected, ordinal):
+    return (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
+            f"{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1")
+
+
+def custody_from_api(raw, expected):
+    require(type(raw) is bytes and 0 < len(raw) <= MAX_API_BYTES, "bounded API response required")
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs,
+                           parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise FormalQualificationError("invalid artifact API response") from error
+    require(type(value) is dict and type(value.get("total_count")) is int
+            and type(value.get("artifacts")) is list
+            and value["total_count"] == len(value["artifacts"]) == 7,
+            "API artifact inventory must be exactly seven")
+    by_name = {}
+    for item in value["artifacts"]:
+        require(type(item) is dict and type(item.get("name")) is str
+                and item["name"] not in by_name and item.get("expired") is False,
+                "live unique API artifact required")
+        workflow_run = item.get("workflow_run")
+        require(type(workflow_run) is dict
+                and workflow_run.get("id") == int(expected["GITHUB_RUN_ID"]),
+                "artifact API workflow run differs")
+        artifact_id = positive(item.get("id"))
+        digest_value = archive_digest(item.get("digest"))
+        by_name[item["name"]] = (artifact_id, digest_value)
+    rows = []
+    for ordinal in range(1, 8):
+        name = expected_artifact_name(expected, ordinal)
+        require(name in by_name, "expected cycle artifact absent from API inventory")
+        artifact_id, digest_value = by_name[name]
+        rows.append({"ordinal": ordinal, "name": name, "artifact_id": artifact_id,
+                     "archive_digest": digest_value})
+    require(len({row["artifact_id"] for row in rows}) == 7
+            and len({row["archive_digest"] for row in rows}) == 7,
+            "cycle artifact identities must be unique")
+    return {"version": CUSTODY_VERSION, "authority": CUSTODY_AUTHORITY,
+            "repository": REPOSITORY,
+            "workflow_run": {"id": int(expected["GITHUB_RUN_ID"]), "attempt": 1},
+            "artifacts": rows}
+
+
+def validate_custody(raw, expected):
+    value = decode(raw, MAX_CUSTODY_BYTES)
+    exact_keys(value, {"version", "authority", "repository", "workflow_run", "artifacts"})
+    require(value["version"] == CUSTODY_VERSION and value["authority"] == CUSTODY_AUTHORITY
+            and value["repository"] == REPOSITORY)
+    exact_keys(value["workflow_run"], {"id", "attempt"})
+    require(value["workflow_run"] == {"id": int(expected["GITHUB_RUN_ID"]), "attempt": 1}
+            and type(value["artifacts"]) is list and len(value["artifacts"]) == 7)
+    for ordinal, row in enumerate(value["artifacts"], 1):
+        exact_keys(row, {"ordinal", "name", "artifact_id", "archive_digest"})
+        require(row["ordinal"] == ordinal and row["name"] == expected_artifact_name(expected, ordinal))
+        positive(row["artifact_id"]); archive_digest(row["archive_digest"])
+    require(len({row["artifact_id"] for row in value["artifacts"]}) == 7
+            and len({row["archive_digest"] for row in value["artifacts"]}) == 7,
+            "cycle artifact custody identities differ")
+    return value
+
+
 def write_all(descriptor, raw):
     view = memoryview(raw)
     while view:
         written = os.write(descriptor, view); require(written > 0); view = view[written:]
 
 
-def materialize_grant(environ=os.environ, authority_path=FORMAL_MODULE):
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try: os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+
+def materialize_grant(environ=os.environ, authority_path=FORMAL_MODULE, authority=None):
     expected = expected_environment(environ); ordinal = int(environ.get("FORMAL_CYCLE_ORDINAL", "0"))
-    authority = load_authority(authority_path); grant = issue_grant(ordinal, expected, authority)
+    authority = authority or load_authority(authority_path); grant = issue_grant(ordinal, expected, authority)
     root = authority.ROOT
     require(os.geteuid() == 0 and not root.exists())
     root.mkdir(mode=0o700); os.chown(root, 0, 0)
@@ -337,6 +417,7 @@ def materialize_grant(environ=os.environ, authority_path=FORMAL_MODULE):
     try:
         raw = authority.encode(grant); write_all(descriptor, raw); os.fchmod(descriptor, 0o400); os.fsync(descriptor)
     finally: os.close(descriptor)
+    fsync_directory(root)
     return grant
 
 
@@ -368,9 +449,11 @@ def validate_cycle_directory(path, expected, ordinal):
     return receipt_raw, status_raw, validate_status(status_raw, receipt_raw, expected, ordinal)
 
 
-def aggregate(root, expected, cycle_job_result="success"):
+def aggregate(root, custody_raw, expected, cycle_job_result="success"):
     require(cycle_job_result == "success" and expected["GITHUB_RUN_ATTEMPT"] == "1",
             "failed, retried, canceled, or uncertain cycle batch")
+    custody = validate_custody(custody_raw, expected)
+    custody_by_ordinal = {row["ordinal"]: row for row in custody["artifacts"]}
     root = Path(root); seen = root.lstat()
     expected_members = {f"cycle-{ordinal}" for ordinal in range(1, 8)}
     require(stat.S_ISDIR(seen.st_mode) and not stat.S_ISLNK(seen.st_mode)
@@ -378,9 +461,17 @@ def aggregate(root, expected, cycle_job_result="success"):
             "artifact batch inventory differs")
     rows = []; batches = set(); identity_sets = {name: set() for name in
         ("host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key")}
-    total = 0
+    total = 0; shared_bindings = None
     for ordinal in range(1, 8):
         receipt_raw, status_raw, status = validate_cycle_directory(root / f"cycle-{ordinal}", expected, ordinal)
+        receipt, _grant, _measurements = validate_receipt(receipt_raw, expected, ordinal)
+        if shared_bindings is None:
+            shared_bindings = receipt["source_bindings"]
+        else:
+            require(receipt["source_bindings"] == shared_bindings,
+                    "every immutable source binding must be byte-for-byte common")
+        artifact = custody_by_ordinal[ordinal]
+        require(status["artifact_name"] == artifact["name"], "status and API artifact names differ")
         batches.add(status["batch_commitment"]); total += status["workload_measurements"]
         for name, seen in identity_sets.items():
             identity = status["identities"][name]; require(identity not in seen, f"reused {name}"); seen.add(identity)
@@ -388,15 +479,16 @@ def aggregate(root, expected, cycle_job_result="success"):
             "grant_commitment": status["grant_commitment"],
             "receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(),
             "status_sha256": hashlib.sha256(status_raw).hexdigest(),
-            "artifact_name": status["artifact_name"], "identities": status["identities"]})
+            "artifact_name": status["artifact_name"],
+            "artifact_id": artifact["artifact_id"],
+            "artifact_archive_digest": artifact["archive_digest"],
+            "identities": status["identities"]})
     require(len(batches) == 1 and total == 21
             and [row["mode"] for row in rows] == list(CYCLE_MODES)
             and len(identity_sets["operation"] | identity_sets["rootfs"]) == 14
             and len(identity_sets["client_key"] | identity_sets["host_key"]) == 14,
             "batch cardinality, mode, measurement, or cross-role identity differs")
-    first_receipt = decode(read_regular(root / "cycle-1/receipt.json", MAX_RECEIPT_BYTES),
-                           MAX_RECEIPT_BYTES)
-    bindings = first_receipt["source_bindings"]
+    require(shared_bindings is not None)
     return canonical({"version": "cogs.stage2-pre-aws-qualification-package/v3",
         "authority": PACKAGE_AUTHORITY,
         "implementation_revision": expected["EXPECTED_IMPLEMENTATION_HEAD"],
@@ -406,8 +498,11 @@ def aggregate(root, expected, cycle_job_result="success"):
         "workflow_sha256": expected["EXPECTED_WORKFLOW_SHA256"],
         "result_schema_sha256": expected["EXPECTED_RESULT_SCHEMA_SHA256"],
         "rootfs_descriptor_sha256": expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
-        "runtime_commitment": bindings["runtime_attestation_sha256"],
-        "fixture_commitment": bindings["final_pin_sha256"],
+        "runtime_commitment": shared_bindings["runtime_attestation_sha256"],
+        "fixture_commitment": shared_bindings["final_pin_sha256"],
+        "source_bindings": shared_bindings,
+        "cycle_artifact_custody": custody,
+        "cycle_artifact_custody_sha256": hashlib.sha256(custody_raw).hexdigest(),
         "batch_commitment": next(iter(batches)), "cycle_count": 7,
         "workload_measurements": total, "cycles": rows,
         "predecessor_versions": ["cogs.stage2-pre-aws-qualification-package/v1",
@@ -418,7 +513,7 @@ def aggregate(root, expected, cycle_job_result="success"):
 
 
 def main():
-    require(len(sys.argv) == 2 and sys.argv[1] in {"grant", "publish", "readback", "aggregate"})
+    require(len(sys.argv) == 2 and sys.argv[1] in {"grant", "publish", "readback", "custody", "aggregate"})
     command = sys.argv[1]; expected = expected_environment(); ordinal = int(os.environ.get("FORMAL_CYCLE_ORDINAL", "0"))
     if command == "grant":
         grant = materialize_grant(); print(f"batch_commitment={grant.batch_commitment}"); print(f"grant_commitment={grant.grant_commitment}")
@@ -429,8 +524,22 @@ def main():
         local = Path(os.environ["CYCLE_STAGING"]); remote = Path(os.environ["CYCLE_READBACK_STAGING"])
         left = validate_cycle_directory(local, expected, ordinal); right = validate_cycle_directory(remote, expected, ordinal)
         require(left[:2] == right[:2], "exact cycle artifact readback differs")
+        positive(int(os.environ["CYCLE_ARTIFACT_ID"]))
+        archive_digest(os.environ["CYCLE_ARTIFACT_DIGEST"])
+    elif command == "custody":
+        api_raw = read_regular(os.environ["CYCLE_CUSTODY_API_RESPONSE"], MAX_API_BYTES)
+        custody_raw = canonical(custody_from_api(api_raw, expected))
+        destination = Path(os.environ["CYCLE_CUSTODY_MAP"])
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try: write_all(descriptor, custody_raw); os.fsync(descriptor)
+        finally: os.close(descriptor)
+        fsync_directory(destination.parent)
+        custody = validate_custody(read_regular(destination, MAX_CUSTODY_BYTES), expected)
+        print("artifact_ids=" + ",".join(str(row["artifact_id"]) for row in custody["artifacts"]))
     else:
-        raw = aggregate(os.environ["CYCLE_AGGREGATE_ROOT"], expected, os.environ.get("CYCLE_JOB_RESULT", ""))
+        custody_raw = read_regular(os.environ["CYCLE_CUSTODY_MAP"], MAX_CUSTODY_BYTES)
+        raw = aggregate(os.environ["CYCLE_AGGREGATE_ROOT"], custody_raw, expected,
+                        os.environ.get("CYCLE_JOB_RESULT", ""))
         require(sys.stdout.buffer.write(raw) == len(raw))
 
 

@@ -44,12 +44,19 @@ test("each job prepares one rootfs, executes one mode-bound lifecycle, and close
 
 test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", () => {
   assert.match(workflow, /needs: \[admission, local-kata\]/u);
-  assert.match(workflow, /Download all seven cycle artifacts/u);
+  assert.match(workflow, /Materialize authenticated exact custody for all seven cycle uploads/u);
+  assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/artifacts\?per_page=100/u);
+  assert.match(workflow, /Download all seven cycle artifacts by exact numeric IDs/u);
+  assert.match(workflow, /artifact-ids: \$\{\{ steps\.cycle_custody\.outputs\.artifact_ids \}\}/u);
+  assert.doesNotMatch(workflow, /pattern: stage2-formal-cycle/u);
   assert.match(workflow, /merge-multiple: true/u);
+  assert.match(workflow, /CYCLE_ARTIFACT_DIGEST: \$\{\{ steps\.cycle_upload\.outputs\.artifact-digest \}\}/u);
   assert.match(workflow, /CYCLE_JOB_RESULT: \$\{\{ needs\.local-kata\.result \}\}/u);
   assert.match(workflow, /test "\$CYCLE_JOB_RESULT" = success/u);
   assert.match(workflow, /pre-aws-package-v3\.json/u);
   assert.match(workflow, /Byte-compare package and fail closed/u);
+  assert.match(workflow, /cycle-artifact-custody-v1\.json/u);
+  assert.match(workflow, /PACKAGE_ARTIFACT_DIGEST.*artifact-digest/u);
   assert.ok(Buffer.byteLength(workflow) < 94_000);
 });
 

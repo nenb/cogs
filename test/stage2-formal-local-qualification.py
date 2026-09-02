@@ -5,8 +5,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import stat
 import tempfile
 import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -110,6 +112,23 @@ def write_cycle(root, ordinal, value=None):
     (path / "receipt.json").write_bytes(raw); (path / "status.json").write_bytes(formal.canonical(status))
 
 
+def artifact_api():
+    return {"total_count": 7, "artifacts": [{
+        "id": 700 + ordinal, "name": formal.expected_artifact_name(expected, ordinal),
+        "digest": "sha256:" + d(f"archive-{ordinal}"), "expired": False,
+        "workflow_run": {"id": 71},
+    } for ordinal in range(1, 8)]}
+
+
+def custody(api=None):
+    source = api or artifact_api()
+    return formal.canonical(formal.custody_from_api(json.dumps(source).encode(), expected))
+
+
+def aggregate(root, outcome="success", expected_value=expected, custody_raw=None):
+    return formal.aggregate(root, custody_raw or custody(), expected_value, outcome)
+
+
 # Grant domains are non-cloud, batch shared, ordinal/mode unique, canonical and one-attempt.
 grants = [formal.issue_grant(index, expected, authority) for index in range(1, 8)]
 assert len({item.batch_commitment for item in grants}) == 1
@@ -143,18 +162,54 @@ try: operation._validate_body("CYCLE_ROUTE_V1", hostile_body)
 except operation.OperationError: pass
 else: raise AssertionError("cloud authority relabeling was accepted")
 
+# API custody is exact-ID, sha256-prefixed, run-bound, complete, and canonical.
+valid_custody = formal.validate_custody(custody(), expected)
+assert [row["artifact_id"] for row in valid_custody["artifacts"]] == list(range(701, 708))
+for mutation in ("id", "digest", "name", "expired", "run", "missing", "extra"):
+    hostile = artifact_api()
+    if mutation == "id": hostile["artifacts"][1]["id"] = hostile["artifacts"][0]["id"]
+    elif mutation == "digest": hostile["artifacts"][1]["digest"] = d("unprefixed")
+    elif mutation == "name": hostile["artifacts"][1]["name"] = "wildcard-substitute"
+    elif mutation == "expired": hostile["artifacts"][1]["expired"] = True
+    elif mutation == "run": hostile["artifacts"][1]["workflow_run"]["id"] = 72
+    elif mutation == "missing": hostile["artifacts"].pop(); hostile["total_count"] = 6
+    else: hostile["artifacts"].append(copy.deepcopy(hostile["artifacts"][-1])); hostile["total_count"] = 8
+    rejected(lambda hostile=hostile: formal.custody_from_api(json.dumps(hostile).encode(), expected))
+
 with tempfile.TemporaryDirectory() as temporary:
     for ordinal in range(1, 8): write_cycle(temporary, ordinal)
-    package_raw = formal.aggregate(temporary, expected, "success")
+    package_raw = aggregate(temporary)
     package = formal.decode(package_raw, 96 * 1024)
     assert package["cycle_count"] == 7 and package["workload_measurements"] == 21
+    assert package["source_bindings"] == receipt(1)["source_bindings"]
+    assert package["cycle_artifact_custody"] == valid_custody
+    assert package["cycle_artifact_custody_sha256"] == hashlib.sha256(custody()).hexdigest()
     assert [row["mode"] for row in package["cycles"]] == list(formal.CYCLE_MODES)
+    assert [row["artifact_id"] for row in package["cycles"]] == list(range(701, 708))
+    assert all(row["artifact_archive_digest"].startswith("sha256:") for row in package["cycles"])
     assert package["claims"] == {"formal_non_aws_qualification_passed": True,
         "aws_authorized": False, "aws_executed": False, "provider_executed": False,
         "promotion_authorized": False}
     for outcome in ("failure", "cancelled", "skipped", ""):
-        rejected(lambda outcome=outcome: formal.aggregate(temporary, expected, outcome))
-    rejected(lambda: formal.aggregate(temporary, {**expected, "GITHUB_RUN_ATTEMPT": "2"}, "success"))
+        rejected(lambda outcome=outcome: aggregate(temporary, outcome))
+    rejected(lambda: aggregate(temporary, expected_value={**expected, "GITHUB_RUN_ATTEMPT": "2"}))
+
+    # Every immutable binding is common to all cycles; none is borrowed from cycle one.
+    for binding in formal.SOURCE_KEYS:
+        hostile = receipt(2)
+        hostile["source_bindings"][binding] = ("3" * 40 if binding == "source_head"
+                                                else d(f"hostile-{binding}"))
+        if binding in {"source_head", "source_manifest_sha256", "rootfs_descriptor_sha256",
+                       "guest_program_sha256"}:
+            rejected(lambda hostile=hostile: formal.validate_receipt(
+                formal.canonical(hostile), expected, 2))
+            continue
+        other = tempfile.TemporaryDirectory()
+        try:
+            for ordinal in range(1, 8):
+                write_cycle(other.name, ordinal, hostile if ordinal == 2 else receipt(ordinal))
+            rejected(lambda: aggregate(other.name))
+        finally: other.cleanup()
 
     # Every identity class, ordinal, artifact, status and canonical byte sequence is fail-closed.
     for identity in ("host_boot_id", "operation_token", "rootfs_token", "runtime",
@@ -173,7 +228,7 @@ with tempfile.TemporaryDirectory() as temporary:
         other = tempfile.TemporaryDirectory()
         try:
             for ordinal in range(1, 8): write_cycle(other.name, ordinal, hostile if ordinal == 2 else receipt(ordinal))
-            rejected(lambda: formal.aggregate(other.name, expected, "success"))
+            rejected(lambda: aggregate(other.name))
         finally: other.cleanup()
 
     for left, right in (("operation_token", "rootfs_token"),):
@@ -182,13 +237,13 @@ with tempfile.TemporaryDirectory() as temporary:
         other = tempfile.TemporaryDirectory()
         try:
             for ordinal in range(1, 8): write_cycle(other.name, ordinal, hostile if ordinal == 2 else receipt(ordinal))
-            rejected(lambda: formal.aggregate(other.name, expected, "success"))
+            rejected(lambda: aggregate(other.name))
         finally: other.cleanup()
     hostile = receipt(2); hostile["key_freshness"]["client_key_commitment"] = receipt(1)["key_freshness"]["host_key_commitment"]
     other = tempfile.TemporaryDirectory()
     try:
         for ordinal in range(1, 8): write_cycle(other.name, ordinal, hostile if ordinal == 2 else receipt(ordinal))
-        rejected(lambda: formal.aggregate(other.name, expected, "success"))
+        rejected(lambda: aggregate(other.name))
     finally: other.cleanup()
 
     mutations = []
@@ -216,11 +271,59 @@ with tempfile.TemporaryDirectory() as temporary:
     rejected(lambda: formal.validate_receipt(sample_raw + b" ", expected, 1))
     rejected(lambda: formal.validate_receipt(sample_raw.replace(b'{"authority":', b'{"authority":"x","authority":', 1), expected, 1))
     extra = Path(temporary) / "cycle-8"; extra.mkdir()
-    rejected(lambda: formal.aggregate(temporary, expected, "success")); extra.rmdir()
+    rejected(lambda: aggregate(temporary)); extra.rmdir()
     missing = Path(temporary) / "cycle-7/status.json"; saved = missing.read_bytes(); missing.unlink()
-    rejected(lambda: formal.aggregate(temporary, expected, "success")); missing.write_bytes(saved)
+    rejected(lambda: aggregate(temporary)); missing.write_bytes(saved)
     status_path = Path(temporary) / "cycle-7/status.json"; status = json.loads(status_path.read_bytes())
     status["outcomes"]["recovery"] = "uncertain"; status_path.write_bytes(formal.canonical(status))
-    rejected(lambda: formal.aggregate(temporary, expected, "success"))
+    rejected(lambda: aggregate(temporary))
+
+# Grant publication fsyncs the containing directory and fails closed on that boundary.
+grant_environment = {**expected, "FORMAL_CYCLE_ORDINAL": "1"}
+with tempfile.TemporaryDirectory() as temporary:
+    authority.ROOT = Path(temporary) / "formal-authority"
+    calls = []
+    real_fsync = formal.os.fsync
+    def observe_fsync(descriptor):
+        calls.append(stat.S_ISDIR(formal.os.fstat(descriptor).st_mode)); return real_fsync(descriptor)
+    with patch.object(formal.os, "geteuid", return_value=0), patch.object(
+            formal.os, "chown", return_value=None), patch.object(
+            formal.os, "fsync", side_effect=observe_fsync):
+        formal.materialize_grant(grant_environment, authority=authority)
+    assert calls == [False, True]
+with tempfile.TemporaryDirectory() as temporary:
+    authority.ROOT = Path(temporary) / "formal-authority"
+    real_fsync = formal.os.fsync
+    def reject_directory_fsync(descriptor):
+        if stat.S_ISDIR(formal.os.fstat(descriptor).st_mode): raise OSError("directory fsync fault")
+        return real_fsync(descriptor)
+    with patch.object(formal.os, "geteuid", return_value=0), patch.object(
+            formal.os, "chown", return_value=None), patch.object(
+            formal.os, "fsync", side_effect=reject_directory_fsync):
+        rejected(lambda: formal.materialize_grant(grant_environment, authority=authority))
+
+# Consumption fsyncs the grant directory after unlink and its ancestor after rmdir.
+with tempfile.TemporaryDirectory() as temporary:
+    parent = Path(temporary) / "cycle"; parent.mkdir(mode=0o700); parent.chmod(0o700)
+    path = parent / "grant.json"; path.write_bytes(authority.encode(grants[0])); path.chmod(0o400)
+    owner = parent.lstat(); calls = []
+    real_fsync = authority.os.fsync
+    def observe_consume_fsync(descriptor):
+        calls.append(authority.os.fstat(descriptor).st_ino); return real_fsync(descriptor)
+    with patch.object(authority.os, "fsync", side_effect=observe_consume_fsync):
+        assert authority._read_fixed(path, "full", (owner.st_uid, owner.st_gid)) == grants[0]
+    assert len(calls) == 2 and calls[0] == owner.st_ino and calls[1] == Path(temporary).stat().st_ino
+with tempfile.TemporaryDirectory() as temporary:
+    parent = Path(temporary) / "cycle"; parent.mkdir(mode=0o700); parent.chmod(0o700)
+    path = parent / "grant.json"; path.write_bytes(authority.encode(grants[0])); path.chmod(0o400)
+    owner = parent.lstat(); calls = []
+    real_fsync = authority.os.fsync
+    def fault_after_rmdir(descriptor):
+        calls.append(descriptor)
+        if len(calls) == 2: raise OSError("ancestor fsync fault")
+        return real_fsync(descriptor)
+    with patch.object(authority.os, "fsync", side_effect=fault_after_rmdir):
+        rejected(lambda: authority._read_fixed(path, "full", (owner.st_uid, owner.st_gid)))
+    assert not parent.exists() and len(calls) == 2
 
 print("stage2 formal seven-cycle qualification hostile checks passed")

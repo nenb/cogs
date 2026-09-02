@@ -16,6 +16,9 @@
     "rootfs_descriptor_sha256",
     "runtime_commitment",
     "fixture_commitment",
+    "source_bindings",
+    "cycle_artifact_custody",
+    "cycle_artifact_custody_sha256",
     "batch_commitment",
     "cycle_count",
     "workload_measurements",
@@ -35,6 +38,11 @@
     "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
     "runtime_commitment": { "$ref": "#/$defs/sha256" },
     "fixture_commitment": { "$ref": "#/$defs/sha256" },
+    "source_bindings": { "$ref": "#/$defs/sourceBindings" },
+    "cycle_artifact_custody": {
+      "$ref": "https://cogs.dev/schemas/stage2-formal-local-artifact-custody-v1.json"
+    },
+    "cycle_artifact_custody_sha256": { "$ref": "#/$defs/sha256" },
     "batch_commitment": { "$ref": "#/$defs/sha256" },
     "cycle_count": { "const": 7 },
     "workload_measurements": { "const": 21 },
@@ -78,6 +86,43 @@
   "$defs": {
     "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "archiveDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "host_attestation_sha256",
+        "runtime_attestation_sha256",
+        "rootfs_sha256",
+        "rootfs_descriptor_sha256",
+        "rootfs_package_manifest_sha256",
+        "rootfs_provenance_sha256",
+        "rootfs_publication_receipt_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "host_attestation_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_attestation_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_package_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_provenance_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_publication_receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
+        "owner_implementation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
     "identities": {
       "type": "object",
       "additionalProperties": false,
@@ -104,6 +149,8 @@
         "receipt_sha256",
         "status_sha256",
         "artifact_name",
+        "artifact_id",
+        "artifact_archive_digest",
         "identities"
       ],
       "properties": {
@@ -113,6 +160,8 @@
         "receipt_sha256": { "$ref": "#/$defs/sha256" },
         "status_sha256": { "$ref": "#/$defs/sha256" },
         "artifact_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "artifact_id": { "type": "integer", "minimum": 1 },
+        "artifact_archive_digest": { "$ref": "#/$defs/archiveDigest" },
         "identities": { "$ref": "#/$defs/identities" }
       }
     },

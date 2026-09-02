@@ -153,11 +153,15 @@ def _read_fixed(path, mode, owner):
                                item.st_mtime_ns, item.st_ctime_ns)
         _require(stable(before) == stable(os.fstat(descriptor)))
         grant = decode(raw); _require(grant.mode == mode)
-        path.unlink(); directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try: os.fsync(directory)
-        finally: os.close(directory)
-        _require(os.fstat(descriptor).st_nlink == 0)
-        parent.rmdir()
+        ancestor = os.open(parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            path.unlink(); directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+            _require(os.fstat(descriptor).st_nlink == 0)
+            parent.rmdir()
+            os.fsync(ancestor)
+        finally: os.close(ancestor)
         return grant
     finally: os.close(descriptor)
 
