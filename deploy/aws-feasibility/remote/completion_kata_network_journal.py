@@ -584,8 +584,8 @@ def setup_abort_complete(state):
     while count < len(actions) and count < len(SETUP) and actions[count] == SETUP[count]:
         count += 1
     if count == 0:
-        return (len(state["snapshots"]) == 1
-                and state["snapshots"][0]["snapshot_kind"] == "baseline"
+        snapshots = tuple(row["snapshot_kind"] for row in state["snapshots"])
+        return (snapshots in {("baseline",), ("baseline", "network-absent")}
                 and not state["effects"] and state["pending"] is None)
     expected = [*SETUP[:count], "IP_NETNS_REMOVE"]
     if count > SETUP.index("NFT_INSTALL_OWNED"): expected.append("NFT_REMOVE_ATOMIC")

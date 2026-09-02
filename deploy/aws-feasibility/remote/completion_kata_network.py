@@ -3155,7 +3155,7 @@ def _abort_incomplete_baseline(journal):
     """Release ACTIVE after an exact read-only baseline prefix, without a snapshot."""
     import completion_kata_operation as operation
     nft_owner.require_active(journal)
-    if operation._durable_phase(journal) != "FS_SETTLED" or operation._network_records(journal):
+    if journal.durable_phase() != "FS_SETTLED" or operation._network_records(journal):
         raise NetworkError("incomplete baseline abort order")
     _cleanup_baseline_support(journal, True)
     if (_netns_parent_mount() is not None
@@ -3212,8 +3212,10 @@ def _resume_effect(journal, ip, nft, tc):
             raise NetworkError("mutation output cannot be reconstructed")
         _record_observation(journal, body["action"], raw, mutation_outcome["command_serial"])
     prior = _settled_effects(journal)
+    action = Action(body["action"])
     identity = _observed_identity(journal, ip, nft, tc,
-        prior[-1]["identity"] if prior else _empty_identity(), Action(body["action"]),
+        prior[-1]["identity"] if prior else _empty_identity(), action,
+        ready=action is _SETUP_ACTIONS[-1],
         policy_version=body.get("policy_version", _journal_policy(journal)))
     observed = _effect_body(journal, Action(body["action"]), identity,
                             "absent" if body["action"] in {item.value for item in
@@ -3382,16 +3384,25 @@ def _setup_abort_observed(journal, ip, nft, tc, settled):
     starts = [index for index, (kind, _body) in enumerate(history)
               if kind == "NETWORK_CLEANUP_INTENT_V2"]
     if not starts: raise NetworkError("setup abort intent absent")
-    end = next((index for index in range(starts[-1] + 1, len(history))
+    cursor = starts[-1]
+    # A pending setup effect may be observed and settled after cleanup intent.
+    # Its source pass belongs to that already-issued effect, not to the cleanup
+    # census. Anchor the latter after the durable effect settlement.
+    resumed = [index for index in range(cursor + 1, len(history))
+               if history[index][0] == "NETWORK_EFFECT_SETTLED_V2"
+               and history[index][1]["action"] in {item.value for item in _SETUP_ACTIONS}]
+    if resumed: cursor = resumed[-1]
+    end = next((index for index in range(cursor + 1, len(history))
                 if history[index][0] == "NETWORK_EFFECT_INTENT_V2" and
                 history[index][1]["action"] in {item.value for item in
                     (Action.IP_NETNS_REMOVE, Action.NFT_REMOVE_ATOMIC)}), len(history))
-    rows = [body for kind, body in history[starts[-1] + 1:end]
+    rows = [body for kind, body in history[cursor + 1:end]
             if kind == operation.network_journal.OUTPUT_RECORD and
             body["chunk_index"] + 1 == body["chunk_count"]]
     if end == len(history):
-        raws = _observer_pass(journal, ip, nft, tc, expected, "NETWORK_CLEANUP_INTENT_V2")
-        rows = _sources(journal, "NETWORK_CLEANUP_INTENT_V2")
+        after = history[cursor][0]
+        raws = _observer_pass(journal, ip, nft, tc, expected, after)
+        rows = _sources(journal, after)
     else:
         if tuple(row["source_id"] for row in rows) != expected:
             raise NetworkError("setup abort identity proof incomplete")

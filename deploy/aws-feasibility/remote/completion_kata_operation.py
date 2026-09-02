@@ -84,10 +84,13 @@ def _stage_candidates(names, allowed=()):
         token = suffix[:-len(b".quarantine")] if suffix.endswith(b".quarantine") else suffix
         _fail(len(token) == 64 and set(token) <= set(b"0123456789abcdef"))
     return candidates
+def _daemon_cleanup_closed(body):
+    """Recognize physical process/cgroup closure without rewriting uncertainty."""
+    return all(body[name] for name in (
+        "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
 def _daemon_closed(body):
     return (body["uncertain"] is False and not body.get("errors", ())
-            and all(body[name] for name in (
-                "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+            and _daemon_cleanup_closed(body))
 def _recovery_no_effect_classification(intent):
     if type(intent) is not dict:
         return None
@@ -1374,7 +1377,7 @@ def _legal(records):
             intent = next(item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == serial)
             recoverable = {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}
             daemon = prior.record_type == "DAEMON_OUTCOME_V2" and intent.body["command_id"] == "CONTAINERD_START"
-            terminal = (_daemon_closed(prior.body) if daemon else
+            terminal = (_daemon_cleanup_closed(prior.body) if daemon else
                         prior.record_type == "COMMAND_OUTCOME_V2" and prior.body["uncertain"])
             target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent.body["command_id"] == "CTR_RUN" else intent.body["lifecycle_phase"]
             _fail(terminal and
@@ -2749,7 +2752,8 @@ def _make_authority():
                   and terminal.body["uncertain"]
                   and terminal.body["outcome"] != "recovery-no-effect") or (
                 terminal.record_type == "DAEMON_OUTCOME_V2"
-                and _legal(records) == "UNCERTAIN" and _daemon_closed(terminal.body))
+                and _legal(records) == "UNCERTAIN"
+                and _daemon_cleanup_closed(terminal.body))
         def runtime_recovery_history(self):
             _io, records, status = reload(self); _fail(status == "exact" and records and records[-1].record_type != "RETIRED")
             result = {"operation_token": records[0].body["operation_token"], "phase": _legal(records),
@@ -2796,7 +2800,7 @@ def _make_authority():
                 _fail((terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"])
                       or (terminal.record_type == "DAEMON_OUTCOME_V2"
                           and _legal(records) == "UNCERTAIN"
-                          and _daemon_closed(terminal.body)))
+                          and _daemon_cleanup_closed(terminal.body)))
                 serial = terminal.body["command_serial"]
                 intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
                               and item.body["command_serial"] == serial)
@@ -2844,7 +2848,7 @@ def _make_authority():
             _io, records, status = reload(self); _fail(status == "exact" and _legal(records) == "UNCERTAIN"); terminal = records[-1].body
             intent = next(item.body for item in records if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == terminal["command_serial"])
             daemon = records[-1].record_type == "DAEMON_OUTCOME_V2"
-            _fail((_daemon_closed(terminal) if daemon else terminal["uncertain"])
+            _fail((_daemon_cleanup_closed(terminal) if daemon else terminal["uncertain"])
                   and (daemon or intent["command_id"] in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}))
             target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
             write_validated(self, "RUNTIME_RESUME_V4", {"operation_token": records[0].body["operation_token"], "target_phase": target,

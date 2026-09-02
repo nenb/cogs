@@ -906,8 +906,10 @@ daemon_resume = {"operation_token": "a" * 64, "target_phase": "RUNTIME_CLEANUP_O
 daemon_cleanup = append(daemon_raw, "RUNTIME_RESUME_V4", daemon_resume)
 assert operation._legal(operation._parse(daemon_cleanup)) == "RUNTIME_CLEANUP_ONLY"
 class ClosedDaemonJournal:
+    def __init__(self, terminal=daemon_outcome):
+        self.terminal = terminal
     def recovery_command(self):
-        return daemon_intent, daemon_preexec, daemon_outcome
+        return daemon_intent, daemon_preexec, self.terminal
 closed_journal = ClosedDaemonJournal()
 with patch.object(process, "_recover_cgroup",
                   side_effect=AssertionError("certain daemon cleanup retried")), \
@@ -925,10 +927,34 @@ with patch.object(operation, "_claim_production_cleanup_operation",
                   side_effect=AssertionError("certain daemon cleanup retried")):
     recovered = process._recover_pending_production(closed_journal)
 assert recovered.body == daemon_outcome and closed_journal.resumes == 1
+# Unknown exit status remains sticky uncertainty, while separately observed
+# process/cgroup closure authorizes cleanup without another process operation.
+daemon_prefix = daemon_raw[:operation._parse(daemon_raw)[-1].previous_offset]
+uncertain_closed = {**daemon_outcome, "status": None, "uncertain": True,
+                    "errors": ["daemon-absent-on-reopen"]}
+uncertain_closed_raw = append(daemon_prefix, "DAEMON_OUTCOME_V2", uncertain_closed)
+assert operation._legal(operation._parse(uncertain_closed_raw)) == "UNCERTAIN"
+assert not operation._daemon_closed(uncertain_closed)
+assert operation._daemon_cleanup_closed(uncertain_closed)
+assert operation._legal(operation._parse(append(
+    uncertain_closed_raw, "RUNTIME_RESUME_V4", daemon_resume))) == "RUNTIME_CLEANUP_ONLY"
+uncertain_closed_journal = ClosedDaemonJournal(uncertain_closed)
+with patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("closed uncertain daemon cleanup retried")):
+    assert process._recover_pending_fixed(uncertain_closed_journal).body == uncertain_closed
+uncertain_closed_journal.resumes = 0
+uncertain_closed_journal.resume_runtime_cleanup = lambda: setattr(
+    uncertain_closed_journal, "resumes", uncertain_closed_journal.resumes + 1)
+with patch.object(operation, "_claim_production_cleanup_operation",
+                  return_value=uncertain_closed_journal), \
+     patch.object(operation, "_durable_phase", return_value="UNCERTAIN"), \
+     patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("closed uncertain daemon cleanup retried")):
+    recovered = process._recover_pending_production(uncertain_closed_journal)
+assert recovered.body == uncertain_closed and uncertain_closed_journal.resumes == 1
 wrong_daemon = {**daemon_outcome, "leader_reaped": False, "uncertain": True,
                 "errors": ["daemon-not-reaped"]}
-wrong_raw = append(daemon_raw[:operation._parse(daemon_raw)[-1].previous_offset],
-                   "DAEMON_OUTCOME_V2", wrong_daemon)
+wrong_raw = append(daemon_prefix, "DAEMON_OUTCOME_V2", wrong_daemon)
 rejected(lambda: append(wrong_raw, "RUNTIME_RESUME_V4", daemon_resume))
 
 # Runtime uncertainty is historical and sticky: observers are never resumable
@@ -1365,6 +1391,11 @@ def native_runtime_daemon_foundations(completion):
             deadline = time.monotonic() + 2
             while os.path.exists(f"/proc/{daemon_pid}") and time.monotonic() < deadline: time.sleep(0.01)
             assert not os.path.exists(f"/proc/{daemon_pid}") and len(os.listdir("/proc/self/fd")) == before
+            reopened_outcome = journal.runtime_recovery_history()["daemon_outcomes"][-1]
+            assert (reopened_outcome["uncertain"]
+                    and reopened_outcome["errors"] == ["daemon-absent-on-reopen"]
+                    and operation._daemon_cleanup_closed(reopened_outcome)
+                    and not operation._daemon_closed(reopened_outcome))
             assert process._set_subreaper(False) is False and journal.resume_runtime_cleanup() == "RUNTIME_CLEANUP_ONLY"
             daemon = runtime._retain_private_containerd(journal, completion_node, None, control)
             rejected(lambda: runtime._shutdown_private_containerd(daemon))
@@ -1799,6 +1830,11 @@ def production_owner_test():
                     for cut_index, cut_name in enumerate(baseline_cuts):
                         production_network.close(); production_fixture(network_prefix)
                         production_network = operation._open_fixed_operation()
+                        # The fixture coordinator admits the sole global owner
+                        # before fork. The crash worker inherits that exact OFD
+                        # authority; it is not a second legacy contender.
+                        token = production_network.command_context().operation_token
+                        network.nft_owner.acquire(production_network)
                         child = os.fork()
                         if child == 0:
                             exit_code = 81 + cut_index
@@ -1831,11 +1867,18 @@ def production_owner_test():
                             os._exit(119)
                         _pid, status = os.waitpid(child, 0)
                         assert os.waitstatus_to_exitcode(status) == 81 + cut_index
+                        # Drop the coordinator's duplicate of the inherited OFD
+                        # only after worker death, then prove fresh reconstruction.
+                        fixture_owner = network.nft_owner._OWNERS.pop(token)
+                        for descriptor in (fixture_owner.lock_fd,
+                                           *reversed(fixture_owner.descriptors)):
+                            try: os.close(descriptor)
+                            except OSError: pass
                         production_network.close(); production_network = operation._open_fixed_operation()
                         network.nft_owner.reopen_cleanup(production_network)
                         rows = operation._network_records(production_network)
                         if rows:
-                            if operation._durable_phase(production_network) == "FS_SETTLED":
+                            if production_network.durable_phase() == "FS_SETTLED":
                                 operation._settle_network_phase(production_network, "BASELINES_CAPTURED")
                             network._abort_fixed_setup(production_network, *retained_tools)
                             assert production_network.durable_phase() == "NETWORK_ABSENT"
@@ -2008,7 +2051,8 @@ def production_owner_test():
                                 return result
                             with patch.object(network, "_record_observation", side_effect=outcome_cut), \
                                  patch.object(network, "_record_effect", side_effect=observed_cut):
-                                network._effect(production_network, cut_action, *retained_tools, identity)
+                                network._effect(production_network, cut_action, *retained_tools, identity,
+                                    cut_action is network._SETUP_ACTIONS[-1])
                             os._exit(120)
                         _pid, status = os.waitpid(child, 0)
                         assert os.waitstatus_to_exitcode(status) == 101 + cut_index

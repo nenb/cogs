@@ -99,6 +99,16 @@ check("RUNTIME_READY" not in journal_model.LIFECYCLE_REQUIREMENTS,
       "B1 improperly requires a deferred runtime-ready transition")
 check(len(journal_model.SETUP_ABORT_TRACES) == len(journal_model.SETUP),
       "settled setup effects lack abort cuts")
+zero_abort = journal_model.initial()
+zero_abort["snapshots"] = [{"snapshot_kind": "baseline"}]
+check(journal_model.setup_abort_complete(zero_abort),
+      "zero-effect setup abort baseline rejected")
+zero_abort["snapshots"].append({"snapshot_kind": "network-absent"})
+check(journal_model.setup_abort_complete(zero_abort),
+      "zero-effect setup abort settlement rejected")
+zero_abort["snapshots"].append({"snapshot_kind": "firewall-restored"})
+check(not journal_model.setup_abort_complete(zero_abort),
+      "post-abort snapshot authorized as setup abort")
 for count, trace in enumerate(journal_model.SETUP_ABORT_TRACES, 1):
     prefix = tuple(item for action in journal_model.SETUP[:count]
                    for item in journal_model.EFFECT_COMMAND_TRACES[action])
