@@ -218,19 +218,28 @@ for route, grant, ssh_event in (
         (coordinator.cycle_evidence._fixed_readiness_route(), rehearsal_grant("readiness", 2),
          "READINESS_SSH_AUTHENTICATED")):
     fake = FakeOwners()
+    def validate_and_discard(seen_route, lifecycle):
+        assert seen_route is route and lifecycle.cycle_route is route
+        fake.events.append("CYCLE_RECEIPT_VALIDATED_DISCARDED")
+        fake.abort_custody(lifecycle)
+        return None
     with patch.object(coordinator, "_owners", fake), \
+         patch.object(coordinator.cycle_evidence, "_validate_and_discard_cycle_receipt",
+                      side_effect=validate_and_discard) as validation, \
          patch.object(coordinator.cycle_evidence, "_issue_cycle_receipt",
                       side_effect=AssertionError("rehearsal minted cycle receipt")), \
          patch.object(coordinator, "_produce_owner_evidence",
                       side_effect=AssertionError("rehearsal produced owner evidence")), \
          patch.object(coordinator, "_issue_owner_receipt",
                       side_effect=AssertionError("rehearsal minted local receipt")):
-        assert coordinator._run_cycle(route, grant, False) is None
+        rehearsal_result = coordinator._run_cycle(route, grant, False)
+        check(rehearsal_result is None, "rehearsal returned a receipt")
+    validation.assert_called_once()
     assert fake.events.count("CYCLE_GRANT_VALIDATED") == 1
     assert fake.events.count("CYCLE_ROUTE_BOUND") == 1
     assert fake.events.count(ssh_event) == 1
     assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
-    assert fake.events[-1] == "CUSTODY_ABORTED"
+    assert fake.events[-2:] == ["CYCLE_RECEIPT_VALIDATED_DISCARDED", "CUSTODY_ABORTED"]
     assert "OWNER_EVIDENCE" not in fake.events and "RECEIPT_ISSUED" not in fake.events
 
 # Every failed no-mint cycle cut after operation assignment still reaches exact
