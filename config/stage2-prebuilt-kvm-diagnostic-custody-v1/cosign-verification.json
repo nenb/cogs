@@ -1,0 +1,2 @@
+
+[{"critical":{"identity":{"docker-reference":"ghcr.io/nenb/cogs/stage2-rootfs@sha256:f80a3eafb00a184fa0899014c91401d7d5f06d757b29f38562070d0b5dab2a67"},"image":{"docker-manifest-digest":"sha256:f80a3eafb00a184fa0899014c91401d7d5f06d757b29f38562070d0b5dab2a67"},"type":"https://sigstore.dev/cosign/sign/v1"},"optional":{}}]

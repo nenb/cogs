@@ -349,7 +349,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     budget.current_lines,
     Number(budget.deployment_lines) + Number(budget.retained_schema_script_lines) + Number(budget.workflow_lines),
   );
-  assert.equal(budget.workflow_files, 25);
+  assert.equal(budget.workflow_files, 26);
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(
     Number(budget.correction_global_gross_added_lines),

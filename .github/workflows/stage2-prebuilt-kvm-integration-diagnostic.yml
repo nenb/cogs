@@ -1,0 +1,306 @@
+name: Stage 2 reusable prebuilt KVM integration diagnostic
+run-name: Reusable prebuilt KVM integration diagnostic source=${{ github.sha }} run=${{ github.run_id }}
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  EXACT_IMPLEMENTATION: 5bced6bdc54756761f28a393970301b9b24341cc
+  EXACT_CONTROL: 3a3499f0f452bf0fe893a0214cf0c0bbd0cd0e99
+jobs:
+  full:
+    name: full
+    runs-on: ubuntu-24.04
+    timeout-minutes: 250
+    env:
+      REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-1
+      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-1
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-local-receipt-upload-${{ github.run_id }}-1
+    steps:
+      - name: Admit a fresh protected-main attempt without consulting run history
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Check out the protected diagnostic workflow source without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - name: Verify the fixed non-authorizing publication lock
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py verify
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
+      - name: Acquire the exact lock-bound implementation without credentials
+        run: |
+          set -euo pipefail
+          destination=$RUNNER_TEMP/stage2-implementation
+          clean=(env -i HOME=/nonexistent PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$destination"
+          "${clean[@]}" /usr/bin/git -C "$destination" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$EXACT_IMPLEMENTATION"
+          "${clean[@]}" /usr/bin/git -C "$destination" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$destination" rev-parse HEAD)" = "$EXACT_IMPLEMENTATION"
+      - id: preparation
+        name: Independently materialize and prepare the immutable publication
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          sudo -n mkdir -m 0755 /run/netns
+          test "$(sudo -n stat -c '%U:%G:%a' /run/netns)" = root:root:755
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
+          sudo -n chmod 0755 /opt
+          prepared=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$RUNNER_TEMP/stage2-implementation/scripts/prepare-stage2-fixed-source.py")
+          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$EXACT_IMPLEMENTATION"
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py descriptor
+          immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1950s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py)
+          test "$(RESULT="$immutable" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["rootfs_artifact_count"])')" = 1
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py adjuncts
+          provisional=$(sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            COGS_STAGE2_CONTROL_REVISION="$EXACT_CONTROL" /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py)
+          RESULT="$provisional" /usr/bin/python3 -I -c 'import json,os
+          value=json.loads(os.environ["RESULT"])
+          assert value["authority"] == "non-authoritative-discovery-candidate"
+          assert value["kvm_used"] is False and len(value["control_sha256"]) == 64'
+          staged=$(sudo -n /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py provisional)
+          [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
+      - name: Issue the fixed no-mint full diagnostic grant
+        run: |
+          sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py full
+      - id: route
+        name: Execute the actual production-shaped full route without minting
+        continue-on-error: true
+        timeout-minutes: 132
+        run: |
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh
+      - id: recovery
+        name: Run cleanup-only recovery after every preparation attempt
+        if: always() && steps.preparation.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 13
+        run: |
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 720s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
+      - id: settlement
+        name: Settle fixed roots after recovery
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        env: { RECOVERY_OUTCOME: "${{ steps.recovery.outcome }}" }
+        run: |
+          set -euo pipefail
+          test "$RECOVERY_OUTCOME" = success
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            RECOVERY_OUTCOME=success /usr/bin/python3 -I -B scripts/stage2-local-settlement.py cleanup
+      - id: residue
+        name: Independently prove zero lifecycle residue
+        if: always() && steps.settlement.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            /usr/bin/python3 -I -B scripts/stage2-local-settlement.py residue
+      - id: scaffold
+        name: Restore hosted scaffolding after residue proof
+        if: always() && steps.residue.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sudo -n rmdir /run/netns
+          test ! -e /run/netns
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:755
+          sudo -n chmod 0777 /opt
+      - name: Enforce the complete full diagnostic outcome
+        if: always()
+        env:
+          ROUTE: ${{ steps.route.outcome }}
+          RECOVERY: ${{ steps.recovery.outcome }}
+          SETTLEMENT: ${{ steps.settlement.outcome }}
+          RESIDUE: ${{ steps.residue.outcome }}
+          SCAFFOLD: ${{ steps.scaffold.outcome }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD"; do
+            test "$outcome" = success
+          done
+          test ! -e "$REPORT_STAGING"
+          test ! -e "$REPORT_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
+  readiness:
+    name: readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-1
+      REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-1
+      RECEIPT_READBACK_STAGING: /var/tmp/cogs-stage2-local-receipt-upload-${{ github.run_id }}-1
+    steps:
+      - name: Admit a fresh protected-main attempt without consulting run history
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Check out the protected diagnostic workflow source without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - name: Verify the fixed non-authorizing publication lock
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py verify
+          test ! -e /var/lib/cogs
+          test ! -e /opt/kata
+      - name: Acquire the exact lock-bound implementation without credentials
+        run: |
+          set -euo pipefail
+          destination=$RUNNER_TEMP/stage2-implementation
+          clean=(env -i HOME=/nonexistent PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$destination"
+          "${clean[@]}" /usr/bin/git -C "$destination" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$EXACT_IMPLEMENTATION"
+          "${clean[@]}" /usr/bin/git -C "$destination" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$destination" rev-parse HEAD)" = "$EXACT_IMPLEMENTATION"
+      - id: preparation
+        name: Independently materialize and prepare the immutable publication
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          sudo -n mkdir -m 0755 /run/netns
+          test "$(sudo -n stat -c '%U:%G:%a' /run/netns)" = root:root:755
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:777
+          sudo -n chmod 0755 /opt
+          prepared=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            "$RUNNER_TEMP/stage2-implementation/scripts/prepare-stage2-fixed-source.py")
+          test "$(RESULT="$prepared" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["revision"])')" = "$EXACT_IMPLEMENTATION"
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py descriptor
+          immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1950s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py)
+          test "$(RESULT="$immutable" python3 -c 'import json,os;print(json.loads(os.environ["RESULT"])["rootfs_artifact_count"])')" = 1
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-prebuilt-kvm-diagnostic-lock.py adjuncts
+          provisional=$(sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            COGS_STAGE2_CONTROL_REVISION="$EXACT_CONTROL" /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py)
+          RESULT="$provisional" /usr/bin/python3 -I -c 'import json,os
+          value=json.loads(os.environ["RESULT"])
+          assert value["authority"] == "non-authoritative-discovery-candidate"
+          assert value["kvm_used"] is False and len(value["control_sha256"]) == 64'
+          staged=$(sudo -n /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py provisional)
+          [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
+      - name: Issue the fixed no-mint readiness diagnostic grant
+        run: |
+          sudo -n env -i PATH=/usr/bin:/bin COGS_STAGE2_REHEARSAL_RUN_ID="$GITHUB_RUN_ID" \
+            /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-prebuilt-rehearsal-grant.py readiness
+      - id: route
+        name: Execute the actual production-shaped readiness route without minting
+        continue-on-error: true
+        timeout-minutes: 35
+        run: |
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1980s \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh
+      - id: recovery
+        name: Run cleanup-only recovery after every preparation attempt
+        if: always() && steps.preparation.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 13
+        run: |
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 720s \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh
+      - id: settlement
+        name: Settle fixed roots after recovery
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        env: { RECOVERY_OUTCOME: "${{ steps.recovery.outcome }}" }
+        run: |
+          set -euo pipefail
+          test "$RECOVERY_OUTCOME" = success
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            RECOVERY_OUTCOME=success /usr/bin/python3 -I -B scripts/stage2-local-settlement.py cleanup
+      - id: residue
+        name: Independently prove zero lifecycle residue
+        if: always() && steps.settlement.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" REPORT_STAGING="$REPORT_STAGING" \
+            REPORT_READBACK_STAGING="$REPORT_READBACK_STAGING" RECEIPT_READBACK_STAGING="$RECEIPT_READBACK_STAGING" \
+            /usr/bin/python3 -I -B scripts/stage2-local-settlement.py residue
+      - id: scaffold
+        name: Restore hosted scaffolding after residue proof
+        if: always() && steps.residue.outcome == 'success'
+        continue-on-error: true
+        run: |
+          sudo -n rmdir /run/netns
+          test ! -e /run/netns
+          test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:755
+          sudo -n chmod 0777 /opt
+      - name: Enforce the complete readiness diagnostic outcome
+        if: always()
+        env:
+          ROUTE: ${{ steps.route.outcome }}
+          RECOVERY: ${{ steps.recovery.outcome }}
+          SETTLEMENT: ${{ steps.settlement.outcome }}
+          RESIDUE: ${{ steps.residue.outcome }}
+          SCAFFOLD: ${{ steps.scaffold.outcome }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD"; do
+            test "$outcome" = success
+          done
+          test ! -e "$REPORT_STAGING"
+          test ! -e "$REPORT_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING"
+  aggregate:
+    name: aggregate statuses only
+    if: always()
+    needs: [full, readiness]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require both independent lifecycle jobs
+        env:
+          FULL: ${{ needs.full.result }}
+          READINESS: ${{ needs.readiness.result }}
+        run: |
+          test "$FULL" = success
+          test "$READINESS" = success
