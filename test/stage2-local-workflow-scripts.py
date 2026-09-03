@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -198,6 +200,46 @@ def control_staging_tests():
             os.close(descriptor)
 
 
+def settlement_linux_tail_tests():
+    if os.environ.get("COGS_REQUIRE_STAGE2_LOCAL_SETTLEMENT_LINUX") != "1":
+        return
+    assert sys.platform.startswith("linux") and os.geteuid() == 0
+    environment = {
+        "GITHUB_RUN_ID": "900000291", "GITHUB_RUN_ATTEMPT": "1",
+        "REPORT_STAGING": "/var/tmp/cogs-stage2-local-result-900000291-1",
+        "REPORT_READBACK_STAGING": "/var/tmp/cogs-stage2-local-result-upload-900000291-1",
+        "RECEIPT_READBACK_STAGING": "/var/tmp/cogs-stage2-local-receipt-upload-900000291-1",
+    }
+    with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+        outer = Path(temporary)
+        roots = tuple(str(outer / name) for name in ("fixed-a", "fixed-b"))
+        for path in roots:
+            root = Path(path); root.mkdir(mode=0o700)
+            (root / "owned").write_bytes(b"owned")
+        original_fixed, original_markers = settlement.FIXED_ROOTS, settlement.MARKER_ROOTS
+        try:
+            settlement.FIXED_ROOTS = roots
+            settlement.MARKER_ROOTS = ()
+            sibling = subprocess.Popen([
+                sys.executable, "-c", "import time;time.sleep(30)",
+                "cogs-stage2-local-tail-sibling",
+            ])
+            try:
+                time.sleep(0.05)
+                rejected(settlement._scan_fixed, settlement.LocalSettlementError)
+            finally:
+                sibling.terminate()
+                try: sibling.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    sibling.kill(); sibling.wait(timeout=5)
+            settlement.cleanup({**environment, "RECOVERY_OUTCOME": "success"})
+            assert not any(os.path.lexists(path) for path in roots)
+            settlement.residue(environment)
+        finally:
+            settlement.FIXED_ROOTS = original_fixed
+            settlement.MARKER_ROOTS = original_markers
+
+
 def settlement_tests():
     environment = {
         "GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "1",
@@ -275,4 +317,5 @@ publication_tests()
 receipt_tests()
 control_staging_tests()
 settlement_tests()
+settlement_linux_tail_tests()
 print("stage2 local workflow script tests passed")

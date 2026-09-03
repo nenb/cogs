@@ -176,7 +176,8 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
         return False
     if observed_namespace != namespace:
         return False
-    if marker in command:
+    observer = proc_root == Path("/proc") and name == str(os.getpid())
+    if not observer and marker in command:
         raise SettlementError(f"unsettled candidate process: {name}")
     if (any(_refers(field, targets) for field in _mount_fields(mounts))
             and (phase == "after-unmount" or namespace != own_namespace)):
