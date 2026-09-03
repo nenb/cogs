@@ -210,18 +210,16 @@ def _claim_fixed_executable_owner(custody):
     return _issue_fixed_executable_owner(custody)
 
 
-def _claim_fixed_recovery_executable_owner(custody):
-    """Install reviewed host-tool policy before parsing an admitted journal.
-
-    The journal's command lineage contains the hashes that this immutable
-    policy validates, so recovery must establish the policy from static
-    custody first.  The owner grants cleanup tools only after the journal is
-    independently parsed and source-bound.
-    """
+def _claim_recovery_executable_owner(custody, diagnostic):
+    """Install the custody-selected static policy before journal parsing."""
     state = _states.get(custody)
-    _require(state is not None and state["lease"] is None
-             and state["mapping"] is None and state["executables"] is None)
-    owner = process._open_static_attested_executable_owner(custody)
+    _require(type(diagnostic) is bool and state is not None
+             and state["recovery"] and state["diagnostic"] is diagnostic
+             and state["lease"] is None and state["mapping"] is None
+             and state["executables"] is None)
+    opener = (process._open_diagnostic_static_attested_executable_owner
+              if diagnostic else process._open_static_attested_executable_owner)
+    owner = opener(custody)
     try:
         for role in ("ssh", "ssh-keygen"):
             retained = process._claim_attested_executable(owner, role)
@@ -234,6 +232,16 @@ def _claim_fixed_recovery_executable_owner(custody):
         raise
     state["executables"] = owner
     return owner
+
+
+def _claim_fixed_recovery_executable_owner(custody):
+    """Install formal static policy before parsing an admitted journal."""
+    return _claim_recovery_executable_owner(custody, False)
+
+
+def _claim_diagnostic_recovery_executable_owner(custody):
+    """Install split-lineage diagnostic policy without accepting formal custody."""
+    return _claim_recovery_executable_owner(custody, True)
 
 
 def _reconstruct_fixed_executable_owner(custody, journal):

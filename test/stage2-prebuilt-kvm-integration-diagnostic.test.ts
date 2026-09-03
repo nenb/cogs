@@ -34,6 +34,9 @@ test("both attempt-one jobs materialize and execute GITHUB_SHA, never the prior 
   for (const route of [full, readiness]) {
     assert.equal(occurrences(route, 'test "$GITHUB_RUN_ATTEMPT" = 1'), 2);
     assert.equal(occurrences(route, 'fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"'), 1);
+    assert.equal(occurrences(route, "timeout-minutes: 250"), 1);
+    assert.equal(occurrences(route, "timeout-minutes: 132"), 1);
+    assert.equal(occurrences(route, "7800s"), 1);
   }
   assert.equal(occurrences(workflow, "scripts/prepare-stage2-fixed-source.py"), 2);
   assert.equal(occurrences(workflow, ')["revision"])\')" = "$GITHUB_SHA"'), 2);
