@@ -3073,7 +3073,8 @@ def _derive_journal_identity(kind, action, outputs, prior=None, baselines=None,
         suffix = (("NFT_RULESET",) if action == "NFT_REMOVE_ATOMIC" else ()) + ("MOUNTINFO", "NETNS_STAT", "IP_ALL_LINKS")
         if action not in {"IP_NETNS_REMOVE", "NFT_REMOVE_ATOMIC"}: suffix += ("IP_NS_LINKS",)
         if action == "NFT_INSTALL_OWNED" or prior and prior.get("nft") is not None and action != "NFT_REMOVE_ATOMIC": suffix += ("NFT_TABLE",)
-        if ids != (action, *suffix): raise NetworkError("effect source cardinality")
+        if ids != (action, *suffix):
+            raise NetworkError(f"effect source cardinality:{action}:{','.join(ids)}")
     netns = _journal_netns(rows, prior)
     host_name = prior["host_link"]["ifname"] if prior and prior.get("host_link") else None
     if host_name is None:
