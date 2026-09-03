@@ -40,6 +40,7 @@ def chain_factory(control):
 attestation_owner = authority = None
 retained = []
 intent = preexec = None
+snapshot_free = os.environ.get("COGS_KATA_SNAPSHOT_FREE_RECOVERY_V1") == "1"
 try:
     if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V3") == "1":
         attestation_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
@@ -49,14 +50,44 @@ try:
         for role in ("ssh", "ssh-keygen"):
             retained.append(process._claim_attested_executable(attestation_owner, role))
     with patch.object(operation, "_open_base_chain", side_effect=chain_factory):
-        authority = operation._open_fixed_operation()
+        if snapshot_free:
+            authority = operation._claim_production_recovery_operation(
+                operation._open_fixed_operation_recovery())
+        else:
+            authority = operation._open_fixed_operation()
         if operation._has_recovery_command(authority):
             intent, preexec, _terminal = authority.recovery_command()
             if preexec is not None:
                 reported = (preexec["pid"], preexec["proc_start_time"])
         phase = operation._durable_phase(authority)
-        if phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED", "RUNTIME_READY", "SSH_READY",
-                     "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"}:
+        if snapshot_free:
+            _boot, expired_deadline = operation._recovery_lifecycle_deadline(authority)
+            with patch.object(operation, "_boottime_ns", return_value=expired_deadline), \
+                 patch.object(process, "_boottime_ns", return_value=expired_deadline):
+                if operation._has_recovery_command(authority):
+                    process._recover_pending_production(authority)
+                authority.record_snapshot_free_cleanup()
+                input_path = completion / operation.INPUT_NAME.text
+                if input_path.exists():
+                    input_path.rmdir()
+                authority.record_input_removed("1" * 64)
+                authority.prepare_rootfs_release()
+                permit = authority.reserve_rootfs_release()
+                grant = operation._claim_rootfs_release(permit)
+                authorization = operation._invoke_rootfs_release(
+                    grant, lambda context: operation.RootfsAuthorization(
+                        context.rootfs_token, 9, 0x2222, "e" * 64))
+                operation._settle_rootfs_release(grant, authorization)
+                authority.settle_rootfs_absent("2" * 64)
+                retired = operation._resume_retire_production_operation(
+                    authority, {"proof_sha256": "3" * 64})
+                removed = operation._remove_retired_operation(authority)
+                if removed.raw != retired.raw:
+                    raise RuntimeError("snapshot-free retirement changed during removal")
+                (completion.parent / "snapshot-free-recovery-result.jsonl").write_bytes(
+                    retired.raw)
+        elif phase in {"ROOTFS_LEASED", "FS_INTENT", "FS_SETTLED", "RUNTIME_READY", "SSH_READY",
+                       "READINESS_REVOKED", "FIREWALL_ABSENT", "UNCERTAIN"}:
             lifecycle_boot, lifecycle_deadline = operation._recovery_lifecycle_deadline(authority)
             if lifecycle_boot != process._boot_id():
                 raise RuntimeError("recovery lifecycle boot changed")

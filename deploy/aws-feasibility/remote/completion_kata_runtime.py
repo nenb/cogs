@@ -478,6 +478,27 @@ def _timestamp(value):
         "timestamp")
 
 
+def _successful_cycle_launch(journal, durable):
+    """Require exact durable launch lineage; never infer or replay a launch."""
+    route = kata_operation._cycle_route(journal)
+    if route is None:
+        return None
+    body = durable.body
+    _fail(durable.command_id == "CTR_RUN" and body["outcome"] == "exited"
+          and body["status"] == 0 and not body["uncertain"],
+          "successful CTR_RUN outcome required")
+    history = journal.runtime_recovery_history()
+    matches = [row for row in history["launches"]
+               if row["command_serial"] == durable.command_serial
+               and row["binding_sha256"] == durable.binding_sha256]
+    if not matches:
+        journal.revoke_readiness()
+        raise KataRuntimeError("successful CTR_RUN launch lineage absent")
+    _fail(len(matches) == 1 and matches[0]["route"] == route["route"],
+          "CTR_RUN launch lineage differs")
+    return matches[0]
+
+
 def _durable_ctr_launch_path(history):
     """Select the sole successful durable CTR_RUN preexec fd binding."""
     runs = [row for row in history["intents"] if row["command_id"] == "CTR_RUN"]
@@ -1458,6 +1479,53 @@ def _share_fact(retained=None):
     finally:
         for descriptor in reversed(held): os.close(descriptor)
 
+def _settle_cleanup_only_share_absence(journal):
+    """Settle the never-launched share without reopening removed runtime roles."""
+    history = journal.runtime_recovery_history()
+    resumes = [row for row in history["runtime_resumes"]
+               if row["target_phase"] == "RUNTIME_CLEANUP_ONLY"]
+    _fail(history["phase"] == "NETWORK_ABSENT" and len(resumes) == 1
+          and history["runtime_staged"] and not history["launches"]
+          and not history["runtime_ownership"]
+          and not history["runtime_role_identities"]
+          and not history["runtime_share_identities"]
+          and not any(row["command_id"] == "CTR_RUN" for row in history["intents"]),
+          "cleanup-only launch history differs")
+    fact = _share_fact()
+    _fail(fact["state"] == "absent", "cleanup-only share residue")
+    journal.settle_runtime_phase("SHARE_ABSENT", _canonical_fact(fact))
+    return fact
+
+
+def _settle_setup_abort_absence(journal, target):
+    """Settle owner absence after network-only setup abort; never prepare runtime."""
+    history = journal.runtime_recovery_history()
+    runtime_commands = {actions.CommandId.CONTAINERD_START.value,
+                        actions.CommandId.CTR_RUN.value}
+    _fail(not history["runtime_prepared"] and not history["runtime_stage_intents"]
+          and not history["runtime_staged"] and not history["daemon_retained"]
+          and not history["daemon_outcomes"] and not history["launches"]
+          and not history["runtime_ownership"] and not history["runtime_role_identities"]
+          and not history["runtime_share_identities"]
+          and not any(row["command_id"] in runtime_commands for row in history["intents"]),
+          "setup-abort runtime history differs")
+    if target == "share":
+        _fail(history["phase"] == "NETWORK_ABSENT", "setup-abort share order")
+        fact = _share_fact()
+        _fail(fact["state"] == "absent", "setup-abort share residue")
+        phase = "SHARE_ABSENT"
+    else:
+        _fail(target == "containerd" and history["phase"] == "FIREWALL_ABSENT",
+              "setup-abort containerd order")
+        _fail(_qmp_absent() == {"state": "absent", "private_socket": "absent",
+                                "observer_socket": "absent"},
+              "setup-abort runtime socket residue")
+        fact = {"containerd": "absent", "start_intent": "absent"}
+        phase = "CONTAINERD_ABSENT"
+    journal.settle_runtime_phase(phase, _canonical_fact(fact))
+    return fact
+
+
 def _remove_owned_empty_share(retained):
     parent_path, name = os.path.split(SHARE_ROOT)
     parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -1878,6 +1946,7 @@ def _runtime_owner_routes():
         if not success:
             _fail(not durable.body["uncertain"], "uncertain CTR_RUN preserved")
             state[0].revoke_readiness(); raise KataRuntimeError("certain CTR_RUN failure")
+        _successful_cycle_launch(state[0], durable)
         _fail(verify_daemon(state[6]) == retained, "retained daemon changed during launch")
         fact = {"version": V2, "command": "CTR_RUN", "binding": durable.binding_sha256, "observation_binding": probe[2]["binding_sha256"], "daemon_binding": retained["binding_sha256"], "daemon_pid": retained["pid"], "daemon_starttime": retained["proc_start_time"], "daemon_sockets": {name: _canonical_fact(retained["socket_generations"][name]) for name, _quarantine in socket_contract}, "journal": state[0].runtime_recovery_history()["terminal_sha256"]}
         state[0].settle_runtime_phase("RUNTIME_READY", _canonical_fact(fact)); return fact

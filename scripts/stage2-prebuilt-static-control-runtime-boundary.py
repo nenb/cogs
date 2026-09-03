@@ -32,7 +32,7 @@ POLICY = {
         "effect": "immutable HTTPS acquisition and archive extraction only; runtime launch surfaces forbidden",
     },
     "deploy/aws-feasibility/remote/completion_kata_preparation.py": {
-        "sha256": "6e7ecb73c85748bb6cc7ac030b30ec866a8c58fcbb88a13da61a8462b1c371a6",
+        "sha256": "04c375d9d430e0b4f9c5600b2ec65d372ed38590c666bf70de30b4914e496a4c",
         "effect": "deterministic static description only; reviewed child executable is zstd decompression only",
     },
 }

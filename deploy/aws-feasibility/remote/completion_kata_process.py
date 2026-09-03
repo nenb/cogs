@@ -782,6 +782,15 @@ def _retain_parent_ssh_inputs(bindings):
         raise
 
 
+def _close_parent_ssh_inputs(descriptors, errors):
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            errors.append(f"parent-ssh-fd-{descriptor}-close:{error.errno}")
+    return ()
+
+
 def _write_child_error(descriptor, value):
     try:
         os.write(descriptor, struct.pack("!I", min(max(int(value), 1), 65535)))
@@ -1665,7 +1674,7 @@ def _outcome_body(intent, outcome, status, exec_errno, stdout, stderr, overflow,
     interrupted = state["term"] or state["kill"] or "absolute-deadline" in errors
     uncertain = (not leader_reaped or not descendants_reaped or not cgroup_empty
                  or not cgroup_removed or not pipes_eof or bool(errors) or interrupted)
-    if uncertain and outcome != "not-started":
+    if uncertain and outcome not in {"not-started", "recovery-no-effect"}:
         outcome, status, exec_errno = "uncertain", None, None
     body = {
         "operation_token": intent["operation_token"], "command_serial": intent["command_serial"],
@@ -1728,6 +1737,24 @@ def _prove_child_inherited_fds(pid, bindings):
 
 def _active_fixed_daemon_profile(_journal):
     return None
+
+
+def _recorded_daemon_absent(retained):
+    """Prove that the retained PID no longer names the recorded process."""
+    observation = _observe_proc(retained["pid"])
+    return (observation.kind is ObservationKind.ABSENT
+            or observation.kind is ObservationKind.EXACT
+            and observation.row[4] != retained["proc_start_time"])
+
+
+def _wait_recorded_daemon_absence(retained, deadline):
+    """Require two bounded process observations after owned-cgroup removal."""
+    while _boottime_ns() < deadline:
+        if _recorded_daemon_absent(retained):
+            if _recorded_daemon_absent(retained):
+                return True
+        time.sleep(0.005)
+    return False
 
 
 def _active_cycle_route(journal, command_id):
@@ -1924,6 +1951,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             retained_pidfd = pidfd
             pidfd = None
             _close_and_prove_absent(retained_pidfd, "leader-pidfd", errors)
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, errors)
         body = _outcome_body(
             intent, outcome, status, exec_errno, stdout, stderr, overflow,
             wait_status, pipes_eof, cleanup, state, errors, release_count,
@@ -2000,6 +2028,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             retained_pidfd = pidfd
             pidfd = None
             _close_and_prove_absent(retained_pidfd, "leader-pidfd", settlement_errors)
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, settlement_errors)
         known_not_started = pid is None and not preexec_recorded
         if not known_not_started and not settlement_errors:
             settlement_errors.append("launch-boundary-uncertain")
@@ -2019,9 +2048,7 @@ def _transact_fixed(journal, fixed, executable, inherited=(), daemon_owner=None,
             settlement_errors.append("cleanup-continuation-pending")
         raise ProcessError(";".join((*diagnostics, *settlement_errors))) from primary
     finally:
-        for descriptor in parent_ssh_fds:
-            try: os.close(descriptor)
-            except OSError: pass
+        parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, errors)
         if network_fd is not None:
             try: os.close(network_fd)
             except OSError: pass
@@ -2232,15 +2259,25 @@ def _daemon_routes():
             active[id(journal)] = owner
             return owner
         except (FileNotFoundError, ProcessLookupError) as absent:
+            # A missing retained socket/PID/cgroup invalidates live ownership,
+            # but the exact recorded cgroup still authorizes reverse cleanup.
+            # Preserve the unknown exit status while separately proving that
+            # the recorded process and every cgroup-owned descendant are gone.
             errors = ["daemon-absent-on-reopen"]
             if owner is not None: errors.extend(close_state(owner)); owner = None
             empty, removed = _recover_cgroup(retained["cgroup_path"], _generation_tuple(retained["cgroup_generation"]),
                                               _boottime_ns() + 5_000_000_000, {"term": False, "kill": False}, errors)
+            leader_absent = _wait_recorded_daemon_absence(
+                retained, _boottime_ns() + 5_000_000_000)
+            if not leader_absent:
+                errors.append("daemon-process-absence-unproven")
+            descendants_absent = empty and removed
             body = {"operation_token": retained["operation_token"], "command_serial": retained["command_serial"],
                 "command_id": retained["command_id"], "binding_sha256": retained["binding_sha256"],
                 "pid": retained["pid"], "proc_start_time": retained["proc_start_time"], "status": None,
-                "leader_reaped": False, "descendants_reaped": False, "cgroup_empty": empty,
-                "cgroup_removed": removed, "uncertain": True, "errors": errors}
+                "leader_reaped": leader_absent, "descendants_reaped": descendants_absent,
+                "cgroup_empty": empty, "cgroup_removed": removed,
+                "uncertain": True, "errors": errors}
             for descriptor in (pidfd, leaf_fd, base_fd):
                 if descriptor is not None:
                     try: os.close(descriptor)
@@ -2416,6 +2453,23 @@ def _recover_pending_fixed(journal):
     else:
         intent, preexec = kata_operation._pending_command(journal)
         terminal = None
+    closed_daemon = (terminal is not None
+                     and intent["command_id"] == CommandId.CONTAINERD_START.value
+                     and kata_operation._daemon_cleanup_closed(terminal))
+    baseline_no_effect = False
+    if (terminal is None
+            and kata_operation._recovery_no_effect_classification(intent) is not None
+            and kata_operation._is_production_recovery_operation(journal)):
+        history = kata_operation._network_history(journal)
+        baseline_no_effect = (intent["lifecycle_phase"] == "FS_SETTLED"
+            and not kata_operation._network_records(journal)
+            and not any(kind in kata_operation.network_journal.RECORDS
+                        for kind, _body in history))
+    if closed_daemon:
+        return kata_operation.DurableCommandOutcome(
+            terminal["command_serial"], terminal["command_id"],
+            terminal["binding_sha256"], terminal,
+        )
     errors = ["crash-continuation"]
     state = {"term": False, "kill": False}
     path = f"{CGROUP_BASE}/{intent['operation_token']}-{intent['command_serial']}"
@@ -2458,7 +2512,7 @@ def _recover_pending_fixed(journal):
     # therefore records uncertainty, unlike the live before-fork path which can
     # prove every pipe end closed and no child ever existed.
     body = _outcome_body(
-        intent, "uncertain", None, None,
+        intent, "recovery-no-effect" if baseline_no_effect else "uncertain", None, None,
         b"", b"", {"stdout": False, "stderr": False}, None, False,
         closure, state, errors, 0,
     )
@@ -2466,10 +2520,19 @@ def _recover_pending_fixed(journal):
 
 
 def _recover_pending_production(journal):
-    """Production family adapter: exact admission and sticky uncertain closure."""
+    """Production family adapter: preserve ambiguous effects, not read-only probes."""
     journal = kata_operation._claim_production_cleanup_operation(journal)
+    intent, _preexec, _terminal = kata_operation._recovery_command(journal)
+    command_id = intent["command_id"]
     outcome = _recover_pending_fixed(journal)
-    if outcome.body["uncertain"] and kata_operation._durable_phase(journal) != "UNCERTAIN":
+    if (command_id == CommandId.CONTAINERD_START.value
+            and kata_operation._daemon_cleanup_closed(outcome.body)):
+        if kata_operation._durable_phase(journal) != "UNCERTAIN":
+            raise ProcessError("certain daemon rollback phase differs")
+        journal.resume_runtime_cleanup()
+    elif (outcome.body["uncertain"]
+          and outcome.body.get("outcome") != "recovery-no-effect"
+          and kata_operation._durable_phase(journal) != "UNCERTAIN"):
         kata_operation._record_uncertain(journal, "incomplete")
     return outcome
 

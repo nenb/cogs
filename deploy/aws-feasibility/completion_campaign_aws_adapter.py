@@ -448,7 +448,8 @@ class AwsCampaignCustodian:
         timeout = max(1, min(7800, remaining_ns // 1_000_000_000))
         raw = self._run(REMOTE_COMMAND, (str(grant.ordinal), grant.mode,
                         grant.grant_commitment, str(timeout)), timeout)
-        return remote_adapter.remote_receipt(grant, apply, running, raw)
+        return remote_adapter.remote_receipt(
+            self.approval, grant, apply, running, raw)
 
     def inventory(self, grant, destroyed, sequence):
         _require(type(destroyed) is production.EffectReceipt and 1 <= sequence <= 8)

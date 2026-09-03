@@ -25,6 +25,18 @@ def _require(condition, message="fixed mutable execution bridge"):
         raise ExecutionBridgeError(message)
 
 
+def _runtime_identity(qmp):
+    """Commit only immutable QEMU/QMP/KVM identity, never the journal tip."""
+    value = {name: qmp[name] for name in (
+                 "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
+                 "qemu_executable_device", "qemu_executable_inode",
+                 "observer_qmp_device", "observer_qmp_inode", "kvm_device",
+                 "kvm_inode", "kvm_rdev", "kvm_api")}
+    value.update(qmp_present=qmp["kvm_present"], qmp_enabled=qmp["kvm_enabled"])
+    return hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + operation._canonical(value)).hexdigest()
+
+
 def _routes():
     seal, states = object(), {}
     issued = False
@@ -76,13 +88,13 @@ def _routes():
                           "RUNTIME_READY", "SSH_READY", "READINESS_REVOKED",
                           "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT",
                           "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-                          "CONTAINERD_ABSENT", "INPUT_REMOVED",
+                          "CONTAINERD_ABSENT", "RUNTIME_CLEANUP_ONLY", "INPUT_REMOVED",
                           "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED",
                           "ROOTFS_ABSENT"}
         runtime_phases = {"NETWORK_READY", "RUNTIME_READY", "SSH_READY",
                           "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED",
                           "TASK_ABSENT", "RUNTIME_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT",
-                          "SHARE_ABSENT", "FIREWALL_ABSENT"}
+                          "SHARE_ABSENT", "FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
         if phase not in network_phases:
             return phase
         lifecycle.executables = preparation._reconstruct_fixed_executable_owner(
@@ -97,16 +109,27 @@ def _routes():
                                                  "ROOTFS_RELEASE_READY",
                                                  "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT"}
                                 else None)
-        if phase == "FS_SETTLED" and current["nft_owner"] is not None and not rows:
-            raise ExecutionBridgeError("incomplete baseline capture is preserved")
+        # ACTIVE with no snapshot is an exact read-only baseline prefix.  Keep
+        # the reconstructed owner so cleanup can release it; a prior completed
+        # release reconstructs as None and proceeds through ordinary FS cleanup.
         history = journal.runtime_recovery_history() if phase in runtime_phases else None
+        runtime_provenance = bool(history and (
+            history["runtime_prepared"] or history["runtime_stage_intents"]
+            or history["runtime_staged"] or history["daemon_retained"]
+            or history["daemon_outcomes"] or history["launches"]
+            or history["runtime_ownership"]))
         if (rows and rows[-1]["snapshot_kind"] in {"ready", "discovered", "runtime"}
+                and phase != "RUNTIME_CLEANUP_ONLY"
                 and not (history and history["runtime_network_released"])):
             current["network_owner"] = network._reopen_runtime_network(journal)
             lifecycle.network_owner = current["network_owner"]
-        if phase in runtime_phases and (phase != "FIREWALL_ABSENT"
-                                        or runtime_stage_present(current)):
+        if phase in runtime_phases and runtime_provenance and (
+                phase not in {"FIREWALL_ABSENT", "RUNTIME_CLEANUP_ONLY"}
+                or runtime_stage_present(current)):
             ensure_runtime(current, lifecycle)
+        elif phase in {"NETWORK_ABSENT", "FIREWALL_ABSENT"}:
+            _require(not runtime_stage_present(current),
+                     "setup-abort runtime tree lacks durable provenance")
         return phase
 
     def ensure_runtime(current, lifecycle):
@@ -274,9 +297,11 @@ def _routes():
         _require(mapping is lifecycle.execution_mapping,
                  "runtime observation mapping lineage differs")
         import completion_local_evidence as evidence
+        operation_token = operation._command_context(lifecycle.operation).operation_token
         typed = evidence._PlatformOwnerResult(
-            operation_token=operation._command_context(lifecycle.operation).operation_token,
+            operation_token=operation_token,
             live_mapping_sha256=mapping["live_mapping_sha256"],
+            runtime_identity_sha256=_runtime_identity(qmp),
             qemu_process_sha256=hashlib.sha256(operation._canonical(fact)).hexdigest(),
             qemu_argv_sha256=qmp["qemu_argv_sha256"],
             qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],
@@ -349,9 +374,12 @@ def _routes():
         qmp = fact["qmp"]
         qemu_sha256 = hashlib.sha256(operation._canonical(fact)).hexdigest()
         import completion_local_evidence as evidence
+        operation_token = operation._command_context(lifecycle.operation).operation_token
+        runtime_identity_sha256 = _runtime_identity(qmp)
         _require(type(platform) is evidence._PlatformOwnerResult
-                 and platform.live_mapping_sha256 == mapping["live_mapping_sha256"],
-                 "pre-workload runtime mapping changed during cleanup")
+                 and platform.live_mapping_sha256 == mapping["live_mapping_sha256"]
+                 and platform.runtime_identity_sha256 == runtime_identity_sha256,
+                 "pre-workload runtime identity changed during cleanup")
         identity_fields = (
             "qemu_argv_sha256", "qemu_pid", "qemu_starttime",
             "qemu_executable_device", "qemu_executable_inode",
@@ -370,6 +398,7 @@ def _routes():
                     runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
                     runtime_network_sha256=current["runtime_network"]["proof_sha256"],
                     live_mapping_sha256=mapping["live_mapping_sha256"],
+                    runtime_identity_sha256=runtime_identity_sha256,
                     qemu_process_sha256=qemu_sha256,
                     qmp_identity=(qmp["qemu_pid"], qmp["qemu_starttime"],
                         qmp["qemu_executable_device"], qmp["qemu_executable_inode"],
@@ -386,6 +415,7 @@ def _routes():
             runtime_mount_record_sha256=mapping["runtime_mount_sha256"],
             network_causal_proof_sha256=causal["causal_proof_sha256"],
             live_mapping_sha256=mapping["live_mapping_sha256"],
+            runtime_identity_sha256=runtime_identity_sha256,
             qemu_process_sha256=qemu_sha256,
             qemu_argv_sha256=qmp["qemu_argv_sha256"],
             qemu_pid=qmp["qemu_pid"], qemu_starttime=qmp["qemu_starttime"],
@@ -433,12 +463,41 @@ def _routes():
         return runtime_cleanup(bridge, lifecycle, "NETWORK_ABSENT", "CONTAINER_ABSENT")
     def remove_share(bridge, lifecycle):
         phase = operation._durable_phase(lifecycle.operation)
+        history = lifecycle.operation.runtime_recovery_history()
+        resumes = history["runtime_resumes"]
+        if (phase == "NETWORK_ABSENT" and not history["runtime_prepared"]
+                and not history["runtime_stage_intents"] and not history["runtime_staged"]):
+            return runtime._settle_setup_abort_absence(lifecycle.operation, "share")
+        if (phase == "NETWORK_ABSENT"
+                and any(row["target_phase"] == "RUNTIME_CLEANUP_ONLY" for row in resumes)):
+            return runtime._settle_cleanup_only_share_absence(lifecycle.operation)
         source = "NETWORK_ABSENT" if phase == "NETWORK_ABSENT" else "CONTAINER_ABSENT"
         return runtime_cleanup(bridge, lifecycle, source, "SHARE_ABSENT")
 
     def remove_network(bridge, lifecycle):
         current = state(bridge, lifecycle)
         phase = operation._durable_phase(lifecycle.operation)
+        if phase == "RUNTIME_CLEANUP_ONLY":
+            owner = current.get("runtime")
+            if owner is not None:
+                runtime._cleanup_fixed_runtime(owner)
+                current["runtime"] = None
+                lifecycle.staged_runtime = None
+                for node in reversed(current.pop("config_nodes", ())):
+                    fs._close_node(node)
+            _require(not runtime_stage_present(current),
+                     "cleanup-only runtime tree remains")
+            return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
+        if phase == "FS_SETTLED":
+            rows = operation._network_records(lifecycle.operation)
+            if rows:
+                _require(len(rows) == 1 and rows[0]["snapshot_kind"] == "baseline",
+                         "pre-settlement baseline snapshot differs")
+                operation._settle_network_phase(lifecycle.operation, "BASELINES_CAPTURED")
+                return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
+            if not (current.get("recovery") and current.get("nft_owner") is None):
+                network._abort_incomplete_baseline(lifecycle.operation)
+            return lifecycle.operation.record_snapshot_free_cleanup()
         if phase == "BASELINES_CAPTURED":
             return network._abort_fixed_setup(lifecycle.operation, *current["tools"])
         if phase == "RUNTIME_ABSENT":
@@ -460,6 +519,13 @@ def _routes():
             _require(operation._durable_phase(lifecycle.operation) == "CONTAINERD_ABSENT",
                      "containerd absence settlement differs")
             return result
+        history = lifecycle.operation.runtime_recovery_history()
+        if (not history["runtime_prepared"] and not history["runtime_stage_intents"]
+                and not history["runtime_staged"]):
+            _require(not runtime_stage_present(current),
+                     "setup-abort runtime tree remains")
+            return runtime._settle_setup_abort_absence(
+                lifecycle.operation, "containerd")
         # A fresh process can arrive after shutdown durably recorded the daemon
         # outcome and removed kata-runtime-v1, after firewall settlement.
         # Reopen only the daemon cleanup identity: no containerd/ctr pathname or
@@ -521,9 +587,11 @@ def _routes():
         token = records[0].body["operation_token"]
         final = next(row for row in records if row.record_type == "FINAL_BASELINES")
         phases = {row.record_type for row in records}
-        required = {"NETWORK_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
-                    "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_ABSENT",
-                    "FINAL_BASELINES", "RETIRED"}
+        snapshot_free = "SNAPSHOT_FREE_CLEANUP_V1" in phases
+        required = {"INPUT_REMOVED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED"}
+        if not snapshot_free:
+            required |= {"NETWORK_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT",
+                         "CONTAINERD_ABSENT"}
         if "RUNTIME_ROLE_IDENTITIES_V1" in phases:
             required |= {"TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1",
                          "RUNTIME_ABSENT", "RUNTIME_NETWORK_RELEASED_V1", "CONTAINER_ABSENT"}

@@ -7,9 +7,9 @@ const modulePath = "deploy/aws-feasibility/completion_campaign_aws_provider.py";
 const source = readFileSync(modulePath, "utf8");
 
 test("fixed provider boundary passes its provider-free hostile fake-executor matrix", () => {
-  const result = spawnSync("python3", ["test/aws-stage2-completion-campaign-aws-provider.py"], {
+  const result = spawnSync("python3", ["-I", "-B", "test/aws-stage2-completion-campaign-aws-provider.py"], {
     encoding: "utf8",
-    env: { LC_ALL: "C", PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    env: { LC_ALL: "C", PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
     timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);

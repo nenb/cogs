@@ -18,7 +18,6 @@ import sys
 import tempfile
 import threading
 from types import SimpleNamespace
-
 if sys.flags.optimize:
     raise RuntimeError("Outcome 2 recovery tests refuse optimized Python")
 sys.dont_write_bytecode = True
@@ -37,7 +36,6 @@ REQUIRED_ACCEPTANCE = {
     "AT-ADAPT-REC-01", "AT-ROOT-01", "AT-LIFE-01", "AT-LIFE-02",
     "AT-FD-CLOSE-01", "AT-UNAV-01",
 }
-
 def load_module():
     spec = importlib.util.spec_from_file_location(
         "completion_trusted_runtime_launcher_recovery", MODULE,
@@ -46,13 +44,11 @@ def load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
 def production_symbol(module, name):
     value = module
     for component in name.split("."):
         value = getattr(value, component, None)
     return value
-
 def fixture_rows(module):
     document = json.loads(FIXTURE.read_text())
     if set(document) != {"version", "rows"}:
@@ -82,7 +78,6 @@ def fixture_rows(module):
     if acceptance != REQUIRED_ACCEPTANCE:
         raise AssertionError(f"recovery acceptance set drift: {acceptance}")
     return rows
-
 @contextmanager
 def patched(target, **replacements):
     missing = object()
@@ -97,7 +92,6 @@ def patched(target, **replacements):
                 delattr(target, name)
             else:
                 setattr(target, name, value)
-
 class RecoveryOps:
     """Faults concrete operations reached from production ownership branches."""
 
@@ -107,7 +101,6 @@ class RecoveryOps:
         self.root_parent = root_parent
         self.events = []
         self.fired = False
-
     def mutation(self, method):
         if self.fired or method != self.fault["method"]:
             return None
@@ -115,14 +108,11 @@ class RecoveryOps:
         mutation = self.fault["mutation"]
         self.events.append(f"ops.{method}:{mutation}")
         return mutation
-
     def unavailable(self, primitive, saved):
         ctypes.set_errno(saved)
         return self.module._SystemOps._checked(self, -1, primitive)
-
     def open(self, path, flags, mode=0o600):
         return os.open(path, flags, mode)
-
     def close(self, fd):
         mutation = self.mutation("close")
         os.close(fd)
@@ -132,7 +122,6 @@ class RecoveryOps:
             leaf = Path(self.root_parent) / self.module._ROOT_LEAF
             leaf.rmdir()
             leaf.mkdir(mode=0o700)
-
     def mount(self, source, target, kind, flags, data):
         del source, target, kind, flags, data
         mutation = self.mutation("mount")
@@ -141,21 +130,18 @@ class RecoveryOps:
         if mutation == "eopnotsupp":
             self.unavailable("mount", errno.EOPNOTSUPP)
         raise AssertionError("unexpected recovery mount mutation")
-
     def start_time(self, pid):
         del pid
         mutation = self.mutation("start_time")
         if mutation == "enosys":
             self.unavailable("proc-stat", errno.ENOSYS)
         raise AssertionError("unexpected start-time mutation")
-
     def pidfd_signal(self, fd, number):
         del fd, number
         mutation = self.mutation("pidfd_signal")
         if mutation == "eio":
             raise OSError(errno.EIO, "modeled pidfd signal failure")
         raise AssertionError("unexpected pidfd signal mutation")
-
 def materialization_failure(module, ops):
     try:
         module._materialize_root(
@@ -348,6 +334,7 @@ class SocketChannel:
     def __init__(self):
         self.queues = [[], []]
         self.closed = [False, False]
+        self.transfers = [0, 0]
         self.condition = threading.Condition()
 
 class CommonSocket:
@@ -361,6 +348,7 @@ class CommonSocket:
         self.role = "socket"
         self.listening = False
         self.pending = []
+        self.transfer_guard = False
     def fileno(self):
         return self.fd
     def detach(self):
@@ -444,6 +432,9 @@ class CommonSocket:
                     descriptor = struct.unpack("i", encoded[offset:offset + struct.calcsize("i")])[0]
                     rights.append(self.kernel.fds[descriptor])
         self.kernel.events.append("private-capability:transferred")
+        for kind, value in rights:
+            if kind == "socket":
+                with value.channel.condition: value.channel.transfers[value.side] += 1
         with self.channel.condition:
             self.channel.queues[1 - self.side].append((raw, tuple(rights)))
             self.channel.condition.notify_all()
@@ -459,7 +450,15 @@ class CommonSocket:
             if not self.channel.queues[self.side]:
                 return b"", [], 0, None
             raw, rights = self.channel.queues[self.side].pop(0)
-            descriptors = [self.kernel.allocate(kind, value) for kind, value in rights]
+            descriptors = []
+            for kind, value in rights:
+                descriptor = self.kernel.allocate(kind, value)
+                if kind == "socket":
+                    duplicate = CommonSocket(self.kernel, descriptor, value.channel,
+                                             value.side, value.connector)
+                    duplicate.role, duplicate.transfer_guard = value.role, True
+                    self.kernel.fds[descriptor] = (kind, duplicate)
+                descriptors.append(descriptor)
         ancillary = [] if not descriptors else [(
             socket.SOL_SOCKET, socket.SCM_RIGHTS,
             b"".join(struct.pack("i", descriptor) for descriptor in descriptors),
@@ -600,20 +599,19 @@ class CommonKernel:
         kind, value = self.fds.pop(fd)
         self.offsets.pop(fd, None)
         if kind == "socket" and value.channel is not None:
-            retained = any(
-                item_kind == "socket" and item.channel is value.channel and item.side == value.side
-                for table in tuple(self.fd_tables.values())
-                for item_kind, item in tuple(table.values())
-            )
-            if not retained:
-                with value.channel.condition:
-                    retained = any(
-                        item_kind == "socket" and item.channel is value.channel and item.side == value.side
-                        for queue in value.channel.queues for _raw, rights in queue for item_kind, item in rights
-                    )
-                    if not retained:
-                        value.channel.closed[value.side] = True
-                        value.channel.condition.notify_all()
+            channel = value.channel
+            with channel.condition:
+                if value.transfer_guard:
+                    if channel.transfers[value.side] <= 0: raise AssertionError("SCM_RIGHTS guard")
+                    channel.transfers[value.side] -= 1
+                retained = channel.transfers[value.side] > 0 or any(
+                    k == "socket" and item.channel is channel and item.side == value.side
+                    for table in tuple(self.fd_tables.values()) for k, item in tuple(table.values())
+                ) or any(k == "socket" and item.channel is channel and item.side == value.side
+                    for queue in channel.queues for _raw, rights in queue for k, item in rights)
+                if not retained:
+                    channel.closed[value.side] = True
+                    channel.condition.notify_all()
         if self.phase == "upload" and role == "report" and self.hit("upload-report-close") == "after-error":
             raise OSError(errno.EIO, "modeled upload report close after effect")
         retained_name = {
@@ -1367,13 +1365,15 @@ def run_common_row(common, row, production_result):
         except BaseException as caught:
             error = caught
         finally:
+            # Prevent a rejected row from executing through the next row's patches.
+            kernel.cleanup_exit()
             cursor = 0
             while cursor < len(kernel.threads):
                 kernel.threads[cursor].join(MODEL_WAIT_SECONDS + 1)
                 cursor += 1
             live_threads = [thread.name for thread in kernel.threads if thread.is_alive()]
-            if live_threads and error is None:
-                error = AssertionError(f"modeled child loops exceeded bound: {live_threads}")
+    if live_threads:
+        raise AssertionError(f"{row['id']}: modeled child loops exceeded bound: {live_threads}")
     if row["primitive_fault"]["cut"] == "none":
         kernel.consumed.add(row["id"])
     observed = common_error_code(error)
@@ -1385,7 +1385,7 @@ def run_common_row(common, row, production_result):
     if (error is None) != expected_accept:
         raise AssertionError(f"{row['id']}: exact oracle contradicted expectation")
     if kernel.consumed != {row["id"]}:
-        raise AssertionError(f"{row['id']}: selected cut did not fire exactly")
+        raise AssertionError(f"{row['id']}: selected cut did not fire exactly: {kernel.events}")
     kernel.audit(row["primitive_fault"]["disposition"])
     cursor = -1
     for event in row["sentinel"]:

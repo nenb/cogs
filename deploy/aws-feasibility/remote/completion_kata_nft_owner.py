@@ -504,6 +504,28 @@ def _require_owner(journal):
     return owner
 
 
+_BASELINE_COMMANDS = (
+    "IP_ALL_LINKS", "IP_ALL_ADDRESSES", "IP_ALL_ROUTES4",
+    "IP_ALL_ROUTES6", "IP_NETNS_LIST", "NFT_RULESET",
+)
+_BASELINE_NETWORK_RECORDS = frozenset({
+    "COMMAND_OUTCOME_V2", "NETWORK_OBSERVER_CHUNK_V2", "NETWORK_CLEANUP_SUPPORT_V3",
+})
+
+
+def _incomplete_baseline(history, network_rows):
+    """Recognize only the read-only prefix after ACTIVE baseline admission."""
+    network_intents = [row for row in history["intents"]
+                       if row["command_id"].startswith(("IP_", "TC_", "NFT_"))]
+    command_ids = tuple(row["command_id"] for row in network_intents)
+    return (history["phase"] == "FS_SETTLED"
+            and command_ids == _BASELINE_COMMANDS[:len(command_ids)]
+            and len(command_ids) <= len(_BASELINE_COMMANDS)
+            and all(kind in _BASELINE_NETWORK_RECORDS for kind, _body in network_rows)
+            and all(body.get("command_id") in _BASELINE_COMMANDS
+                    for kind, body in network_rows if kind == "COMMAND_OUTCOME_V2"))
+
+
 def reopen_cleanup(journal):
     """Reconstruct only the exact durable ACTIVE writer for historical cleanup.
 
@@ -531,7 +553,8 @@ def reopen_cleanup(journal):
                                                   "INPUT_REMOVED", "ROOTFS_RELEASE_READY",
                                                   "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
                                                   "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}
-            if network_rows and not terminal_free:
+            baseline_free = _incomplete_baseline(history, network_rows)
+            if network_rows and not (terminal_free or baseline_free):
                 raise NftOwnerError("FREE NFT owner contradicts live network journal")
             _close_proven(lock_fd, "FREE NFT cleanup probe")
             lock_fd = None
@@ -675,7 +698,7 @@ def _cleanup_command_evidence(owner, history, cleanup_target):
         })
     nft_mutations = [row for row in history["intents"] if row["command_id"] in {
         "NFT_INSTALL", "NFT_INSTALL_OWNED", "NFT_REMOVE", "NFT_REMOVE_ATOMIC"}]
-    if cleanup_target != "network" or nft_mutations or owner.child_binding_issued:
+    if cleanup_target not in {"baseline", "network"} or nft_mutations or owner.child_binding_issued:
         raise NftOwnerError("successful NFT deletion evidence required")
     return _digest({"cleanup_target": cleanup_target, "nft_mutations": [],
                     "deletion_binding_issued": False})
@@ -683,16 +706,21 @@ def _cleanup_command_evidence(owner, history, cleanup_target):
 
 def settle_free(journal, cleanup_target):
     owner = _require_owner(journal)
-    if cleanup_target not in {"network", "firewall"}:
+    if cleanup_target not in {"baseline", "network", "firewall"}:
         raise NftOwnerError("fixed NFT cleanup target required")
     context, history, binding, genesis = _journal_bindings(journal)
     if (binding != owner.active["journal_binding_sha256"]
             or genesis != owner.active["journal_genesis_sha256"]
             or context.operation_token != owner.active["operation_token"]):
         raise NftOwnerError("NFT cleanup journal binding changed")
-    expected_phase = "NETWORK_ABSENT" if cleanup_target == "network" else "FIREWALL_ABSENT"
-    if history["phase"] != expected_phase or history["tip"] not in {
-            "NETWORK_CLEANUP_SETTLED_V2", "FIREWALL_CLEANUP_SETTLED_V2"}:
+    expected_phase = {"baseline": "FS_SETTLED", "network": "NETWORK_ABSENT",
+                      "firewall": "FIREWALL_ABSENT"}[cleanup_target]
+    network_rows = journal.network_history()
+    baseline_settled = (cleanup_target == "baseline"
+                        and _incomplete_baseline(history, network_rows))
+    cleanup_settled = (cleanup_target != "baseline" and history["tip"] in {
+        "NETWORK_CLEANUP_SETTLED_V2", "FIREWALL_CLEANUP_SETTLED_V2"})
+    if history["phase"] != expected_phase or not (baseline_settled or cleanup_settled):
         raise NftOwnerError("durable NFT cleanup settlement absent")
     command = _cleanup_command_evidence(owner, history, cleanup_target)
     cleanup = _digest({

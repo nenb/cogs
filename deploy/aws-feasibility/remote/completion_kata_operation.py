@@ -14,6 +14,7 @@ import time
 import unicodedata
 import completion_guest_workloads_v3 as guest_workloads
 import completion_guest_readiness_v1 as guest_readiness
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_actions as actions
 import completion_kata_command_policy as command_policy
 import completion_kata_network_journal as network_journal
@@ -83,6 +84,52 @@ def _stage_candidates(names, allowed=()):
         token = suffix[:-len(b".quarantine")] if suffix.endswith(b".quarantine") else suffix
         _fail(len(token) == 64 and set(token) <= set(b"0123456789abcdef"))
     return candidates
+def _daemon_cleanup_closed(body):
+    """Recognize physical process/cgroup closure without rewriting uncertainty."""
+    return all(body[name] for name in (
+        "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
+def _daemon_closed(body):
+    return (body["uncertain"] is False and not body.get("errors", ())
+            and _daemon_cleanup_closed(body))
+def _recovery_no_effect_classification(intent):
+    if type(intent) is not dict:
+        return None
+    command_id = intent.get("command_id")
+    classification = RECOVERY_NO_EFFECT_CLASSIFICATIONS.get(command_id)
+    if (classification != "approved-read-only-baseline-probe"
+            or command_id in network_journal.EFFECTS
+            or command_id in command_policy.KEY_COMMANDS
+            or command_id in command_policy.RUNTIME_EXTENSION_COMMANDS
+            or command_id in command_policy.SSH_COMMANDS):
+        return None
+    return classification
+def _snapshot_free_baseline_prefix(records, pending=False):
+    if any(row.record_type in _V1_COMMAND_RECORDS for row in records):
+        return False
+    intents = [row.body for row in records if row.record_type == "COMMAND_INTENT_V2"
+               and row.body["command_id"] not in command_policy.KEY_COMMANDS]
+    command_ids = tuple(row["command_id"] for row in intents)
+    approved = network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+    outcomes = {row.body["command_serial"] for row in records
+                if row.record_type == "COMMAND_OUTCOME_V2"}
+    unsettled = [row for row in intents if row["command_serial"] not in outcomes]
+    pending_prefix = (not unsettled or pending and len(unsettled) == 1
+                      and unsettled[0] is intents[-1]
+                      and records[-1].record_type in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2"})
+    return (command_ids == approved[:len(command_ids)]
+            and all(_recovery_no_effect_classification(row) is not None for row in intents)
+            and pending_prefix
+            and not any(row.record_type == "CTR_LAUNCH_ISSUED_V1" for row in records))
+def _snapshot_free_runtime_absence(records, phase):
+    kinds = [row.record_type for row in records]
+    return (phase == "FS_SETTLED"
+            and kinds.count("PRODUCTION_ADMISSION_V2") == 1
+            and kinds.count("LIFECYCLE_DEADLINE_V1") == 1
+            and not any(kind in {"RUNTIME_PREPARED_V1", "RUNTIME_STAGE_INTENT_V4",
+                                 "RUNTIME_STAGED_V3"} for kind in kinds)
+            and _snapshot_free_baseline_prefix(records, pending=True))
+
+
 def _validate_runtime_layout(names, records, phase):
     present = names & RUNTIME_NAMES
     _fail(len(present) <= 1)
@@ -96,14 +143,14 @@ def _validate_runtime_layout(names, records, phase):
     elif phase == "FIREWALL_ABSENT":
         terminal = records[-1] if records else None
         daemon_closed = (terminal is not None and terminal.record_type == "DAEMON_OUTCOME_V2"
-                         and terminal.body["uncertain"] is False
-                         and all(terminal.body[name] for name in (
-                             "leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+                         and _daemon_closed(terminal.body))
         _fail(runtime_present == staged or staged and not runtime_present and daemon_closed)
     elif staged and phase not in {"UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}:
         _fail(runtime_present)
     elif intent and not staged:
         _fail(runtime_present)
+    elif not runtime_present and _snapshot_free_runtime_absence(records, phase):
+        pass
     elif phase not in {"SHARE_ABSENT", "UNCERTAIN", "RUNTIME_CLEANUP_ONLY", *KEY_INPUT_PHASES}:
         _fail(runtime_present or prepared and not intent)
 def _validate_stage_layout(raw_names, records, phase, completion_key):
@@ -209,7 +256,18 @@ UNCERTAIN_REASONS = frozenset({
     "malformed", "contradictory", "identity-mismatch", "old-boot", "unknown", "replaced", "incomplete",
 })
 OUTCOMES = frozenset({"not_started", "exec_failed", "exited", "signaled", "recovery_absent", "uncertain"})
-COMMAND_OUTCOMES_V2 = frozenset({"not-started", "exec-failed", "exited", "signaled", "uncertain"})
+COMMAND_OUTCOMES_V2 = frozenset({
+    "not-started", "exec-failed", "exited", "signaled", "uncertain",
+    "recovery-no-effect",
+})
+RECOVERY_NO_EFFECT_CLASSIFICATIONS = MappingProxyType({
+    command_id: "approved-read-only-baseline-probe"
+    for command_id in network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+})
+SNAPSHOT_FREE_CLEANUP_PROJECTION = (
+    "INPUT_REMOVED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED",
+    "INDEPENDENT_RESIDUE",
+)
 FIXED_ENV = (
     ("HOME", "/nonexistent"), ("LANG", "C"), ("LC_ALL", "C"),
     ("PATH", "/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin"), ("TZ", "UTC"),
@@ -445,50 +503,78 @@ def _validate_body(kind, body):
               == body["admission_boottime_ns"] + JOURNAL_TOTAL_NS)
     elif kind == "PRODUCTION_ADMISSION_V2":
         _keys(body, ("operation_token", "admission_version", "policy_version",
-                     "parser_source_sha256"))
+                     "full_parser_source_sha256", "readiness_parser_source_sha256"))
         _hex(body["operation_token"])
         _fail(body["admission_version"] == PRODUCTION_ADMISSION_VERSION
               and body["policy_version"] == command_policy.POLICY_VERSION
-              and body["parser_source_sha256"] == SSH_PARSER_SHA256)
+              and body["full_parser_source_sha256"] == SSH_PARSER_SHA256
+              and body["readiness_parser_source_sha256"] ==
+                  guest_readiness.PARSER_SHA256)
     elif kind == "CYCLE_ROUTE_V1":
-        grant_keys = ("grant_authority", "batch_commitment", "cycle_ordinal",
-                      "implementation_revision", "control_revision",
-                      "static_control_sha256", "rootfs_descriptor_sha256",
-                      "ami_commitment", "plan_sha256", "grant_commitment")
-        _keys(body, ("operation_token", "route", "cycle_capability_sha256",
-                     "program_sha256", "marker_sha256", *grant_keys))
+        base_keys = ("operation_token", "route", "cycle_capability_sha256",
+                     "program_sha256", "parser_source_sha256", "marker_sha256",
+                     "grant_authority")
+        cloud_keys = ("batch_commitment", "cycle_ordinal", "implementation_revision",
+                      "control_revision", "static_control_sha256",
+                      "rootfs_descriptor_sha256", "ami_commitment", "plan_sha256",
+                      "grant_commitment")
+        formal_keys = ("authority", "batch_commitment", "cycle_ordinal",
+                       "implementation_revision", "control_revision",
+                       "source_manifest_sha256", "static_control_sha256",
+                       "workflow_sha256", "result_schema_sha256",
+                       "rootfs_descriptor_sha256", "workflow_run_id",
+                       "workflow_run_attempt", "grant_commitment")
+        _fail(type(body) is dict and (set(body) == set((*base_keys, *cloud_keys))
+                                      or set(body) == set((*base_keys, *formal_keys))))
         _hex(body["operation_token"]); _choice(body["route"], {"full", "readiness"})
         _hex(body["cycle_capability_sha256"]); _hex(body["program_sha256"])
-        _hex(body["marker_sha256"])
-        expected = ((guest_workloads.GUEST_PROGRAM_SHA256,
+        _hex(body["parser_source_sha256"]); _hex(body["marker_sha256"])
+        expected = ((guest_workloads.GUEST_PROGRAM_SHA256, SSH_PARSER_SHA256,
                      hashlib.sha256(guest_workloads.GUEST_READY_MARKER).hexdigest())
                     if body["route"] == "full" else
-                    (guest_readiness.GUEST_PROGRAM_SHA256, guest_readiness.MARKER_SHA256))
-        _fail((body["program_sha256"], body["marker_sha256"]) == expected)
-        _choice(body["grant_authority"], {"synthetic", "production"})
+                    (guest_readiness.GUEST_PROGRAM_SHA256,
+                     guest_readiness.PARSER_SHA256, guest_readiness.MARKER_SHA256))
+        _fail((body["program_sha256"], body["parser_source_sha256"],
+               body["marker_sha256"]) == expected)
+        _choice(body["grant_authority"], {
+            "synthetic", "production", formal_cycle_authority.AUTHORITY})
         if body["grant_authority"] == "synthetic":
-            _fail(all(body[name] is None for name in grant_keys[1:]))
-        else:
+            _fail(set(body) == set((*base_keys, *cloud_keys))
+                  and all(body[name] is None for name in cloud_keys))
+        elif body["grant_authority"] == "production":
+            _fail(set(body) == set((*base_keys, *cloud_keys)))
             for name in ("batch_commitment", "static_control_sha256",
                          "rootfs_descriptor_sha256", "ami_commitment",
                          "plan_sha256", "grant_commitment"):
                 _hex(body[name])
-            _hex(body["implementation_revision"], 40)
-            _hex(body["control_revision"], 40)
+            _hex(body["implementation_revision"], 40); _hex(body["control_revision"], 40)
             _uint(body["cycle_ordinal"], 7, 1)
             _fail(body["route"] == ("full" if body["cycle_ordinal"] == 1 else "readiness"))
-            fields = {
-                "batch_commitment": body["batch_commitment"],
+            fields = {"batch_commitment": body["batch_commitment"],
                 "ordinal": body["cycle_ordinal"], "mode": body["route"],
                 "implementation_revision": body["implementation_revision"],
                 "control_revision": body["control_revision"],
                 "static_control_sha256": body["static_control_sha256"],
                 "rootfs_descriptor_sha256": body["rootfs_descriptor_sha256"],
-                "ami_commitment": body["ami_commitment"],
-                "plan_sha256": body["plan_sha256"],
-            }
+                "ami_commitment": body["ami_commitment"], "plan_sha256": body["plan_sha256"]}
             _fail(body["grant_commitment"] == hashlib.sha256(
                 b"cogs.stage2-cycle-launch-grant/v1\0" + _canonical(fields)[:-1]).hexdigest())
+        else:
+            _fail(set(body) == set((*base_keys, *formal_keys)))
+            fields = {"authority": body["authority"],
+                "batch_commitment": body["batch_commitment"],
+                "ordinal": body["cycle_ordinal"], "mode": body["route"],
+                "implementation_revision": body["implementation_revision"],
+                "control_revision": body["control_revision"],
+                "source_manifest_sha256": body["source_manifest_sha256"],
+                "static_control_sha256": body["static_control_sha256"],
+                "workflow_sha256": body["workflow_sha256"],
+                "result_schema_sha256": body["result_schema_sha256"],
+                "rootfs_descriptor_sha256": body["rootfs_descriptor_sha256"],
+                "workflow_run_id": body["workflow_run_id"],
+                "workflow_run_attempt": body["workflow_run_attempt"],
+                "grant_commitment": body["grant_commitment"]}
+            _fail(formal_cycle_authority.FormalCycleGrant(**fields).mode == body["route"])
     elif kind == "CTR_LAUNCH_ISSUED_V1":
         _keys(body, ("operation_token", "route", "command_serial", "binding_sha256",
                      "host_boot_id", "kata_launch_started_boottime_ns"))
@@ -733,6 +819,12 @@ def _validate_body(kind, body):
         elif body["outcome"] in {"exited", "signaled"}:
             _fail(body["release_count"] == 1)
             _fail(type(body["status"]) is int and body["errno"] is None)
+        elif body["outcome"] == "recovery-no-effect":
+            _fail(body["command_id"] in network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+                  and body["status"] is body["errno"] is None
+                  and body["release_count"] == 0 and body["uncertain"]
+                  and body["stdout_length"] == body["stderr_length"] == 0
+                  and not body["stdout_truncated"] and not body["stderr_truncated"])
         else:
             _fail(body["release_count"] in {0, 1} and body["uncertain"])
     elif kind == "RUNTIME_RESUME_V4":
@@ -974,6 +1066,14 @@ def _validate_body(kind, body):
         _keys(body, ("operation_token", "reason"))
         _hex(body["operation_token"])
         _choice(body["reason"], UNCERTAIN_REASONS)
+    elif kind == "SNAPSHOT_FREE_CLEANUP_V1":
+        _keys(body, ("operation_token", "classification", "projection", "proof_sha256"))
+        _hex(body["operation_token"])
+        _fail(body["classification"] == "snapshot-free-fs-settled"
+              and body["projection"] == list(SNAPSHOT_FREE_CLEANUP_PROJECTION))
+        expected = hashlib.sha256(_canonical({name: body[name] for name in body
+                                              if name != "proof_sha256"})).hexdigest()
+        _fail(body["proof_sha256"] == expected)
     elif kind == "FINAL_BASELINES":
         _keys(body, ("operation_token", "final_baselines_sha256"))
         _hex(body["operation_token"])
@@ -1221,6 +1321,10 @@ def _v2_occurrence(records, index, phase, body, ownership=None):
     else:
         _fail(phase == "BASELINES_CAPTURED"
               and not any(item.body["command_id"] == command_id for item in prior))
+def _require_cycle_launch(cycle_route, launch_observation):
+    _fail(cycle_route is None or launch_observation is not None)
+
+
 def _legal(records):
     _fail(records and records[0].record_type == "GENESIS")
     genesis = records[0].body
@@ -1249,6 +1353,8 @@ def _legal(records):
     network_state = network_journal.initial()
     cleanup_mode = None
     runtime_prepared = False
+    runtime_cleanup_only = False
+    snapshot_free_cleanup = None
     rootfs = False
     next_serial = 0
     input_grants = {}
@@ -1271,12 +1377,16 @@ def _legal(records):
             intent = next(item for item in records[:index] if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == serial)
             recoverable = {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}
             daemon = prior.record_type == "DAEMON_OUTCOME_V2" and intent.body["command_id"] == "CONTAINERD_START"
+            terminal = (_daemon_cleanup_closed(prior.body) if daemon else
+                        prior.record_type == "COMMAND_OUTCOME_V2" and prior.body["uncertain"])
             target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent.body["command_id"] == "CTR_RUN" else intent.body["lifecycle_phase"]
-            _fail(prior.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"} and prior.body["uncertain"] and
+            _fail(terminal and
                   prior.body["command_serial"] == serial and prior.body["binding_sha256"] == body["binding_sha256"] == intent.body["binding_sha256"] and
                   (daemon or intent.body["command_id"] in recoverable) and body["target_phase"] == target and
                   intent.body["policy_version"] == command_policy.RUNTIME_POLICY_VERSION)
-            phase = target; continue
+            phase = target
+            runtime_cleanup_only = daemon
+            continue
         if phase == "RETIRED" or (phase == "UNCERTAIN" and kind not in {
                 "INPUT_GRANT", "INPUT_WA", "INPUT_STEP"}):
             raise OperationError()
@@ -1295,10 +1405,14 @@ def _legal(records):
             continue
         if kind == "PRODUCTION_ADMISSION_V2":
             _fail(phase == "ROOTFS_LEASED" and not production_admitted and command_phase is None)
-            production_admitted = True
+            production_admitted = record
             continue
         if kind == "CYCLE_ROUTE_V1":
+            admission_parser = production_admitted.body[
+                "full_parser_source_sha256" if body["route"] == "full"
+                else "readiness_parser_source_sha256"] if production_admitted else None
             _fail(production_admitted and cycle_route is None and command_phase is None
+                  and body["parser_source_sha256"] == admission_parser
                   and phase in {"ROOTFS_LEASED", "FS_SETTLED"}
                   and not any(item.record_type in {"COMMAND_INTENT", "COMMAND_INTENT_V2"}
                               and item.body["command_id"] == "CTR_RUN"
@@ -1349,7 +1463,7 @@ def _legal(records):
             result = ssh_result if body["route"] == "full" else readiness_result
             parser = SSH_PARSER_SHA256 if body["route"] == "full" else guest_readiness.PARSER_SHA256
             _fail(result is not None and body["result_record_sha256"] == result.line_sha256
-                  and body["parser_sha256"] == parser
+                  and body["parser_sha256"] == parser == cycle_route.body["parser_source_sha256"]
                   and body["stdout_sha256"] == result.body["stdout_sha256"])
             settlement_observation = record
             continue
@@ -1418,6 +1532,14 @@ def _legal(records):
             else:
                 _fail(prior and prior[-1]["action"] == "remove-intent")
             input_steps.setdefault(body["path"], []).append(body)
+            continue
+        if kind == "SNAPSHOT_FREE_CLEANUP_V1":
+            _fail(production_admitted and command_phase is None and phase == "FS_SETTLED"
+                  and snapshot_free_cleanup is None and runtime_staged is None
+                  and not network_state["snapshots"] and not network_state["effects"]
+                  and network_state["pending"] is None
+                  and _snapshot_free_baseline_prefix(records[:index]))
+            snapshot_free_cleanup = record
             continue
         if kind == "RUNTIME_PREPARED_V1":
             _fail(command_generation != "v1" and command_phase is None and phase == "NETWORK_READY"
@@ -1528,8 +1650,12 @@ def _legal(records):
             _fail(body["proc_start_time"] == daemon_preexec.body["proc_start_time"])
             residue = not all(body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed"))
             if not residue: retained_daemon = None
-            if body["uncertain"] or phase != "FIREWALL_ABSENT":
+            if body["uncertain"]:
                 phase = "UNCERTAIN"; ever_uncertain = True
+            elif phase != "FIREWALL_ABSENT":
+                # A fully reaped pre-KVM rollback needs an explicit cleanup-only
+                # transition, but is not sticky uncertainty.
+                phase = "UNCERTAIN"
             continue
         if kind == "COMMAND_OUTPUT_V3":
             _fail(command_phase == "COMMAND_PREEXEC_V2" and command_intent_v2 is not None and
@@ -1549,16 +1675,25 @@ def _legal(records):
             )
             _fail((command_preexec_v2 is None
                    and body["outcome"] in {"not-started", "uncertain"}) or
+                  (command_preexec_v2 is None and body["outcome"] == "recovery-no-effect"
+                   and production_admitted
+                   and _recovery_no_effect_classification(command_intent_v2.body) is not None) or
                   (command_preexec_v2 is not None and body["outcome"] != "not-started"))
             if command_output_v3 is not None and not body["uncertain"]:
                 _fail(body["stdout_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stdout_hex"])).hexdigest()
                       and body["stderr_sha256"] == hashlib.sha256(bytes.fromhex(command_output_v3.body["stderr_hex"])).hexdigest())
+            settled_command_b1 = command_b1
             if command_b1:
                 network_state = network_journal.command_outcome(network_state, body)
             command_phase = command_intent_v2 = command_preexec_v2 = command_output_v3 = None
             command_b1 = False
-            if body["uncertain"]:
+            if body["uncertain"] and body["outcome"] != "recovery-no-effect":
                 phase = "UNCERTAIN"; ever_uncertain = True
+            elif body["outcome"] == "recovery-no-effect":
+                _fail(production_admitted and phase == "FS_SETTLED" and settled_command_b1
+                      and _recovery_no_effect_classification(body) is not None
+                      and not network_state["snapshots"] and not network_state["effects"]
+                      and network_state["pending"] is None and launch_observation is None)
             continue
         if kind == "COMMAND_INTENT":
             if body["command_id"] == "CTR_RUN":
@@ -1692,7 +1827,8 @@ def _legal(records):
         elif kind in LIFECYCLE:
             _fail(rootfs)
             seen = {item.record_type for item in records[:index]}; setup_abort = bool(
-                runtime_staged is None and network_state["snapshots"]
+                (runtime_staged is None or runtime_cleanup_only)
+                and network_state["snapshots"]
                 and network_journal.setup_abort_complete(network_state))
             if network_state["snapshots"]:
                 requirement = (phase if setup_abort else
@@ -1719,6 +1855,7 @@ def _legal(records):
                       [row["action"] for row in network_state["effects"]] == list(network_journal.SETUP))
             elif kind == "RUNTIME_READY":
                 _fail(phase == "NETWORK_READY")
+                _require_cycle_launch(cycle_route, launch_observation)
                 if runtime_staged is not None: _runtime_trace(records, index, phase, ownership, complete=True)
             elif kind == "SSH_READY":
                 # Historical fake record only: any v2 SSH intent requires the
@@ -1770,12 +1907,15 @@ def _legal(records):
             elif kind == "INPUT_REMOVED":
                 by_path = {path: steps[-1] for path, steps in input_steps.items()}
                 early = (phase in {"ROOTFS_LEASED", "FS_SETTLED"}
+                         and (phase == "ROOTFS_LEASED" and all(
+                                  item.body["command_id"] in command_policy.KEY_COMMANDS
+                                  for item in records[:index]
+                                  if item.record_type == "COMMAND_INTENT_V2")
+                              or phase == "FS_SETTLED" and snapshot_free_cleanup is not None
+                                  and _snapshot_free_baseline_prefix(records[:index]))
                          and not network_state["snapshots"]
                          and not network_state["effects"]
                          and runtime_staged is None
-                         and all(item.body["command_id"] in command_policy.KEY_COMMANDS
-                                 for item in records[:index]
-                                 if item.record_type == "COMMAND_INTENT_V2")
                          and all(step["action"] == "absent" for step in by_path.values()))
                 _fail(phase == "CONTAINERD_ABSENT" or runtime_staged is None and phase == "FIREWALL_ABSENT" or early)
             elif kind == "ROOTFS_RELEASE_READY":
@@ -1796,7 +1936,9 @@ def _legal(records):
             _fail(rootfs and phase == "ROOTFS_ABSENT" and not ever_uncertain)
             _fail(network_state["policy_version"] != network_journal.POLICY_VERSION
                   or network_state["snapshots"] and
-                     network_state["snapshots"][-1]["snapshot_kind"] == "final-absent")
+                     network_state["snapshots"][-1]["snapshot_kind"] == "final-absent"
+                  or snapshot_free_cleanup is not None and not network_state["snapshots"]
+                     and not network_state["effects"] and network_state["pending"] is None)
             phase = kind
             pending = record
         elif kind == "RETIRE_INTENT":
@@ -1813,12 +1955,6 @@ def _legal(records):
             raise OperationError()
     if phase in {"INPUT_REMOVED", *LIFECYCLE[14:], "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"}:
         _fail(retained_daemon is None)
-    if cycle_route is not None and phase == "RETIRED":
-        _fail(launch_observation is not None and marker_observation is not None
-              and settlement_observation is not None
-              and (ssh_result is not None) == (cycle_route.body["route"] == "full")
-              and (readiness_result is not None) ==
-                  (cycle_route.body["route"] == "readiness"))
     return phase
 def _parse_untrusted(raw):
     _fail(type(raw) is bytes and 0 < len(raw) <= MAX_BYTES and raw.endswith(b"\n") and b"\x00" not in raw)
@@ -2122,13 +2258,17 @@ def _make_authority():
                 absent_settlement = (phase == "FS_SETTLED" and settlements
                                      and settlements[-1] > 0
                                      and records[settlements[-1] - 1].record_type == "FS_ABSENT")
+                snapshot_free_input_cleanup = (phase == "FS_SETTLED"
+                    and any(item.record_type == "SNAPSHOT_FREE_CLEANUP_V1" for item in records)
+                    and _snapshot_free_baseline_prefix(records))
                 if phase == "FS_SETTLED" and not absent_settlement:
                     input_required.add("FS_SETTLED")
                 terminal_input_absent = (phase == "CONTAINERD_ABSENT"
                     and records[-1].record_type == "INPUT_STEP"
                     and records[-1].body["action"] == "absent"
                     and records[-1].body["path"] == ".")
-                if phase in input_required and phase != "FS_INTENT" and not terminal_input_absent:
+                if (phase in input_required and phase != "FS_INTENT"
+                        and not terminal_input_absent and not snapshot_free_input_cleanup):
                     _fail(INPUT_NAME.raw in names)
                 if (phase == "FS_ABSENT" or absent_settlement or terminal_input_absent
                         or phase in set(LIFECYCLE[LIFECYCLE.index("INPUT_REMOVED"):])
@@ -2339,6 +2479,8 @@ def _make_authority():
                 try:
                     os.fsync(self.state.operation_fd.number)
                     _fail(self.read() is None)
+                    self.classification = None
+                    self._probe_inventory = None
                 except BaseException as caught:
                     error = caught
             if error is not None:
@@ -2372,11 +2514,13 @@ def _make_authority():
         __slots__ = ()
         def __new__(cls, key=None): _fail(key is seal); return super().__new__(cls)
         def __getattribute__(self, name):
-            direct = {"record_command_intent", "record_runtime_prepared", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
+            direct = {"record_command_intent", "record_runtime_prepared", "record_snapshot_free_cleanup", "settle_runtime_phase", "settle_network_cleanup", "prepare_rootfs_release", "settle_rootfs_absent", "reserve_rootfs", "reserve_rootfs_release"}
             if name in direct: return object.__getattribute__(self, name)
             _fail(name in {"command_context", "reconstruction_identity", "has_recovery_command", "recovery_command", "recovery_lifecycle_deadline", "record_command_preexec", "record_command_output", "record_command_outcome", "record_daemon_outcome", "runtime_recovery_history", "runtime_history", "resume_runtime_cleanup", "record_runtime_identity", "record_runtime_role_identities", "record_runtime_role_absence", "record_runtime_share_identity", "record_runtime_network_released", "durable_command_outcome", "durable_command_output", "input_cleanup_token", "input_steps", "input_wa", "input_grants", "durable_phase", "pending_fs_intent", "record_input_wa", "record_input_step", "record_input_grant", "record_fs_absent", "record_fs_settled", "record_input_removed", "record_uncertain", "revoke_readiness", "begin_network_cleanup", "network_records", "network_history", "record_network", "settle_network_phase", "close", "status"}); return getattr(cleanup_owners[self], name)
         def record_command_intent(self, body): return issue_command_intent(cleanup_owners[self], body, True)
         def record_runtime_prepared(self, grant): return cleanup_owners[self].record_runtime_prepared(grant)
+        def record_snapshot_free_cleanup(self):
+            return cleanup_owners[self].record_snapshot_free_cleanup()
         def settle_runtime_phase(self, kind, proof, ownership=None):
             _fail(kind in {"OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "CONTAINER_ABSENT", "RUNTIME_ABSENT", "SHARE_ABSENT", "CONTAINERD_ABSENT"}); return cleanup_owners[self].settle_runtime_phase(kind, proof, ownership)
         def settle_network_cleanup(self, target): return cleanup_owners[self].settle_network_cleanup(target)
@@ -2521,9 +2665,10 @@ def _make_authority():
         admitted = any(row.record_type == "PRODUCTION_ADMISSION_V2" for row in records)
         cleanup_phase = _legal(records) in {"READINESS_REVOKED", *LIFECYCLE[5:], "UNCERTAIN", "RUNTIME_CLEANUP_ONLY"}
         cleanup_record = kind in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2", "RUNTIME_RESUME_V4", "RUNTIME_IDENTITY_V4",
-            "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
+            "SNAPSHOT_FREE_CLEANUP_V1", "RUNTIME_PREPARED_V1", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_ROLE_ABSENCE_V1",
             "RUNTIME_SHARE_IDENTITY_V1", "RUNTIME_NETWORK_RELEASED_V1",
             "FS_ABSENT", "FS_SETTLED", "INPUT_WA", "INPUT_STEP", "UNCERTAIN", *LIFECYCLE[4:],
+            "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED",
             *network_journal.CLEANUP_INTENTS, *network_journal.CLEANUP_SETTLED} or cleanup_phase and (
             kind in {"COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3", "NETWORK_SNAPSHOT_V2"} or kind in network_journal.ALL_RECORDS)
         if (admitted or kind == "PRODUCTION_ADMISSION_V2") and not cleanup_record: _require_live_production_deadline(records)
@@ -2599,11 +2744,16 @@ def _make_authority():
             }
         def has_recovery_command(self):
             _io, records, status = reload(self); _fail(status == "exact")
-            return records[-1].record_type in {
+            terminal = records[-1]
+            return terminal.record_type in {
                 "COMMAND_INTENT_V2", "COMMAND_PREEXEC_V2", "COMMAND_OUTPUT_V3",
                 "SSH_MARKER_OBSERVED_V1",
-            } or (
-                records[-1].record_type == "COMMAND_OUTCOME_V2" and records[-1].body["uncertain"])
+            } or (terminal.record_type == "COMMAND_OUTCOME_V2"
+                  and terminal.body["uncertain"]
+                  and terminal.body["outcome"] != "recovery-no-effect") or (
+                terminal.record_type == "DAEMON_OUTCOME_V2"
+                and _legal(records) == "UNCERTAIN"
+                and _daemon_cleanup_closed(terminal.body))
         def runtime_recovery_history(self):
             _io, records, status = reload(self); _fail(status == "exact" and records and records[-1].record_type != "RETIRED")
             result = {"operation_token": records[0].body["operation_token"], "phase": _legal(records),
@@ -2647,9 +2797,10 @@ def _make_authority():
                 preexec = matches[0] if matches else None
             else:
                 terminal = records[-1]
-                _fail(terminal.record_type in {"COMMAND_OUTCOME_V2", "DAEMON_OUTCOME_V2"}
-                      and terminal.body["uncertain"])
-                if terminal.record_type == "DAEMON_OUTCOME_V2": _fail(not all(terminal.body[name] for name in ("leader_reaped", "descendants_reaped", "cgroup_empty", "cgroup_removed")))
+                _fail((terminal.record_type == "COMMAND_OUTCOME_V2" and terminal.body["uncertain"])
+                      or (terminal.record_type == "DAEMON_OUTCOME_V2"
+                          and _legal(records) == "UNCERTAIN"
+                          and _daemon_cleanup_closed(terminal.body)))
                 serial = terminal.body["command_serial"]
                 intent = next(item for item in records if item.record_type == "COMMAND_INTENT_V2"
                               and item.body["command_serial"] == serial)
@@ -2685,7 +2836,10 @@ def _make_authority():
             _fail(_same_command_v2(body, intent))
             _fail((preexec is None
                    and body["outcome"] in {"not-started", "uncertain"}) or
-                  (preexec is not None and body["outcome"] != "not-started"))
+                  (body["outcome"] == "recovery-no-effect"
+                   and _recovery_no_effect_classification(intent) is not None) or
+                  (preexec is not None and body["outcome"] not in {
+                      "not-started", "recovery-no-effect"}))
             write_validated(self, "COMMAND_OUTCOME_V2", body)
             return DurableCommandOutcome(
                 body["command_serial"], body["command_id"], body["binding_sha256"], body,
@@ -2693,10 +2847,23 @@ def _make_authority():
         def resume_runtime_cleanup(self):
             _io, records, status = reload(self); _fail(status == "exact" and _legal(records) == "UNCERTAIN"); terminal = records[-1].body
             intent = next(item.body for item in records if item.record_type == "COMMAND_INTENT_V2" and item.body["command_serial"] == terminal["command_serial"])
-            _fail(records[-1].record_type == "DAEMON_OUTCOME_V2" or intent["command_id"] in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"})
-            target = "RUNTIME_CLEANUP_ONLY" if records[-1].record_type == "DAEMON_OUTCOME_V2" else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
+            daemon = records[-1].record_type == "DAEMON_OUTCOME_V2"
+            _fail((_daemon_cleanup_closed(terminal) if daemon else terminal["uncertain"])
+                  and (daemon or intent["command_id"] in {"CTR_RUN", "CTR_TASK_TERM", "CTR_TASK_KILL"}))
+            target = "RUNTIME_CLEANUP_ONLY" if daemon else "READINESS_REVOKED" if intent["command_id"] == "CTR_RUN" else intent["lifecycle_phase"]
             write_validated(self, "RUNTIME_RESUME_V4", {"operation_token": records[0].body["operation_token"], "target_phase": target,
                 "uncertain_serial": terminal["command_serial"], "binding_sha256": terminal["binding_sha256"]}); return target
+        def record_snapshot_free_cleanup(self):
+            _io, records, status = reload(self, True); _fail(status == "exact")
+            existing = [item.body for item in records
+                        if item.record_type == "SNAPSHOT_FREE_CLEANUP_V1"]
+            if existing: return existing[0]
+            body = {"operation_token": records[0].body["operation_token"],
+                    "classification": "snapshot-free-fs-settled",
+                    "projection": list(SNAPSHOT_FREE_CLEANUP_PROJECTION)}
+            body["proof_sha256"] = hashlib.sha256(_canonical(body)).hexdigest()
+            write_validated(self, "SNAPSHOT_FREE_CLEANUP_V1", body)
+            return body
         def record_runtime_prepared(self, grant):
             import completion_kata_admission as admission
             facts = admission._consume_prepared_runtime_custody(grant)
@@ -2787,7 +2954,8 @@ def _make_authority():
                     "operation_token": context.operation_token,
                     "admission_version": PRODUCTION_ADMISSION_VERSION,
                     "policy_version": command_policy.POLICY_VERSION,
-                    "parser_source_sha256": SSH_PARSER_SHA256})
+                    "full_parser_source_sha256": SSH_PARSER_SHA256,
+                    "readiness_parser_source_sha256": guest_readiness.PARSER_SHA256})
         def cycle_route(self):
             _io, records, status = reload(self, True); _fail(status == "exact")
             rows = [item.body for item in records if item.record_type == "CYCLE_ROUTE_V1"]
@@ -2796,29 +2964,45 @@ def _make_authority():
         def record_cycle_route(self, route, capability_sha256, program_sha256,
                                marker_sha256, grant=None):
             context = self.command_context()
-            body = {
-                "operation_token": context.operation_token, "route": route,
+            parser_source_sha256 = (SSH_PARSER_SHA256 if route == "full"
+                                    else guest_readiness.PARSER_SHA256)
+            body = {"operation_token": context.operation_token, "route": route,
                 "cycle_capability_sha256": capability_sha256,
-                "program_sha256": program_sha256, "marker_sha256": marker_sha256,
-                "grant_authority": "synthetic" if grant is None else "production",
-                "batch_commitment": None, "cycle_ordinal": None,
-                "implementation_revision": None, "control_revision": None,
-                "static_control_sha256": None, "rootfs_descriptor_sha256": None,
-                "ami_commitment": None, "plan_sha256": None,
-                "grant_commitment": None,
-            }
-            if grant is not None:
-                body.update({
+                "program_sha256": program_sha256,
+                "parser_source_sha256": parser_source_sha256,
+                "marker_sha256": marker_sha256}
+            if type(grant) is formal_cycle_authority.FormalCycleGrant:
+                body.update({"grant_authority": formal_cycle_authority.AUTHORITY,
+                    "authority": grant.authority,
                     "batch_commitment": grant.batch_commitment,
                     "cycle_ordinal": grant.ordinal,
                     "implementation_revision": grant.implementation_revision,
                     "control_revision": grant.control_revision,
+                    "source_manifest_sha256": grant.source_manifest_sha256,
                     "static_control_sha256": grant.static_control_sha256,
+                    "workflow_sha256": grant.workflow_sha256,
+                    "result_schema_sha256": grant.result_schema_sha256,
                     "rootfs_descriptor_sha256": grant.rootfs_descriptor_sha256,
-                    "ami_commitment": grant.ami_commitment,
-                    "plan_sha256": grant.plan_sha256,
-                    "grant_commitment": grant.grant_commitment,
-                })
+                    "workflow_run_id": grant.workflow_run_id,
+                    "workflow_run_attempt": grant.workflow_run_attempt,
+                    "grant_commitment": grant.grant_commitment})
+            else:
+                body.update({"grant_authority": "synthetic" if grant is None else "production",
+                    "batch_commitment": None, "cycle_ordinal": None,
+                    "implementation_revision": None, "control_revision": None,
+                    "static_control_sha256": None, "rootfs_descriptor_sha256": None,
+                    "ami_commitment": None, "plan_sha256": None,
+                    "grant_commitment": None})
+                if grant is not None:
+                    body.update({"batch_commitment": grant.batch_commitment,
+                        "cycle_ordinal": grant.ordinal,
+                        "implementation_revision": grant.implementation_revision,
+                        "control_revision": grant.control_revision,
+                        "static_control_sha256": grant.static_control_sha256,
+                        "rootfs_descriptor_sha256": grant.rootfs_descriptor_sha256,
+                        "ami_commitment": grant.ami_commitment,
+                        "plan_sha256": grant.plan_sha256,
+                        "grant_commitment": grant.grant_commitment})
             write_validated(self, "CYCLE_ROUTE_V1", body)
         def record_launch_issued(self, serial, binding, started_ns):
             _io, records, status = reload(self, True); _fail(status == "exact")

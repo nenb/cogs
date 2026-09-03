@@ -99,6 +99,16 @@ check("RUNTIME_READY" not in journal_model.LIFECYCLE_REQUIREMENTS,
       "B1 improperly requires a deferred runtime-ready transition")
 check(len(journal_model.SETUP_ABORT_TRACES) == len(journal_model.SETUP),
       "settled setup effects lack abort cuts")
+zero_abort = journal_model.initial()
+zero_abort["snapshots"] = [{"snapshot_kind": "baseline"}]
+check(journal_model.setup_abort_complete(zero_abort),
+      "zero-effect setup abort baseline rejected")
+zero_abort["snapshots"].append({"snapshot_kind": "network-absent"})
+check(journal_model.setup_abort_complete(zero_abort),
+      "zero-effect setup abort settlement rejected")
+zero_abort["snapshots"].append({"snapshot_kind": "firewall-restored"})
+check(not journal_model.setup_abort_complete(zero_abort),
+      "post-abort snapshot authorized as setup abort")
 for count, trace in enumerate(journal_model.SETUP_ABORT_TRACES, 1):
     prefix = tuple(item for action in journal_model.SETUP[:count]
                    for item in journal_model.EFFECT_COMMAND_TRACES[action])
@@ -143,6 +153,27 @@ with patch.object(network.nft_owner, "acquire", side_effect=lambda _j: gate_even
     try: network._capture_fixed_baselines(object(), object(), object(), object())
     except GateCut: pass
 check(gate_events == ["acquire", "require"], "baseline command preceded persistent NFT admission")
+# An ambiguous crashed baseline child remains a read-only no-effect prefix;
+# ambiguous setup/runtime children retain sticky operation uncertainty.
+for phase, command_id, expected_poison in (
+        ("FS_SETTLED", "IP_ALL_LINKS", False),
+        ("BASELINES_CAPTURED", "IP_VETH_ADD_ATOMIC", True)):
+    poison_calls = []
+    outcome_name = "recovery-no-effect" if phase == "FS_SETTLED" else "uncertain"
+    uncertain_outcome = type("Outcome", (), {"body": {
+        "uncertain": True, "outcome": outcome_name}})()
+    context = type("Context", (), {"lifecycle_phase": phase})()
+    with patch.object(operation, "_claim_production_cleanup_operation", side_effect=lambda value: value), \
+         patch.object(operation, "_command_context", return_value=context), \
+         patch.object(operation, "_recovery_command", return_value=({"command_id": command_id}, None, None)), \
+         patch.object(operation, "_network_history", return_value=[]), \
+         patch.object(operation, "_network_records", return_value=[]), \
+         patch.object(process, "_recover_pending_fixed", return_value=uncertain_outcome), \
+         patch.object(operation, "_durable_phase", return_value=phase), \
+         patch.object(operation, "_record_uncertain", side_effect=lambda *_a: poison_calls.append(1)):
+        check(process._recover_pending_production(object()) is uncertain_outcome,
+              "pending recovery changed command outcome")
+    check(bool(poison_calls) is expected_poison, "observer/effect uncertainty disposition differs")
 for setup_action in network._SETUP_ACTIONS:
     recorded = []
     with patch.object(network.nft_owner, "require_active", side_effect=GateCut()), \
@@ -341,6 +372,34 @@ with patch.object(network, "_pending_observation", return_value={"source_id": "N
      patch.object(network, "_record_observation", side_effect=lambda _j, source, raw, serial: recorded_resume.append((source, raw, serial))):
     network._resume_observer_chunk(object(), object(), object(), object(), network.Action.NFT_REMOVE_ATOMIC)
 check(recorded_resume == [("NFT_REMOVE_ATOMIC", b"retained-table", 7)], "partial nft mutation resumed empty bytes")
+
+# Baseline-only support deletion is exact and crash-idempotent; a replacement
+# is preserved rather than removed by path shape.
+with tempfile.TemporaryDirectory() as temporary:
+    preserved = Path(temporary, "preserved"); staged = Path(temporary, "staged")
+    preserved.mkdir(); staged.mkdir()
+    support = {"preserved_directory": network._placeholder_identity(preserved.stat()),
+               "parent_stage_directory": network._placeholder_identity(staged.stat())}
+    support_history = [(journal_model.SUPPORT_RECORD, {"support": support})]
+    rename = lambda source_parent, source, target_parent, target: os.rename(
+        source, target, src_dir_fd=source_parent, dst_dir_fd=target_parent)
+    with patch.object(operation, "_network_history", return_value=support_history), \
+         patch.object(network, "PRESERVED_DIR", str(preserved)), \
+         patch.object(network, "PARENT_STAGE_DIR", str(staged)), \
+         patch.object(network, "_rename_noreplace", side_effect=rename):
+        network._cleanup_baseline_support(object(), True)
+        check(not preserved.exists() and not staged.exists(), "baseline support residue remained")
+        network._cleanup_baseline_support(object(), True)
+    preserved.mkdir(); staged.mkdir(); replacement_support = copy.deepcopy(support)
+    replacement_support["preserved_directory"]["inode"] += 1
+    replacement_support["parent_stage_directory"]["inode"] += 1
+    with patch.object(operation, "_network_history", return_value=[(
+            journal_model.SUPPORT_RECORD, {"support": replacement_support})]), \
+         patch.object(network, "PRESERVED_DIR", str(preserved)), \
+         patch.object(network, "PARENT_STAGE_DIR", str(staged)):
+        reject(lambda: network._cleanup_baseline_support(object(), True),
+               "replacement baseline support was removed")
+        check(preserved.exists() and staged.exists(), "replacement baseline support changed")
 
 # Complete runtime address inventory includes the TAP row and requires it empty.
 tap_row = link(30, "tap-fixed", "02:00:00:00:00:30", None, "tap")
@@ -734,6 +793,35 @@ with patch.object(operation, "_network_history", return_value=removal_history), 
      patch.object(network, "_record_effect"):
     network._resume_effect(object(), object(), object(), object())
 check(removal_raw == [b""], "successful deletion recovery did not reconstruct empty stdout")
+
+# Setup abort accepts its observer-only resume contract only when an intent has
+# a certain successful command outcome. Ambiguous intent remains preserved;
+# an already-observed local effect needs no command evidence to settle.
+class ResumeProbe:
+    def __init__(self, history): self.history, self.events = history, []
+    def begin_network_cleanup(self, target):
+        check(target == "network", "setup resume cleanup target"); self.events.append("begin")
+    def network_history(self): return tuple(self.history)
+    def record_uncertain(self, _reason): pass
+for last_kind, outcome, expected_resume in (
+        ("NETWORK_EFFECT_INTENT_V2", {"command_id": "IP_VETH_ADD_ATOMIC",
+            "outcome": "exited", "status": 0, "uncertain": False}, True),
+        ("NETWORK_EFFECT_INTENT_V2", {"command_id": "IP_VETH_ADD_ATOMIC",
+            "outcome": "uncertain", "status": None, "uncertain": True}, False),
+        ("NETWORK_EFFECT_OBSERVED_V2", None, True)):
+    pending = {"action": ("IP_NETNS_ADD" if last_kind.endswith("OBSERVED_V2")
+                           else "IP_VETH_ADD_ATOMIC")}
+    history = [(last_kind, pending)] + ([] if outcome is None else [("COMMAND_OUTCOME_V2", outcome)])
+    probe = ResumeProbe(history)
+    def resume_cut(*_args): probe.events.append("resume"); raise RuntimeError("resume cut")
+    with patch.object(network.nft_owner, "require_active"), \
+         patch.object(network, "_baselines", return_value=(BASELINES, [BASELINE])), \
+         patch.object(operation, "_network_history", return_value=history), \
+         patch.object(network, "_resume_effect", side_effect=resume_cut), \
+         patch.object(network, "_poison_fixed_network"):
+        reject(lambda: network._abort_fixed_setup(probe, object(), object(), object()))
+    check(("resume" in probe.events) is expected_resume,
+          "setup abort certain/ambiguous resume disposition differs")
 
 # Cleanup intent is durable before fallible work. If poisoning cannot append
 # UNCERTAIN, both failures survive and neither this owner nor a reopen can progress.

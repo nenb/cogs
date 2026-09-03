@@ -324,8 +324,8 @@ def _production_routes():
             if operation._cycle_route(state["journal"]) is not None:
                 operation._record_ssh_settled(
                     state["journal"], "SSH_READY", session.command_serial,
-                    session.binding_sha256, session.stdout_sha256, PARSER_SHA256,
-                    operation._boottime_ns())
+                    session.binding_sha256, session.stdout_sha256,
+                    operation.SSH_PARSER_SHA256, operation._boottime_ns())
             operation._record_ssh_ready(state["journal"])
             state["finalized"] = True
             state["pending_result"] = None
@@ -448,7 +448,8 @@ def _production_readiness_routes():
                         state["executable_released"] = True
                     except BaseException as error: errors.append(error)
                 if errors:
-                    raise BaseExceptionGroup("readiness SSH settlement", errors)
+                    causes = ([primary] if primary is not None else []) + errors
+                    raise BaseExceptionGroup("readiness SSH settlement", causes)
         def finalize_authenticated(self, session):
             state = states[self]
             _fail(state["pending"] is not None and state["pending"][1] is session

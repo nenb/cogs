@@ -1357,8 +1357,13 @@ def _configured_launch_assets(kata_root):
     return raw, rows
 
 
-def collect_fixed_candidate():
-    """Collect the sole fixed, source-external, no-KVM static candidate."""
+def collect_fixed_candidate(builder=build_control_bytes):
+    """Collect one fixed observation with an explicitly selected control codec."""
+    _require(builder is build_control_bytes or (
+        getattr(builder, "__name__", "") == "build_control_bytes"
+        and getattr(builder, "__globals__", {}).get("VERSION") ==
+            "cogs.stage2-current-source-prebuilt-diagnostic-control/v1"),
+        "control codec selection differs")
     global _OBSERVATION_STAGE
     _require(platform.system() == "Linux" and platform.machine() == "x86_64" and os.geteuid() == 0)
     _OBSERVATION_STAGE = "source-manifest"
@@ -1502,9 +1507,9 @@ def collect_fixed_candidate():
                "identity": final.package_identity.value()}
     control_revision = os.environ.get("COGS_STAGE2_CONTROL_REVISION", "")
     _git_revision(control_revision)
-    return build_control_bytes(implementation, runtime, package,
-                               "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-                               contracts, control_revision, prebuilt_custody)
+    return builder(implementation, runtime, package,
+                   "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
+                   contracts, control_revision, prebuilt_custody)
 
 
 def generate_implementation_h_candidate_control_bytes():
@@ -1512,8 +1517,10 @@ def generate_implementation_h_candidate_control_bytes():
     return collect_fixed_candidate()
 
 
-def publish_fixed_candidate(control_raw, members):
+def publish_fixed_candidate(control_raw, members, control_member=CONTROL_MEMBER):
     """Publish one new candidate directory; never replace reviewed or staged bytes."""
+    _require(control_member in {CONTROL_MEMBER,
+        "stage2-current-source-prebuilt-diagnostic-control-v1.json"})
     destination = OBSERVATION_ROOT / "candidate"
     parent_created = not OBSERVATION_ROOT.exists()
     if parent_created:
@@ -1523,7 +1530,7 @@ def publish_fixed_candidate(control_raw, members):
     _require(not destination.exists())
     destination.mkdir(mode=0o700)
     try:
-        payloads = {CONTROL_MEMBER: control_raw, **members}
+        payloads = {control_member: control_raw, **members}
         directories = {destination}
         for name, raw in sorted(payloads.items()):
             path = destination / name

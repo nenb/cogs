@@ -2,16 +2,19 @@
 """Portable hostile matrix for corrected custody and receipt boundaries."""
 import copy
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_admission as admission
+import completion_kata_diagnostic_control as diagnostic_control
 import completion_kata_preparation_bridge as preparation_bridge
 import completion_local_receipt as receipt
 
@@ -204,6 +207,134 @@ reject(admission._take_static_preparation_issuer)
 assert not hasattr(admission, "_claim_committed_execution_custody")
 assert not hasattr(receipt, "_issue_local_receipt")
 reject(lambda: receipt._consume_local_receipt(raw), receipt.LocalReceiptError)
+
+# Recovery retirement is separately sealed and closes exactly the role and
+# optional prepared-runtime claims issued in this process. The forward route
+# still rejects the same partial claim set.
+retire_recovery = admission._retire_recovery_executable_role_custody
+retire_claims = inspect.getclosurevars(retire_recovery).nonlocals["retire_claims"]
+routes = inspect.getclosurevars(retire_claims).nonlocals
+custody_classes = inspect.getclosurevars(routes["live_custody"]).nonlocals
+custody_type = custody_classes["_StaticPreparationCustody"]
+diagnostic_custody_type = custody_classes["_DiagnosticPreparationCustody"]
+seal = inspect.getclosurevars(custody_type.__new__).nonlocals["seal"]
+
+# Formal and split-lineage custody projections are mutually exclusive. The
+# diagnostic projection names only diagnostic authority and the exact current
+# source, prior publication, rootfs custody, and held executable lineages.
+diagnostic_custody = diagnostic_custody_type(seal)
+formal_substitution = custody_type(seal)
+control_value = {
+    "version": diagnostic_control.VERSION,
+    "authority": diagnostic_control.AUTHORITY,
+    "profile": diagnostic_control.PROFILE,
+    "runtime_implementation": {"revision": "1" * 40,
+                               "source_manifest_sha256": "2" * 64},
+    "publication_producer": {
+        "implementation_revision": diagnostic_control.PRODUCER_IMPLEMENTATION,
+        "source_manifest_sha256": diagnostic_control.PRODUCER_SOURCE_MANIFEST,
+        "control_revision": diagnostic_control.PUBLICATION_CONTROL,
+        "descriptor_sha256": diagnostic_control.DESCRIPTOR_SHA256,
+        "oci_manifest_sha256": diagnostic_control.OCI_MANIFEST_SHA256,
+        "ustar_sha256": diagnostic_control.USTAR_SHA256,
+        "signature_verification_sha256": diagnostic_control.SIGNATURE_SHA256,
+    },
+    "rootfs": {"prebuilt_descriptor_sha256": diagnostic_control.DESCRIPTOR_SHA256,
+               "custody": {"signature_verification_sha256":
+                           diagnostic_control.SIGNATURE_SHA256}},
+}
+executables = [{"role": f"diagnostic-role-{index}"} for index in range(5)]
+for custody, is_diagnostic in ((diagnostic_custody, True),
+                               (formal_substitution, False)):
+    routes["custody_states"][custody] = {
+        "diagnostic": is_diagnostic, "descriptors": [],
+        "configuration_identity": {"retired": True, "active_sha256": "a" * 64},
+        "control": admission.preparation.StaticDescription(
+            b"", "3" * 64, control_value),
+        "runtime": admission.preparation.StaticDescription(
+            b"", "4" * 64, {"executables": executables}),
+    }
+lineage = admission._diagnostic_custody_lineage(diagnostic_custody)
+assert lineage["version"] == admission.DIAGNOSTIC_CUSTODY_LINEAGE_VERSION
+assert lineage["authority"] == diagnostic_control.AUTHORITY
+assert lineage["runtime_implementation"] == control_value["runtime_implementation"]
+assert lineage["publication_producer"] == control_value["publication_producer"]
+assert "production" not in canonical(lineage).decode("ascii")
+reject(lambda: admission._static_custody_binding(diagnostic_custody))
+reject(lambda: admission._diagnostic_custody_lineage(formal_substitution))
+admission._abort_static_preparation(diagnostic_custody)
+admission._abort_static_preparation(formal_substitution)
+
+for with_prepared in (False, True):
+    custody = custody_type(seal)
+    descriptors = [os.open(os.devnull, os.O_RDONLY) for _index in range(8 + with_prepared)]
+    role_claims = (object(), object())
+    roles = {"ssh", "ssh-keygen"}
+    routes["custody_states"][custody] = {
+        "diagnostic": False, "recovery": True, "roles": roles,
+        "descriptors": list(descriptors),
+        "source_descriptors": (descriptors[2],), "source_anchor": descriptors[3],
+        "configuration_identity": {"active_sha256": "a" * 64},
+    }
+    for index, (claim, role) in enumerate(zip(role_claims, sorted(roles))):
+        routes["role_states"][claim] = {"custody": custody, "role": role,
+            "descriptors": (descriptors[index],), "consumed": True}
+    prepared_claim = object()
+    if with_prepared:
+        routes["prepared_states"][prepared_claim] = {
+            "custody": custody, "descriptors": (descriptors[4],),
+            "consumed": True, "verified": True}
+    configuration = descriptors[5:8]
+    with patch.object(admission, "_verify_retiring_observer_configuration",
+                      return_value=tuple(configuration)):
+        retire_recovery(custody)
+    retired = {*descriptors[:2], descriptors[2], descriptors[3], *configuration}
+    if with_prepared: retired.add(descriptors[4])
+    assert all(descriptor not in routes["custody_states"][custody]["descriptors"]
+               for descriptor in retired)
+    for descriptor in retired:
+        try: os.fstat(descriptor)
+        except OSError: pass
+        else: raise AssertionError("recovery retirement leaked a descriptor")
+    assert not any(item["custody"] is custody for item in routes["role_states"].values())
+    assert not any(item["custody"] is custody for item in routes["prepared_states"].values())
+    admission._abort_static_preparation(custody)
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    base_path = root / "base.toml"
+    base_path.write_bytes(b"base")
+    base_parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    base_fd = os.open(base_path, os.O_RDONLY)
+    runtime_parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    retired_configuration = {
+        "retired": True, "active_sha256": sha(b"base-derived"),
+        "base_parent": base_parent, "base_fd": base_fd,
+        "base_status": os.fstat(base_fd), "runtime_parent": runtime_parent,
+        "runtime_parent_status": os.fstat(runtime_parent),
+    }
+    with patch.object(admission.preparation, "KATA_BASE_CONFIGURATION_SIZE", 4), \
+         patch.object(admission.preparation, "derive_observer_configuration",
+                      side_effect=lambda value: value + b"-derived"):
+        assert admission._verify_retiring_observer_configuration(
+            retired_configuration) == (base_parent, base_fd, runtime_parent)
+        (root / "settled-sibling").mkdir()
+        assert admission._verify_retiring_observer_configuration(
+            retired_configuration) == (base_parent, base_fd, runtime_parent)
+        (root / "kata-runtime-v1").mkdir()
+        reject(lambda: admission._verify_retiring_observer_configuration(
+            retired_configuration))
+    os.close(runtime_parent); os.close(base_fd); os.close(base_parent)
+
+partial_forward = custody_type(seal)
+routes["custody_states"][partial_forward] = {
+    "diagnostic": False, "recovery": False, "roles": set(), "descriptors": [],
+    "source_descriptors": (), "source_anchor": None,
+    "configuration_identity": {"active_sha256": "a" * 64},
+}
+reject(lambda: admission._retire_consumed_executable_role_custody(partial_forward))
+admission._abort_static_preparation(partial_forward)
+
 source = (REMOTE / "completion_kata_admission.py").read_text()
 assert "REVIEWED_ENVELOPE_SHA256 = None" in source and "REVIEWED_RUNTIME_MANIFEST_SHA256 = None" in source
 assert "candidate_contract_sha256" in source and "candidate_result_sha256" in source

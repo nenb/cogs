@@ -6,9 +6,9 @@
   "guest_program_size": 168,
   "marker_sha256": "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010",
   "parser": "completion_guest_readiness_v1.parse_guest_readiness_output",
-  "parser_sha256": "65bda4ab75ce62a1d90de65df9a672ae5bb26713a0bfb0ec35aaa7a1d9bd810d",
+  "parser_sha256": "500423ea45a3c12da1eaf107281a966e88f21f77701524f2d8617d0456f68e4c",
   "source_path": "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py",
-  "source_sha256": "91b64fc166e6fd5b48ce906ce45f14e75345a9fcd1056dcc36a5bf51b67455c9",
+  "source_sha256": "500423ea45a3c12da1eaf107281a966e88f21f77701524f2d8617d0456f68e4c",
   "total_deadline_ns": 1200000000000,
   "version": "cogs.stage2-completion-ssh-readiness/v1"
 }

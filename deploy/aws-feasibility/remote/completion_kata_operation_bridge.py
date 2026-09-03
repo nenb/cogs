@@ -58,7 +58,9 @@ def _routes():
         source = preparation._fixed_source_approval(lifecycle.static_custody)
         _require(source is lifecycle.source_approval,
                  "preparation SourceApproval identity differs")
-        lease = preparation._acquire_fixed_rootfs(lifecycle.static_custody)
+        lease = (preparation._acquire_diagnostic_rootfs(lifecycle.static_custody)
+                 if lifecycle.diagnostic else
+                 preparation._acquire_fixed_rootfs(lifecycle.static_custody))
         _require(type(source) is fs.SourceApproval
                  and type(lease) is rootfs.RetainedRootfsLease
                  and lease.disposition == "held")

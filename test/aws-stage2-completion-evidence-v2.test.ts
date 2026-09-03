@@ -14,20 +14,28 @@ const root = join(import.meta.dirname, "..");
 let rawFixture: string | undefined;
 function raw(): string {
   if (rawFixture !== undefined) return rawFixture;
-  const result = spawnSync("python3", ["-I", join(root, "test/aws-stage2-completion-campaign-production.py")], {
+  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
     cwd: root,
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COGS_TEST_EMIT_EVIDENCE: "1" },
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PYTHONDONTWRITEBYTECODE: "1",
+      COGS_TEST_EMIT_EVIDENCE: "1",
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   rawFixture = result.stdout;
   return rawFixture;
 }
 function issuerReport(): string {
-  const result = spawnSync("python3", ["-I", join(root, "test/aws-stage2-completion-campaign-production.py")], {
+  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
     cwd: root,
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COGS_TEST_EMIT_REPORT: "1" },
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PYTHONDONTWRITEBYTECODE: "1",
+      COGS_TEST_EMIT_REPORT: "1",
+    },
   });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
@@ -156,6 +164,30 @@ test("seven cycles, 21 measurements, eight detailed inventories, common bindings
   reject((value) => {
     value.cycles[2].freshness.client_key = value.cycles[2].freshness.host_key;
   }, "within-cycle SSH key graft");
+});
+
+test("serialized evidence independently revalidates exact remote source, parser, and QEMU bindings", () => {
+  const value = fixture();
+  const readiness = value.cycles[1].remote.bindings;
+  assert.notEqual(readiness.qemu.pre_ssh_runtime_fact_sha256, readiness.qemu.post_ssh_runtime_fact_sha256);
+  assert.equal(readiness.source_bindings.source_head, value.batch.implementation_revision);
+  reject((item) => {
+    item.cycles[1].remote.bindings.source_bindings.host_attestation_sha256 = "0".repeat(64);
+  }, "authenticated source projection drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.parser_source_sha256 = "0".repeat(64);
+  }, "authenticated parser projection drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.qemu.qemu_pid += 1;
+  }, "immutable QEMU identity drift");
+  reject((item) => {
+    item.cycles[1].remote.bindings.qemu.post_ssh_runtime_fact_sha256 =
+      item.cycles[1].remote.bindings.qemu.pre_ssh_runtime_fact_sha256;
+  }, "post-SSH observation replay");
+  reject((item) => {
+    item.cycles[2].remote.bindings.qemu.runtime_identity_sha256 =
+      item.cycles[1].remote.bindings.qemu.runtime_identity_sha256;
+  }, "cross-cycle QEMU identity replay");
 });
 
 test("summaries and every typed receipt cost are independently recomputed", () => {

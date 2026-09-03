@@ -10,10 +10,14 @@ const source = readFileSync(join(root, "deploy/aws-feasibility/completion_campai
 
 test("provider-free production controller enforces seven independent ordered cycles", () => {
   for (const optimize of ["", "1", "2"]) {
-    const result = spawnSync("python3", ["-I", probe], {
+    const result = spawnSync("python3", ["-I", "-B", probe], {
       cwd: root,
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONOPTIMIZE: optimize },
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PYTHONDONTWRITEBYTECODE: "1",
+        PYTHONOPTIMIZE: optimize,
+      },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "stage2 provider-free production campaign controller checks passed\n");

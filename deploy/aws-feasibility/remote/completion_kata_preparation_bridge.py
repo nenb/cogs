@@ -9,6 +9,7 @@ import os
 import time
 
 import completion_cycle_authority as cycle_authority
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_admission as admission
 import completion_kata_process as process
 import completion_rootfs_fs as rootfs_fs
@@ -17,6 +18,8 @@ import completion_rootfs_lease as rootfs_lease
 _ROOTFS_DEADLINE_NS = 3_600_000_000_000
 _claim_static = admission._claim_static_preparation
 _claim_recovery_static = admission._claim_recovery_static_preparation
+_claim_diagnostic_static = admission._claim_diagnostic_static_preparation
+_claim_diagnostic_recovery_static = admission._claim_diagnostic_recovery_static_preparation
 _states = {}
 
 
@@ -34,23 +37,35 @@ def _control():
         time.monotonic_ns() + _ROOTFS_DEADLINE_NS, lambda: False)
 
 
-def _record_static_custody(custody):
+def _record_static_custody(custody, recovery, diagnostic=False):
     _states[custody] = {
+        "diagnostic": diagnostic,
         "approval": None, "rootfs_authority": None, "cycle_grant": None,
         "lease": None, "mapping": None, "mapping_consumed": False,
         "executables": None, "prepared": None, "abandoned": False,
+        "recovery": recovery,
     }
     return custody
 
 
 def _claim_fixed_static_preparation():
     """Authenticate the sole forward V3 package and retain its source files."""
-    return _record_static_custody(_claim_static())
+    return _record_static_custody(_claim_static(), False)
 
 
 def _claim_fixed_recovery_static_preparation():
     """Authenticate the sole cleanup-only V3 package."""
-    return _record_static_custody(_claim_recovery_static())
+    return _record_static_custody(_claim_recovery_static(), True)
+
+
+def _claim_diagnostic_static_preparation():
+    """Authenticate the explicit current-source split-lineage profile."""
+    return _record_static_custody(_claim_diagnostic_static(), False, True)
+
+
+def _claim_diagnostic_recovery_static_preparation():
+    """Authenticate that profile for cleanup-only reconstruction."""
+    return _record_static_custody(_claim_diagnostic_recovery_static(), True, True)
 
 
 def _fixed_source_approval(custody):
@@ -65,10 +80,20 @@ def _fixed_source_approval(custody):
 
 
 def _acquire_fixed_rootfs(custody):
-    """Import the one descriptor-bound prebuilt rootfs; no build fallback exists."""
+    return _acquire_rootfs(custody, False)
+
+
+def _acquire_diagnostic_rootfs(custody):
+    return _acquire_rootfs(custody, True)
+
+
+def _acquire_rootfs(custody, diagnostic=False):
+    """Import only the descriptor-bound rootfs selected by the custody profile."""
     state = _states.get(custody)
-    _require(state is not None and state["lease"] is None and not state["abandoned"])
-    authority = admission._fixed_prebuilt_rootfs_authority(custody)
+    _require(state is not None and state["diagnostic"] is diagnostic
+             and state["lease"] is None and not state["abandoned"])
+    authority = (admission._diagnostic_prebuilt_rootfs_authority(custody)
+                 if diagnostic else admission._fixed_prebuilt_rootfs_authority(custody))
     state["rootfs_authority"] = authority
     lease = rootfs_lease._acquire_prebuilt(
         _fixed_source_approval(custody), authority, _control())
@@ -81,9 +106,10 @@ def _acquire_fixed_rootfs(custody):
 def _validate_fixed_cycle_grant(custody, grant):
     """Bind controller-issued batch authority to exact H/G control and rootfs."""
     state = _states.get(custody)
-    _require(state is not None)
+    _require(state is not None and not state["diagnostic"])
     binding = admission._cycle_grant_binding(custody)
-    _require(type(grant) is cycle_authority.campaign.CycleLaunchGrant
+    _require(type(grant) in {cycle_authority.campaign.CycleLaunchGrant,
+                            formal_cycle_authority.FormalCycleGrant}
              and state["cycle_grant"] is None
              and grant.implementation_revision == binding["implementation_revision"]
              and grant.control_revision == binding["control_revision"]
@@ -240,7 +266,10 @@ def _retire_fixed_executable_owner(custody, owner):
              and type(owner) is process.AttestedExecutableOwner)
     process._abort_attested_executable_owner(owner)
     state["executables"] = None
-    admission._retire_consumed_executable_role_custody(custody)
+    retire = (admission._retire_recovery_executable_role_custody
+              if state["recovery"] else
+              admission._retire_consumed_executable_role_custody)
+    retire(custody)
 
 
 def _abandon_fixed_rootfs(custody, lease):

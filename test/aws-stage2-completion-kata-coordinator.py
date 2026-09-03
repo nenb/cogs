@@ -4,6 +4,7 @@ import ast
 import io
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -217,20 +218,97 @@ for route, grant, ssh_event in (
         (coordinator.cycle_evidence._fixed_readiness_route(), rehearsal_grant("readiness", 2),
          "READINESS_SSH_AUTHENTICATED")):
     fake = FakeOwners()
+    def validate_and_discard(seen_route, lifecycle):
+        assert seen_route is route and lifecycle.cycle_route is route
+        fake.events.append("CYCLE_RECEIPT_VALIDATED_DISCARDED")
+        fake.abort_custody(lifecycle)
+        return None
     with patch.object(coordinator, "_owners", fake), \
+         patch.object(coordinator.cycle_evidence, "_validate_and_discard_cycle_receipt",
+                      side_effect=validate_and_discard) as validation, \
          patch.object(coordinator.cycle_evidence, "_issue_cycle_receipt",
                       side_effect=AssertionError("rehearsal minted cycle receipt")), \
          patch.object(coordinator, "_produce_owner_evidence",
                       side_effect=AssertionError("rehearsal produced owner evidence")), \
          patch.object(coordinator, "_issue_owner_receipt",
                       side_effect=AssertionError("rehearsal minted local receipt")):
-        assert coordinator._run_cycle(route, grant, False) is None
+        rehearsal_result = coordinator._run_cycle(route, grant, False)
+        check(rehearsal_result is None, "rehearsal returned a receipt")
+    validation.assert_called_once()
     assert fake.events.count("CYCLE_GRANT_VALIDATED") == 1
     assert fake.events.count("CYCLE_ROUTE_BOUND") == 1
     assert fake.events.count(ssh_event) == 1
     assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
-    assert fake.events[-1] == "CUSTODY_ABORTED"
+    assert fake.events[-2:] == ["CYCLE_RECEIPT_VALIDATED_DISCARDED", "CUSTODY_ABORTED"]
     assert "OWNER_EVIDENCE" not in fake.events and "RECEIPT_ISSUED" not in fake.events
+
+# Every failed no-mint cycle cut after operation assignment still reaches exact
+# retirement/removal/residue, while cycle receipt issuance remains unreachable.
+for route, grant in (
+        (coordinator.cycle_evidence._fixed_full_route(), rehearsal_grant("full", 1)),
+        (coordinator.cycle_evidence._fixed_readiness_route(),
+         rehearsal_grant("readiness", 2))):
+    cycle_forward = (coordinator.FORWARD_ORDER[3:] if grant.mode == "full" else
+                     (*coordinator.FORWARD_ORDER[3:-2],
+                      "READINESS_SSH_AUTHENTICATED"))
+    for event in cycle_forward:
+        for side in ("before", "after"):
+            fake = FakeOwners((side, event))
+            with patch.object(coordinator, "_owners", fake), patch.object(
+                    coordinator.cycle_evidence, "_issue_cycle_receipt") as issuer:
+                try: coordinator._run_cycle(route, grant)
+                except BaseException: pass
+                else: raise AssertionError("failed cycle minted a receipt")
+            issuer.assert_not_called()
+            assert cleanup_projection(fake.events) == coordinator.CLEANUP_ORDER
+            assert "RETIRED" in fake.events and "OPERATION_REMOVED" in fake.events
+            assert fake.events[-1] == "CUSTODY_ABORTED"
+
+# Both sealed cycle transaction facades close once even when exact semantic
+# construction fails, and preserve validation before close in ordered causes.
+class MalformedCycleLifecycle:
+    static_custody = object()
+for transaction in (coordinator.cycle_evidence._issue_cycle_receipt,
+                    coordinator.cycle_evidence._validate_and_discard_cycle_receipt):
+    close_failure = Cut("close-after-validation")
+    with patch.object(coordinator.cycle_evidence.preparation,
+                      "_abort_fixed_static_preparation",
+                      side_effect=close_failure) as close:
+        try:
+            transaction(coordinator.cycle_evidence._fixed_full_route(),
+                        MalformedCycleLifecycle())
+        except coordinator.cycle_evidence.CycleEvidenceError as error:
+            causes = getattr(error.__cause__, "exceptions",
+                             getattr(error.__cause__, "errors", ()))
+            check(len(causes) == 2 and isinstance(causes[0], AttributeError)
+                  and causes[1] is close_failure,
+                  "cycle transaction did not preserve validation-first causes")
+        else: raise AssertionError("malformed cycle transaction was accepted")
+    close.assert_called_once_with(MalformedCycleLifecycle.static_custody)
+
+# Once the cycle facade claims settlement, issuer-validation and no-mint-close
+# failures remain primary and cannot trigger a coordinator abort retry.
+for mint, failure_name in ((True, "issuer-validation"), (False, "no-mint-close")):
+    route = coordinator.cycle_evidence._fixed_full_route()
+    current_grant = rehearsal_grant("full", 1)
+    class SettlementFailureOwners(FakeOwners):
+        def abort_custody(self, lifecycle):
+            self.events.append("CUSTODY_ABORTED")
+            if not mint: raise Cut(failure_name)
+    fake = SettlementFailureOwners()
+    def failed_transaction(_route, lifecycle):
+        fake.abort_custody(lifecycle)
+        if mint: raise Cut(failure_name)
+    patch_name = ("_issue_cycle_receipt" if mint
+                  else "_validate_and_discard_cycle_receipt")
+    with patch.object(coordinator, "_owners", fake), patch.object(
+            coordinator.cycle_evidence, patch_name, side_effect=failed_transaction):
+        try: coordinator._run_cycle(route, current_grant, mint)
+        except coordinator.CoordinatorError as error:
+            assert isinstance(error.__cause__, Cut)
+            assert str(error.__cause__) == failure_name
+        else: raise AssertionError("failed cycle settlement was accepted")
+    assert fake.events.count("CUSTODY_ABORTED") == 1
 
 # Every before/after forward cut stops forward progress. Once an operation was
 # returned, all cleanup phases are attempted in order. Before that, only the
@@ -409,7 +487,15 @@ class PrestageOwners(FakeOwners):
 for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
             ("after", "PREPRODUCTION_RECOVERED")):
     fake = PrestageOwners(cut)
-    invoke(coordinator._recover_fixed_local_qualification, fake)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._recover_fixed_local_qualification()
+        except coordinator.CoordinatorNoOperationPath:
+            pass
+        except BaseException as error:
+            if cut is None:
+                raise AssertionError("exact no-operation classification changed") from error
+        else:
+            raise AssertionError("no-operation recovery returned ordinary success")
     expected = ["STATIC_CUSTODY", "RECOVERY_EXECUTABLE_POLICY",
                 "RECOVERY_OPERATION_OPENED"]
     if cut is None or cut[0] == "after": expected.append("PREPRODUCTION_RECOVERED")
@@ -421,8 +507,81 @@ for cut in (None, ("before", "PREPRODUCTION_RECOVERED"),
         "OWNER_EVIDENCE", "RECOVERY_EVIDENCE", "RECEIPT_ISSUED"))
     assert fake.events.count("CUSTODY_ABORTED") == 1
 
+# Only the fully settled no-operation route requests preparation fallback.
+for cut, expected in ((None, coordinator.CoordinatorNoOperationPath),
+                      (("after", "PREPRODUCTION_RECOVERED"), coordinator.CoordinatorError),
+                      (("after", "CUSTODY_ABORTED"), coordinator.CoordinatorError)):
+    fake = PrestageOwners(cut)
+    with patch.object(coordinator, "_owners", fake):
+        try: coordinator._recover_fixed_local_qualification()
+        except BaseException as error:
+            assert type(error) is expected
+            if cut is not None: assert type(error.__cause__) is Cut
+        else: raise AssertionError("no-operation recovery returned without classification")
+
+# The real coordinator-held execution bridge reconstructs an ACTIVE,
+# snapshot-free FS_SETTLED owner and routes it to the no-effect baseline abort;
+# this is not merely behavior of the fake coordinator facade above.
+reconstructed_owner = object(); reconstructed_tools = tuple(object() for _index in range(3))
+reconstruction_events = []
+reconstruction_journal = SimpleNamespace(
+    record_snapshot_free_cleanup=lambda: reconstruction_events.append("projection") or "CLEANUP_ONLY")
+reconstruction_lifecycle = SimpleNamespace(
+    operation=reconstruction_journal, executables=None, static_custody=object(),
+    network_owner=None, staged_runtime=None)
+execution = coordinator.execution_bridge
+with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLED"), \
+     patch.object(execution.operation, "_network_records", return_value=[]), \
+     patch.object(execution.preparation, "_reconstruct_fixed_executable_owner", return_value=object()), \
+     patch.object(execution.process, "_claim_attested_executable", side_effect=reconstructed_tools), \
+     patch.object(execution.nft_owner, "reopen_cleanup", return_value=reconstructed_owner):
+    check(execution._reconstruct_execution_cleanup(
+        coordinator._owners.execution, reconstruction_lifecycle) == "FS_SETTLED",
+        "real execution reconstruction rejected incomplete baseline")
+with patch.object(execution.operation, "_durable_phase", return_value="FS_SETTLED"), \
+     patch.object(execution.operation, "_network_records", return_value=[]), \
+     patch.object(execution.network, "_abort_incomplete_baseline",
+                  side_effect=lambda journal: reconstruction_events.append(journal) or "FREE"):
+    check(execution._remove_network(coordinator._owners.execution,
+        reconstruction_lifecycle) == "CLEANUP_ONLY", "real coordinator omitted cleanup-only projection")
+check(reconstruction_events == [reconstruction_journal, "projection"],
+      "real coordinator repeated or changed baseline abort owner")
+
+# NETWORK_ABSENT after a network-only setup abort settles share and containerd
+# absence directly. No runtime preparation or reconstruction can be reached.
+setup_phase = ["NETWORK_ABSENT"]
+def setup_history():
+    return {"phase": setup_phase[0], "runtime_prepared": (), "runtime_stage_intents": (),
+            "runtime_staged": (), "daemon_retained": (), "daemon_outcomes": (),
+            "launches": (), "runtime_ownership": (), "runtime_role_identities": (),
+            "runtime_share_identities": (), "runtime_resumes": (), "intents": ()}
+def settle_setup(_journal, target):
+    setup_phase[0] = "SHARE_ABSENT" if target == "share" else "CONTAINERD_ABSENT"
+    return {target: "absent"}
+reconstruction_journal.runtime_recovery_history = setup_history
+with patch.object(execution.operation, "_durable_phase", side_effect=lambda _journal: setup_phase[0]), \
+     patch.object(execution.runtime, "_settle_setup_abort_absence", side_effect=settle_setup), \
+     patch.object(execution.runtime, "_reconstruct_fixed_runtime",
+                  side_effect=AssertionError("runtime reconstruction reached")), \
+     patch.object(execution.preparation, "_claim_fixed_prepared_runtime",
+                  side_effect=AssertionError("runtime preparation reached")), \
+     patch.object(execution.operation, "_open_base_chain", return_value=SimpleNamespace(
+                  components=(SimpleNamespace(node=object()),))), \
+     patch.object(execution.fs, "_enumerate_stable",
+                  return_value=SimpleNamespace(raw_names=())):
+    check(execution._remove_share(coordinator._owners.execution,
+        reconstruction_lifecycle) == {"share": "absent"}, "setup-abort share not settled")
+    setup_phase[0] = "FIREWALL_ABSENT"
+    current = execution._stop_containerd(coordinator._owners.execution,
+                                         reconstruction_lifecycle)
+    check(current == {"containerd": "absent"}, "setup-abort containerd not settled")
+
 # Source shape keeps both production entries zero argument and recovery cannot
 # name any work-opening method. Public openers and arbitrary receipts stay shut.
+recovery_shell = (REMOTE / "recover-stage2-completion-remote.sh").read_text()
+assert "except BaseException" not in recovery_shell
+assert "except c.CoordinatorNoOperationPath" in recovery_shell
+assert recovery_shell.count("recover_failed_preparation") == 1
 source = (REMOTE / "completion_kata_coordinator.py").read_text()
 tree = ast.parse(source)
 functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}

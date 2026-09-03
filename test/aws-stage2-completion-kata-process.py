@@ -85,6 +85,19 @@ assert before_fork["outcome"] == "not-started" and not before_fork["uncertain"] 
        and before_fork["pipes_eof"] and before_fork["leader_reaped"]
 assert crash_unknown["outcome"] == "uncertain" and crash_unknown["uncertain"] \
        and not crash_unknown["pipes_eof"]
+parent_errors = []
+with patch.object(process.os, "close", side_effect=(OSError(errno.EINTR, "key"),
+                                                     OSError(errno.EIO, "hosts"))):
+    assert process._close_parent_ssh_inputs((1000, 1001), parent_errors) == ()
+with patch.object(process.kata_operation, "_validate_body"):
+    parent_close_outcome = process._outcome_body(
+        portable_intent, "exited", 0, None, b"", b"",
+        {"stdout": False, "stderr": False}, 0, True,
+        (True, True, True, True), {"term": False, "kill": False}, parent_errors, 1)
+assert parent_errors == [f"parent-ssh-fd-1000-close:{errno.EINTR}",
+                         f"parent-ssh-fd-1001-close:{errno.EIO}"]
+assert parent_close_outcome["outcome"] == "uncertain" \
+       and parent_close_outcome["uncertain"] and parent_close_outcome["errors"] == parent_errors
 process_source = (REMOTE / "completion_kata_process.py").read_text()
 cycle_route = object()
 with patch.object(process.kata_operation, "_is_production_recovery_operation", return_value=False), \
@@ -103,6 +116,8 @@ with patch.object(process.kata_operation, "_is_production_recovery_operation") a
     recovery.assert_not_called(); claim_route.assert_not_called()
 assert process_source.index("_close_and_prove_absent(retained_pidfd, \"leader-pidfd\", errors)") < \
        process_source.index("durable = kata_operation._record_command_outcome(journal, body)")
+assert process_source.index("parent_ssh_fds = _close_parent_ssh_inputs(parent_ssh_fds, errors)") < \
+       process_source.index("body = _outcome_body(", process_source.index("def _transact_fixed"))
 rejected(lambda: process._start_fixed_daemon(object(), object()))
 socket_generations = __import__("inspect").getclosurevars(process._verify_fixed_daemon).nonlocals["socket_generations"]
 if not hasattr(process.os, "O_PATH"): process.os.O_PATH = 0

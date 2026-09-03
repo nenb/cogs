@@ -20,6 +20,9 @@ REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "509dacc4a83b45a2da1ca7892210de8434a2b
 REVIEWED_CONTROL_SHA256 = "d94af3687d21c432946f3bb1bc40b76fc8dad786fea2cc51366d1651a8a33926"
 REVIEWED_WORKFLOW_SHA256 = "70234e13f666384bd10a9deb569da14a40f504d0a9cbd18c1f5ffd9c2e24adb9"
 REVIEWED_RESULT_SCHEMA_SHA256 = "e77754237db66f1742b491c7c30708f5f8e65301cf61388eb2a55a062b3c1045"
+# Filled only by the later independent G review, together with the updated
+# workflow/control digests above.  No dispatch value can supply this authority.
+REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -93,6 +96,7 @@ def _reviewed_constants():
         (REVIEWED_CONTROL_SHA256, SHA256),
         (REVIEWED_WORKFLOW_SHA256, SHA256),
         (REVIEWED_RESULT_SCHEMA_SHA256, SHA256),
+        (REVIEWED_ROOTFS_DESCRIPTOR_SHA256, SHA256),
     )
     _require(all(type(value) is str and pattern.fullmatch(value) is not None
                  for value, pattern in values), "review constants remain blocked")
@@ -138,6 +142,7 @@ def guard(environ=os.environ, event=None, first_created=None):
         "implementation_head": implementation,
         "implementation_manifest_sha256": REVIEWED_IMPLEMENTATION_MANIFEST_SHA256,
         "result_schema_sha256": REVIEWED_RESULT_SCHEMA_SHA256,
+        "rootfs_descriptor_sha256": REVIEWED_ROOTFS_DESCRIPTOR_SHA256,
         "workflow_sha256": REVIEWED_WORKFLOW_SHA256,
     }
 

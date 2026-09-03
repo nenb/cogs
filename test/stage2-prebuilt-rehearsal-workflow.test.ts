@@ -40,16 +40,17 @@ test("diagnostic publisher separately signs, verifies, and reads back immutable 
   assert.doesNotMatch(publisher, /latest|continue-on-error:\s*true/u);
 });
 
-test("one first-created rehearsal uses each authentic route once and mints nothing", () => {
+test("one first-created dispatch uses each authentic route once and mints nothing", () => {
+  assert.equal(occurrences(rehearsal, "workflow_dispatch:"), 1);
+  assert.doesNotMatch(rehearsal, /^\s+(?:push|pull_request|schedule):/mu);
   assert.match(rehearsal, /stage2-prebuilt-kvm-rehearsal\.yml\/runs/u);
   assert.match(rehearsal, /map\(\.id\) == \[\$current\]/u);
   assert.match(rehearsal, /\.run_attempt == 1/u);
   assert.match(rehearsal, /stage2-prebuilt-rootfs-diagnostic-publisher\.yml/u);
   assert.equal(occurrences(rehearsal, "run-stage2-completion-full-rehearsal.sh"), 1);
   assert.equal(occurrences(rehearsal, "run-stage2-completion-readiness-rehearsal.sh"), 1);
-  assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py full"), 1);
-  assert.equal(occurrences(rehearsal, "stage2-prebuilt-rehearsal-grant.py readiness"), 1);
-  assert.equal(occurrences(rehearsal, "recover-stage2-completion-remote.sh"), 2);
+  assert.equal(occurrences(rehearsal, 'stage2-prebuilt-rehearsal-grant.py "$ROUTE"'), 1);
+  assert.equal(occurrences(rehearsal, "recover-stage2-completion-remote.sh"), 1);
   assert.match(rehearsal, /steps\.preparation\.outcome != 'skipped'/u);
   assert.doesNotMatch(rehearsal, /steps\.preparation\.outcome == 'success'/u);
   assert.match(rehearsal, /stage2-stage-prebuilt-control\.py provisional/u);
@@ -60,6 +61,51 @@ test("one first-created rehearsal uses each authentic route once and mints nothi
   );
   assert.match(coordinator, /def _run_fixed_full_rehearsal\(\):[\s\S]*?claim_full\(\), False\)/u);
   assert.match(coordinator, /def _run_fixed_readiness_rehearsal\(\):[\s\S]*?claim_readiness\(\), False\)/u);
+});
+
+test("full and readiness receive independent fresh jobs with no shared route roots", () => {
+  const routeStart = rehearsal.indexOf("  route_rehearsal:");
+  const aggregateStart = rehearsal.indexOf("  aggregate:");
+  assert.ok(routeStart > 0 && aggregateStart > routeStart);
+  const routes = rehearsal.slice(routeStart, aggregateStart);
+  const aggregate = rehearsal.slice(aggregateStart);
+
+  assert.match(routes, /name: Authentic no-mint \$\{\{ matrix\.route \}\} route on a fresh runner/u);
+  assert.match(
+    routes,
+    /strategy:\n {6}fail-fast: false\n {6}max-parallel: 2\n {6}matrix:\n {8}route: \[full, readiness\]/u,
+  );
+  assert.match(routes, /ROUTE: \$\{\{ matrix\.route \}\}/u);
+  assert.doesNotMatch(routes, /^ {4}needs:|^ {4}outputs:/mu);
+  assert.doesNotMatch(routes, /steps\.full_entry|steps\.full_recovery|readiness_grant|cancelled\(\)/u);
+  assert.match(routes, /timeout-minutes: \$\{\{ matrix\.route == 'full' && 132 \|\| 35 \}\}/u);
+  for (const independentOperation of [
+    "Admit the sole first-created attempt-one diagnostic rehearsal before source effects",
+    "Authenticate completed diagnostic publisher and exact immutable control artifact",
+    "Check out exact directional G without credentials",
+    "Require G to be the direct child of diagnostic H",
+    "Acquire exact H separately without credentials",
+    "Download exact diagnostic publication custody",
+    "Materialize H and acquire the immutable descriptor-selected prebuilt rootfs",
+    "Generate and stage provisional directional G control",
+    "Provision fixed NFT writer owner after complete preparation",
+    "Issue the sole mode-bound non-cloud rehearsal grant on this fresh host",
+    "Execute exactly one authentic mode-bound lifecycle without minting",
+    "Run cleanup-only recovery after this route or a pre-entry refusal",
+    "Settle this fresh host's fixed roots only after recovery",
+    "Independently prove final zero lifecycle residue",
+    "Restore hosted scaffolding after residue proof",
+    "Enforce this job's singular no-mint route and cleanup outcomes",
+  ]) {
+    assert.equal(occurrences(routes, independentOperation), 1, independentOperation);
+  }
+  assert.doesNotMatch(routes, /outputs:|upload-artifact/u);
+
+  assert.match(aggregate, /needs: route_rehearsal/u);
+  assert.match(aggregate, /if: \$\{\{ always\(\) \}\}\n {4}permissions: \{\}/u);
+  assert.match(aggregate, /ROUTE_RESULT: \$\{\{ needs\.route_rehearsal\.result \}\}/u);
+  assert.match(aggregate, /test "\$ROUTE_RESULT" = success/u);
+  assert.doesNotMatch(aggregate, /uses:|checkout|artifact|\/var\/lib\/cogs|\/opt\/kata/u);
 });
 
 test("rehearsal descriptor custody is directional and publication adjuncts follow acquisition", () => {
@@ -98,8 +144,10 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 fixed={'implementation_revision':'1'*40,'control_revision':'2'*40,'static_control_sha256':'3'*64,'rootfs_descriptor_sha256':'4'*64}
 full=m.grant_value('full','19',fixed); ready=m.grant_value('readiness','19',fixed)
 assert full['ordinal']==1 and ready['ordinal']==2 and full['mode']=='full' and ready['mode']=='readiness'
+for name in fixed:
+ assert full[name]==ready[name]==fixed[name]
 assert full['batch_commitment']==ready['batch_commitment'] and full['ami_commitment']==ready['ami_commitment']
-assert full['plan_sha256']!=ready['plan_sha256']
+assert full['grant_commitment']!=ready['grant_commitment'] and full['plan_sha256']!=ready['plan_sha256']
 for value in (full,ready):
  fields={key:item for key,item in value.items() if key not in {'version','grant_commitment'}}
  expected=hashlib.sha256(b'cogs.stage2-cycle-launch-grant/v1\0'+m.canonical(fields)[:-1]).hexdigest()

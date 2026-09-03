@@ -8,6 +8,7 @@ replace the module-held facade with typed recorders.
 from dataclasses import dataclass
 
 import completion_cycle_authority as cycle_authority
+import completion_formal_cycle_authority as formal_cycle_authority
 import completion_kata_admission as admission
 import completion_kata_execution_bridge as execution_bridge
 import completion_kata_network as network
@@ -109,6 +110,10 @@ class CoordinatorBlocked(CoordinatorError):
     """An immutable prerequisite or package-private integration refusal."""
 
 
+class CoordinatorNoOperationPath(CoordinatorBlocked):
+    """Exact pre-operation classification after coordinator cleanup and custody close."""
+
+
 class CoordinatorTerminal(CoordinatorError):
     """Bounded terminal class retaining private ordered causes without rendering them."""
     def __init__(self, stage, errors):
@@ -126,6 +131,7 @@ def _safe_failure_diagnostic(error):
 @dataclass
 class _Lifecycle:
     recovery: bool = False
+    diagnostic: bool = False
     cycle_route: object = None
     cycle_grant: object = None
     static_custody: object = None
@@ -153,7 +159,8 @@ class _Lifecycle:
     residue: object = None
     primary_failure: BaseException = None
     failure_stage: str = "entry"
-    custody_settled: bool = False
+    custody_settlement_claimed: bool = False
+    no_operation_path: bool = False
 
 
 class _AdmissionBoundary:
@@ -175,6 +182,17 @@ class _AdmissionBoundary:
         except (admission.AdmissionError,
                 preparation_bridge.PreparationBridgeError) as error:
             raise CoordinatorBlocked(BLOCKED_REASON) from error
+        return custody, approval
+
+    def claim_diagnostic_static(self, recovery=False):
+        try:
+            custody = (preparation_bridge._claim_diagnostic_recovery_static_preparation()
+                       if recovery else
+                       preparation_bridge._claim_diagnostic_static_preparation())
+            approval = preparation_bridge._fixed_source_approval(custody)
+        except (admission.AdmissionError,
+                preparation_bridge.PreparationBridgeError) as error:
+            raise CoordinatorBlocked("sealed diagnostic preparation required") from error
         return custody, approval
 
     def claim_live(self, lifecycle):
@@ -262,6 +280,8 @@ class _PackagePrivateOwners:
         self.evidence = _PrivateEvidenceBoundary()
 
     def claim_static_custody(self, lifecycle):
+        if lifecycle.diagnostic:
+            return self.admission.claim_diagnostic_static(lifecycle.recovery)
         return (self.admission.claim_recovery_static() if lifecycle.recovery
                 else self.admission.claim_static())
 
@@ -472,11 +492,19 @@ def _cleanup(lifecycle):
     return []
 
 
+def _claim_custody_settlement(lifecycle):
+    if lifecycle.static_custody is None or lifecycle.custody_settlement_claimed:
+        raise CoordinatorBlocked("static custody settlement is not fresh")
+    # The selected facade owns the one and only close attempt from this point,
+    # including validation and close failures whose effect may be uncertain.
+    lifecycle.custody_settlement_claimed = True
+
+
 def _abort_custody(lifecycle, errors):
-    if lifecycle.static_custody is not None and not lifecycle.custody_settled:
+    if lifecycle.static_custody is not None and not lifecycle.custody_settlement_claimed:
+        _claim_custody_settlement(lifecycle)
         try:
             _owners.abort_custody(lifecycle)
-            lifecycle.custody_settled = True
         except BaseException as error:
             errors.append(error)
 
@@ -491,17 +519,16 @@ def _finish(lifecycle, mint=True):
     if lifecycle.cycle_route is not None:
         if lifecycle.primary_failure is not None:
             raise CoordinatorBlocked("failed cycle cannot mint a receipt")
+        _claim_custody_settlement(lifecycle)
         if not mint:
-            _owners.abort_custody(lifecycle)
-            lifecycle.custody_settled = True
-            return None
-        lifecycle.custody_settled = True
+            return cycle_evidence._validate_and_discard_cycle_receipt(
+                lifecycle.cycle_route, lifecycle)
         return cycle_evidence._issue_cycle_receipt(lifecycle.cycle_route, lifecycle)
     evidence = _owners.owner_evidence(lifecycle)
     # From this call onward the receipt transaction exclusively owns custody
     # close, including every no-mint failure. The coordinator must never retry
     # an uncertain or already-effective descriptor close.
-    lifecycle.custody_settled = True
+    _claim_custody_settlement(lifecycle)
     return _issue_owner_receipt(lifecycle.static_custody, evidence)
 
 
@@ -509,11 +536,14 @@ def _run_cycle(route=None, grant=None, mint=True):
     """Compose one lifecycle; production routes require a consumed batch grant."""
     if type(mint) is not bool:
         raise CoordinatorBlocked("exact receipt policy required")
+    diagnostic = route is not None and cycle_evidence._is_diagnostic_route(route)
+    if diagnostic and (mint or grant is not None):
+        raise CoordinatorBlocked("diagnostic route requires sealed no-mint policy")
     if route is not None:
         cycle_evidence._describe_route(route)
         if not cycle_evidence._cycle_launch_authorized(route, grant):
             raise CoordinatorBlocked("exact cycle batch/ordinal authority required")
-    lifecycle = _Lifecycle(cycle_route=route, cycle_grant=grant)
+    lifecycle = _Lifecycle(diagnostic=diagnostic, cycle_route=route, cycle_grant=grant)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -588,6 +618,18 @@ def _run_fixed_readiness_cycle():
     return _run_cycle(cycle_evidence._fixed_readiness_route(), cycle_authority.claim_readiness())
 
 
+def _run_formal_local_full_cycle():
+    """One non-cloud formal full cycle consuming its fixed ordinal-one grant."""
+    return _run_cycle(cycle_evidence._formal_full_route(),
+                      formal_cycle_authority.claim_full())
+
+
+def _run_formal_local_readiness_cycle():
+    """One non-cloud formal readiness cycle consuming its fixed ordinal grant."""
+    return _run_cycle(cycle_evidence._formal_readiness_route(),
+                      formal_cycle_authority.claim_readiness())
+
+
 def _run_fixed_full_rehearsal():
     """Real full production route with receipt issuance intentionally unreachable."""
     return _run_cycle(cycle_evidence._fixed_full_route(),
@@ -600,9 +642,19 @@ def _run_fixed_readiness_rehearsal():
                       cycle_authority.claim_readiness(), False)
 
 
-def _recover_fixed_local_qualification():
+def _run_current_source_full_diagnostic():
+    """Current source plus fixed prior rootfs; receipt issuance is structurally refused."""
+    return _run_cycle(cycle_evidence._diagnostic_full_route(), None, False)
+
+
+def _run_current_source_readiness_diagnostic():
+    """Current source readiness plus fixed prior rootfs; never mint evidence."""
+    return _run_cycle(cycle_evidence._diagnostic_readiness_route(), None, False)
+
+
+def _recover(recovery_diagnostic=False):
     """Open durable ownership and clean only; work construction is unreachable."""
-    lifecycle = _Lifecycle(recovery=True)
+    lifecycle = _Lifecycle(recovery=True, diagnostic=recovery_diagnostic)
     try:
         lifecycle.static_custody, lifecycle.static_gate = _owners.claim_static_custody(lifecycle)
         lifecycle.source_approval = lifecycle.static_gate
@@ -615,6 +667,7 @@ def _recover_fixed_local_qualification():
             _owners.recover_pending(lifecycle)
             _owners.reconstruct_cleanup(lifecycle)
         else:
+            lifecycle.no_operation_path = True
             _owners.recover_preproduction(lifecycle)
     except BaseException as error:
         lifecycle.primary_failure = error
@@ -633,7 +686,17 @@ def _recover_fixed_local_qualification():
     _abort_custody(lifecycle, errors)
     if errors:
         _raise_failures("fixed recovery custody close was not exact", errors)
+    if lifecycle.no_operation_path:
+        raise CoordinatorNoOperationPath("no operation path before ownership")
     return None
+
+
+def _recover_fixed_local_qualification():
+    return _recover(False)
+
+
+def _recover_current_source_diagnostic():
+    return _recover(True)
 
 
 def _consume_local_receipt(receipt):

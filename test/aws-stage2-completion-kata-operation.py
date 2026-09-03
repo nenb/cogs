@@ -728,21 +728,33 @@ def runtime_v2_intent(raw, command_id):
     records = operation._parse(raw); genesis = records[0].body
     phase = operation._legal(records); serial = sum(row.record_type == "COMMAND_INTENT_V2" for row in records)
     command = command_id.value; policy = operation.command_policy
-    argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS, "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
-    deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
-    duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+    if command == "CONTAINERD_START":
+        argv = [policy.STAGED_CONTAINERD, "--address", policy.CONTAINERD_ADDRESS,
+                "--root", policy.CONTAINERD_ROOT, "--state", policy.CONTAINERD_STATE,
+                "--config", operation.BASE + "/kata-runtime-v1/containerd.toml"]
+        deadline_class, duration, grammar = "runtime-start", 60_000_000_000, "empty"
+        role, executable_path, executable_digest, executable_inode = (
+            "containerd", policy.STAGED_CONTAINERD, policy.CONTAINERD_EXTRACTION[0][2], 103)
+    else:
+        argv = [policy.STAGED_CTR, "--address", policy.CONTAINERD_ADDRESS,
+                "--namespace", policy.NAMESPACE, *policy.CTR_TAILS[command]]
+        deadline_class = "observer" if command in {"CTR_CONTAINER_INFO", "CTR_CONTAINER_LIST", "CTR_TASK_LIST"} else "task-term" if command == "CTR_TASK_TERM" else "task-kill" if command == "CTR_TASK_KILL" else "remove"
+        duration = {"observer": 15, "task-term": 15, "task-kill": 10, "remove": 20}[deadline_class] * 1_000_000_000
+        grammar = "text"
+        role, executable_path, executable_digest, executable_inode = (
+            "ctr", policy.STAGED_CTR, policy.CONTAINERD_EXTRACTION[1][2], 102)
     environment = [list(row) for row in operation.FIXED_ENV]
     body = {"operation_token": genesis["operation_token"], "command_serial": serial, "command_id": command,
         "binding_sha256": operation.ZERO, "journal_key": genesis["journal_key"], "host_boot_id": genesis["host_boot_id"],
-        "source_revision": genesis["source_revision"], "lifecycle_phase": phase, "executable_role": "ctr",
-        "executable_path": policy.STAGED_CTR, "executable_sha256": policy.CONTAINERD_EXTRACTION[1][2],
-        "executable_generation": generation(102, "file", 0o500), "tool_closure_sha256": "d" * 64,
+        "source_revision": genesis["source_revision"], "lifecycle_phase": phase, "executable_role": role,
+        "executable_path": executable_path, "executable_sha256": executable_digest,
+        "executable_generation": generation(executable_inode, "file", 0o500), "tool_closure_sha256": "d" * 64,
         "argv": argv, "argv_sha256": hashlib.sha256(operation._canonical(argv)).hexdigest(), "stdin_hex": "",
         "stdin_sha256": hashlib.sha256(b"").hexdigest(), "stdin_length": 0, "environment": environment,
         "environment_sha256": hashlib.sha256(operation._canonical(environment)).hexdigest(), "inherited_fds": [],
         "policy_version": policy.RUNTIME_POLICY_VERSION, "deadline_class": deadline_class, "duration_ns": duration,
         "cleanup_reserve_ns": min(policy.CLEANUP_RESERVE_NS, duration // 2),
-        "deadline_boottime_ns": duration * 2, "output_grammar": "text",
+        "deadline_boottime_ns": duration * 2, "output_grammar": grammar,
         "stdout_limit": 65536, "stderr_limit": 65536}
     body["binding_sha256"] = hashlib.sha256(operation._canonical({name: value for name, value in body.items() if name != "binding_sha256"})).hexdigest()
     return body
@@ -790,20 +802,67 @@ def staged_runtime_prefix():
     return append(raw, "RUNTIME_STAGED_V3", stage)
 
 
+def runtime_preexec(intent):
+    serial = intent["command_serial"]
+    body = {name: intent[name] for name in (
+        "operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
+    body.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial, "sid": 100 + serial,
+        "proc_start_time": 1, "pidfd_supported": True,
+        "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
+        "cgroup_generation": generation(200 + serial), "executable_sha256": intent["executable_sha256"],
+        "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
+        "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
+    return body
+
+
 def append_runtime_command(raw, command_id, uncertain=False, status=0):
     intent = runtime_v2_intent(raw, command_id); raw = append(raw, "COMMAND_INTENT_V2", intent)
     if not uncertain:
-        serial = intent["command_serial"]
-        preexec = {name: intent[name] for name in ("operation_token", "command_serial", "command_id", "binding_sha256", "host_boot_id")}
-        preexec.update({"pid": 100 + serial, "ppid": 1, "pgid": 100 + serial, "sid": 100 + serial,
-            "proc_start_time": 1, "pidfd_supported": True,
-            "cgroup_path": f"{process.CGROUP_BASE}/{intent['operation_token']}-{serial}",
-            "cgroup_generation": generation(200 + serial), "executable_sha256": intent["executable_sha256"],
-            "tool_closure_sha256": intent["tool_closure_sha256"], "executable_generation": intent["executable_generation"],
-            "exec_status_pipe": generation(300 + serial, "pipe", 0o600), "release_count": 0})
-        raw = append(raw, "COMMAND_PREEXEC_V2", preexec)
+        raw = append(raw, "COMMAND_PREEXEC_V2", runtime_preexec(intent))
     return append(raw, "COMMAND_OUTCOME_V2", runtime_outcome(intent, uncertain, status)), intent
 
+
+# Recovery-no-effect is an explicit closed classification, not a synonym for
+# any observer or command that happened to be pending before PREEXEC.
+classified = operation.RECOVERY_NO_EFFECT_CLASSIFICATIONS
+assert tuple(classified) == operation.network_journal.SUCCESS_PHASE_TRACES["FS_SETTLED"]
+assert all(operation._recovery_no_effect_classification({"command_id": command_id}) ==
+           "approved-read-only-baseline-probe" for command_id in classified)
+for denied_id in ({*operation.network_journal.EFFECTS,
+                   *operation.command_policy.KEY_COMMANDS,
+                   *operation.command_policy.RUNTIME_EXTENSION_COMMANDS,
+                   *operation.command_policy.SSH_COMMANDS,
+                   "IP_HOST_LINKS"} - set(classified)):
+    assert operation._recovery_no_effect_classification({"command_id": denied_id}) is None
+assert operation._recovery_no_effect_classification({}) is None
+assert not operation._snapshot_free_baseline_prefix((
+    SimpleNamespace(record_type="COMMAND_INTENT", body={"command_id": "CTR_RUN"}),))
+assert not operation._snapshot_free_baseline_prefix((
+    SimpleNamespace(record_type="CTR_LAUNCH_ISSUED_V1", body={}),))
+snapshot_free_runtime_records = tuple(SimpleNamespace(record_type=kind, body={}) for kind in (
+    "LIFECYCLE_DEADLINE_V1", "PRODUCTION_ADMISSION_V2"))
+assert operation._snapshot_free_runtime_absence(snapshot_free_runtime_records, "FS_SETTLED")
+operation._validate_runtime_layout(set(), snapshot_free_runtime_records, "FS_SETTLED")
+operation._validate_runtime_layout(
+    {operation.RUNTIME_NAME.raw}, snapshot_free_runtime_records, "FS_SETTLED")
+pending_baseline_records = snapshot_free_runtime_records + (
+    SimpleNamespace(record_type="COMMAND_INTENT_V2", body={
+        "command_id": next(iter(classified)), "command_serial": 0}),)
+assert not operation._snapshot_free_baseline_prefix(pending_baseline_records)
+assert operation._snapshot_free_baseline_prefix(pending_baseline_records, pending=True)
+assert operation._snapshot_free_runtime_absence(pending_baseline_records, "FS_SETTLED")
+operation._validate_runtime_layout(set(), pending_baseline_records, "FS_SETTLED")
+prepared_runtime_records = snapshot_free_runtime_records + (
+    SimpleNamespace(record_type="RUNTIME_PREPARED_V1", body={}),)
+assert not operation._snapshot_free_runtime_absence(prepared_runtime_records, "FS_SETTLED")
+for denied_runtime_records in (
+    snapshot_free_runtime_records[:1],
+    snapshot_free_runtime_records + (SimpleNamespace(record_type="COMMAND_INTENT_V2",
+        body={"command_id": "IP_HOST_LINKS", "command_serial": 0}),),
+):
+    assert not operation._snapshot_free_runtime_absence(denied_runtime_records, "FS_SETTLED")
+    rejected(lambda denied_runtime_records=denied_runtime_records:
+             operation._validate_runtime_layout(set(), denied_runtime_records, "FS_SETTLED"))
 
 # Prepared custody is a non-phase event with exact bytes and strict one-shot ordering.
 prepared_prefix, _unused, _leased = leased_prefix()
@@ -821,6 +880,82 @@ legacy_intent = append(prepared_prefix, "RUNTIME_STAGE_INTENT_V4", intent_body)
 rejected(lambda: append(legacy_intent, "RUNTIME_PREPARED_V1", prepared))
 operation._validate_runtime_layout(set(), operation._parse(prepared_raw), "NETWORK_READY")
 rejected(lambda: operation._validate_runtime_layout(set(), operation._parse(prepared_prefix), "NETWORK_READY"))
+
+# A fully reaped daemon rollback before KVM is cleanup-only rather than sticky
+# uncertainty. Recovery appends one resume without another process operation.
+daemon_raw = staged_runtime_prefix()
+daemon_intent = runtime_v2_intent(daemon_raw, process.CommandId.CONTAINERD_START)
+daemon_raw = append(daemon_raw, "COMMAND_INTENT_V2", daemon_intent)
+daemon_preexec = runtime_preexec(daemon_intent)
+daemon_raw = append(daemon_raw, "COMMAND_PREEXEC_V2", daemon_preexec)
+sockets = {name: {"generation": generation(600 + index, "socket", 0o700, 1),
+                  "fd_inode": 700 + index}
+           for index, name in enumerate(("s", "s.ttrpc"))}
+daemon_raw = append(daemon_raw, "DAEMON_RETAINED_V2", {**daemon_preexec,
+                    "socket_generations": sockets})
+daemon_outcome = {name: daemon_intent[name] for name in (
+    "operation_token", "command_serial", "command_id", "binding_sha256")}
+daemon_outcome.update({"pid": daemon_preexec["pid"], "proc_start_time": 1,
+    "status": 0, "leader_reaped": True, "descendants_reaped": True,
+    "cgroup_empty": True, "cgroup_removed": True, "uncertain": False, "errors": []})
+daemon_raw = append(daemon_raw, "DAEMON_OUTCOME_V2", daemon_outcome)
+assert operation._legal(operation._parse(daemon_raw)) == "UNCERTAIN"
+daemon_resume = {"operation_token": "a" * 64, "target_phase": "RUNTIME_CLEANUP_ONLY",
+    "uncertain_serial": daemon_intent["command_serial"],
+    "binding_sha256": daemon_intent["binding_sha256"]}
+daemon_cleanup = append(daemon_raw, "RUNTIME_RESUME_V4", daemon_resume)
+assert operation._legal(operation._parse(daemon_cleanup)) == "RUNTIME_CLEANUP_ONLY"
+class ClosedDaemonJournal:
+    def __init__(self, terminal=daemon_outcome):
+        self.terminal = terminal
+    def recovery_command(self):
+        return daemon_intent, daemon_preexec, self.terminal
+closed_journal = ClosedDaemonJournal()
+with patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("certain daemon cleanup retried")), \
+     patch.object(process, "_recover_daemon_reap",
+                  side_effect=AssertionError("certain daemon reap retried")):
+    recovered = process._recover_pending_fixed(closed_journal)
+assert recovered.body == daemon_outcome and recovered.command_id == "CONTAINERD_START"
+closed_journal.resumes = 0
+closed_journal.resume_runtime_cleanup = lambda: setattr(
+    closed_journal, "resumes", closed_journal.resumes + 1)
+with patch.object(operation, "_claim_production_cleanup_operation",
+                  return_value=closed_journal), \
+     patch.object(operation, "_durable_phase", return_value="UNCERTAIN"), \
+     patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("certain daemon cleanup retried")):
+    recovered = process._recover_pending_production(closed_journal)
+assert recovered.body == daemon_outcome and closed_journal.resumes == 1
+# Unknown exit status remains sticky uncertainty, while separately observed
+# process/cgroup closure authorizes cleanup without another process operation.
+daemon_prefix = daemon_raw[:operation._parse(daemon_raw)[-1].previous_offset]
+uncertain_closed = {**daemon_outcome, "status": None, "uncertain": True,
+                    "errors": ["daemon-absent-on-reopen"]}
+uncertain_closed_raw = append(daemon_prefix, "DAEMON_OUTCOME_V2", uncertain_closed)
+assert operation._legal(operation._parse(uncertain_closed_raw)) == "UNCERTAIN"
+assert not operation._daemon_closed(uncertain_closed)
+assert operation._daemon_cleanup_closed(uncertain_closed)
+assert operation._legal(operation._parse(append(
+    uncertain_closed_raw, "RUNTIME_RESUME_V4", daemon_resume))) == "RUNTIME_CLEANUP_ONLY"
+uncertain_closed_journal = ClosedDaemonJournal(uncertain_closed)
+with patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("closed uncertain daemon cleanup retried")):
+    assert process._recover_pending_fixed(uncertain_closed_journal).body == uncertain_closed
+uncertain_closed_journal.resumes = 0
+uncertain_closed_journal.resume_runtime_cleanup = lambda: setattr(
+    uncertain_closed_journal, "resumes", uncertain_closed_journal.resumes + 1)
+with patch.object(operation, "_claim_production_cleanup_operation",
+                  return_value=uncertain_closed_journal), \
+     patch.object(operation, "_durable_phase", return_value="UNCERTAIN"), \
+     patch.object(process, "_recover_cgroup",
+                  side_effect=AssertionError("closed uncertain daemon cleanup retried")):
+    recovered = process._recover_pending_production(uncertain_closed_journal)
+assert recovered.body == uncertain_closed and uncertain_closed_journal.resumes == 1
+wrong_daemon = {**daemon_outcome, "leader_reaped": False, "uncertain": True,
+                "errors": ["daemon-not-reaped"]}
+wrong_raw = append(daemon_prefix, "DAEMON_OUTCOME_V2", wrong_daemon)
+rejected(lambda: append(wrong_raw, "RUNTIME_RESUME_V4", daemon_resume))
 
 # Runtime uncertainty is historical and sticky: observers are never resumable
 # or retryable, while a consumed TERM uncertainty can finish teardown but never retire.
@@ -918,6 +1053,28 @@ rejected(lambda: append(sticky, "RETIRE_INTENT", retire_body))
 rejected(lambda: append(sticky, "RETIRED", retire_body))
 rejected(lambda: operation._make_fake_lifecycle_for_tests(sticky))
 
+# Cycle success is a receipt condition, not generic cleanup authority. The
+# coordinator cut matrix proves failed routes retire with receipt denial, while
+# this state-machine gate forbids RUNTIME_READY without durable launch lineage.
+operation._require_cycle_launch(None, None)
+operation._require_cycle_launch(object(), object())
+rejected(lambda: operation._require_cycle_launch(object(), None))
+
+successful_run = operation.DurableCommandOutcome(8, "CTR_RUN", "7" * 64, {
+    "outcome": "exited", "status": 0, "uncertain": False})
+class CycleLaunchJournal:
+    def __init__(self, launches): self.launches, self.revocations = launches, 0
+    def runtime_recovery_history(self): return {"launches": self.launches}
+    def revoke_readiness(self): self.revocations += 1
+launch = {"route": "full", "command_serial": 8, "binding_sha256": "7" * 64}
+with patch.object(operation, "_cycle_route", return_value={"route": "full"}):
+    exact_launch = CycleLaunchJournal((launch,))
+    assert runtime._successful_cycle_launch(exact_launch, successful_run) == launch
+    missing_launch = CycleLaunchJournal(())
+    rejected(lambda: runtime._successful_cycle_launch(missing_launch, successful_run))
+    assert missing_launch.revocations == 1
+    assert missing_launch.runtime_recovery_history()["launches"] == ()
+
 # The durable deadline uses strict admission/claim semantics at its exact edge.
 deadline_raw, _unused, _unused = leased_prefix(); edge = 100 + operation.JOURNAL_TOTAL_NS
 edge_body = {"operation_token": token, "admission_boottime_ns": 100,
@@ -942,7 +1099,8 @@ def native_transaction_crashes(completion):
                  ("PRODUCTION_ADMISSION_V2", {"operation_token": "a" * 64,
                     "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                     "policy_version": operation.command_policy.POLICY_VERSION,
-                    "parser_source_sha256": operation.SSH_PARSER_SHA256}),
+                    "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                    "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),
                  ("BASELINES_CAPTURED", {"operation_token": "a" * 64, "proof_sha256": "9" * 64}))
     for cut in ("intent", "create", "fork", "preexec", "release", "output"):
         fixture_journal(completion, lifecycle, host_boot_id=process._boot_id())
@@ -1233,6 +1391,11 @@ def native_runtime_daemon_foundations(completion):
             deadline = time.monotonic() + 2
             while os.path.exists(f"/proc/{daemon_pid}") and time.monotonic() < deadline: time.sleep(0.01)
             assert not os.path.exists(f"/proc/{daemon_pid}") and len(os.listdir("/proc/self/fd")) == before
+            reopened_outcome = journal.runtime_recovery_history()["daemon_outcomes"][-1]
+            assert (reopened_outcome["uncertain"]
+                    and reopened_outcome["errors"] == ["daemon-absent-on-reopen"]
+                    and operation._daemon_cleanup_closed(reopened_outcome)
+                    and not operation._daemon_closed(reopened_outcome))
             assert process._set_subreaper(False) is False and journal.resume_runtime_cleanup() == "RUNTIME_CLEANUP_ONLY"
             daemon = runtime._retain_private_containerd(journal, completion_node, None, control)
             rejected(lambda: runtime._shutdown_private_containerd(daemon))
@@ -1657,6 +1820,78 @@ def production_owner_test():
                         retained_tools.append(process.RetainedExecutable(role, path, descriptor,
                             process._digest_fd(descriptor, identity.size), "d" * 64,
                             process._host_generation(descriptor)))
+
+                    # Every baseline admission/observer/snapshot/settlement cut
+                    # is reopened by a distinct process. Read-only prefixes
+                    # release ACTIVE without manufacturing BASELINES_CAPTURED;
+                    # a durable snapshot is first settled, then torn down.
+                    baseline_cuts = ("acquire", *(f"command-{index}" for index in
+                        range(len(network._BASELINE_ACTIONS))), "snapshot", "settlement")
+                    for cut_index, cut_name in enumerate(baseline_cuts):
+                        production_network.close(); production_fixture(network_prefix)
+                        production_network = operation._open_fixed_operation()
+                        # The fixture coordinator admits the sole global owner
+                        # before fork. The crash worker inherits that exact OFD
+                        # authority; it is not a second legacy contender.
+                        token = production_network.command_context().operation_token
+                        network.nft_owner.acquire(production_network)
+                        child = os.fork()
+                        if child == 0:
+                            exit_code = 81 + cut_index
+                            real_perform = network._perform_fixed
+                            performed = [0]
+                            def cut_perform(*args, **kwargs):
+                                result = real_perform(*args, **kwargs)
+                                current = performed[0]; performed[0] += 1
+                                if cut_name == f"command-{current}": os._exit(exit_code)
+                                return result
+                            real_snapshot = network._snapshot
+                            def cut_snapshot(*args, **kwargs):
+                                result = real_snapshot(*args, **kwargs)
+                                if cut_name == "snapshot": os._exit(exit_code)
+                                return result
+                            real_settle = operation._settle_network_phase
+                            def cut_settlement(*args, **kwargs):
+                                result = real_settle(*args, **kwargs)
+                                if cut_name == "settlement": os._exit(exit_code)
+                                return result
+                            active = network.nft_owner.require_active
+                            def cut_acquire(*args, **kwargs):
+                                if cut_name == "acquire": os._exit(exit_code)
+                                return active(*args, **kwargs)
+                            with patch.object(network, "_perform_fixed", side_effect=cut_perform), \
+                                 patch.object(network, "_snapshot", side_effect=cut_snapshot), \
+                                 patch.object(operation, "_settle_network_phase", side_effect=cut_settlement), \
+                                 patch.object(network.nft_owner, "require_active", side_effect=cut_acquire):
+                                network._capture_fixed_baselines(production_network, *retained_tools)
+                            os._exit(119)
+                        _pid, status = os.waitpid(child, 0)
+                        assert os.waitstatus_to_exitcode(status) == 81 + cut_index
+                        # Drop the coordinator's duplicate of the inherited OFD
+                        # only after worker death, then prove fresh reconstruction.
+                        fixture_owner = network.nft_owner._OWNERS.pop(token)
+                        for descriptor in (fixture_owner.lock_fd,
+                                           *reversed(fixture_owner.descriptors)):
+                            try: os.close(descriptor)
+                            except OSError: pass
+                        production_network.close(); production_network = operation._open_fixed_operation()
+                        network.nft_owner.reopen_cleanup(production_network)
+                        rows = operation._network_records(production_network)
+                        if rows:
+                            if production_network.durable_phase() == "FS_SETTLED":
+                                operation._settle_network_phase(production_network, "BASELINES_CAPTURED")
+                            network._abort_fixed_setup(production_network, *retained_tools)
+                            assert production_network.durable_phase() == "NETWORK_ABSENT"
+                        else:
+                            network._abort_incomplete_baseline(production_network)
+                            assert production_network.durable_phase() == "FS_SETTLED"
+                        state = network.nft_owner._parse_state(
+                            Path(network.nft_owner.OWNER_DIR, network.nft_owner.STATE_NAME).read_bytes())
+                        assert state["phase"] == "FREE"
+                        assert not any(Path(path).exists() for path in
+                            (network.PRESERVED_DIR, network.PARENT_STAGE_DIR))
+                    production_network.close(); production_fixture(network_prefix)
+                    production_network = operation._open_fixed_operation()
                     baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
                     assert baseline_body["snapshot_kind"] == "baseline"
                     assert any(kind == operation.network_journal.OUTPUT_RECORD
@@ -1782,6 +2017,61 @@ def production_owner_test():
                         assert aborted["snapshot_kind"] == "network-absent"
                         assert production_network.durable_phase() == "NETWORK_ABSENT"
                         assert all(aborted["identity"][name] is None for name in ("netns", "host_link", "peer_link", "nft", "tap", "tc"))
+                        production_network.close()
+                    # For every command-backed setup effect, a crash after the
+                    # certain status-zero outcome is observer-only on reopen.
+                    # Every setup effect also survives the observed/settled cut.
+                    setup_effect_cuts = tuple(
+                        (action, cut) for action in network._SETUP_ACTIONS
+                        for cut in (("observed",) if action is network.Action.IP_NETNS_ADD
+                                    else ("outcome", "observed")))
+                    for cut_index, (cut_action, cut_kind) in enumerate(setup_effect_cuts):
+                        production_fixture(setup_prefix)
+                        production_network = operation._open_fixed_operation()
+                        baseline_body = network._capture_fixed_baselines(production_network, *retained_tools)
+                        identity = baseline_body["identity"]
+                        position = network._SETUP_ACTIONS.index(cut_action)
+                        for action in network._SETUP_ACTIONS[:position]:
+                            identity = network._effect(production_network, action, *retained_tools, identity)
+                        child = os.fork()
+                        if child == 0:
+                            exit_code = 101 + cut_index
+                            real_observation = network._record_observation
+                            real_effect_record = network._record_effect
+                            def outcome_cut(owner, source, raw, serial=None):
+                                if cut_kind == "outcome" and source == cut_action.value:
+                                    os._exit(exit_code)
+                                return real_observation(owner, source, raw, serial)
+                            def observed_cut(owner, kind, body):
+                                result = real_effect_record(owner, kind, body)
+                                if (cut_kind == "observed"
+                                        and kind == "NETWORK_EFFECT_OBSERVED_V2"
+                                        and body["action"] == cut_action.value):
+                                    os._exit(exit_code)
+                                return result
+                            with patch.object(network, "_record_observation", side_effect=outcome_cut), \
+                                 patch.object(network, "_record_effect", side_effect=observed_cut):
+                                network._effect(production_network, cut_action, *retained_tools, identity,
+                                    cut_action is network._SETUP_ACTIONS[-1])
+                            os._exit(120)
+                        _pid, status = os.waitpid(child, 0)
+                        assert os.waitstatus_to_exitcode(status) == 101 + cut_index
+                        token = production_network.command_context().operation_token
+                        production_network.close()
+                        live = network.nft_owner._OWNERS.pop(token)
+                        for descriptor in (live.lock_fd, *reversed(live.descriptors)):
+                            try: os.close(descriptor)
+                            except OSError: pass
+                        production_network = operation._open_fixed_operation()
+                        network.nft_owner.reopen_cleanup(production_network)
+                        aborted = network._abort_fixed_setup(production_network, *retained_tools)
+                        assert aborted["snapshot_kind"] == "network-absent"
+                        intents = production_network.runtime_recovery_history()["intents"]
+                        assert sum(row["command_id"] == cut_action.value for row in intents) == (
+                            0 if cut_action is network.Action.IP_NETNS_ADD else 1)
+                        assert production_network.durable_phase() == "NETWORK_ABSENT"
+                        assert network.nft_owner._parse_state(Path(
+                            network.nft_owner.OWNER_DIR, network.nft_owner.STATE_NAME).read_bytes())["phase"] == "FREE"
                         production_network.close()
                     # A fresh owner removes durable detached placeholders without setup retry.
                     production_fixture(setup_prefix)
@@ -2282,7 +2572,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256})
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256})
             input_root.mkdir(mode=0o700)
 
             # Production admission is a real fsynced FixedJournal record and
@@ -2300,7 +2591,8 @@ def production_owner_test():
             admitted_suffix = (retained_deadline, ("PRODUCTION_ADMISSION_V2", {
                 "operation_token": "a" * 64, "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}))
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}))
             production_fixture(leased_records + admitted_suffix)
             expired_owner = operation._open_fixed_operation(); unchanged = fixture_journal_path(completion).read_bytes()
             with patch.object(operation, "_boottime_ns", return_value=edge - 1):
@@ -2396,7 +2688,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),)
             absence_intent = {
                 "operation_token": "a" * 64, "resource_id": "input-root", "action": "create",
                 "expected_parent_generation": parent_generation,
@@ -2575,10 +2868,71 @@ def production_owner_test():
                 executable_owner = process._open_synthetic_attested_executable_owner_v3_for_tests()
                 ssh_executable = process._claim_attested_executable(executable_owner, "ssh")
 
+                # A distinct interpreter replays the real fsynced journal at
+                # the exact expired-deadline edge. Zero-command, intent-only,
+                # and PREEXEC baseline cuts all reach input/rootfs retirement
+                # through the snapshot-free residue projection without a
+                # fabricated network lifecycle record. The intent-only case is
+                # the regression that replay rejected before this correction.
+                (completion / "kata-runtime-v1").rmdir()
+                snapshot_helper = str(ROOT / "test/aws-stage2-completion-kata-native-recover.py")
+                for baseline_cut in ("zero-command", "intent-only", "preexec"):
+                    def add_baseline_cut(raw, cut=baseline_cut):
+                        if cut == "zero-command": return raw
+                        records = operation._parse(raw); genesis = records[0].body
+                        context = SimpleNamespace(operation_token=genesis["operation_token"],
+                            command_serial=sum(row.record_type == "COMMAND_INTENT_V2"
+                                               for row in records),
+                            journal_key=genesis["journal_key"],
+                            host_boot_id=genesis["host_boot_id"],
+                            source_revision=genesis["source_revision"],
+                            lifecycle_phase="FS_SETTLED")
+                        command = fixed_v2_intent(context, process.CommandId.IP_ALL_LINKS)
+                        raw = append(raw, "COMMAND_INTENT_V2", command)
+                        return (append(raw, "COMMAND_PREEXEC_V2", runtime_preexec(command))
+                                if cut == "preexec" else raw)
+                    input_root.mkdir(mode=0o700)
+                    production_fixture(leased_records + (release_deadline, release_admission,
+                        settle_production_fs, add_baseline_cut))
+                    recovery = os.fork()
+                    if recovery == 0:
+                        os.execve("/usr/bin/python3", ["/usr/bin/python3", "-I", "-B",
+                            snapshot_helper, str(completion)], {"HOME": "/root", "LC_ALL": "C",
+                            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                            "PYTHONDONTWRITEBYTECODE": "1",
+                            "COGS_KATA_SYNTHETIC_ATTESTATION_V3": "1",
+                            "COGS_KATA_SNAPSHOT_FREE_RECOVERY_V1": "1"})
+                    _pid, recovery_status = os.waitpid(recovery, 0)
+                    assert os.waitstatus_to_exitcode(recovery_status) == 0, baseline_cut
+                    result_path = completion.parent / "snapshot-free-recovery-result.jsonl"
+                    recovered = operation._parse(result_path.read_bytes())
+                    result_path.unlink()
+                    assert not fixture_journal_path(completion).exists()
+                    assert not input_root.exists() and not os.path.exists(process.CGROUP_BASE)
+                    kinds = [row.record_type for row in recovered]
+                    assert operation._legal(recovered) == "RETIRED"
+                    assert kinds.count("SNAPSHOT_FREE_CLEANUP_V1") == 1
+                    assert {"INPUT_REMOVED", "ROOTFS_RELEASE_READY",
+                            "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT",
+                            "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"} <= set(kinds)
+                    assert not {"BASELINES_CAPTURED", "NETWORK_READY", "NETWORK_ABSENT",
+                                "SHARE_ABSENT", "FIREWALL_ABSENT",
+                                "CONTAINERD_ABSENT"} & set(kinds)
+                    projection = next(row.body for row in recovered
+                                      if row.record_type == "SNAPSHOT_FREE_CLEANUP_V1")
+                    assert "INDEPENDENT_RESIDUE" in projection["projection"]
+                    terminals = [row.body for row in recovered
+                                 if row.record_type == "COMMAND_OUTCOME_V2"
+                                 and row.body["command_id"] in
+                                     operation.RECOVERY_NO_EFFECT_CLASSIFICATIONS]
+                    assert ((not terminals and baseline_cut == "zero-command") or
+                            len(terminals) == 1 and
+                            terminals[0]["outcome"] == "recovery-no-effect")
+
                 # Build expired cleanup fixtures only after the exact production
                 # key-command policy has been issued, and advance through the
                 # required production FS_SETTLED phase before network setup.
-                (completion / "kata-runtime-v1").rmdir()
+                assert not (completion / "kata-runtime-v1").exists()
                 production_fixture(release_rows[:2] + (release_deadline, release_admission,
                     settle_production_fs) + release_rows[2:5] + release_rows[6:-1])
                 expired_release_owner = operation._open_fixed_operation()
@@ -2977,7 +3331,8 @@ def production_owner_test():
                 "operation_token": "a" * 64,
                 "admission_version": operation.PRODUCTION_ADMISSION_VERSION,
                 "policy_version": operation.command_policy.POLICY_VERSION,
-                "parser_source_sha256": operation.SSH_PARSER_SHA256}),)
+                "full_parser_source_sha256": operation.SSH_PARSER_SHA256,
+                "readiness_parser_source_sha256": operation.guest_readiness.PARSER_SHA256}),)
             (completion / "kata-runtime-v1").mkdir(mode=0o700)
             production_fixture(recovery_prefix)
             recovery_authority = operation._open_fixed_operation()

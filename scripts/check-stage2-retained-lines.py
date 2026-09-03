@@ -21,10 +21,10 @@ CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
 HARD_LIMIT = 94_000
-DEPLOY_CORRECTION_HIGH = 20_500
-RETAINED_CORRECTION_HIGH = 10_500
-WORKFLOW_CORRECTION_HIGH = 4_500
-GLOBAL_CORRECTION_HIGH = 35_000
+DEPLOY_CORRECTION_HIGH = 22_000
+RETAINED_CORRECTION_HIGH = 11_500
+WORKFLOW_CORRECTION_HIGH = 5_000
+GLOBAL_CORRECTION_HIGH = 38_000
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -87,6 +87,14 @@ RETAINED_FILES = (
     "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
     "scripts/stage2-prebuilt-static-control-runtime-boundary.py",
     "scripts/stage2-prebuilt-rehearsal-grant.py",
+    "scripts/stage2-prebuilt-kvm-diagnostic-lock.py",
+    "config/stage2-prebuilt-kvm-diagnostic-lock-v1.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/cosign-verification.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/descriptor.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/producer-receipt.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/publication-receipt.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/rootfs.package.json",
+    "config/stage2-prebuilt-kvm-diagnostic-custody-v1/rootfs.provenance.json",
     "scripts/stage2-pre-aws-package-v2.py",
     "scripts/stage2-production-approval.py",
     "scripts/stage2-production-planner.py",

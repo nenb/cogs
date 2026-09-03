@@ -3,6 +3,7 @@
 
 import dataclasses
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -349,6 +350,20 @@ check(readiness_contract["guest_program_size"] == len(readiness_raw)
       "readiness contract")
 check(readiness.parse_guest_readiness_output(readiness.GUEST_READY_MARKER) ==
       readiness.GUEST_READY_MARKER, "readiness parser")
+# The parser commitment is over every actual source byte, while a copied and
+# mutated module retains the complete strict parser rather than a test stub.
+with tempfile.TemporaryDirectory() as temporary:
+    mutated_path = Path(temporary) / "completion_guest_readiness_v1_mutated.py"
+    mutated_source = (REMOTE / "completion_guest_readiness_v1.py").read_bytes() + b"# mutation probe\n"
+    mutated_path.write_bytes(mutated_source)
+    spec = importlib.util.spec_from_file_location("readiness_mutation_probe", mutated_path)
+    check(spec is not None and spec.loader is not None, "readiness mutation import")
+    mutated = importlib.util.module_from_spec(spec); spec.loader.exec_module(mutated)
+    check(mutated.PARSER_SHA256 == hashlib.sha256(mutated_source).hexdigest()
+          and mutated.PARSER_SHA256 != readiness.PARSER_SHA256
+          and mutated.parse_guest_readiness_output(mutated.GUEST_READY_MARKER) ==
+              mutated.GUEST_READY_MARKER,
+          "readiness parser source mutation was not committed")
 for hostile in (b"", readiness.GUEST_READY_MARKER[:-1],
                 readiness.GUEST_READY_MARKER + b"x",
                 readiness.GUEST_READY_MARKER * 2, b"warning\n"):

@@ -10,7 +10,7 @@ held directory custody before a receipt is returned.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
@@ -113,6 +113,48 @@ def _effect(item: production.EffectReceipt) -> dict[str, Any]:
         "observed_started_unix_ns": str(item.observed_started_unix_ns),
         "observed_ended_unix_ns": str(item.observed_ended_unix_ns),
     }
+
+
+def _remote_bindings(item: production.RemoteReceipt,
+                     grant: production.CycleLaunchGrant,
+                     approval: production.ProductionApproval) -> dict[str, Any]:
+    projection = item.bindings
+    _require(type(projection) is production.RemoteBindingProjection
+             and type(projection.source) is production.RemoteSourceBindings
+             and type(projection.qemu) is production.RemoteQemuBindings,
+             "closed remote binding projection")
+    source, qemu = asdict(projection.source), asdict(projection.qemu)
+    program, marker = production.REMOTE_PROGRAMS[grant.mode]
+    _require(production._commit(b"cogs.stage2-source-bindings/v1", source) ==
+             approval.source_bindings_sha256
+             and source["source_head"] == grant.implementation_revision
+             and source["source_manifest_sha256"] == approval.source_manifest_sha256
+             and source["runtime_attestation_sha256"] == approval.runtime_commitment
+             and source["rootfs_descriptor_sha256"] == grant.rootfs_descriptor_sha256
+             and source["final_pin_sha256"] == approval.fixture_commitment
+             and projection.program_sha256 == program
+             and projection.parser_source_sha256 == production.REMOTE_PARSERS[grant.mode]
+             and projection.marker_sha256 == marker
+             and projection.cycle_capability_sha256 == production._cycle_capability(
+                 grant.mode, program, marker), "remote source/parser binding drift")
+    identity_fields = {name: qemu[name] for name in (
+        "qemu_argv_sha256", "qemu_pid",
+        "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
+        "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode",
+        "kvm_rdev", "kvm_api", "qmp_present", "qmp_enabled")}
+    identity = hashlib.sha256(
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + _canonical(identity_fields)).hexdigest()
+    _require(qemu["operation_token"] == item.operation_commitment
+             and qemu["runtime_identity_sha256"] == identity
+             and (qemu["post_ssh_runtime_fact_sha256"] is not None) ==
+                 (grant.mode == "readiness")
+             and (grant.mode != "readiness" or qemu["post_ssh_runtime_fact_sha256"] !=
+                  qemu["pre_ssh_runtime_fact_sha256"]), "remote QEMU binding drift")
+    return {"source_bindings": source,
+            "cycle_capability_sha256": projection.cycle_capability_sha256,
+            "program_sha256": projection.program_sha256,
+            "parser_source_sha256": projection.parser_source_sha256,
+            "marker_sha256": projection.marker_sha256, "qemu": qemu}
 
 
 def _inventory(item: production.InventoryReceipt) -> dict[str, Any]:
@@ -242,6 +284,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         }
         _require(len(freshness) == len(set(freshness.values())) == 8,
                  "within-cycle freshness replay")
+        remote_bindings = _remote_bindings(remote, grant, approval)
         workloads = [{"category": row.category, "ordinal": row.ordinal,
                       "duration_ns": row.duration_ns, "commitment": row.commitment}
                      for row in remote.workloads]
@@ -263,6 +306,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                                         - remote.provider_launch_started_unix_ns),
                 "kata_launch_to_ssh_ready_ns": (remote.ssh_ready_observed_boottime_ns
                                                 - remote.kata_launch_started_boottime_ns),
+                "bindings": remote_bindings,
             },
             **({"workloads": workloads} if workloads else {}),
             "zero_inventory_commitment": zero.zero_commitment,
@@ -287,6 +331,8 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(item.host_boot_commitment for item in candidate.remotes),
                  tuple(item.client_key_commitment for item in candidate.remotes),
                  tuple(item.host_key_commitment for item in candidate.remotes),
+                 tuple(item.bindings.qemu.runtime_identity_sha256
+                       for item in candidate.remotes),
                  tuple(dict(row[2].resource_commitments)["root_volume"]
                        for row in candidate.effects),
                  tuple(dict(row[2].resource_commitments)["launch_template_generation"]
@@ -311,6 +357,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
              "aggregate cost gate")
     bindings = {
         "source_manifest_commitment": approval.source_manifest_sha256,
+        "source_bindings_commitment": approval.source_bindings_sha256,
         "static_control_commitment": approval.static_control_sha256,
         "pre_aws_package_commitment": approval.pre_aws_package_sha256,
         "rootfs_descriptor_commitment": approval.rootfs_descriptor_sha256,

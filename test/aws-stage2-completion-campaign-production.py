@@ -9,6 +9,7 @@ import os
 import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
@@ -18,13 +19,32 @@ import completion_campaign_production as production
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
 
 
+def source_bindings():
+    return {
+        "source_head": "1" * 40, "source_manifest_sha256": d("source"),
+        "host_attestation_sha256": d("host-attestation"),
+        "runtime_attestation_sha256": d("runtime"), "rootfs_sha256": d("rootfs-content"),
+        "rootfs_descriptor_sha256": d("rootfs"),
+        "rootfs_package_manifest_sha256": d("rootfs-package"),
+        "rootfs_provenance_sha256": d("rootfs-provenance"),
+        "rootfs_publication_receipt_sha256": d("rootfs-publication"),
+        "artifact_sha256": d("artifact"), "candidate_sha256": d("candidate"),
+        "final_pin_sha256": d("fixture"),
+        "guest_program_sha256": production.FULL_PROGRAM_SHA256,
+        "owner_implementation_sha256": d("owner-implementation"),
+    }
+
+
 def approval():
     values = dict(
         version="cogs.stage2-completion-production-approval/v3",
         phrase=production.APPROVAL_PHRASE,
         implementation_revision="1" * 40,
         control_revision="2" * 40,
-        source_manifest_sha256=d("source"), static_control_sha256=d("control"),
+        source_manifest_sha256=d("source"),
+        source_bindings_sha256=production._commit(
+            b"cogs.stage2-source-bindings/v1", source_bindings()),
+        static_control_sha256=d("control"),
         pre_aws_package_sha256=d("preaws"), rootfs_descriptor_sha256=d("rootfs"),
         rootfs_package_manifest_sha256=d("rootfs-package"),
         rootfs_provenance_sha256=d("rootfs-provenance"),
@@ -126,14 +146,44 @@ class Harness:
                                             d(f"workload-{category}-{sample}"))
             for category in ("git", "build", "install") for sample in range(1, 8)
         ) if grant.mode == "full" else ()
-        return production.RemoteReceipt(
+        operation = d(f"operation-{operation_ordinal}")
+        runtime_ordinal = (1 if self.mutate == "qemu_replay" and grant.ordinal == 2
+                           else grant.ordinal)
+        qemu_values = dict(
+            operation_token=operation, live_mapping_sha256=d(f"mapping-{grant.ordinal}"),
+            qemu_argv_sha256=d(f"qemu-argv-{runtime_ordinal}"), qemu_pid=100 + runtime_ordinal,
+            qemu_starttime=200 + runtime_ordinal, qemu_executable_device=8,
+            qemu_executable_inode=300 + runtime_ordinal, observer_qmp_device=9,
+            observer_qmp_inode=400 + runtime_ordinal, kvm_device=10,
+            kvm_inode=500 + runtime_ordinal, kvm_rdev=11, kvm_api=12,
+            qmp_present=True, qmp_enabled=True)
+        identity = production._runtime_identity(SimpleNamespace(**qemu_values))
+        qemu = production.RemoteQemuBindings(
+            **qemu_values, runtime_identity_sha256=identity,
+            pre_ssh_runtime_fact_sha256=d(f"pre-ssh-{grant.ordinal}"),
+            post_ssh_runtime_fact_sha256=(d(f"post-ssh-{grant.ordinal}")
+                                          if grant.mode == "readiness" else None))
+        program, marker = production.REMOTE_PROGRAMS[grant.mode]
+        source_values = source_bindings()
+        if self.mutate == "remote_source" and grant.ordinal == 2:
+            source_values["host_attestation_sha256"] = d("hostile-source")
+        parser = (d("hostile-parser") if self.mutate == "remote_parser"
+                  and grant.ordinal == 2 else production.REMOTE_PARSERS[grant.mode])
+        bindings = production.RemoteBindingProjection(
+            production.RemoteSourceBindings(**source_values),
+            production._cycle_capability(grant.mode, program, marker), program,
+            parser, marker, qemu)
+        receipt = production.RemoteReceipt(
             grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
             apply.state_commitment, apply.state_lineage_commitment,
             d(f"instance-{instance_ordinal}"), d(f"host-{grant.ordinal}"),
-            d(f"operation-{operation_ordinal}"), d(f"boot-{grant.ordinal}"),
+            operation, d(f"boot-{grant.ordinal}"),
             d(f"client-key-{grant.ordinal}"), d(f"host-key-{grant.ordinal}"), rootfs,
             grant.ami_commitment, apply.observed_started_unix_ns,
-            running.observed_ended_unix_ns, 100, 200, workloads, True)
+            running.observed_ended_unix_ns, 100, 200, workloads, bindings, True)
+        if self.mutate == "remote_qemu" and grant.ordinal == 2:
+            object.__setattr__(qemu, "qemu_pid", qemu.qemu_pid + 1)
+        return receipt
 
     def inventory(self, grant, destroyed, sequence):
         self.inventory_count += 1
@@ -223,6 +273,10 @@ with tempfile.TemporaryDirectory() as directory:
         assert evidence["deadlines"]["actual_campaign_duration_ns"] == candidate.actual_duration_ns
         assert len(evidence["cycles"]) == 7 and len(evidence["inventories"]) == 8
         assert len(evidence["cycles"][0]["workloads"]) == 21
+        assert evidence["cycles"][0]["remote"]["bindings"]["source_bindings"] == source_bindings()
+        assert evidence["cycles"][1]["remote"]["bindings"]["parser_source_sha256"] == production.REMOTE_PARSERS["readiness"]
+        qemu_evidence = evidence["cycles"][1]["remote"]["bindings"]["qemu"]
+        assert qemu_evidence["pre_ssh_runtime_fact_sha256"] != qemu_evidence["post_ssh_runtime_fact_sha256"]
         assert sum(row["cost"]["cost_micro_usd"] for row in evidence["cycles"]) == 7
         assert not list(Path(directory).iterdir())
     finally: os.close(parent_fd)
@@ -230,11 +284,27 @@ try: controller.run()
 except production.ProductionCampaignError: pass
 else: raise AssertionError("controller replay accepted")
 
-for mutation in ("state", "instance", "operation", "rootfs", "observer"):
+for mutation in ("state", "instance", "operation", "rootfs", "observer",
+                 "remote_source", "remote_parser", "remote_qemu", "qemu_replay"):
     h = Harness(mutate=mutation)
     try: production.ProductionCampaignController(h.ports()).run()
     except production.ProductionCampaignError: pass
     else: raise AssertionError(f"{mutation} drift accepted")
+
+# Evidence independently reconstructs every typed remote commitment; mutating a
+# controller-retained object cannot fall back to trust in the opaque host receipt.
+for mutation in ("remote_source", "remote_parser", "remote_qemu"):
+    candidate = production.ProductionCampaignController(Harness().ports()).run()
+    binding = candidate.remotes[1].bindings
+    if mutation == "remote_source":
+        object.__setattr__(binding.source, "host_attestation_sha256", d("evidence-hostile-source"))
+    elif mutation == "remote_parser":
+        object.__setattr__(binding, "parser_source_sha256", d("evidence-hostile-parser"))
+    else:
+        object.__setattr__(binding.qemu, "qemu_pid", binding.qemu.qemu_pid + 1)
+    try: issuer._project_test_candidate(candidate)
+    except issuer.EvidenceIssuanceError: pass
+    else: raise AssertionError(f"evidence accepted {mutation} drift")
 
 for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1),
                 ("destroy", 1), ("inventory", 8)):

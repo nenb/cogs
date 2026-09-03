@@ -52,7 +52,7 @@ CLEANUP_INTENTS = MappingProxyType({
     # starts from the already-unqualified BASELINES_CAPTURED phase.
     "NETWORK_CLEANUP_INTENT_V1": ({"TASK_STOPPED", "OWNERSHIP_OBSERVED"}, "NETWORK_ABSENT", None),
     "FIREWALL_CLEANUP_INTENT_V1": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", None),
-    "NETWORK_CLEANUP_INTENT_V2": ({"BASELINES_CAPTURED", "TASK_STOPPED", "RUNTIME_ABSENT"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
+    "NETWORK_CLEANUP_INTENT_V2": ({"BASELINES_CAPTURED", "TASK_STOPPED", "RUNTIME_ABSENT", "RUNTIME_CLEANUP_ONLY"}, "NETWORK_ABSENT", "NETWORK_CLEANUP_SETTLED_V2"),
     "FIREWALL_CLEANUP_INTENT_V2": ({"SHARE_ABSENT"}, "FIREWALL_ABSENT", "FIREWALL_CLEANUP_SETTLED_V2"),
 })
 CLEANUP_SETTLED = frozenset(value[2] for value in CLEANUP_INTENTS.values() if value[2] is not None)
@@ -485,7 +485,7 @@ def advance(state, kind, body, phase):
         allowed_phase = {"baseline": {"ROOTFS_LEASED", "FS_SETTLED"},
             "ready": {"BASELINES_CAPTURED"}, "discovered": {"NETWORK_READY", "RUNTIME_READY"},
             "runtime": {"NETWORK_READY", "RUNTIME_READY"},
-            "network-absent": {"BASELINES_CAPTURED", "RUNTIME_ABSENT"},
+            "network-absent": {"BASELINES_CAPTURED", "RUNTIME_ABSENT", "RUNTIME_CLEANUP_ONLY"},
             "firewall-restored": {"SHARE_ABSENT"}, "final-absent": {"ROOTFS_ABSENT"}}
         _fail(phase in allowed_phase[body["snapshot_kind"]])
         expected = {None: "baseline", "baseline": "ready", "ready": "discovered",
@@ -524,7 +524,7 @@ def advance(state, kind, body, phase):
         state["snapshots"].append(body); state["current"] = body["identity"]; return state
     if kind == "NETWORK_EFFECT_INTENT_V2":
         phases = ({"BASELINES_CAPTURED"} if body["action"] in SETUP else
-                  {"BASELINES_CAPTURED", "NETWORK_READY", "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT"}
+                  {"BASELINES_CAPTURED", "NETWORK_READY", "READINESS_REVOKED", "OWNERSHIP_OBSERVED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ABSENT", "RUNTIME_CLEANUP_ONLY"}
                   if body["action"] == "IP_NETNS_REMOVE" else
                   {"BASELINES_CAPTURED", "NETWORK_READY", "SHARE_ABSENT"})
         _fail(phase in phases)
@@ -584,8 +584,8 @@ def setup_abort_complete(state):
     while count < len(actions) and count < len(SETUP) and actions[count] == SETUP[count]:
         count += 1
     if count == 0:
-        return (len(state["snapshots"]) == 1
-                and state["snapshots"][0]["snapshot_kind"] == "baseline"
+        snapshots = tuple(row["snapshot_kind"] for row in state["snapshots"])
+        return (snapshots in {("baseline",), ("baseline", "network-absent")}
                 and not state["effects"] and state["pending"] is None)
     expected = [*SETUP[:count], "IP_NETNS_REMOVE"]
     if count > SETUP.index("NFT_INSTALL_OWNED"): expected.append("NFT_REMOVE_ATOMIC")
@@ -606,7 +606,7 @@ def successful_trace(command_ids, phase, replay_indices=(), policy_version=POLIC
     setup_abort_traces = (SETUP_ABORT_TRACES if policy_version in {POLICY_VERSION, NFT_GATE_POLICY_VERSION}
                           else LEGACY_SETUP_ABORT_TRACES)
     valid = (observed in variants if variants is not None else
-             phase == "BASELINES_CAPTURED" and (observed in setup_abort_traces
+             phase in {"BASELINES_CAPTURED", "RUNTIME_CLEANUP_ONLY"} and (observed in setup_abort_traces
                  or observed == SUCCESS_PHASE_TRACES["FS_SETTLED"]) or
              phase in SUCCESS_PHASE_TRACES and observed == SUCCESS_PHASE_TRACES[phase])
     if not valid:

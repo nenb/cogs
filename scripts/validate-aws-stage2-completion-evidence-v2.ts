@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -48,6 +49,20 @@ const LIMITATIONS = [
   "custody-is-local-tamper-evidence-not-external-worm",
 ] as const;
 const EFFECTS = ["plan", "apply", "running", "destroy"] as const;
+const PROGRAMS = {
+  full: [
+    "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406",
+    "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5",
+  ],
+  readiness: [
+    "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab",
+    "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010",
+  ],
+} as const;
+const PARSERS = {
+  full: "a134e1b00791b4cccf37206284f36dc685056f8a57aebc13173f09285292a35c",
+  readiness: "500423ea45a3c12da1eaf107281a966e88f21f77701524f2d8617d0456f68e4c",
+} as const;
 
 export type Summary = { samples_ns: number[]; min_ns: number; p50_ns: number; p95_ns: number; max_ns: number };
 type Effect = {
@@ -84,6 +99,33 @@ type Cycle = {
     host_boot_commitment: string;
     apply_to_running_ns: number;
     kata_launch_to_ssh_ready_ns: number;
+    bindings: {
+      source_bindings: Record<string, string>;
+      cycle_capability_sha256: string;
+      program_sha256: string;
+      parser_source_sha256: string;
+      marker_sha256: string;
+      qemu: {
+        operation_token: string;
+        live_mapping_sha256: string;
+        runtime_identity_sha256: string;
+        pre_ssh_runtime_fact_sha256: string;
+        post_ssh_runtime_fact_sha256: string | null;
+        qemu_argv_sha256: string;
+        qemu_pid: number;
+        qemu_starttime: number;
+        qemu_executable_device: number;
+        qemu_executable_inode: number;
+        observer_qmp_device: number;
+        observer_qmp_inode: number;
+        kvm_device: number;
+        kvm_inode: number;
+        kvm_rdev: number;
+        kvm_api: number;
+        qmp_present: boolean;
+        qmp_enabled: boolean;
+      };
+    };
   };
   workloads?: Array<{ category: string; ordinal: number; duration_ns: number; commitment: string }>;
   zero_inventory_commitment: string;
@@ -175,6 +217,22 @@ function check(value: boolean, message: string): asserts value {
 }
 function distinct(values: string[], label: string): void {
   check(new Set(values).size === values.length, `${label} commitments must be pairwise distinct`);
+}
+function commitment(domain: string, value: unknown, newline = false): string {
+  return createHash("sha256")
+    .update(domain)
+    .update("\0")
+    .update(canonical(value))
+    .update(newline ? "\n" : "")
+    .digest("hex");
+}
+function cycleCapability(mode: "full" | "readiness", program: string, marker: string): string {
+  return createHash("sha256")
+    .update("cogs.stage2-cycle-route/v1\0production\0")
+    .update(mode)
+    .update(Buffer.from(program, "hex"))
+    .update(Buffer.from(marker, "hex"))
+    .digest("hex");
 }
 function summary(samples: number[]): Summary {
   const sorted = [...samples].sort((a, b) => a - b);
@@ -311,6 +369,7 @@ function semantics(e: CompletionEvidence): void {
   const operations: string[] = [];
   const boots: string[] = [];
   const settlements: string[] = [];
+  const runtimeIdentities: string[] = [];
   const freshnessNames = [
     "instance",
     "root_volume",
@@ -370,6 +429,41 @@ function semantics(e: CompletionEvidence): void {
       `cycle ${index + 1} provider wall sample`,
     );
     check(cycle.remote.kata_launch_to_ssh_ready_ns > 0, `cycle ${index + 1} SSH sample`);
+    const remoteBindings = cycle.remote.bindings;
+    const source = remoteBindings.source_bindings;
+    const mode = cycle.mode as "full" | "readiness";
+    const [program, marker] = PROGRAMS[mode];
+    check(
+      commitment("cogs.stage2-source-bindings/v1", source) === e.bindings.source_bindings_commitment &&
+        source.source_head === e.batch.implementation_revision &&
+        source.source_manifest_sha256 === e.bindings.source_manifest_commitment &&
+        source.runtime_attestation_sha256 === e.bindings.runtime_commitment &&
+        source.rootfs_descriptor_sha256 === e.bindings.rootfs_descriptor_commitment &&
+        source.final_pin_sha256 === e.bindings.fixture_commitment &&
+        source.guest_program_sha256 === PROGRAMS.full[0] &&
+        remoteBindings.program_sha256 === program &&
+        remoteBindings.parser_source_sha256 === PARSERS[mode] &&
+        remoteBindings.marker_sha256 === marker &&
+        remoteBindings.cycle_capability_sha256 === cycleCapability(mode, program, marker),
+      `cycle ${index + 1} exact remote source/parser bindings`,
+    );
+    const qemu = remoteBindings.qemu;
+    const {
+      runtime_identity_sha256: _identity,
+      pre_ssh_runtime_fact_sha256: _pre,
+      post_ssh_runtime_fact_sha256: post,
+      operation_token: _operation,
+      live_mapping_sha256: _mapping,
+      ...qemuIdentity
+    } = qemu;
+    check(
+      qemu.operation_token === cycle.remote.operation_commitment &&
+        qemu.runtime_identity_sha256 === commitment("cogs.stage2-qemu-runtime-identity/v1", qemuIdentity, true) &&
+        (mode === "readiness") === (post !== null) &&
+        (mode !== "readiness" || post !== qemu.pre_ssh_runtime_fact_sha256),
+      `cycle ${index + 1} exact remote QEMU bindings`,
+    );
+    runtimeIdentities.push(qemu.runtime_identity_sha256);
     check(cycle.cost.rate_source_commitment === e.cost.rate_source_commitment, `cycle ${index + 1} rate source`);
     check(
       cycle.cost.cost_micro_usd === ceilCost(duration, e.cost.aggregate_rate_micro_usd_per_hour),
@@ -400,6 +494,7 @@ function semantics(e: CompletionEvidence): void {
   distinct(operations, "operation");
   distinct(boots, "host boot");
   distinct(settlements, "effect settlement");
+  distinct(runtimeIdentities, "QEMU runtime identity");
   for (const name of freshnessNames) distinct(freshness[name], `${name} freshness`);
 
   const zeros: string[] = [];
