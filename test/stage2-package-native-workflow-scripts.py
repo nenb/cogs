@@ -60,6 +60,21 @@ def terminate(process):
 
 
 def live_process_tests():
+    if Path("/proc/self").is_dir() and os.geteuid() == 0:
+        self_marker = b"stage2-package-native-workflow-scripts.py"
+        settlement.scan("before-unmount", targets=("/observer-self-test",),
+                        marker=self_marker)
+        sibling = subprocess.Popen([
+            sys.executable, "-c", "import time;time.sleep(30)", self_marker.decode(),
+        ])
+        try:
+            time.sleep(0.05)
+            rejected(lambda: settlement.scan(
+                "before-unmount", targets=("/observer-self-test",), marker=self_marker),
+                settlement.SettlementError)
+        finally:
+            terminate(sibling)
+
     marker = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)",
                                "run-stage2-package-native-candidate.py"])
     try:
