@@ -149,7 +149,7 @@ jobs:
   readiness:
     name: readiness
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 250
     env:
       REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-1
       REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-1
@@ -222,9 +222,9 @@ jobs:
       - id: route
         name: Execute the actual production-shaped readiness route without minting
         continue-on-error: true
-        timeout-minutes: 35
+        timeout-minutes: 132
         run: |
-          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1980s \
+          sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 7800s \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_cycle_readiness_diagnostic.py
       - id: recovery
         name: Run cleanup-only recovery after every preparation attempt

@@ -340,6 +340,9 @@ def _attested_executable_routes(install_policy):
     def open_static(custody):
         admission._static_custody_binding(custody)
         return states.issue({"__static_custody__": custody})
+    def open_diagnostic_static(custody):
+        admission._diagnostic_custody_lineage(custody)
+        return states.issue({"__static_custody__": custody})
     def open_synthetic():
         if os.environ.get("COGS_KATA_SYNTHETIC_ATTESTATION_V1") != "1":
             raise ProcessError("synthetic attestation test admission absent")
@@ -349,13 +352,15 @@ def _attested_executable_routes(install_policy):
             raise ProcessError("V3 synthetic attestation test admission absent")
         return issue(command_policy.REVIEWED_SYNTHETIC_HOST_TOOL_CONTRACTS_V3)
     return (AttestedExecutableOwner, claim, require, release, issue, issue_retained,
-            abort_owner, open_fixed, open_static, open_synthetic, open_synthetic_v3)
+            abort_owner, open_fixed, open_static, open_diagnostic_static,
+            open_synthetic, open_synthetic_v3)
 
 
 (AttestedExecutableOwner, _claim_attested_executable, _require_attested_executable,
  _release_attested_executable, _issue_attested_executable_owner,
  _issue_retained_executable_owner, _abort_attested_executable_owner,
  _open_attested_executable_owner, _open_static_attested_executable_owner,
+ _open_diagnostic_static_attested_executable_owner,
  _open_synthetic_attested_executable_owner_for_tests,
  _open_synthetic_attested_executable_owner_v3_for_tests) = _attested_executable_routes(
      _install_attested_policy)

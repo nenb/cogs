@@ -62,6 +62,26 @@ CLEANUP_METHODS = tuple(name for name, event in METHOD_EVENT.items()
 assert tuple(METHOD_EVENT[name] for name in FORWARD_METHODS) == coordinator.FORWARD_ORDER
 assert tuple(METHOD_EVENT[name] for name in CLEANUP_METHODS) == coordinator.CLEANUP_ORDER
 
+# Recovery preserves the mutually exclusive formal and split-lineage custody
+# projections while selecting the matching immutable executable policy.
+boundary = coordinator._AdmissionBoundary()
+custody, gate = object(), object()
+with patch.object(coordinator.preparation_bridge,
+                  "_claim_diagnostic_recovery_executable_owner",
+                  return_value="diagnostic-owner") as diagnostic_claim, \
+     patch.object(coordinator.preparation_bridge,
+                  "_claim_fixed_recovery_executable_owner",
+                  return_value="formal-owner") as formal_claim:
+    lifecycle = SimpleNamespace(recovery=True, diagnostic=True,
+        source_approval=gate, static_gate=gate, static_custody=custody)
+    diagnostic_owner = boundary.claim_recovery_executables(lifecycle)
+    check(diagnostic_owner == "diagnostic-owner", "diagnostic recovery owner differs")
+    diagnostic_claim.assert_called_once_with(custody); formal_claim.assert_not_called()
+    lifecycle.diagnostic = False
+    formal_owner = boundary.claim_recovery_executables(lifecycle)
+    check(formal_owner == "formal-owner", "formal recovery owner differs")
+    formal_claim.assert_called_once_with(custody)
+
 
 class Cut(Exception):
     pass

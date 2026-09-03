@@ -215,8 +215,10 @@ class _AdmissionBoundary:
     def claim_recovery_executables(self, lifecycle):
         if not lifecycle.recovery or lifecycle.source_approval is not lifecycle.static_gate:
             raise CoordinatorBlocked("cleanup-only executable policy admission differs")
-        return preparation_bridge._claim_fixed_recovery_executable_owner(
-            lifecycle.static_custody)
+        claim = (preparation_bridge._claim_diagnostic_recovery_executable_owner
+                 if lifecycle.diagnostic else
+                 preparation_bridge._claim_fixed_recovery_executable_owner)
+        return claim(lifecycle.static_custody)
 
     def abort(self, lifecycle):
         preparation_bridge._abort_fixed_static_preparation(

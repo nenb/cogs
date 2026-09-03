@@ -99,6 +99,15 @@ assert parent_errors == [f"parent-ssh-fd-1000-close:{errno.EINTR}",
 assert parent_close_outcome["outcome"] == "uncertain" \
        and parent_close_outcome["uncertain"] and parent_close_outcome["errors"] == parent_errors
 process_source = (REMOTE / "completion_kata_process.py").read_text()
+diagnostic_custody = object()
+with patch.object(process.admission, "_diagnostic_custody_lineage",
+                  return_value={"authority": "diagnostic-only"}) as diagnostic_lineage, \
+     patch.object(process.admission, "_static_custody_binding") as formal_binding:
+    diagnostic_owner = process._open_diagnostic_static_attested_executable_owner(
+        diagnostic_custody)
+    diagnostic_lineage.assert_called_once_with(diagnostic_custody)
+    formal_binding.assert_not_called()
+    process._abort_attested_executable_owner(diagnostic_owner)
 cycle_route = object()
 with patch.object(process.kata_operation, "_is_production_recovery_operation", return_value=False), \
      patch.object(process.kata_operation, "_cycle_route", return_value=cycle_route) as claim_route:
