@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 REMOTE = Path(__file__).resolve().parents[1] / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
@@ -256,6 +257,50 @@ def configure(root, fail_at=None):
     module._verify_installed = verify
     return events
 
+
+# Diagnostic recovery accepts the external custody directory only when every
+# canonical member equals the already validated diagnostic control projection.
+diagnostic_descriptor = descriptor_value()
+diagnostic_runtime = {"rootfs": {
+    "prebuilt_descriptor": diagnostic_descriptor,
+    "prebuilt_descriptor_sha256": hashlib.sha256(
+        module.preparation.canonical_bytes(diagnostic_descriptor)).hexdigest(),
+}}
+diagnostic_custody = {
+    "package_manifest": {"kind": "package"},
+    "provenance": {"kind": "provenance"},
+    "qualification_receipt": {"kind": "qualification"},
+    "publication_receipt": {"kind": "publication"},
+    "signature_verification_sha256": hashlib.sha256(b"signature").hexdigest(),
+}
+diagnostic_paths = {
+    module.preparation.PREBUILT_DESCRIPTOR_PATH:
+        module.preparation.canonical_bytes(diagnostic_descriptor),
+    module.preparation.PREBUILT_PACKAGE_PATH:
+        module.preparation.canonical_bytes(diagnostic_custody["package_manifest"]),
+    module.preparation.PREBUILT_PROVENANCE_PATH:
+        module.preparation.canonical_bytes(diagnostic_custody["provenance"]),
+    module.preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH:
+        module.preparation.canonical_bytes(diagnostic_custody["qualification_receipt"]),
+    module.preparation.PREBUILT_PUBLICATION_RECEIPT_PATH:
+        module.preparation.canonical_bytes(diagnostic_custody["publication_receipt"]),
+    module.preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH: b"signature",
+}
+with patch.object(module, "_descriptor_root") as diagnostic_root, \
+     patch.object(module, "_read_external_member",
+                  side_effect=lambda path: diagnostic_paths[path]):
+    assert module._diagnostic_descriptor_bytes(
+        diagnostic_runtime, diagnostic_custody) == diagnostic_paths[
+            module.preparation.PREBUILT_DESCRIPTOR_PATH]
+    diagnostic_root.assert_called_once()
+with patch.object(module, "_descriptor_root"), \
+     patch.object(module, "_read_external_member", return_value=b"changed"):
+    try:
+        module._diagnostic_descriptor_bytes(diagnostic_runtime, diagnostic_custody)
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("changed diagnostic custody was accepted")
 
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
