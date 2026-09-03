@@ -371,6 +371,73 @@ def _expected_runtime():
     return runtime.value
 
 
+def _diagnostic_expected_runtime():
+    """Authenticate the split-lineage control retained after a diagnostic route."""
+    import completion_kata_diagnostic_control as diagnostic
+    path = CONTROL_ROOT / diagnostic.CONTROL_MEMBER
+    if not path.exists():
+        return None
+    control = diagnostic.load_control(path.read_bytes())
+    members = {row["name"]: (CONTROL_ROOT / row["name"]).read_bytes()
+               for row in control.value["members"]}
+    runtime, _contracts = diagnostic.validate_control_members(control, members)
+    return runtime.value, control.value["rootfs"]["custody"]
+
+
+def _read_external_member(path, maximum=8192):
+    before = path.lstat()
+    _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+             and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o400
+             and 0 < before.st_size <= maximum)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        raw = os.read(descriptor, maximum + 1); after = os.fstat(descriptor)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                                  value.st_gid, value.st_nlink, value.st_size,
+                                  value.st_mtime_ns, value.st_ctime_ns)
+        _require(len(raw) == before.st_size and identity(before) == identity(after))
+        return raw
+    finally: os.close(descriptor)
+
+
+def _descriptor_root(expected_names):
+    root = preparation.PREBUILT_DESCRIPTOR_ROOT
+    seen = root.lstat()
+    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+             and stat.S_IMODE(seen.st_mode) == 0o700
+             and set(os.listdir(root)) == set(expected_names))
+
+
+def _diagnostic_descriptor_bytes(expected_runtime, custody):
+    paths = (
+        preparation.PREBUILT_DESCRIPTOR_PATH,
+        preparation.PREBUILT_PACKAGE_PATH,
+        preparation.PREBUILT_PROVENANCE_PATH,
+        preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH,
+        preparation.PREBUILT_PUBLICATION_RECEIPT_PATH,
+        preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH,
+    )
+    _descriptor_root(path.name for path in paths)
+    raw = preparation.canonical_bytes(expected_runtime["rootfs"]["prebuilt_descriptor"])
+    expected = {
+        preparation.PREBUILT_DESCRIPTOR_PATH: raw,
+        preparation.PREBUILT_PACKAGE_PATH: preparation.canonical_bytes(custody["package_manifest"]),
+        preparation.PREBUILT_PROVENANCE_PATH: preparation.canonical_bytes(custody["provenance"]),
+        preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH:
+            preparation.canonical_bytes(custody["qualification_receipt"]),
+        preparation.PREBUILT_PUBLICATION_RECEIPT_PATH:
+            preparation.canonical_bytes(custody["publication_receipt"]),
+    }
+    for path, wanted in expected.items():
+        _require(_read_external_member(path) == wanted,
+                 "diagnostic external custody differs")
+    signature = _read_external_member(preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH)
+    _require(hashlib.sha256(signature).hexdigest() == custody["signature_verification_sha256"])
+    _require(hashlib.sha256(raw).hexdigest() ==
+             expected_runtime["rootfs"]["prebuilt_descriptor_sha256"])
+    return raw
+
+
 def _prebuilt_descriptor_bytes(expected_runtime):
     if expected_runtime is not None:
         _require(not preparation.PREBUILT_DESCRIPTOR_ROOT.exists(),
@@ -380,25 +447,8 @@ def _prebuilt_descriptor_bytes(expected_runtime):
         _require(hashlib.sha256(raw).hexdigest() ==
                  expected_runtime["rootfs"]["prebuilt_descriptor_sha256"])
         return raw
-    root = preparation.PREBUILT_DESCRIPTOR_ROOT
-    seen = root.lstat()
-    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
-             and stat.S_IMODE(seen.st_mode) == 0o700
-             and set(os.listdir(root)) == {"descriptor.json"})
-    path = preparation.PREBUILT_DESCRIPTOR_PATH
-    before = path.lstat()
-    _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
-             and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o400
-             and 0 < before.st_size <= 8192)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        raw = os.read(descriptor, 8193); after = os.fstat(descriptor)
-        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-                                  value.st_gid, value.st_nlink, value.st_size,
-                                  value.st_mtime_ns, value.st_ctime_ns)
-        _require(len(raw) == before.st_size and identity(before) == identity(after))
-        return raw
-    finally: os.close(descriptor)
+    _descriptor_root(("descriptor.json",))
+    return _read_external_member(preparation.PREBUILT_DESCRIPTOR_PATH)
 
 
 def _archive_values(expected_runtime, archives, extracted):
@@ -941,9 +991,13 @@ def recover_failed_preparation():
     if rootfs_state.exists() or rootfs_state.is_symlink():
         _require(_rootfs_state_idle(),
                  "active rootfs state blocks immutable recovery")
-    expected_runtime = _expected_runtime()
+    diagnostic_runtime = _diagnostic_expected_runtime()
+    expected_runtime = (_expected_runtime() if diagnostic_runtime is None
+                        else diagnostic_runtime[0])
     import completion_rootfs_prebuilt as rootfs_prebuilt
-    descriptor_raw = _prebuilt_descriptor_bytes(expected_runtime)
+    descriptor_raw = (_prebuilt_descriptor_bytes(expected_runtime)
+                      if diagnostic_runtime is None else
+                      _diagnostic_descriptor_bytes(*diagnostic_runtime))
     descriptor = rootfs_prebuilt.decode_fixed_descriptor(descriptor_raw)
     _rollback_preparation(descriptor, descriptor_raw)
     _require(not PREPARATION_ROOT.exists() and not preparation.PREBUILT_INPUT_ROOT.exists()
