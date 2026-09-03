@@ -903,12 +903,22 @@ def _rollback_preparation(descriptor, descriptor_raw):
 
 def _forbidden_mutable_paths():
     return (
-        COMPLETION_ROOT / "kata-operation-v1",
         COMPLETION_ROOT / "kata-input-v1",
         Path("/run/cogs-stage2-local-private-v2"),
         Path("/run/cogs-stage2-ssh"),
         Path("/run/vc/vm/cogs-stage2-ssh-v1"),
     )
+
+
+def _operation_state_idle():
+    """Authenticate journal-absent infrastructure retained after exact retirement."""
+    import completion_kata_operation as operation
+    probe = operation._open_fixed_operation_recovery()
+    try:
+        return probe.status() in {
+            "infrastructure-absent", "infrastructure-subset", "infrastructure-complete"}
+    finally:
+        probe.close()
 
 
 def _rootfs_state_idle():
@@ -923,6 +933,10 @@ def recover_failed_preparation():
     """Inspect and settle only durable immutable transaction custody."""
     _require(not any(path.exists() or path.is_symlink()
                      for path in _forbidden_mutable_paths()))
+    operation_state = COMPLETION_ROOT / "kata-operation-v1"
+    if operation_state.exists() or operation_state.is_symlink():
+        _require(_operation_state_idle(),
+                 "active operation state blocks immutable recovery")
     rootfs_state = COMPLETION_ROOT / "rootfs-v1"
     if rootfs_state.exists() or rootfs_state.is_symlink():
         _require(_rootfs_state_idle(),
