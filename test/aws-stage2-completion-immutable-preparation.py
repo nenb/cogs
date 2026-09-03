@@ -305,6 +305,32 @@ with tempfile.TemporaryDirectory() as temporary:
     assert module.PREPARATION_ROOT.exists()
 module._rootfs_state_idle = original_rootfs_idle
 
+# A completed lifecycle retires its journal while intentionally retaining the
+# authenticated operation infrastructure for fixed-root settlement. Immutable
+# rollback accepts only that independently classified idle shape.
+original_operation_idle = module._operation_state_idle
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    operation_state = module.COMPLETION_ROOT / "kata-operation-v1"
+    operation_state.mkdir(mode=0o700)
+    module._operation_state_idle = lambda: True
+    module.recover_failed_preparation()
+    assert operation_state.is_dir() and not module.PREPARATION_ROOT.exists()
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); configure(root)
+    module.prepare()
+    (module.COMPLETION_ROOT / "kata-operation-v1").mkdir(mode=0o700)
+    module._operation_state_idle = lambda: False
+    try:
+        module.recover_failed_preparation()
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("active operation state did not block immutable recovery")
+    assert module.PREPARATION_ROOT.exists()
+module._operation_state_idle = original_operation_idle
+
 for cut in ("rootfs", "extract-kata", "extract-containerd", "publish"):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
