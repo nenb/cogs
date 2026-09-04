@@ -37,10 +37,11 @@ def source_bindings():
 
 def approval():
     values = dict(
-        version="cogs.stage2-completion-production-approval/v3",
+        version="cogs.stage2-completion-production-approval/v4",
         phrase=production.APPROVAL_PHRASE,
         implementation_revision="1" * 40,
         control_revision="2" * 40,
+        qualification_revision="3" * 40,
         source_manifest_sha256=d("source"),
         source_bindings_sha256=production._commit(
             b"cogs.stage2-source-bindings/v1", source_bindings()),

@@ -21,11 +21,14 @@ test("control candidate workflow is manual reviewed-H one-shot and expressly non
   assert.match(workflow, /test "\$EXACT_IMPLEMENTATION_HEAD" = "\$\(\/usr\/bin\/git rev-parse HEAD\)"/u);
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
   assert.match(workflow, /non-authoritative-stage2-static-control/u);
-  assert.match(workflow, /^ {4}timeout-minutes: 55$/mu);
-  assert.match(workflow, /Step bounds total 49 minutes with a six-minute cleanup\/runner reserve/u);
+  assert.match(workflow, /^ {4}timeout-minutes: 60$/mu);
+  assert.match(workflow, /Step bounds total 53 minutes with a seven-minute cleanup\/runner reserve/u);
   assert.doesNotMatch(workflow, /aws-actions|amazon|terraform|opentofu/u);
   assert.match(workflow, /Authenticate exact trusted rootfs control input/u);
   assert.match(workflow, /artifact-ids: \$\{\{ inputs\.rootfs_control_artifact_id \}\}/u);
+  assert.match(workflow, /artifact-ids: \$\{\{ steps\.candidate_upload\.outputs\.artifact-id \}\}/u);
+  assert.match(workflow, /digest-mismatch: error/u);
+  assert.match(workflow, /values\[0\] and values\[0\] == values\[1\]/u);
   assert.doesNotMatch(workflow, /packages:\s*write|id-token:\s*write/u);
   assert.match(workflow, /test ! -e \/run\/netns\/cogs-stage2-ssh/u);
   assert.doesNotMatch(workflow, /completion_local_full|ctr run|systemctl|containerd --/u);

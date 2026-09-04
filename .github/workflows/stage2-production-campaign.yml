@@ -1,9 +1,10 @@
 name: Stage 2 production AWS campaign
-run-name: Stage 2 production AWS campaign G=${{ github.sha }} approval=${{ inputs.approval_run_id }}
+run-name: Stage 2 production AWS campaign R=${{ github.sha }} G=${{ inputs.control_head }} approval=${{ inputs.approval_run_id }}
 
 on:
   workflow_dispatch:
     inputs:
+      control_head: { description: Exact qualified control G, required: true, type: string }
       authorization_phrase: { description: Fresh destructive AWS campaign authorization, required: true, type: string }
       approval_run_id: { description: Exact authenticated approval run, required: true, type: string }
       approval_artifact_id: { description: Exact authenticated approval artifact ID, required: true, type: string }
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
+      CONTROL_HEAD: ${{ inputs.control_head }}
       APPROVAL_RUN_ID: ${{ inputs.approval_run_id }}
       APPROVAL_ARTIFACT_ID: ${{ inputs.approval_artifact_id }}
       APPROVAL_ARTIFACT_DIGEST: ${{ inputs.approval_artifact_digest }}
@@ -38,17 +40,19 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_ACTOR" = nenb
           test "$GITHUB_TRIGGERING_ACTOR" = nenb
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$CONTROL_HEAD" != "$GITHUB_SHA"
           [[ "$APPROVAL_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$APPROVAL_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$APPROVAL_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           gh api --paginate --slurp \
             'repos/nenb/cogs/actions/workflows/stage2-production-campaign.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/campaign-runs.json"
-          jq -e --arg g "$GITHUB_SHA" --arg approval "$APPROVAL_RUN_ID" \
+          jq -e --arg r "$GITHUB_SHA" --arg g "$CONTROL_HEAD" --arg approval "$APPROVAL_RUN_ID" \
             --argjson current "$GITHUB_RUN_ID" \
-            '[.[].workflow_runs[] | select(.head_sha == $g and .run_attempt == 1 and
+            '[.[].workflow_runs[] | select(.head_sha == $r and
               .path == ".github/workflows/stage2-production-campaign.yml" and
-              .display_title == ("Stage 2 production AWS campaign G=" + $g + " approval=" + $approval))] |
+              .display_title == ("Stage 2 production AWS campaign R=" + $r + " G=" + $g + " approval=" + $approval))] |
              map(.id) == [$current]' "$RUNNER_TEMP/campaign-runs.json" >/dev/null
 
       - name: Authenticate exact completed approval run and immutable artifact
@@ -56,8 +60,8 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/nenb/cogs/actions/runs/$APPROVAL_RUN_ID" >"$RUNNER_TEMP/approval-run.json"
-          jq -e --arg g "$GITHUB_SHA" \
-            '.path == ".github/workflows/stage2-production-approval.yml" and .head_sha == $g and
+          jq -e --arg r "$GITHUB_SHA" \
+            '.path == ".github/workflows/stage2-production-approval.yml" and .head_sha == $r and
              .head_branch == "main" and .event == "workflow_dispatch" and .run_attempt == 1 and
              .status == "completed" and .conclusion == "success"' \
             "$RUNNER_TEMP/approval-run.json" >/dev/null
@@ -67,7 +71,7 @@ jobs:
             '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name' \
             "$RUNNER_TEMP/approval-artifact.json" >/dev/null
 
-      - name: Check out exact control G without persistent credentials
+      - name: Check out exact campaign revision R without persistent credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.sha }}", persist-credentials: false }
 
@@ -101,8 +105,8 @@ jobs:
             https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$out/approval-authentication.json" >/dev/null
-          jq -e --arg g "$GITHUB_SHA" \
-            '.version == "cogs.stage2-completion-production-approval/v3" and
+          jq -e --arg g "$CONTROL_HEAD" \
+            '.version == "cogs.stage2-completion-production-approval/v4" and
              .control_revision == $g and .one_attempt == true' "$out/approval.json" >/dev/null
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
           now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
@@ -268,7 +272,7 @@ jobs:
           artifact_digest=os.environ["EVIDENCE_ARTIFACT_DIGEST"]
           if not artifact_digest.startswith("sha256:"): artifact_digest="sha256:"+artifact_digest
           value={"version":"cogs.stage2-production-evidence-upload-receipt/v1",
-              "result":"pass","control_revision":os.environ["GITHUB_SHA"],
+              "result":"pass","control_revision":os.environ["CONTROL_HEAD"],
               "run_id":int(os.environ["GITHUB_RUN_ID"]),"run_attempt":1,
               "artifact_id":int(os.environ["EVIDENCE_ARTIFACT_ID"]),
               "artifact_digest":artifact_digest,

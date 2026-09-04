@@ -2,7 +2,7 @@
 """Portable exact-policy checks for additive prebuilt static boundary."""
 import importlib.util
 from pathlib import Path
-import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -24,7 +24,8 @@ with tempfile.TemporaryDirectory() as temporary:
     repository = Path(temporary)
     for relative in (*module.POLICY, module.WORKFLOW_PATH):
         target = repository / relative; target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, target)
+        target.write_bytes(subprocess.check_output(
+            ("git", "show", f"d2fe08553d25d73fa276794c96b0f311e5406186:{relative}"), cwd=ROOT))
     observed = module._source_policy(repository)
     assert observed[module.WORKFLOW_PATH] == module.REVIEWED_WORKFLOW_SHA256
     workflow = repository / module.WORKFLOW_PATH

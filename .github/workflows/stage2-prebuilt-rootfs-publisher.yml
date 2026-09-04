@@ -58,6 +58,9 @@ jobs:
           jq -e '[.[].jobs[] | select(.name == "admit" or .name == "build" or .name == "readback") |
                     select(.status == "completed" and .conclusion == "success") | .name] | sort == ["admit","build","readback"]' \
             "$RUNNER_TEMP/producer-jobs.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" >"$RUNNER_TEMP/publisher-commit.json"
+          jq -e --arg g "$GITHUB_SHA" --arg h "$EXACT_H" \
+            '.sha == $g and (.parents | map(.sha)) == [$h]' "$RUNNER_TEMP/publisher-commit.json" >/dev/null
           gh api --paginate --slurp \
             'repos/nenb/cogs/actions/workflows/stage2-prebuilt-rootfs-publisher.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/publisher-runs.json"
@@ -111,7 +114,8 @@ jobs:
   publish:
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Step bounds total 40 minutes with a ten-minute cleanup/runner reserve.
+    timeout-minutes: 50
     permissions:
       actions: read
       contents: read
@@ -127,10 +131,12 @@ jobs:
       PRODUCER_ARTIFACT_DIGEST: ${{ inputs.producer_artifact_digest }}
     steps:
       - name: Check out the same exact publisher G without persisted credentials
+        timeout-minutes: 2
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.sha }}", fetch-depth: 2, persist-credentials: false }
 
       - name: Reauthenticate immutable artifact before entering credential-bearing work
+        timeout-minutes: 2
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
@@ -142,6 +148,7 @@ jobs:
             "$RUNNER_TEMP/artifact.json" >/dev/null
 
       - name: Download the same numeric candidate
+        timeout-minutes: 2
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ inputs.producer_artifact_id }}
@@ -150,6 +157,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Revalidate candidate and exact validation-job commitments
+        timeout-minutes: 2
         env:
           COGS_PREBUILT_CANDIDATE_ROOT: ${{ runner.temp }}/candidate
           SOURCE_MANIFEST: ${{ needs.validate.outputs.source_manifest }}
@@ -170,6 +178,7 @@ jobs:
           PY
 
       - name: Authenticate trusted OCI publisher only after validation
+        timeout-minutes: 2
         env: { GHCR_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
@@ -178,6 +187,7 @@ jobs:
 
       - id: oci
         name: Publish one run-unique transport tag and resolve immutable digest
+        timeout-minutes: 8
         run: |
           set -euo pipefail
           candidate="$RUNNER_TEMP/candidate"
@@ -197,6 +207,7 @@ jobs:
           printf 'subject=%s@%s\ndigest=%s\n' "$REPOSITORY" "$digest" "${digest#sha256:}" >>"$GITHUB_OUTPUT"
 
       - name: Keyless sign and verify exact immutable subject
+        timeout-minutes: 8
         env: { SUBJECT: "${{ steps.oci.outputs.subject }}" }
         run: |
           set -euo pipefail
@@ -216,6 +227,7 @@ jobs:
           test -s "$RUNNER_TEMP/cosign-verification.json"
 
       - name: Pull immutable subject and byte-compare all five members
+        timeout-minutes: 8
         env: { SUBJECT: "${{ steps.oci.outputs.subject }}" }
         run: |
           set -euo pipefail
@@ -228,6 +240,7 @@ jobs:
           test "$(find "$RUNNER_TEMP/readback" -type f | wc -l)" = 5
 
       - name: Issue publication receipt, descriptor, and retained custody
+        timeout-minutes: 2
         env:
           OCI_DIGEST: ${{ steps.oci.outputs.digest }}
           SOURCE_MANIFEST: ${{ needs.validate.outputs.source_manifest }}
@@ -264,6 +277,7 @@ jobs:
           test "$(find "$out" -type f | wc -l)" = 6
 
       - name: Upload exact descriptor and retained publication custody for G
+        timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-prebuilt-rootfs-control-input-${{ inputs.exact_implementation_head }}
@@ -273,6 +287,7 @@ jobs:
           compression-level: 0
 
       - name: Remove publisher credentials
+        timeout-minutes: 2
         if: always()
         run: |
           set -euo pipefail

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed H/G and first-created guard for the sole local Kata workflow."""
+"""Fail-closed H/G/Q and first-created guard for the sole local Kata workflow."""
 import hashlib
 import json
 import os
@@ -15,14 +15,19 @@ REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
 # environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = "1fc2dea2dcefea2aaf71a80356e0f5ed946e9991"
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "509dacc4a83b45a2da1ca7892210de8434a2b9de5b2a478ce4d8197f85967f3a"
+REVIEWED_IMPLEMENTATION_HEAD = "d2fe08553d25d73fa276794c96b0f311e5406186"
+# Filled by the later independent package review with the observed control G.
+REVIEWED_CONTROL_HEAD = None
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "4b1cf5e921e3bdbebf0b1d44e7b29cb14e173698fd97f27e277d865b36183f5a"
 REVIEWED_CONTROL_SHA256 = "d94af3687d21c432946f3bb1bc40b76fc8dad786fea2cc51366d1651a8a33926"
 REVIEWED_WORKFLOW_SHA256 = "70234e13f666384bd10a9deb569da14a40f504d0a9cbd18c1f5ffd9c2e24adb9"
 REVIEWED_RESULT_SCHEMA_SHA256 = "e77754237db66f1742b491c7c30708f5f8e65301cf61388eb2a55a062b3c1045"
 # Filled only by the later independent G review, together with the updated
 # workflow/control digests above.  No dispatch value can supply this authority.
 REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None
+REVIEWED_STATIC_CONTROL_RUN_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = None
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -92,6 +97,7 @@ def _digest(path):
 def _reviewed_constants():
     values = (
         (REVIEWED_IMPLEMENTATION_HEAD, SHA1),
+        (REVIEWED_CONTROL_HEAD, SHA1),
         (REVIEWED_IMPLEMENTATION_MANIFEST_SHA256, SHA256),
         (REVIEWED_CONTROL_SHA256, SHA256),
         (REVIEWED_WORKFLOW_SHA256, SHA256),
@@ -100,6 +106,13 @@ def _reviewed_constants():
     )
     _require(all(type(value) is str and pattern.fullmatch(value) is not None
                  for value, pattern in values), "review constants remain blocked")
+    _require(type(REVIEWED_STATIC_CONTROL_RUN_ID) is int
+             and type(REVIEWED_STATIC_CONTROL_ARTIFACT_ID) is int
+             and REVIEWED_STATIC_CONTROL_RUN_ID > 0 and REVIEWED_STATIC_CONTROL_ARTIFACT_ID > 0
+             and type(REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST) is str
+             and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                              REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST) is not None,
+             "static observation custody remains blocked")
 
 
 def guard(environ=os.environ, event=None, first_created=None):
@@ -114,11 +127,16 @@ def guard(environ=os.environ, event=None, first_created=None):
     _require(POSITIVE.fullmatch(run_id) is not None, "invalid run id")
     implementation = _required(environ, "EXACT_IMPLEMENTATION_HEAD")
     control = _required(environ, "EXACT_CONTROL_HEAD")
+    qualification = _required(environ, "EXACT_QUALIFICATION_HEAD")
     _require(implementation == REVIEWED_IMPLEMENTATION_HEAD
              and implementation == _required(environ, "CONFIGURED_IMPLEMENTATION_HEAD"),
              "implementation H differs")
-    _require(control == _required(environ, "GITHUB_SHA")
+    _require(control == REVIEWED_CONTROL_HEAD
              and control == _required(environ, "CONFIGURED_CONTROL_HEAD"), "control G differs")
+    _require(qualification == _required(environ, "GITHUB_SHA")
+             and qualification == _required(environ, "CONFIGURED_QUALIFICATION_HEAD"),
+             "qualification Q differs")
+    _require(control != qualification, "control G and qualification Q must differ")
     _require(_required(environ, "GITHUB_ACTOR") == _required(environ, "CONFIGURED_AUTHORIZED_ACTOR"),
              "actor differs")
     workflow_ref = f"{REPOSITORY}/.github/workflows/{WORKFLOW_NAME}@refs/heads/main"
@@ -129,9 +147,16 @@ def guard(environ=os.environ, event=None, first_created=None):
              "event repository differs")
     inputs = event.get("inputs")
     _require(type(inputs) is dict and inputs.get("reviewed_implementation_head") == implementation
-             and inputs.get("reviewed_control_head") == control, "event H/G inputs differ")
+             and inputs.get("reviewed_control_head") == control
+             and inputs.get("reviewed_qualification_head") == qualification,
+             "event H/G/Q inputs differ")
     _require(CONTROL.is_file() and _digest(CONTROL) == REVIEWED_CONTROL_SHA256,
              "reviewed control bytes differ")
+    control_value = _read_json(CONTROL, MAX_API_BYTES)
+    _require(type(control_value) is dict
+             and type(control_value.get("producer")) is dict
+             and control_value["producer"].get("control_revision") == control,
+             "reviewed control revision differs")
     _require(_digest(WORKFLOW) == REVIEWED_WORKFLOW_SHA256, "reviewed workflow bytes differ")
     observed_first = (_required(environ, "PRE_EFFECT_ADMITTED_RUN_ID")
                       if first_created is None else str(first_created))
@@ -140,9 +165,13 @@ def guard(environ=os.environ, event=None, first_created=None):
         "control_head": control,
         "control_sha256": REVIEWED_CONTROL_SHA256,
         "implementation_head": implementation,
+        "qualification_head": qualification,
         "implementation_manifest_sha256": REVIEWED_IMPLEMENTATION_MANIFEST_SHA256,
         "result_schema_sha256": REVIEWED_RESULT_SCHEMA_SHA256,
         "rootfs_descriptor_sha256": REVIEWED_ROOTFS_DESCRIPTOR_SHA256,
+        "static_control_run_id": REVIEWED_STATIC_CONTROL_RUN_ID,
+        "static_control_artifact_id": REVIEWED_STATIC_CONTROL_ARTIFACT_ID,
+        "static_control_artifact_digest": REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST,
         "workflow_sha256": REVIEWED_WORKFLOW_SHA256,
     }
 

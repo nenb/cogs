@@ -1,0 +1,27 @@
+# ADR 0298: Freeze prebuilt H and separate control from qualification head
+
+- Status: Accepted
+- Date: 2026-09-04
+- Accepted by: Nick Byrne through the standing instruction to complete every non-AWS prerequisite autonomously and stop at AWS
+
+## Context
+
+No-mint rehearsal `33899505862`, attempt 1, passed complete authentic full and readiness KVM routes on distinct fresh runners at diagnostic implementation `350d728662174d961900491bf40269c19ed3a110` and direct-child diagnostic control `d2fe08553d25d73fa276794c96b0f311e5406186`. Both routes consumed only publisher `33899359360`, artifact `9947034409`, and archive digest `sha256:c0713f32cabfc44462ffdfab647beaf4a10f40c7ead7f5c86a96b8dc1e9fba66`; passed cleanup-only recovery, settlement, residue, scaffold restoration, final observation, and enforcement; and minted no evidence or artifact. Two independent audits returned PASS. The complete log SHA-256 is `37de1a901367afb10063b7c8eaf3bfa747cc50c72415a7406493763133d3f37b`.
+
+Revision `d2fe08553d25d73fa276794c96b0f311e5406186` differs from the rehearsed implementation only in ADR and regenerated readiness evidence. It changes no Stage 2 workflow, runtime, schema, deployment, or test path exercised by the rehearsal. Final producer `33908498241`, attempt 1, then completed two byte-identical builds and exact readback at that revision. Artifact `9951239210` has Actions digest `sha256:58df9716f4d6ac54be10dd6b0a36068cce26535bb4e71bd25b1a17559127ac22` and expires 2026-09-11. Independent readback confirmed canonical ustar `41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397`, manifest `59ae5c5840fffca4ec24f4d720bca7a3f1ecb85e2950d8a7a3db7a3315c321d1`, metadata `8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506`, producer receipt `80d511e18457d9e38281090518675d7769ea97e37c2a7ff0fb64789d93a5a022`, package `53a389489b3d048f5006b8dcb5122ade6384cce48c7c7363b329e7ca769f498d`, provenance `bd9ba93b32cd18505d41984d922b5121b8680b70f8121fdc1177bb2a595580b2`, and source manifest `4b1cf5e921e3bdbebf0b1d44e7b29cb14e173698fd97f27e277d865b36183f5a`.
+
+A final pre-dispatch differential audit found a latent circularity: publisher and static-control bytes must name H's direct child G, but committing those observed bytes later creates qualification-source revision Q. The former workflow incorrectly required G to equal its own execution revision Q and would therefore have issued grants for Q while the authenticated control named G. Runtime validation correctly rejects that mismatch. No final publisher or static-control dispatch occurred, so their first-created authority remains intact.
+
+## Decision
+
+Freeze final implementation **H** as `d2fe08553d25d73fa276794c96b0f311e5406186` and bind final producer `33908498241`, artifact `9951239210`, and its exact archive digest.
+
+This ADR and the fail-closed H/G/Q qualification correction must merge as H's sole direct child. Freeze that merge as independently produced control revision **G**. Authorize exactly one first-created attempt-one final publisher at G for the bound producer, followed only on complete success by exactly one first-created attempt-one no-KVM static-control observation at the same G.
+
+The later reviewed static-package commit is qualification revision **Q**, not G. Q must have exactly one parent, G, contain the unchanged corrected qualification workflow plus exact independently read-back static bytes and filled immutable review constants, and be separately configured. Qualification admission authenticates `Q == GITHUB_SHA`, verifies Q's only parent is G and G's only parent is H, and executes its trusted package/workflow. Runtime grants remain the frozen H contract and bind G plus the corrected workflow digest; changing that H-owned grant codec after successful production would invalidate H and is forbidden. Q is instead preserved in every outer canonical cycle status, authenticated Actions custody map, and aggregate package, while all static control, descriptors, runtime grants, cycle receipts, and runtime checks continue to bind `control_revision = G`. The aggregate also preserves the independently reviewed static run, artifact, and archive identities. Static publication now performs exact-ID byte readback, publisher credential-bearing work has explicit step reserves, and mixed preflight authenticates the complete H→G→Q chain. Dormant production planning consumes the additive V4 aggregate and carries H/G/Q separately; additive production approval V4 preserves Q, and approval/campaign source revision is no longer misclassified as control G. H, G, and Q are distinct and required.
+
+## Consequences
+
+The complete counted set exposed previously omitted formal-qualification code and schemas; preserving aggregate V3 while adding compact reference-based V4 contracts yields 38,376 true no-deletion correction additions and 93,730 total lines before Q. Raise only the measured retained correction high from 11,500 to 12,100 and global correction high from 38,000 to 38,700; the 94,000 hard stop and all deployment/workflow limits remain unchanged.
+
+No final publisher or static observation may run before this direct-child merge passes protected checks and independent exact-head audit. A failed, canceled, retried, malformed, residue-uncertain, or artifactless run retires the generation. This decision grants no formal qualification until Q is independently established, and no provider, OpenTofu, SSM, inventory, campaign, production, or AWS authority.

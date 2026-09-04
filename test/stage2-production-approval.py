@@ -17,8 +17,9 @@ def d(value): return hashlib.sha256(value.encode()).hexdigest()
 
 
 value = {
-    "version": "cogs.stage2-production-approval-draft/v1",
+    "version": "cogs.stage2-production-approval-draft/v2",
     "implementation_revision": "1" * 40, "control_revision": "2" * 40,
+    "qualification_revision": "3" * 40,
     "source_manifest_sha256": d("source"),
     "source_bindings_sha256": d("source-bindings"),
     "static_control_sha256": d("control"),
@@ -47,8 +48,8 @@ with tempfile.TemporaryDirectory() as temporary:
     draft = Path(temporary) / "draft.json"
     draft.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
     environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                   "GITHUB_SHA": "2" * 40, "GITHUB_RUN_ID": "123",
-                   "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "nenb"}
+                   "GITHUB_SHA": "4" * 40, "COGS_STAGE2_CONTROL_REVISION": "2" * 40,
+                   "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "nenb"}
     result = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
                              "issue", str(draft)], cwd=ROOT, env=environment,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)

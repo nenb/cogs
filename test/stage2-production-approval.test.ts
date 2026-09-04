@@ -14,6 +14,10 @@ test("production approval issuance is canonical, provider-free, signed, and firs
     readFileSync("schemas/aws-stage2-completion-production-approval-v3.json", "utf8"),
     /production-approval\/v3/u,
   );
+  assert.match(
+    readFileSync("schemas/aws-stage2-completion-production-approval-v4.json", "utf8"),
+    /production-approval\/v4/u,
+  );
   const result = spawnSync("python3", ["-I", "-B", "test/stage2-production-approval.py"], {
     encoding: "utf8",
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },

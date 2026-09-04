@@ -4,10 +4,11 @@ import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/stage2-prebuilt-local-kata-qualification.yml", "utf8");
 const guard = readFileSync("scripts/stage2-prebuilt-local-qualification-guard.py", "utf8");
+const preflightWorkflow = readFileSync(".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml", "utf8");
 const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
 const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
 
-test("formal qualification is additive, exact H/G, first-created, and seven fresh jobs", () => {
+test("formal qualification is additive, exact H/G/Q, first-created, and seven fresh jobs", () => {
   assert.match(workflow, /\n {2}local-kata:\n {4}needs: admission\n {4}strategy:/u);
   assert.match(workflow, /ordinal: \[1, 2, 3, 4, 5, 6, 7\]/u);
   assert.match(workflow, /max-parallel: 7/u);
@@ -25,13 +26,25 @@ test("formal qualification is additive, exact H/G, first-created, and seven fres
   assert.ok(7800 + 10 <= 132 * 60);
   assert.match(workflow, /^name: Stage 2 prebuilt local Kata qualification$/mu);
   assert.match(workflow, /stage2-prebuilt-local-kata-qualification\.yml\/runs/u);
+  assert.match(workflow, /mixed_preflight_run_id/u);
+  assert.match(workflow, /stage2-prebuilt-mixed-hg-preflight\.yml/u);
+  assert.match(workflow, /\.conclusion == "success"/u);
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
-  assert.match(workflow, /Independently authenticate exact final H and G for this ordinal/u);
+  assert.match(workflow, /reviewed_qualification_head/u);
+  assert.match(workflow, /CONFIGURED_QUALIFICATION_HEAD: \$\{\{ vars\.STAGE2_LOCAL_QUALIFICATION_HEAD \}\}/u);
+  assert.match(workflow, /qualification-commit\.json/u);
+  assert.match(workflow, /\(\.parents \| map\(\.sha\)\) == \[\$g\]/u);
+  assert.match(workflow, /fetch --quiet --no-tags --depth=2 origin "\$EXACT_QUALIFICATION_HEAD"/u);
+  assert.match(workflow, /rev-parse HEAD\^\)" = "\$EXACT_CONTROL_HEAD"/u);
+  assert.match(workflow, /Independently authenticate exact final H, G, and Q for this ordinal/u);
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
   assert.match(staging, /stage2-completion-local-control-v3/u);
   assert.match(guard, /Reviewed directional binding/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = None/u);
   assert.match(guard, /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None/u);
+  assert.match(guard, /control_value\["producer"\]\.get\("control_revision"\) == control/u);
+  assert.match(guard, /"qualification_head": qualification/u);
 });
 
 test("each job prepares one rootfs, executes one mode-bound lifecycle, and closes custody", () => {
@@ -65,9 +78,12 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(workflow, /CYCLE_ARTIFACT_DIGEST: \$\{\{ steps\.cycle_upload\.outputs\.artifact-digest \}\}/u);
   assert.match(workflow, /CYCLE_JOB_RESULT: \$\{\{ needs\.local-kata\.result \}\}/u);
   assert.match(workflow, /test "\$CYCLE_JOB_RESULT" = success/u);
-  assert.match(workflow, /pre-aws-package-v3\.json/u);
+  assert.match(workflow, /pre-aws-package-v4\.json/u);
+  assert.match(workflow, /mixed_preflight_run_id/u);
+  assert.match(workflow, /EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST/u);
+  assert.match(workflow, /retention-days: 90/u);
   assert.match(workflow, /Byte-compare package and fail closed/u);
-  assert.match(workflow, /cycle-artifact-custody-v1\.json/u);
+  assert.match(workflow, /cycle-artifact-custody-v2\.json/u);
   assert.match(workflow, /PACKAGE_ARTIFACT_DIGEST.*artifact-digest/u);
   assert.match(workflow, /\[\[ "\$PACKAGE_ARTIFACT_DIGEST" =~ \^\[0-9a-f\]\{64\}\$ \]\]/u);
   assert.match(
@@ -88,8 +104,14 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.ok(Buffer.byteLength(workflow) < 94_000);
 });
 
-test("corrected mixed preflight remains no-KVM and versioned", () => {
+test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () => {
+  assert.match(preflightWorkflow, /^name: Stage 2 exact mixed H-G-Q no-KVM preflight$/mu);
+  assert.match(preflightWorkflow, /qualification_head/u);
+  assert.match(preflightWorkflow, /map\(\.id\) == \[\$current\]/u);
+  assert.match(preflightWorkflow, /rev-parse HEAD\^\)" = "\$EXACT_CONTROL_HEAD"/u);
+  assert.match(preflightWorkflow, /rev-parse HEAD\^\^\)" = "\$EXACT_IMPLEMENTATION_HEAD"/u);
   assert.match(preflight, /stage2-local-immutable-preparation\/v2/u);
+  assert.match(preflight, /EXACT_QUALIFICATION_HEAD/u);
   assert.match(preflight, /rootfs_artifact_count/u);
   assert.doesNotMatch(preflight, /\/dev\/kvm|completion_local_full/u);
 });

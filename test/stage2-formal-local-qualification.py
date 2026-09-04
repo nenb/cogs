@@ -27,11 +27,16 @@ def d(value): return hashlib.sha256(value.encode()).hexdigest()
 expected = {
     "EXPECTED_IMPLEMENTATION_HEAD": "1" * 40,
     "EXPECTED_CONTROL_HEAD": "2" * 40,
+    "EXPECTED_QUALIFICATION_HEAD": "3" * 40,
     "EXPECTED_SOURCE_MANIFEST_SHA256": d("source"),
     "EXPECTED_CONTROL_SHA256": d("control"),
     "EXPECTED_WORKFLOW_SHA256": d("workflow"),
     "EXPECTED_RESULT_SCHEMA_SHA256": d("schema"),
     "EXPECTED_ROOTFS_DESCRIPTOR_SHA256": d("descriptor"),
+    "EXPECTED_STATIC_CONTROL_RUN_ID": "61",
+    "EXPECTED_STATIC_CONTROL_ARTIFACT_ID": "62",
+    "EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST": "sha256:" + d("static-archive"),
+    "EXPECTED_MIXED_PREFLIGHT_RUN_ID": "63",
     "GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "1",
 }
 
@@ -123,7 +128,7 @@ def artifact_api():
     return {"total_count": 7, "artifacts": [{
         "id": 700 + ordinal, "name": formal.expected_artifact_name(expected, ordinal),
         "digest": "sha256:" + d(f"archive-{ordinal}"), "expired": False,
-        "workflow_run": {"id": 71},
+        "workflow_run": {"id": 71, "head_sha": expected["EXPECTED_QUALIFICATION_HEAD"]},
     } for ordinal in range(1, 8)]}
 
 
@@ -177,13 +182,14 @@ rejected(lambda: formal.archive_digest(d("archive")))
 # API custody is exact-ID, sha256-prefixed, run-bound, complete, and canonical.
 valid_custody = formal.validate_custody(custody(), expected)
 assert [row["artifact_id"] for row in valid_custody["artifacts"]] == list(range(701, 708))
-for mutation in ("id", "digest", "name", "expired", "run", "missing", "extra"):
+for mutation in ("id", "digest", "name", "expired", "run", "head", "missing", "extra"):
     hostile = artifact_api()
     if mutation == "id": hostile["artifacts"][1]["id"] = hostile["artifacts"][0]["id"]
     elif mutation == "digest": hostile["artifacts"][1]["digest"] = d("unprefixed")
     elif mutation == "name": hostile["artifacts"][1]["name"] = "wildcard-substitute"
     elif mutation == "expired": hostile["artifacts"][1]["expired"] = True
     elif mutation == "run": hostile["artifacts"][1]["workflow_run"]["id"] = 72
+    elif mutation == "head": hostile["artifacts"][1]["workflow_run"]["head_sha"] = "4" * 40
     elif mutation == "missing": hostile["artifacts"].pop(); hostile["total_count"] = 6
     else: hostile["artifacts"].append(copy.deepcopy(hostile["artifacts"][-1])); hostile["total_count"] = 8
     rejected(lambda hostile=hostile: formal.custody_from_api(json.dumps(hostile).encode(), expected))
@@ -199,8 +205,13 @@ with tempfile.TemporaryDirectory() as temporary:
     package_raw = aggregate(temporary)
     package = formal.decode(package_raw, 96 * 1024)
     assert package["cycle_count"] == 7 and package["workload_measurements"] == 21
+    assert package["qualification_revision"] == expected["EXPECTED_QUALIFICATION_HEAD"]
     assert package["source_bindings"] == receipt(1)["source_bindings"]
     assert package["cycle_artifact_custody"] == valid_custody
+    assert package["mixed_preflight_run_id"] == 63
+    assert package["static_control_observation"] == {
+        "run_id": 61, "artifact_id": 62,
+        "artifact_archive_digest": "sha256:" + d("static-archive")}
     assert package["cycle_artifact_custody_sha256"] == hashlib.sha256(custody()).hexdigest()
     assert [row["mode"] for row in package["cycles"]] == list(formal.CYCLE_MODES)
     assert [row["artifact_id"] for row in package["cycles"]] == list(range(701, 708))
