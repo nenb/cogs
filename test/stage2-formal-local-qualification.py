@@ -169,6 +169,11 @@ try: operation._validate_body("CYCLE_ROUTE_V1", hostile_body)
 except operation.OperationError: pass
 else: raise AssertionError("cloud authority relabeling was accepted")
 
+# Action output and API digests have distinct closed formats.
+assert formal.upload_digest(d("upload")) == d("upload")
+rejected(lambda: formal.upload_digest("sha256:" + d("upload")))
+rejected(lambda: formal.archive_digest(d("archive")))
+
 # API custody is exact-ID, sha256-prefixed, run-bound, complete, and canonical.
 valid_custody = formal.validate_custody(custody(), expected)
 assert [row["artifact_id"] for row in valid_custody["artifacts"]] == list(range(701, 708))
@@ -182,6 +187,12 @@ for mutation in ("id", "digest", "name", "expired", "run", "missing", "extra"):
     elif mutation == "missing": hostile["artifacts"].pop(); hostile["total_count"] = 6
     else: hostile["artifacts"].append(copy.deepcopy(hostile["artifacts"][-1])); hostile["total_count"] = 8
     rejected(lambda hostile=hostile: formal.custody_from_api(json.dumps(hostile).encode(), expected))
+
+with tempfile.TemporaryDirectory() as cycle_parent:
+    write_cycle(cycle_parent, 1)
+    formal.validate_cycle_artifact_root(cycle_parent, expected, 1)
+    write_cycle(cycle_parent, 2)
+    rejected(lambda: formal.validate_cycle_artifact_root(cycle_parent, expected, 1))
 
 with tempfile.TemporaryDirectory() as temporary:
     for ordinal in range(1, 8): write_cycle(temporary, ordinal)

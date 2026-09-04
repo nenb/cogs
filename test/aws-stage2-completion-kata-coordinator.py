@@ -601,7 +601,8 @@ with patch.object(execution.operation, "_durable_phase", side_effect=lambda _jou
 recovery_shell = (REMOTE / "recover-stage2-completion-remote.sh").read_text()
 assert "except BaseException" not in recovery_shell
 assert "except c.CoordinatorNoOperationPath" in recovery_shell
-assert recovery_shell.count("recover_failed_preparation") == 1
+assert recovery_shell.count("recover_failed_preparation") == 2
+assert "if not any(path.exists() or path.is_symlink() for path in controls)" in recovery_shell
 source = (REMOTE / "completion_kata_coordinator.py").read_text()
 tree = ast.parse(source)
 functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}

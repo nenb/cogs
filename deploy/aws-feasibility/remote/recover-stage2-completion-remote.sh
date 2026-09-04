@@ -20,13 +20,18 @@ exec /usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C \
   PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
   COGS_STAGE2_RECOVERY_PROFILE="$profile" \
   /usr/bin/python3 -I -B -c \
-  'import sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote"); import completion_kata_coordinator as c
-try:
- import os
- result = (c._recover_current_source_diagnostic()
-           if os.environ["COGS_STAGE2_RECOVERY_PROFILE"] == "diagnostic"
-           else c._recover_fixed_local_qualification())
-except c.CoordinatorNoOperationPath:
- import completion_kata_immutable_preparation as p
- result = p.recover_failed_preparation()
+  'import os,sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
+import completion_kata_coordinator as c
+import completion_kata_immutable_preparation as p
+controls=(p.CONTROL_ROOT / p.preparation.CONTROL_MEMBER,
+          p.CONTROL_ROOT / "stage2-current-source-prebuilt-diagnostic-control-v1.json")
+if not any(path.exists() or path.is_symlink() for path in controls):
+ result=p.recover_failed_preparation()
+else:
+ try:
+  result = (c._recover_current_source_diagnostic()
+            if os.environ["COGS_STAGE2_RECOVERY_PROFILE"] == "diagnostic"
+            else c._recover_fixed_local_qualification())
+ except c.CoordinatorNoOperationPath:
+  result = p.recover_failed_preparation()
 raise SystemExit(0 if result is None else 70)'

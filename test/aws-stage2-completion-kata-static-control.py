@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
 sys.path.insert(0, str(REMOTE))
 import completion_kata_admission as admission
+import completion_kata_immutable_preparation as immutable_preparation
 import completion_kata_preparation as preparation
 import completion_local_evidence as evidence
 import completion_rootfs_prebuilt as prebuilt
@@ -64,7 +65,7 @@ def source_implementation():
             "selected_sources": rows, "selected_sources_sha256": sha(canonical(rows))}
 
 
-def prebuilt_custody():
+def prebuilt_custody(manifest_digest="1" * 64):
     package = {"version": "cogs.stage2-prebuilt-rootfs-package/v1"}
     provenance = {"version": "cogs.stage2-prebuilt-rootfs-provenance/v1"}
     qualification = {"version": "cogs.stage2-prebuilt-rootfs-producer-receipt/v1"}
@@ -73,7 +74,7 @@ def prebuilt_custody():
         "version": "cogs.stage2-prebuilt-rootfs-publication-receipt/v1",
         "result": "pass", "implementation_revision": "1" * 40,
         "control_revision": "2" * 40, "source_manifest_sha256": "2" * 64,
-        "oci_manifest_sha256": "1" * 64,
+        "oci_manifest_sha256": manifest_digest,
         "rootfs_ustar_sha256": prebuilt.USTAR_SHA256,
         "package_manifest_sha256": sha(canonical(package)),
         "provenance_sha256": sha(canonical(provenance)),
@@ -89,15 +90,15 @@ def prebuilt_custody():
             "signature_verification_sha256": signature}
 
 
-def prebuilt_descriptor():
-    custody = prebuilt_custody()
+def prebuilt_descriptor(manifest_digest="1" * 64):
+    custody = prebuilt_custody(manifest_digest)
     return {
         "version": prebuilt.VERSION,
         "authority": prebuilt.AUTHORITY,
         "artifact": {"version": prebuilt.ARTIFACT_VERSION, "os": "linux", "architecture": prebuilt.ARCHITECTURE, "format": prebuilt.FORMAT},
         "registry": {"host": prebuilt.REGISTRY_HOST, "repository": prebuilt.REGISTRY_REPOSITORY,
                      "manifest_media_type": prebuilt.REGISTRY_MANIFEST_MEDIA_TYPE,
-                     "manifest_digest": "1" * 64,
+                     "manifest_digest": manifest_digest,
                      "layer_media_type": prebuilt.REGISTRY_LAYER_MEDIA_TYPE,
                      "layer_digest": prebuilt.USTAR_SHA256, "layer_size": prebuilt.USTAR_SIZE},
         "rootfs": {"metadata_sha256": prebuilt.METADATA_SHA256, "metadata_size": prebuilt.METADATA_SIZE,
@@ -146,7 +147,7 @@ def contract(role, path, digit):
     return {**body, "closure_sha256": sha(canonical(body))}
 
 
-def values():
+def values(manifest_digest="1" * 64):
     contracts = {}
     executables = []
     for index, (role, source_class, path) in enumerate(preparation.EXECUTABLES):
@@ -189,8 +190,8 @@ def values():
                           "manifest_size": 1_049_443,
                           "ustar_sha256": "41951eee6ee10211fa716962dd6e2641c319a816b89d0fc31fe114872addc397",
                           "ustar_size": 136_905_728, "entry_count": 4_353,
-                          "prebuilt_descriptor": prebuilt_descriptor(),
-                          "prebuilt_descriptor_sha256": sha(canonical(prebuilt_descriptor())),
+                          "prebuilt_descriptor": prebuilt_descriptor(manifest_digest),
+                          "prebuilt_descriptor_sha256": sha(canonical(prebuilt_descriptor(manifest_digest))),
                           "static_mapping_policy": {"uid": 0, "gid": 0, "nlink": 1,
                                                     "distinct_file_identities": True,
                                                     "path_basis": "rootfs-relative-no-symlink"},
@@ -235,7 +236,37 @@ assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)
 envelope, runtime_description, loaded_contracts = preparation.validate_control_members(control, first_members)
 assert set(loaded_contracts) == {row[0] for row in preparation.EXECUTABLES}
+# A valid envelope from a distinct descriptor generation cannot be paired with
+# another valid runtime merely by rewriting its runtime-member commitment.
+other_implementation, other_runtime, other_package, other_contracts = values("3" * 64)
+_other_control, other_members = preparation.build_control_bytes(
+    other_implementation, other_runtime, other_package,
+    "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
+    other_contracts, "2" * 40, prebuilt_custody("3" * 64))
+mixed_members = dict(first_members)
+mixed_envelope = json.loads(other_members[preparation.ENVELOPE_MEMBER])
+mixed_envelope["runtime"]["manifest_sha256"] = sha(first_members[preparation.RUNTIME_MEMBER])
+mixed_envelope_raw = canonical(mixed_envelope)
+mixed_members[preparation.ENVELOPE_MEMBER] = mixed_envelope_raw
+mixed_control_value = copy.deepcopy(control.value)
+mixed_envelope_row = next(
+    row for row in mixed_control_value["members"] if row["name"] == preparation.ENVELOPE_MEMBER)
+mixed_envelope_row.update(sha256=sha(mixed_envelope_raw), size=len(mixed_envelope_raw))
+mixed_control = preparation.load_control(canonical(mixed_control_value))
+reject(lambda: preparation.validate_control_members(mixed_control, mixed_members))
 assert envelope.value["implementation"]["revision"] == "1" * 40
+with tempfile.TemporaryDirectory() as temporary:
+    original_control_root = immutable_preparation.CONTROL_ROOT
+    immutable_preparation.CONTROL_ROOT = Path(temporary)
+    try:
+        (immutable_preparation.CONTROL_ROOT / preparation.CONTROL_MEMBER).write_bytes(first_control)
+        for name, raw in first_members.items():
+            (immutable_preparation.CONTROL_ROOT / name).parent.mkdir(parents=True, exist_ok=True)
+            (immutable_preparation.CONTROL_ROOT / name).write_bytes(raw)
+        loaded_envelope, loaded_runtime = immutable_preparation._expected_control_values()
+        assert loaded_envelope == envelope.value and loaded_runtime == runtime_description.value
+    finally:
+        immutable_preparation.CONTROL_ROOT = original_control_root
 assert envelope.value["programs"]["guest_program_sha256"] == preparation.final_guest.GUEST_PROGRAM_SHA256
 assert envelope.value["result_binding_base"]["guest_program_sha256"] == preparation.final_guest.GUEST_PROGRAM_SHA256
 # Feed the exact producer-generated binding into the terminal evidence boundary.

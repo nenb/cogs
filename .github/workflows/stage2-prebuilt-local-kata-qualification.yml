@@ -70,7 +70,7 @@ jobs:
       matrix:
         ordinal: [1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
-    timeout-minutes: 201
+    timeout-minutes: 210
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
@@ -128,7 +128,7 @@ jobs:
 
       - name: Complete exact immutable preparation before KVM eligibility and role custody
         id: preparation
-        timeout-minutes: 32
+        timeout-minutes: 35
         env:
           EXPECTED_MANIFEST: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
@@ -295,6 +295,7 @@ jobs:
         with:
           artifact-ids: ${{ steps.cycle_upload.outputs.artifact-id }}
           path: ${{ env.REPORT_READBACK_STAGING }}
+          merge-multiple: true
           digest-mismatch: error
 
       - name: Validate exact-ID and exact-archive-digest cycle readback
@@ -337,6 +338,20 @@ jobs:
           seen=$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)
           case "$seen" in root:root:755) sudo -n /bin/chmod 0777 /opt ;; root:root:777) ;; *) exit 1 ;; esac
 
+      - name: Run one final supervised cycle residue observation
+        id: final_observation
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-local-settlement.py supervise-final <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          EOF
+
       - name: Enforce one-attempt complete cycle custody and zero residue
         if: always()
         timeout-minutes: 1
@@ -351,25 +366,20 @@ jobs:
           CYCLE_READBACK: ${{ steps.cycle_readback.outcome }}
           OUTPUT_CLEANUP: ${{ steps.output_cleanup.outcome }}
           HOST_SCAFFOLD_RESTORE: ${{ steps.host_scaffold_restore.outcome }}
+          FINAL_OBSERVATION: ${{ steps.final_observation.outcome }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
           for outcome in "$ENTRY" "$RECOVERY" "$FIXED_CLEANUP" "$INDEPENDENT_RESIDUE" "$PUBLICATION" \
-            "$CYCLE_UPLOAD" "$CYCLE_DOWNLOAD" "$CYCLE_READBACK" "$OUTPUT_CLEANUP" "$HOST_SCAFFOLD_RESTORE"
+            "$CYCLE_UPLOAD" "$CYCLE_DOWNLOAD" "$CYCLE_READBACK" "$OUTPUT_CLEANUP" "$HOST_SCAFFOLD_RESTORE" \
+            "$FINAL_OBSERVATION"
           do test "$outcome" = success; done
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-local-settlement.py supervise-final <<EOF
-          $GITHUB_RUN_ID
-          $GITHUB_RUN_ATTEMPT
-          $REPORT_STAGING
-          $REPORT_READBACK_STAGING
-          $RECEIPT_READBACK_STAGING
-          EOF
 
   aggregate:
     needs: [admission, local-kata]
-    if: always()
+    if: always() && needs.admission.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
@@ -380,6 +390,7 @@ jobs:
       CYCLE_CUSTODY_MAP: /var/tmp/cogs-stage2-formal-artifact-custody-${{ github.run_id }}-${{ github.run_attempt }}.json
     steps:
       - name: Acquire exact control revision G without credentials
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
@@ -390,6 +401,7 @@ jobs:
 
       - name: Authenticate exact final H and G for aggregation
         id: gate
+        timeout-minutes: 1
         env:
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
@@ -403,6 +415,7 @@ jobs:
         id: cycle_custody
         if: always() && needs.local-kata.result == 'success'
         continue-on-error: true
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
@@ -422,6 +435,7 @@ jobs:
         id: cycle_download
         if: always() && steps.cycle_custody.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 3
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.cycle_custody.outputs.artifact_ids }}
@@ -433,6 +447,7 @@ jobs:
         id: package_create
         if: always() && steps.cycle_download.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 2
         env:
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
           EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
@@ -452,6 +467,7 @@ jobs:
         id: package_upload
         if: always() && steps.package_create.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-formal-non-aws-package-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-1
@@ -464,14 +480,19 @@ jobs:
         id: package_download
         if: always() && steps.package_upload.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 3
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.package_upload.outputs.artifact-id }}
           path: ${{ env.PACKAGE_READBACK }}
+          merge-multiple: true
           digest-mismatch: error
 
       - name: Byte-compare package and fail closed
+        id: package_readback
         if: always()
+        continue-on-error: true
+        timeout-minutes: 2
         env:
           CUSTODY: ${{ steps.cycle_custody.outcome }}
           CREATE: ${{ steps.package_create.outcome }}
@@ -486,8 +507,36 @@ jobs:
           test "$CYCLE_JOB_RESULT" = success
           test "$CUSTODY:$CREATE:$UPLOAD:$DOWNLOAD" = success:success:success:success
           [[ "$PACKAGE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$PACKAGE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PACKAGE_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           cmp "$PACKAGE_STAGING/pre-aws-package-v3.json" "$PACKAGE_READBACK/pre-aws-package-v3.json"
           cmp "$PACKAGE_STAGING/cycle-artifact-custody-v1.json" "$PACKAGE_READBACK/cycle-artifact-custody-v1.json"
+
+      - name: Remove every aggregate staging path
+        id: aggregate_cleanup
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
           rm -rf -- "$CYCLE_AGGREGATE_ROOT" "$PACKAGE_STAGING" "$PACKAGE_READBACK" \
             "$CYCLE_CUSTODY_API_RESPONSE" "$CYCLE_CUSTODY_MAP"
+          for path in "$CYCLE_AGGREGATE_ROOT" "$PACKAGE_STAGING" "$PACKAGE_READBACK" \
+            "$CYCLE_CUSTODY_API_RESPONSE" "$CYCLE_CUSTODY_MAP"; do test ! -e "$path"; done
+
+      - name: Enforce complete aggregate custody and cleanup
+        if: always()
+        timeout-minutes: 1
+        env:
+          CYCLE_JOB_RESULT: ${{ needs.local-kata.result }}
+          CUSTODY: ${{ steps.cycle_custody.outcome }}
+          DOWNLOAD: ${{ steps.cycle_download.outcome }}
+          CREATE: ${{ steps.package_create.outcome }}
+          UPLOAD: ${{ steps.package_upload.outcome }}
+          PACKAGE_DOWNLOAD: ${{ steps.package_download.outcome }}
+          READBACK: ${{ steps.package_readback.outcome }}
+          CLEANUP: ${{ steps.aggregate_cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$CYCLE_JOB_RESULT" = success
+          for outcome in "$CUSTODY" "$DOWNLOAD" "$CREATE" "$UPLOAD" \
+            "$PACKAGE_DOWNLOAD" "$READBACK" "$CLEANUP"; do test "$outcome" = success; done

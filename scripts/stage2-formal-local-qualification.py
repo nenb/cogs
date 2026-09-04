@@ -145,7 +145,13 @@ def positive(value):
 
 def archive_digest(value):
     require(type(value) is str and ARCHIVE_SHA256.fullmatch(value) is not None,
-            "sha256-prefixed Actions artifact archive digest required")
+            "sha256-prefixed Actions artifact API digest required")
+    return value
+
+
+def upload_digest(value):
+    require(type(value) is str and SHA256.fullmatch(value) is not None,
+            "raw upload-artifact output digest required")
     return value
 
 
@@ -444,6 +450,7 @@ def publish(staging, expected, ordinal, runner_uid):
     source.unlink(); os.chmod(staging, 0o555)
     validate_status(read_regular(staging / "status.json", MAX_STATUS_BYTES),
                     read_regular(staging / "receipt.json", MAX_RECEIPT_BYTES), expected, ordinal)
+    validate_cycle_artifact_root(staging.parent, expected, ordinal)
 
 
 def validate_cycle_directory(path, expected, ordinal):
@@ -455,6 +462,14 @@ def validate_cycle_directory(path, expected, ordinal):
     status_raw = read_regular(path / "status.json", MAX_STATUS_BYTES)
     validate_receipt(receipt_raw, expected, ordinal)
     return receipt_raw, status_raw, validate_status(status_raw, receipt_raw, expected, ordinal)
+
+
+def validate_cycle_artifact_root(root, expected, ordinal):
+    root = Path(root); seen = root.lstat()
+    name = f"cycle-{ordinal}"
+    require(stat.S_ISDIR(seen.st_mode) and not stat.S_ISLNK(seen.st_mode)
+            and set(os.listdir(root)) == {name}, "cycle artifact parent inventory differs")
+    return validate_cycle_directory(root / name, expected, ordinal)
 
 
 def aggregate(root, custody_raw, expected, cycle_job_result="success"):
@@ -530,10 +545,11 @@ def main():
         publish(os.environ["CYCLE_STAGING"], expected, ordinal, uid)
     elif command == "readback":
         local = Path(os.environ["CYCLE_STAGING"]); remote = Path(os.environ["CYCLE_READBACK_STAGING"])
-        left = validate_cycle_directory(local, expected, ordinal); right = validate_cycle_directory(remote, expected, ordinal)
+        left = validate_cycle_artifact_root(local.parent, expected, ordinal)
+        right = validate_cycle_artifact_root(remote.parent, expected, ordinal)
         require(left[:2] == right[:2], "exact cycle artifact readback differs")
         positive(int(os.environ["CYCLE_ARTIFACT_ID"]))
-        archive_digest(os.environ["CYCLE_ARTIFACT_DIGEST"])
+        upload_digest(os.environ["CYCLE_ARTIFACT_DIGEST"])
     elif command == "custody":
         api_raw = read_regular(os.environ["CYCLE_CUSTODY_API_RESPONSE"], MAX_API_BYTES)
         custody_raw = canonical(custody_from_api(api_raw, expected))

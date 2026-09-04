@@ -17,7 +17,20 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   assert.match(workflow, /COGS_STAGE2_CONTROL_REVISION="\$GITHUB_SHA"/u);
   assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py/u);
   assert.match(workflow, /completion_kata_immutable_preparation\.py/u);
+  const descriptor = workflow.indexOf("Stage only the descriptor for immutable acquisition");
+  const immutable = workflow.indexOf("Acquire verify and install immutable fixtures without runtime launch");
+  const adjuncts = workflow.indexOf("Stage authenticated publication adjuncts after immutable acquisition");
+  const control = workflow.indexOf("Produce deterministic non-authoritative control candidate");
+  assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
+  assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 1/u);
+  assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 6/u);
   assert.match(workflow, /stage2-local-static-control-v2\.json/u);
+  const stepMinutes = [...workflow.matchAll(/^ {8}timeout-minutes: (\d+)$/gmu)].reduce(
+    (total, match) => total + Number(match[1]),
+    0,
+  );
+  assert.equal(stepMinutes, 49);
+  assert.match(workflow, /^ {4}timeout-minutes: 55$/mu);
   assert.doesNotMatch(workflow, /\/dev\/kvm|containerd|\bctr\b|qmp|run-stage2-completion-(?:full|readiness)/u);
 });
 
