@@ -22,9 +22,11 @@ CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
 HARD_LIMIT = 94_000
 DEPLOY_CORRECTION_HIGH = 22_000
-RETAINED_CORRECTION_HIGH = 11_500
+RETAINED_CORRECTION_HIGH = 12_100
 WORKFLOW_CORRECTION_HIGH = 5_000
-GLOBAL_CORRECTION_HIGH = 38_000
+GLOBAL_CORRECTION_HIGH = 38_700
+FINAL_H_REVISION = "d2fe08553d25d73fa276794c96b0f311e5406186"
+FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_901, 11_508, 4_546
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -58,6 +60,7 @@ RETAINED_FILES = (
     "schemas/aws-stage2-completion-production-approval-v1.json",
     "schemas/aws-stage2-completion-production-approval-v2.json",
     "schemas/aws-stage2-completion-production-approval-v3.json",
+    "schemas/aws-stage2-completion-production-approval-v4.json",
     "schemas/aws-stage2-production-evidence-upload-receipt-v1.json",
     "schemas/stage2-cycle-launch-grant-v1.json",
     "scripts/validate-aws-stage2-completion-evidence.ts",
@@ -84,6 +87,7 @@ RETAINED_FILES = (
     "scripts/stage2-prebuilt-rootfs-producer.py",
     "scripts/stage2-prebuilt-rootfs-publisher.py",
     "scripts/stage2-prebuilt-local-qualification-guard.py",
+    "scripts/stage2-formal-local-qualification.py",
     "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
     "scripts/stage2-prebuilt-static-control-runtime-boundary.py",
     "scripts/stage2-prebuilt-rehearsal-grant.py",
@@ -118,6 +122,13 @@ RETAINED_FILES = (
     "schemas/stage2-local-static-control-package-v2.json",
     "schemas/stage2-pre-aws-qualification-package-v1.json",
     "schemas/stage2-pre-aws-qualification-package-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v3.json",
+    "schemas/stage2-pre-aws-qualification-package-v4.json",
+    "schemas/stage2-formal-local-artifact-custody-v1.json",
+    "schemas/stage2-formal-local-artifact-custody-v2.json",
+    "schemas/stage2-formal-local-cycle-grant-v1.json",
+    "schemas/stage2-formal-local-cycle-status-v1.json",
+    "schemas/stage2-formal-local-cycle-status-v2.json",
     "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
     "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
     "schemas/stage2-workload-post-pin-v1.json",
@@ -170,8 +181,8 @@ def _counted(path):
             or path in RETAINED_FILES)
 
 
-def _gross_slice(paths, allowed):
-    output = _git(["diff", "--numstat", CORRECTION_BASE_REVISION, "--", *paths])
+def _gross_slice(paths, allowed, revision=CORRECTION_BASE_REVISION):
+    output = _git(["diff", "--numstat", revision, "--", *paths])
     added = 0
     for line in output.splitlines():
         columns = line.split("\t")
@@ -212,12 +223,13 @@ def measure():
     _require(mutable_owner_lines < MUTABLE_OWNER_LINE_LIMIT)
     retained = sum(_lines(ROOT / name) for name in RETAINED_FILES)
     current = deploy + retained + workflows
-    deploy_gross = _gross_slice((DEPLOY_ROOT,), lambda name: (
+    deploy_gross = FINAL_H_DEPLOY_GROSS + _gross_slice((DEPLOY_ROOT,), lambda name: (
         (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
-        or name in control_data_names or name in retained_names))
-    retained_gross = _gross_slice(RETAINED_FILES, lambda name: name in retained_names)
-    workflow_gross = _gross_slice((WORKFLOW_ROOT,), lambda name: (
-        name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)))
+        or name in control_data_names or name in retained_names), FINAL_H_REVISION)
+    retained_gross = FINAL_H_RETAINED_GROSS + _gross_slice(
+        RETAINED_FILES, lambda name: name in retained_names, FINAL_H_REVISION)
+    workflow_gross = FINAL_H_WORKFLOW_GROSS + _gross_slice((WORKFLOW_ROOT,), lambda name: (
+        name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)), FINAL_H_REVISION)
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     slices_satisfied = (

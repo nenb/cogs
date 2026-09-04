@@ -52,26 +52,29 @@ def digest(domain, value):
 
 def environment():
     revision = os.environ.get("GITHUB_SHA", "")
+    control = os.environ.get("COGS_STAGE2_CONTROL_REVISION", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     actor = os.environ.get("GITHUB_ACTOR", "")
-    require(SHA1.fullmatch(revision) is not None and POSITIVE.fullmatch(run_id) is not None
+    require(SHA1.fullmatch(revision) is not None and SHA1.fullmatch(control) is not None
+            and revision != control and POSITIVE.fullmatch(run_id) is not None
             and actor == "nenb" and os.environ.get("GITHUB_RUN_ATTEMPT") == "1")
-    return revision, int(run_id), actor
+    return revision, control, int(run_id), actor
 
 
 def issue(path):
-    revision, run_id, actor = environment()
+    revision, control, run_id, actor = environment()
     _raw, draft = read(path)
-    require(draft.pop("version", None) == "cogs.stage2-production-approval-draft/v1")
+    require(draft.pop("version", None) == "cogs.stage2-production-approval-draft/v2")
     allowed = {item.name for item in fields(production.ProductionApproval)} - {
         "version", "phrase", "batch_commitment", "issuer_commitment",
         "rate_source_commitment", "one_attempt"}
-    require(set(draft) == allowed and draft.get("control_revision") == revision)
+    require(set(draft) == allowed and draft.get("control_revision") == control)
     issuer = digest(b"cogs.stage2-production-approval-issuer/v1", {
         "workflow": ".github/workflows/stage2-production-approval.yml",
-        "control_revision": revision, "run_id": run_id, "actor": actor})
+        "workflow_revision": revision, "control_revision": control,
+        "run_id": run_id, "actor": actor})
     value = {
-        "version": "cogs.stage2-completion-production-approval/v3",
+        "version": "cogs.stage2-completion-production-approval/v4",
         "phrase": production.APPROVAL_PHRASE,
         **draft,
         "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
@@ -85,11 +88,11 @@ def issue(path):
 
 
 def authenticate(approval_path):
-    revision, run_id, actor = environment()
+    revision, control, run_id, actor = environment()
     approval_raw, approval_value = read(approval_path)
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
     approval = production.ProductionApproval(**approval_value)
-    require(approval.control_revision == revision)
+    require(approval.control_revision == control)
     executor = os.environ.get("COGS_STAGE2_EXECUTOR_PRINCIPAL_COMMITMENT", "")
     production._digest(executor)
     require(executor == approval.executor_principal_commitment)
@@ -101,7 +104,7 @@ def authenticate(approval_path):
         "issuer_commitment": approval.issuer_commitment,
         "workflow_sha256": os.environ.get("COGS_STAGE2_APPROVAL_WORKFLOW_SHA256", ""),
         "workflow_run_id": run_id, "workflow_run_attempt": 1,
-        "control_revision": revision,
+        "control_revision": control,
         "approver_principal_commitment": approver,
         "executor_principal_commitment": executor,
         "inventory_observer_principal_commitment":

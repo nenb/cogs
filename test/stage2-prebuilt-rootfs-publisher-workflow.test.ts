@@ -12,6 +12,9 @@ const script = join(root, "scripts/stage2-prebuilt-rootfs-publisher.py");
 test("trusted publisher is directional, numeric-artifact-bound, signed, and byte-read-back", () => {
   assert.match(workflow, /test "\$\(git rev-parse HEAD\^\)" = "\$EXACT_H"/u);
   assert.match(workflow, /fetch-depth: 2/u);
+  assert.match(workflow, /\.sha == \$g and \(\.parents \| map\(\.sha\)\) == \[\$h\]/u);
+  assert.match(workflow, /Step bounds total 40 minutes with a ten-minute cleanup\/runner reserve/u);
+  assert.match(workflow, /^ {4}timeout-minutes: 50$/mu);
   assert.match(workflow, /artifact-ids: \$\{\{ inputs\.producer_artifact_id \}\}/u);
   assert.match(workflow, /\.digest == \$digest and \.workflow_run\.id == \$run/u);
   assert.match(workflow, /packages: write/u);

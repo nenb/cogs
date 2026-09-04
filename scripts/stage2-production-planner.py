@@ -64,36 +64,43 @@ def run(arguments, timeout, environment, parse=False):
 
 
 def main(arguments):
-    require(len(arguments) == 7 and os.environ.get("COGS_STAGE2_AWS_PLAN_AUTHORIZATION") ==
+    require(len(arguments) == 5 and os.environ.get("COGS_STAGE2_AWS_PLAN_AUTHORIZATION") ==
             "authorize-read-only-stage2-production-planning")
-    report_raw, report = read(arguments[0]); receipt_raw, receipt = read(arguments[1])
-    control_raw, control = read(arguments[2]); descriptor_raw, descriptor = read(arguments[3], 8192)
-    package_raw, package = read(arguments[4]); tofu = Path(arguments[5]); output = Path(arguments[6])
-    require(report.get("version") == "cogs.stage2-workload-local-qualification/v4"
-            and report.get("result") == "pass" and report.get("qualified") is True
-            and report.get("rootfs_input", {}).get("build_attempts") == 0
-            and report.get("rootfs_input", {}).get("import_attempts") == 1
-            and receipt.get("report", {}).get("sha256") == hashlib.sha256(report_raw).hexdigest()
+    package_raw, package = read(arguments[0]); control_raw, control = read(arguments[1])
+    descriptor_raw, descriptor = read(arguments[2], 8192)
+    tofu = Path(arguments[3]); output = Path(arguments[4])
+    require(package.get("version") == "cogs.stage2-pre-aws-qualification-package/v4"
+            and package.get("authority") == "non-aws-prerequisite-evidence-only"
+            and package.get("cycle_count") == 7 and package.get("workload_measurements") == 21
+            and package.get("claims", {}).get("formal_non_aws_qualification_passed") is True
+            and package.get("claims", {}).get("aws_authorized") is False
+            and package.get("claims", {}).get("provider_executed") is False
+            and package.get("claims", {}).get("aws_executed") is False
+            and package.get("claims", {}).get("promotion_authorized") is False
             and control.get("version") == "cogs.stage2-local-static-control-package/v2"
-            and descriptor.get("version") == "cogs.stage2-prebuilt-rootfs-descriptor/v1"
-            and package.get("version") == "cogs.stage2-pre-aws-qualification-package/v2")
-    bindings = report["bindings"]; producer = descriptor["producer"]
-    require(bindings["rootfs_descriptor_sha256"] == hashlib.sha256(descriptor_raw).hexdigest()
-            and producer["revision"] == bindings["source_head"]
+            and descriptor.get("version") == "cogs.stage2-prebuilt-rootfs-descriptor/v1")
+    bindings = package["source_bindings"]; producer = descriptor["producer"]
+    require(re.fullmatch(r"[0-9a-f]{40}", package["qualification_revision"]) is not None
+            and bindings["rootfs_descriptor_sha256"] == hashlib.sha256(descriptor_raw).hexdigest()
+            and producer["revision"] == package["implementation_revision"] == bindings["source_head"]
+            and control.get("producer", {}).get("control_revision") == package["control_revision"]
             and producer["source_manifest_sha256"] == bindings["source_manifest_sha256"]
             and producer["package_manifest_sha256"] == bindings["rootfs_package_manifest_sha256"]
             and producer["provenance_sha256"] == bindings["rootfs_provenance_sha256"]
             and producer["publication_receipt_sha256"] ==
                 bindings["rootfs_publication_receipt_sha256"]
-            and package["implementation_revision"] == bindings["source_head"]
-            and package["control_revision"] == receipt["control"]["head"]
-            and package["report_sha256"] == hashlib.sha256(report_raw).hexdigest()
-            and package["receipt_sha256"] == hashlib.sha256(receipt_raw).hexdigest()
+            and package["source_manifest_sha256"] == bindings["source_manifest_sha256"]
             and package["static_control_sha256"] == hashlib.sha256(control_raw).hexdigest()
-            and package["rootfs"]["descriptor_sha256"] == hashlib.sha256(descriptor_raw).hexdigest())
-    require(hashlib.sha256(tofu.read_bytes()).hexdigest() == TOFU_SHA256
-            and re.fullmatch(r"[0-9a-f]{40}", receipt["control"]["head"]) is not None
-            and hashlib.sha256(control_raw).hexdigest() == receipt["control"]["sha256"])
+            and package["rootfs_descriptor_sha256"] == hashlib.sha256(descriptor_raw).hexdigest()
+            and package["cycle_artifact_custody"]["workflow_run"]["head_sha"] ==
+                package["qualification_revision"]
+            and type(package["static_control_observation"]["run_id"]) is int
+            and package["static_control_observation"]["run_id"] > 0
+            and type(package["static_control_observation"]["artifact_id"]) is int
+            and package["static_control_observation"]["artifact_id"] > 0
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", package["static_control_observation"]
+                             ["artifact_archive_digest"]) is not None)
+    require(hashlib.sha256(tofu.read_bytes()).hexdigest() == TOFU_SHA256)
     environment = {key: os.environ[key] for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN")}
     environment.update({"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C",
@@ -136,13 +143,14 @@ def main(arguments):
             and image.get("RootDeviceType") == "ebs" and image.get("State") == "available")
     now = time.time_ns()
     draft = {
-        "version": "cogs.stage2-production-approval-draft/v1",
+        "version": "cogs.stage2-production-approval-draft/v2",
         "implementation_revision": bindings["source_head"],
-        "control_revision": receipt["control"]["head"],
+        "control_revision": package["control_revision"],
+        "qualification_revision": package["qualification_revision"],
         "source_manifest_sha256": bindings["source_manifest_sha256"],
         "source_bindings_sha256": production._commit(
             b"cogs.stage2-source-bindings/v1", bindings),
-        "static_control_sha256": receipt["control"]["sha256"],
+        "static_control_sha256": package["static_control_sha256"],
         "pre_aws_package_sha256": hashlib.sha256(package_raw).hexdigest(),
         "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
         "rootfs_package_manifest_sha256": producer["package_manifest_sha256"],
@@ -194,7 +202,7 @@ def main(arguments):
             "ami_id": image["ImageId"], "ami_owner_id": image["OwnerId"],
             "ami_commitment": draft["ami_commitment"], "batch_commitment": batch,
             "cycle_ordinal": ordinal, "source_revision": bindings["source_head"],
-            "control_revision": receipt["control"]["head"],
+            "control_revision": package["control_revision"],
             "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(draft["expires_unix_ns"] // 10**9)),
             "budget_alert_email": email, "account_id_sha256": draft["account_commitment"]}

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Non-authoritative exact mixed-H/G immutable preflight. Never enter KVM/Kata.
+# Non-authoritative exact mixed-H/G/Q immutable preflight. Never enter KVM/Kata.
 set -uo pipefail
 
-H=1eaec52dd4e2f1222548362e92adc780a2169025
-G=e8775fe2fb07170b1b5c9d17b356aaa8c1b93ce4
-MANIFEST=ec4c46f2247df2fad872dd3f1f7e147d775dfb568fcb7e520ceb7d3653108768
-CONTROL=d32dad750fdae5118ba164d394145a3c3e7e45894524c2a17cbd502ecb80e26d
+H=d2fe08553d25d73fa276794c96b0f311e5406186
+# Filled only by the later independent static-package review.
+G=0000000000000000000000000000000000000000
+MANIFEST=4b1cf5e921e3bdbebf0b1d44e7b29cb14e173698fd97f27e277d865b36183f5a
+CONTROL=0000000000000000000000000000000000000000000000000000000000000000
 ROOT=/var/lib/cogs/stage2-completion-v1/source
 H_CHECKOUT=$GITHUB_WORKSPACE/preflight-H
-CONTROL_CHECKOUT=$GITHUB_WORKSPACE/control
+CONTROL_CHECKOUT=$GITHUB_WORKSPACE/qualification
 REPORT=/var/tmp/cogs-stage2-local-result-$GITHUB_RUN_ID-1
 READBACK=/var/tmp/cogs-stage2-local-result-upload-$GITHUB_RUN_ID-1
 RECEIPT=/var/tmp/cogs-stage2-local-receipt-upload-$GITHUB_RUN_ID-1
@@ -48,6 +49,10 @@ admit() {
   test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true || return
   test "$EXACT_IMPLEMENTATION_HEAD" = "$H" || return
   test "$EXACT_CONTROL_HEAD" = "$G" || return
+  [[ "$EXACT_QUALIFICATION_HEAD" =~ ^[0-9a-f]{40}$ ]] || return
+  test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA" || return
+  test "$H" != "$G" && test "$H" != "$EXACT_QUALIFICATION_HEAD" \
+    && test "$G" != "$EXACT_QUALIFICATION_HEAD" || return
   for name in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE \
     AWS_WEB_IDENTITY_TOKEN_FILE TF_TOKEN_app_terraform_io TF_VAR_credentials GOOGLE_APPLICATION_CREDENTIALS \
     ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID \

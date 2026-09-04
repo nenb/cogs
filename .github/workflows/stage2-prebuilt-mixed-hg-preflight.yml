@@ -1,5 +1,5 @@
-name: Stage 2 exact mixed H-G no-KVM preflight
-run-name: Stage 2 prebuilt mixed H-G preflight H=${{ inputs.implementation_head }} G=${{ inputs.control_head }}
+name: Stage 2 exact mixed H-G-Q no-KVM preflight
+run-name: Stage 2 prebuilt mixed H-G-Q preflight H=${{ inputs.implementation_head }} G=${{ inputs.control_head }} Q=${{ inputs.qualification_head }}
 
 on:
   workflow_dispatch:
@@ -12,8 +12,13 @@ on:
         description: Exact protected-main control G
         required: true
         type: string
+      qualification_head:
+        description: Exact direct-child qualification package Q
+        required: true
+        type: string
 
-permissions: {}
+permissions:
+  actions: read
 
 concurrency:
   group: stage2-mixed-hg-preflight
@@ -28,12 +33,33 @@ jobs:
       ENV: /dev/null
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.control_head }}
+      EXACT_QUALIFICATION_HEAD: ${{ inputs.qualification_head }}
     steps:
-      - name: Acquire exact protected-main G without credentials
+      - name: Admit sole exact protected-main H-G-Q preflight
+        timeout-minutes: 1
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_CONTROL_HEAD"
+          test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_QUALIFICATION_HEAD"
+          test "$EXACT_CONTROL_HEAD" != "$EXACT_QUALIFICATION_HEAD"
+          gh api --paginate --slurp \
+            'repos/nenb/cogs/actions/workflows/stage2-prebuilt-mixed-hg-preflight.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
+            >"$RUNNER_TEMP/preflight-runs.json"
+          jq -e --arg q "$EXACT_QUALIFICATION_HEAD" --arg h "$EXACT_IMPLEMENTATION_HEAD" \
+            --arg g "$EXACT_CONTROL_HEAD" --argjson current "$GITHUB_RUN_ID" \
+            --arg title "Stage 2 prebuilt mixed H-G-Q preflight H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD Q=$EXACT_QUALIFICATION_HEAD" \
+            '[.[].workflow_runs[] | select(.head_sha == $q and .display_title == $title and
+              .path == ".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml")] |
+             map(.id) == [$current]' "$RUNNER_TEMP/preflight-runs.json" >/dev/null
+
+      - name: Acquire exact protected-main Q and prove H-G-Q ancestry without credentials
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test "$EXACT_CONTROL_HEAD" = e8775fe2fb07170b1b5c9d17b356aaa8c1b93ce4
+          test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA"
           test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
           test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
@@ -41,13 +67,14 @@ jobs:
             path=$1 revision=$2
             "${clean[@]}" /usr/bin/git init --quiet "$path"
             "${clean[@]}" /usr/bin/git -C "$path" remote add origin https://github.com/nenb/cogs.git
-            "${clean[@]}" /usr/bin/git -C "$path" fetch --quiet --no-tags --depth=1 origin "$revision"
+            "${clean[@]}" /usr/bin/git -C "$path" fetch --quiet --no-tags --depth=3 origin "$revision"
             "${clean[@]}" /usr/bin/git -C "$path" checkout --quiet --detach FETCH_HEAD
             test "$(/usr/bin/git -C "$path" rev-parse HEAD)" = "$revision"
             test -z "$(/usr/bin/git -C "$path" status --porcelain)"
           }
-          exact_git "$GITHUB_WORKSPACE/control" "$EXACT_CONTROL_HEAD"
-          exact_git "$GITHUB_WORKSPACE/driver" "$GITHUB_SHA"
+          exact_git "$GITHUB_WORKSPACE/qualification" "$EXACT_QUALIFICATION_HEAD"
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE/qualification" rev-parse HEAD^)" = "$EXACT_CONTROL_HEAD"
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE/qualification" rev-parse HEAD^^)" = "$EXACT_IMPLEMENTATION_HEAD"
       - name: Execute exact mixed H-G preparation and mandatory settlement without KVM
         timeout-minutes: 46
         run: |
@@ -56,11 +83,12 @@ jobs:
             GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REF="$GITHUB_REF" \
             GITHUB_REF_PROTECTED="$GITHUB_REF_PROTECTED" GITHUB_SHA="$GITHUB_SHA" \
             EXACT_IMPLEMENTATION_HEAD="$EXACT_IMPLEMENTATION_HEAD" EXACT_CONTROL_HEAD="$EXACT_CONTROL_HEAD" \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 2690s /bin/bash "$GITHUB_WORKSPACE/driver/scripts/stage2-prebuilt-mixed-hg-preflight.sh" run
+            EXACT_QUALIFICATION_HEAD="$EXACT_QUALIFICATION_HEAD" \
+            /usr/bin/timeout --signal=TERM --kill-after=10s 2690s /bin/bash "$GITHUB_WORKSPACE/qualification/scripts/stage2-prebuilt-mixed-hg-preflight.sh" run
       - name: Independently repeat mandatory settlement after every outcome
         if: always()
         timeout-minutes: 11
         run: |
           env -i BASH_ENV=/dev/null ENV=/dev/null HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/driver/scripts/stage2-prebuilt-mixed-hg-preflight.sh" settle
+            /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/qualification/scripts/stage2-prebuilt-mixed-hg-preflight.sh" settle

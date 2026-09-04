@@ -1,5 +1,5 @@
 name: Stage 2 prebuilt local Kata qualification
-run-name: Stage 2 prebuilt local Kata qualification H=${{ inputs.reviewed_implementation_head }} G=${{ inputs.reviewed_control_head }}
+run-name: Stage 2 prebuilt local Kata qualification H=${{ inputs.reviewed_implementation_head }} G=${{ inputs.reviewed_control_head }} Q=${{ inputs.reviewed_qualification_head }}
 
 on:
   workflow_dispatch:
@@ -9,7 +9,15 @@ on:
         required: true
         type: string
       reviewed_control_head:
-        description: Exact reviewed control revision G containing this unchanged workflow
+        description: Exact independently observed control revision G
+        required: true
+        type: string
+      reviewed_qualification_head:
+        description: Exact direct-child qualification package revision Q containing this unchanged workflow
+        required: true
+        type: string
+      mixed_preflight_run_id:
+        description: Exact successful attempt-one H-G-Q no-KVM preflight run
         required: true
         type: string
 
@@ -24,19 +32,23 @@ concurrency:
 jobs:
   admission:
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
     outputs:
       run_id: ${{ steps.pre_admission.outputs.run_id }}
+      preflight_run_id: ${{ steps.pre_admission.outputs.preflight_run_id }}
     steps:
       - name: Admit the sole first-created formal non-cloud batch before every source effect
         id: pre_admission
-        timeout-minutes: 1
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
           EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+          EXACT_QUALIFICATION_HEAD: ${{ inputs.reviewed_qualification_head }}
+          MIXED_PREFLIGHT_RUN_ID: ${{ inputs.mixed_preflight_run_id }}
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
+          CONFIGURED_QUALIFICATION_HEAD: ${{ vars.STAGE2_LOCAL_QUALIFICATION_HEAD }}
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
         run: |
           set -euo pipefail
@@ -49,18 +61,42 @@ jobs:
           test "$GITHUB_TRIGGERING_ACTOR" = "$CONFIGURED_AUTHORIZED_ACTOR"
           test "$EXACT_IMPLEMENTATION_HEAD" = "$CONFIGURED_IMPLEMENTATION_HEAD"
           test "$EXACT_CONTROL_HEAD" = "$CONFIGURED_CONTROL_HEAD"
-          test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_QUALIFICATION_HEAD" = "$CONFIGURED_QUALIFICATION_HEAD"
+          test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_CONTROL_HEAD"
+          test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_QUALIFICATION_HEAD"
+          test "$EXACT_CONTROL_HEAD" != "$EXACT_QUALIFICATION_HEAD"
+          [[ "$MIXED_PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/commits/$EXACT_CONTROL_HEAD" >"$RUNNER_TEMP/control-commit.json"
+          jq -e --arg g "$EXACT_CONTROL_HEAD" --arg h "$EXACT_IMPLEMENTATION_HEAD" \
+            '.sha == $g and (.parents | map(.sha)) == [$h]' "$RUNNER_TEMP/control-commit.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/commits/$EXACT_QUALIFICATION_HEAD" >"$RUNNER_TEMP/qualification-commit.json"
+          jq -e --arg q "$EXACT_QUALIFICATION_HEAD" --arg g "$EXACT_CONTROL_HEAD" \
+            '.sha == $q and (.parents | map(.sha)) == [$g]' "$RUNNER_TEMP/qualification-commit.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$MIXED_PREFLIGHT_RUN_ID" >"$RUNNER_TEMP/preflight-run.json"
+          jq -e --arg q "$EXACT_QUALIFICATION_HEAD" \
+            --arg title "Stage 2 prebuilt mixed H-G-Q preflight H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD Q=$EXACT_QUALIFICATION_HEAD" \
+            '.path == ".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml" and
+             .head_sha == $q and .head_branch == "main" and .event == "workflow_dispatch" and
+             .display_title == $title and .run_attempt == 1 and .status == "completed" and
+             .conclusion == "success"' "$RUNNER_TEMP/preflight-run.json" >/dev/null
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$MIXED_PREFLIGHT_RUN_ID/jobs?per_page=100" \
+            >"$RUNNER_TEMP/preflight-jobs.json"
+          jq -e '[.[].jobs[] | select(.name == "preflight" and .status == "completed" and
+                     .conclusion == "success")] | length == 1' "$RUNNER_TEMP/preflight-jobs.json" >/dev/null
           gh api --paginate --slurp \
             'repos/nenb/cogs/actions/workflows/stage2-prebuilt-local-kata-qualification.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/qualification-runs.json"
           jq -e --arg h "$EXACT_IMPLEMENTATION_HEAD" --arg g "$EXACT_CONTROL_HEAD" \
-            --arg title "Stage 2 prebuilt local Kata qualification H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD" \
+            --arg q "$EXACT_QUALIFICATION_HEAD" \
+            --arg title "Stage 2 prebuilt local Kata qualification H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD Q=$EXACT_QUALIFICATION_HEAD" \
             --argjson current "$GITHUB_RUN_ID" \
-            '[.[].workflow_runs[] | select(.head_sha == $g and .display_title == $title and
-              .path == ".github/workflows/stage2-prebuilt-local-kata-qualification.yml" and
-              .run_attempt == 1)] | map(.id) == [$current]' \
+            '[.[].workflow_runs[] | select(.head_sha == $q and .display_title == $title and
+              .path == ".github/workflows/stage2-prebuilt-local-kata-qualification.yml")] |
+             map(.id) == [$current]' \
             "$RUNNER_TEMP/qualification-runs.json" >/dev/null
-          printf 'run_id=%s\n' "$GITHUB_RUN_ID" >>"$GITHUB_OUTPUT"
+          printf 'run_id=%s\npreflight_run_id=%s\n' \
+            "$GITHUB_RUN_ID" "$MIXED_PREFLIGHT_RUN_ID" >>"$GITHUB_OUTPUT"
 
   local-kata:
     needs: admission
@@ -74,6 +110,7 @@ jobs:
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+      EXACT_QUALIFICATION_HEAD: ${{ inputs.reviewed_qualification_head }}
       FORMAL_CYCLE_ORDINAL: ${{ matrix.ordinal }}
       REPORT_STAGING: /var/tmp/cogs-stage2-local-result-${{ github.run_id }}-${{ github.run_attempt }}
       REPORT_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-${{ github.run_attempt }}
@@ -82,7 +119,7 @@ jobs:
       CYCLE_READBACK_STAGING: /var/tmp/cogs-stage2-local-result-upload-${{ github.run_id }}-${{ github.run_attempt }}/cycle-${{ matrix.ordinal }}
       CYCLE_ARTIFACT_NAME: stage2-formal-cycle-${{ matrix.ordinal }}-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Acquire exact control revision G without credentials
+      - name: Acquire exact qualification revision Q without credentials
         timeout-minutes: 1
         run: |
           set -euo pipefail
@@ -91,22 +128,25 @@ jobs:
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
           "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
-          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$EXACT_CONTROL_HEAD"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=2 origin "$EXACT_QUALIFICATION_HEAD"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE" rev-parse HEAD^)" = "$EXACT_CONTROL_HEAD"
 
-      - name: Independently authenticate exact final H and G for this ordinal
+      - name: Independently authenticate exact final H, G, and Q for this ordinal
         id: gate
         timeout-minutes: 1
         env:
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
+          CONFIGURED_QUALIFICATION_HEAD: ${{ vars.STAGE2_LOCAL_QUALIFICATION_HEAD }}
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
           PRE_EFFECT_ADMITTED_RUN_ID: ${{ needs.admission.outputs.run_id }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
-          test "$EXACT_CONTROL_HEAD" = "$GITHUB_SHA"
-          test "$EXACT_CONTROL_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
+          test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA"
+          test "$EXACT_QUALIFICATION_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
+          test "$EXACT_CONTROL_HEAD" = "$(/usr/bin/git rev-parse HEAD^)"
           test -z "$(/usr/bin/git status --porcelain)"
           /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             /usr/bin/python3 -I -B scripts/stage2-prebuilt-local-qualification-guard.py >>"$GITHUB_OUTPUT"
@@ -170,17 +210,27 @@ jobs:
         env: &formal_expected
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
           EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_QUALIFICATION_HEAD: ${{ steps.gate.outputs.qualification_head }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
           EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
           EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
           EXPECTED_ROOTFS_DESCRIPTOR_SHA256: ${{ steps.gate.outputs.rootfs_descriptor_sha256 }}
+          EXPECTED_STATIC_CONTROL_RUN_ID: ${{ steps.gate.outputs.static_control_run_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_ID: ${{ steps.gate.outputs.static_control_artifact_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST: ${{ steps.gate.outputs.static_control_artifact_digest }}
+          EXPECTED_MIXED_PREFLIGHT_RUN_ID: ${{ needs.admission.outputs.preflight_run_id }}
         run: |
           set -euo pipefail
           sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             env -i PATH=/usr/bin:/bin FORMAL_CYCLE_ORDINAL="$FORMAL_CYCLE_ORDINAL" \
             GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             EXPECTED_IMPLEMENTATION_HEAD="$EXPECTED_IMPLEMENTATION_HEAD" EXPECTED_CONTROL_HEAD="$EXPECTED_CONTROL_HEAD" \
+            EXPECTED_QUALIFICATION_HEAD="$EXPECTED_QUALIFICATION_HEAD" \
+            EXPECTED_STATIC_CONTROL_RUN_ID="$EXPECTED_STATIC_CONTROL_RUN_ID" \
+            EXPECTED_STATIC_CONTROL_ARTIFACT_ID="$EXPECTED_STATIC_CONTROL_ARTIFACT_ID" \
+            EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST="$EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST" \
+            EXPECTED_MIXED_PREFLIGHT_RUN_ID="$EXPECTED_MIXED_PREFLIGHT_RUN_ID" \
             EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" EXPECTED_CONTROL_SHA256="$EXPECTED_CONTROL_SHA256" \
             EXPECTED_WORKFLOW_SHA256="$EXPECTED_WORKFLOW_SHA256" EXPECTED_RESULT_SCHEMA_SHA256="$EXPECTED_RESULT_SCHEMA_SHA256" \
             EXPECTED_ROOTFS_DESCRIPTOR_SHA256="$EXPECTED_ROOTFS_DESCRIPTOR_SHA256" \
@@ -268,6 +318,11 @@ jobs:
             GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             CYCLE_STAGING="$CYCLE_STAGING" TRUSTED_RUNNER_UID="$(id -u)" \
             EXPECTED_IMPLEMENTATION_HEAD="$EXPECTED_IMPLEMENTATION_HEAD" EXPECTED_CONTROL_HEAD="$EXPECTED_CONTROL_HEAD" \
+            EXPECTED_QUALIFICATION_HEAD="$EXPECTED_QUALIFICATION_HEAD" \
+            EXPECTED_STATIC_CONTROL_RUN_ID="$EXPECTED_STATIC_CONTROL_RUN_ID" \
+            EXPECTED_STATIC_CONTROL_ARTIFACT_ID="$EXPECTED_STATIC_CONTROL_ARTIFACT_ID" \
+            EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST="$EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST" \
+            EXPECTED_MIXED_PREFLIGHT_RUN_ID="$EXPECTED_MIXED_PREFLIGHT_RUN_ID" \
             EXPECTED_SOURCE_MANIFEST_SHA256="$EXPECTED_SOURCE_MANIFEST_SHA256" EXPECTED_CONTROL_SHA256="$EXPECTED_CONTROL_SHA256" \
             EXPECTED_WORKFLOW_SHA256="$EXPECTED_WORKFLOW_SHA256" EXPECTED_RESULT_SCHEMA_SHA256="$EXPECTED_RESULT_SCHEMA_SHA256" \
             EXPECTED_ROOTFS_DESCRIPTOR_SHA256="$EXPECTED_ROOTFS_DESCRIPTOR_SHA256" \
@@ -306,11 +361,16 @@ jobs:
         env:
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
           EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_QUALIFICATION_HEAD: ${{ steps.gate.outputs.qualification_head }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
           EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
           EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
           EXPECTED_ROOTFS_DESCRIPTOR_SHA256: ${{ steps.gate.outputs.rootfs_descriptor_sha256 }}
+          EXPECTED_STATIC_CONTROL_RUN_ID: ${{ steps.gate.outputs.static_control_run_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_ID: ${{ steps.gate.outputs.static_control_artifact_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST: ${{ steps.gate.outputs.static_control_artifact_digest }}
+          EXPECTED_MIXED_PREFLIGHT_RUN_ID: ${{ needs.admission.outputs.preflight_run_id }}
           CYCLE_ARTIFACT_ID: ${{ steps.cycle_upload.outputs.artifact-id }}
           CYCLE_ARTIFACT_DIGEST: ${{ steps.cycle_upload.outputs.artifact-digest }}
         run: |
@@ -383,28 +443,33 @@ jobs:
     env:
       EXACT_IMPLEMENTATION_HEAD: ${{ inputs.reviewed_implementation_head }}
       EXACT_CONTROL_HEAD: ${{ inputs.reviewed_control_head }}
+      EXACT_QUALIFICATION_HEAD: ${{ inputs.reviewed_qualification_head }}
       CYCLE_AGGREGATE_ROOT: /var/tmp/cogs-stage2-formal-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
       PACKAGE_STAGING: /var/tmp/cogs-stage2-formal-package-${{ github.run_id }}-${{ github.run_attempt }}
       PACKAGE_READBACK: /var/tmp/cogs-stage2-formal-package-readback-${{ github.run_id }}-${{ github.run_attempt }}
       CYCLE_CUSTODY_API_RESPONSE: /var/tmp/cogs-stage2-formal-artifact-api-${{ github.run_id }}-${{ github.run_attempt }}.json
       CYCLE_CUSTODY_MAP: /var/tmp/cogs-stage2-formal-artifact-custody-${{ github.run_id }}-${{ github.run_attempt }}.json
     steps:
-      - name: Acquire exact control revision G without credentials
+      - name: Acquire exact qualification revision Q without credentials
         timeout-minutes: 2
         run: |
           set -euo pipefail
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
           "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
-          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$EXACT_CONTROL_HEAD"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=2 origin "$EXACT_QUALIFICATION_HEAD"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXACT_QUALIFICATION_HEAD"
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE" rev-parse HEAD^)" = "$EXACT_CONTROL_HEAD"
+          test -z "$(/usr/bin/git -C "$GITHUB_WORKSPACE" status --porcelain)"
 
-      - name: Authenticate exact final H and G for aggregation
+      - name: Authenticate exact final H, G, and Q for aggregation
         id: gate
         timeout-minutes: 1
         env:
           CONFIGURED_IMPLEMENTATION_HEAD: ${{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}
           CONFIGURED_CONTROL_HEAD: ${{ vars.STAGE2_LOCAL_CONTROL_HEAD }}
+          CONFIGURED_QUALIFICATION_HEAD: ${{ vars.STAGE2_LOCAL_QUALIFICATION_HEAD }}
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
           PRE_EFFECT_ADMITTED_RUN_ID: ${{ needs.admission.outputs.run_id }}
         run: |
@@ -420,6 +485,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
           EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_QUALIFICATION_HEAD: ${{ steps.gate.outputs.qualification_head }}
+          EXPECTED_STATIC_CONTROL_RUN_ID: ${{ steps.gate.outputs.static_control_run_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_ID: ${{ steps.gate.outputs.static_control_artifact_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST: ${{ steps.gate.outputs.static_control_artifact_digest }}
+          EXPECTED_MIXED_PREFLIGHT_RUN_ID: ${{ needs.admission.outputs.preflight_run_id }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
           EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
@@ -451,17 +521,22 @@ jobs:
         env:
           EXPECTED_IMPLEMENTATION_HEAD: ${{ steps.gate.outputs.implementation_head }}
           EXPECTED_CONTROL_HEAD: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_QUALIFICATION_HEAD: ${{ steps.gate.outputs.qualification_head }}
           EXPECTED_SOURCE_MANIFEST_SHA256: ${{ steps.gate.outputs.implementation_manifest_sha256 }}
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
           EXPECTED_WORKFLOW_SHA256: ${{ steps.gate.outputs.workflow_sha256 }}
           EXPECTED_RESULT_SCHEMA_SHA256: ${{ steps.gate.outputs.result_schema_sha256 }}
           EXPECTED_ROOTFS_DESCRIPTOR_SHA256: ${{ steps.gate.outputs.rootfs_descriptor_sha256 }}
+          EXPECTED_STATIC_CONTROL_RUN_ID: ${{ steps.gate.outputs.static_control_run_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_ID: ${{ steps.gate.outputs.static_control_artifact_id }}
+          EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST: ${{ steps.gate.outputs.static_control_artifact_digest }}
+          EXPECTED_MIXED_PREFLIGHT_RUN_ID: ${{ needs.admission.outputs.preflight_run_id }}
           CYCLE_JOB_RESULT: ${{ needs.local-kata.result }}
         run: |
           set -euo pipefail
           install -d -m 0700 "$PACKAGE_STAGING"
-          install -m 0600 "$CYCLE_CUSTODY_MAP" "$PACKAGE_STAGING/cycle-artifact-custody-v1.json"
-          /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py aggregate >"$PACKAGE_STAGING/pre-aws-package-v3.json"
+          install -m 0600 "$CYCLE_CUSTODY_MAP" "$PACKAGE_STAGING/cycle-artifact-custody-v2.json"
+          /usr/bin/python3 -I -B scripts/stage2-formal-local-qualification.py aggregate >"$PACKAGE_STAGING/pre-aws-package-v4.json"
 
       - name: Upload non-AWS prerequisite package
         id: package_upload
@@ -473,7 +548,7 @@ jobs:
           name: stage2-formal-non-aws-package-${{ inputs.reviewed_implementation_head }}-${{ inputs.reviewed_control_head }}-${{ github.run_id }}-1
           path: ${{ env.PACKAGE_STAGING }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
           compression-level: 0
 
       - name: Download package by exact numeric ID
@@ -508,8 +583,8 @@ jobs:
           test "$CUSTODY:$CREATE:$UPLOAD:$DOWNLOAD" = success:success:success:success
           [[ "$PACKAGE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$PACKAGE_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          cmp "$PACKAGE_STAGING/pre-aws-package-v3.json" "$PACKAGE_READBACK/pre-aws-package-v3.json"
-          cmp "$PACKAGE_STAGING/cycle-artifact-custody-v1.json" "$PACKAGE_READBACK/cycle-artifact-custody-v1.json"
+          cmp "$PACKAGE_STAGING/pre-aws-package-v4.json" "$PACKAGE_READBACK/pre-aws-package-v4.json"
+          cmp "$PACKAGE_STAGING/cycle-artifact-custody-v2.json" "$PACKAGE_READBACK/cycle-artifact-custody-v2.json"
 
       - name: Remove every aggregate staging path
         id: aggregate_cleanup

@@ -1,9 +1,10 @@
 name: Stage 2 authenticated production approval
-run-name: Stage 2 production approval G=${{ github.sha }} plan=${{ inputs.planning_run_id }}
+run-name: Stage 2 production approval R=${{ github.sha }} G=${{ inputs.control_head }} plan=${{ inputs.planning_run_id }}
 
 on:
   workflow_dispatch:
     inputs:
+      control_head: { description: Exact qualified control G, required: true, type: string }
       planning_run_id: { description: Exact separately authorized planning run, required: true, type: string }
       planning_artifact_id: { description: Exact planning package artifact ID, required: true, type: string }
       planning_artifact_digest: { description: Exact sha256-prefixed planning archive digest, required: true, type: string }
@@ -22,6 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
+      COGS_STAGE2_CONTROL_REVISION: ${{ inputs.control_head }}
       PLAN_RUN_ID: ${{ inputs.planning_run_id }}
       PLAN_ARTIFACT_ID: ${{ inputs.planning_artifact_id }}
       PLAN_ARTIFACT_DIGEST: ${{ inputs.planning_artifact_digest }}
@@ -38,16 +40,19 @@ jobs:
           test "$GITHUB_ACTOR" = nenb
           test "$GITHUB_TRIGGERING_ACTOR" = nenb
           test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$COGS_STAGE2_CONTROL_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$COGS_STAGE2_CONTROL_REVISION" != "$GITHUB_SHA"
           [[ "$PLAN_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$PLAN_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$PLAN_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           gh api --paginate --slurp \
             'repos/nenb/cogs/actions/workflows/stage2-production-approval.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/approval-runs.json"
-          jq -e --arg g "$GITHUB_SHA" --arg plan "$PLAN_RUN_ID" --argjson current "$GITHUB_RUN_ID" \
-            '[.[].workflow_runs[] | select(.head_sha == $g and
-              .display_title == ("Stage 2 production approval G=" + $g + " plan=" + $plan) and
-              .path == ".github/workflows/stage2-production-approval.yml" and .run_attempt == 1)] |
+          jq -e --arg r "$GITHUB_SHA" --arg g "$COGS_STAGE2_CONTROL_REVISION" \
+            --arg plan "$PLAN_RUN_ID" --argjson current "$GITHUB_RUN_ID" \
+            '[.[].workflow_runs[] | select(.head_sha == $r and
+              .display_title == ("Stage 2 production approval R=" + $r + " G=" + $g + " plan=" + $plan) and
+              .path == ".github/workflows/stage2-production-approval.yml")] |
              map(.id) == [$current]' "$RUNNER_TEMP/approval-runs.json" >/dev/null
 
       - name: Authenticate completed planning package without invoking AWS
@@ -55,8 +60,8 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/nenb/cogs/actions/runs/$PLAN_RUN_ID" >"$RUNNER_TEMP/plan-run.json"
-          jq -e --arg g "$GITHUB_SHA" \
-            '.path == ".github/workflows/stage2-production-plan.yml" and .head_sha == $g and
+          jq -e --arg r "$GITHUB_SHA" \
+            '.path == ".github/workflows/stage2-production-plan.yml" and .head_sha == $r and
              .head_branch == "main" and .event == "workflow_dispatch" and .run_attempt == 1 and
              .status == "completed" and .conclusion == "success"' \
             "$RUNNER_TEMP/plan-run.json" >/dev/null

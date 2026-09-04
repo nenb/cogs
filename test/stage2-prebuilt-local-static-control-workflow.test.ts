@@ -29,8 +29,8 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
     (total, match) => total + Number(match[1]),
     0,
   );
-  assert.equal(stepMinutes, 49);
-  assert.match(workflow, /^ {4}timeout-minutes: 55$/mu);
+  assert.equal(stepMinutes, 53);
+  assert.match(workflow, /^ {4}timeout-minutes: 60$/mu);
   assert.doesNotMatch(workflow, /\/dev\/kvm|containerd|\bctr\b|qmp|run-stage2-completion-(?:full|readiness)/u);
 });
 

@@ -1,16 +1,15 @@
 name: Stage 2 production planning
-run-name: Stage 2 production planning G=${{ github.sha }} qualification=${{ inputs.qualification_run_id }}
+run-name: Stage 2 production planning H=${{ inputs.implementation_head }} G=${{ inputs.control_head }} Q=${{ inputs.qualification_head }} qualification=${{ inputs.qualification_run_id }}
 
 on:
   workflow_dispatch:
     inputs:
       authorization_phrase: { description: Fresh read-only AWS planning authorization, required: true, type: string }
+      implementation_head: { description: Exact qualified implementation H, required: true, type: string }
+      control_head: { description: Exact qualified control G, required: true, type: string }
+      qualification_head: { description: Exact qualification package Q, required: true, type: string }
       qualification_run_id: { description: Exact successful formal qualification run, required: true, type: string }
-      report_artifact_id: { description: Exact report artifact ID, required: true, type: string }
-      report_artifact_digest: { description: Exact report archive digest, required: true, type: string }
-      receipt_artifact_id: { description: Exact receipt artifact ID, required: true, type: string }
-      receipt_artifact_digest: { description: Exact receipt archive digest, required: true, type: string }
-      package_artifact_id: { description: Exact corrected pre-AWS package artifact ID, required: true, type: string }
+      package_artifact_id: { description: Exact V4 qualification package artifact ID, required: true, type: string }
       package_artifact_digest: { description: Exact corrected pre-AWS package archive digest, required: true, type: string }
 
 permissions:
@@ -27,11 +26,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
+      IMPLEMENTATION_HEAD: ${{ inputs.implementation_head }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      QUALIFICATION_HEAD: ${{ inputs.qualification_head }}
       QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
-      REPORT_ARTIFACT_ID: ${{ inputs.report_artifact_id }}
-      REPORT_ARTIFACT_DIGEST: ${{ inputs.report_artifact_digest }}
-      RECEIPT_ARTIFACT_ID: ${{ inputs.receipt_artifact_id }}
-      RECEIPT_ARTIFACT_DIGEST: ${{ inputs.receipt_artifact_digest }}
       PACKAGE_ARTIFACT_ID: ${{ inputs.package_artifact_id }}
       PACKAGE_ARTIFACT_DIGEST: ${{ inputs.package_artifact_digest }}
     steps:
@@ -46,50 +44,53 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_ACTOR" = nenb
           test "$GITHUB_TRIGGERING_ACTOR" = nenb
+          [[ "$IMPLEMENTATION_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$QUALIFICATION_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$IMPLEMENTATION_HEAD" != "$CONTROL_HEAD" && test "$IMPLEMENTATION_HEAD" != "$QUALIFICATION_HEAD"
+          test "$CONTROL_HEAD" != "$QUALIFICATION_HEAD"
+          test "$GITHUB_SHA" != "$IMPLEMENTATION_HEAD" && test "$GITHUB_SHA" != "$CONTROL_HEAD"
+          test "$GITHUB_SHA" != "$QUALIFICATION_HEAD"
           [[ "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$REPORT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$RECEIPT_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$PACKAGE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$REPORT_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$RECEIPT_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$PACKAGE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           gh api --paginate --slurp \
             'repos/nenb/cogs/actions/workflows/stage2-production-plan.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
             >"$RUNNER_TEMP/planning-runs.json"
-          jq -e --arg g "$GITHUB_SHA" --arg qualification "$QUALIFICATION_RUN_ID" \
+          jq -e --arg r "$GITHUB_SHA" --arg h "$IMPLEMENTATION_HEAD" --arg g "$CONTROL_HEAD" \
+            --arg q "$QUALIFICATION_HEAD" --arg qualification "$QUALIFICATION_RUN_ID" \
             --argjson current "$GITHUB_RUN_ID" \
-            '[.[].workflow_runs[] | select(.head_sha == $g and .run_attempt == 1 and
+            '[.[].workflow_runs[] | select(.head_sha == $r and
               .path == ".github/workflows/stage2-production-plan.yml" and
-              .display_title == ("Stage 2 production planning G=" + $g + " qualification=" + $qualification))] |
+              .display_title == ("Stage 2 production planning H=" + $h + " G=" + $g + " Q=" + $q + " qualification=" + $qualification))] |
              map(.id) == [$current]' "$RUNNER_TEMP/planning-runs.json" >/dev/null
 
-      - name: Authenticate exact successful formal qualification and both artifacts
+      - name: Authenticate exact successful formal qualification and package artifact
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
           gh api "repos/nenb/cogs/actions/runs/$QUALIFICATION_RUN_ID" >"$RUNNER_TEMP/qualification.json"
-          jq -e --arg g "$GITHUB_SHA" \
+          jq -e --arg q "$QUALIFICATION_HEAD" \
+            --arg title "Stage 2 prebuilt local Kata qualification H=$IMPLEMENTATION_HEAD G=$CONTROL_HEAD Q=$QUALIFICATION_HEAD" \
             '.path == ".github/workflows/stage2-prebuilt-local-kata-qualification.yml" and
-             .head_sha == $g and .head_branch == "main" and .event == "workflow_dispatch" and
+             .head_sha == $q and .display_title == $title and
+             .head_branch == "main" and .event == "workflow_dispatch" and
              .run_attempt == 1 and .status == "completed" and .conclusion == "success"' \
             "$RUNNER_TEMP/qualification.json" >/dev/null
-          for row in report receipt package; do
-            id_name=${row^^}_ARTIFACT_ID; digest_name=${row^^}_ARTIFACT_DIGEST
-            id=${!id_name}; digest=${!digest_name}
-            gh api "repos/nenb/cogs/actions/artifacts/$id" >"$RUNNER_TEMP/$row-artifact.json"
-            jq -e --arg digest "$digest" --argjson run "$QUALIFICATION_RUN_ID" \
-              '.expired == false and .digest == $digest and .workflow_run.id == $run' \
-              "$RUNNER_TEMP/$row-artifact.json" >/dev/null
-          done
+          gh api "repos/nenb/cogs/actions/artifacts/$PACKAGE_ARTIFACT_ID" >"$RUNNER_TEMP/package-artifact.json"
+          jq -e --arg digest "$PACKAGE_ARTIFACT_DIGEST" --argjson run "$QUALIFICATION_RUN_ID" \
+            --arg name "stage2-formal-non-aws-package-$IMPLEMENTATION_HEAD-$CONTROL_HEAD-$QUALIFICATION_RUN_ID-1" \
+            '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name' \
+            "$RUNNER_TEMP/package-artifact.json" >/dev/null
 
-      - name: Check out exact control G without persistent credentials
+      - name: Check out exact planning revision without persistent credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.sha }}", persist-credentials: false }
 
-      - name: Download exact report and receipt IDs
+      - name: Download exact V4 qualification package ID
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ inputs.report_artifact_id }},${{ inputs.receipt_artifact_id }},${{ inputs.package_artifact_id }}
+          artifact-ids: ${{ inputs.package_artifact_id }}
           merge-multiple: true
           path: ${{ runner.temp }}/qualification
           run-id: ${{ inputs.qualification_run_id }}
@@ -102,8 +103,8 @@ jobs:
           package=deploy/aws-feasibility/remote/stage2-completion-local-control-v3
           test -f "$package/stage2-local-static-control-v2.json"
           test -f "$package/stage2-local-execution-envelope-v3.json"
-          test -f "$RUNNER_TEMP/qualification/report.json"
-          test -f "$RUNNER_TEMP/qualification/receipt.json"
+          test -f "$RUNNER_TEMP/qualification/pre-aws-package-v4.json"
+          test -f "$RUNNER_TEMP/qualification/cycle-artifact-custody-v2.json"
           python3 -I -B - "$package/stage2-local-execution-envelope-v3.json" \
             "$RUNNER_TEMP/descriptor.json" <<'PY'
           import json,sys
@@ -132,10 +133,9 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-production-planner.py \
-            "$RUNNER_TEMP/qualification/report.json" "$RUNNER_TEMP/qualification/receipt.json" \
+            "$RUNNER_TEMP/qualification/pre-aws-package-v4.json" \
             deploy/aws-feasibility/remote/stage2-completion-local-control-v3/stage2-local-static-control-v2.json \
-            "$RUNNER_TEMP/descriptor.json" "$RUNNER_TEMP/qualification/pre-aws-package.json" \
-            "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/planning"
+            "$RUNNER_TEMP/descriptor.json" "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/planning"
           test "$(find "$RUNNER_TEMP/planning/plans" -type f -name '*.tfplan' | wc -l)" = 7
           test "$(find "$RUNNER_TEMP/planning/plans" -type f -name '*.plan.json' | wc -l)" = 7
           test ! -e "$RUNNER_TEMP/planning/.aws-credentials"

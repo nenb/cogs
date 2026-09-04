@@ -97,7 +97,7 @@ RATE_SOURCE_COMMITMENT = _commit(
 
 
 def approval_batch_commitment(value):
-    return _commit(b"cogs.stage2-production-approved-batch/v3", _approval_fields(value))
+    return _commit(b"cogs.stage2-production-approved-batch/v4", _approval_fields(value))
 
 
 def executor_principal_commitment(partition, account_id, role_name):
@@ -133,6 +133,7 @@ class ProductionApproval:
     batch_commitment: str
     implementation_revision: str
     control_revision: str
+    qualification_revision: str
     source_manifest_sha256: str
     source_bindings_sha256: str
     static_control_sha256: str
@@ -170,10 +171,13 @@ class ProductionApproval:
     one_attempt: bool
 
     def __post_init__(self):
-        _require(self.version == "cogs.stage2-completion-production-approval/v3"
+        _require(self.version == "cogs.stage2-completion-production-approval/v4"
                  and self.phrase == APPROVAL_PHRASE and self.one_attempt is True,
                  ProductionApprovalError)
         _digest(self.batch_commitment); _sha1(self.implementation_revision); _sha1(self.control_revision)
+        _sha1(self.qualification_revision)
+        _require(len({self.implementation_revision, self.control_revision,
+                      self.qualification_revision}) == 3, ProductionApprovalError)
         for item in (
             self.source_manifest_sha256, self.source_bindings_sha256,
             self.static_control_sha256,
@@ -637,7 +641,7 @@ class CampaignCandidate:
                  and len(set(self.cycle_commitments)) == 7, ProductionReceiptError)
         _digest(self.custody_root)
         approval_commitment = _commit(
-            b"cogs.stage2-production-approval/v3", asdict(self.approval))
+            b"cogs.stage2-production-approval/v4", asdict(self.approval))
         expected = _commit(b"cogs.stage2-production-custody/v2", {
             "execution_authority": self.execution_authority,
             "approval": approval_commitment,
@@ -784,7 +788,7 @@ class ProductionCampaignController:
         _require(not self.used); self.used = True
         approval = self.ports.approval
         consumed_at = self._now(approval)
-        approval_commitment = _commit(b"cogs.stage2-production-approval/v3", asdict(approval))
+        approval_commitment = _commit(b"cogs.stage2-production-approval/v4", asdict(approval))
         consumption = self.ports.consume(approval, approval_commitment, consumed_at)
         _require(type(consumption) is ApprovalConsumptionReceipt
                  and consumption.approval_commitment == approval_commitment,
