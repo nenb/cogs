@@ -21,8 +21,8 @@ test("control candidate workflow is manual reviewed-H one-shot and expressly non
   assert.match(workflow, /test "\$EXACT_IMPLEMENTATION_HEAD" = "\$\(\/usr\/bin\/git rev-parse HEAD\)"/u);
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
   assert.match(workflow, /non-authoritative-stage2-static-control/u);
-  assert.match(workflow, /^ {4}timeout-minutes: 45$/mu);
-  assert.match(workflow, /Step bounds total 42 minutes with a three-minute cleanup\/runner reserve/u);
+  assert.match(workflow, /^ {4}timeout-minutes: 55$/mu);
+  assert.match(workflow, /Step bounds total 49 minutes with a six-minute cleanup\/runner reserve/u);
   assert.doesNotMatch(workflow, /aws-actions|amazon|terraform|opentofu/u);
   assert.match(workflow, /Authenticate exact trusted rootfs control input/u);
   assert.match(workflow, /artifact-ids: \$\{\{ inputs\.rootfs_control_artifact_id \}\}/u);
@@ -83,7 +83,7 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /REVIEWED_WORKFLOW_SHA256 = "9aa8cccf885e2aeb49678881685850c416583de207e8f61c63fc9637ed739bc9"/u,
+    /REVIEWED_WORKFLOW_SHA256 = "da423b595330633b30da3ba5c3ad603cc23ca5dd31e5a64ebee82f1ea85fa1c7"/u,
   );
   assert.doesNotMatch(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);

@@ -359,7 +359,7 @@ def _run_extract(archive, destination):
     _require(marker.read_bytes() == intent); marker.unlink(); _sync_directory(destination)
 
 
-def _expected_runtime():
+def _expected_control_values():
     if not CONTROL_ROOT.exists():
         return None
     control_raw = (CONTROL_ROOT / preparation.CONTROL_MEMBER).read_bytes()
@@ -367,8 +367,13 @@ def _expected_runtime():
     members = {}
     for row in control.value["members"]:
         members[row["name"]] = (CONTROL_ROOT / row["name"]).read_bytes()
-    _envelope, runtime, _contracts = preparation.validate_control_members(control, members)
-    return runtime.value
+    envelope, runtime, _contracts = preparation.validate_control_members(control, members)
+    return envelope.value, runtime.value
+
+
+def _expected_runtime():
+    values = _expected_control_values()
+    return None if values is None else values[1]
 
 
 def _diagnostic_expected_runtime():
@@ -384,31 +389,53 @@ def _diagnostic_expected_runtime():
     return runtime.value, control.value["rootfs"]["custody"]
 
 
-def _read_external_member(path, maximum=8192):
-    before = path.lstat()
-    _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
-             and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o400
-             and 0 < before.st_size <= maximum)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        raw = os.read(descriptor, maximum + 1); after = os.fstat(descriptor)
-        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-                                  value.st_gid, value.st_nlink, value.st_size,
-                                  value.st_mtime_ns, value.st_ctime_ns)
-        _require(len(raw) == before.st_size and identity(before) == identity(after))
-        return raw
-    finally: os.close(descriptor)
-
-
-def _descriptor_root(expected_names):
+def _external_members(paths, maximum=8192):
+    """Read one exact external-custody generation through a held directory FD."""
     root = preparation.PREBUILT_DESCRIPTOR_ROOT
-    seen = root.lstat()
-    _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
-             and stat.S_IMODE(seen.st_mode) == 0o700
-             and set(os.listdir(root)) == set(expected_names))
+    before_root = root.lstat()
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+                              value.st_gid, value.st_nlink, value.st_size,
+                              value.st_mtime_ns, value.st_ctime_ns)
+    root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY |
+                              os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptors = []
+    try:
+        current_root = os.fstat(root_descriptor)
+        names = tuple(path.name for path in paths)
+        _require(stat.S_ISDIR(before_root.st_mode)
+                 and before_root.st_uid == before_root.st_gid == 0
+                 and before_root.st_nlink >= 1
+                 and stat.S_IMODE(before_root.st_mode) == 0o700
+                 and identity(before_root) == identity(current_root)
+                 and set(os.listdir(root_descriptor)) == set(names))
+        values = {}
+        for name in names:
+            before = os.stat(name, dir_fd=root_descriptor, follow_symlinks=False)
+            _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                     and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o400
+                     and 0 < before.st_size <= maximum)
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=root_descriptor)
+            descriptors.append((name, descriptor, identity(before)))
+            _require(identity(os.fstat(descriptor)) == identity(before))
+            raw = os.read(descriptor, maximum + 1)
+            _require(len(raw) == before.st_size and not os.read(descriptor, 1))
+            values[name] = raw
+        _require(identity(os.fstat(root_descriptor)) == identity(before_root)
+                 and identity(root.lstat()) == identity(before_root)
+                 and set(os.listdir(root_descriptor)) == set(names))
+        _require(all(identity(os.fstat(descriptor)) == seen
+                     and identity(os.stat(name, dir_fd=root_descriptor,
+                                          follow_symlinks=False)) == seen
+                     for name, descriptor, seen in descriptors))
+        return values
+    finally:
+        for _name, descriptor, _seen in descriptors:
+            os.close(descriptor)
+        os.close(root_descriptor)
 
 
-def _diagnostic_descriptor_bytes(expected_runtime, custody):
+def _external_descriptor_bytes(expected_runtime, custody):
     paths = (
         preparation.PREBUILT_DESCRIPTOR_PATH,
         preparation.PREBUILT_PACKAGE_PATH,
@@ -417,7 +444,7 @@ def _diagnostic_descriptor_bytes(expected_runtime, custody):
         preparation.PREBUILT_PUBLICATION_RECEIPT_PATH,
         preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH,
     )
-    _descriptor_root(path.name for path in paths)
+    members = _external_members(paths)
     raw = preparation.canonical_bytes(expected_runtime["rootfs"]["prebuilt_descriptor"])
     expected = {
         preparation.PREBUILT_DESCRIPTOR_PATH: raw,
@@ -429,26 +456,67 @@ def _diagnostic_descriptor_bytes(expected_runtime, custody):
             preparation.canonical_bytes(custody["publication_receipt"]),
     }
     for path, wanted in expected.items():
-        _require(_read_external_member(path) == wanted,
-                 "diagnostic external custody differs")
-    signature = _read_external_member(preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH)
+        _require(members[path.name] == wanted,
+                 "external descriptor custody differs")
+    signature = members[preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH.name]
     _require(hashlib.sha256(signature).hexdigest() == custody["signature_verification_sha256"])
     _require(hashlib.sha256(raw).hexdigest() ==
              expected_runtime["rootfs"]["prebuilt_descriptor_sha256"])
     return raw
 
 
+def _standalone_external_descriptor_bytes():
+    """Authenticate cleanup-only six-member custody from its descriptor hash chain."""
+    paths = (
+        preparation.PREBUILT_DESCRIPTOR_PATH,
+        preparation.PREBUILT_PACKAGE_PATH,
+        preparation.PREBUILT_PROVENANCE_PATH,
+        preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH,
+        preparation.PREBUILT_PUBLICATION_RECEIPT_PATH,
+        preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH,
+    )
+    members = _external_members(paths)
+    raw = members[preparation.PREBUILT_DESCRIPTOR_PATH.name]
+    import completion_rootfs_prebuilt as rootfs_prebuilt
+    descriptor = rootfs_prebuilt.decode_fixed_descriptor(raw)
+    package = members[preparation.PREBUILT_PACKAGE_PATH.name]
+    provenance = members[preparation.PREBUILT_PROVENANCE_PATH.name]
+    qualification = members[preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH.name]
+    publication_raw = members[preparation.PREBUILT_PUBLICATION_RECEIPT_PATH.name]
+    signature = members[preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH.name]
+    _require(hashlib.sha256(package).hexdigest() == descriptor.package_manifest_sha256
+             and hashlib.sha256(provenance).hexdigest() == descriptor.provenance_sha256
+             and hashlib.sha256(qualification).hexdigest() == descriptor.qualification_receipt_sha256
+             and hashlib.sha256(publication_raw).hexdigest() == descriptor.publication_receipt_sha256,
+             "standalone external custody hash chain differs")
+    publication = preparation.decode_canonical(publication_raw, 8192)
+    _require(publication.get("implementation_revision") == descriptor.producer_revision
+             and publication.get("source_manifest_sha256") ==
+                 descriptor.producer_source_manifest_sha256
+             and publication.get("oci_manifest_sha256") == descriptor.manifest_digest
+             and publication.get("rootfs_ustar_sha256") == descriptor.ustar_sha256
+             and publication.get("package_manifest_sha256") == descriptor.package_manifest_sha256
+             and publication.get("provenance_sha256") == descriptor.provenance_sha256
+             and publication.get("qualification_receipt_sha256") ==
+                 descriptor.qualification_receipt_sha256
+             and publication.get("signature_verification_sha256") ==
+                 hashlib.sha256(signature).hexdigest(),
+             "standalone publication custody differs")
+    return raw
+
+
 def _prebuilt_descriptor_bytes(expected_runtime):
     if expected_runtime is not None:
-        _require(not preparation.PREBUILT_DESCRIPTOR_ROOT.exists(),
+        _require(not (preparation.PREBUILT_DESCRIPTOR_ROOT.exists()
+                      or preparation.PREBUILT_DESCRIPTOR_ROOT.is_symlink()),
                  "external descriptor competes with reviewed control")
         raw = preparation.canonical_bytes(
             expected_runtime["rootfs"]["prebuilt_descriptor"])
         _require(hashlib.sha256(raw).hexdigest() ==
                  expected_runtime["rootfs"]["prebuilt_descriptor_sha256"])
         return raw
-    _descriptor_root(("descriptor.json",))
-    return _read_external_member(preparation.PREBUILT_DESCRIPTOR_PATH)
+    return _external_members((preparation.PREBUILT_DESCRIPTOR_PATH,))[
+        preparation.PREBUILT_DESCRIPTOR_PATH.name]
 
 
 def _archive_values(expected_runtime, archives, extracted):
@@ -816,7 +884,7 @@ def _read_file_hash(descriptor, size):
     return digest.hexdigest()
 
 
-def _rollback_preparation(descriptor, descriptor_raw):
+def _rollback_preparation(descriptor, descriptor_raw, expected_runtime):
     """Inspect every owned class and aggregate uncertainty; never report best effort."""
     if not PREPARATION_ROOT.exists():
         _require(not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists()
@@ -840,7 +908,6 @@ def _rollback_preparation(descriptor, descriptor_raw):
     if receipt is not None:
         values = receipt[1]["runtime_archives"]
     else:
-        expected_runtime = _expected_runtime()
         values = None if expected_runtime is None else expected_runtime.get("archives")
     kata_moved = KATA_ROOT.exists() or KATA_ROOT.is_symlink()
     # The staged observer derivative is authorized only by the still-present
@@ -979,6 +1046,28 @@ def _rootfs_state_idle():
     return rootfs_lease._prestage_rootfs_absent(control)
 
 
+def _recovery_descriptor_bytes(diagnostic_runtime, formal_values):
+    expected_runtime = (formal_values[1] if formal_values is not None else
+                        diagnostic_runtime[0] if diagnostic_runtime is not None else None)
+    present = (preparation.PREBUILT_DESCRIPTOR_ROOT.exists()
+               or preparation.PREBUILT_DESCRIPTOR_ROOT.is_symlink())
+    if diagnostic_runtime is not None:
+        raw = _external_descriptor_bytes(*diagnostic_runtime)
+    elif formal_values is not None and present:
+        raw = _external_descriptor_bytes(
+            expected_runtime, formal_values[0]["rootfs"]["custody"])
+    elif formal_values is None and present:
+        names = set(os.listdir(preparation.PREBUILT_DESCRIPTOR_ROOT))
+        raw = (_standalone_external_descriptor_bytes()
+               if names == {"descriptor.json", "rootfs.package.json",
+                            "rootfs.provenance.json", "producer-receipt.json",
+                            "publication-receipt.json", "cosign-verification.json"}
+               else _prebuilt_descriptor_bytes(expected_runtime))
+    else:
+        raw = _prebuilt_descriptor_bytes(expected_runtime)
+    return raw, expected_runtime
+
+
 def recover_failed_preparation():
     """Inspect and settle only durable immutable transaction custody."""
     _require(not any(path.exists() or path.is_symlink()
@@ -992,14 +1081,12 @@ def recover_failed_preparation():
         _require(_rootfs_state_idle(),
                  "active rootfs state blocks immutable recovery")
     diagnostic_runtime = _diagnostic_expected_runtime()
-    expected_runtime = (_expected_runtime() if diagnostic_runtime is None
-                        else diagnostic_runtime[0])
+    formal_values = (_expected_control_values() if diagnostic_runtime is None else None)
+    descriptor_raw, expected_runtime = _recovery_descriptor_bytes(
+        diagnostic_runtime, formal_values)
     import completion_rootfs_prebuilt as rootfs_prebuilt
-    descriptor_raw = (_prebuilt_descriptor_bytes(expected_runtime)
-                      if diagnostic_runtime is None else
-                      _diagnostic_descriptor_bytes(*diagnostic_runtime))
     descriptor = rootfs_prebuilt.decode_fixed_descriptor(descriptor_raw)
-    _rollback_preparation(descriptor, descriptor_raw)
+    _rollback_preparation(descriptor, descriptor_raw, expected_runtime)
     _require(not PREPARATION_ROOT.exists() and not preparation.PREBUILT_INPUT_ROOT.exists()
              and not IMMUTABLE_STAGING.exists() and not STAGED_RUNTIME.exists() and not KATA_ROOT.exists())
     return None
@@ -1078,7 +1165,7 @@ def prepare():
         if not created:
             raise
         try:
-            _rollback_preparation(descriptor, descriptor_raw)
+            _rollback_preparation(descriptor, descriptor_raw, expected_runtime)
         except BaseException as rollback:
             raise _error_group(
                 "immutable preparation failed with rollback uncertainty",

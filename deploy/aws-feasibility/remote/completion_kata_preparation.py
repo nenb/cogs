@@ -858,6 +858,11 @@ def validate_control_members(control, members):
     runtime = load_runtime(members[RUNTIME_MEMBER])
     _require(envelope.value["implementation"] == control.value["implementation"])
     _require(envelope.value["runtime"]["manifest_sha256"] == runtime.sha256)
+    shared_rootfs = ("manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size",
+                     "entry_count", "prebuilt_descriptor", "prebuilt_descriptor_sha256")
+    _require({name: envelope.value["rootfs"][name] for name in shared_rootfs} ==
+             {name: runtime.value["rootfs"][name] for name in shared_rootfs},
+             "envelope and runtime rootfs differ")
     _require(envelope.value["runtime"]["archive_set_sha256"] == _sha(canonical_bytes(runtime.value["archives"])))
     _require(envelope.value["runtime"]["launch_assets_sha256"] == runtime.value["launch"]["artifacts_sha256"])
     _require(envelope.value["runtime"]["executable_set_sha256"] == _sha(canonical_bytes(runtime.value["executables"])))

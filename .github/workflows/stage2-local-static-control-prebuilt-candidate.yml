@@ -27,8 +27,8 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    # Step bounds total 42 minutes with a three-minute cleanup/runner reserve.
-    timeout-minutes: 45
+    # Step bounds total 49 minutes with a six-minute cleanup/runner reserve.
+    timeout-minutes: 55
     concurrency:
       group: stage2-no-kvm-static-control-${{ inputs.exact_implementation_head }}
       cancel-in-progress: false
@@ -105,6 +105,7 @@ jobs:
           ' "$EXACT_IMPLEMENTATION_HEAD" <<<"$result"
 
       - name: Authenticate exact trusted rootfs control input
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTROL_RUN_ID: ${{ inputs.rootfs_control_run_id }}
@@ -128,6 +129,7 @@ jobs:
             /tmp/rootfs-control-artifact.json >/dev/null
 
       - name: Download exact trusted rootfs descriptor
+        timeout-minutes: 2
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ inputs.rootfs_control_artifact_id }}
@@ -135,7 +137,8 @@ jobs:
           run-id: ${{ inputs.rootfs_control_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Stage descriptor as fixed root-owned static producer input
+      - name: Stage only the descriptor for immutable acquisition
+        timeout-minutes: 1
         run: |
           set -euo pipefail
           test "$(find "$RUNNER_TEMP/rootfs-control" -type f | wc -l)" = 6
@@ -143,10 +146,9 @@ jobs:
             test -f "$RUNNER_TEMP/rootfs-control/$name"
           done
           sudo -n install -d -m 0700 /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1
-          for name in descriptor.json publication-receipt.json rootfs.provenance.json rootfs.package.json producer-receipt.json cosign-verification.json; do
-            sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/rootfs-control/$name" \
-              "/var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1/$name"
-          done
+          sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/rootfs-control/descriptor.json" \
+            /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1/descriptor.json
+          test "$(sudo -n find /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1 -type f | wc -l)" = 1
 
       - name: Acquire verify and install immutable fixtures without runtime launch
         timeout-minutes: 30
@@ -159,6 +161,16 @@ jobs:
             > /tmp/cogs-stage2-immutable-preparation.json
           test ! -e /run/vc
           test ! -e /run/netns/cogs-stage2-ssh
+
+      - name: Stage authenticated publication adjuncts after immutable acquisition
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          for name in publication-receipt.json rootfs.provenance.json rootfs.package.json producer-receipt.json cosign-verification.json; do
+            sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/rootfs-control/$name" \
+              "/var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1/$name"
+          done
+          test "$(sudo -n find /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1 -type f | wc -l)" = 6
 
       - name: Produce deterministic non-authoritative control candidate
         timeout-minutes: 3

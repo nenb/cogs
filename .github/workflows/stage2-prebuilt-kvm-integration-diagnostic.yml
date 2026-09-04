@@ -112,7 +112,7 @@ jobs:
             RECOVERY_OUTCOME=success /usr/bin/python3 -I -B scripts/stage2-local-settlement.py cleanup
       - id: residue
         name: Independently prove zero lifecycle residue
-        if: always() && steps.settlement.outcome == 'success'
+        if: always()
         continue-on-error: true
         timeout-minutes: 2
         run: |
@@ -122,13 +122,27 @@ jobs:
             /usr/bin/python3 -I -B scripts/stage2-local-settlement.py residue
       - id: scaffold
         name: Restore hosted scaffolding after residue proof
-        if: always() && steps.residue.outcome == 'success'
+        if: always()
         continue-on-error: true
+        timeout-minutes: 1
         run: |
           sudo -n rmdir /run/netns
           test ! -e /run/netns
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:755
           sudo -n chmod 0777 /opt
+      - id: final_observation
+        name: Run one final supervised residue observation
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-local-settlement.py supervise-final <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          EOF
       - name: Enforce the complete full diagnostic outcome
         if: always()
         env:
@@ -137,10 +151,11 @@ jobs:
           SETTLEMENT: ${{ steps.settlement.outcome }}
           RESIDUE: ${{ steps.residue.outcome }}
           SCAFFOLD: ${{ steps.scaffold.outcome }}
+          FINAL_OBSERVATION: ${{ steps.final_observation.outcome }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
-          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD"; do
+          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD" "$FINAL_OBSERVATION"; do
             test "$outcome" = success
           done
           test ! -e "$REPORT_STAGING"
@@ -251,7 +266,7 @@ jobs:
             RECOVERY_OUTCOME=success /usr/bin/python3 -I -B scripts/stage2-local-settlement.py cleanup
       - id: residue
         name: Independently prove zero lifecycle residue
-        if: always() && steps.settlement.outcome == 'success'
+        if: always()
         continue-on-error: true
         timeout-minutes: 2
         run: |
@@ -261,13 +276,27 @@ jobs:
             /usr/bin/python3 -I -B scripts/stage2-local-settlement.py residue
       - id: scaffold
         name: Restore hosted scaffolding after residue proof
-        if: always() && steps.residue.outcome == 'success'
+        if: always()
         continue-on-error: true
+        timeout-minutes: 1
         run: |
           sudo -n rmdir /run/netns
           test ! -e /run/netns
           test "$(sudo -n stat -c '%U:%G:%a' /opt)" = root:root:755
           sudo -n chmod 0777 /opt
+      - id: final_observation
+        name: Run one final supervised residue observation
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-local-settlement.py supervise-final <<EOF
+          $GITHUB_RUN_ID
+          $GITHUB_RUN_ATTEMPT
+          $REPORT_STAGING
+          $REPORT_READBACK_STAGING
+          $RECEIPT_READBACK_STAGING
+          EOF
       - name: Enforce the complete readiness diagnostic outcome
         if: always()
         env:
@@ -276,10 +305,11 @@ jobs:
           SETTLEMENT: ${{ steps.settlement.outcome }}
           RESIDUE: ${{ steps.residue.outcome }}
           SCAFFOLD: ${{ steps.scaffold.outcome }}
+          FINAL_OBSERVATION: ${{ steps.final_observation.outcome }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = 1
-          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD"; do
+          for outcome in "$ROUTE" "$RECOVERY" "$SETTLEMENT" "$RESIDUE" "$SCAFFOLD" "$FINAL_OBSERVATION"; do
             test "$outcome" = success
           done
           test ! -e "$REPORT_STAGING"

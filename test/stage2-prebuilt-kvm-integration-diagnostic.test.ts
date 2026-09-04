@@ -70,6 +70,11 @@ test("fixed rootfs custody is acquired twice while mint, report, and publication
   assert.equal(occurrences(workflow, "recover-stage2-completion-remote.sh"), 2);
   assert.equal(occurrences(workflow, "stage2-local-settlement.py cleanup"), 2);
   assert.equal(occurrences(workflow, "stage2-local-settlement.py residue"), 2);
+  assert.equal(occurrences(workflow, "stage2-local-settlement.py supervise-final"), 2);
+  assert.equal(occurrences(workflow, "if: always() && steps.settlement.outcome == 'success'"), 0);
+  assert.equal(occurrences(workflow, "if: always() && steps.residue.outcome == 'success'"), 0);
+  assert.equal(occurrences(workflow, "id: final_observation"), 2);
+  assert.equal(occurrences(workflow, '"$FINAL_OBSERVATION"'), 2);
   assert.doesNotMatch(workflow, /completion_local_full|stage2-local-publication|stage2-local-upload-receipt/u);
   const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
   assert.match(aggregate, /^ {4}permissions: \{\}$/mu);

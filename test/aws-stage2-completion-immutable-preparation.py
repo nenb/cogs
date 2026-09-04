@@ -127,6 +127,11 @@ def configure(root, fail_at=None):
     module.preparation.PREBUILT_INPUT_ROOT = prebuilt_root
     module.preparation.PREBUILT_DESCRIPTOR_ROOT = root / "var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1"
     module.preparation.PREBUILT_DESCRIPTOR_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "descriptor.json"
+    module.preparation.PREBUILT_PACKAGE_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "rootfs.package.json"
+    module.preparation.PREBUILT_PROVENANCE_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "rootfs.provenance.json"
+    module.preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "producer-receipt.json"
+    module.preparation.PREBUILT_PUBLICATION_RECEIPT_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "publication-receipt.json"
+    module.preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH = module.preparation.PREBUILT_DESCRIPTOR_ROOT / "cosign-verification.json"
     module.preparation.PREBUILT_USTAR_PATH = prebuilt_root / "rootfs.tar"
     prebuilt_acquisition.ROOT = prebuilt_root
     events = []
@@ -138,10 +143,11 @@ def configure(root, fail_at=None):
     module._fixed_contract = lambda: {"bounds": {"artifact_count": 16}}
     module._artifact_rows = lambda _contract: artifact_rows
     descriptor = descriptor_value()
-    module._expected_runtime = lambda: {
+    expected_runtime = {
         "rootfs": {"prebuilt_descriptor": descriptor,
                    "prebuilt_descriptor_sha256": hashlib.sha256(
                        module.preparation.canonical_bytes(descriptor)).hexdigest()}}
+    module._expected_control_values = lambda: ({"rootfs": {"custody": {}}}, expected_runtime)
     prebuilt.load_authority = lambda _descriptor, _raw: object()
 
     def stable(path, expected, mode=0o400):
@@ -286,21 +292,95 @@ diagnostic_paths = {
         module.preparation.canonical_bytes(diagnostic_custody["publication_receipt"]),
     module.preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH: b"signature",
 }
-with patch.object(module, "_descriptor_root") as diagnostic_root, \
-     patch.object(module, "_read_external_member",
-                  side_effect=lambda path: diagnostic_paths[path]):
-    assert module._diagnostic_descriptor_bytes(
+diagnostic_members = {path.name: raw for path, raw in diagnostic_paths.items()}
+with patch.object(module, "_external_members", return_value=diagnostic_members) as external:
+    assert module._external_descriptor_bytes(
         diagnostic_runtime, diagnostic_custody) == diagnostic_paths[
             module.preparation.PREBUILT_DESCRIPTOR_PATH]
-    diagnostic_root.assert_called_once()
-with patch.object(module, "_descriptor_root"), \
-     patch.object(module, "_read_external_member", return_value=b"changed"):
+    external.assert_called_once()
+with patch.object(module, "_external_members",
+                  return_value={name: b"changed" for name in diagnostic_members}):
     try:
-        module._diagnostic_descriptor_bytes(diagnostic_runtime, diagnostic_custody)
+        module._external_descriptor_bytes(diagnostic_runtime, diagnostic_custody)
     except module.ImmutablePreparationError:
         pass
     else:
         raise AssertionError("changed diagnostic custody was accepted")
+
+# Before final control exists, the descriptor's own hash chain authenticates
+# exactly the six expected publisher members for cleanup only.
+standalone_package = module.preparation.canonical_bytes({"kind": "package"})
+standalone_provenance = module.preparation.canonical_bytes({"kind": "provenance"})
+standalone_qualification = module.preparation.canonical_bytes({"kind": "qualification"})
+standalone_signature = b"signature"
+standalone_publication = module.preparation.canonical_bytes({
+    "implementation_revision": "2" * 40,
+    "source_manifest_sha256": "1" * 64,
+    "oci_manifest_sha256": "1" * 64,
+    "rootfs_ustar_sha256": prebuilt.USTAR_SHA256,
+    "package_manifest_sha256": hashlib.sha256(standalone_package).hexdigest(),
+    "provenance_sha256": hashlib.sha256(standalone_provenance).hexdigest(),
+    "qualification_receipt_sha256": hashlib.sha256(standalone_qualification).hexdigest(),
+    "signature_verification_sha256": hashlib.sha256(standalone_signature).hexdigest(),
+})
+standalone_descriptor = descriptor_value()
+standalone_descriptor["producer"].update(
+    package_manifest_sha256=hashlib.sha256(standalone_package).hexdigest(),
+    provenance_sha256=hashlib.sha256(standalone_provenance).hexdigest(),
+    qualification_receipt_sha256=hashlib.sha256(standalone_qualification).hexdigest(),
+    publication_receipt_sha256=hashlib.sha256(standalone_publication).hexdigest())
+standalone_raw = module.preparation.canonical_bytes(standalone_descriptor)
+standalone_members = {
+    module.preparation.PREBUILT_DESCRIPTOR_PATH.name: standalone_raw,
+    module.preparation.PREBUILT_PACKAGE_PATH.name: standalone_package,
+    module.preparation.PREBUILT_PROVENANCE_PATH.name: standalone_provenance,
+    module.preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH.name: standalone_qualification,
+    module.preparation.PREBUILT_PUBLICATION_RECEIPT_PATH.name: standalone_publication,
+    module.preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH.name: standalone_signature,
+}
+with patch.object(module, "_external_members", return_value=standalone_members):
+    assert module._standalone_external_descriptor_bytes() == standalone_raw
+changed_standalone = dict(standalone_members)
+changed_standalone[module.preparation.PREBUILT_PACKAGE_PATH.name] = b"changed"
+with patch.object(module, "_external_members", return_value=changed_standalone):
+    try:
+        module._standalone_external_descriptor_bytes()
+    except module.ImmutablePreparationError:
+        pass
+    else:
+        raise AssertionError("changed standalone external custody was accepted")
+
+# Execute every descriptor-cardinality/profile selector without lifecycle effects.
+with tempfile.TemporaryDirectory() as temporary:
+    original_descriptor_root = module.preparation.PREBUILT_DESCRIPTOR_ROOT
+    module.preparation.PREBUILT_DESCRIPTOR_ROOT = Path(temporary) / "descriptor-root"
+    module.preparation.PREBUILT_DESCRIPTOR_ROOT.mkdir()
+    try:
+        (module.preparation.PREBUILT_DESCRIPTOR_ROOT / "descriptor.json").write_bytes(b"one")
+        with patch.object(module, "_prebuilt_descriptor_bytes", return_value=b"one") as one:
+            assert module._recovery_descriptor_bytes(None, None) == (b"one", None)
+            one.assert_called_once_with(None)
+        for name in ("rootfs.package.json", "rootfs.provenance.json", "producer-receipt.json",
+                     "publication-receipt.json", "cosign-verification.json"):
+            (module.preparation.PREBUILT_DESCRIPTOR_ROOT / name).write_bytes(b"member")
+        with patch.object(module, "_standalone_external_descriptor_bytes",
+                          return_value=b"six") as standalone:
+            assert module._recovery_descriptor_bytes(None, None) == (b"six", None)
+            standalone.assert_called_once_with()
+        with patch.object(module, "_external_descriptor_bytes",
+                          return_value=b"diagnostic") as external:
+            assert module._recovery_descriptor_bytes(
+                (diagnostic_runtime, diagnostic_custody), None) == (
+                    b"diagnostic", diagnostic_runtime)
+            external.assert_called_once_with(diagnostic_runtime, diagnostic_custody)
+        formal_envelope = {"rootfs": {"custody": diagnostic_custody}}
+        with patch.object(module, "_external_descriptor_bytes",
+                          return_value=b"formal") as external:
+            assert module._recovery_descriptor_bytes(
+                None, (formal_envelope, diagnostic_runtime)) == (b"formal", diagnostic_runtime)
+            external.assert_called_once_with(diagnostic_runtime, diagnostic_custody)
+    finally:
+        module.preparation.PREBUILT_DESCRIPTOR_ROOT = original_descriptor_root
 
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
@@ -324,6 +404,112 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not module.PREPARATION_ROOT.exists()
     assert not module.STAGED_RUNTIME.exists() and not module.KATA_ROOT.exists()
     assert not module.ARTIFACT_ROOT.exists()
+
+# A dangling external-custody root is present malformed state, never absence
+# that permits the embedded descriptor path.
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    configure(root)
+    module.prepare()
+    external = module.preparation.PREBUILT_DESCRIPTOR_ROOT
+    external.parent.mkdir(parents=True, exist_ok=True)
+    external.symlink_to(external.parent / "missing-generation")
+    try:
+        module.recover_failed_preparation()
+    except (module.ImmutablePreparationError, OSError):
+        pass
+    else:
+        raise AssertionError("dangling external custody was treated as absent")
+    assert external.is_symlink() and module.PREPARATION_ROOT.exists()
+
+# The formal no-mint and qualification routes retain six external custody
+# members after staging reviewed control. Root execution proves recovery
+# authenticates those exact bytes rather than treating them as competition.
+if os.geteuid() == 0:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        configure(root)
+        module.prepare()
+        descriptor = descriptor_value()
+        custody = {
+            "package_manifest": {"kind": "package"},
+            "provenance": {"kind": "provenance"},
+            "qualification_receipt": {"kind": "qualification"},
+            "publication_receipt": {"kind": "publication"},
+            "signature_verification_sha256": hashlib.sha256(b"signature").hexdigest(),
+        }
+        external = module.preparation.PREBUILT_DESCRIPTOR_ROOT
+        external.mkdir(mode=0o700)
+        formal_paths = {
+            module.preparation.PREBUILT_DESCRIPTOR_PATH:
+                module.preparation.canonical_bytes(descriptor),
+            module.preparation.PREBUILT_PACKAGE_PATH:
+                module.preparation.canonical_bytes(custody["package_manifest"]),
+            module.preparation.PREBUILT_PROVENANCE_PATH:
+                module.preparation.canonical_bytes(custody["provenance"]),
+            module.preparation.PREBUILT_QUALIFICATION_RECEIPT_PATH:
+                module.preparation.canonical_bytes(custody["qualification_receipt"]),
+            module.preparation.PREBUILT_PUBLICATION_RECEIPT_PATH:
+                module.preparation.canonical_bytes(custody["publication_receipt"]),
+            module.preparation.PREBUILT_SIGNATURE_VERIFICATION_PATH: b"signature",
+        }
+        for path, raw in formal_paths.items():
+            path.write_bytes(raw)
+            path.chmod(0o400)
+        original_expected_control_values = module._expected_control_values
+        expected_runtime = module._expected_runtime()
+        module._expected_control_values = lambda: ({"rootfs": {"custody": custody}}, expected_runtime)
+        changed = module.preparation.PREBUILT_PACKAGE_PATH
+        changed.chmod(0o600)
+        changed.write_bytes(b"changed")
+        changed.chmod(0o400)
+        try:
+            module.recover_failed_preparation()
+        except module.ImmutablePreparationError:
+            pass
+        else:
+            raise AssertionError("changed formal external custody was accepted")
+        assert module.PREPARATION_ROOT.exists() and changed.read_bytes() == b"changed"
+        changed.chmod(0o600)
+        changed.write_bytes(formal_paths[changed])
+        changed.chmod(0o400)
+        extra = external / "foreign"
+        extra.write_bytes(b"foreign")
+        extra.chmod(0o400)
+        try:
+            module.recover_failed_preparation()
+        except module.ImmutablePreparationError:
+            pass
+        else:
+            raise AssertionError("extra formal external custody was accepted")
+        assert module.PREPARATION_ROOT.exists() and extra.read_bytes() == b"foreign"
+        extra.unlink()
+        target_inode = changed.stat().st_ino
+        original_read = module.os.read
+        replaced = [False]
+        def replace_after_read(descriptor, count):
+            raw = original_read(descriptor, count)
+            if not replaced[0] and os.fstat(descriptor).st_ino == target_inode:
+                replaced[0] = True
+                changed.unlink()
+                changed.write_bytes(formal_paths[changed])
+                changed.chmod(0o400)
+            return raw
+        with patch.object(module.os, "read", side_effect=replace_after_read):
+            try:
+                module.recover_failed_preparation()
+            except module.ImmutablePreparationError:
+                pass
+            else:
+                raise AssertionError("same-name formal custody replacement was accepted")
+        assert replaced[0] and module.PREPARATION_ROOT.exists()
+        try:
+            module.recover_failed_preparation()
+        finally:
+            module._expected_control_values = original_expected_control_values
+        assert external.is_dir() and set(external.iterdir()) == set(formal_paths)
+        assert not module.PREPARATION_ROOT.exists()
+        assert not module.STAGED_RUNTIME.exists() and not module.KATA_ROOT.exists()
 
 # Immutable cleanup may proceed beside only an independently authenticated
 # idle rootfs owner. Active or uncertain rootfs state remains a hard stop.

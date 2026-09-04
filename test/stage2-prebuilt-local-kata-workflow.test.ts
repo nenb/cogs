@@ -13,7 +13,16 @@ test("formal qualification is additive, exact H/G, first-created, and seven fres
   assert.match(workflow, /max-parallel: 7/u);
   assert.match(workflow, /runs-on: ubuntu-24\.04/u);
   assert.match(workflow, /FORMAL_CYCLE_ORDINAL: \$\{\{ matrix\.ordinal \}\}/u);
-  assert.match(workflow, /timeout-minutes: 201/u);
+  assert.match(workflow, /timeout-minutes: 210/u);
+  assert.match(workflow, /id: preparation\n {8}timeout-minutes: 35/u);
+  const local = workflow.slice(workflow.indexOf("  local-kata:"), workflow.indexOf("  aggregate:"));
+  const localStepMinutes = [...local.matchAll(/^ {8}timeout-minutes: (\d+)$/gmu)].reduce(
+    (total, match) => total + Number(match[1]),
+    0,
+  );
+  assert.ok(localStepMinutes <= 198, `local step bounds ${localStepMinutes}`);
+  assert.ok(75 + 5 + 75 + 5 + 1770 + 10 <= 35 * 60);
+  assert.ok(7800 + 10 <= 132 * 60);
   assert.match(workflow, /^name: Stage 2 prebuilt local Kata qualification$/mu);
   assert.match(workflow, /stage2-prebuilt-local-kata-qualification\.yml\/runs/u);
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
@@ -43,7 +52,10 @@ test("each job prepares one rootfs, executes one mode-bound lifecycle, and close
 });
 
 test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", () => {
-  assert.match(workflow, /needs: \[admission, local-kata\]/u);
+  assert.match(
+    workflow,
+    /needs: \[admission, local-kata\]\n {4}if: always\(\) && needs\.admission\.result == 'success'/u,
+  );
   assert.match(workflow, /Materialize authenticated exact custody for all seven cycle uploads/u);
   assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/artifacts\?per_page=100/u);
   assert.match(workflow, /Download all seven cycle artifacts by exact numeric IDs/u);
@@ -57,6 +69,22 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(workflow, /Byte-compare package and fail closed/u);
   assert.match(workflow, /cycle-artifact-custody-v1\.json/u);
   assert.match(workflow, /PACKAGE_ARTIFACT_DIGEST.*artifact-digest/u);
+  assert.match(workflow, /\[\[ "\$PACKAGE_ARTIFACT_DIGEST" =~ \^\[0-9a-f\]\{64\}\$ \]\]/u);
+  assert.match(
+    workflow,
+    /id: package_readback[\s\S]*?id: aggregate_cleanup[\s\S]*?Enforce complete aggregate custody and cleanup/u,
+  );
+  assert.match(workflow, /id: aggregate_cleanup\n {8}if: always\(\)/u);
+  assert.match(workflow, /timeout-minutes: 25/u);
+  const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
+  const aggregateStepMinutes = [...aggregate.matchAll(/^ {8}timeout-minutes: (\d+)$/gmu)].reduce(
+    (total, match) => total + Number(match[1]),
+    0,
+  );
+  assert.ok(aggregateStepMinutes <= 20, `aggregate step bounds ${aggregateStepMinutes}`);
+  assert.match(workflow, /FINAL_OBSERVATION: \$\{\{ steps\.final_observation\.outcome \}\}/u);
+  assert.match(workflow, /"\$FINAL_OBSERVATION"/u);
+  assert.match(workflow, /"\$PACKAGE_DOWNLOAD" "\$READBACK" "\$CLEANUP"/u);
   assert.ok(Buffer.byteLength(workflow) < 94_000);
 });
 

@@ -14,6 +14,7 @@ test("diagnostic supply-chain identities cannot consume final first-created auth
   assert.match(producer, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-diagnostic-producer\.yml"/u);
   assert.doesNotMatch(producer, /actions\/workflows\/stage2-prebuilt-rootfs-producer\.yml\/runs/u);
   assert.doesNotMatch(producer, /packages:\s*write|id-token:\s*write|cosign sign|oras push/u);
+  assert.match(producer, /96ff5f11e4117ac8b22196a2216a52722eb16577dd3f28598e6ca4ebf28f70c0/u);
   assert.match(publisher, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-diagnostic-producer\.yml"/u);
   assert.match(publisher, /stage2-prebuilt-rootfs-diagnostic-publisher\.yml\/runs/u);
   assert.doesNotMatch(publisher, /actions\/workflows\/stage2-prebuilt-rootfs-publisher\.yml\/runs/u);
@@ -78,7 +79,11 @@ test("full and readiness receive independent fresh jobs with no shared route roo
   assert.match(routes, /ROUTE: \$\{\{ matrix\.route \}\}/u);
   assert.doesNotMatch(routes, /^ {4}needs:|^ {4}outputs:/mu);
   assert.doesNotMatch(routes, /steps\.full_entry|steps\.full_recovery|readiness_grant|cancelled\(\)/u);
-  assert.match(routes, /timeout-minutes: \$\{\{ matrix\.route == 'full' && 132 \|\| 35 \}\}/u);
+  assert.match(routes, /timeout-minutes: 132/u);
+  assert.equal(occurrences(routes, "deadline=7800s"), 2);
+  assert.doesNotMatch(routes, /if: always\(\) && steps\.(?:fixed_cleanup|residue)\.outcome == 'success'/u);
+  assert.match(routes, /stage2-local-settlement\.py supervise-final/u);
+  assert.match(routes, /"\$FINAL_OBSERVATION"/u);
   for (const independentOperation of [
     "Admit the sole first-created attempt-one diagnostic rehearsal before source effects",
     "Authenticate completed diagnostic publisher and exact immutable control artifact",
@@ -95,6 +100,7 @@ test("full and readiness receive independent fresh jobs with no shared route roo
     "Settle this fresh host's fixed roots only after recovery",
     "Independently prove final zero lifecycle residue",
     "Restore hosted scaffolding after residue proof",
+    "Run one final supervised residue observation",
     "Enforce this job's singular no-mint route and cleanup outcomes",
   ]) {
     assert.equal(occurrences(routes, independentOperation), 1, independentOperation);

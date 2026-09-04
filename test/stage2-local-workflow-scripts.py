@@ -212,34 +212,30 @@ def settlement_linux_tail_tests():
     }
     for name in ("REPORT_STAGING", "REPORT_READBACK_STAGING", "RECEIPT_READBACK_STAGING"):
         assert os.environ.get(name) == environment[name]
-    with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
-        outer = Path(temporary)
-        roots = tuple(str(outer / name) for name in ("fixed-a", "fixed-b"))
-        for path in roots:
-            root = Path(path); root.mkdir(mode=0o700)
-            (root / "owned").write_bytes(b"owned")
-        original_fixed, original_markers = settlement.FIXED_ROOTS, settlement.MARKER_ROOTS
-        try:
-            settlement.FIXED_ROOTS = roots
-            settlement.MARKER_ROOTS = ()
-            sibling = subprocess.Popen([
-                sys.executable, "-c", "import time;time.sleep(30)",
-                "cogs-stage2-local-tail-sibling",
-            ])
-            try:
-                time.sleep(0.05)
-                rejected(settlement._scan_fixed, settlement.LocalSettlementError)
-            finally:
-                sibling.terminate()
-                try: sibling.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    sibling.kill(); sibling.wait(timeout=5)
-            settlement.cleanup({**environment, "RECOVERY_OUTCOME": "success"})
-            assert not any(os.path.lexists(path) for path in roots)
-            settlement.residue(environment)
-        finally:
-            settlement.FIXED_ROOTS = original_fixed
-            settlement.MARKER_ROOTS = original_markers
+    fixed = Path("/var/lib/cogs")
+    assert not fixed.exists() and not Path("/opt/kata").exists()
+    custody = fixed / "stage2-prebuilt-rootfs-descriptor-v1"
+    custody.mkdir(mode=0o700, parents=True)
+    for name in ("descriptor.json", "rootfs.package.json", "rootfs.provenance.json",
+                 "producer-receipt.json", "publication-receipt.json", "cosign-verification.json"):
+        path = custody / name
+        path.write_bytes(name.encode("ascii"))
+        path.chmod(0o400)
+    sibling = subprocess.Popen([
+        sys.executable, "-c", "import time;time.sleep(30)",
+        "cogs-stage2-local-tail-sibling",
+    ])
+    try:
+        time.sleep(0.05)
+        rejected(settlement._scan_fixed, settlement.LocalSettlementError)
+    finally:
+        sibling.terminate()
+        try: sibling.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            sibling.kill(); sibling.wait(timeout=5)
+    settlement.cleanup({**environment, "RECOVERY_OUTCOME": "success"})
+    assert not any(os.path.lexists(path) for path in settlement.FIXED_ROOTS)
+    settlement.residue(environment)
 
 
 def settlement_tests():
