@@ -210,6 +210,8 @@ def settlement_linux_tail_tests():
         "REPORT_READBACK_STAGING": "/var/tmp/cogs-stage2-local-result-upload-900000291-1",
         "RECEIPT_READBACK_STAGING": "/var/tmp/cogs-stage2-local-receipt-upload-900000291-1",
     }
+    for name in ("REPORT_STAGING", "REPORT_READBACK_STAGING", "RECEIPT_READBACK_STAGING"):
+        assert os.environ.get(name) == environment[name]
     with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
         outer = Path(temporary)
         roots = tuple(str(outer / name) for name in ("fixed-a", "fixed-b"))

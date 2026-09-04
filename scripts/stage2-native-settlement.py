@@ -90,15 +90,40 @@ def _names(path, maximum, message):
         raise SettlementError(message) from error
 
 
-def _starttime(base):
+def _stat_fields(base):
     raw = _bytes(base / "stat")
     if raw is None:
         return None
     close = raw.rfind(b")")
     fields = raw[close + 2:].split() if close >= 0 else ()
-    if len(fields) < 20 or not fields[19].isdigit():
+    if (len(fields) < 20 or not fields[1].isdigit()
+            or not fields[19].isdigit()):
         raise SettlementError("invalid process generation")
-    return int(fields[19])
+    return fields
+
+
+def _starttime(base):
+    fields = _stat_fields(base)
+    return None if fields is None else int(fields[19])
+
+
+def _observer_lineage(proc_root):
+    """Bind only the real observer and its live supervisor ancestry by generation."""
+    if proc_root != Path("/proc"):
+        return frozenset()
+    current = str(os.getpid())
+    lineage = set()
+    for _ in range(64):
+        fields = _stat_fields(proc_root / current)
+        if fields is None:
+            raise SettlementError("observer ancestry unavailable")
+        generation = int(fields[19])
+        lineage.add((current, generation))
+        parent = fields[1].decode("ascii")
+        if parent == "0":
+            return frozenset(lineage)
+        current = parent
+    raise SettlementError("observer ancestry exceeded bound")
 
 
 def _slot_generation(proc_root, name):
@@ -176,8 +201,7 @@ def _inspect_generation(phase, proc_root, name, starttime, own_namespace, target
         return False
     if observed_namespace != namespace:
         return False
-    observer = proc_root == Path("/proc") and name == str(os.getpid())
-    if not observer and marker in command:
+    if marker and marker in command:
         raise SettlementError(f"unsettled candidate process: {name}")
     if (any(_refers(field, targets) for field in _mount_fields(mounts))
             and (phase == "after-unmount" or namespace != own_namespace)):
@@ -231,6 +255,7 @@ def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os
     own_namespace = _identity(proc_root / "self/ns/mnt")
     if own_namespace is None:
         raise SettlementError("mount namespace unavailable")
+    observer_lineage = _observer_lineage(proc_root)
     empty_coverage = 0
     coverage = {}
     reasons = set()
@@ -238,8 +263,9 @@ def scan(phase, proc_root=Path("/proc"), targets=None, marker=MARKER, environ=os
         before, complete = _inventory(proc_root)
         inspected = set()
         for name, starttime in sorted(before.items()):
+            inspected_marker = b"" if (name, starttime) in observer_lineage else marker
             if _inspect_generation(phase, proc_root, name, starttime,
-                                   own_namespace, targets, marker):
+                                   own_namespace, targets, inspected_marker):
                 inspected.add((name, starttime))
         after, final_complete = _inventory(proc_root)
         # Births and reused generations in the final census were not inspected and
