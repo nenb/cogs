@@ -239,6 +239,9 @@ jobs:
             sudo -n env -i \
               HOME=/root LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin \
               PYTHONDONTWRITEBYTECODE=1 COGS_REQUIRE_STAGE2_LOCAL_SETTLEMENT_LINUX=1 \
+              REPORT_STAGING=/var/tmp/cogs-stage2-local-result-900000291-1 \
+              REPORT_READBACK_STAGING=/var/tmp/cogs-stage2-local-result-upload-900000291-1 \
+              RECEIPT_READBACK_STAGING=/var/tmp/cogs-stage2-local-receipt-upload-900000291-1 \
               /usr/bin/python3 -I -B test/stage2-local-workflow-scripts.py
             test ! -e /tmp/cogs-stage2-workload-candidate-v1
             test ! -e /tmp/cogs-stage2-workload-post-pin-v1
