@@ -86,7 +86,7 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
   assert.match(
     runtimeBoundary,
-    /REVIEWED_WORKFLOW_SHA256 = "da423b595330633b30da3ba5c3ad603cc23ca5dd31e5a64ebee82f1ea85fa1c7"/u,
+    /REVIEWED_WORKFLOW_SHA256 = "4c031ad4d0ef0dbd25e69f721902f019f37b248ca79f88b5fb48cbf63cfe9693"/u,
   );
   assert.doesNotMatch(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
