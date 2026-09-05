@@ -75,6 +75,14 @@ jobs:
           exact_git "$GITHUB_WORKSPACE/qualification" "$EXACT_QUALIFICATION_HEAD"
           test "$(/usr/bin/git -C "$GITHUB_WORKSPACE/qualification" rev-parse HEAD^)" = "$EXACT_CONTROL_HEAD"
           test "$(/usr/bin/git -C "$GITHUB_WORKSPACE/qualification" rev-parse HEAD^^)" = "$EXACT_IMPLEMENTATION_HEAD"
+      - name: Normalize the exact hosted opt scaffold before immutable preparation
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test ! -e /opt/kata && test ! -L /opt/kata
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
+          sudo -n /bin/chmod 0755 /opt
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:755
       - name: Execute exact mixed H-G preparation and mandatory settlement without KVM
         timeout-minutes: 46
         run: |
@@ -92,3 +100,12 @@ jobs:
           env -i BASH_ENV=/dev/null ENV=/dev/null HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             /usr/bin/timeout --signal=TERM --kill-after=10s 630s /bin/bash "$GITHUB_WORKSPACE/qualification/scripts/stage2-prebuilt-mixed-hg-preflight.sh" settle
+      - name: Restore the exact hosted opt scaffold only after settlement
+        if: always()
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test ! -e /opt/kata && test ! -L /opt/kata
+          seen=$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)
+          case "$seen" in root:root:755) sudo -n /bin/chmod 0777 /opt ;; root:root:777) ;; *) exit 1 ;; esac
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777

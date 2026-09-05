@@ -112,6 +112,27 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   assert.match(preflightWorkflow, /qualification_head/u);
   assert.match(preflightWorkflow, /map\(\.id\) == \[\$current\]/u);
   assert.match(preflightWorkflow, /rev-parse HEAD\^\)" = "\$EXACT_CONTROL_HEAD"/u);
+  const normalization = preflightWorkflow.indexOf(
+    "Normalize the exact hosted opt scaffold before immutable preparation",
+  );
+  const execution = preflightWorkflow.indexOf(
+    "Execute exact mixed H-G preparation and mandatory settlement without KVM",
+  );
+  const settlement = preflightWorkflow.indexOf("Independently repeat mandatory settlement after every outcome");
+  const restoration = preflightWorkflow.indexOf("Restore the exact hosted opt scaffold only after settlement");
+  assert.ok(normalization > 0 && execution > normalization && settlement > execution && restoration > settlement);
+  const normalized = preflightWorkflow.slice(normalization, execution);
+  assert.match(normalized, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
+  assert.match(normalized, /stat -c '%U:%G:%a' \/opt\)" = root:root:777/u);
+  assert.match(normalized, /sudo -n \/bin\/chmod 0755 \/opt/u);
+  assert.match(normalized, /stat -c '%U:%G:%a' \/opt\)" = root:root:755/u);
+  assert.match(preflightWorkflow.slice(settlement, restoration), /if: always\(\)/u);
+  const restored = preflightWorkflow.slice(restoration);
+  assert.match(restored, /if: always\(\)/u);
+  assert.match(restored, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
+  assert.match(restored, /root:root:755\) sudo -n \/bin\/chmod 0777 \/opt/u);
+  assert.match(restored, /\*\) exit 1/u);
+  assert.match(restored, /stat -c '%U:%G:%a' \/opt\)" = root:root:777/u);
   assert.match(preflightWorkflow, /rev-parse HEAD\^\^\)" = "\$EXACT_IMPLEMENTATION_HEAD"/u);
   assert.match(preflight, /stage2-local-immutable-preparation\/v2/u);
   assert.match(preflight, /EXACT_QUALIFICATION_HEAD/u);
