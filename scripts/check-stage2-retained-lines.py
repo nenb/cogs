@@ -40,13 +40,13 @@ CONTROL_DATA_MEMBERS = (
     f"{CONTROL_DATA_ROOT}/stage2-local-runtime-manifest-v2.json",
     f"{CONTROL_DATA_ROOT}/stage2-local-static-control-v1.json",
 )
-CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, "deploy/aws-feasibility/remote/stage2-completion-local-control-v3")
-CONTROL_DATA_MEMBERS += (
-    *(f"{CONTROL_DATA_ROOTS[1]}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
+CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, *(f"deploy/aws-feasibility/remote/stage2-completion-local-control-v{n}" for n in (3, 4)))
+CONTROL_DATA_MEMBERS += tuple(member for root in CONTROL_DATA_ROOTS[1:] for member in (
+    *(f"{root}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
         "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
-    *(f"{CONTROL_DATA_ROOTS[1]}/stage2-local-{name}-v3.json" for name in ("execution-envelope", "runtime-manifest")),
-    f"{CONTROL_DATA_ROOTS[1]}/stage2-local-static-control-v2.json",
-)
+    *(f"{root}/stage2-local-{name}-v3.json" for name in ("execution-envelope", "runtime-manifest")),
+    f"{root}/stage2-local-static-control-v2.json",
+))
 MUTABLE_OWNER_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
