@@ -61,6 +61,7 @@
         "schemas/stage2-workload-candidate-v2.json",
         "deploy/aws-feasibility/remote/stage2-completion-runtime-v1.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v2/**/*.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v3/**/*.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",
