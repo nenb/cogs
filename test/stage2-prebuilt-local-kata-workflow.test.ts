@@ -41,8 +41,11 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
   assert.match(staging, /stage2-completion-local-control-v3/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = None/u);
-  assert.match(guard, /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "a108f981dacad6978e2a37d16a143da5c3b51cf4"/u);
+  assert.match(
+    guard,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "da5e971e6ca56f001aa045d024d9ce164d3418955f75a8affa6f486ddbb8971d"/u,
+  );
   assert.match(guard, /control_value\["producer"\]\.get\("control_revision"\) == control/u);
   assert.match(guard, /"qualification_head": qualification/u);
 });
