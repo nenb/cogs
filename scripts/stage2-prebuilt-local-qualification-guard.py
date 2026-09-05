@@ -9,25 +9,25 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v3"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
 # environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = "d2fe08553d25d73fa276794c96b0f311e5406186"
+REVIEWED_IMPLEMENTATION_HEAD = "229ea62bce964086726181974a6fec1c6dfd1f86"
 # Filled by the later independent package review with the observed control G.
-REVIEWED_CONTROL_HEAD = "a108f981dacad6978e2a37d16a143da5c3b51cf4"
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "4b1cf5e921e3bdbebf0b1d44e7b29cb14e173698fd97f27e277d865b36183f5a"
-REVIEWED_CONTROL_SHA256 = "753f1aa84d91c1a7a8447ef04403aef26a679230b3e0d1fb333c5cfbcb38b46a"
+REVIEWED_CONTROL_HEAD = None
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "99f18cc63033dfbdc2686e021c0c46f0c41951f1833ed7f1cc1dd160af64ab28"
+REVIEWED_CONTROL_SHA256 = None
 REVIEWED_WORKFLOW_SHA256 = "3370179f5679c69be265e56fe64da7934618ab022fd81b725e614019f87cf131"
 REVIEWED_RESULT_SCHEMA_SHA256 = "e77754237db66f1742b491c7c30708f5f8e65301cf61388eb2a55a062b3c1045"
 # Filled only by the later independent G review, together with the updated
 # workflow/control digests above.  No dispatch value can supply this authority.
-REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "da5e971e6ca56f001aa045d024d9ce164d3418955f75a8affa6f486ddbb8971d"
-REVIEWED_STATIC_CONTROL_RUN_ID = 33931091412
-REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 9958574502
-REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:9a1f72632363ab9725ae79f7590af75723997e1b416cacb84ad10939bc65ee10"
+REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None
+REVIEWED_STATIC_CONTROL_RUN_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = None
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")

@@ -100,7 +100,7 @@ jobs:
       - name: Prepare exact control and prebuilt descriptor inputs before credentials
         run: |
           set -euo pipefail
-          package=deploy/aws-feasibility/remote/stage2-completion-local-control-v3
+          package=deploy/aws-feasibility/remote/stage2-completion-local-control-v4
           test -f "$package/stage2-local-static-control-v2.json"
           test -f "$package/stage2-local-execution-envelope-v3.json"
           test -f "$RUNNER_TEMP/qualification/pre-aws-package-v4.json"
@@ -134,7 +134,7 @@ jobs:
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-production-planner.py \
             "$RUNNER_TEMP/qualification/pre-aws-package-v4.json" \
-            deploy/aws-feasibility/remote/stage2-completion-local-control-v3/stage2-local-static-control-v2.json \
+            deploy/aws-feasibility/remote/stage2-completion-local-control-v4/stage2-local-static-control-v2.json \
             "$RUNNER_TEMP/descriptor.json" "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/planning"
           test "$(find "$RUNNER_TEMP/planning/plans" -type f -name '*.tfplan' | wc -l)" = 7
           test "$(find "$RUNNER_TEMP/planning/plans" -type f -name '*.plan.json' | wc -l)" = 7
