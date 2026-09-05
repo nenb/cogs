@@ -8,7 +8,7 @@ import stat
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v3"
+SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
 PROVISIONAL_SOURCE = Path(
     "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
