@@ -7,6 +7,7 @@ H=229ea62bce964086726181974a6fec1c6dfd1f86
 G=821149ba4c3dbccef48694efcdb1eb29fa9fd2b9
 MANIFEST=99f18cc63033dfbdc2686e021c0c46f0c41951f1833ed7f1cc1dd160af64ab28
 CONTROL=80a962f87f35cf1653894168ebe32139d7d32bc0a21f89cf028ac02a67976fc8
+DESCRIPTOR=b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876
 ROOT=/var/lib/cogs/stage2-completion-v1/source
 H_CHECKOUT=$GITHUB_WORKSPACE/preflight-H
 CONTROL_CHECKOUT=$GITHUB_WORKSPACE/qualification
@@ -19,6 +20,7 @@ OWNER_VALUE="cogs-stage2-mixed-hg-owner-v1:$GITHUB_RUN_ID:1"
 SOURCE_VALUE="cogs-stage2-mixed-hg-source-v1:$GITHUB_RUN_ID:1:$H:$MANIFEST"
 
 phase() { /usr/bin/printf 'COGS_MIXED_HG_PHASE:%s\n' "$1"; }
+absent() { sudo -n /usr/bin/test ! -e "$1" && sudo -n /usr/bin/test ! -L "$1"; }
 
 root_marker() {
   value=$1 path=$2
@@ -65,7 +67,7 @@ admit() {
 
 acquire_h() {
   phase acquire-h
-  test ! -e "$H_CHECKOUT" || return
+  absent "$H_CHECKOUT" || return
   clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
   "${clean[@]}" /usr/bin/git init --quiet "$H_CHECKOUT" || return
@@ -78,7 +80,7 @@ acquire_h() {
 
 prepare() {
   phase baseline
-  test ! -e /var/lib/cogs && test ! -e /opt/kata && test ! -e "$OWNER" && test ! -e "$SOURCE" || return
+  absent /var/lib/cogs && absent /opt/kata && absent "$OWNER" && absent "$SOURCE" || return
   root_marker "$OWNER_VALUE" "$OWNER" || return
   phase source
   prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 150s \
@@ -104,6 +106,9 @@ v=json.loads(sys.stdin.buffer.read()); assert (v["revision"],v["manifest_sha256"
   /usr/bin/python3 -I -c 'import json,sys
 v=json.loads(sys.stdin.buffer.read()); assert v == {"version":"cogs.stage2-local-immutable-preparation/v2","rootfs_artifact_count":1,"runtime_archive_count":2,"receipt_sha256":v["receipt_sha256"],"control_verified":True,"authority":"immutable-public-input-preparation-only"}; assert len(v["receipt_sha256"]) == 64' \
     <<<"$immutable" || return
+  verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+    "$CONTROL_CHECKOUT/scripts/stage2-stage-prebuilt-control.py" verify "$DESCRIPTOR") || return
+  test "$verified" = "rootfs_descriptor_sha256=$DESCRIPTOR" || return
   phase installed
   sudo -n /usr/bin/test -x "$ROOT/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/containerd" || return
   sudo -n /usr/bin/test -x "$ROOT/deploy/aws-feasibility/.state/completion-v1/kata-runtime-v1/bin/ctr" || return
@@ -120,7 +125,7 @@ settle() {
         env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
         "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" && recovery=success
     else recovery=success; fi
-  elif test ! -e /var/lib/cogs && test ! -e /opt/kata && test ! -e "$OWNER" && test ! -e "$SOURCE"; then
+  elif absent /var/lib/cogs && absent /opt/kata && absent "$OWNER" && absent "$SOURCE"; then
     recovery=success
   fi
   test "$recovery" = success || return
@@ -130,7 +135,7 @@ settle() {
   phase residue
   /usr/bin/printf '%s\n' "$GITHUB_RUN_ID" 1 "$REPORT" "$READBACK" "$RECEIPT" | \
     sudo -n /usr/bin/python3 -I -B "$CONTROL_CHECKOUT/scripts/stage2-local-settlement.py" supervise-residue || return
-  test ! -e /var/lib/cogs && test ! -e /opt/kata || return
+  absent /var/lib/cogs && absent /opt/kata || return
 }
 
 test "$#" -eq 1 || exit 2

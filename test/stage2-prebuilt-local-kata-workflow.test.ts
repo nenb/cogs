@@ -40,6 +40,8 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
   assert.match(staging, /stage2-completion-local-control-v4/u);
+  assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
+  assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
   assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "229ea62bce964086726181974a6fec1c6dfd1f86"/u);
   assert.match(guard, /REVIEWED_CONTROL_HEAD = "821149ba4c3dbccef48694efcdb1eb29fa9fd2b9"/u);
@@ -59,6 +61,12 @@ test("each job prepares one rootfs, executes one mode-bound lifecycle, and close
   assert.match(beforeEntry, /"rootfs_artifact_count":1/u);
   assert.match(beforeEntry, /"runtime_archive_count":2/u);
   assert.match(beforeEntry, /completion_kata_immutable_preparation\.py/u);
+  assert.match(
+    beforeEntry,
+    /sudo -n env -i PATH=\/usr\/bin:\/bin \/usr\/bin\/python3 -I -B[\s\S]*stage2-stage-prebuilt-control\.py verify/u,
+  );
+  assert.equal(beforeEntry.split("scripts/stage2-stage-prebuilt-control.py verify").length - 1, 1);
+  assert.doesNotMatch(beforeEntry, /descriptor=\$\(\/usr\/bin\/python3/u);
   assert.match(beforeEntry, /non-cloud formal grant/u);
   assert.match(workflow, /1\) entry=completion_formal_cycle_full\.py/u);
   assert.match(workflow, /2\|3\|4\|5\|6\|7\) entry=completion_formal_cycle_readiness\.py/u);
@@ -138,5 +146,7 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   assert.match(preflight, /stage2-local-immutable-preparation\/v2/u);
   assert.match(preflight, /EXACT_QUALIFICATION_HEAD/u);
   assert.match(preflight, /rootfs_artifact_count/u);
+  assert.match(preflight, /stage2-stage-prebuilt-control\.py" verify "\$DESCRIPTOR"/u);
+  assert.equal(preflight.split('stage2-stage-prebuilt-control.py" verify "$DESCRIPTOR"').length - 1, 1);
   assert.doesNotMatch(preflight, /\/dev\/kvm|completion_local_full/u);
 });

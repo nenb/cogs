@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -37,6 +38,16 @@ def _load_module(path, name):
     return module
 
 
+def _read_complete(descriptor, size):
+    chunks, remaining = [], size
+    while remaining:
+        part = os.read(descriptor, min(65_536, remaining))
+        _require(part, "control member was truncated")
+        chunks.append(part); remaining -= len(part)
+    _require(not os.read(descriptor, 1))
+    return b"".join(chunks)
+
+
 def _read_regular(directory, relative, maximum):
     _require(type(relative) is str and relative
              and all(part not in {"", ".", ".."} for part in relative.split("/")))
@@ -54,7 +65,7 @@ def _read_regular(directory, relative, maximum):
         before = os.fstat(descriptor)
         _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
                  and 0 < before.st_size <= maximum)
-        raw = os.read(descriptor, maximum + 1)
+        raw = _read_complete(descriptor, before.st_size)
         after = os.fstat(descriptor)
         _require(len(raw) == before.st_size and (before.st_dev, before.st_ino,
                  before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
@@ -65,6 +76,41 @@ def _read_regular(directory, relative, maximum):
         if descriptor is not None:
             os.close(descriptor)
         os.close(parent)
+
+
+def _identity(value):
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _read_frozen(directory, relative, maximum, held):
+    _require(type(relative) is str and type(held) is list and relative
+             and all(part not in {"", ".", ".."} for part in relative.split("/")))
+    parent, descriptor, child = os.dup(directory), None, None
+    try:
+        for component in relative.split("/")[:-1]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                            | os.O_CLOEXEC, dir_fd=parent)
+            seen = os.fstat(child)
+            _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and stat.S_IMODE(seen.st_mode) == 0o500)
+            held.append((parent, _identity(os.fstat(parent)))); parent = child; child = None
+        descriptor = os.open(relative.split("/")[-1], os.O_RDONLY | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, dir_fd=parent)
+        before = os.fstat(descriptor)
+        _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                 and stat.S_IMODE(before.st_mode) == 0o400 and before.st_nlink == 1
+                 and 0 < before.st_size <= maximum)
+        raw = _read_complete(descriptor, before.st_size)
+        _require(len(raw) == before.st_size and _identity(before) == _identity(os.fstat(descriptor)),
+                 "frozen control member changed")
+        held.extend(((parent, _identity(os.fstat(parent))), (descriptor, _identity(before))))
+        parent = descriptor = None
+        return raw
+    finally:
+        if child is not None: os.close(child)
+        if descriptor is not None: os.close(descriptor)
+        if parent is not None: os.close(parent)
 
 
 def _write_frozen(path, raw):
@@ -107,7 +153,8 @@ def _stage(source_path, diagnostic_version=None):
         for row in rows:
             name = row["name"]
             _require(type(name) is str and name not in members)
-            members[name] = _read_regular(source, name, row["size"])
+            members[name] = _read_regular(
+                source, name, _member_maximum(codec, row, diagnostic_version is not None))
         codec.validate_control_members(control, members)
         _require(os.fstat(source) == source_identity, "control package directory changed")
     finally:
@@ -155,22 +202,75 @@ def stage():
     return _stage(SOURCE)
 
 
+def _member_maximum(codec, row, diagnostic):
+    base = codec.preparation if diagnostic else codec
+    maximum = {"envelope": base.MAX_ENVELOPE_BYTES,
+               "runtime-manifest": base.MAX_RUNTIME_BYTES,
+               "executable-closure": base.MAX_CONTRACT_BYTES}.get(row.get("kind"))
+    _require(type(row.get("size")) is int and maximum is not None
+             and 0 < row["size"] <= maximum)
+    return maximum
+
+
+def verify_staged(expected_descriptor, diagnostic=False):
+    _require(os.geteuid() == 0 and type(diagnostic) is bool and type(expected_descriptor) is str
+             and re.fullmatch(r"[0-9a-f]{64}", expected_descriptor) is not None)
+    codec = _load_module(DIAGNOSTIC_CONTROL if diagnostic else H_PREPARATION,
+                         "completion_kata_control_verification")
+    control_member = DIAGNOSTIC_MEMBER if diagnostic else CONTROL_MEMBER
+    maximum = codec.MAX_BYTES if diagnostic else codec.MAX_CONTROL_BYTES
+    directory = os.open(DESTINATION, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    held = [(directory, _identity(os.fstat(directory)))]
+    try:
+        before = os.fstat(directory)
+        _require(stat.S_ISDIR(before.st_mode) and before.st_uid == before.st_gid == 0
+                 and stat.S_IMODE(before.st_mode) == 0o500)
+        control = codec.load_control(_read_frozen(directory, control_member, maximum, held))
+        members = {row["name"]: _read_frozen(
+            directory, row["name"], _member_maximum(codec, row, diagnostic), held)
+                   for row in control.value["members"]}
+        if diagnostic:
+            runtime, _ = codec.validate_control_members(control, members)
+            envelope = codec.normalized_envelope(control, runtime)
+        else:
+            envelope, _, _ = codec.validate_control_members(control, members)
+        top = {control_member, "contracts", *(name for name in members if "/" not in name)}
+        contracts = {name.split("/", 1)[1] for name in members if name.startswith("contracts/")}
+        _require(set(os.listdir(directory)) == top)
+        contract_fd = os.open("contracts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                              | os.O_CLOEXEC, dir_fd=directory)
+        seen = os.fstat(contract_fd); held.append((contract_fd, _identity(seen)))
+        _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                 and stat.S_IMODE(seen.st_mode) == 0o500
+                 and set(os.listdir(contract_fd)) == contracts)
+        _require(all(_identity(os.fstat(fd)) == identity for fd, identity in held))
+        observed = envelope.value["rootfs"]["prebuilt_descriptor_sha256"]
+        _require(observed == expected_descriptor)
+        return observed
+    finally:
+        while held: os.close(held.pop()[0])
+
+
 def stage_provisional(diagnostic_version=None):
     return _stage(PROVISIONAL_SOURCE, diagnostic_version)
 
 
 def main():
     _require(len(sys.argv) in {1, 2, 3})
-    _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
-    _require(len(sys.argv) < 3 or sys.argv[2] == DIAGNOSTIC_VERSION)
-    digest = (stage() if len(sys.argv) == 1 else
-              stage_provisional(None if len(sys.argv) == 2 else sys.argv[2]))
-    raw = f"control_sha256={digest}\n".encode("ascii")
+    if len(sys.argv) == 3 and sys.argv[1] in {"verify", "verify-diagnostic"}:
+        observed = verify_staged(sys.argv[2], sys.argv[1].endswith("-diagnostic"))
+        raw = f"rootfs_descriptor_sha256={observed}\n".encode("ascii")
+    else:
+        _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
+        _require(len(sys.argv) < 3 or sys.argv[2] == DIAGNOSTIC_VERSION)
+        digest = (stage() if len(sys.argv) == 1 else
+                  stage_provisional(None if len(sys.argv) == 2 else sys.argv[2]))
+        raw = f"control_sha256={digest}\n".encode("ascii")
     _require(sys.stdout.buffer.write(raw) == len(raw))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ControlStagingError, OSError):
-        raise SystemExit(2)
+    except Exception:
+        raise SystemExit(2) from None

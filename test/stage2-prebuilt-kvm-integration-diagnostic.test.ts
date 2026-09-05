@@ -67,6 +67,11 @@ test("fixed rootfs custody is acquired twice while mint, report, and publication
   assert.equal(occurrences(workflow, "completion_kata_immutable_preparation.py"), 2);
   assert.equal(occurrences(workflow, "stage2-prebuilt-kvm-diagnostic-lock.py descriptor"), 2);
   assert.equal(occurrences(workflow, "stage2-prebuilt-kvm-diagnostic-lock.py adjuncts"), 2);
+  assert.equal(occurrences(workflow, "verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B"), 2);
+  assert.equal(
+    occurrences(workflow, "verify-diagnostic 015cb863f9b2ec8582619cc46c1914d41eb1b58ef1abc3384cdf34ed24c89029"),
+    2,
+  );
   assert.equal(occurrences(workflow, "recover-stage2-completion-remote.sh"), 2);
   assert.equal(occurrences(workflow, "stage2-local-settlement.py cleanup"), 2);
   assert.equal(occurrences(workflow, "stage2-local-settlement.py residue"), 2);

@@ -28,6 +28,7 @@ settlement = load("stage2_local_settlement_test", "scripts/stage2-local-settleme
 publication = load("stage2_local_publication_test", "scripts/stage2-local-publication.py")
 receipt = load("stage2_local_receipt_test", "scripts/stage2-local-upload-receipt.py")
 control_staging = load("stage2_control_staging_test", "scripts/stage2-stage-reviewed-control.py")
+prebuilt_staging = load("stage2_prebuilt_staging_test", "scripts/stage2-stage-prebuilt-control.py")
 
 
 def rejected(call, exception):
@@ -310,10 +311,97 @@ def settlement_tests():
              settlement.LocalSettlementError)
 
 
+def prebuilt_staging_linux_tests():
+    if os.environ.get("COGS_REQUIRE_STAGE2_LOCAL_SETTLEMENT_LINUX") != "1": return
+    assert os.geteuid() == 0 and hasattr(os, "fork") and hasattr(os, "setuid")
+    original = (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
+                prebuilt_staging.H_PREPARATION)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        prebuilt_staging.SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
+        prebuilt_staging.DESTINATION = root / "control"
+        prebuilt_staging.H_PREPARATION = ROOT / "deploy/aws-feasibility/remote/completion_kata_preparation.py"
+        try:
+            assert prebuilt_staging.stage() == "80a962f87f35cf1653894168ebe32139d7d32bc0a21f89cf028ac02a67976fc8"
+            expected = "b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876"
+            assert prebuilt_staging.verify_staged(expected) == expected
+            descriptor_count = len(os.listdir("/proc/self/fd"))
+            child = os.fork()
+            if child == 0:
+                try:
+                    os.setgid(65534); os.setuid(65534)
+                    (prebuilt_staging.DESTINATION / "stage2-local-execution-envelope-v3.json").read_bytes()
+                    os._exit(1)
+                except PermissionError: os._exit(0)
+                except BaseException: os._exit(2)
+            _, status_value = os.waitpid(child, 0)
+            assert os.waitstatus_to_exitcode(status_value) == 0
+            envelope = prebuilt_staging.DESTINATION / "stage2-local-execution-envelope-v3.json"
+            os.chmod(envelope, 0o600)
+            rejected(lambda: prebuilt_staging.verify_staged(expected),
+                     prebuilt_staging.ControlStagingError)
+            os.chmod(envelope, 0o400)
+            rejected(lambda: prebuilt_staging.verify_staged("f" * 64),
+                     prebuilt_staging.ControlStagingError)
+            alias = root / "alias"; os.link(envelope, alias)
+            rejected(lambda: prebuilt_staging.verify_staged(expected),
+                     prebuilt_staging.ControlStagingError)
+            alias.unlink()
+            raw = envelope.read_bytes(); envelope.unlink(); envelope.symlink_to("missing")
+            rejected(lambda: prebuilt_staging.verify_staged(expected), OSError)
+            envelope.unlink(); envelope.write_bytes(raw); os.chown(envelope, 0, 0); os.chmod(envelope, 0o400)
+            contracts = prebuilt_staging.DESTINATION / "contracts"
+            os.chmod(contracts, 0o700)
+            rejected(lambda: prebuilt_staging.verify_staged(expected),
+                     prebuilt_staging.ControlStagingError)
+            os.chmod(contracts, 0o500)
+            extra = prebuilt_staging.DESTINATION / "extra"; extra.write_bytes(b"x"); os.chmod(extra, 0o400)
+            rejected(lambda: prebuilt_staging.verify_staged(expected),
+                     prebuilt_staging.ControlStagingError)
+            extra.unlink()
+            control = prebuilt_staging.DESTINATION / prebuilt_staging.CONTROL_MEMBER
+            control_alias = root / "control-alias"; os.link(control, control_alias)
+            rejected(lambda: prebuilt_staging.verify_staged(expected),
+                     prebuilt_staging.ControlStagingError)
+            control_alias.unlink()
+            old_read, calls = prebuilt_staging._read_complete, 0
+            def raced(descriptor, size):
+                nonlocal calls
+                value = old_read(descriptor, size); calls += 1
+                if calls == 2: os.chmod(control, 0o600)
+                return value
+            prebuilt_staging._read_complete = raced
+            try:
+                rejected(lambda: prebuilt_staging.verify_staged(expected),
+                         prebuilt_staging.ControlStagingError)
+            finally:
+                prebuilt_staging._read_complete = old_read; os.chmod(control, 0o400)
+            rejected(lambda: prebuilt_staging.verify_staged(expected, True), OSError)
+            rejected(lambda: prebuilt_staging.verify_staged(None),
+                     prebuilt_staging.ControlStagingError)
+            codec = type("Codec", (), {"MAX_ENVELOPE_BYTES": 4,
+                                        "MAX_RUNTIME_BYTES": 4, "MAX_CONTRACT_BYTES": 4})()
+            assert prebuilt_staging._member_maximum(
+                codec, {"kind": "envelope", "size": 4}, False) == 4
+            rejected(lambda: prebuilt_staging._member_maximum(
+                codec, {"kind": "envelope", "size": 5}, False),
+                prebuilt_staging.ControlStagingError)
+            assert prebuilt_staging.verify_staged(expected) == expected
+            assert len(os.listdir("/proc/self/fd")) == descriptor_count
+            cli = subprocess.run((sys.executable, "-I", "-B", str(
+                ROOT / "scripts/stage2-stage-prebuilt-control.py"), "verify", "bad"),
+                capture_output=True, check=False)
+            assert cli.returncode == 2 and cli.stdout == cli.stderr == b""
+        finally:
+            (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
+             prebuilt_staging.H_PREPARATION) = original
+
+
 guard_tests()
 publication_tests()
 receipt_tests()
 control_staging_tests()
 settlement_tests()
 settlement_linux_tail_tests()
+prebuilt_staging_linux_tests()
 print("stage2 local workflow script tests passed")
