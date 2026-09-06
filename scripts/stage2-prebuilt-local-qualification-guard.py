@@ -9,25 +9,25 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
 # environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = "229ea62bce964086726181974a6fec1c6dfd1f86"
+REVIEWED_IMPLEMENTATION_HEAD = "8907eba3191d07573cd84573cb0b2adddff17bd6"
 # Filled by the later independent package review with the observed control G.
-REVIEWED_CONTROL_HEAD = "821149ba4c3dbccef48694efcdb1eb29fa9fd2b9"
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "99f18cc63033dfbdc2686e021c0c46f0c41951f1833ed7f1cc1dd160af64ab28"
-REVIEWED_CONTROL_SHA256 = "80a962f87f35cf1653894168ebe32139d7d32bc0a21f89cf028ac02a67976fc8"
-REVIEWED_WORKFLOW_SHA256 = "3370179f5679c69be265e56fe64da7934618ab022fd81b725e614019f87cf131"
+REVIEWED_CONTROL_HEAD = None
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "f437ba77c1aac3b9abf96f5332c17edf74e258cdc9477b0bb1d2f47931cd22f3"
+REVIEWED_CONTROL_SHA256 = None
+REVIEWED_WORKFLOW_SHA256 = "e68429c7cc1b680d5c770731db4f30d551e207abb254b7e5e88a64289d8b7cda"
 REVIEWED_RESULT_SCHEMA_SHA256 = "e77754237db66f1742b491c7c30708f5f8e65301cf61388eb2a55a062b3c1045"
 # Filled only by the later independent G review, together with the updated
 # workflow/control digests above.  No dispatch value can supply this authority.
-REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876"
-REVIEWED_STATIC_CONTROL_RUN_ID = 33987659305
-REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 9975667979
-REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:94769e5b4dacfe280d059c453c4a1e722f5f0686509778d9c6f4b0fa00d44be0"
+REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None
+REVIEWED_STATIC_CONTROL_RUN_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = None
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")

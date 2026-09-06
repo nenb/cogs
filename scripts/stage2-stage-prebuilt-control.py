@@ -9,7 +9,7 @@ import stat
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
+SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
 QUALIFICATION_SOURCE = Path(
     "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v5")
 PROVISIONAL_SOURCE = Path(

@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as temporary:
     for relative in (*module.POLICY, module.WORKFLOW_PATH):
         target = repository / relative; target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(subprocess.check_output(
-            ("git", "show", f"229ea62bce964086726181974a6fec1c6dfd1f86:{relative}"), cwd=ROOT))
+            ("git", "show", f"8907eba3191d07573cd84573cb0b2adddff17bd6:{relative}"), cwd=ROOT))
     observed = module._source_policy(repository)
     assert observed[module.WORKFLOW_PATH] == module.REVIEWED_WORKFLOW_SHA256
     workflow = repository / module.WORKFLOW_PATH
