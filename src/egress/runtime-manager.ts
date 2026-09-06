@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
+import { modelAuthFailureCause } from "../auth/model-auth.ts";
 import type { LaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import { type CogsTelemetry, captureTelemetry } from "../telemetry/instrumentation.ts";
@@ -9,16 +10,23 @@ import {
   type CogsEgressCompletionQueue,
   createCogsEgressCompletionQueue,
 } from "./completion-queue.ts";
-import type { CogsEgressPkiMaterial, CogsEgressPkiSource } from "./egress-material.ts";
-import type { CogsEnvoyProcessHandle, CogsEnvoyProcessPort } from "./envoy-process.ts";
+import { type CogsEgressPkiMaterial, type CogsEgressPkiSource, egressMaterialFailureCause } from "./egress-material.ts";
+import {
+  type CogsEnvoyProcessHandle,
+  type CogsEnvoyProcessPort,
+  failedCogsEnvoyProcessRetirement,
+} from "./envoy-process.ts";
 import {
   type CogsEnvoyCredentialSource,
   type CogsEnvoyRuntimeConfig,
+  envoyRuntimeConfigFailureCause,
   withCogsEnvoyRuntimeConfig,
 } from "./envoy-runtime-config.ts";
 import { type CogsExtAuthzServer, startCogsExtAuthzServer } from "./ext-authz-server.ts";
+import { egressPkiFailureCause } from "./openbao-pki.ts";
 import {
   createOpenBaoEgressRevocationBinding,
+  getOpenBaoHydratedMaterial,
   normalizeOpenBaoEgressRevocationAuthorityOptions,
   type OpenBaoEgressRevocationBinding,
   type OpenBaoEgressRevocationBindingOptions,
@@ -36,9 +44,10 @@ import {
   type CogsEgressRevocationTimers,
   type CogsEgressRevocationWatcher,
   createCogsEgressRevocationWatcher,
+  failedCogsEgressRevocationRetirement,
 } from "./revocation-watcher.ts";
 import { type CogsEgressRoutePlan, lowerLaunchEgressRoutePlan } from "./route-policy.ts";
-import { withCogsEgressTmpfsMaterial } from "./tmpfs-material-writer.ts";
+import { failedCogsEgressTmpfsRetirement, withCogsEgressTmpfsMaterial } from "./tmpfs-material-writer.ts";
 
 const walLimits = Object.freeze({ maxBytes: 1024 * 1024, maxRecords: 10_000, maxRecordBytes: 4096 });
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -89,6 +98,7 @@ type RuntimeManagerPorts = Readonly<{
     operation: (paths: RuntimeMaterialPaths) => Promise<T>,
   ): Promise<T>;
   bindOpenBaoRevocation(request: OpenBaoEgressRevocationBindingRequest): Promise<OpenBaoEgressRevocationBinding>;
+  getOpenBaoHydratedMaterial: typeof getOpenBaoHydratedMaterial;
 }>;
 
 export type CogsEgressRuntimeRevocationConfig =
@@ -132,6 +142,13 @@ export class CogsEgressRuntimeManagerError extends Error {
   }
 }
 
+const failedManagerRetirements = new WeakMap<CogsEgressRuntimeManagerError, Promise<void>>();
+
+/** Trusted startup-owner seam; undefined means no manager work was acquired. */
+export function failedCogsEgressRuntimeManagerRetirement(error: unknown): Promise<void> | undefined {
+  return error instanceof CogsEgressRuntimeManagerError ? failedManagerRetirements.get(error) : undefined;
+}
+
 export function aggregateCogsEgressRoutePlanRevision(routePlan: CogsEgressRoutePlan): string {
   try {
     if (!routePlan || typeof routePlan !== "object" || Array.isArray(routePlan) || !Object.isFrozen(routePlan))
@@ -168,8 +185,11 @@ export async function startCogsEgressRuntimeManager(
     await manager.start();
     return manager.handle();
   } catch {
-    await manager.close().catch(() => undefined);
-    throw new CogsEgressRuntimeManagerError();
+    const observation = manager.close();
+    const failure = new CogsEgressRuntimeManagerError();
+    failedManagerRetirements.set(failure, manager.failedStartupRetirement());
+    await observation.catch(() => undefined);
+    throw failure;
   }
 }
 
@@ -195,16 +215,23 @@ class RuntimeManager {
   private closing = false;
   private replacement = false;
   private release: (() => void) | undefined;
+  private openBaoRelease: (() => void) | undefined;
   private scopePromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
   private actualClosePromise: Promise<void> | undefined;
   private readonly finalCompletions: CogsEgressCompletion[] = [];
   private readyResolve!: () => void;
   private readyReject!: (error: unknown) => void;
+  private readonly startupRetirement: Promise<void>;
+  private resolveStartupRetirement!: () => void;
   private published = false;
   private scopeEnded = false;
 
-  public constructor(private readonly options: Captured) {}
+  public constructor(private readonly options: Captured) {
+    this.startupRetirement = new Promise<void>((resolve) => {
+      this.resolveStartupRetirement = resolve;
+    });
+  }
 
   public async start(): Promise<void> {
     const ready = new Promise<void>((resolve, reject) => {
@@ -265,11 +292,21 @@ class RuntimeManager {
         else this.readyReject(error);
       },
     );
-    await ready;
+    let readinessTimer: unknown;
+    try {
+      readinessTimer = this.options.timers.setTimeout(
+        () => this.readyReject(new Error("startup observation deadline")),
+        Math.min(60_000, this.options.operationTimeoutMs * 4),
+      );
+      await ready;
+    } finally {
+      if (readinessTimer !== undefined) this.options.timers.clearTimeout(readinessTimer);
+    }
     this.published = true;
     if (this.scopeEnded && !this.closing) {
       this.readyState = false;
       void this.failClosed();
+      throw new Error("scope ended before publication");
     }
   }
 
@@ -303,7 +340,9 @@ class RuntimeManager {
         ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
       },
       async (pki) => {
+        if (this.closing) throw new Error("startup closed");
         const binding = await this.resolveRevocationBinding(presetRevision, pki);
+        if (this.closing) throw new Error("startup closed");
         return this.options.ports.withConfig(
           {
             userId: this.options.launch.user_id,
@@ -315,7 +354,10 @@ class RuntimeManager {
             ...(this.options.policyAuthorizer === undefined ? {} : { policyAuthorizer: this.options.policyAuthorizer }),
           },
           binding.credentialSource,
-          async (config) => this.withMaterial(config, pki, presetRevision, binding),
+          async (config) => {
+            if (this.closing) throw new Error("startup closed");
+            return this.withMaterial(config, pki, presetRevision, binding);
+          },
         );
       },
     );
@@ -333,7 +375,7 @@ class RuntimeManager {
         credentialVersion: revocation.credentialVersion,
       });
     }
-    return validBinding(
+    const binding = validBinding(
       await this.options.ports.bindOpenBaoRevocation({
         ...revocation.openbao,
         routePlan: this.routePlan,
@@ -342,7 +384,18 @@ class RuntimeManager {
         pkiExpiresAtMs: pki.expiresAtMs,
         ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
       }),
+      true,
     );
+    const hydrated = this.options.ports.getOpenBaoHydratedMaterial(binding);
+    this.openBaoRelease = hydrated.release;
+    if (
+      hydrated.manifest.baseline.presetRevision !== presetRevision ||
+      hydrated.manifest.baseline.credentialVersion !== binding.credentialVersion ||
+      hydrated.manifest.baseline.revoked ||
+      hydrated.manifest.baseline.pkiExpiresAtMs !== pki.expiresAtMs
+    )
+      throw new Error("hydrated baseline mismatch");
+    return binding;
   }
 
   private async withMaterial(
@@ -352,32 +405,62 @@ class RuntimeManager {
     binding: OpenBaoEgressRevocationBinding,
   ): Promise<void> {
     await this.options.ports.withTmpfs(config, pki, async (paths) => {
-      this.watcher = await createCogsEgressRevocationWatcher(binding.source, this.actions(), {
-        baseline: Object.freeze({
-          presetRevision,
-          credentialVersion: validOpaque(binding.credentialVersion),
-          revoked: false,
-          pkiExpiresAtMs: pki.expiresAtMs,
-        }),
-        pollIntervalMs: this.options.revocationPollIntervalMs,
-        minPkiRemainingMs: this.options.revocationMinPkiRemainingMs,
-        operationTimeoutMs: this.options.operationTimeoutMs,
-        nowMs: this.options.nowMs,
-        timers: this.options.timers,
-        ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
-      });
-      this.process = await this.options.envoyProcess.start({
-        bootstrapPath: paths.bootstrap,
-        listenerPort: this.options.listenerPort,
-        ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
-        onCompletionLine: (line) => this.queue?.onCompletionLine(line) ?? Promise.reject(new Error("closed")),
-      });
-      if (!this.dependenciesReady()) throw new Error("dependency unavailable");
-      this.readyState = true;
-      this.readyResolve();
-      await new Promise<void>((resolve) => {
-        this.release = resolve;
-      });
+      try {
+        if (this.closing) throw new Error("startup closed");
+        try {
+          this.watcher = await createCogsEgressRevocationWatcher(binding.source, this.actions(), {
+            baseline: Object.freeze({
+              presetRevision,
+              credentialVersion: validOpaque(binding.credentialVersion),
+              revoked: false,
+              pkiExpiresAtMs: pki.expiresAtMs,
+            }),
+            pollIntervalMs: this.options.revocationPollIntervalMs,
+            minPkiRemainingMs: this.options.revocationMinPkiRemainingMs,
+            operationTimeoutMs: this.options.operationTimeoutMs,
+            nowMs: this.options.nowMs,
+            timers: this.options.timers,
+            ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
+          });
+        } catch (error) {
+          this.readyReject(error);
+          await failedCogsEgressRevocationRetirement(error);
+          throw error;
+        }
+        if (this.closing) throw new Error("startup closed");
+        try {
+          this.process = await this.options.envoyProcess.start({
+            bootstrapPath: paths.bootstrap,
+            listenerPort: this.options.listenerPort,
+            ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
+            onCompletionLine: (line) => this.queue?.onCompletionLine(line) ?? Promise.reject(new Error("closed")),
+          });
+        } catch (error) {
+          this.readyReject(error);
+          await failedCogsEnvoyProcessRetirement(error);
+          throw error;
+        }
+        if (this.closing || !this.dependenciesReady()) throw new Error("dependency unavailable");
+        this.readyState = true;
+        this.readyResolve();
+        await new Promise<void>((resolve) => {
+          this.release = resolve;
+        });
+      } catch (error) {
+        this.readyState = false;
+        this.closing = true;
+        // Do not return through tmpfs/config/PKI lexical finalizers until every
+        // post-acquisition consumer has actually retired. Unknown process/authz
+        // retirement intentionally keeps this callback and material owned.
+        const [watcherRetired, authzRetired, processRetired] = await Promise.all([
+          this.closeWatcher(),
+          settle(this.closeAuthz()),
+          settle(this.closeProcess()),
+        ]);
+        void watcherRetired;
+        if (!authzRetired || !processRetired) await new Promise<never>(() => undefined);
+        throw error;
+      }
     });
   }
 
@@ -454,6 +537,16 @@ class RuntimeManager {
     return this.closePromise;
   }
 
+  public failedStartupRetirement(): Promise<void> {
+    if (this.actualClosePromise === undefined) {
+      this.closing = true;
+      this.readyState = false;
+      this.actualClosePromise = this.closeOnce();
+      void this.actualClosePromise.catch(() => undefined);
+    }
+    return this.startupRetirement;
+  }
+
   private async failClosed(): Promise<void> {
     await this.close().catch(() => undefined);
   }
@@ -470,22 +563,26 @@ class RuntimeManager {
     if (!authzOutcome || !processOutcome) throw new CogsEgressRuntimeManagerError();
 
     let failed = !watcherOutcome;
+    let retirementCertain = true;
     let queueRetired = false;
     try {
       await this.closeQueue();
       queueRetired = true;
     } catch {
       failed = true;
+      retirementCertain = false;
     }
     try {
       await this.closeTelemetry();
     } catch {
       failed = true;
+      retirementCertain = false;
     }
     try {
-      await this.releaseScope();
+      if (!(await this.releaseScope())) failed = true;
     } catch {
       failed = true;
+      retirementCertain = false;
     }
     // WAL release requires both authz and completion producers to be retired.
     if (queueRetired) {
@@ -493,10 +590,15 @@ class RuntimeManager {
         await this.closeWal();
       } catch {
         failed = true;
+        retirementCertain = false;
       }
-    } else failed = true;
+    } else {
+      failed = true;
+      retirementCertain = false;
+    }
     this.internalAuthzToken = "";
     this.proxyCapability = "";
+    if (retirementCertain) this.resolveStartupRetirement();
     if (failed) throw new CogsEgressRuntimeManagerError();
   }
 
@@ -539,11 +641,22 @@ class RuntimeManager {
     if (this.telemetry === telemetry) this.telemetry = undefined;
   }
 
-  private async releaseScope(): Promise<void> {
+  private async releaseScope(): Promise<boolean> {
     const release = this.release;
     release?.();
     if (this.release === release) this.release = undefined;
-    if (this.scopePromise) await this.scopePromise;
+    let failure: unknown;
+    try {
+      if (this.scopePromise) await this.scopePromise;
+    } catch (error) {
+      failure = error;
+      const tmpfsRetirement = nestedTmpfsRetirement(error);
+      if (tmpfsRetirement !== undefined) await tmpfsRetirement;
+    }
+    const materialRelease = this.openBaoRelease;
+    materialRelease?.();
+    if (this.openBaoRelease === materialRelease) this.openBaoRelease = undefined;
+    return failure === undefined;
   }
 
   private async closeWal(): Promise<void> {
@@ -615,6 +728,25 @@ class RuntimeManager {
       if (timer !== undefined) this.options.timers.clearTimeout(timer);
     }
   }
+}
+
+function nestedTmpfsRetirement(error: unknown): Promise<void> | undefined {
+  const seen = new Set<object>();
+  let current = error;
+  // At most sixteen credentialed integrations add two wrappers each; leave
+  // bounded headroom for PKI/config and future fixed wrappers.
+  for (let depth = 0; depth < 64 && typeof current === "object" && current !== null; depth += 1) {
+    if (seen.has(current)) return undefined;
+    seen.add(current);
+    const retirement = failedCogsEgressTmpfsRetirement(current);
+    if (retirement !== undefined) return retirement;
+    current =
+      egressPkiFailureCause(current) ??
+      envoyRuntimeConfigFailureCause(current) ??
+      egressMaterialFailureCause(current) ??
+      modelAuthFailureCause(current);
+  }
+  return undefined;
 }
 
 async function settle(work: Promise<void>): Promise<boolean> {
@@ -750,7 +882,7 @@ function validRevocation(value: CogsEgressRuntimeRevocationConfig): CogsEgressRu
   throw new Error("bad revocation");
 }
 
-function validBinding(value: unknown): OpenBaoEgressRevocationBinding {
+function validBinding(value: unknown, preserveIdentity = false): OpenBaoEgressRevocationBinding {
   if (!plain(value)) throw new Error("bad binding");
   exactShape(value, ["credentialSource", "credentialVersion", "source"], []);
   const source = value.source as { read?: unknown };
@@ -762,10 +894,15 @@ function validBinding(value: unknown): OpenBaoEgressRevocationBinding {
     typeof credentialSource.withCredential !== "function"
   )
     throw new Error("bad binding");
+  validOpaque(value.credentialVersion as string);
+  if (preserveIdentity) {
+    if (!Object.isFrozen(value)) throw new Error("mutable binding");
+    return value as unknown as OpenBaoEgressRevocationBinding;
+  }
   return Object.freeze({
     source: value.source as CogsEgressRevocationSource,
     credentialSource: value.credentialSource as CogsEnvoyCredentialSource,
-    credentialVersion: validOpaque(value.credentialVersion as string),
+    credentialVersion: value.credentialVersion as string,
   });
 }
 
@@ -813,9 +950,13 @@ function ports(input: Partial<RuntimeManagerPorts> | undefined): RuntimeManagerP
     bindOpenBaoRevocation: own("bindOpenBaoRevocation")
       ? input?.bindOpenBaoRevocation
       : createOpenBaoEgressRevocationBinding,
+    getOpenBaoHydratedMaterial: own("getOpenBaoHydratedMaterial")
+      ? input?.getOpenBaoHydratedMaterial
+      : getOpenBaoHydratedMaterial,
   });
   if (typeof value.openWal !== "function" || typeof value.startAuthz !== "function") throw new Error("bad ports");
   if (typeof value.withConfig !== "function" || typeof value.withTmpfs !== "function") throw new Error("bad ports");
-  if (typeof value.bindOpenBaoRevocation !== "function") throw new Error("bad ports");
+  if (typeof value.bindOpenBaoRevocation !== "function" || typeof value.getOpenBaoHydratedMaterial !== "function")
+    throw new Error("bad ports");
   return value as RuntimeManagerPorts;
 }

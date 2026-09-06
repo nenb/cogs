@@ -98,7 +98,7 @@ This guarantee does **not** prevent the sandbox from:
 - sending source or returned data to an approved destination when the allowed method and path permit it;
 - abusing the integration as a confused deputy.
 
-Method and path restrictions reduce this risk but do not provide information-flow control. Model providers also receive source included in model prompts by design.
+Method and path restrictions reduce this risk but do not provide information-flow control. Model providers also receive source included in model prompts by design. Cogs strips the injected header name from upstream responses and excludes the value from its own logs, telemetry, and ordinary history, but this is not response DLP: an approved upstream can store the credential or reflect it in another header or body.
 
 ### 4.2 Trust domains
 
@@ -372,10 +372,11 @@ Cogs exposes a small, versioned HTTP API inside the cluster. The daemon authenti
 | `POST /v1/input` | Submit `prompt`, `steer`, or `follow_up` content |
 | `POST /v1/abort` | Abort the active Pi run |
 | `GET /v1/events?after=<seq>` | Receive Pi/Cogs events over SSE |
-| `GET /v1/entries?after=<entry-id>&limit=<n>` | Page through append-order Pi history for reconnect/UI reconstruction |
+| `GET /v1/entries?after=<entry-id>&limit=<n>` | Page complete permitted append-order entries; return 413 rather than clip one oversized entry |
+| `GET /v1/entry-fragments?cursor=<opaque>` | Pin and reconstruct every byte of oversized permitted entries through retry-stable fragments |
 | `GET /v1/state` | Return session/run state and model/usage summary |
 | `POST /v1/export` | Produce an explicit user-requested session bundle |
-| `POST /v1/shutdown` | Flush session state and stop gracefully |
+| `POST /v1/shutdown` | Accept one shutdown request with 202; terminal cleanup status belongs to the runtime owner |
 | `GET /health/live` | Process liveness |
 | `GET /health/ready` | Pi, storage, sandbox, and proxy readiness |
 
@@ -394,7 +395,7 @@ Events use a monotonically increasing worker-local sequence and include:
 - run settled/aborted;
 - shutdown-ready.
 
-Raw Pi event payloads are adapted only enough to add stable versioning and correlation IDs. A bounded replay buffer supports short SSE reconnects; Pi JSONL remains the durable source of truth. After replay-buffer eviction or when reopening a chat, the daemon uses the paged entries endpoint rather than requesting a sensitive full export.
+Raw Pi event payloads are adapted only enough to add stable versioning and correlation IDs. A bounded replay buffer supports short SSE reconnects; Pi JSONL remains the durable source of truth. After replay-buffer eviction, the daemon uses complete permitted-entry pages or the fragment endpoint rather than requesting a sensitive full export. Fragment cursors bind the session, startup projection epoch, pinned durable tail, current entry and redacted-byte offset; retries are byte-identical, appends beyond the pinned tail are excluded, and restart/tamper/persistence uncertainty fails closed. Raw export remains separately authenticated, sensitive, native-byte preserving, and unsanitized.
 
 Attachments are prepared by the daemon in the workspace and referred to by path/metadata in the prompt. Cogs does not fetch arbitrary attachment URLs.
 
@@ -498,8 +499,9 @@ The allowlist is immutable for a session, so the MVP avoids a custom xDS control
 4. It renders immutable proxy configuration into trusted tmpfs.
 5. Static routes encode integration rule groups and header overwrite behavior.
 6. The selected proxy starts only after configuration validation succeeds.
-7. The integration UI/service sends revocation events to the daemon for immediate drain and replacement.
-8. As a backstop, Cogs polls the OpenBao secret version/deletion/lease metadata at a configured interval no greater than 60 seconds. A change marks egress unready, denies new requests, drains existing connections, and requests worker replacement.
+7. The integration UI/service can request drain and replacement; this is an admission request, not proof that existing work retired.
+8. Before publishing material, Cogs deduplicates required handles and brackets each exact-version data read with metadata reads (`M0 → D(version=N) → M1`). The immutable identity includes trusted authority, mount, canonical handle, positive version, exact key creation time, and exact version creation time.
+9. As a backstop, Cogs polls the complete hydrated manifest. A persistent distinguishable mutation is detected within the declared conditional bound `P + 2R + J`, where `P` is post-poll wait, `R` is one aggregate-read bound, and `J` is scheduler/gate allowance. Detection closes admission; independently proved process/connection retirement adds `D`. This is not immediate issuer revocation, transactional multi-key observation, credential erasure, or protection against trusted clock/storage rollback or an identical backend restore.
 
 Secret values may appear in trusted tmpfs and proxy memory, but never in Kubernetes manifests, logs, the sandbox, or durable session storage. Proxy administration and config-dump interfaces are disabled or bound to a worker-private Unix socket.
 
@@ -513,7 +515,7 @@ For every request the proxy must:
 - match a declared integration rule, destination, and port;
 - validate CONNECT authority, TLS SNI, HTTP `Host`, and HTTP/2 `:authority` consistency;
 - resolve and dial the registered hostname, never a guest-selected destination IP;
-- match the declared method and path prefix;
+- match the declared method and raw origin-form path with the closed exact/prefix/segment-glob grammar and bounded iterative matching; reject percent encoding, Unicode, repeated slashes, dot-only segments, semicolons, fragments, and undeclared queries without decoding or normalization;
 - reject nested CONNECT, upgrades, WebSockets, and DNS-over-HTTPS routes;
 - strip guest-supplied authentication headers;
 - inject the configured real header value;
@@ -528,7 +530,7 @@ Queries are omitted or redacted because they frequently contain sensitive data. 
 Before the proxy authorizes credential use, a synchronous local authorization call records a non-secret audit intent in a trusted append-only WAL. The Envoy candidate uses `ext_authz` with `failure_mode_allow: false`; another proxy must provide equivalent fail-closed behavior.
 
 - inability to authorize or append the secret-use record denies the request;
-- completion status is added by the proxy's structured access logging;
+- completion status, including explicit no-response code zero, is continuously correlated from the proxy's structured access logging; bounded diagnostic retention may drop only with counters and never substitutes for the durable intent;
 - WAL-to-OTLP delivery is asynchronous and buffered;
 - an unavailable OTLP collector does not stop execution;
 - an unwritable/full local audit WAL does stop credentialed egress.
@@ -820,6 +822,10 @@ Additional defaults:
 At 250 default-sized active sessions, requested capacity is 500 vCPU and 1 TiB RAM before trusted-worker and system overhead. The platform therefore requires autoscaled dedicated node pools and enforced admission quotas; this is not a small static cluster.
 
 Sub-five-second startup is a future optimization using pre-pulled images and a bounded warm pool. It must not weaken isolation by reusing dirty guest state between users. Warm instances are reset from an immutable image and receive fresh identities, mounts, proxy configuration, and host keys.
+
+A cleanup deadline bounds caller observation only. Every owner seals admission synchronously and retains its exact actual-work and retirement promises. Timeout, cancellation, leader/PID absence, listener refusal, or socket destruction cannot release dependent material, delete owned state, authorize replacement, or turn a failed lifecycle into `stopped`. Independent safe termination requests may proceed, but releases remain behind their user-retirement barriers. Development supervisor cleanup additionally requires an exact generation-bound worker cleanup receipt plus independent worker identity absence; missing, stale, malformed, or unpersisted proof preserves recovery and blocks reuse.
+
+Pi native JSONL uses a pinned 0.84.2 instance-local persistence fence installed before `createAgentSession`. Expected append history and the last published durable frontier are distinct. Native write/serialization/identity, full-prefix validation, file or directory fsync, close, or owner-acknowledgment failure poisons admission permanently; a later successful write or fsync cannot heal the gap. All successful, error, abort, retry, compaction, navigation, export, and shutdown boundaries require actual operation quiescence and exact frontier equality. Native retry and compaction are bounded by the existing operation owner and retain failed attempts/compactions in append history; there is no caller-level tool replay or second transcript.
 
 ---
 

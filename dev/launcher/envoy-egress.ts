@@ -25,6 +25,7 @@ import { lowerLaunchEgressRoutePlan } from "../../src/egress/route-policy.ts";
 import {
   type CogsEgressRuntimeManager,
   type CogsEgressRuntimeManagerOptions,
+  failedCogsEgressRuntimeManagerRetirement,
   startCogsEgressRuntimeManager,
 } from "../../src/egress/runtime-manager.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
@@ -423,7 +424,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         }
       }),
     });
-  } catch {
+  } catch (startupError) {
     const cleanup = cleanupOptions();
     let failed = false;
     try {
@@ -433,10 +434,12 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         failed = true;
       }
 
-      const managerClean = await closeManagerAfterStartupFailure(manager, capturedSeams, cleanup).catch(() => {
-        failed = true;
-        return false;
-      });
+      const managerClean = await closeManagerAfterStartupFailure(manager, startupError, capturedSeams, cleanup).catch(
+        () => {
+          failed = true;
+          return false;
+        },
+      );
       if (managerClean && internallyPreparedBinary && capturedState) {
         try {
           await cleanupEnvoyBinary(capturedState, internallyPreparedBinary);
@@ -808,11 +811,20 @@ async function closeRelayAfterStartupFailure(relay: KvmRelay | undefined): Promi
 
 async function closeManagerAfterStartupFailure(
   manager: CogsEgressRuntimeManager | undefined,
+  startupError: unknown,
   seams: EnvoyEgressSeams,
   options: DeadlineOptions,
 ): Promise<boolean> {
   if (!manager) {
-    return true;
+    const retirement = failedCogsEgressRuntimeManagerRetirement(startupError);
+    if (retirement === undefined) return true;
+    await retirement;
+    try {
+      await (seams.validateTmpfs ?? validateTmpfs)(EGRESS_TMPFS_ROOT);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   try {

@@ -79,6 +79,13 @@ export class CogsEnvoyRuntimeConfigError extends Error {
   }
 }
 
+const runtimeConfigFailureCauses = new WeakMap<CogsEnvoyRuntimeConfigError, unknown>();
+
+/** Internal composition seam; public errors remain generic and cause-free. */
+export function envoyRuntimeConfigFailureCause(error: unknown): unknown {
+  return error instanceof CogsEnvoyRuntimeConfigError ? runtimeConfigFailureCauses.get(error) : undefined;
+}
+
 interface CopiedIntegration {
   readonly id: string;
   readonly auth: CopiedAuth;
@@ -152,8 +159,10 @@ export async function withCogsEnvoyRuntimeConfig<T>(
     } finally {
       credentials.clear();
     }
-  } catch {
-    throw new CogsEnvoyRuntimeConfigError();
+  } catch (error) {
+    const failure = new CogsEnvoyRuntimeConfigError();
+    runtimeConfigFailureCauses.set(failure, error);
+    throw failure;
   }
 }
 

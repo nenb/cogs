@@ -749,7 +749,9 @@ Implement:
 - no local-tool fallback;
 - turn-boundary recycle notification;
 - emergency hard deadline handling;
-- bounded shutdown timeout.
+- bounded shutdown observation with one absolute close context; actual work/custody persists after timeout;
+- sticky failed-versus-retired cleanup state, dependency-safe release, and no replacement on PID/listener/leader absence alone;
+- exact generation-bound development cleanup receipt before supervisor control removal.
 
 ### 20.2 Internal API
 
@@ -771,7 +773,9 @@ Requirements:
 - daemon request correlation ID;
 - bounded LRU duplicate suppression;
 - SSE sequence and bounded replay;
-- paged append-order history with opaque continuation cursor;
+- paged whole-entry history with opaque continuation cursor and no clipping;
+- additive retry-stable permitted-history fragment transport pinned to a durable tail;
+- fail-closed permitted resume when the complete historical secret-redaction view is unavailable;
 - no raw export through a model-callable tool;
 - no cross-session API.
 
@@ -785,7 +789,10 @@ Contract tests must run without a real model or VM.
 - Disable project/global extension discovery and Pi package loading.
 - Do not import repository code.
 - Preserve native Pi JSONL and branching.
-- Map prompt, steer, follow-up, and abort exactly to Pi semantics.
+- Install the pinned instance-local native persistence fence before SDK factory writes; compare expected append history to a full validated, file-and-directory-fsynced durable frontier at every terminal boundary.
+- Make the first native write/frontier/fsync/close/owner-ack gap terminal and non-healing; complete history/export and new admission require the same healthy frontier.
+- Enable only native bounded retry (three attempts, 2-second base delay) and compaction (16,384 reserve / 20,000 recent tokens) under the existing operation owner; never retry a side-effecting tool at the caller layer.
+- Map prompt, steer, follow-up, abort, retry, compaction, and navigation to Pi semantics while retaining actual operation promises through cancellation.
 - Forward Pi events through the versioned event envelope.
 - Use a fake model/stream function for deterministic tests.
 - Add opt-in real-provider integration tests using developer credentials that never run in normal CI.
@@ -807,7 +814,7 @@ Implement and test:
 
 - `read`: offset/limit, UTF-8 handling, binary behavior, maximum output;
 - `write`: temporary upload and atomic rename;
-- `edit`: exactly one match, no guessed replacement;
+- `edit`: exactly one match, literal index splicing (replacement tokens such as `$&` have no special meaning), no guessed replacement;
 - `bash`: `/workspace` cwd, streaming, cancellation, process-group termination, output truncation, exit/signal reporting.
 
 Direct file tools validate allowed guest paths. Do not parse shell commands as policy.
@@ -869,8 +876,10 @@ Production broker implementation belongs to the future daemon/platform. Stages 4
 - Generate/inject the per-session proxy capability.
 - Restrict guest reachability to the proxy listener port.
 - Add synchronous audit authorization and WAL.
-- Poll OpenBao metadata within the configured revocation bound.
-- Implement daemon-facing drain/replacement event.
+- Hydrate each deduplicated handle through strict `M0 → explicit-version D → M1` provenance and derive the watcher baseline from that immutable manifest.
+- Poll the complete OpenBao identity tuple within the declared conditional `P + 2R + J` detection bound; never describe it as immediate revocation.
+- Implement daemon-facing drain/replacement request without treating notification, timeout, or process-leader exit as retirement/release permission.
+- Correlate code zero and HTTP 100–599 completions continuously; keep durable credential-use audit fail-closed and optional OTLP loss bounded/counted.
 - Run the full applicable Stage 1 suite in every security-relevant change: `insecure-container` on PRs and `linux-kvm` nightly/security-labelled. Replace all Stage 1 `stubbed` audit/revocation results with real Stage 3 results.
 
 If the selected proxy cannot be configured without growing substantial custom code, stop and revisit the proxy ADR.

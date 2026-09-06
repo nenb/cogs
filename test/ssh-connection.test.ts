@@ -282,6 +282,17 @@ test("SSH startup is public-key-only, bounded, redacted, and destroys late nonco
     await assert.rejects(aborting, /aborted/);
     assert.ok(Date.now() - startedAt < 250);
 
+    const preIoTransport = new FakeTransport();
+    const preIoManager = new SshConnectionManager({
+      config: config(await keyFile(root)),
+      transport: preIoTransport,
+    });
+    const preIoStart = preIoManager.start();
+    const preIoShutdown = preIoManager.shutdown();
+    await preIoShutdown;
+    await assert.rejects(preIoStart, /interrupted/);
+    assert.equal(preIoTransport.options.length, 0, "shutdown before key-read retirement cannot start transport");
+
     await assert.rejects(
       new SshConnectionManager({
         config: config(await keyFile(root), { connectTimeoutMs: 10, handshakeTimeoutMs: 10 }),
@@ -377,6 +388,67 @@ test("real ssh2 wrapper rejects pre-ready terminal events and has no error-liste
   }
 });
 
+test("ssh2 exec abort retains the callback owner when a late channel may have started work", async () => {
+  class PendingClient extends EventEmitter {
+    public callback: ((error: Error | undefined, channel: unknown) => void) | undefined;
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel: unknown) => void,
+    ): void {
+      this.callback = callback;
+    }
+  }
+  const client = new PendingClient();
+  const connection = new Ssh2Connection(client as never);
+  const controller = new AbortController();
+  const opening = connection.openExec("fixed", controller.signal);
+  let settled = false;
+  void opening.finally(() => {
+    settled = true;
+  });
+  controller.abort();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  const channel = Object.assign(new EventEmitter(), {
+    stderr: new EventEmitter(),
+    destroyCalls: 0,
+    destroy() {
+      this.destroyCalls += 1;
+    },
+    close() {},
+  });
+  client.callback?.(undefined, channel);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(channel.destroyCalls, 1);
+  assert.equal(settled, false, "late channel destruction is not remote process retirement");
+
+  const noChannelClient = new PendingClient();
+  const noChannelAbort = new AbortController();
+  const noChannelOpen = new Ssh2Connection(noChannelClient as never).openExec("fixed", noChannelAbort.signal);
+  let noChannelSettled = false;
+  void noChannelOpen.finally(() => {
+    noChannelSettled = true;
+  });
+  noChannelAbort.abort();
+  noChannelClient.callback?.(new Error("no response"), undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(noChannelSettled, false, "no-channel error cannot disprove remote exec acceptance");
+
+  const transportLostClient = new PendingClient();
+  const transportLostOpen = new Ssh2Connection(transportLostClient as never).openExec(
+    "fixed",
+    new AbortController().signal,
+  );
+  let transportLostSettled = false;
+  void transportLostOpen.finally(() => {
+    transportLostSettled = true;
+  });
+  transportLostClient.callback?.(new Error("no response"), undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(transportLostSettled, false, "transport loss cannot disprove remote exec acceptance");
+});
+
 test("post-ready ssh2 error forces underlying client destroy during fail-closed teardown", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-ssh-wrapper-error-"));
   class FakeSsh2Client extends EventEmitter {
@@ -424,8 +496,10 @@ test("SSH shutdown is idempotent, globally bounded, and removes listeners", asyn
     const connection = transport.connections[0];
     assert.ok(connection);
     assert.ok(connection.listenersCount() > 0);
-    await manager.shutdown();
-    await manager.shutdown();
+    const first = manager.shutdown();
+    assert.equal(manager.shutdown(), first);
+    await assert.rejects(first, /shutdown uncertain/);
+    await assert.rejects(manager.shutdown(), /shutdown uncertain/);
     assert.equal(connection.destroyCalls, 1);
     assert.equal(connection.listenersCount(), 0);
     connection.emit("close");
@@ -433,7 +507,7 @@ test("SSH shutdown is idempotent, globally bounded, and removes listeners", asyn
 
     const throwingTransport = new FakeTransport({ throwClose: true, throwDestroy: true, throwOff: true });
     const throwing = await started(root, throwingTransport);
-    await throwing.shutdown();
+    await assert.rejects(throwing.shutdown(), /shutdown uncertain/);
     assert.equal(throwing.ready, false);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -561,10 +635,13 @@ test("ssh2 SFTP wrapper maps only exact numeric own status codes and destroys ch
   const accessor = new Error("EOF accessor must not classify");
   Object.defineProperty(accessor, "code", { get: () => 1 });
   sftp.readError = accessor;
-  await assert.rejects(
-    channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal),
-    /^Error: sftp operation failed$/,
-  );
+  const uncertainRead = channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal);
+  let uncertainReadSettled = false;
+  void uncertainRead.finally(() => {
+    uncertainReadSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(uncertainReadSettled, false);
   channel.destroy();
   assert.equal(sftp.destroyed, 1);
 });
@@ -650,14 +727,14 @@ test("ssh2 SFTP wrapper accepts zero EOF and partial slice read tuples and clean
   const controller = new AbortController();
   const opened = channel.port.open("/workspace/.cogs-late.tmp", "wx", controller.signal);
   controller.abort();
-  await assert.rejects(opened, /sftp operation failed/);
+  await assert.rejects(opened, /sftp open aborted|sftp operation failed/);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(sftp.closed, 1);
   assert.equal(sftp.unlinked, 1);
   assert.equal(sftp.files.has("/workspace/.cogs-late.tmp"), false);
 });
 
-test("ssh2 SFTP callbacks reject malformed async values without uncaught throws or hangs", async () => {
+test("ssh2 SFTP callbacks contain malformed values without uncaught throws or false retirement", async () => {
   class BadStatsSftp extends EventEmitter {
     public calls = 0;
     public lstat(_path: string, cb: (error: Error | undefined, stats: unknown) => void): void {
@@ -757,7 +834,7 @@ test("ssh2 SFTP callbacks reject malformed async values without uncaught throws 
         channel.port.read(Buffer.from("h"), Buffer.alloc(1), 0, 1, 0, new AbortController().signal),
         new Promise((_, reject) => setTimeout(() => reject(new Error("hung read")), 50)),
       ]),
-      /sftp operation failed/,
+      /hung read/,
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.deepEqual(uncaught, []);
@@ -919,7 +996,13 @@ test("ssh2 SFTP wrapper maps mkdir setMode and rmdir callbacks", async () => {
   await rmdirPort("/dir", new AbortController().signal);
   assert.deepEqual(sftp.calls, ['mkdir:/dir:{"mode":365}', "chmod:/dir:444", "rmdir:/dir"]);
   sftp.failNext = true;
-  await assert.rejects(mkdirPort("/bad", 0o555, new AbortController().signal), /sftp operation failed/);
+  await assert.rejects(
+    Promise.race([
+      mkdirPort("/bad", 0o555, new AbortController().signal),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("uncertain mkdir")), 30)),
+    ]),
+    /uncertain mkdir/,
+  );
 });
 
 test("ssh2 SFTP stats reject POSIX mode high bits and channel observes remote close before close call", async () => {
@@ -1074,6 +1157,12 @@ test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and k
     signalClient.channel.emit("exit", null, allowedSignal, false, "");
     signalClient.channel.emit("close");
     assert.deepEqual(await signalExec.port.terminal(), { code: null, signal: allowedSignal });
+    let signalRetired = false;
+    void signalExec.close().then(() => {
+      signalRetired = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(signalRetired, false, "signal-only wrapper exit is not remote process retirement");
   }
 
   for (const tuple of [
@@ -1111,10 +1200,16 @@ test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and k
       callback(undefined, this.channel);
     }
   }
-  await assert.rejects(
-    new Ssh2Connection(new ThrowingClient() as never).openExec("fixed", new AbortController().signal),
-    /ssh exec open failed/,
+  const uncertainWrap = new Ssh2Connection(new ThrowingClient() as never).openExec(
+    "fixed",
+    new AbortController().signal,
   );
+  let uncertainWrapSettled = false;
+  void uncertainWrap.finally(() => {
+    uncertainWrapSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(uncertainWrapSettled, false, "accepted remote exec outlives failed local channel wrapping");
 });
 
 test("ssh2 exec wrapper guards hostile stderr/off/destroy during attach cleanup and late destroy", async () => {
@@ -1168,10 +1263,13 @@ test("ssh2 exec wrapper guards hostile stderr/off/destroy during attach cleanup 
       callback(undefined, new BadStderr());
     }
   }
-  await assert.rejects(
-    new Ssh2Connection(new BadClient() as never).openExec("fixed", new AbortController().signal),
-    /ssh exec open failed/,
-  );
+  const badStderrOpen = new Ssh2Connection(new BadClient() as never).openExec("fixed", new AbortController().signal);
+  let badStderrSettled = false;
+  void badStderrOpen.finally(() => {
+    badStderrSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(badStderrSettled, false, "accepted exec remains uncertain after hostile local wrapping");
 });
 
 function sshTelemetry() {

@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
@@ -18,7 +19,12 @@ import {
 import { Type } from "typebox";
 import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
 import { type CogsCommandAuditHook, captureCogsCommandAuditHook } from "../audit/command-audit.ts";
-import { type ModelApiKeySource, ModelCredentialResolver, validateModelApiKey } from "../auth/model-auth.ts";
+import {
+  type ModelApiKeySource,
+  ModelCredentialResolver,
+  modelAuthFailureCause,
+  validateModelApiKey,
+} from "../auth/model-auth.ts";
 import { validateLaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, CogsPolicyDeniedError, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import {
@@ -47,7 +53,7 @@ import {
   createCogsJsonlHistoryStore,
 } from "../session/jsonl-history.ts";
 import { type CogsLocalExporter, createCogsLocalExporter } from "../session/local-export.ts";
-import { permittedJson } from "../session/permitted-history.ts";
+import { permittedJson, permittedJsonBytes } from "../session/permitted-history.ts";
 import type {
   CogsAgentsFile,
   CogsPreparedSkillMetadata,
@@ -67,6 +73,11 @@ import {
   telemetryStart,
 } from "../telemetry/instrumentation.ts";
 import {
+  installNativePersistence,
+  type NativePersistenceFence,
+  openStrictNativeSession,
+} from "./native-persistence.ts";
+import {
   type CogsPiOwnedRuntimeCleanupResult,
   type CogsPiOwnedRuntimeOptions,
   type CogsPiOwnedRuntimeTracker,
@@ -77,6 +88,8 @@ import {
 export const COGS_PI_TOOL_NAMES = ["read", "write", "edit", "bash"] as const;
 export type CogsPiToolName = (typeof COGS_PI_TOOL_NAMES)[number];
 const COGS_PI_API_KEY_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
+const modelCredentialOwners = new WeakMap<ModelRuntime, Promise<void>>();
+const failedPiStartupRetirements = new WeakMap<object, Promise<void>>();
 
 export interface CogsToolPorts {
   readonly read: (input: { path: string; offset?: number; limit?: number; signal?: AbortSignal }) => Promise<JsonValue>;
@@ -92,6 +105,11 @@ export interface CogsToolPorts {
     signal?: AbortSignal;
     onUpdate?: (update: { content: [{ type: "text"; text: string }]; details: JsonValue }) => void | Promise<void>;
   }) => Promise<JsonValue>;
+}
+
+/** Trusted startup-owner seam; undefined means no Pi startup work remains. */
+export function failedCogsPiSessionRetirement(error: unknown): Promise<void> | undefined {
+  return typeof error === "object" && error !== null ? failedPiStartupRetirements.get(error) : undefined;
 }
 
 export interface CogsPiSessionOptions {
@@ -451,13 +469,18 @@ export async function createAuthenticatedCogsPiSession({
         }),
     );
   } catch (error) {
+    if (typeof error === "object" && error !== null) inheritPiStartupRetirement(error, modelAuthFailureCause(error));
     let cleanupError: unknown;
     try {
       await preparedResources.dispose();
     } catch (disposeError) {
       cleanupError = disposeError;
     }
-    if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+    if (cleanupError !== undefined) {
+      const failure = new Error("Pi session cleanup failed");
+      inheritPiStartupRetirement(failure, error);
+      throw failure;
+    }
     throw error;
   }
 }
@@ -532,6 +555,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       policyAuthorizer,
     );
     await boundedModelCredentialMutation(
+      modelRuntime,
       (signal) => modelRuntime.setRuntimeApiKey(modelProvider, secret.value, { signal }),
       abortTimeoutMs ?? 5_000,
     );
@@ -540,6 +564,8 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
     if (modelRuntime.isUsingOAuth(modelProvider)) throw new Error("oauth model authentication is disabled");
     await resolveRuntimeApiKey(modelRuntime, model, secret.value, abortTimeoutMs ?? 5_000);
 
+    const adapterRef: { current?: PiSessionAdapter } = {};
+    let persistencePoisoned = false;
     const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
     const sessionDir = sessionManager.getSessionDir();
     await ownedRuntime?.adoptSessionDir(sessionDir);
@@ -549,6 +575,14 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       ...(ownedRuntime === undefined ? {} : { onOwnedHistoryMarker: ownedRuntime.recordSessionFile }),
     });
     await historyStore.initialize();
+    const persistence = installNativePersistence(sessionManager, {
+      onPoison: () => {
+        persistencePoisoned = true;
+        adapterRef.current?.persistenceFailed();
+      },
+      isAtRest: () => adapterRef.current?.persistenceAtRest() ?? true,
+      acknowledge: async () => historyStore.flushSettled(),
+    });
     const gitMapStore =
       gitOptions === undefined
         ? undefined
@@ -581,7 +615,6 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
           }),
     });
     startupLocalExporter = localExporter;
-    const adapterRef: { current?: PiSessionAdapter } = {};
     const gitBinding =
       gitOptions === undefined || gitMapStore === undefined || gitObserver === undefined
         ? undefined
@@ -643,10 +676,13 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       tools: [...COGS_PI_TOOL_NAMES],
       noTools: "builtin",
       sessionManager,
-      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+      settingsManager: SettingsManager.inMemory({
+        compaction: { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 },
+        retry: { enabled: true, maxRetries: 3, baseDelayMs: 2_000 },
+      }),
     });
     const session = sessionResult.session;
-    await historyStore.flushSettled();
+    await persistence.commitAtRest();
 
     const piStream = session.agent.streamFunction;
     session.agent.streamFunction = async (activeModel, context, streamOptions) => {
@@ -671,6 +707,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       abortTimeoutMs,
       preparedResources,
       historicalSecretsAvailable: resumeFile === undefined,
+      persistence,
       historyStore,
       gitMapStore,
       gitBinding,
@@ -680,8 +717,11 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       ownedRuntime,
     });
     adapterRef.current = adapter;
+    if (persistencePoisoned) adapter.persistenceFailed();
     return adapter;
   } catch (error) {
+    const retirementHolder = {};
+    inheritPiStartupRetirement(retirementHolder, error);
     let cleanupError: unknown;
     for (const cleanup of [
       () => startupLocalExporter?.dispose() ?? Promise.resolve(),
@@ -692,18 +732,22 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
         await cleanup();
       } catch (disposeError) {
         cleanupError = disposeError;
+        inheritPiStartupRetirement(retirementHolder, disposeError);
       }
     }
+    let credentialRetired = false;
     try {
       await boundedModelCredentialMutation(
+        modelRuntime,
         (signal) => modelRuntime.removeRuntimeApiKey(modelProvider, { signal }),
         abortTimeoutMs ?? 5_000,
       );
+      credentialRetired = true;
     } catch (removeError) {
       cleanupError = removeError;
-    } finally {
-      secret.value = "";
+      inheritPiStartupRetirement(retirementHolder, removeError);
     }
+    if (credentialRetired) secret.value = "";
     if (ownershipStarted) {
       try {
         await ownedRuntime?.cleanup(async () => undefined);
@@ -711,7 +755,11 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
         cleanupError = new Error("Pi owned runtime cleanup failed");
       }
     }
-    if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+    if (cleanupError !== undefined) {
+      const failure = new Error("Pi session cleanup failed");
+      inheritPiStartupRetirement(failure, retirementHolder);
+      throw failure;
+    }
     throw error;
   }
 }
@@ -972,6 +1020,7 @@ class CogsGitBoundary {
   >();
   private readonly queued: Array<() => Promise<void>> = [];
   private readonly pendingPersist = new Set<Promise<void>>();
+  private readonly actualWork = new Set<Promise<unknown>>();
   private drainChain: Promise<void> = Promise.resolve();
   private disposed = false;
   private overflow = false;
@@ -1110,7 +1159,7 @@ class CogsGitBoundary {
       commit: input.commit,
       nearestAncestor: (ancestorInput) =>
         observerDeadline(
-          Promise.resolve().then(() => this.options.observer.nearestAncestor(ancestorInput)),
+          this.track(() => this.options.observer.nearestAncestor(ancestorInput)),
           2500,
         ),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -1123,9 +1172,11 @@ class CogsGitBoundary {
     this.toolCaptures.clear();
     this.messageWaiters.clear();
     this.queued.length = 0;
-    await this.drain().catch(() => undefined);
-    await observerDeadline(this.options.observer.dispose(), 2500).catch(() => undefined);
-    await observerDeadline(this.options.checkpointer?.dispose() ?? Promise.resolve(), 2500).catch(() => undefined);
+    await this.drain();
+    const observerDispose = this.track(() => this.options.observer.dispose());
+    const checkpointerDispose = this.track(() => this.options.checkpointer?.dispose() ?? Promise.resolve());
+    await Promise.all([observerDispose, checkpointerDispose]);
+    await Promise.all([...this.actualWork]);
     this.clearPending();
   }
 
@@ -1227,12 +1278,15 @@ class CogsGitBoundary {
     if (this.options.notes) {
       let ok = false;
       try {
-        ok = await observerDeadline(
-          Promise.resolve().then(() =>
-            this.options.observer.appendNote(appended, signal === undefined ? {} : { signal }),
-          ),
-          2500,
+        const actual = this.track(() =>
+          this.options.observer.appendNote(appended, signal === undefined ? {} : { signal }),
         );
+        try {
+          ok = await observerDeadline(actual, 2500);
+        } catch {
+          await actual.catch(() => undefined);
+          ok = false;
+        }
       } catch {
         ok = false;
       }
@@ -1267,13 +1321,15 @@ class CogsGitBoundary {
     const controller = new AbortController();
     const start = telemetryStart();
     try {
-      checkpoint = await observerDeadline(
-        Promise.resolve().then(
-          () => this.options.checkpointer?.checkpoint({ ...input, signal: controller.signal }) ?? null,
-        ),
-        this.options.checkpointTimeoutMs,
-        () => controller.abort(),
+      const actual = this.track(
+        () => this.options.checkpointer?.checkpoint({ ...input, signal: controller.signal }) ?? Promise.resolve(null),
       );
+      try {
+        checkpoint = await observerDeadline(actual, this.options.checkpointTimeoutMs, () => controller.abort());
+      } catch (error) {
+        await actual.catch(() => undefined);
+        throw error;
+      }
       if (checkpoint !== null) checkpoint = snapshotCheckpointResult(checkpoint, input);
     } catch {
       controller.abort();
@@ -1300,10 +1356,13 @@ class CogsGitBoundary {
     if (this.options.notes) {
       let ok = false;
       try {
-        ok = await observerDeadline(
-          Promise.resolve().then(() => this.options.observer.appendNote(record)),
-          2500,
-        );
+        const actual = this.track(() => this.options.observer.appendNote(record));
+        try {
+          ok = await observerDeadline(actual, 2500);
+        } catch {
+          await actual.catch(() => undefined);
+          ok = false;
+        }
       } catch {
         ok = false;
       }
@@ -1339,11 +1398,9 @@ class CogsGitBoundary {
 
   private async safeObserve(signal?: AbortSignal): Promise<CogsGitObservation> {
     const start = telemetryStart();
+    const actual = this.track(() => this.options.observer.observeHead(signal === undefined ? {} : { signal }));
     try {
-      const observation = await observerDeadline(
-        this.options.observer.observeHead(signal === undefined ? {} : { signal }),
-        2500,
-      );
+      const observation = await observerDeadline(actual, 2500);
       const ok = observation.kind === "observed" && observation.repo === this.options.repositoryId;
       emitSpan(this.options.telemetry, "git.observe", {
         operation: "observe",
@@ -1352,6 +1409,7 @@ class CogsGitBoundary {
       });
       return ok ? observation : Object.freeze({ kind: "unavailable" as const });
     } catch {
+      await actual.catch(() => undefined);
       emitSpan(this.options.telemetry, "git.observe", {
         operation: "observe",
         outcome: "error",
@@ -1359,6 +1417,18 @@ class CogsGitBoundary {
       });
       return Object.freeze({ kind: "unavailable" as const });
     }
+  }
+
+  private track<T>(operation: () => Promise<T>): Promise<T> {
+    let actual: Promise<T>;
+    try {
+      actual = Promise.resolve(operation());
+    } catch (error) {
+      actual = Promise.reject(error);
+    }
+    this.actualWork.add(actual);
+    void actual.finally(() => this.actualWork.delete(actual)).catch(() => undefined);
+    return actual;
   }
 
   private warn(
@@ -1389,30 +1459,64 @@ function maxTurn(records: readonly CogsGitMapRecord[]): number {
 }
 
 async function boundedModelCredentialMutation(
+  owner: ModelRuntime,
   operation: (signal: AbortSignal) => Promise<void>,
   timeoutMs: number,
 ): Promise<void> {
+  if (modelCredentialOwners.has(owner)) throw new Error("model credential operation failed");
   const controller = new AbortController();
+  const deadlineAt = performance.now() + timeoutMs;
   let timer: NodeJS.Timeout | undefined;
+  let timeoutFailure: Error | undefined;
   const mutation = Promise.resolve()
     .then(() => operation(controller.signal))
     .catch(() => {
       throw new Error("model credential operation failed");
     });
+  const expire = () => {
+    controller.abort();
+    timeoutFailure ??= new Error("model credential operation failed");
+    failedPiStartupRetirements.set(
+      timeoutFailure,
+      mutation.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return timeoutFailure;
+  };
+  modelCredentialOwners.set(owner, mutation);
+  void mutation
+    .finally(() => {
+      if (modelCredentialOwners.get(owner) === mutation) modelCredentialOwners.delete(owner);
+    })
+    .catch(() => undefined);
+  const observed = mutation.then(() => {
+    if (performance.now() >= deadlineAt) throw expire();
+  });
   try {
     await Promise.race([
-      mutation,
+      observed,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(new Error("model credential operation failed"));
-        }, timeoutMs);
+        timer = setTimeout(() => reject(expire()), timeoutMs);
       }),
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     controller.abort();
   }
+}
+
+function inheritPiStartupRetirement(target: object, source: unknown): void {
+  const inherited = failedCogsPiSessionRetirement(source);
+  if (inherited === undefined) return;
+  const current = failedPiStartupRetirements.get(target);
+  failedPiStartupRetirements.set(
+    target,
+    current === undefined || current === inherited
+      ? inherited
+      : Promise.all([current, inherited]).then(() => undefined),
+  );
 }
 
 async function resolveRuntimeApiKey(
@@ -1448,14 +1552,28 @@ async function resolveRuntimeApiKey(
 }
 
 function observerDeadline<T>(promise: Promise<T> | PromiseLike<T>, ms: number, onTimeout?: () => void): Promise<T> {
+  const deadlineAt = performance.now() + ms;
   let timer: NodeJS.Timeout | undefined;
+  let expired = false;
+  const expire = () => {
+    if (!expired) onTimeout?.();
+    expired = true;
+    return new Error("git observer unavailable");
+  };
+  const observed = Promise.resolve(promise).then(
+    (value) => {
+      if (performance.now() >= deadlineAt) throw expire();
+      return value;
+    },
+    (error) => {
+      if (performance.now() >= deadlineAt) throw expire();
+      throw error;
+    },
+  );
   return Promise.race([
-    promise,
+    observed,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        onTimeout?.();
-        reject(new Error("git observer unavailable"));
-      }, ms);
+      timer = setTimeout(() => reject(expire()), ms);
     }),
   ]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
@@ -1709,11 +1827,14 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private active: ActiveRun | undefined;
   private phase: AdapterPhase = "open";
   private cleanupPromise: Promise<void> | undefined;
+  private disposePromise: Promise<void> | undefined;
+  private abortPromise: Promise<void> | undefined;
   private shutdownPreparePromise: Promise<JsonValue> | undefined;
   private shutdownPrepareAbort: { abort: () => void } | undefined;
   private fatalEmitted = false;
   private usageBase: { input: number; output: number; cache: number; cost: number } | undefined;
   private modelCallStartedAt: number | undefined;
+  private persistenceCommitReady = false;
   private readonly telemetryHealth = new TelemetryHealthCursor();
   private readonly timeoutMs: number;
   private readonly abortTimeoutMs: number;
@@ -1735,6 +1856,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
       readonly historicalSecretsAvailable: boolean;
+      readonly persistence: NativePersistenceFence;
       readonly historyStore: CogsJsonlHistoryStore;
       readonly gitMapStore: CogsGitMapStore | undefined;
       readonly gitBinding: CogsGitBoundary | undefined;
@@ -1748,6 +1870,29 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     this.timeoutMs = runtime.operationTimeoutMs ?? 60_000;
     this.abortTimeoutMs = runtime.abortTimeoutMs ?? 5_000;
     this.unsubscribe = session.subscribe((event) => this.forwardEvent(event));
+  }
+
+  public persistenceAtRest(): boolean {
+    return (
+      !this.session.isStreaming &&
+      (this.persistenceCommitReady ||
+        (this.active === undefined &&
+          (this.phase === "open" || this.phase === "draining" || this.phase === "shutdown")))
+    );
+  }
+
+  public persistenceFailed(): void {
+    if (this.phase === "disposed" || this.cleanupPromise !== undefined) return;
+    this.phase = "failed";
+    const active = this.active;
+    if (active !== undefined) {
+      active.suppressLate = true;
+      if (active.deadline !== undefined) clearTimeout(active.deadline);
+    }
+    this.invokeFatal("native-persistence-failed");
+    queueMicrotask(() => {
+      void this.failClosed("native-persistence-failed", active).catch(() => undefined);
+    });
   }
 
   public activeToolNames(): readonly string[] {
@@ -1793,7 +1938,10 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     assertOpaqueId(entryId, "entry id");
     if (this.active !== undefined || this.session.isStreaming) throw new Error("cannot navigate while running");
     await throwIfAborted(input.signal);
-    return this.session.navigateTree(entryId, { summarize: false });
+    this.runtime.persistence.assertUsable();
+    const result = await this.runtime.persistence.track(() => this.session.navigateTree(entryId, { summarize: false }));
+    await this.commitPersistence(input.signal);
+    return result;
   }
 
   public async input(input: {
@@ -1805,6 +1953,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   }): Promise<RunState> {
     this.assertLive();
     await throwIfAborted(input.signal);
+    this.runtime.persistence.assertUsable();
     assertOpaqueId(input.requestId, "request id");
     assertOpaqueId(input.correlationId, "correlation id");
     assertInputKind(input.kind);
@@ -1815,6 +1964,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       const active = this.active;
       if (active === undefined || active.terminal) throw new Error("Pi session is not running");
       if (this.phase !== "running") throw new Error("Pi session is not running");
+      this.runtime.persistence.assertUsable();
       if (input.kind === "steer") await this.session.steer(input.content);
       else if (input.kind === "follow_up") await this.session.followUp(input.content);
       this.emitOrFail("pi_event", input.correlationId, input.requestId, {
@@ -1824,6 +1974,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
 
     if (this.active !== undefined || this.session.isStreaming) throw new Error("Pi session is already running");
+    this.runtime.persistence.assertUsable();
     const active: ActiveRun = {
       requestId: input.requestId,
       correlationId: input.correlationId,
@@ -1854,6 +2005,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   }
 
   public async state(input: { signal?: AbortSignal } = {}): Promise<{ runState: RunState; usage?: JsonValue }> {
+    if (this.phase === "disposed") throw new Error("Pi session is closed");
     await throwIfAborted(input.signal);
     const runState = this.stateSync();
     if (runState === "shutdown") return { runState };
@@ -1872,6 +2024,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       // A resumed transcript may contain prior credentials unavailable to this owner.
       // Raw export stays separately explicit and sensitive; never guess its secret view.
       if (!this.runtime.historicalSecretsAvailable) throw new Error("historical redaction unavailable");
+      if (!this.persistenceAtRest()) throw new Error("history busy");
+      this.runtime.persistence.requireComplete();
       const page = await this.runtime.historyStore.entries(input);
       return {
         entries: page.entries.map((entry) =>
@@ -1889,12 +2043,52 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
   }
 
+  public async frontier(input: { signal?: AbortSignal } = {}): Promise<{
+    entries: number;
+    lastEntryId: string | null;
+  }> {
+    this.assertLive();
+    await throwIfAborted(input.signal);
+    if (!this.persistenceAtRest()) throw new Error("history busy");
+    const frontier = this.runtime.persistence.requireComplete();
+    return Object.freeze({ entries: frontier.entries, lastEntryId: frontier.lastAppendId });
+  }
+
+  public async projectedEntry(input: { after: string | undefined; signal?: AbortSignal }): Promise<{
+    entryId: string;
+    bytes: Buffer;
+  }> {
+    this.assertLive();
+    await throwIfAborted(input.signal);
+    if (!this.runtime.historicalSecretsAvailable) throw new Error("historical redaction unavailable");
+    if (!this.persistenceAtRest()) throw new Error("history busy");
+    this.runtime.persistence.requireComplete();
+    const page = await this.runtime.historyStore.entries({
+      after: input.after,
+      limit: 1,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    const entry = page.entries[0];
+    if (entry === undefined || typeof entry !== "object" || entry === null || Array.isArray(entry))
+      throw new Error("history entry unavailable");
+    const entryId = (entry as { readonly id?: unknown }).id;
+    if (typeof entryId !== "string") throw new Error("history entry unavailable");
+    const bytes = permittedJsonBytes(entry, {
+      secrets: [this.runtime.secret.value],
+      maxInputBytes: 4 * 1024 * 1024,
+      maxOutputBytes: 64 * 1024 * 1024,
+    });
+    return Object.freeze({ entryId, bytes });
+  }
+
   public async prepareShutdown(input: {
     requestId: string;
     correlationId: string;
     signal?: AbortSignal;
   }): Promise<JsonValue> {
     const request = snapshotShutdownInput(input);
+    if (this.phase === "disposed" || this.phase === "failed") throw new Error("Pi session is closed");
+    this.runtime.persistence.assertUsable();
     if (this.shutdownPreparePromise !== undefined) return this.shutdownPreparePromise;
     await throwIfAborted(request.signal);
     if (this.shutdownPreparePromise !== undefined) return this.shutdownPreparePromise;
@@ -1932,6 +2126,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     const start = telemetryStart();
     try {
       requireRawExportPolicy(this.runtime.userId, this.runtime.sessionId, this.runtime.policyAuthorizer);
+      if (!this.persistenceAtRest()) throw new Error("history busy");
+      this.runtime.persistence.requireComplete();
       const descriptor = snapshotExportDescriptor(
         await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
         this.runtime.sessionId,
@@ -1958,33 +2154,39 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     return owner.cleanup((deadlineExpiresAt) => this.dispose({ ownedDeadlineExpiresAt: deadlineExpiresAt }));
   }
 
-  public async dispose(input: { readonly ownedDeadlineExpiresAt?: number } = {}): Promise<void> {
+  public dispose(input: { readonly ownedDeadlineExpiresAt?: number } = {}): Promise<void> {
+    if (this.disposePromise !== undefined) return this.disposePromise;
+    // Seal admission and cache ownership before any callback/await can reenter.
+    if (this.phase !== "failed" && this.phase !== "disposed") this.phase = "draining";
+    this.disposePromise = this.disposeOnce(input).catch(() => {
+      this.phase = "failed";
+      throw new Error("Pi session cleanup failed");
+    });
+    return this.disposePromise;
+  }
+
+  private async disposeOnce(input: { readonly ownedDeadlineExpiresAt?: number }): Promise<void> {
     if (this.phase === "disposed") return;
-    if (this.phase === "draining" && this.shutdownPreparePromise !== undefined) {
+    if (this.shutdownPreparePromise !== undefined) {
       this.shutdownPrepareAbort?.abort();
-      try {
-        await observerDeadline(
-          this.shutdownPreparePromise.then(
-            () => undefined,
-            () => undefined,
-          ),
-          this.abortTimeoutMs,
-        );
-      } catch {
-        throw new Error("Pi session cleanup failed");
-      }
+      await observerDeadline(
+        this.shutdownPreparePromise.then(
+          () => undefined,
+          () => undefined,
+        ),
+        this.abortTimeoutMs,
+      );
     }
     if (this.cleanupPromise !== undefined) {
       await this.cleanupPromise;
-      this.phase = "disposed";
       return;
     }
     const active = this.active;
     if (active !== undefined && !active.terminal) {
       await this.failClosed("disposed", active);
-      this.phase = "disposed";
       return;
     }
+    await this.commitPersistence();
     this.unsubscribe();
     let cleanupError: unknown;
     try {
@@ -2003,18 +2205,20 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         cleanupError = error;
       }
     }
+    let credentialRetired = false;
     try {
       await boundedModelCredentialMutation(
+        this.#modelRuntime,
         (signal) => this.#modelRuntime.removeRuntimeApiKey(this.runtime.provider, { signal }),
         this.abortTimeoutMs,
       );
+      credentialRetired = true;
     } catch (error) {
       cleanupError = error;
-    } finally {
-      this.runtime.secret.value = "";
     }
-    this.phase = "disposed";
+    if (credentialRetired) this.runtime.secret.value = "";
     if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+    this.phase = "disposed";
   }
 
   private async prepareShutdownOnce(input: {
@@ -2028,7 +2232,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     try {
       await throwIfAborted(input.signal);
       const flushStart = telemetryStart();
-      await this.runtime.historyStore.flushSettled(input.signal === undefined ? {} : { signal: input.signal });
+      await this.commitPersistence(input.signal);
       emitSpan(this.runtime.telemetry, "pi.history.flush", {
         operation: "flush",
         outcome: "ok",
@@ -2081,15 +2285,17 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     const runStart = telemetryStart();
     this.usageBase = this.safeUsageBase();
     active.deadline = setTimeout(() => {
-      void this.timeoutActive(active);
+      void this.timeoutActive(active).catch(() => undefined);
     }, this.timeoutMs);
     try {
       await this.runtime.gitBinding?.beginTurn(active.correlationId, active.requestId);
-      await this.session.prompt(content, { expandPromptTemplates: false });
-      if (active.suppressLate || this.phase === "aborting") return;
+      if (active.suppressLate || this.phase !== "running" || this.active !== active) return;
+      this.runtime.persistence.assertUsable();
+      await this.runtime.persistence.track(() => this.session.prompt(content, { expandPromptTemplates: false }));
+      if (active.suppressLate) return;
       try {
         const flushStart = telemetryStart();
-        await this.runtime.historyStore.flushSettled();
+        await this.commitPersistence();
         emitSpan(this.runtime.telemetry, "pi.history.flush", {
           operation: "flush",
           outcome: "ok",
@@ -2117,7 +2323,13 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       });
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
-      if (active.terminal || active.suppressLate || this.phase === "aborting") return;
+      if (active.terminal || active.suppressLate || this.phase === "aborting" || this.phase === "failed") return;
+      try {
+        await this.commitPersistence();
+      } catch {
+        await this.failClosed("native-persistence-failed", active).catch(() => undefined);
+        return;
+      }
       if (isAbortLike(error)) {
         emitSpan(this.runtime.telemetry, "pi.run", {
           outcome: "cancelled",
@@ -2146,6 +2358,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     }
     try {
       await this.abortWithBound("timeout");
+      await observerDeadline(active.promise, this.abortTimeoutMs);
+      await this.commitPersistence();
       if (this.active === active) this.active = undefined;
       if (this.phase === "aborting") this.phase = "open";
     } catch {
@@ -2166,6 +2380,8 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     this.phase = "aborting";
     try {
       await this.abortWithBound(reason);
+      await observerDeadline(active.promise, this.abortTimeoutMs);
+      await this.commitPersistence();
       this.terminal(active, "run_aborted", { reason });
     } catch (error) {
       await this.failClosed("abort-failed", active);
@@ -2174,13 +2390,32 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   }
 
   private async abortWithBound(reason: string): Promise<void> {
+    const deadlineAt = performance.now() + this.abortTimeoutMs;
     let timer: NodeJS.Timeout | undefined;
-    const abortPromise = this.session.abort();
+    let abortPromise = this.abortPromise;
+    if (abortPromise === undefined) {
+      // Register the actual promise before invoking native abort code.
+      abortPromise = Promise.resolve()
+        .then(() => this.session.abort())
+        .finally(() => {
+          if (this.abortPromise === abortPromise) this.abortPromise = undefined;
+        });
+      this.abortPromise = abortPromise;
+    }
+    const observed = abortPromise.then(
+      () => {
+        if (performance.now() >= deadlineAt) throw new Error(`Pi abort timed out after ${reason}`);
+      },
+      (error) => {
+        if (performance.now() >= deadlineAt) throw new Error(`Pi abort timed out after ${reason}`);
+        throw error;
+      },
+    );
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`Pi abort timed out after ${reason}`)), this.abortTimeoutMs);
     });
     try {
-      await Promise.race([abortPromise, timeout]);
+      await Promise.race([observed, timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -2362,53 +2597,64 @@ class PiSessionAdapter implements CogsPiSessionPorts {
 
   private async failClosed(_reason: string, active: ActiveRun | undefined): Promise<void> {
     if (this.cleanupPromise !== undefined) return this.cleanupPromise;
-    if (this.phase === "failed" || this.phase === "disposed") return;
-    this.phase = "aborting";
+    if (this.phase === "disposed") return;
+    if (this.phase !== "failed") this.phase = "aborting";
     this.shutdownPrepareAbort?.abort();
     if (active !== undefined) {
       active.suppressLate = true;
       if (active.deadline !== undefined) clearTimeout(active.deadline);
     }
     this.cleanupPromise = (async () => {
-      let cleanupError: unknown;
+      // Cancellation and its caller deadline do not prove native/model/tool work
+      // retired. Keep every dependent resource and credential owner intact until
+      // the fence's actual tracked work reaches zero.
       try {
         await this.abortWithBound("fail-closed");
+        await observerDeadline(this.runtime.persistence.waitForIdle(), this.abortTimeoutMs);
+        if (this.runtime.persistence.state().cause === undefined) await this.commitPersistence();
       } catch {
-        // Non-cooperative abort is represented by the failed-closed phase.
-      } finally {
-        this.unsubscribe();
-        try {
-          this.session.dispose();
-        } catch (error) {
-          cleanupError = error;
-        }
-        for (const cleanup of [
-          () => this.runtime.localExporter.dispose(),
-          () => this.runtime.gitBinding?.dispose() ?? Promise.resolve(),
-          () => this.runtime.preparedResources?.dispose() ?? Promise.resolve(),
-        ]) {
-          try {
-            await cleanup();
-          } catch (error) {
-            cleanupError = error;
-          }
-        }
-        try {
-          await boundedModelCredentialMutation(
-            (signal) => this.#modelRuntime.removeRuntimeApiKey(this.runtime.provider, { signal }),
-            this.abortTimeoutMs,
-          );
-        } catch (error) {
-          cleanupError = error;
-        } finally {
-          this.runtime.secret.value = "";
-        }
-        this.active = undefined;
         this.phase = "failed";
         this.invokeFatal(_reason);
+        throw new Error("Pi session cleanup failed");
       }
-      if (cleanupError !== undefined) throw new Error("Pi session cleanup failed");
+
+      let cleanupError: unknown;
+      this.unsubscribe();
+      try {
+        this.session.dispose();
+      } catch (error) {
+        cleanupError = error;
+      }
+      for (const cleanup of [
+        () => this.runtime.localExporter.dispose(),
+        () => this.runtime.gitBinding?.dispose() ?? Promise.resolve(),
+        () => this.runtime.preparedResources?.dispose() ?? Promise.resolve(),
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupError = error;
+        }
+      }
+      let credentialRetired = false;
+      try {
+        await boundedModelCredentialMutation(
+          this.#modelRuntime,
+          (signal) => this.#modelRuntime.removeRuntimeApiKey(this.runtime.provider, { signal }),
+          this.abortTimeoutMs,
+        );
+        credentialRetired = true;
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (credentialRetired) this.runtime.secret.value = "";
+      this.active = undefined;
+      this.phase = "failed";
+      this.invokeFatal(_reason);
+      if (cleanupError !== undefined || this.runtime.persistence.state().cause !== undefined)
+        throw new Error("Pi session cleanup failed");
     })();
+    void this.cleanupPromise.catch(() => undefined);
     await this.cleanupPromise;
   }
 
@@ -2416,11 +2662,26 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (this.fatalEmitted) return;
     this.fatalEmitted = true;
     queueMicrotask(() => {
-      Promise.resolve(this.runtime.onFatal(reason)).catch(() => undefined);
+      Promise.resolve()
+        .then(() => this.runtime.onFatal(reason))
+        .catch(() => undefined);
     });
   }
 
+  private async commitPersistence(signal?: AbortSignal): Promise<void> {
+    await throwIfAborted(signal);
+    this.persistenceCommitReady = true;
+    try {
+      await this.runtime.persistence.commitAtRest();
+    } finally {
+      this.persistenceCommitReady = false;
+    }
+  }
+
   private assertLive(): void {
+    if (this.phase === "disposed" || this.phase === "draining" || this.phase === "shutdown")
+      throw new Error("Pi session is closed");
+    this.runtime.persistence.assertUsable();
     if (this.phase !== "open" && this.phase !== "running") throw new Error("Pi session is closed");
   }
 }
@@ -2439,7 +2700,7 @@ async function createContainedSessionManager(
   const candidate = resolve(realSessionDir, resumeFile);
   const realCandidate = await secureNativeSessionFile(candidate, realSessionDir);
   await access(realCandidate, constants.R_OK);
-  return SessionManager.open(realCandidate, realSessionDir, cwd);
+  return openStrictNativeSession(realCandidate, realSessionDir, cwd);
 }
 
 async function createNewSecureNativeSessionManager(cwd: string, sessionDir: string): Promise<SessionManager> {
@@ -2503,7 +2764,13 @@ async function createSecureNativeSessionHeader(
       )
         throw new Error("bad file");
     } finally {
-      await handle.close().catch(() => undefined);
+      await handle.close();
+    }
+    const directory = await open(sessionDir, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
     }
   } catch {
     if (created !== undefined) {

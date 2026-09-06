@@ -61,6 +61,14 @@ export class CogsEgressTmpfsError extends Error {
   }
 }
 
+const failedTmpfsRetirements = new WeakMap<CogsEgressTmpfsError, Promise<void>>();
+class TmpfsDescriptorUncertainError extends Error {}
+
+/** Trusted lexical-owner seam; pending means material cleanup remains uncertain. */
+export function failedCogsEgressTmpfsRetirement(error: unknown): Promise<void> | undefined {
+  return error instanceof CogsEgressTmpfsError ? failedTmpfsRetirements.get(error) : undefined;
+}
+
 export async function withCogsEgressTmpfsMaterial<T>(
   config: CogsEnvoyRuntimeConfig,
   pki: CogsEgressPkiMaterial,
@@ -71,6 +79,7 @@ export async function withCogsEgressTmpfsMaterial<T>(
   let childReady = false;
   let childIdentity: StoredIdentity | undefined;
   let cleanupAttempted = false;
+  let cleanupRetirement: Promise<void> = Promise.resolve();
   let storage: CogsEgressTmpfsStoragePort | undefined;
   try {
     const captured = Object.freeze({ storage: options.storage, euid: options.euid });
@@ -94,18 +103,35 @@ export async function withCogsEgressTmpfsMaterial<T>(
       await writeFile(storage, path, content, maxBytes, euid, (identity) => written.push(identity));
     }
     await syncDirectory(storage, childPath);
-    let result: T;
+    let result: T | undefined;
+    let operationError: unknown;
     try {
       result = await operation(Object.freeze({ ...paths }));
-    } finally {
-      cleanupAttempted = true;
-      await cleanup(storage, written, childIdentity);
+    } catch (error) {
+      operationError = error;
     }
-    return result;
-  } catch {
-    if (!cleanupAttempted && storage !== undefined)
-      await cleanup(storage, written, childReady ? childIdentity : undefined).catch(() => undefined);
-    throw new CogsEgressTmpfsError();
+    cleanupAttempted = true;
+    try {
+      await cleanup(storage, written, childIdentity);
+    } catch {
+      cleanupRetirement = new Promise<never>(() => undefined);
+      operationError = new Error("cleanup uncertain");
+    }
+    if (operationError !== undefined) throw operationError;
+    return result as T;
+  } catch (error) {
+    if (error instanceof TmpfsDescriptorUncertainError || (childReady && childIdentity === undefined))
+      cleanupRetirement = new Promise<never>(() => undefined);
+    if (!cleanupAttempted && storage !== undefined) {
+      try {
+        await cleanup(storage, written, childReady ? childIdentity : undefined);
+      } catch {
+        cleanupRetirement = new Promise<never>(() => undefined);
+      }
+    }
+    const failure = new CogsEgressTmpfsError();
+    failedTmpfsRetirements.set(failure, cleanupRetirement);
+    throw failure;
   }
 }
 
@@ -133,6 +159,7 @@ async function writeFile(
   const data = bytes(content, maxBytes);
   let file: FilePort | undefined;
   let identity: StoredIdentity | undefined;
+  let failure: unknown;
   try {
     file = await storage.openFile(path, fileFlags(), modeFile);
     const initial = await file.stat();
@@ -149,10 +176,20 @@ async function writeFile(
     const stat = await file.stat();
     verifyFile(stat, euid, data.byteLength);
     if (identity.dev !== stat.dev || identity.ino !== stat.ino) throw new Error("file changed");
-  } finally {
-    data.fill(0);
-    if (file !== undefined) await file.close();
+  } catch (error) {
+    failure = error;
   }
+  data.fill(0);
+  if (file !== undefined) {
+    try {
+      await file.close();
+    } catch {
+      failure = new TmpfsDescriptorUncertainError();
+    }
+  }
+  if (failure !== undefined && file !== undefined && identity === undefined)
+    failure = new TmpfsDescriptorUncertainError();
+  if (failure !== undefined) throw failure;
 }
 
 function verifyFile(stat: CogsEgressTmpfsStats, euid: number, size: number): void {
@@ -200,11 +237,18 @@ async function cleanup(
 
 async function syncDirectory(storage: CogsEgressTmpfsStoragePort, path: string): Promise<void> {
   const dir = await storage.openDir(path, dirFlags());
+  let failure: unknown;
   try {
     await dir.sync();
-  } finally {
-    await dir.close();
+  } catch (error) {
+    failure = error;
   }
+  try {
+    await dir.close();
+  } catch {
+    failure = new TmpfsDescriptorUncertainError();
+  }
+  if (failure !== undefined) throw failure;
 }
 
 async function ensureMissing(storage: CogsEgressTmpfsStoragePort, path: string): Promise<void> {

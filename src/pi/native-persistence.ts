@@ -44,6 +44,7 @@ export interface NativePersistenceFence {
   }>;
   /** Register the actual promise, never a timeout wrapper. Includes retry/compaction/navigation. */
   track<T>(operation: () => Promise<T>): Promise<T>;
+  waitForIdle(): Promise<void>;
   commitAtRest(): Promise<NativeFrontier>;
   requireComplete(): NativeFrontier;
 }
@@ -96,6 +97,8 @@ export function installNativePersistence(
   let durable: NativeFrontier | undefined;
   let revision = 0;
   let active = 0;
+  let activeRetired: Promise<void> = Promise.resolve();
+  let resolveActiveRetired: (() => void) | undefined;
   let mutating = false;
   let committing: Promise<NativeFrontier> | undefined;
   let expected = scan(path, directory, false);
@@ -227,6 +230,11 @@ export function installNativePersistence(
     track<T>(operation: () => Promise<T>): Promise<T> {
       assertUsable();
       if (committing) fail("activity");
+      if (active === 0) {
+        activeRetired = new Promise<void>((resolve) => {
+          resolveActiveRetired = resolve;
+        });
+      }
       active++;
       // Register before executing arbitrary callbacks; retirement follows actual settlement.
       return Promise.resolve()
@@ -236,8 +244,13 @@ export function installNativePersistence(
         })
         .finally(() => {
           active--;
+          if (active === 0) {
+            resolveActiveRetired?.();
+            resolveActiveRetired = undefined;
+          }
         });
     },
+    waitForIdle: () => activeRetired,
     requireComplete,
     commitAtRest(): Promise<NativeFrontier> {
       if (committing) return committing;

@@ -3,13 +3,19 @@ import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { createServer, Socket } from "node:net";
 import { dirname, join, relative } from "node:path";
+import { performance } from "node:perf_hooks";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { type ApiEvent, type ApiServer, createApiServer, type ExportPort } from "../../src/api/server.ts";
 import { OpenBaoModelApiKeyStore } from "../../src/auth/model-auth.ts";
 import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.ts";
+import type { CloseContext, CloseWork } from "../../src/launch/close.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
 import { type LaunchDependency, type LaunchDependencyName, LaunchLifecycle } from "../../src/launch/lifecycle.ts";
-import { type CogsPiSessionPorts, createAuthenticatedCogsPiSession } from "../../src/pi/session.ts";
+import {
+  type CogsPiSessionPorts,
+  createAuthenticatedCogsPiSession,
+  failedCogsPiSessionRetirement,
+} from "../../src/pi/session.ts";
 import { authorizeCogsPolicyAction } from "../../src/policy/static-policy.ts";
 import { createSshBashToolPort } from "../../src/ssh/bash-tool.ts";
 import { SshConnectionManager } from "../../src/ssh/connection.ts";
@@ -165,11 +171,11 @@ export async function createTrustedWorkerRuntime(
   const deadlineAt = Date.now() + STARTUP_DEADLINE_MS;
   let startupTimer: NodeJS.Timeout | undefined;
   let outerCleanup: Promise<void> | undefined;
-  let stoppedClose: NodeJS.Immediate | undefined;
   let admitted: Admitted | undefined;
   let pi: CogsPiSessionPorts | undefined;
+  let failedPiRetirement: Promise<void> | undefined;
+  let lifecycle: LaunchLifecycle | undefined;
   let piOwnedCleaned = false;
-  let lifecycleStopped = false;
   let cleanupEntered = false;
   let cleanupRequested = false;
   let quiesced = false;
@@ -187,18 +193,23 @@ export async function createTrustedWorkerRuntime(
   if (aborted(callerSignal)) startup.abort();
   startupTimer = setTimeout(() => startup.abort(), STARTUP_DEADLINE_MS);
 
+  const beginCompositeCleanup = (context?: CloseContext): CloseWork => {
+    cleanupRequested = true;
+    startup.abort();
+    const inheritedDeadlineAt =
+      context === undefined ? undefined : Date.now() + Math.max(0, context.deadlineAt - performance.now());
+    outerCleanup ??= (async () => {
+      await startupQuiesced;
+      await cleanupAll(cleanups, startup, inheritedDeadlineAt);
+    })();
+    return Object.freeze({ done: outerCleanup, retired: outerCleanup });
+  };
+
   const cleanup = () => {
     cleanupRequested = true;
     startup.abort();
-    if (stoppedClose !== undefined) {
-      clearImmediate(stoppedClose);
-      stoppedClose = undefined;
-    }
-    outerCleanup ??= (async () => {
-      await startupQuiesced;
-      await cleanupAll(cleanups, startup);
-    })();
-    return outerCleanup;
+    if (lifecycle !== undefined && !cleanupEntered) return lifecycle.requestShutdown("trusted-compose-close");
+    return beginCompositeCleanup().done;
   };
 
   const markQuiesced = () => {
@@ -392,7 +403,6 @@ export async function createTrustedWorkerRuntime(
     binaryOwned = false;
     checkCooperative(startup.signal, deadlineAt);
 
-    let lifecycle: LaunchLifecycle | undefined;
     const dependencies = nonProducingDependencies(
       ssh,
       egress,
@@ -407,20 +417,10 @@ export async function createTrustedWorkerRuntime(
       shutdownTimeoutMs: 10_000,
       emergencyHardDeadlineMs: 30_000,
       dependencyHealthIntervalMs: 100,
+      shutdownOwner: (context) => beginCompositeCleanup(context),
       onEvent: (event) => {
-        if (event.state === "stopped") lifecycleStopped = true;
         if (event.state === "failed" || event.state === "stopped") cleanupRequested = true;
-        if ((event.state === "failed" || event.state === "stopped") && stoppedClose === undefined && !cleanupEntered) {
-          stoppedClose = setImmediate(() => {
-            stoppedClose = undefined;
-            void cleanup().catch(() => undefined);
-          });
-        }
       },
-    });
-    registerCleanup(cleanups, {
-      name: "lifecycle",
-      close: () => (lifecycleStopped ? undefined : lifecycle?.requestShutdown("trusted-compose-close")),
     });
     await lifecycle.start();
     if (!lifecycle.ready) fail();
@@ -428,11 +428,14 @@ export async function createTrustedWorkerRuntime(
     await checkAdmission();
 
     const disposePi = async () => {
-      if (pi === undefined) return;
+      if (pi === undefined) {
+        await failedPiRetirement;
+        return;
+      }
       const current = pi;
-      pi = undefined;
       const result = await current.disposeOwnedRuntime();
       if (result.version !== "cogs.pi-owned-runtime-cleanup/v1alpha1" || result.cleaned !== true) fail();
+      if (pi === current) pi = undefined;
       piOwnedCleaned = true;
     };
     registerCleanup(cleanups, { name: "pi", close: disposePi });
@@ -440,28 +443,36 @@ export async function createTrustedWorkerRuntime(
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
     const s309Emit = createS309ProofEmitter(fixture, egress, admitted.profile);
-    pi = await s.createPi({
-      cwd: "/workspace",
-      agentDir: roots.agentDir,
-      sessionRoot: roots.sessionRoot,
-      launchDocument: launch,
-      modelApiKeys: modelStore,
-      skillPreparer: skills.createPreparer(ssh),
-      signal: startup.signal,
-      toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
-      streamFn: createDeterministicLauncherStream(Object.freeze({ s309FixturePort: fixture.snapshot().port })),
-      emit: (event) => api?.publish(s309Emit(event)) ?? true,
-      onFatal: () => void cleanup().catch(() => undefined),
-      policyAuthorizer: Object.freeze(authorizeCogsPolicyAction),
-      telemetry,
-      ownedRuntime: Object.freeze({ enabled: true, requireEmptyRoots: true, cleanupDeadlineMs: 10_000 }),
-      git: Object.freeze({
-        repositoryId: "launcher",
-        manager: ssh,
-        enableNotes: true,
-        checkpoint: Object.freeze({ enabled: false }),
+    const piStartup = Promise.resolve().then(() =>
+      s.createPi({
+        cwd: "/workspace",
+        agentDir: roots.agentDir,
+        sessionRoot: roots.sessionRoot,
+        launchDocument: launch,
+        modelApiKeys: modelStore,
+        skillPreparer: skills.createPreparer(ssh),
+        signal: startup.signal,
+        toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
+        streamFn: createDeterministicLauncherStream(Object.freeze({ s309FixturePort: fixture.snapshot().port })),
+        emit: (event) => api?.publish(s309Emit(event)) ?? true,
+        onFatal: () => void cleanup().catch(() => undefined),
+        policyAuthorizer: Object.freeze(authorizeCogsPolicyAction),
+        telemetry,
+        ownedRuntime: Object.freeze({ enabled: true, requireEmptyRoots: true, cleanupDeadlineMs: 10_000 }),
+        git: Object.freeze({
+          repositoryId: "launcher",
+          manager: ssh,
+          enableNotes: true,
+          checkpoint: Object.freeze({ enabled: false }),
+        }),
       }),
-    });
+    );
+    try {
+      pi = await piStartup;
+    } catch (error) {
+      failedPiRetirement = failedCogsPiSessionRetirement(error);
+      throw error;
+    }
     await verifyPi(pi, roots.sessionRoot, skills);
     checkCooperative(startup.signal, deadlineAt);
     await checkAdmission();
@@ -470,7 +481,7 @@ export async function createTrustedWorkerRuntime(
     let api: ApiServer | undefined;
     api = apiToken.withToken((token) =>
       s.createApi({
-        lifecycle,
+        lifecycle: lifecycle as LaunchLifecycle,
         session: pi as CogsPiSessionPorts,
         history: pi as CogsPiSessionPorts,
         exporter:
@@ -513,21 +524,42 @@ export async function createTrustedWorkerRuntime(
     EVENT_REMOVE.call(signal, "abort", listener);
   }
 
-  async function cleanupAll(items: Cleanup[], controller: AbortController): Promise<void> {
+  async function cleanupAll(
+    items: Cleanup[],
+    controller: AbortController,
+    inheritedDeadlineAt?: number,
+  ): Promise<void> {
     cleanupEntered = true;
     controller.abort();
-    let failed = false;
     const byName = cleanupMap(items);
+    const deadlineAt = Math.min(Date.now() + CLEANUP_DEADLINE_MS, inheritedDeadlineAt ?? Number.MAX_SAFE_INTEGER);
+    const completed = new Set<CleanupName>();
+    // API admission and Pi cancellation are independent initiation requests.
+    // Both start even if one hangs/fails, but no dependent resource is released
+    // until both actual owners report retirement.
+    const front = (["api", "pi"] as const)
+      .map((name) => ({ name, item: byName.get(name) }))
+      .filter((entry): entry is { name: "api" | "pi"; item: Cleanup } => entry.item !== undefined);
+    const outcomes = await Promise.allSettled(
+      front.map(async ({ name, item }) => {
+        await item.close(Object.freeze({ deadlineAt }));
+        completed.add(name);
+      }),
+    );
+    if (outcomes.some((outcome) => outcome.status === "rejected")) throw new Error(GENERIC);
+
     for (const name of CLEANUP_ORDER) {
+      if (completed.has(name)) continue;
       const item = byName.get(name);
       if (item === undefined) continue;
+      // A rejected/uncertain owner blocks every dependent release. Owners retain
+      // their own actual work for recovery; no later cleanup is credited.
       try {
-        await item.close(Object.freeze({ deadlineAt: Date.now() + CLEANUP_DEADLINE_MS }));
+        await item.close(Object.freeze({ deadlineAt }));
       } catch {
-        failed = true;
+        throw new Error(GENERIC);
       }
     }
-    if (failed) throw new Error(GENERIC);
   }
 }
 

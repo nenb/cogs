@@ -13,6 +13,7 @@ import {
   type CogsEgressRuntimeManagerOptions,
   startCogsEgressRuntimeManager,
 } from "../egress/runtime-manager.ts";
+import { type CloseContext, type CloseWork, closeContext } from "../launch/close.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../launch/config.ts";
 import {
   createCogsEgressRuntimeLaunchDependency,
@@ -24,6 +25,7 @@ import {
   type AuthenticatedCogsPiSessionOptions,
   type CogsPiSessionPorts,
   createAuthenticatedCogsPiSession,
+  failedCogsPiSessionRetirement,
 } from "../pi/session.ts";
 import { authorizeCogsPolicyAction } from "../policy/static-policy.ts";
 import { type CogsPrivateSkillStore, createCogsPrivateSkillStore } from "../skills/local-private-store.ts";
@@ -46,7 +48,7 @@ type Storage = Readonly<{ shared: CogsSharedSkillOciResolver; private: CogsPriva
 type CloseReason = "requested" | "signal" | "dependency-lost" | "pi-fatal" | "startup-failed";
 
 export interface ProductionWorkerRuntime {
-  readonly ready: true;
+  readonly ready: boolean;
   readonly apiPort: number;
   readonly closed: Promise<void>;
   readonly close: (reason?: CloseReason) => Promise<void>;
@@ -130,8 +132,10 @@ export async function startProductionWorker(
   let telemetry: CogsWorkerTelemetrySink | undefined;
   let lifecycle: LaunchLifecycle | undefined;
   let pi: CogsPiSessionPorts | undefined;
+  let piStartupWork: Promise<CogsPiSessionPorts> | undefined;
   let api: ApiServer | undefined;
   let closePromise: Promise<void> | undefined;
+  let compositeCloseWork: CloseWork | undefined;
   let resolveClosed!: () => void;
   let rejectClosed!: (error: Error) => void;
   const closed = new Promise<void>((resolvePromise, rejectPromise) => {
@@ -150,29 +154,62 @@ export async function startProductionWorker(
   };
   input.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
-  const close = (reason: CloseReason = "requested"): Promise<void> => {
-    if (reason === "dependency-lost" || reason === "pi-fatal" || reason === "startup-failed") spontaneousFailure = true;
-    if (closePromise !== undefined) return closePromise;
+  const beginCompositeClose = (context: CloseContext): CloseWork => {
+    if (compositeCloseWork !== undefined) return compositeCloseWork;
     startup.abort();
-    closePromise = (async () => {
-      const deadline = seams.now() + (runtime?.lifecycle.shutdown_timeout_seconds ?? 10) * 1000;
-      for (const operation of [
-        () => api?.close({ deadlineAt: deadline }) ?? Promise.resolve(),
-        () => closePi(pi, deadline),
-        () => lifecycle?.requestShutdown(`production:${reason}`) ?? Promise.resolve(),
-        () => telemetry?.close() ?? Promise.resolve(),
-      ]) {
-        try {
-          await beforeDeadline(operation(), deadline);
-        } catch {
-          cleanupUncertain = true;
-        }
+    const actual = (async () => {
+      // API admission and Pi work stop before dependency release. Neither a
+      // timeout nor one rejection authorizes lifecycle/SSH/material destruction.
+      const independent = await Promise.allSettled([
+        api?.close({ signal: context.signal }) ?? Promise.resolve(),
+        closePiStartupOwner(),
+      ]);
+      if (independent.some((result) => result.status === "rejected")) {
+        cleanupUncertain = true;
+        throw new ProductionWorkerError();
       }
+      const dependencyWork = lifecycle?.closeDependencies(context);
+      if (dependencyWork !== undefined) await Promise.all([dependencyWork.done, dependencyWork.retired]);
+      await (telemetry?.close() ?? Promise.resolve());
       for (const name of startedDependencies) if (!closedDependencies.has(name)) cleanupUncertain = true;
       startup.dispose();
       input.signal?.removeEventListener("abort", onCallerAbort);
-      if (cleanupUncertain || spontaneousFailure) throw new ProductionWorkerError();
+      if (cleanupUncertain) throw new ProductionWorkerError();
     })();
+    void actual.catch(() => undefined);
+    compositeCloseWork = Object.freeze({ done: actual, retired: actual });
+    return compositeCloseWork;
+  };
+
+  const closePiStartupOwner = async (): Promise<void> => {
+    const startupWork = piStartupWork;
+    if (startupWork === undefined) return closePi(pi);
+    let acquired: CogsPiSessionPorts;
+    try {
+      acquired = await startupWork;
+    } catch (error) {
+      await failedCogsPiSessionRetirement(error);
+      return;
+    }
+    if (pi === undefined) pi = acquired;
+    await closePi(acquired);
+  };
+
+  const close = (reason: CloseReason = "requested"): Promise<void> => {
+    if (reason === "dependency-lost" || reason === "pi-fatal" || reason === "startup-failed") spontaneousFailure = true;
+    if (closePromise !== undefined) return closePromise;
+    const observed = lifecycle
+      ? lifecycle.requestShutdown(`production:${reason}`)
+      : Promise.all(Object.values(beginCompositeClose(closeContext(10_000)))).then(() => undefined);
+    closePromise = observed.then(
+      () => {
+        if (cleanupUncertain || spontaneousFailure) throw new ProductionWorkerError();
+      },
+      () => {
+        cleanupUncertain = true;
+        throw new ProductionWorkerError();
+      },
+    );
     closePromise.then(resolveClosed, () => rejectClosed(new ProductionWorkerError()));
     return closePromise;
   };
@@ -201,8 +238,9 @@ export async function startProductionWorker(
       Object.freeze({
         name,
         start: async (signal: AbortSignal) => {
-          await start(signal);
+          // Custody begins before acquisition code can create a partial owner.
           startedDependencies.add(name);
+          await start(signal);
         },
         ready,
         shutdown: async (signal: AbortSignal) => {
@@ -320,6 +358,7 @@ export async function startProductionWorker(
           () => egressDependency.ready?.() === true,
         ),
       ]),
+      shutdownOwner: beginCompositeClose,
       onEvent: (event) => {
         if (published && (event.state === "failed" || event.state === "stopped"))
           void close(event.state === "failed" ? "dependency-lost" : "requested").catch(() => undefined);
@@ -328,37 +367,44 @@ export async function startProductionWorker(
     await lifecycle.start();
     if (!lifecycle.ready || storage === undefined || ssh === undefined) throw new Error("dependencies unavailable");
     throwIfAborted(startup.signal);
+    const activeSsh = ssh;
+    const activeStorage = storage;
 
     const filePorts = createSftpFileToolPorts({
-      manager: ssh,
+      manager: activeSsh,
       maxReadBytes: launch.limits.max_tool_output_bytes,
       maxWriteBytes: launch.limits.max_tool_output_bytes,
       operationTimeoutMs: launch.limits.tool_timeout_seconds * 1000,
     });
     const bashPort = createSshBashToolPort({
-      manager: ssh,
+      manager: activeSsh,
       timeoutMs: launch.limits.tool_timeout_seconds * 1000,
       maxResultBytes: Math.min(launch.limits.max_tool_output_bytes, 16 * 1024),
     });
-    pi = await seams.createPi({
-      cwd: "/workspace",
-      agentDir: runtime.paths.agent_directory,
-      sessionRoot: runtime.paths.session_root,
-      launchDocument: launch,
-      modelApiKeys: modelStore,
-      skillPreparer: createCogsSkillSessionPreparer({
-        ssh,
-        sharedResolver: storage.shared,
-        privateStore: storage.private,
+    // Register the actual factory promise before invoking arbitrary startup code;
+    // shutdown must retain a late Pi owner before dependency/material release.
+    piStartupWork = Promise.resolve().then(() =>
+      seams.createPi({
+        cwd: "/workspace",
+        agentDir: runtime.paths.agent_directory,
+        sessionRoot: runtime.paths.session_root,
+        launchDocument: launch,
+        modelApiKeys: modelStore,
+        skillPreparer: createCogsSkillSessionPreparer({
+          ssh: activeSsh,
+          sharedResolver: activeStorage.shared,
+          privateStore: activeStorage.private,
+        }),
+        signal: startup.signal,
+        toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
+        emit: (event) => api?.publish(event) ?? true,
+        onFatal: () => void close("pi-fatal").catch(() => undefined),
+        policyAuthorizer: POLICY,
+        telemetry,
+        git: Object.freeze({ repositoryId: launch.workspace_id, manager: activeSsh, enableNotes: true }),
       }),
-      signal: startup.signal,
-      toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
-      emit: (event) => api?.publish(event) ?? true,
-      onFatal: () => void close("pi-fatal").catch(() => undefined),
-      policyAuthorizer: POLICY,
-      telemetry,
-      git: Object.freeze({ repositoryId: launch.workspace_id, manager: ssh, enableNotes: true }),
-    });
+    );
+    pi = await piStartupWork;
     throwIfAborted(startup.signal);
     api = seams.createApi({
       lifecycle,
@@ -371,26 +417,39 @@ export async function startProductionWorker(
     const listened = await api.listen(runtime.api.port, runtime.api.listen_host, { signal: startup.signal });
     if (!lifecycle.ready || telemetry.ready !== true) throw new Error("readiness lost");
     published = true;
-    return Object.freeze({ ready: true as const, apiPort: listened.port, closed, close });
+    return Object.freeze({
+      get ready() {
+        return published && closePromise === undefined && lifecycle?.ready === true && telemetry?.ready === true;
+      },
+      apiPort: listened.port,
+      closed,
+      close,
+    });
   } catch {
     await close("startup-failed").catch(() => undefined);
     throw new ProductionWorkerError();
   }
 }
 
-async function closePi(pi: CogsPiSessionPorts | undefined, deadline: number): Promise<void> {
+async function closePi(pi: CogsPiSessionPorts | undefined): Promise<void> {
   if (pi === undefined) return;
+  let failed = false;
   try {
-    const state = await beforeDeadline(pi.state(), deadline);
+    const state = await pi.state();
     if (state.runState === "idle" || state.runState === "settled") {
-      await beforeDeadline(
-        pi.prepareShutdown({ requestId: "production-shutdown", correlationId: "production-shutdown" }),
-        deadline,
-      );
+      await pi.prepareShutdown({ requestId: "production-shutdown", correlationId: "production-shutdown" });
     }
-  } finally {
-    await beforeDeadline(pi.dispose(), deadline);
+  } catch {
+    failed = true;
   }
+  try {
+    // This starts only after state/preparation settled; no timeout authorizes an
+    // overlapping dispose. Persistence poison still permits cleanup.
+    await pi.dispose();
+  } catch {
+    failed = true;
+  }
+  if (failed) throw new ProductionWorkerError();
 }
 
 async function probeModelAuthentication(
@@ -524,22 +583,6 @@ function linkedAbort(parent: AbortSignal | undefined): AbortController & { dispo
   else parent?.addEventListener("abort", abort, { once: true });
   controller.dispose = () => parent?.removeEventListener("abort", abort);
   return controller;
-}
-
-async function beforeDeadline<T>(promise: Promise<T>, deadline: number): Promise<T> {
-  const remaining = deadline - Date.now();
-  if (!Number.isSafeInteger(remaining) || remaining < 1) throw new Error("deadline");
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("deadline")), remaining);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }
 
 function throwIfAborted(signal: AbortSignal): void {

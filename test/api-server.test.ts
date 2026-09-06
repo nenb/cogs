@@ -108,7 +108,7 @@ async function withServer<T>(
   try {
     return await fn({ base: `http://127.0.0.1:${port}`, api, life, p });
   } finally {
-    await api.close();
+    await api.close().catch(() => undefined);
   }
 }
 
@@ -317,6 +317,39 @@ test("abort and shutdown are idempotent and fail closed", async () => {
   });
 });
 
+test("shutdown 202 is handed off before lifecycle-owned API close destroys sockets", async () => {
+  const p = ports();
+  let api: ReturnType<typeof createApiServer> | undefined;
+  let shutdowns = 0;
+  const life = {
+    ready: true,
+    state: "ready",
+    requestShutdown: async () => {
+      shutdowns += 1;
+      await api?.close();
+    },
+  };
+  api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+  });
+  const { port } = await api.listen();
+  const response = await json(`http://127.0.0.1:${port}`, "/v1/shutdown", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 202);
+  assert.deepEqual(await body(response), { version: "cogs.shutdown/v1alpha1", accepted: true });
+  for (let attempt = 0; attempt < 20 && shutdowns === 0; attempt += 1)
+    await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shutdowns, 1);
+  await api.close();
+});
+
 test("SSE sequence supports replay and rejects replay gaps while slow consumers are cleaned up", async () => {
   await withServer(
     async ({ base, api }) => {
@@ -412,6 +445,122 @@ test("entries use authenticated opaque cursors and reject tampering", async () =
     const bad = await json(base, `/v1/entries?after=${encodeURIComponent(`${next}x`)}&limit=2`, { method: "GET" });
     assert.equal(bad.status, 400);
   });
+});
+
+test("entry fragments reconstruct a pinned permitted snapshot with byte-identical retries", async () => {
+  const life = lifecycle();
+  const firstBytes = Buffer.from(JSON.stringify({ id: "entry-1", content: "🙂".repeat(12_000) }));
+  const secondBytes = Buffer.from(JSON.stringify({ id: "entry-2", content: "tail" }));
+  const projected = new Map<string | undefined, { entryId: string; bytes: Buffer }>([
+    [undefined, { entryId: "entry-1", bytes: firstBytes }],
+    ["entry-1", { entryId: "entry-2", bytes: secondBytes }],
+    ["entry-2", { entryId: "entry-3", bytes: Buffer.from('{"id":"entry-3"}') }],
+  ]);
+  const p = ports({
+    history: {
+      frontier: async () => ({ entries: 2, lastEntryId: "entry-2" }),
+      projectedEntry: async ({ after }) => projected.get(after) ?? assert.fail("bad projected cursor"),
+    },
+  });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+    maxResponseBytes: 8192,
+  });
+  const schema = JSON.parse(await readFile(resolve(import.meta.dirname, "../schemas/entry-fragments-v1.json"), "utf8"));
+  const validate = addFormats(new Ajv({ allErrors: true, strict: false })).compile(schema);
+  const { port } = await api.listen();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    let cursor: string | undefined;
+    const rebuilt = new Map<string, Buffer[]>();
+    const positions = new Map<string, number>();
+    const pinResponse = await json(base, "/v1/entry-fragments", { method: "GET" });
+    assert.equal(pinResponse.status, 200);
+    const pin = await body(pinResponse);
+    assert.equal(validate(pin), true, JSON.stringify(validate.errors));
+    assert.deepEqual(pin.fragments, []);
+    assert.equal(pin.snapshotFinal, false);
+    cursor = String(pin.next);
+    assert.match(cursor, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    let tail = "";
+    for (let pages = 0; pages < 64; pages++) {
+      const path = `/v1/entry-fragments?cursor=${encodeURIComponent(cursor)}`;
+      const first = await json(base, path, { method: "GET" });
+      const firstBody = await body(first);
+      const retry = await json(base, path, { method: "GET" });
+      const retryBody = await body(retry);
+      assert.deepEqual(retryBody, firstBody, "same cursor must produce byte-equivalent JSON values");
+      assert.equal(validate(firstBody), true, JSON.stringify(validate.errors));
+      const [fragment] = firstBody.fragments as Array<Record<string, unknown>>;
+      assert.ok(fragment);
+      const entryId = String(fragment.entryId);
+      const offset = Number(fragment.offset);
+      assert.equal(offset, positions.get(entryId) ?? 0);
+      const chunk = Buffer.from(String(fragment.data), "base64");
+      let chunks = rebuilt.get(entryId);
+      if (chunks === undefined) {
+        chunks = [];
+        rebuilt.set(entryId, chunks);
+      }
+      chunks.push(chunk);
+      positions.set(entryId, offset + chunk.length);
+      assert.equal(offset + chunk.length <= Number(fragment.totalBytes), true);
+      if (firstBody.snapshotFinal === true) {
+        assert.equal(fragment.final, true);
+        tail = String(firstBody.tail);
+        break;
+      }
+      cursor = String(firstBody.next);
+    }
+    assert.ok(tail);
+    assert.deepEqual(Buffer.concat(rebuilt.get("entry-1") ?? []), firstBytes);
+    assert.deepEqual(Buffer.concat(rebuilt.get("entry-2") ?? []), secondBytes);
+    assert.equal(rebuilt.has("entry-3"), false, "appends after the pinned tail are excluded");
+    const tailPath = `/v1/entry-fragments?cursor=${encodeURIComponent(tail)}`;
+    const tailA = await body(await json(base, tailPath, { method: "GET" }));
+    const tailB = await body(await json(base, tailPath, { method: "GET" }));
+    assert.deepEqual(tailA, tailB);
+    assert.deepEqual(tailA.fragments, []);
+    assert.equal(tailA.snapshotFinal, true);
+    assert.equal(tailA.tail, tail);
+    assert.equal((await json(base, `${tailPath}x`, { method: "GET" })).status, 400);
+  } finally {
+    await api.close();
+  }
+});
+
+test("legacy entries reduce whole-entry count without clipping or cursor skips", async () => {
+  const life = lifecycle();
+  const values = [
+    { id: "entry-1", content: "a".repeat(220) },
+    { id: "entry-2", content: "b".repeat(220) },
+  ];
+  const p = ports({ history: { entries: async () => ({ entries: values }) } });
+  const api = createApiServer({
+    lifecycle: life as never,
+    session: p.session,
+    history: p.history,
+    exporter: p.exporter,
+    bearerToken: "worker-secret-0123456789abcdefghi",
+    sessionId: "session-1",
+    maxResponseBytes: 512,
+  });
+  const { port } = await api.listen();
+  try {
+    const response = await json(`http://127.0.0.1:${port}`, "/v1/entries?limit=2", { method: "GET" });
+    assert.equal(response.status, 200);
+    const page = await body(response);
+    assert.deepEqual(page.entries, [values[0]]);
+    assert.equal(typeof page.next, "string");
+  } finally {
+    await api.close();
+  }
 });
 
 test("export is authenticated API only and response overflow is bounded", async () => {
@@ -707,7 +856,7 @@ test("query/body smuggling, malformed cursors, and hanging ports fail closed", a
   try {
     assert.equal((await json(`http://127.0.0.1:${port}`, "/v1/state", { method: "GET" })).status, 504);
   } finally {
-    await api.close();
+    await assert.rejects(api.close(), /close uncertain/);
   }
 });
 
@@ -999,7 +1148,7 @@ test("input queue wait is bounded without poisoning or late delivery", async () 
   }
 });
 
-test("port-timeout poison preserves delayed shutdown rejection", async () => {
+test("port-timeout poison preserves delayed shutdown rejection behind request-only 202", async () => {
   let shutdownCalls = 0;
   const life = lifecycle();
   life.requestShutdown = async () => {
@@ -1024,10 +1173,10 @@ test("port-timeout poison preserves delayed shutdown rejection", async () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(shutdownCalls, 1);
     assert.equal((await json(base, "/health/ready", { method: "GET" })).status, 503);
-    assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 500);
+    assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 202);
     assert.equal(shutdownCalls, 1);
   } finally {
-    await api.close();
+    await assert.rejects(api.close(), /close uncertain/);
   }
 });
 
@@ -1421,7 +1570,7 @@ test("cooperative close deadline destroys raw socket and proves closed listener"
   raw.write("GET /health/live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
   await new Promise<void>((resolve) => raw.once("data", () => resolve()));
   const closedRaw = new Promise((resolve) => raw.once("close", resolve));
-  await api.close({ deadlineAt: Date.now() });
+  await assert.rejects(api.close({ deadlineAt: Date.now() }), /close uncertain/);
   await closedRaw;
   await assertCanBind(port);
 });

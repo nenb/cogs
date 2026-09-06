@@ -7,6 +7,7 @@ import {
   CogsEgressTmpfsError,
   type CogsEgressTmpfsStats,
   type CogsEgressTmpfsStoragePort,
+  failedCogsEgressTmpfsRetirement,
   withCogsEgressTmpfsMaterial,
 } from "../src/egress/tmpfs-material-writer.ts";
 
@@ -110,6 +111,26 @@ test("rejects non-tmpfs, parent owner/mode/realpath, preexisting child, symlink,
   }
 });
 
+test("post-mkdir identity failure retains partial directory acquisition uncertainty", async () => {
+  const storage = new FakeStorage();
+  storage.afterMkdir = () => {
+    storage.must(child).isSymbolicLink = true;
+  };
+  const failure = await withCogsEgressTmpfsMaterial(config, pki, async () => {}, { storage, euid: 501 }).catch(
+    (error: unknown) => error,
+  );
+  assert.equal(generic(failure), true);
+  const retirement = failedCogsEgressTmpfsRetirement(failure);
+  assert.ok(retirement);
+  let retired = false;
+  void retirement.then(() => {
+    retired = true;
+  });
+  await Promise.resolve();
+  assert.equal(retired, false);
+  assert.equal(storage.entries.has(child), true);
+});
+
 test("rejects zero, oversized, multibyte-oversized, open, and malformed partial writes generically", async () => {
   const zero = new FakeStorage();
   zero.writePlan = [0];
@@ -202,18 +223,26 @@ test("sync, close, unlink, and rmdir failures are generic", async () => {
     const storage = new FakeStorage();
     storage.fail = fault;
     let operated = false;
-    await assert.rejects(
-      withCogsEgressTmpfsMaterial(
-        config,
-        pki,
-        async () => {
-          operated = true;
-        },
-        { storage, euid: 501 },
-      ),
-      generic,
-    );
-    if (fault === "unlink" || fault === "rmdir") assert.equal(operated, true);
+    const failure = await withCogsEgressTmpfsMaterial(
+      config,
+      pki,
+      async () => {
+        operated = true;
+      },
+      { storage, euid: 501 },
+    ).catch((error: unknown) => error);
+    assert.equal(generic(failure), true);
+    const retirement = failedCogsEgressTmpfsRetirement(failure);
+    assert.ok(retirement);
+    if (fault === "close" || fault === "unlink" || fault === "rmdir") {
+      if (fault === "unlink" || fault === "rmdir") assert.equal(operated, true);
+      let retired = false;
+      void retirement.then(() => {
+        retired = true;
+      });
+      await Promise.resolve();
+      assert.equal(retired, false);
+    }
     if (fault === "sync") assert.deepEqual(storage.unlinks, [paths.bootstrap]);
   }
 });

@@ -12,8 +12,10 @@ Included:
 - legal prompt/steer/follow-up/abort state checks against the injected session port;
 - lifecycle-backed readiness and fail-closed shutdown behavior, including idempotent API close, closed-state readiness reporting where observable, API readiness/admission poison, and exactly-once lifecycle shutdown trigger after any injected port timeout; late noncooperative port completion cannot reopen readiness, write a timed-out response, or allow new event publication;
 - monotonic versioned SSE sequence with recursively validated JSON payloads, bounded replay, explicit replay-gap/future-sequence rejection, safe-integer sequence exhaustion guard, bounded event size, and backpressure disconnect;
-- paged append-order history through authenticated opaque cursors bound to the worker session;
-- explicit authenticated export API response marked sensitive.
+- paged append-order history through authenticated opaque cursors bound to the worker session; legacy `/v1/entries` returns only complete projected entries, reduces entry count to fit, and returns `413 history_entry_requires_fragments` when one entry cannot fit;
+- complete permitted-history transport through `/v1/entry-fragments`: an initial cursor-less pin handshake, one base64 fragment per page, deterministic authenticated session/startup/snapshot/offset-bound cursors, byte-identical retries, and a replayable terminal tail cursor; fragments reconstruct canonical `cogs.permitted-json/v1` bytes, not raw native JSONL;
+- fragment snapshots stop at their pinned durable tail even when later entries append; restart, cursor tampering, persistence uncertainty, unavailable prior-secret coverage, and malformed offsets fail closed rather than restarting at newer content;
+- explicitly sensitive raw export remains separate, native-byte preserving, and unsanitized.
 
 Excluded until later S3-01 slices:
 

@@ -44,6 +44,13 @@ export class CogsEgressPkiError extends Error {
   }
 }
 
+const pkiFailureCauses = new WeakMap<CogsEgressPkiError, unknown>();
+
+/** Internal composition seam; public errors remain generic and cause-free. */
+export function egressPkiFailureCause(error: unknown): unknown {
+  return error instanceof CogsEgressPkiError ? pkiFailureCauses.get(error) : undefined;
+}
+
 export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
   readonly #origin: string;
   readonly #mount: string;
@@ -119,8 +126,10 @@ export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
         clearTimeout(timeout);
         captured.signal?.removeEventListener("abort", onAbort);
       }
-    } catch {
-      throw new CogsEgressPkiError();
+    } catch (error) {
+      const failure = new CogsEgressPkiError();
+      pkiFailureCauses.set(failure, error);
+      throw failure;
     }
   }
 }

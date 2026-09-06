@@ -1,4 +1,4 @@
-import type { CogsEgressRuntimeManager } from "../egress/runtime-manager.ts";
+import { type CogsEgressRuntimeManager, failedCogsEgressRuntimeManagerRetirement } from "../egress/runtime-manager.ts";
 import {
   type CogsTelemetry,
   captureTelemetry,
@@ -492,6 +492,7 @@ export function createCogsEgressRuntimeLaunchDependency(
   let closePromise: Promise<void> | undefined;
   let startWork: Promise<void> | undefined;
   let shutdownPromise: Promise<void> | undefined;
+  let failedStartRetirement: Promise<void> | undefined;
   let shutdownRequested = false;
   let started = false;
   return Object.freeze({
@@ -504,7 +505,8 @@ export function createCogsEgressRuntimeLaunchDependency(
           if (signal.aborted) throw new Error("aborted");
           manager = await factory(signal);
           if (signal.aborted || shutdownRequested || !manager.ready) throw new Error("egress not ready");
-        } catch {
+        } catch (error) {
+          failedStartRetirement ??= failedCogsEgressRuntimeManagerRetirement(error);
           if (manager) {
             try {
               closePromise ??= manager.close();
@@ -526,14 +528,15 @@ export function createCogsEgressRuntimeLaunchDependency(
         return false;
       }
     },
-    async shutdown() {
+    async shutdown(signal: AbortSignal) {
       shutdownRequested = true;
       shutdownPromise ??= (async () => {
         try {
           await startWork?.catch(() => undefined);
+          await failedStartRetirement;
           const current = manager;
           if (!current) return;
-          closePromise ??= current.close();
+          closePromise ??= current.close({ signal });
           await closePromise;
           manager = undefined;
         } catch {

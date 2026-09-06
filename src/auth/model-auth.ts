@@ -43,6 +43,13 @@ export class ModelAuthError extends Error {
   }
 }
 
+const modelAuthFailureCauses = new WeakMap<ModelAuthError, unknown>();
+
+/** Internal composition seam; the public error remains generic and serializes no cause. */
+export function modelAuthFailureCause(error: unknown): unknown {
+  return error instanceof ModelAuthError ? modelAuthFailureCauses.get(error) : undefined;
+}
+
 export class DisabledOAuthBrokerClient implements OAuthBrokerClient {
   public async getAccessMaterial(_input: {
     userId: string;
@@ -154,7 +161,7 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
       request.signal?.addEventListener("abort", onAbort, { once: true });
       let apiKey = "";
       try {
-        apiKey = await openBaoDeadline(controller.signal, this.#timeoutMs, async (signal) =>
+        const readOperation = (signal: AbortSignal) =>
           withTokenOnce(this.#identity, signal, async (rawToken) => {
             if (controller.signal.aborted) throw new Error("aborted");
             let token = "";
@@ -188,8 +195,14 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
             } finally {
               token = "";
             }
-          }),
-        );
+          });
+        // Hydration's pinned read is actual owned work. Its timer requests abort,
+        // but the caller retains it until the transport/identity callback settles.
+        apiKey =
+          expected === undefined
+            ? await openBaoDeadline(controller.signal, this.#timeoutMs, readOperation)
+            : await readOperation(controller.signal);
+        if (controller.signal.aborted) throw new Error("aborted");
       } finally {
         controller.abort();
         clearTimeout(timeout);
@@ -599,7 +612,9 @@ export async function openBaoDeadline<T>(
 async function generic<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
-  } catch {
-    throw new ModelAuthError();
+  } catch (error) {
+    const failure = new ModelAuthError();
+    modelAuthFailureCauses.set(failure, error);
+    throw failure;
   }
 }

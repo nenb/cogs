@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   ModelCredentialResolver,
   type OpenBaoIdentityPort,
   OpenBaoModelApiKeyStore,
-  openBaoDeadline,
   parseOpenBaoJson,
   validateOpenBaoTimestamp,
 } from "../auth/model-auth.ts";
@@ -147,7 +147,7 @@ export async function createOpenBaoEgressRevocationBinding(
     const signal = request.signal ?? new AbortController().signal;
     const store = new OpenBaoModelApiKeyStore(authority);
     try {
-      await openBaoDeadline(signal, authority.timeoutMs ?? 5000, async (captureSignal) => {
+      await ownedOpenBaoDeadline(signal, authority.timeoutMs ?? 5000, async (captureSignal) => {
         for (const handle of handles) {
           const reader = new OpenBaoEgressRevocationSource({
             ...request,
@@ -261,7 +261,7 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
     parent: AbortSignal,
   ): Promise<Readonly<{ identity: OpenBaoHydratedIdentity | null; revoked: boolean }>> {
     try {
-      return await openBaoDeadline(parent, this.#timeoutMs, async (signal) =>
+      return await ownedOpenBaoDeadline(parent, this.#timeoutMs, async (signal) =>
         withTokenOnce(this.#identity, signal, async (rawToken) => {
           if (signal.aborted) throw new Error("aborted");
           const response = await this.#fetch(
@@ -320,7 +320,7 @@ class AggregateOpenBaoEgressRevocationSource implements CogsEgressRevocationSour
   public async read(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
     if (signal.aborted) throw new CogsEgressOpenBaoRevocationError();
     try {
-      return await openBaoDeadline(signal, this.#timeoutMs, (boundedSignal) => this.readInner(boundedSignal));
+      return await ownedOpenBaoDeadline(signal, this.#timeoutMs, (boundedSignal) => this.readInner(boundedSignal));
     } catch {
       throw new CogsEgressOpenBaoRevocationError();
     }
@@ -385,6 +385,33 @@ function handleDigest(handle: string): string {
 
 function aggregateVersion(pairs: readonly (readonly [string, string])[]): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(pairs)).digest("hex")}`;
+}
+
+async function ownedOpenBaoDeadline<T>(
+  parent: AbortSignal,
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const deadlineAt = performance.now() + timeoutMs;
+  let expired = false;
+  const abort = () => controller.abort();
+  if (parent.aborted) abort();
+  else parent.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const value = await operation(controller.signal);
+    if (expired || performance.now() >= deadlineAt || parent.aborted || controller.signal.aborted)
+      throw new Error("openbao deadline");
+    return value;
+  } finally {
+    clearTimeout(timer);
+    parent.removeEventListener("abort", abort);
+    controller.abort();
+  }
 }
 
 function identityVersion(identity: OpenBaoHydratedIdentity): string {

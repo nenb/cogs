@@ -1,4 +1,5 @@
-import type { LauncherState } from "./state.ts";
+import { writeWorkerCleanupReceipt } from "./control.ts";
+import { type LauncherState, resolveLauncherState } from "./state.ts";
 import { createTrustedWorkerRuntime } from "./trusted-compose.ts";
 import { processWorkerChannel, runWorkerChild, type WorkerProvisionalRuntime } from "./worker-process.ts";
 
@@ -32,6 +33,11 @@ async function closeRuntime(): Promise<void> {
   closing ??= runtime.close();
   try {
     await closing;
+    const [, root, name, sourceRevision, extra] = process.argv.slice(2);
+    if (root === undefined || name === undefined || sourceRevision === undefined || extra !== undefined)
+      throw new Error("worker cleanup receipt unavailable");
+    const state = await resolveLauncherState({ root, name, sourceRevision });
+    await writeWorkerCleanupReceipt(state);
     if (deadline) clearTimeout(deadline);
     process.off("SIGTERM", onTerminate);
     process.exitCode = 0;

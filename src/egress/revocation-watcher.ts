@@ -1,4 +1,8 @@
+import { performance } from "node:perf_hooks";
+
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const orphanRetirements = new Set<Promise<void>>();
+const failedStartupRetirements = new WeakMap<CogsEgressRevocationError, Promise<void>>();
 const reasons = new Set<CogsEgressRevocationReason>([
   "revoked",
   "preset_changed",
@@ -65,18 +69,34 @@ export class CogsEgressRevocationError extends Error {
   }
 }
 
+/** Trusted startup-owner seam; undefined means no watcher work was acquired. */
+export function failedCogsEgressRevocationRetirement(error: unknown): Promise<void> | undefined {
+  return error instanceof CogsEgressRevocationError ? failedStartupRetirements.get(error) : undefined;
+}
+
 export async function createCogsEgressRevocationWatcher(
   source: CogsEgressRevocationSource,
   actions: CogsEgressRevocationActions,
   options: CogsEgressRevocationWatcherOptions,
 ): Promise<CogsEgressRevocationWatcher> {
+  let watcher: RevocationWatcher | undefined;
   try {
     validatePorts(source, actions);
-    const watcher = new RevocationWatcher(source, actions, capture(options));
+    watcher = new RevocationWatcher(source, actions, capture(options));
     await watcher.start();
     return watcher.handle();
   } catch {
-    throw new CogsEgressRevocationError();
+    const failure = new CogsEgressRevocationError();
+    if (watcher !== undefined) {
+      // Startup has no public handle yet. Retain any non-cooperative source or
+      // action owner internally and let the lexical material owner join it.
+      void watcher.close().catch(() => undefined);
+      const retirement = watcher.retirement();
+      failedStartupRetirements.set(failure, retirement);
+      orphanRetirements.add(retirement);
+      void retirement.finally(() => orphanRetirements.delete(retirement)).catch(() => undefined);
+    }
+    throw failure;
   }
 }
 
@@ -91,6 +111,7 @@ class RevocationWatcher {
   private closePromise: Promise<void> | undefined;
   private retirementPromise: Promise<void> | undefined;
   private actionFailed = false;
+  private readonly sourceWork = new Set<Promise<unknown>>();
   private readonly actionWork: Promise<void>[] = [];
 
   public constructor(
@@ -167,7 +188,16 @@ class RevocationWatcher {
     try {
       if (this.options.signal.aborted) controller.abort();
       else this.options.signal.addEventListener("abort", relay, { once: true });
-      const snapshot = await this.withTimeout((signal) => this.source.read(signal), controller);
+      const deadlineAt = performance.now() + this.options.operationTimeoutMs;
+      let actual: Promise<CogsEgressRevocationSnapshot>;
+      try {
+        actual = Promise.resolve(this.source.read(controller.signal));
+      } catch (error) {
+        actual = Promise.reject(error);
+      }
+      this.sourceWork.add(actual);
+      void actual.finally(() => this.sourceWork.delete(actual)).catch(() => undefined);
+      const snapshot = await this.observeAction(actual, controller, deadlineAt);
       return validateSnapshot(snapshot);
     } finally {
       this.options.signal.removeEventListener("abort", relay);
@@ -213,6 +243,7 @@ class RevocationWatcher {
     ];
     for (const attempt of attempts) {
       const controller = new AbortController();
+      const deadlineAt = performance.now() + this.options.operationTimeoutMs;
       let resolveActual!: () => void;
       let rejectActual!: (error: unknown) => void;
       const actual = new Promise<void>((resolve, reject) => {
@@ -230,7 +261,7 @@ class RevocationWatcher {
         this.actionFailed = true;
       });
       try {
-        await this.observeAction(actual, controller);
+        await this.observeAction(actual, controller, deadlineAt);
       } catch {
         // Continue to initiate the next independent safety action, but retain
         // this actual promise for close/recovery ownership.
@@ -265,10 +296,15 @@ class RevocationWatcher {
     }
     this.active?.abort();
     try {
-      const works = [this.activeWork, this.transition, ...this.actionWork].filter(
+      const registration = [this.activeWork, this.transition].filter(
         (work): work is Promise<void> => work !== undefined,
       );
-      this.retirementPromise = Promise.allSettled(works).then(() => undefined);
+      this.retirementPromise = (async () => {
+        // transition completion seals the action-registration frontier. Source
+        // and action promises are the actual work, not timeout observations.
+        await Promise.allSettled(registration);
+        await Promise.allSettled([...this.sourceWork, ...this.actionWork]);
+      })();
       if (!this.actionFailed)
         await boundedAwait(this.retirementPromise, this.options.operationTimeoutMs * 4, this.options.timers);
     } catch {
@@ -287,26 +323,19 @@ class RevocationWatcher {
     this.abortListener = undefined;
   }
 
-  private async withTimeout<T>(work: (signal: AbortSignal) => Promise<T>, controller: AbortController): Promise<T> {
-    let actual: Promise<T>;
-    try {
-      actual = Promise.resolve(work(controller.signal));
-    } catch (error) {
-      actual = Promise.reject(error);
-    }
-    void actual.catch(() => undefined);
-    return this.observeAction(actual, controller);
-  }
-
-  private async observeAction<T>(actual: Promise<T>, controller: AbortController): Promise<T> {
+  private async observeAction<T>(actual: Promise<T>, controller: AbortController, deadlineAt: number): Promise<T> {
     let timer: unknown;
     try {
       return await new Promise<T>((resolve, reject) => {
-        timer = this.options.timers.setTimeout(() => {
+        const expire = () => {
           controller.abort();
           reject(new Error("timeout"));
-        }, this.options.operationTimeoutMs);
-        actual.then(resolve, reject);
+        };
+        timer = this.options.timers.setTimeout(expire, this.options.operationTimeoutMs);
+        actual.then(
+          (value) => (performance.now() >= deadlineAt ? expire() : resolve(value)),
+          (error) => (performance.now() >= deadlineAt ? expire() : reject(error)),
+        );
       });
     } finally {
       if (timer !== undefined) this.options.timers.clearTimeout(timer);
@@ -369,10 +398,20 @@ function validatePorts(source: CogsEgressRevocationSource, actions: CogsEgressRe
 }
 
 async function boundedAwait(work: Promise<unknown>, ms: number, timers: CogsEgressRevocationTimers): Promise<void> {
+  const deadlineAt = performance.now() + ms;
   let timer: unknown;
   try {
+    const observed = work.then(
+      () => {
+        if (performance.now() >= deadlineAt) throw new Error("cleanup timeout");
+      },
+      (error) => {
+        if (performance.now() >= deadlineAt) throw new Error("cleanup timeout");
+        throw error;
+      },
+    );
     await Promise.race([
-      work,
+      observed,
       new Promise((_, reject) => {
         timer = timers.setTimeout(() => reject(new Error("cleanup timeout")), ms);
       }),

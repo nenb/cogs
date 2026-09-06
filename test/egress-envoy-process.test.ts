@@ -6,6 +6,7 @@ import {
   CogsEnvoyProcessError,
   type CogsEnvoyProcessPorts,
   createNodeCogsEnvoyProcessPort,
+  failedCogsEnvoyProcessRetirement,
 } from "../src/egress/envoy-process.ts";
 
 const bootstrap = "/run/cogs/egress/envoy/bootstrap.json";
@@ -55,6 +56,33 @@ test("spawns exact Envoy argv/env and waits for TCP readiness", async () => {
     { port: 15001, host: "127.0.0.1" },
   ]);
   await handle.close();
+});
+
+test("failed startup exposes actual child retirement after bounded kill observation", async () => {
+  const ports = new FakePorts([]);
+  ports.killBehavior = () => undefined;
+  const processPort = createNodeCogsEnvoyProcessPort({
+    executablePath: "/envoy",
+    startupTimeoutMs: 50,
+    closeTimeoutMs: 50,
+    ports,
+  });
+  const failure = await processPort
+    .start({ bootstrapPath: bootstrap, listenerPort: 15001, onCompletionLine: async () => {} })
+    .catch((error: unknown) => error);
+  assert.ok(failure instanceof CogsEnvoyProcessError);
+  const retirement = failedCogsEnvoyProcessRetirement(failure);
+  assert.ok(retirement);
+  let retired = false;
+  void retirement.then(() => {
+    retired = true;
+  });
+  await tick();
+  assert.equal(retired, false);
+  assert.deepEqual(ports.kills, ["SIGTERM", "SIGKILL"]);
+  ports.exitClose();
+  await retirement;
+  assert.equal(retired, true);
 });
 
 test("rejects timeout, abort, early exit, and invalid constructor/input generically", async () => {
@@ -334,6 +362,23 @@ test("intentional TERM delivers and awaits final stdout line", async () => {
   assert.equal(closed, true);
 });
 
+test("leader exit does not retire a surviving owned process group", async () => {
+  const ports = new FakePorts([false, true]);
+  ports.killBehavior = (signal) => {
+    if (signal === "SIGTERM") ports.child.emitExitClose();
+    else ports.groupAlive = false;
+  };
+  const handle = await createNodeCogsEnvoyProcessPort({
+    executablePath: "/envoy",
+    startupTimeoutMs: 100,
+    closeTimeoutMs: 50,
+    ports,
+  }).start({ bootstrapPath: bootstrap, listenerPort: 15001, onCompletionLine: async () => {} });
+  await handle.close();
+  assert.deepEqual(ports.kills, ["SIGTERM", "SIGKILL"]);
+  assert.equal(ports.groupAlive, false);
+});
+
 test("unexpected death, double close, signal failures, and missing terminal events fail closed", async () => {
   const exited = new FakePorts([false, true]);
   const exitedHandle = await createNodeCogsEnvoyProcessPort({
@@ -411,6 +456,7 @@ class FakePorts implements CogsEnvoyProcessPorts {
   public spawned?: { exe: string; argv: string[]; request: unknown };
   public connects: Array<{ port: number; host: string }> = [];
   public kills: string[] = [];
+  public groupAlive = true;
   public afterSpawn?: (child: FakeChild) => void;
   public killBehavior?: (signal: "SIGTERM" | "SIGKILL") => void;
   public failConnect = false;
@@ -439,6 +485,10 @@ class FakePorts implements CogsEnvoyProcessPorts {
     this.killBehavior ? this.killBehavior(signal) : this.exitClose();
   }
 
+  public processGroupState(): "alive" | "absent" {
+    return this.groupAlive ? "alive" : "absent";
+  }
+
   public setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout> {
     return setTimeout(callback, ms);
   }
@@ -448,6 +498,7 @@ class FakePorts implements CogsEnvoyProcessPorts {
   }
 
   public exitClose(): void {
+    this.groupAlive = false;
     this.child.emitExitClose();
   }
 }

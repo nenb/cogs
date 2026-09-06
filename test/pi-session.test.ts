@@ -18,6 +18,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { promisify } from "node:util";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -36,6 +37,7 @@ import {
   type CogsToolPorts,
   createAuthenticatedCogsPiSession,
   createCogsPiSession,
+  failedCogsPiSessionRetirement,
 } from "../src/pi/session.ts";
 import type { CogsGitCheckpointer } from "../src/session/git-checkpoint.ts";
 import type { CogsGitMapRecord } from "../src/session/git-map.ts";
@@ -1037,8 +1039,15 @@ test("Pi session hanging or forged checkpoint warns without checkpoint claim", a
   try {
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true });
-    for (const checkpointer of [
-      Object.freeze({ checkpoint: () => new Promise(() => undefined), dispose: async () => undefined }),
+    let finishHanging!: (value: null) => void;
+    const checkpointers = [
+      Object.freeze({
+        checkpoint: () =>
+          new Promise<null>((resolve) => {
+            finishHanging = resolve;
+          }),
+        dispose: async () => undefined,
+      }),
       Object.freeze({
         checkpoint: async () =>
           Object.freeze({
@@ -1055,7 +1064,8 @@ test("Pi session hanging or forged checkpoint warns without checkpoint claim", a
           }),
         dispose: async () => undefined,
       }),
-    ] as CogsGitCheckpointer[]) {
+    ] as CogsGitCheckpointer[];
+    for (const [index, checkpointer] of checkpointers.entries()) {
       const events: string[] = [];
       const adapter = await createCogsPiSession(
         withDefaults({
@@ -1075,6 +1085,11 @@ test("Pi session hanging or forged checkpoint warns without checkpoint claim", a
         }),
       );
       await adapter.input({ requestId: "hostile", correlationId: "hostile", kind: "prompt", content: "go" });
+      if (index === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 2600));
+        assert.equal((await adapter.state()).runState, "running", "timed-out checkpoint remains owned");
+        finishHanging(null);
+      }
       await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
       assert.ok(events.includes("warning"));
       assert.equal(events.includes("checkpoint"), false);
@@ -1145,6 +1160,7 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     let noteAttempts = 0;
+    let finishNote!: (value: boolean) => void;
     const observer: CogsGitObserver = Object.freeze({
       observeHead: async () =>
         Object.freeze({
@@ -1156,7 +1172,11 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
       nearestAncestor: async () => null,
       appendNote: () => {
         noteAttempts += 1;
-        return noteAttempts === 1 ? new Promise<boolean>(() => undefined) : Promise.resolve(false);
+        return noteAttempts === 1
+          ? new Promise<boolean>((resolve) => {
+              finishNote = resolve;
+            })
+          : Promise.resolve(false);
       },
       dispose: async () => undefined,
     });
@@ -1179,6 +1199,9 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
     );
     try {
       await adapter.input({ requestId: "hanging-note", correlationId: "hanging-note", kind: "prompt", content: "go" });
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+      assert.equal((await adapter.state()).runState, "running", "timed-out note remains owned");
+      finishNote(false);
       await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
       assert.ok(events.some((event) => event.kind === "warning" && event.payload.code === "git-note-unavailable"));
       assert.ok(events.some((event) => event.kind === "run_settled"));
@@ -1195,6 +1218,7 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
     const agentDir = resolve(resolveRoot, "agent");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true });
+    let finishNearest!: (value: string | null) => void;
     const adapter = await createCogsPiSession(
       withDefaults({
         cwd,
@@ -1209,7 +1233,10 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
           repositoryId: "workspace-1",
           observer: Object.freeze({
             ...fakeObserver(["1".repeat(40)]),
-            nearestAncestor: () => new Promise<string | null>(() => undefined),
+            nearestAncestor: () =>
+              new Promise<string | null>((resolve) => {
+                finishNearest = resolve;
+              }),
           }),
         },
       }),
@@ -1226,6 +1253,7 @@ test("Pi session bounds hanging Git notes and resolver ancestor lookups", async 
       const resolved = await adapter.resolveGitMapping({ repo: "workspace-1", commit: "2".repeat(40) });
       assert.equal(resolved?.kind, "unavailable");
       assert.ok(Date.now() - started < 3500);
+      finishNearest(null);
     } finally {
       await adapter.dispose();
     }
@@ -1563,13 +1591,14 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
       const abortPromise = adapter.abort({ requestId: "abort1", correlationId: "abort-corr" });
       await eventually(async () => assert.equal((await adapter.state()).runState, "aborting"));
       releaseAbort?.();
-      await abortPromise;
+      await assert.rejects(abortPromise, /cleanup failed/);
+      await eventually(async () => assert.equal((await adapter.state()).runState, "shutdown"));
       assert.deepEqual(
         events.filter((event) => event.startsWith("run_aborted")),
-        ["run_aborted:root-corr:root:abort-corr:abort1"],
+        [],
       );
     } finally {
-      await adapter.dispose();
+      await adapter.dispose().catch(() => undefined);
     }
 
     const queueEvents: string[] = [];
@@ -1635,7 +1664,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
       queueEvents.some((event) => event.startsWith("run_settled:root-corr2:root2")),
       false,
     );
-    await queueAdapter.dispose();
+    await assert.rejects(queueAdapter.dispose(), /cleanup failed/);
 
     const nonCooperative = await createCogsPiSession(
       withDefaults({
@@ -1657,7 +1686,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
     await assert.rejects(
       nonCooperative.input({ requestId: "after-noncoop", correlationId: "corr", kind: "prompt", content: "x" }),
     );
-    await nonCooperative.dispose();
+    await assert.rejects(nonCooperative.dispose(), /cleanup failed/);
 
     const failing = await createCogsPiSession(
       withDefaults({
@@ -1866,6 +1895,48 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
   }
 });
 
+test("Pi abort completion after a synchronous deadline overrun cannot reopen admission", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-abort-deadline-"));
+  const cwd = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  const adapter = await createCogsPiSession(
+    withDefaults({
+      cwd,
+      agentDir,
+      sessionRoot: resolve(root, "sessions"),
+      sessionId: "abort-deadline",
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      apiKey: "synthetic-only-key",
+      toolPorts: fakePorts([]),
+      streamFn: hangingStream({ count: 0 }),
+      operationTimeoutMs: 1000,
+      abortTimeoutMs: 10,
+    }),
+  );
+  try {
+    await adapter.input({ requestId: "deadline", correlationId: "deadline", kind: "prompt", content: "go" });
+    const session = internalSession(adapter);
+    const nativeAbort = session.abort.bind(session);
+    session.abort = async () => {
+      const until = performance.now() + 30;
+      while (performance.now() < until) {
+        // Hold the event loop so the completion continuation precedes timers.
+      }
+      await nativeAbort();
+    };
+    const started = performance.now();
+    await assert.rejects(adapter.abort({ requestId: "abort", correlationId: "abort" }), /cleanup failed|timed out/);
+    assert.ok(performance.now() - started >= 30);
+    assert.equal((await adapter.state()).runState, "shutdown");
+    await assert.rejects(adapter.input({ requestId: "late", correlationId: "late", kind: "prompt", content: "no" }));
+  } finally {
+    await adapter.dispose().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi adapter fatal callback requests lifecycle shutdown and readiness closes", async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-fatal-api-"));
   const cwd = resolve(temporaryRoot, "workspace");
@@ -2048,6 +2119,58 @@ test("Pi adapter events publish through the actual SSE server schema envelope", 
       await adapter.dispose();
     }
   } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("actual Pi adapter serves entry fragments through the HTTP API with receiver binding intact", async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-fragments-http-"));
+  const cwd = resolve(temporaryRoot, "workspace");
+  const agentDir = resolve(temporaryRoot, "agent");
+  const sessionRoot = resolve(temporaryRoot, "sessions");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  const adapter = await createCogsPiSession(
+    withDefaults({
+      cwd,
+      agentDir,
+      sessionRoot,
+      sessionId: "session-test",
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      apiKey: "COGS_RUNTIME_ONLY_TEST_KEY",
+      toolPorts: fakePorts([]),
+      streamFn: oneTextStream("fragment-response"),
+    }),
+  );
+  const lifecycle = { ready: true, state: "ready", requestShutdown: async () => undefined };
+  const token = "worker-secret-0123456789abcdefghi";
+  const api = createApiServer({
+    lifecycle: lifecycle as never,
+    session: adapter,
+    history: adapter,
+    exporter: adapter,
+    bearerToken: token,
+    sessionId: "session-test",
+  });
+  const { port } = await api.listen();
+  try {
+    await adapter.input({ requestId: "fragment-http", correlationId: "fragment-http", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+    const request = async (path: string) => {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(response.status, 200);
+      return response.json() as Promise<{ fragments: unknown[]; next?: string; snapshotFinal: boolean }>;
+    };
+    const pinned = await request("/v1/entry-fragments");
+    assert.equal(pinned.snapshotFinal, false);
+    assert.equal(typeof pinned.next, "string");
+    const first = await request(`/v1/entry-fragments?cursor=${encodeURIComponent(pinned.next as string)}`);
+    assert.ok(first.fragments.length > 0);
+  } finally {
+    await api.close();
+    await adapter.dispose();
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
@@ -2745,7 +2868,7 @@ test("Pi session tool enable policy denial cleans owned exporter Git and prepare
   }
 });
 
-test("Pi session fails closed instead of settling when durable JSONL flush rejects", async () => {
+test("Pi session fails closed instead of settling when native persistence frontier rejects", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-jsonl-flush-fail-"));
   try {
     const cwd = resolve(root, "workspace");
@@ -2784,8 +2907,74 @@ test("Pi session fails closed instead of settling when durable JSONL flush rejec
     await writeFile(resolve(root, "outside.jsonl"), "not pi jsonl\n");
     await adapter.input({ requestId: "flush", correlationId: "flush-corr", kind: "prompt", content: "go" });
     await eventually(async () => assert.equal((await adapter.state()).runState, "shutdown"));
-    assert.equal(fatal, "history-flush-failed");
+    assert.equal(fatal, "native-persistence-failed");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native writer divergence poisons admission synchronously and later healthy writes cannot heal it", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-native-gap-"));
+  const cwd = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  const nativePersist = SessionManager.prototype._persist;
+  let armed = false;
+  let failures = 0;
+  let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+  SessionManager.prototype._persist = function (entry) {
+    if (armed && entry.type === "message" && (entry as { message?: { role?: string } }).message?.role === "assistant") {
+      failures++;
+      throw new Error("synthetic native EIO with secret path");
+    }
+    return nativePersist.call(this, entry);
+  };
+  try {
+    let fatal = "";
+    adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "native-gap",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "synthetic-only-key",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("must-not-be-durable"),
+        onFatal: (reason) => {
+          fatal = reason;
+          throw new Error("synthetic synchronous fatal observer failure");
+        },
+      }),
+    );
+    armed = true;
+    const current = adapter;
+    await current.input({ requestId: "gap", correlationId: "gap", kind: "prompt", content: "persist user" });
+    await eventually(async () => assert.equal((await current.state()).runState, "shutdown"));
+    assert.equal(failures, 1);
+    assert.equal(fatal, "native-persistence-failed");
+    const manager = (adapter as unknown as { sessionManager: SessionManager }).sessionManager;
+    const memoryMessages = manager.getEntries().filter((entry) => entry.type === "message").length;
+    const nativeFile = adapter.sessionFile() ?? assert.fail("missing native file");
+    const durableMessages = (await readFile(nativeFile, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .slice(1)
+      .map((line) => JSON.parse(line) as { type?: string })
+      .filter((entry) => entry.type === "message").length;
+    assert.ok(memoryMessages > durableMessages, "fixture must reproduce memory/durable divergence");
+    armed = false;
+    await assert.rejects(
+      adapter.input({ requestId: "later", correlationId: "later", kind: "prompt", content: "must reject" }),
+      /native persistence/,
+    );
+    await assert.rejects(adapter.entries({ after: undefined, limit: 100 }), /native persistence/);
+    await assert.rejects(adapter.prepareShutdown({ requestId: "stop", correlationId: "stop" }));
+  } finally {
+    armed = false;
+    SessionManager.prototype._persist = nativePersist;
+    await adapter?.dispose().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -3180,6 +3369,10 @@ test("Pi session prepareShutdown maps shutdown boundary before final export and 
       assert.equal(JSON.stringify(first).includes("sk-ant-api03"), false);
     } finally {
       await adapter.dispose();
+      await assert.rejects(
+        adapter.prepareShutdown({ requestId: "after-dispose", correlationId: "after-dispose" }),
+        /session is closed/,
+      );
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -3616,7 +3809,69 @@ test("Pi session sanitizes credential synchronization failures and bounds creden
     assert.equal(setAborted, true);
     assert.equal(cleanupRemovalCalls, 1);
 
+    let releaseNoncooperativeSet!: () => void;
+    cleanupRemovalCalls = 0;
+    ModelRuntime.prototype.setRuntimeApiKey = async () =>
+      new Promise<void>((resolve) => {
+        releaseNoncooperativeSet = resolve;
+      });
+    const noncooperativeFailure = await createCogsPiSession(
+      withDefaults({
+        cwd: resolve(root, "workspace"),
+        agentDir: resolve(root, "agent"),
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "credential-noncooperative-hang",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: secret,
+        toolPorts: fakePorts([]),
+        abortTimeoutMs: 25,
+      }),
+    ).catch((error: unknown) => error);
+    assert.match(String(noncooperativeFailure), /Pi session cleanup failed/);
+    assert.equal(cleanupRemovalCalls, 0, "remove must not overlap the still-owned set mutation");
+    const startupRetirement = failedCogsPiSessionRetirement(noncooperativeFailure);
+    assert.ok(startupRetirement);
+    let startupRetired = false;
+    void startupRetirement.then(() => {
+      startupRetired = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(startupRetired, false);
+    releaseNoncooperativeSet();
+    await startupRetirement;
+    assert.equal(startupRetired, true);
+
     ModelRuntime.prototype.setRuntimeApiKey = originalSet;
+    let releaseStartupRemoval!: () => void;
+    ModelRuntime.prototype.removeRuntimeApiKey = () =>
+      new Promise<void>((resolve) => {
+        releaseStartupRemoval = resolve;
+      });
+    const removalFailure = await createCogsPiSession(
+      withDefaults({
+        cwd: resolve(root, "workspace"),
+        agentDir: resolve(root, "agent"),
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "credential-removal-startup-failure",
+        model: { provider: "anthropic", id: "synthetic-unknown-model" },
+        apiKey: secret,
+        toolPorts: fakePorts([]),
+        abortTimeoutMs: 25,
+      }),
+    ).catch((error: unknown) => error);
+    assert.match(String(removalFailure), /Pi session cleanup failed/);
+    const removalRetirement = failedCogsPiSessionRetirement(removalFailure);
+    assert.ok(removalRetirement);
+    let removalRetired = false;
+    void removalRetirement.then(() => {
+      removalRetired = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(removalRetired, false);
+    releaseStartupRemoval();
+    await removalRetirement;
+    assert.equal(removalRetired, true);
+
     ModelRuntime.prototype.removeRuntimeApiKey = originalRemove;
     const adapter = await createCogsPiSession(
       withDefaults({
@@ -5092,6 +5347,25 @@ test("Pi owned runtime rollback is exact and final cleanup is same-promise durin
     assert.equal(owned, adapter.disposeOwnedRuntime());
     await normalDispose;
     assert.deepEqual(await owned, { version: "cogs.pi-owned-runtime-cleanup/v1alpha1", cleaned: true });
+    await assert.rejects(adapter.state(), /session is closed/);
+    await assert.rejects(
+      adapter.input({ requestId: "after-dispose", correlationId: "after-dispose", kind: "prompt", content: "no" }),
+      /session is closed/,
+    );
+    await assert.rejects(adapter.entries({ after: undefined, limit: 10 }), /session is closed/);
+    await assert.rejects(adapter.frontier?.() ?? Promise.reject(new Error("missing frontier")), /session is closed/);
+    await assert.rejects(
+      adapter.projectedEntry?.({ after: undefined }) ?? Promise.reject(new Error("missing projected entry")),
+      /session is closed/,
+    );
+    await assert.rejects(
+      adapter.createExport({ requestId: "after-dispose", correlationId: "after-dispose" }),
+      /session is closed/,
+    );
+    await assert.rejects(
+      adapter.prepareShutdown({ requestId: "after-dispose", correlationId: "after-dispose" }),
+      /session is closed/,
+    );
     await assertGone(resolve(concurrentRoot, "agent"));
     await assertGone(resolve(concurrentRoot, "sessions"));
   } finally {

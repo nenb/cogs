@@ -147,7 +147,7 @@ Envoy can allow/block or TCP-proxy these, but cannot inject HTTP credentials int
 - **Excluded Envoy UID bypass:** if workload can run as Envoy’s excluded UID, it can bypass interception.
 - **Privileged workload:** `NET_ADMIN`, `CAP_SETUID`, root, hostNetwork, or privileged pods can bypass policy.
 - **Envoy admin/SDS exposure:** workload must not reach admin or secret-discovery endpoints.
-- **Long-lived connections:** revocation may not affect already-established HTTP/2, gRPC, or WebSocket streams unless connections are drained.
+- **Long-lived connections:** bounded polling only detects a persistent distinguishable OpenBao generation change; it does not revoke an issuer credential or retire already-established HTTP/2, gRPC, or WebSocket streams. Admission denial and independently proved connection/process retirement are separate facts.
 - **SDS/control-plane outage:** Envoy may continue using last-known secrets until reconnect; alert on stale streams.
 
 ## Security Controls
@@ -158,8 +158,9 @@ Envoy can allow/block or TCP-proxy these, but cannot inject HTTP credentials int
 - Cover IPv4 and IPv6; block UDP/443 unless supported.
 - Deny by default; route only registry-declared hosts.
 - Validate SNI, Host, and `:authority` consistency.
-- Overwrite or strip any workload-supplied auth headers.
-- Fail closed when a secret is absent/revoked.
+- Overwrite or strip any workload-supplied auth headers; remove the injected header name on responses, while explicitly treating other-header/body reflection or upstream storage as outside response-DLP guarantees.
+- Match only the validated raw origin-form target with bounded exact/prefix/segment-glob logic; never execute configured route text as a JavaScript regular expression or decode/normalize away ambiguity.
+- Fail closed when a secret is absent/revoked or when strict `M0 → D(version=N) → M1` provenance differs.
 - Keep Envoy admin/SDS endpoints inaccessible to workload.
 - Use short-lived credentials where possible.
 - Drain/reset upstream connections on revocation.
@@ -197,7 +198,7 @@ Proposed changes to fold into this document. These arise from reviewing the v0.2
 - **State the guarantee narrowly, up front.** The protection is "the workload cannot read the credential *value*." It does **not** prevent the agent from misusing the credential (confused deputy) or exfiltrating data the API returns. Reject any framing (as in v0.2) that markets egress allow-listing as a general security boundary.
 - **Reject "all tools are identical in shape."** A uniform YAML declaration is fine; implementation cost differs sharply by auth class. Keep the tiered taxonomy in Recommended MVP as the authoritative model. Call out explicitly that SigV4/HMAC signing and OAuth2 client-credentials are *not* header injection.
 - **Correct the "one SDS stream / native OpenBao SDS" claim.** OpenBao does not natively speak Envoy xDS/SDS. A bridge is required (vault-agent + file SDS, or a small xDS control plane e.g. go-control-plane). There are two SDS sources: credentials (via the bridge) and TLS certs (via k8s SDS / cert-manager). Say so.
-- **Correct "revocation is instant."** True for *new* requests. Established HTTP/2, gRPC, SSE, and WebSocket streams stay authenticated until drained. Revocation must reset upstream connections, not just gate new ones. (Already noted in Common Failure cases; promote it so it isn't oversold elsewhere.)
+- **Correct "revocation is instant."** It is not instant. Under the declared non-repetition/consistent-read assumptions, a persistent distinguishable generation change is detected within `P + 2R + J`; new admission closes at detection. Established streams remain until independently bounded and proved drain/retirement. Deletion does not revoke at the credential issuer or undo disclosure/side effects.
 
 ### Substrate hardening (egress capture)
 
@@ -216,7 +217,7 @@ Proposed changes to fold into this document. These arise from reviewing the v0.2
 
 ### Routing / egress policy
 
-- **Do not route or bind credentials on the client-supplied Host header alone.** The Host header is workload-controlled. Route on validated **SNI**, enforce `SNI == Host == :authority` consistency, and have Envoy dial the *resolved registered hostname*, never the captured original-destination IP. Otherwise an agent can decouple an injected credential from its intended upstream.
+- **Do not route or bind credentials on the client-supplied Host header alone.** The Host header is workload-controlled. Route on validated **SNI**, enforce `SNI == Host == :authority` consistency, and have Envoy dial the *resolved registered hostname*, never the captured original-destination IP. Match the original raw path/query under the closed grammar without percent decoding, Unicode normalization, slash merging, or dot removal. Otherwise an agent can decouple an injected credential from its intended upstream.
 - **Control tunnels/upgrades.** HTTP `CONNECT`, WebSocket upgrades, and DNS-over-HTTPS to an allowed resolver defeat the egress allow-list. Reject or explicitly control these.
 - **Wildcard egress is pod-wide.** Keep the existing note; grant `*` only to a named browser tool and document the pod-level implication.
 

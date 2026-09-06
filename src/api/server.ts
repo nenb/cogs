@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import { performance } from "node:perf_hooks";
 import { URL } from "node:url";
 import type { LaunchLifecycle } from "../launch/lifecycle.ts";
 
@@ -43,6 +44,14 @@ export interface HistoryPort {
   readonly entries: (input: { after: string | undefined; limit: number; signal?: AbortSignal }) => Promise<{
     entries: readonly JsonValue[];
     nextAfter?: string;
+  }>;
+  readonly frontier?: (input?: { signal?: AbortSignal }) => Promise<{
+    entries: number;
+    lastEntryId: string | null;
+  }>;
+  readonly projectedEntry?: (input: { after: string | undefined; signal?: AbortSignal }) => Promise<{
+    entryId: string;
+    bytes: Buffer;
   }>;
 }
 
@@ -116,6 +125,15 @@ type DuplicateEntry = {
   lastUsed: number;
 };
 type Client = { readonly response: ServerResponse; readonly close: () => void };
+type FragmentCursorState = Readonly<{
+  v: 1;
+  purpose: "fragment" | "tail";
+  session: string;
+  epoch: string;
+  tail: string | null;
+  after: string | null;
+  offset: number;
+}>;
 
 const forbiddenResponse = Object.freeze({ version: "cogs.error/v1alpha1", error: "forbidden" });
 const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
@@ -135,11 +153,15 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   const duplicates: DuplicateEntry[] = [];
   const replay: { seq: number; serialized: string }[] = [];
   const clients = new Set<Client>();
+  const activeRoutes = new Set<Promise<void>>();
+  const activePortWork = new Set<Promise<unknown>>();
   let sequence = 0;
   let inputQueue: Promise<void> = Promise.resolve();
   let abortPromise: Promise<{ aborted: boolean; runState: RunState }> | undefined;
   let shutdownPromise: Promise<void> | undefined;
+  let shutdownAccepted = false;
   let closePromise: Promise<void> | undefined;
+  let actualClosePromise: Promise<void> | undefined;
   let listenPromise: Promise<{ port: number }> | undefined;
   let listenEventPromise: Promise<void> | undefined;
   let closeServerPromise: Promise<void> | undefined;
@@ -150,19 +172,24 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let duplicateClock = 0;
   const tokenDigest = digest(options.bearerToken);
   const cursorSecret = createHmac("sha256", options.bearerToken).update(`cursor:${options.sessionId}`).digest();
+  const fragmentEpoch = randomUUID();
 
   const sockets = new Set<Socket>();
   const server = createServer((request, response) => {
-    void route(request, response).catch(() => {
-      safeWriteJson(
-        response,
-        500,
-        { version: "cogs.error/v1alpha1", error: "internal" },
-        maxResponseBytes,
-        "internal",
-        true,
-      );
-    });
+    let work!: Promise<void>;
+    work = route(request, response)
+      .catch(() => {
+        safeWriteJson(
+          response,
+          500,
+          { version: "cogs.error/v1alpha1", error: "internal" },
+          maxResponseBytes,
+          "internal",
+          true,
+        );
+      })
+      .finally(() => activeRoutes.delete(work));
+    activeRoutes.add(work);
   });
   server.on("connection", (socket) => {
     sockets.add(socket);
@@ -237,6 +264,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         return method(request, response, url, maxResponseBytes, "GET", ["after", "limit"], false, async () =>
           handleEntries(url, response, correlationId),
         );
+      case "/v1/entry-fragments":
+        return method(request, response, url, maxResponseBytes, "GET", ["cursor"], false, async () =>
+          handleEntryFragments(url, response, correlationId),
+        );
       case "/v1/events":
         return method(request, response, url, maxResponseBytes, "GET", ["after"], false, () =>
           handleEvents(url, request, response),
@@ -274,7 +305,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   async function callPort<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     requireReady();
     try {
-      return await withPortTimeout(operation, portTimeoutMs);
+      return await withPortTimeout((signal) => trackPortWork(operation(signal)), portTimeoutMs);
     } catch (error) {
       if (error instanceof HttpError && error.code === "port_timeout") poisonFromPortTimeout();
       throw error;
@@ -284,11 +315,17 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   async function callPortAdmission<T>(operation: () => Promise<T>): Promise<T> {
     requireReady();
     try {
-      return await withAdmissionTimeout(operation, portTimeoutMs);
+      return await withAdmissionTimeout(() => trackPortWork(operation()), portTimeoutMs);
     } catch (error) {
       if (error instanceof HttpError && error.code === "port_timeout") poisonFromPortTimeout();
       throw error;
     }
+  }
+
+  function trackPortWork<T>(actual: Promise<T>): Promise<T> {
+    activePortWork.add(actual);
+    void actual.finally(() => activePortWork.delete(actual)).catch(() => undefined);
+    return actual;
   }
 
   async function handleInput(request: IncomingMessage, response: ServerResponse, correlationId: string): Promise<void> {
@@ -421,8 +458,30 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const body = await readJson(request, maxRequestBytes, requestTimeoutMs);
     if (!plainObject(body)) throw new HttpError(400, "malformed_json");
     assertNoUnknown(body, []);
-    shutdownPromise ??= options.lifecycle.requestShutdown("api-shutdown");
-    await shutdownPromise;
+    const trigger = () => {
+      response.removeListener("finish", trigger);
+      response.removeListener("close", trigger);
+      if (shutdownPromise !== undefined) return;
+      try {
+        shutdownPromise = options.lifecycle.requestShutdown("api-shutdown");
+      } catch (error) {
+        shutdownPromise = Promise.reject(error);
+      }
+      shutdownPromise.catch(() => {
+        poisoned = true;
+      });
+    };
+    if (!shutdownAccepted) {
+      shutdownAccepted = true;
+      // Seal all further admission before acknowledging the request. Start the
+      // owner after response handoff; API close must not destroy its own 202.
+      poisoned = true;
+      response.once("finish", trigger);
+      response.once("close", trigger);
+      setImmediate(trigger);
+    }
+    // 202 acknowledges the accepted shutdown request only. It is not a cleanup
+    // or retirement receipt and is not cancelled by client disconnect.
     return safeWriteJson(
       response,
       202,
@@ -440,15 +499,167 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "bad_limit");
     const after = decodeCursor(url.searchParams.get("after"));
     const page = validateEntriesPage(await callPort((signal) => options.history.entries({ after, limit, signal })));
-    const body = {
-      version: "cogs.entries/v1alpha1",
-      entries: page.entries,
-      next: page.nextAfter === undefined ? undefined : encodeCursor(page.nextAfter),
-    };
-    // v1 contains whole entries only. Never advance over omitted content.
+    const entries = [...page.entries];
+    let nextAfter = page.nextAfter;
+    let body = entriesBody(entries, nextAfter);
+    // v1 contains whole entries only. Reduce only the entry count and continue
+    // after the last entry actually returned; never clip or skip content.
+    while (entries.length > 1 && Buffer.byteLength(JSON.stringify(body)) > maxResponseBytes) {
+      entries.pop();
+      nextAfter = historyEntryId(entries.at(-1));
+      body = entriesBody(entries, nextAfter);
+    }
     if (Buffer.byteLength(JSON.stringify(body)) > maxResponseBytes)
       throw new HttpError(413, "history_entry_requires_fragments");
     return safeWriteJson(response, 200, body, maxResponseBytes, correlationId);
+  }
+
+  function entriesBody(entries: readonly JsonValue[], nextAfter: string | undefined) {
+    return {
+      version: "cogs.entries/v1alpha1",
+      entries,
+      next: nextAfter === undefined ? undefined : encodeCursor(nextAfter),
+    };
+  }
+
+  async function handleEntryFragments(url: URL, response: ServerResponse, correlationId: string): Promise<void> {
+    requireReady();
+    if (maxResponseBytes < 8192) throw new HttpError(503, "history_fragment_budget_unavailable");
+    const frontier = options.history.frontier;
+    const projectedEntry = options.history.projectedEntry;
+    if (frontier === undefined || projectedEntry === undefined)
+      throw new HttpError(503, "history_fragments_unavailable");
+    const rawCursor = url.searchParams.get("cursor");
+    if (rawCursor === null) {
+      const pin = validateHistoryFrontier(await callPort((signal) => frontier.call(options.history, { signal })));
+      if (pin.entries === 0) {
+        const tail = encodeFragmentCursor({
+          v: 1,
+          purpose: "tail",
+          session: options.sessionId,
+          epoch: fragmentEpoch,
+          tail: null,
+          after: null,
+          offset: 0,
+        });
+        return safeWriteJson(
+          response,
+          200,
+          fragmentEnvelope([], true, undefined, tail),
+          maxResponseBytes,
+          correlationId,
+        );
+      }
+      if (pin.lastEntryId === null) throw new HttpError(503, "history_unavailable");
+      const next = encodeFragmentCursor({
+        v: 1,
+        purpose: "fragment",
+        session: options.sessionId,
+        epoch: fragmentEpoch,
+        tail: pin.lastEntryId,
+        after: null,
+        offset: 0,
+      });
+      return safeWriteJson(response, 200, fragmentEnvelope([], false, next), maxResponseBytes, correlationId);
+    }
+
+    const cursor = decodeFragmentCursor(rawCursor);
+    if (cursor.purpose === "tail")
+      return safeWriteJson(
+        response,
+        200,
+        fragmentEnvelope([], true, undefined, rawCursor),
+        maxResponseBytes,
+        correlationId,
+      );
+    if (cursor.tail === null || cursor.after === cursor.tail) throw new HttpError(409, "history_cursor_stale");
+    const projected = validateProjectedEntry(
+      await callPort((signal) => projectedEntry.call(options.history, { after: cursor.after ?? undefined, signal })),
+    );
+    if (cursor.offset < 0 || cursor.offset >= projected.bytes.length) throw new HttpError(409, "history_cursor_stale");
+    const remaining = projected.bytes.length - cursor.offset;
+    const candidate = chooseFragment(cursor, projected, remaining);
+    return safeWriteJson(response, 200, candidate, maxResponseBytes, correlationId);
+  }
+
+  function chooseFragment(
+    cursor: FragmentCursorState,
+    projected: { entryId: string; bytes: Buffer },
+    remaining: number,
+  ): JsonValue {
+    const maximum = Math.min(49_152, remaining);
+    if (maximum === remaining) {
+      const final = fragmentCandidate(cursor, projected, maximum, true);
+      if (Buffer.byteLength(JSON.stringify(final)) <= maxResponseBytes) return final;
+    }
+    let low = 1;
+    let high = Math.min(maximum, remaining - 1);
+    let selected: JsonValue | undefined;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = fragmentCandidate(cursor, projected, middle, false);
+      if (Buffer.byteLength(JSON.stringify(candidate)) <= maxResponseBytes) {
+        selected = candidate;
+        low = middle + 1;
+      } else high = middle - 1;
+    }
+    if (selected === undefined) throw new HttpError(503, "history_fragment_budget_unavailable");
+    return selected;
+  }
+
+  function fragmentCandidate(
+    cursor: FragmentCursorState,
+    projected: { entryId: string; bytes: Buffer },
+    length: number,
+    final: boolean,
+  ): JsonValue {
+    const offset = cursor.offset;
+    const snapshotFinal = final && projected.entryId === cursor.tail;
+    const continuation = snapshotFinal
+      ? {
+          tail: encodeFragmentCursor({
+            ...cursor,
+            purpose: "tail",
+            after: projected.entryId,
+            offset: 0,
+          }),
+        }
+      : {
+          next: encodeFragmentCursor(
+            final ? { ...cursor, after: projected.entryId, offset: 0 } : { ...cursor, offset: offset + length },
+          ),
+        };
+    return fragmentEnvelope(
+      [
+        {
+          entryId: projected.entryId,
+          offset,
+          totalBytes: projected.bytes.length,
+          encoding: "base64",
+          data: projected.bytes.subarray(offset, offset + length).toString("base64"),
+          final,
+        },
+      ],
+      snapshotFinal,
+      continuation.next,
+      continuation.tail,
+    );
+  }
+
+  function fragmentEnvelope(
+    fragments: readonly JsonValue[],
+    snapshotFinal: boolean,
+    next?: string,
+    tail?: string,
+  ): JsonValue {
+    return {
+      version: "cogs.entry-fragments/v1",
+      projection: "cogs.permitted-json/v1",
+      fragments,
+      snapshotFinal,
+      ...(next === undefined ? {} : { next }),
+      ...(tail === undefined ? {} : { tail }),
+    };
   }
 
   function handleEvents(url: URL, request: IncomingMessage, response: ServerResponse): void {
@@ -491,6 +702,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   function enqueueInput<T>(operation: () => Promise<T>): Promise<T> {
+    const deadlineAt = performance.now() + requestTimeoutMs;
     let started = false;
     let cancelled = false;
     let timeout: NodeJS.Timeout | undefined;
@@ -507,13 +719,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     };
     const run = inputQueue.then(
       async () => {
-        if (cancelled) return undefined as T;
+        if (cancelled || performance.now() >= deadlineAt) throw new HttpError(429, "input_queue_timeout");
         started = true;
         clear();
         return operation();
       },
       async () => {
-        if (cancelled) return undefined as T;
+        if (cancelled || performance.now() >= deadlineAt) throw new HttpError(429, "input_queue_timeout");
         started = true;
         clear();
         return operation();
@@ -584,6 +796,52 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
+  function encodeFragmentCursor(state: FragmentCursorState): string {
+    const payload = Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
+    const signature = createHmac("sha256", cursorSecret).update(`fragment:${payload}`).digest("base64url");
+    return `${payload}.${signature}`;
+  }
+
+  function decodeFragmentCursor(value: string): FragmentCursorState {
+    try {
+      if (value.length < 3 || value.length > 2048) throw new Error("bad fragment cursor");
+      const [payload, signature, extra] = value.split(".");
+      if (payload === undefined || signature === undefined || extra !== undefined)
+        throw new Error("bad fragment cursor");
+      const encoded = Buffer.from(payload, "base64url");
+      if (encoded.toString("base64url") !== payload) throw new Error("bad fragment cursor");
+      const expected = createHmac("sha256", cursorSecret).update(`fragment:${payload}`).digest("base64url");
+      if (!safeEqual(signature, expected)) throw new Error("bad fragment cursor");
+      const decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(encoded)) as unknown;
+      if (!plainObject(decoded)) throw new Error("bad fragment cursor");
+      assertNoUnknown(decoded, ["v", "purpose", "session", "epoch", "tail", "after", "offset"]);
+      if (
+        decoded.v !== 1 ||
+        (decoded.purpose !== "fragment" && decoded.purpose !== "tail") ||
+        decoded.session !== options.sessionId ||
+        (decoded.tail !== null && (typeof decoded.tail !== "string" || !opaqueId(decoded.tail))) ||
+        (decoded.after !== null && (typeof decoded.after !== "string" || !opaqueId(decoded.after))) ||
+        !Number.isSafeInteger(decoded.offset) ||
+        (decoded.offset as number) < 0 ||
+        (decoded.purpose === "tail" && (decoded.offset !== 0 || decoded.after !== decoded.tail))
+      )
+        throw new Error("bad fragment cursor");
+      if (decoded.epoch !== fragmentEpoch) throw new HttpError(409, "history_cursor_stale");
+      return Object.freeze({
+        v: 1,
+        purpose: decoded.purpose,
+        session: decoded.session,
+        epoch: decoded.epoch,
+        tail: decoded.tail,
+        after: decoded.after,
+        offset: decoded.offset as number,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(400, "bad_cursor");
+    }
+  }
+
   return Object.freeze({
     listen: (port = 0, host = "127.0.0.1", rawOptions?: ApiListenOptions) => {
       let cooperative: CooperativeOptions;
@@ -607,7 +865,16 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       } catch (error) {
         return Promise.reject(error);
       }
-      closePromise ??= closeOnce(cooperative);
+      if (closePromise !== undefined) return closePromise;
+      let resolveObserved!: () => void;
+      let rejectObserved!: (error: Error) => void;
+      closePromise = new Promise<void>((resolve, reject) => {
+        resolveObserved = resolve;
+        rejectObserved = reject;
+      });
+      actualClosePromise = closeOnce(cooperative);
+      void actualClosePromise.catch(() => undefined);
+      observeApiClose(actualClosePromise, cooperative).then(resolveObserved, rejectObserved);
       return closePromise;
     },
     publish,
@@ -700,6 +967,30 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     });
   }
 
+  function observeApiClose(actual: Promise<void>, cooperative: CooperativeOptions): Promise<void> {
+    const deadlineAt = cooperative.deadlineAt ?? Date.now() + portTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        cooperative.signal?.removeEventListener("abort", abort);
+        error === undefined ? resolve() : reject(error);
+      };
+      const abort = () => finish(new Error("api server close uncertain"));
+      actual.then(
+        () => finish(Date.now() < deadlineAt ? undefined : new Error("api server close uncertain")),
+        () => finish(new Error("api server close uncertain")),
+      );
+      cooperative.signal?.addEventListener("abort", abort, { once: true });
+      const remaining = deadlineAt - Date.now();
+      if (cooperative.signal?.aborted || remaining <= 0) abort();
+      else timer = setTimeout(abort, remaining);
+    });
+  }
+
   async function closeOnce(cooperative: CooperativeOptions): Promise<void> {
     closed = true;
     const cleanupAbort = watchAbort(cooperative, destroyOwnedConnections);
@@ -737,6 +1028,9 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     destroyOwnedConnections();
     if (server.listening) throw new Error("api server close uncertain");
+    await Promise.allSettled([...activeRoutes]);
+    await Promise.allSettled([...activePortWork]);
+    if (activeRoutes.size > 0 || activePortWork.size > 0) throw new Error("api server close uncertain");
     bindState = bindState === "listening" || bindState === "binding" ? "closed" : bindState;
   }
 
@@ -1061,6 +1355,45 @@ function validateEntriesPage(value: unknown): { entries: readonly JsonValue[]; n
   return { entries };
 }
 
+function validateHistoryFrontier(value: unknown): { entries: number; lastEntryId: string | null } {
+  if (!strictPlainObject(value) || Object.keys(value).some((key) => key !== "entries" && key !== "lastEntryId"))
+    throw new HttpError(500, "malformed_port_result");
+  const entries = requiredDataProperty(value, "entries");
+  const lastEntryId = requiredDataProperty(value, "lastEntryId");
+  if (
+    !Number.isSafeInteger(entries) ||
+    (entries as number) < 0 ||
+    (entries as number) > 100_000 ||
+    (lastEntryId !== null && (typeof lastEntryId !== "string" || !opaqueId(lastEntryId))) ||
+    ((entries as number) === 0) !== (lastEntryId === null)
+  )
+    throw new HttpError(500, "malformed_port_result");
+  return { entries: entries as number, lastEntryId: lastEntryId as string | null };
+}
+
+function validateProjectedEntry(value: unknown): { entryId: string; bytes: Buffer } {
+  if (!strictPlainObject(value) || Object.keys(value).some((key) => key !== "entryId" && key !== "bytes"))
+    throw new HttpError(500, "malformed_port_result");
+  const entryId = requiredDataProperty(value, "entryId");
+  const bytes = requiredDataProperty(value, "bytes");
+  if (
+    typeof entryId !== "string" ||
+    !opaqueId(entryId) ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < 1 ||
+    bytes.length > 64 * 1024 * 1024
+  )
+    throw new HttpError(500, "malformed_port_result");
+  return { entryId, bytes: Buffer.from(bytes) };
+}
+
+function historyEntryId(value: JsonValue | undefined): string {
+  if (!strictPlainObject(value)) throw new HttpError(500, "malformed_port_result");
+  const id = requiredDataProperty(value, "id");
+  if (typeof id !== "string" || !opaqueId(id)) throw new HttpError(500, "malformed_port_result");
+  return id;
+}
+
 function writeJson(
   response: ServerResponse,
   status: number,
@@ -1294,15 +1627,28 @@ function duplicateHeader(request: IncomingMessage, name: string): boolean {
 
 async function withPortTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
+  const deadlineAt = performance.now() + timeoutMs;
   let timeout: NodeJS.Timeout | undefined;
+  const expired = () => {
+    controller.abort();
+    return new HttpError(504, "port_timeout");
+  };
   try {
+    const actual = operation(controller.signal);
+    const observed = actual.then(
+      (value) => {
+        if (performance.now() >= deadlineAt) throw expired();
+        return value;
+      },
+      (error) => {
+        if (performance.now() >= deadlineAt) throw expired();
+        throw error;
+      },
+    );
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        reject(new HttpError(504, "port_timeout"));
-      }, timeoutMs);
+      timeout = setTimeout(() => reject(expired()), timeoutMs);
     });
-    return await Promise.race([operation(controller.signal), timeoutPromise]);
+    return await Promise.race([observed, timeoutPromise]);
   } finally {
     controller.abort();
     if (timeout !== undefined) clearTimeout(timeout);
@@ -1310,14 +1656,25 @@ async function withPortTimeout<T>(operation: (signal: AbortSignal) => Promise<T>
 }
 
 async function withAdmissionTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+  const deadlineAt = performance.now() + timeoutMs;
   let timeout: NodeJS.Timeout | undefined;
+  const expired = () => new HttpError(504, "port_timeout");
   try {
+    const actual = operation();
+    const observed = actual.then(
+      (value) => {
+        if (performance.now() >= deadlineAt) throw expired();
+        return value;
+      },
+      (error) => {
+        if (performance.now() >= deadlineAt) throw expired();
+        throw error;
+      },
+    );
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        reject(new HttpError(504, "port_timeout"));
-      }, timeoutMs);
+      timeout = setTimeout(() => reject(expired()), timeoutMs);
     });
-    return await Promise.race([operation(), timeoutPromise]);
+    return await Promise.race([observed, timeoutPromise]);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
