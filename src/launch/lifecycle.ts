@@ -7,6 +7,7 @@ import {
   telemetryDuration,
   telemetryStart,
 } from "../telemetry/instrumentation.ts";
+import { type CloseContext, type CloseWork, closeClock, closeContext, observeClose } from "./close.ts";
 import type { LaunchConfig } from "./config.ts";
 import { deepFreeze, validateLaunchConfig } from "./config.ts";
 
@@ -36,7 +37,9 @@ export interface SignalSource {
 export interface LaunchDependency {
   readonly name: LaunchDependencyName;
   readonly start: (signal: AbortSignal) => Promise<void>;
-  readonly shutdown: (signal: AbortSignal) => Promise<void>;
+  readonly shutdown: (signal: AbortSignal, context?: CloseContext) => Promise<void>;
+  /** Safe initiation only; dependent release must await this owner's actual users. */
+  readonly beginClose?: (context: CloseContext) => CloseWork;
   readonly ready?: () => boolean;
 }
 
@@ -63,6 +66,8 @@ export interface LaunchLifecycleOptions {
   readonly onEvent?: (event: LifecycleEvent) => void;
   readonly onRecycleNotice?: (notice: RecycleNotice) => void;
   readonly telemetry?: CogsTelemetry;
+  /** Composite owner replaces dependency destruction; must not call requestShutdown recursively. */
+  readonly shutdownOwner?: (context: CloseContext) => CloseWork;
 }
 
 export class LaunchLifecycleError extends Error {
@@ -76,7 +81,7 @@ export class LaunchLifecycleError extends Error {
 }
 
 const systemScheduler: Scheduler = {
-  now: Date.now,
+  now: closeClock.now,
   setTimer: (milliseconds, callback) => {
     const timeout = setTimeout(callback, milliseconds);
     timeout.unref();
@@ -104,6 +109,9 @@ export class LaunchLifecycle {
   #readyConfig: LaunchConfig | undefined;
   #startPromise: Promise<void> | undefined;
   #shutdownPromise: Promise<void> | undefined;
+  #closeWork: CloseWork | undefined;
+  readonly #startWork = new Map<LaunchDependencyName, Promise<void>>();
+  readonly #shutdownOwner: ((context: CloseContext) => CloseWork) | undefined;
   #recyclePending = false;
   #recycleNoticeSent = false;
   #recycleTimer: TimerHandle | undefined;
@@ -122,6 +130,7 @@ export class LaunchLifecycle {
     this.#onEvent = options.onEvent;
     this.#onRecycleNotice = options.onRecycleNotice;
     this.#telemetry = captureTelemetry(options.telemetry);
+    this.#shutdownOwner = options.shutdownOwner;
     if (this.#shutdownTimeoutMs < 1) {
       throw new LaunchLifecycleError("COGS_LAUNCH_INVALID_TIMEOUT", "shutdown timeout must be positive");
     }
@@ -132,7 +141,7 @@ export class LaunchLifecycle {
       throw new LaunchLifecycleError("COGS_LAUNCH_INVALID_DEADLINE", "emergency hard deadline must be positive");
     }
     this.#signalSubscription = options.signals?.onSignal((signal) => {
-      void this.requestShutdown(`signal:${signal}`);
+      void this.requestShutdown(`signal:${signal}`).catch(() => undefined);
     });
   }
 
@@ -201,14 +210,29 @@ export class LaunchLifecycle {
     return this.requestShutdown("recycle-turn-settled");
   }
 
-  public requestShutdown(reason = "requested"): Promise<void> {
+  public requestShutdown(reason = "requested", context?: CloseContext): Promise<void> {
     if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    this.#shutdownPromise = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    // Cache before abort/event callbacks can reenter; seal admission on this stack.
+    this.#readyConfig = undefined;
     this.#lifecycleAbort.abort();
     this.#clearRecycleTimers();
     this.#clearHealthTimer();
-    this.#readyConfig = undefined;
-    this.#shutdownPromise = this.#shutdown(reason);
+    void this.#shutdown(reason, context ?? closeContext(this.#shutdownTimeoutMs, this.#scheduler)).then(
+      resolve,
+      reject,
+    );
     return this.#shutdownPromise;
+  }
+
+  /** Actual work is retained after an observation deadline. No replacement permission is implied. */
+  public get closeWork(): CloseWork | undefined {
+    return this.#closeWork;
   }
 
   public dispose(): Promise<void> {
@@ -226,7 +250,9 @@ export class LaunchLifecycle {
         this.#attemptedDependencies.push(dependency.name);
         const dependencyStart = telemetryStart(this.#scheduler);
         this.#dependencyStartedAt.set(dependency.name, dependencyStart);
-        await this.#withAbort(dependency.start(this.#lifecycleAbort.signal), this.#lifecycleAbort.signal);
+        const work = Promise.resolve().then(() => dependency.start(this.#lifecycleAbort.signal));
+        this.#startWork.set(dependency.name, work);
+        await this.#withAbort(work, this.#lifecycleAbort.signal);
         emitSpan(this.#telemetry, "dependency.start", {
           dependency: telemetryDependency(dependency.name),
           outcome: "ok",
@@ -266,7 +292,7 @@ export class LaunchLifecycle {
         this.#recycleNoticeSent = true;
         const deadlineMs = this.#scheduler.now() + this.#emergencyHardDeadlineMs;
         this.#emergencyTimer = this.#scheduler.setTimer(this.#emergencyHardDeadlineMs, () => {
-          void this.requestShutdown("recycle-emergency-deadline");
+          void this.requestShutdown("recycle-emergency-deadline").catch(() => undefined);
         });
         this.#emitRecycleNotice({ reason: "normal-recycle-deadline", deadlineMs });
       }
@@ -368,45 +394,58 @@ export class LaunchLifecycle {
   #failClosed(reason: string): void {
     this.#readyConfig = undefined;
     this.#transition("failed", reason);
-    void this.requestShutdown(reason);
+    void this.requestShutdown(reason).catch(() => undefined);
   }
 
-  async #shutdown(reason: string): Promise<void> {
+  async #shutdown(reason: string, context: CloseContext): Promise<void> {
     const start = telemetryStart(this.#scheduler);
     emitSpan(this.#telemetry, "shutdown.prepare", { operation: "prepare", state: "shutdown" });
     if (this.#state !== "failed" && this.#state !== "stopped") this.#transition("draining", reason);
-    const shutdownAbort = new AbortController();
-    const timeout = this.#scheduler.setTimer(this.#shutdownTimeoutMs, () => {
-      shutdownAbort.abort();
-    });
     try {
-      await this.#shutdownDependencies(shutdownAbort.signal);
+      this.#closeWork = this.#shutdownOwner?.(context) ?? this.closeDependencies(context);
+      await observeClose(this.#closeWork, context, this.#scheduler);
+      if (this.#state !== "failed") {
+        emitSpan(this.#telemetry, "shutdown.ready", {
+          operation: "close",
+          outcome: "ok",
+          duration_ms: telemetryDuration(this.#scheduler, start),
+        });
+        this.#transition("stopped", reason);
+      }
+    } catch {
+      this.#transition("failed", "cleanup-uncertain");
+      throw new LaunchLifecycleError("COGS_LAUNCH_CLEANUP_FAILED", "cleanup uncertain");
     } finally {
-      timeout.cancel();
-      shutdownAbort.abort();
-      this.#readyConfig = undefined;
-      emitSpan(this.#telemetry, "shutdown.ready", {
-        operation: "close",
-        outcome: "ok",
-        duration_ms: telemetryDuration(this.#scheduler, start),
-      });
-      this.#transition("stopped", reason);
       this.#disposeResources();
     }
   }
 
-  async #shutdownDependencies(signal: AbortSignal): Promise<void> {
-    const attempted = [...this.#attemptedDependencies].reverse();
-    for (const name of attempted) {
-      if (signal.aborted) break;
+  /** Initiate independent migrated owners immediately. Legacy destructors retain reverse-order
+   * barriers: a failed/hung callback cannot authorize dependent resource release. */
+  public closeDependencies(context: CloseContext): CloseWork {
+    const independent: CloseWork[] = [];
+    const legacy: LaunchDependency[] = [];
+    for (const name of [...this.#attemptedDependencies].reverse()) {
       const dependency = this.#dependencies.get(name);
-      if (dependency === undefined) continue;
-      try {
-        await this.#withAbort(dependency.shutdown(signal), signal);
-      } catch {
-        // Shutdown is best-effort after fail-closed readiness has been revoked; no fallback is attempted.
-      }
+      if (!dependency) continue;
+      if (dependency.beginClose) {
+        const acquired = this.#startWork.get(name)?.catch(() => undefined) ?? Promise.resolve();
+        const work = acquired.then(() => dependency.beginClose?.(context) as CloseWork);
+        independent.push({ done: work.then((value) => value.done), retired: work.then((value) => value.retired) });
+      } else legacy.push(dependency);
     }
+    const serial = (async () => {
+      for (const dependency of legacy) {
+        await this.#startWork.get(dependency.name)?.catch(() => undefined);
+        await dependency.shutdown(context.signal, context);
+      }
+    })();
+    const done = Promise.all([serial, ...independent.map((work) => work.done)]).then(() => undefined);
+    const retired = Promise.all([serial, ...independent.map((work) => work.retired)]).then(() => undefined);
+    // Retain both even when one rejection makes the observation terminate early.
+    void done.catch(() => undefined);
+    void retired.catch(() => undefined);
+    return Object.freeze({ done, retired });
   }
 
   #disposeResources(): void {

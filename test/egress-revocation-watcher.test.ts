@@ -264,6 +264,7 @@ test("alternating valid-to-NaN clock and timer set failure trigger source_unavai
     );
     item.timers.tick(50);
     await flush();
+    await flush();
     assert.equal(watcher.ready, false);
     assert.deepEqual(actions.calls, [
       "denyNew:source_unavailable",

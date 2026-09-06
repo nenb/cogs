@@ -79,7 +79,7 @@ test("revocation performs deny authz, process drain final completion, replacemen
   assert.deepEqual(manager.drainCompletions(4), []);
 });
 
-test("replacement callback failure still releases scope and cleanup attempts all stages", async () => {
+test("replacement callback failure retains scope until explicit close proves retirement", async () => {
   const fixture = fixtureRuntime({ replacementRejects: true });
   const manager = await startCogsEgressRuntimeManager(fixture.options());
   fixture.revocation = snap({ revoked: true });
@@ -88,9 +88,11 @@ test("replacement callback failure still releases scope and cleanup attempts all
   assert.equal(manager.ready, false);
   await flush();
   await flush();
-  assert.equal(fixture.scopeReleased, true);
+  assert.equal(fixture.scopeReleased, false);
   assert.ok(fixture.events.includes("authz.close"));
   assert.ok(fixture.events.includes("process.close"));
+  await assert.rejects(manager.close(), generic);
+  assert.equal(fixture.scopeReleased, true);
   assert.ok(fixture.events.includes("wal.close"));
 });
 
@@ -104,11 +106,8 @@ test("scope rejection and unexpected normal completion after publication fail cl
   assert.ok(rejecting.events.includes("wal.close"));
 
   const completing = fixtureRuntime({ scopeCompletes: true });
-  const second = await startCogsEgressRuntimeManager(completing.options());
-  completing.releaseScope?.();
+  await assert.rejects(startCogsEgressRuntimeManager(completing.options()), generic);
   await flush();
-  await flush();
-  assert.equal(second.ready, false);
   assert.ok(completing.events.includes("wal.close"));
 });
 
@@ -331,9 +330,11 @@ test("close timeout aborts work but waits for settlement before rejecting and re
   assert.equal(manager.close(), closed);
   fixture.timers.tick(50);
   await flush();
+  await assert.rejects(closed, generic);
   assert.equal(fixture.events.includes("wal.close"), false);
   settleProcess();
-  await assert.rejects(closed, generic);
+  await flush();
+  await flush();
   assert.ok(fixture.events.includes("process.close.done"));
   assert.ok(fixture.events.includes("wal.close"));
 });
@@ -367,7 +368,8 @@ test("pre-aborted and expired close options still run exact cleanup once", async
     if (mode === "preabort") controller.abort();
     const first = manager.close(mode === "preabort" ? { signal: controller.signal } : { deadlineAt: Date.now() - 1 });
     assert.equal(manager.close(), first);
-    await first;
+    await assert.rejects(first, generic);
+    await flush();
     assert.deepEqual(
       fixture.events.filter((event) => event !== "process.start"),
       ["authz.close", "process.close", "wal.close"],
@@ -383,12 +385,14 @@ test("close parent abort waits for active close settlement and continues indepen
   await flush();
   assert.ok(fixture.events.includes("authz.close"));
   controller.abort();
-  await flush();
-  assert.equal(fixture.events.includes("process.close"), false);
+  await assert.rejects(first, generic);
+  assert.equal(fixture.events.includes("process.close"), true);
+  assert.equal(fixture.events.includes("wal.close"), false);
   fixture.settleAuthzClose?.();
-  await first;
+  await flush();
   await flush();
   assert.equal(manager.close(), first);
+  await assert.rejects(manager.close(), generic);
   assert.ok(fixture.events.includes("process.close"));
   assert.ok(fixture.events.includes("wal.close"));
 });

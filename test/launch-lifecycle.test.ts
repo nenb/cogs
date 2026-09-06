@@ -228,7 +228,7 @@ test("emergency recycle deadline forces shutdown when no settled turn arrives", 
   await shutdown;
   scheduler.advance(5);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(lifecycle.state, "stopped");
+  assert.equal(lifecycle.state, "failed");
   assert.equal(auditAborted, true);
   assert.equal(scheduler.pendingTimers, 0);
 });
@@ -291,8 +291,9 @@ test("startup interruption prevents later dependencies from starting and cleans 
   assert.deepEqual(calls, ["start:sessionStorage", "shutdown:sessionStorage"]);
 });
 
-test("non-cooperative unresolved start cannot keep start hung after signal and cannot start later dependencies", async () => {
+test("non-cooperative unresolved start makes bounded shutdown uncertain and cannot start later dependencies", async () => {
   const signals = new ManualSignals();
+  const scheduler = new FakeScheduler();
   const calls: string[] = [];
   const lifecycle = new LaunchLifecycle({
     launchDocument: validLaunch(),
@@ -313,14 +314,19 @@ test("non-cooperative unresolved start cannot keep start hung after signal and c
       },
     }),
     signals,
+    scheduler,
+    shutdownTimeoutMs: 5,
   });
   const started = lifecycle.start();
   await new Promise((resolve) => setImmediate(resolve));
   signals.emit("SIGINT");
-  await started;
-  assert.equal(lifecycle.state, "stopped");
+  await new Promise((resolve) => setImmediate(resolve));
+  scheduler.advance(5);
+  await assert.rejects(started, /cleanup uncertain/);
+  assert.equal(lifecycle.state, "failed");
   assert.equal(signals.disposed, true);
-  assert.deepEqual(calls, ["start:sessionStorage", "shutdown:sessionStorage"]);
+  assert.deepEqual(calls, ["start:sessionStorage"]);
+  assert.ok(lifecycle.closeWork, "actual unresolved startup remains owned");
 });
 
 test("shutdown during startup aborts active dependency start and leaves no dangling operation", async () => {
@@ -358,6 +364,81 @@ test("public dispose fails closed and cannot leave a ready worker ready", async 
   assert.equal(lifecycle.ready, false);
   assert.equal(lifecycle.state, "stopped");
   assert.equal(scheduler.pendingTimers, 0);
+});
+
+test("migrated close owners all initiate once and any failure is sticky without stopped success", async () => {
+  const calls: string[] = [];
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies(
+      Object.fromEntries(
+        [...(["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"] as const)].map((name) => [
+          name,
+          {
+            beginClose: () => {
+              calls.push(name);
+              return {
+                done: Promise.reject(new Error(`synthetic ${name}`)),
+                retired: Promise.resolve(),
+              };
+            },
+          },
+        ]),
+      ),
+    ),
+  });
+  await lifecycle.start();
+  const first = lifecycle.requestShutdown("all-fail");
+  assert.equal(lifecycle.requestShutdown("again"), first);
+  await assert.rejects(first, /cleanup uncertain/);
+  assert.equal(lifecycle.state, "failed");
+  assert.deepEqual(new Set(calls), new Set(["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"]));
+  assert.equal(calls.length, 6);
+});
+
+test("deadline rejects observation while all independent work stays owned through late retirement", async () => {
+  const scheduler = new FakeScheduler();
+  const calls: string[] = [];
+  let finishDone!: () => void;
+  let finishRetired!: () => void;
+  const heldDone = new Promise<void>((resolve) => {
+    finishDone = resolve;
+  });
+  const heldRetired = new Promise<void>((resolve) => {
+    finishRetired = resolve;
+  });
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    scheduler,
+    shutdownTimeoutMs: 5,
+    dependencies: dependencies({
+      egressRuntime: {
+        beginClose: () => {
+          calls.push("egressRuntime");
+          return { done: heldDone, retired: heldRetired };
+        },
+      },
+      auditWal: {
+        beginClose: () => {
+          calls.push("auditWal");
+          return { done: Promise.resolve(), retired: Promise.resolve() };
+        },
+      },
+    }),
+  });
+  await lifecycle.start();
+  const observed = lifecycle.requestShutdown("deadline");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(new Set(calls), new Set(["egressRuntime", "auditWal"]));
+  scheduler.advance(5);
+  await assert.rejects(observed, /cleanup uncertain/);
+  assert.equal(lifecycle.state, "failed");
+  assert.ok(lifecycle.closeWork);
+  finishDone();
+  finishRetired();
+  await Promise.all([lifecycle.closeWork.done, lifecycle.closeWork.retired]);
+  await assert.rejects(lifecycle.requestShutdown("late"), /cleanup uncertain/);
+  assert.equal(lifecycle.state, "failed");
 });
 
 test("dependency loss fails closed and cleanup only targets attempted dependencies sequentially in reverse", async () => {
@@ -401,7 +482,7 @@ test("dependency loss fails closed and cleanup only targets attempted dependenci
   lifecycle.dependencyLost("proxy");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(lifecycle.ready, false);
-  assert.equal(lifecycle.state, "stopped");
+  assert.equal(lifecycle.state, "failed");
   assert.deepEqual(calls, ["egressRuntime", "auditWal", "auth", "proxy", "ssh", "sessionStorage"]);
 });
 
@@ -425,9 +506,9 @@ test("shutdown timeout aborts cancellable cleanup and leaves no timer", async ()
   const shutdown = lifecycle.requestShutdown("operator");
   for (let index = 0; index < 5; index++) await Promise.resolve();
   scheduler.advance(25);
-  await shutdown;
+  await assert.rejects(shutdown, /cleanup uncertain/);
   assert.equal(shutdownAborted, true);
-  assert.equal(lifecycle.state, "stopped");
+  assert.equal(lifecycle.state, "failed");
   assert.equal(scheduler.pendingTimers, 0);
 });
 
@@ -639,7 +720,7 @@ test("health poll detects egress readiness loss, cancels timers, and late callba
   egressReady = false;
   scheduler.advance(50);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(lifecycle.state, "stopped");
+  assert.equal(lifecycle.state, "failed");
   assert.deepEqual(shutdowns, ["egress"]);
   const pending = scheduler.pendingTimers;
   scheduler.advance(500);
@@ -663,7 +744,7 @@ test("health poll getter throw and scheduler throw fail closed", async () => {
   await lifecycle.start();
   scheduler.advance(50);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(lifecycle.state, "stopped");
+  assert.equal(lifecycle.state, "failed");
 
   const getterScheduler = new FakeScheduler();
   const deps = dependencies();
@@ -681,7 +762,7 @@ test("health poll getter throw and scheduler throw fail closed", async () => {
   await getterLifecycle.start();
   getterScheduler.advance(50);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(getterLifecycle.state, "stopped");
+  assert.equal(getterLifecycle.state, "failed");
 
   const throwingScheduler: Scheduler = {
     now: () => 0,
@@ -699,7 +780,7 @@ test("health poll getter throw and scheduler throw fail closed", async () => {
   await timerFailure.start();
   await timerFailure.requestShutdown("join");
   assert.equal(timerFailure.ready, false);
-  assert.equal(timerFailure.state, "stopped");
+  assert.equal(timerFailure.state, "failed");
 
   assert.throws(
     () =>

@@ -197,6 +197,7 @@ class RuntimeManager {
   private release: (() => void) | undefined;
   private scopePromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
+  private actualClosePromise: Promise<void> | undefined;
   private readonly finalCompletions: CogsEgressCompletion[] = [];
   private readyResolve!: () => void;
   private readyReject!: (error: unknown) => void;
@@ -384,19 +385,20 @@ class RuntimeManager {
     return Object.freeze({
       denyNew: async (_reason: CogsEgressRevocationReason, signal: AbortSignal) => {
         this.readyState = false;
-        await this.closeAuthz(signal);
+        void signal;
+        await this.closeAuthz();
       },
       drain: async (_reason: CogsEgressRevocationReason, signal: AbortSignal) => {
-        await this.closeProcess(signal);
+        void signal;
+        await this.closeProcess();
         this.captureFinalCompletions();
       },
       replace: async (reason: CogsEgressRevocationReason, signal: AbortSignal) => {
+        // This is a sticky request to the generation owner, never permission to
+        // release material or start a replacement. Actual manager retirement
+        // controls the lexical material scope.
         this.replacement = true;
-        try {
-          await this.withTimeout((inner) => this.options.onReplacementRequired(reason, inner), signal);
-        } finally {
-          this.release?.();
-        }
+        await this.withTimeout((inner) => this.options.onReplacementRequired(reason, inner), signal);
       },
     });
   }
@@ -440,8 +442,15 @@ class RuntimeManager {
   }
 
   public close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
-    validCloseOptions(options);
-    this.closePromise ??= this.closeOnce();
+    const context = validCloseOptions(options);
+    if (!this.actualClosePromise) {
+      // Store actual ownership before invoking any callback that can reenter.
+      this.closing = true;
+      this.readyState = false;
+      this.actualClosePromise = this.closeOnce();
+      void this.actualClosePromise.catch(() => undefined);
+    }
+    this.closePromise ??= this.observeClose(this.actualClosePromise, context);
     return this.closePromise;
   }
 
@@ -450,82 +459,121 @@ class RuntimeManager {
   }
 
   private async closeOnce(): Promise<void> {
-    let failed = false;
-    this.closing = true;
-    this.readyState = false;
-    const cleanup = Object.freeze({});
-    for (const step of [
-      () => this.closeWatcher(cleanup),
-      () => this.closeAuthz(),
-      () => this.closeProcess(),
-      () => this.closeQueue(cleanup),
-      () => this.closeTelemetry(cleanup),
-      () => this.releaseScope(cleanup),
-      () => this.closeWal(cleanup),
-    ]) {
+    // Independent denial/termination starts together: a hung watcher must not
+    // prevent authz shutdown or Envoy TERM/KILL. These are actual promises, not
+    // timeout wrappers.
+    const [watcherOutcome, authzOutcome, processOutcome] = await Promise.all([
+      this.closeWatcher(),
+      settle(this.closeAuthz()),
+      settle(this.closeProcess()),
+    ]);
+    if (!authzOutcome || !processOutcome) throw new CogsEgressRuntimeManagerError();
+
+    let failed = !watcherOutcome;
+    let queueRetired = false;
+    try {
+      await this.closeQueue();
+      queueRetired = true;
+    } catch {
+      failed = true;
+    }
+    try {
+      await this.closeTelemetry();
+    } catch {
+      failed = true;
+    }
+    try {
+      await this.releaseScope();
+    } catch {
+      failed = true;
+    }
+    // WAL release requires both authz and completion producers to be retired.
+    if (queueRetired) {
       try {
-        await step();
+        await this.closeWal();
       } catch {
         failed = true;
       }
-    }
+    } else failed = true;
     this.internalAuthzToken = "";
     this.proxyCapability = "";
     if (failed) throw new CogsEgressRuntimeManagerError();
   }
 
-  private async closeWatcher(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
+  private async closeWatcher(): Promise<boolean> {
     const watcher = this.watcher;
-    if (watcher) await this.withTimeout(() => watcher.close(), options?.signal, options?.deadlineAt);
-    this.watcher = undefined;
+    if (!watcher) return true;
+    let observed = true;
+    const observation = watcher.close().catch(() => {
+      observed = false;
+    });
+    // A bounded close rejection is not retirement. Keep manager custody until
+    // every registered source/action actually settles.
+    await Promise.all([observation, watcher.retirement()]);
+    if (this.watcher === watcher) this.watcher = undefined;
+    return observed;
   }
 
-  private async closeAuthz(signal?: AbortSignal): Promise<void> {
+  private async closeAuthz(): Promise<void> {
     const authz = this.authz;
-    if (authz) await this.withTimeout(() => authz.close(), signal);
-    this.authz = undefined;
+    if (authz) await authz.close();
+    if (this.authz === authz) this.authz = undefined;
   }
 
-  private async closeProcess(signal?: AbortSignal): Promise<void> {
+  private async closeProcess(): Promise<void> {
     const process = this.process;
-    if (process) await this.withTimeout(() => process.close(), signal);
-    this.process = undefined;
+    if (process) await process.close();
+    if (this.process === process) this.process = undefined;
   }
 
-  private async closeQueue(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
-    let failed = false;
-    try {
-      this.captureFinalCompletions();
-    } catch {
-      failed = true;
-    }
+  private async closeQueue(): Promise<void> {
+    this.captureFinalCompletions();
     const queue = this.queue;
-    try {
-      if (queue) await this.withTimeout(() => queue.close(), options?.signal, options?.deadlineAt);
-      this.queue = undefined;
-    } catch {
-      failed = true;
-    }
-    if (failed) throw new Error("queue cleanup failed");
+    if (queue) await queue.close();
+    if (this.queue === queue) this.queue = undefined;
   }
 
-  private async closeTelemetry(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
+  private async closeTelemetry(): Promise<void> {
     const telemetry = this.telemetry;
-    if (telemetry) await this.withTimeout((signal) => telemetry.close(signal), options?.signal, options?.deadlineAt);
-    this.telemetry = undefined;
+    if (telemetry) await telemetry.close(new AbortController().signal);
+    if (this.telemetry === telemetry) this.telemetry = undefined;
   }
 
-  private async releaseScope(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
-    this.release?.();
-    this.release = undefined;
-    if (this.scopePromise)
-      await this.withTimeout(() => this.scopePromise ?? Promise.resolve(), options?.signal, options?.deadlineAt);
+  private async releaseScope(): Promise<void> {
+    const release = this.release;
+    release?.();
+    if (this.release === release) this.release = undefined;
+    if (this.scopePromise) await this.scopePromise;
   }
 
-  private async closeWal(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
+  private async closeWal(): Promise<void> {
     const wal = this.wal;
-    if (wal) await this.withTimeout(() => wal.close(), options?.signal, options?.deadlineAt);
-    this.wal = undefined;
+    if (wal) await wal.close();
+    if (this.wal === wal) this.wal = undefined;
+  }
+
+  private observeClose(actual: Promise<void>, options: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
+    const deadlineAt = options.deadlineAt ?? Date.now() + this.options.operationTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: unknown;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) this.options.timers.clearTimeout(timer);
+        options.signal?.removeEventListener("abort", abort);
+        ok ? resolve() : reject(new CogsEgressRuntimeManagerError());
+      };
+      const abort = () => finish(false);
+      actual.then(
+        () => finish(Date.now() < deadlineAt),
+        () => finish(false),
+      );
+      options.signal?.addEventListener("abort", abort, { once: true });
+      const remaining = deadlineAt - Date.now();
+      if (options.signal?.aborted || remaining <= 0) finish(false);
+      else timer = this.options.timers.setTimeout(() => finish(false), remaining);
+    });
   }
 
   private captureFinalCompletions(): void {
@@ -566,6 +614,15 @@ class RuntimeManager {
       if (parent) eventRemove.call(parent, "abort", relay);
       if (timer !== undefined) this.options.timers.clearTimeout(timer);
     }
+  }
+}
+
+async function settle(work: Promise<void>): Promise<boolean> {
+  try {
+    await work;
+    return true;
+  } catch {
+    return false;
   }
 }
 
