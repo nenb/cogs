@@ -68,6 +68,17 @@ export type ReadyWorkerDescriptor = Readonly<{
 
 export type WorkerDescriptor = StartingWorkerDescriptor | ReadyWorkerDescriptor;
 
+export type WorkerCleanupReceipt = Readonly<{
+  version: "cogs.dev-launcher-cleanup-receipt/v1";
+  stateId: string;
+  sourceRevision: string;
+  startupDigest: `sha256:${string}`;
+  childPid: number;
+  childPidIdentity: `sha256:${string}`;
+  outcome: "retired";
+  closedResources: readonly string[];
+}>;
+
 export type WorkerStartup = Readonly<{
   descriptor: PreSpawnWorkerDescriptor;
   startup: StartupNonceHolder;
@@ -77,6 +88,7 @@ export type ControlSeams = Readonly<{
   randomBytes: typeof randomBytes;
   identity: (pid: number) => string | null | undefined;
   parentPid?: number;
+  receiptPid?: number;
   afterExclusiveOpen?: (path: string) => void | Promise<void>;
   afterExclusiveWrite?: (path: string) => void | Promise<void>;
   tempName?: () => string;
@@ -85,7 +97,25 @@ export type ControlSeams = Readonly<{
 const workerVersion = "cogs.dev-launcher-worker/v1alpha1" as const;
 const tokenFile = "api-token";
 const workerFile = "worker.json";
+const cleanupFile = "cleanup.json";
 const fileMode = 0o600;
+const closedResources = Object.freeze([
+  "api",
+  "pi",
+  "lifecycle",
+  "egress",
+  "ssh",
+  "envoy-binary",
+  "listener-reservation",
+  "telemetry",
+  "local-fixture",
+  "otlp",
+  "openbao",
+  "api-token-holder",
+  "runtime-roots",
+  "host-skills",
+  "ssh-key",
+]);
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const tokenPattern = /^[A-Za-z0-9_-]{43}\n$/u;
 const defaultRandomBytes = Object.freeze((size: number) => randomBytes(size)) as typeof randomBytes;
@@ -182,6 +212,7 @@ export async function requireSessionControlsAbsent(state: LauncherState): Promis
     if (!onlySandboxEntry(firstEntries)) fail();
     if (await ownedStat(state, workerFile, false)) fail();
     if (await ownedStat(state, tokenFile, false)) fail();
+    if (await ownedStat(state, cleanupFile, false)) fail();
     const secondEntries = await readdir(state.controlDir);
     if (!onlySandboxEntry(secondEntries)) fail();
   } catch {
@@ -280,6 +311,75 @@ export async function readReadyWorkerDescriptor(state: LauncherState): Promise<R
   }
 }
 
+export async function writeWorkerCleanupReceipt(state: LauncherState, seams?: Partial<ControlSeams>): Promise<void> {
+  try {
+    const captured = captureSeams(seams);
+    const descriptor = await readReadyWorkerDescriptor(state);
+    const receiptPid = captured.receiptPid ?? process.pid;
+    if (descriptor.childPid !== receiptPid) fail();
+    if (observedDigest(captured.identity(receiptPid)) !== descriptor.childPidIdentity) fail();
+    const receipt: WorkerCleanupReceipt = Object.freeze({
+      version: "cogs.dev-launcher-cleanup-receipt/v1",
+      stateId: state.stateId,
+      sourceRevision: state.sourceRevision,
+      startupDigest: descriptor.startupDigest,
+      childPid: descriptor.childPid,
+      childPidIdentity: descriptor.childPidIdentity,
+      outcome: "retired",
+      closedResources,
+    });
+    await writeExclusive(state, cleanupFile, canonicalJson(receipt), captured);
+  } catch {
+    throw generic();
+  }
+}
+
+export async function readWorkerCleanupReceipt(
+  state: LauncherState,
+  descriptor: ReadyWorkerDescriptor,
+): Promise<WorkerCleanupReceipt> {
+  try {
+    const parsed = exactOpen(JSON.parse(await readOwnedFile(state, cleanupFile, 4096)));
+    const keys = [
+      "childPid",
+      "childPidIdentity",
+      "closedResources",
+      "outcome",
+      "sourceRevision",
+      "startupDigest",
+      "stateId",
+      "version",
+    ];
+    if (Object.keys(parsed).sort().join(",") !== keys.sort().join(",")) fail();
+    if (
+      parsed.version !== "cogs.dev-launcher-cleanup-receipt/v1" ||
+      parsed.stateId !== state.stateId ||
+      parsed.sourceRevision !== state.sourceRevision ||
+      parsed.startupDigest !== descriptor.startupDigest ||
+      parsed.childPid !== descriptor.childPid ||
+      parsed.childPidIdentity !== descriptor.childPidIdentity ||
+      parsed.outcome !== "retired" ||
+      !Array.isArray(parsed.closedResources) ||
+      JSON.stringify(parsed.closedResources) !== JSON.stringify(closedResources)
+    )
+      fail();
+    const receipt = Object.freeze({
+      version: "cogs.dev-launcher-cleanup-receipt/v1" as const,
+      stateId: state.stateId,
+      sourceRevision: state.sourceRevision,
+      startupDigest: descriptor.startupDigest,
+      childPid: descriptor.childPid,
+      childPidIdentity: descriptor.childPidIdentity,
+      outcome: "retired" as const,
+      closedResources,
+    });
+    if (canonicalJson(receipt) !== (await readOwnedFile(state, cleanupFile, 4096))) fail();
+    return receipt;
+  } catch {
+    throw generic();
+  }
+}
+
 export async function verifyWorkerIdentity(state: LauncherState, seams?: Partial<ControlSeams>): Promise<boolean> {
   try {
     const capturedSeams = captureSeams(seams);
@@ -300,10 +400,16 @@ export async function cleanupControlFiles(state: LauncherState, seams?: Partial<
     const capturedSeams = captureSeams(seams);
     const entries = await readdir(state.controlDir);
     const allowedTempPrefix = `.worker-${state.stateId}-`;
-    if (entries.some((entry) => entry !== "sandbox" && entry !== tokenFile && entry !== workerFile)) fail();
+    if (
+      entries.some(
+        (entry) => entry !== "sandbox" && entry !== tokenFile && entry !== workerFile && entry !== cleanupFile,
+      )
+    )
+      fail();
     await validateSandboxDir(state);
     const token = await ownedStat(state, tokenFile, false);
     const worker = await ownedStat(state, workerFile, false);
+    const cleanup = await ownedStat(state, cleanupFile, false);
     if (token) {
       const holder = await readApiToken(state);
       holder.dispose();
@@ -317,18 +423,32 @@ export async function cleanupControlFiles(state: LauncherState, seams?: Partial<
         throw generic();
       }
       if (manifest.phase === "worker-ready" && descriptor.readiness !== "ready") fail();
+      if (manifest.phase === "worker-ready") {
+        if (!cleanup || descriptor.readiness !== "ready") fail();
+        await readWorkerCleanupReceipt(state, descriptor);
+      } else {
+        // Pre-spawn proves the child could not acquire runtime resources. Once
+        // child-bound, identity absence is not a retirement receipt.
+        if (descriptor.stage === "child-bound" || cleanup) fail();
+      }
       const identity = identityForCleanup(descriptor);
       const observed = capturedSeams.identity(identity.pid);
       if (observed === undefined || (observed !== null && !digestPattern.test(observed))) fail();
       if (observed === identity.pidIdentity) fail();
-    } else if (manifest.phase === "worker-ready") {
+    } else if (manifest.phase === "worker-ready" || cleanup) {
       fail();
     }
     if (entries.some((entry) => entry.startsWith(allowedTempPrefix))) fail();
     if (token) await unlinkExact(controlPath(state, tokenFile), token);
+    if (cleanup) await unlinkExact(controlPath(state, cleanupFile), cleanup);
     if (worker) await unlinkExact(controlPath(state, workerFile), worker);
     await fsyncDir(state.controlDir);
-    if ((await ownedStat(state, tokenFile, false)) || (await ownedStat(state, workerFile, false))) fail();
+    if (
+      (await ownedStat(state, tokenFile, false)) ||
+      (await ownedStat(state, cleanupFile, false)) ||
+      (await ownedStat(state, workerFile, false))
+    )
+      fail();
   } catch {
     throw generic();
   }
@@ -612,7 +732,15 @@ function captureSeams(seams?: Partial<ControlSeams>): ControlSeams {
   if (!seams || typeof seams !== "object" || Object.getPrototypeOf(seams) !== Object.prototype) fail();
   if (Object.getOwnPropertySymbols(seams).length !== 0) fail();
   const descriptors = Object.getOwnPropertyDescriptors(seams);
-  const allowed = ["afterExclusiveOpen", "afterExclusiveWrite", "identity", "parentPid", "randomBytes", "tempName"];
+  const allowed = [
+    "afterExclusiveOpen",
+    "afterExclusiveWrite",
+    "identity",
+    "parentPid",
+    "randomBytes",
+    "receiptPid",
+    "tempName",
+  ];
   for (const key of Reflect.ownKeys(descriptors)) {
     if (typeof key !== "string" || !allowed.includes(key)) fail();
     const descriptor = descriptors[key];
@@ -623,10 +751,13 @@ function captureSeams(seams?: Partial<ControlSeams>): ControlSeams {
   if (typeof randomValue !== "function" || typeof identityValue !== "function") fail();
   const parentPid = descriptors.parentPid?.value;
   if (parentPid !== undefined) pid(parentPid);
+  const receiptPid = descriptors.receiptPid?.value;
+  if (receiptPid !== undefined) pid(receiptPid);
   return Object.freeze({
     randomBytes: randomValue,
     identity: identityValue,
     ...(parentPid === undefined ? {} : { parentPid: parentPid as number }),
+    ...(receiptPid === undefined ? {} : { receiptPid: receiptPid as number }),
     ...(descriptors.afterExclusiveOpen === undefined
       ? {}
       : { afterExclusiveOpen: descriptors.afterExclusiveOpen.value }),

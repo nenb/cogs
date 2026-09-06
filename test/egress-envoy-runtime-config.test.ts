@@ -5,6 +5,7 @@ import {
   type CogsEnvoyCredentialValue,
   CogsEnvoyRuntimeConfigError,
   type CogsEnvoyRuntimeConfigOptions,
+  envoyRuntimeConfigFailureCause,
   withCogsEnvoyRuntimeConfig,
 } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsEgressAuthRef, CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
@@ -463,6 +464,16 @@ test("credential callback is exactly scoped to caller operation", async () => {
       ),
     CogsEnvoyRuntimeConfigError,
   );
+});
+
+test("generic config failure privately preserves lexical cleanup ownership", async () => {
+  const owner = new Error("synthetic lexical owner");
+  const failure = await withCogsEnvoyRuntimeConfig(baseOptions(), source(), async () => {
+    throw owner;
+  }).catch((error: unknown) => error);
+  assert.ok(failure instanceof CogsEnvoyRuntimeConfigError);
+  assert.equal(envoyRuntimeConfigFailureCause(failure), owner);
+  assert.equal(JSON.stringify(failure).includes("synthetic lexical owner"), false);
 });
 
 test("rejects hostile plans, targets, credentials, and direct fallback shapes generically", async () => {

@@ -43,6 +43,13 @@ export class CogsEgressMaterialError extends Error {
   }
 }
 
+const materialFailureCauses = new WeakMap<CogsEgressMaterialError, unknown>();
+
+/** Internal composition seam; public errors remain generic and cause-free. */
+export function egressMaterialFailureCause(error: unknown): unknown {
+  return error instanceof CogsEgressMaterialError ? materialFailureCauses.get(error) : undefined;
+}
+
 export class ModelBackedEgressCredentialSource implements CogsEnvoyCredentialSource {
   readonly #userId: string;
   readonly #resolver: ModelCredentialResolver;
@@ -79,8 +86,10 @@ export class ModelBackedEgressCredentialSource implements CogsEnvoyCredentialSou
       await this.#resolver.withApiKey(modelRequest, async (material) =>
         consume(credentialFor(captured.authType, material)),
       );
-    } catch {
-      throw new CogsEgressMaterialError();
+    } catch (error) {
+      const failure = new CogsEgressMaterialError();
+      materialFailureCauses.set(failure, error);
+      throw failure;
     }
   }
 }

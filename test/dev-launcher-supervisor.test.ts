@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { canonicalJson } from "../dev/launcher/contract.ts";
-import { beginWorkerStartup, bindWorkerChild, promoteWorkerReady, readApiToken } from "../dev/launcher/control.ts";
+import {
+  beginWorkerStartup,
+  bindWorkerChild,
+  promoteWorkerReady,
+  readApiToken,
+  writeWorkerCleanupReceipt,
+} from "../dev/launcher/control.ts";
 import {
   clearRecovery,
   createState,
@@ -35,7 +41,7 @@ async function readyState(name = "sup", profile: "linux-kvm" | "insecure-contain
   return { dir, state };
 }
 
-async function makeReadyWorker(state: LauncherState): Promise<void> {
+async function makeReadyWorker(state: LauncherState, receipt = true): Promise<void> {
   const startup = await beginWorkerStartup(
     state,
     Object.freeze({
@@ -68,6 +74,11 @@ async function makeReadyWorker(state: LauncherState): Promise<void> {
     Object.freeze({ identity: Object.freeze(() => childDigest) }) as never,
   );
   startup.startup.dispose();
+  if (receipt)
+    await writeWorkerCleanupReceipt(
+      state,
+      Object.freeze({ identity: Object.freeze(() => childDigest), receiptPid: 222 }),
+    );
 }
 
 function seams(overrides: Partial<SupervisorSeams> = {}): Partial<SupervisorSeams> {
@@ -270,6 +281,24 @@ test("supervisor stop does not signal absent or reused workers and is idempotent
     assert.deepEqual(signals, []);
     await stopWorkerForState(state, undefined, seams({ identity: Object.freeze(() => null) }));
     assert.equal((await readManifest(state)).phase, "sandbox-ready");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("supervisor stop preserves controls when worker is absent without a generation-bound cleanup receipt", async () => {
+  const { dir, state } = await readyState("missing-receipt");
+  try {
+    await makeReadyWorker(state, false);
+    await assert.rejects(
+      stopWorkerForState(state, undefined, seams({ identity: Object.freeze(() => null) })),
+      /supervisor failed/,
+    );
+    const inventory = await launcherInventory(state, seams({ identity: Object.freeze(() => null) }));
+    assert.equal(inventory.descriptor, "ready");
+    assert.equal(inventory.cleanupRequired, true);
+    assert.equal(inventory.recovery, "present");
+    assert.equal((await readManifest(state)).phase, "worker-ready");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

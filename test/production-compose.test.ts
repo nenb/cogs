@@ -117,6 +117,8 @@ function harness() {
   let egressReady = true;
   let failAt = "";
   let cleanupFailure = "";
+  let apiCloseWait: Promise<void> | undefined;
+  let piCloseWait: Promise<void> | undefined;
   let piState: "idle" | "running" = "idle";
   let sshOptions: SshConnectionManagerOptions | undefined;
   const maybe = (stage: string) => {
@@ -168,6 +170,7 @@ function harness() {
     createExport: async () => ({ mode: "raw" }) as JsonValue,
     dispose: async () => {
       maybe("pi.dispose");
+      await piCloseWait;
       if (cleanupFailure === "pi") throw new Error("pi close secret");
     },
     disposeOwnedRuntime: async () => ({ version: "cogs.pi-owned-runtime-cleanup/v1alpha1", cleaned: true as const }),
@@ -192,6 +195,7 @@ function harness() {
     },
     close: async () => {
       maybe("api.close");
+      await apiCloseWait;
       if (cleanupFailure === "api") throw new Error("api close secret");
     },
     publish: () => true,
@@ -289,6 +293,10 @@ function harness() {
     setCleanupFailure(stage: string) {
       cleanupFailure = stage;
     },
+    setCleanupWait(stage: "api" | "pi", work: Promise<void>) {
+      if (stage === "api") apiCloseWait = work;
+      else piCloseWait = work;
+    },
     setPiState(state: "idle" | "running") {
       piState = state;
     },
@@ -357,6 +365,42 @@ test("production composition starts in one exact fail-closed order and closes re
   ]);
 });
 
+test("production cleanup starts API and Pi retirement together and gates dependencies on both", async () => {
+  const h = harness();
+  let releaseApi!: () => void;
+  const apiRetired = new Promise<void>((resolve) => {
+    releaseApi = resolve;
+  });
+  let releasePi!: () => void;
+  const piRetired = new Promise<void>((resolve) => {
+    releasePi = resolve;
+  });
+  h.setCleanupWait("api", apiRetired);
+  h.setCleanupWait("pi", piRetired);
+  const worker = await startProductionWorker({ seams: h.seams });
+  const closing = worker.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.log.includes("api.close"), true);
+  assert.equal(h.log.includes("pi.dispose"), true);
+  assert.equal(h.log.includes("egress.close"), false);
+  releaseApi();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.log.includes("egress.close"), false);
+  releasePi();
+  await closing;
+  assert.equal(h.log.includes("egress.close"), true);
+});
+
+test("production Pi cleanup uncertainty blocks dependency and telemetry release", async () => {
+  const h = harness();
+  h.setCleanupFailure("pi");
+  const worker = await startProductionWorker({ seams: h.seams });
+  await assert.rejects(worker.close(), ProductionWorkerError);
+  assert.equal(h.log.includes("egress.close"), false);
+  assert.equal(h.log.includes("ssh.close"), false);
+  assert.equal(h.log.includes("telemetry.close"), false);
+});
+
 test("every production startup seam fails generically, redacts secrets, and rolls back only acquired owners", async () => {
   const stages = [
     "runtime",
@@ -414,6 +458,38 @@ test("dependency loss revokes the runtime, and close uncertainty remains a gener
   const second = await startProductionWorker({ seams: uncertain.seams });
   await assert.rejects(second.close(), ProductionWorkerError);
   await assert.rejects(second.closed, ProductionWorkerError);
+});
+
+test("late Pi startup remains owned before dependency and telemetry release", async () => {
+  const h = harness();
+  let entered!: () => void;
+  const factoryEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const seams: ProductionWorkerSeams = Object.freeze({
+    ...h.seams,
+    createPi: async (options) => {
+      entered();
+      await delayed;
+      return h.seams.createPi(options);
+    },
+  });
+  const starting = startProductionWorker({ seams });
+  await factoryEntered;
+  h.loseSsh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.log.includes("egress.close"), false);
+  assert.equal(h.log.includes("ssh.close"), false);
+  assert.equal(h.log.includes("telemetry.close"), false);
+  release();
+  await assert.rejects(starting, ProductionWorkerError);
+  assert.ok(h.log.indexOf("pi.dispose") < h.log.indexOf("egress.close"));
+  assert.ok(h.log.indexOf("egress.close") < h.log.indexOf("ssh.close"));
+  assert.ok(h.log.indexOf("ssh.close") < h.log.indexOf("telemetry.close"));
 });
 
 test("late egress startup remains owned and is closed after startup abort", async () => {

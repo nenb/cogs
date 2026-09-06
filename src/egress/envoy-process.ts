@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
 import { Socket } from "node:net";
 import { isAbsolute, normalize } from "node:path";
+import { performance } from "node:perf_hooks";
 import { TextDecoder } from "node:util";
 
 const bootstrapPath = "/run/cogs/egress/envoy/bootstrap.json";
@@ -34,10 +35,12 @@ export type CogsEnvoyProcessStartInput = Readonly<{
 export type CogsEnvoyProcessHandle = Readonly<{ ready: boolean; close(): Promise<void> }>;
 
 type ProbeResult = "connected" | "refused";
+type ProcessGroupState = "alive" | "absent" | "unknown";
 export type CogsEnvoyProcessPorts = Readonly<{
   spawn(request: SpawnRequest): ChildPort;
   connect(port: number, host: string, signal?: AbortSignal): Promise<ProbeResult>;
   kill(processGroupId: number, signal: "SIGTERM" | "SIGKILL"): Promise<void>;
+  processGroupState(processGroupId: number): ProcessGroupState;
   setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 }>;
@@ -49,6 +52,13 @@ export type CogsEnvoyProcessPort = Readonly<{
 export class CogsEnvoyProcessError extends Error {
   public readonly code = "COGS_ENVOY_PROCESS_FAILED";
   public override readonly message = "egress Envoy process unavailable";
+}
+
+const failedStartRetirements = new WeakMap<CogsEnvoyProcessError, Promise<void>>();
+
+/** Trusted startup-owner seam; undefined means no child process was acquired. */
+export function failedCogsEnvoyProcessRetirement(error: unknown): Promise<void> | undefined {
+  return error instanceof CogsEnvoyProcessError ? failedStartRetirements.get(error) : undefined;
 }
 
 export function createNodeCogsEnvoyProcessPort(
@@ -118,8 +128,14 @@ async function startEnvoy(
     await waitStartup(runtime, ports, captured.listenerPort, startupTimeoutMs, captured.signal);
     return runtime.handle();
   } catch {
-    if (runtime !== undefined) await runtime.shutdown(false).catch(() => undefined);
-    throw new CogsEnvoyProcessError();
+    const failure = new CogsEnvoyProcessError();
+    if (runtime !== undefined) {
+      await runtime.shutdown(false).catch(() => undefined);
+      const retirement = runtime.retirement();
+      failedStartRetirements.set(failure, retirement);
+      void retirement.catch(() => undefined);
+    }
+    throw failure;
   }
 }
 
@@ -130,9 +146,11 @@ class Runtime {
   private unexpected = false;
   private exitSeen = false;
   private closeSeen = false;
+  private groupRetired = false;
   private terminal?: Promise<void>;
   private closing?: Promise<void>;
   private draining: Promise<void> | undefined;
+  private readonly outputWork = new Set<Promise<void>>();
   private queue: string[] = [];
   private pending = "";
   private pendingBytes = 0;
@@ -182,24 +200,62 @@ class Runtime {
     }
   }
 
+  public async retirement(): Promise<void> {
+    await (this.terminal ?? Promise.resolve());
+    while (!this.groupRetired) {
+      if (this.groupState() === "absent") this.groupRetired = true;
+      else await sleep(this.ports, 25);
+    }
+    for (;;) {
+      const draining = this.draining;
+      if (draining !== undefined) await draining.catch(() => undefined);
+      const output = [...this.outputWork];
+      if (output.length > 0) await Promise.allSettled(output);
+      await Promise.resolve();
+      if (this.draining === undefined && this.outputWork.size === 0) return;
+    }
+  }
+
   private async doShutdown(intentional: boolean): Promise<void> {
     this.stopping = true;
     if (!intentional) this.poisoned = true;
     let signalFailed = false;
-    if (!this.exitSeen || !this.closeSeen) {
+    if (this.groupState() === "absent") this.groupRetired = true;
+    if (!this.exitSeen || !this.closeSeen || !this.groupRetired) {
       await this.ports.kill(-this.child.pid, "SIGTERM").catch(() => {
         signalFailed = true;
       });
-      if (signalFailed || !(await this.waitTerminal(this.closeTimeoutMs))) {
+      await this.waitTerminal(this.closeTimeoutMs);
+      const afterTerm = this.groupState();
+      if (afterTerm === "alive") {
         await this.ports.kill(-this.child.pid, "SIGKILL").catch(() => {
           signalFailed = true;
         });
-        if (!(await this.waitTerminal(this.closeTimeoutMs))) throw new Error("not reaped");
-      }
+      } else if (afterTerm === "unknown") signalFailed = true;
+      if (!(await this.waitTerminal(this.closeTimeoutMs))) throw new Error("leader not reaped");
+      if (!(await this.waitGroupAbsent(this.closeTimeoutMs))) throw new Error("process group not retired");
+      this.groupRetired = true;
     }
     if (this.draining !== undefined) await withTimeout(this.ports, this.draining, 5000);
-    if (signalFailed || !this.exitSeen || !this.closeSeen || this.unexpected || this.poisoned)
+    if (signalFailed || !this.exitSeen || !this.closeSeen || !this.groupRetired || this.unexpected || this.poisoned)
       throw new Error("closed unhealthy");
+  }
+
+  private groupState(): ProcessGroupState {
+    try {
+      return this.ports.processGroupState(-this.child.pid);
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private async waitGroupAbsent(ms: number): Promise<boolean> {
+    const deadlineAt = performance.now() + ms;
+    while (performance.now() < deadlineAt) {
+      if (this.groupState() === "absent") return true;
+      await sleep(this.ports, 10);
+    }
+    return this.groupState() === "absent";
   }
 
   private terminalPromise(): Promise<void> {
@@ -268,8 +324,12 @@ class Runtime {
 
   private async drain(): Promise<void> {
     try {
-      while (this.queue.length > 0 && !this.poisoned)
-        await withTimeout(this.ports, this.onLine(this.queue.shift() ?? ""), 5000);
+      while (this.queue.length > 0 && !this.poisoned) {
+        const actual = Promise.resolve().then(() => this.onLine(this.queue.shift() ?? ""));
+        this.outputWork.add(actual);
+        void actual.finally(() => this.outputWork.delete(actual)).catch(() => undefined);
+        await withTimeout(this.ports, actual, 5000);
+      }
     } catch {
       this.poison();
     } finally {
@@ -319,14 +379,15 @@ async function waitStartup(
   source?: AbortSignal,
 ): Promise<void> {
   const deadline = new AbortController();
+  const deadlineAt = performance.now() + timeoutMs;
   const abort = () => deadline.abort();
   const timer = ports.setTimeout(abort, timeoutMs);
   source?.addEventListener("abort", abort, { once: true });
   if (source?.aborted) abort();
   try {
-    while (runtime.alive() && !deadline.signal.aborted) {
+    while (runtime.alive() && !deadline.signal.aborted && performance.now() < deadlineAt) {
       const result = await probe(ports, port, 1000, deadline.signal);
-      if (result === "connected" && runtime.alive()) return;
+      if (result === "connected" && runtime.alive() && performance.now() < deadlineAt) return;
       if (result !== "refused") throw new Error("bad probe");
       await sleep(ports, 25);
     }
@@ -339,6 +400,7 @@ async function waitStartup(
 
 function probe(ports: CogsEnvoyProcessPorts, port: number, ms: number, source?: AbortSignal): Promise<ProbeResult> {
   const controller = new AbortController();
+  const deadlineAt = performance.now() + ms;
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (result?: ProbeResult, error?: unknown) => {
@@ -347,7 +409,9 @@ function probe(ports: CogsEnvoyProcessPorts, port: number, ms: number, source?: 
       ports.clearTimeout(timer);
       source?.removeEventListener("abort", abort);
       controller.abort();
-      error === undefined && result !== undefined ? resolve(result) : reject(error);
+      error === undefined && result !== undefined && performance.now() < deadlineAt
+        ? resolve(result)
+        : reject(error ?? new Error("timeout"));
     };
     const abort = () => finish(undefined, new Error("aborted"));
     const timer = ports.setTimeout(() => finish(undefined, new Error("timeout")), ms);
@@ -364,16 +428,17 @@ function probe(ports: CogsEnvoyProcessPorts, port: number, ms: number, source?: 
 }
 
 function withTimeout<T>(ports: CogsEnvoyProcessPorts, promise: Promise<T>, ms: number): Promise<T> {
+  const deadlineAt = performance.now() + ms;
   return new Promise((resolve, reject) => {
     const timer = ports.setTimeout(() => reject(new Error("timeout")), ms);
     promise.then(
       (value) => {
         ports.clearTimeout(timer);
-        resolve(value);
+        performance.now() < deadlineAt ? resolve(value) : reject(new Error("timeout"));
       },
       (error) => {
         ports.clearTimeout(timer);
-        reject(error);
+        reject(performance.now() < deadlineAt ? error : new Error("timeout"));
       },
     );
   });
@@ -444,6 +509,15 @@ export const nodeEnvoyProcessPorts: CogsEnvoyProcessPorts = Object.freeze({
   },
   async kill(processGroupId, signal) {
     process.kill(processGroupId, signal);
+  },
+  processGroupState(processGroupId) {
+    try {
+      process.kill(processGroupId, 0);
+      return "alive";
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === "ESRCH" ? "absent" : "unknown";
+    }
   },
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (timer) => clearTimeout(timer),

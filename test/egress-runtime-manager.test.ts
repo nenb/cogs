@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import npmPreset from "../integrations/presets/npm-v1.json" with { type: "json" };
 import type { EgressAuditWal, EgressAuditWalRecord } from "../src/egress/audit-wal.ts";
 import type { CogsEgressPkiMaterial, CogsEgressPkiSource } from "../src/egress/egress-material.ts";
-import type { CogsEnvoyProcessPort } from "../src/egress/envoy-process.ts";
+import { type CogsEnvoyProcessPort, createNodeCogsEnvoyProcessPort } from "../src/egress/envoy-process.ts";
 import type { CogsEnvoyCredentialSource, CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
+import { createOpenBaoEgressRevocationBinding, getOpenBaoHydratedMaterial } from "../src/egress/openbao-revocation.ts";
 import type { CogsEgressRevocationSnapshot, CogsEgressRevocationTimers } from "../src/egress/revocation-watcher.ts";
 import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
 import {
   aggregateCogsEgressRoutePlanRevision,
   CogsEgressRuntimeManagerError,
+  failedCogsEgressRuntimeManagerRetirement,
   startCogsEgressRuntimeManager,
 } from "../src/egress/runtime-manager.ts";
 import type { LaunchConfig } from "../src/launch/config.ts";
+import { createCogsEgressRuntimeLaunchDependency } from "../src/launch/lifecycle.ts";
 
 const raw = "host.example/path?token=secret users/preset-user/integrations/npm workspace";
 const generic = (error: unknown) => {
@@ -272,6 +276,14 @@ test("openbao mode orders preflight, config render, watcher read, process start,
   await manager.close();
 });
 
+test("openbao manager preserves the real provenance-bearing binding identity through release", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true, realHydratedIdentity: true });
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  assert.equal(manager.ready, true);
+  await manager.close();
+  assert.ok(fixture.events.includes("wal.close"));
+});
+
 test("openbao mode fails if metadata changes during config rendering before Envoy starts", async () => {
   const fixture = fixtureRuntime({ openBaoMode: true, configChangesCredential: true });
   await assert.rejects(startCogsEgressRuntimeManager(fixture.options()), generic);
@@ -304,6 +316,191 @@ test("openbao revocation during process startup is never ready and fully cleaned
   assert.ok(fixture.events.includes("authz.close"));
   assert.ok(fixture.events.includes("process.close"));
   assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("startup observation deadline retains late PKI owner and prevents post-close acquisition", async () => {
+  const fixture = fixtureRuntime();
+  const base = fixture.options();
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const starting = startCogsEgressRuntimeManager({
+    ...base,
+    pkiSource: {
+      withPkiMaterial: async (request, operation) => {
+        await delayed;
+        return base.pkiSource.withPkiMaterial(request, operation);
+      },
+    },
+  }).catch((error: unknown) => error);
+  await flush();
+  fixture.timers.tick(200);
+  await flush();
+  fixture.timers.tick(50);
+  await flush();
+  const failure = await starting;
+  assert.ok(failure instanceof CogsEgressRuntimeManagerError);
+  assert.equal(fixture.events.includes("process.start"), false);
+  release();
+  for (let attempt = 0; attempt < 20; attempt += 1) await flush();
+  assert.equal(fixture.events.includes("process.start"), false);
+});
+
+test("initial watcher timeout rejects observation while lexical material waits for source retirement", async () => {
+  const fixture = fixtureRuntime();
+  const base = fixture.options();
+  assert.equal(base.revocation.mode, "injected");
+  let finish!: () => void;
+  const sourceRetired = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let actualRetired = false;
+  const starting = startCogsEgressRuntimeManager({
+    ...base,
+    revocation: {
+      ...base.revocation,
+      revocationSource: {
+        read: async () => {
+          await sourceRetired;
+          actualRetired = true;
+          return snap();
+        },
+      },
+    },
+  }).catch((error: unknown) => error);
+  await flush();
+  fixture.timers.tick(50);
+  await flush();
+  await flush();
+  fixture.timers.tick(200);
+  await flush();
+  const failure = await starting;
+  assert.ok(failure instanceof CogsEgressRuntimeManagerError);
+  assert.equal(actualRetired, false);
+  assert.equal(fixture.scopeReleased, false);
+  const managerRetirement = failedCogsEgressRuntimeManagerRetirement(failure);
+  assert.ok(managerRetirement);
+  let managerRetired = false;
+  void managerRetirement.then(() => {
+    managerRetired = true;
+  });
+  await flush();
+  assert.equal(managerRetired, false);
+  finish();
+  await managerRetirement;
+  for (let attempt = 0; attempt < 20 && !fixture.scopeReleased; attempt += 1) await flush();
+  assert.equal(actualRetired, true);
+  assert.equal(managerRetired, true);
+  assert.equal(fixture.scopeReleased, true);
+});
+
+test("launch dependency joins a rejected manager factory's actual retirement", async () => {
+  const fixture = fixtureRuntime();
+  const base = fixture.options();
+  const baseRevocation = base.revocation;
+  if (baseRevocation.mode !== "injected" || !("credentialVersion" in baseRevocation))
+    assert.fail("expected injected fixture");
+  let finish!: () => void;
+  const sourceRetired = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const dependency = createCogsEgressRuntimeLaunchDependency((signal) =>
+    startCogsEgressRuntimeManager({
+      ...base,
+      signal,
+      revocation: {
+        mode: "injected",
+        credentialVersion: baseRevocation.credentialVersion,
+        credentialSource: baseRevocation.credentialSource,
+        revocationSource: {
+          read: async () => {
+            await sourceRetired;
+            return snap();
+          },
+        },
+      },
+    }),
+  );
+  const started = dependency.start(new AbortController().signal);
+  await flush();
+  fixture.timers.tick(50);
+  await flush();
+  await flush();
+  fixture.timers.tick(50);
+  await assert.rejects(started);
+  const shutdown = dependency.shutdown(new AbortController().signal);
+  let shutdownResolved = false;
+  void shutdown.then(() => {
+    shutdownResolved = true;
+  });
+  await flush();
+  assert.equal(shutdownResolved, false);
+  assert.equal(fixture.scopeReleased, false);
+  finish();
+  await shutdown;
+  assert.equal(shutdownResolved, true);
+  assert.equal(fixture.scopeReleased, true);
+});
+
+test("failed real Envoy acquisition retains lexical material until child exit and close", async () => {
+  const fixture = fixtureRuntime();
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number;
+    stdout: EventEmitter & { resume(): void };
+    stderr: EventEmitter & { resume(): void };
+  };
+  child.pid = 123456;
+  child.stdout = Object.assign(new EventEmitter(), { resume: () => undefined });
+  child.stderr = Object.assign(new EventEmitter(), { resume: () => undefined });
+  const kills: string[] = [];
+  let groupAlive = true;
+  const envoyProcess = createNodeCogsEnvoyProcessPort({
+    executablePath: "/synthetic/envoy",
+    startupTimeoutMs: 50,
+    closeTimeoutMs: 50,
+    ports: {
+      spawn: () => child as never,
+      connect: async () => "refused",
+      kill: async (_pid, signal) => {
+        kills.push(signal);
+      },
+      processGroupState: () => (groupAlive ? "alive" : "absent"),
+      setTimeout,
+      clearTimeout,
+    },
+  });
+  const starting = startCogsEgressRuntimeManager(fixture.options({ envoyProcess })).catch((error: unknown) => error);
+  for (let attempt = 0; attempt < 30 && kills.length < 2; attempt += 1)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(kills, ["SIGTERM", "SIGKILL"]);
+  assert.equal(fixture.scopeReleased, false);
+  groupAlive = false;
+  child.emit("exit", 137, "SIGKILL");
+  child.emit("close", 137, "SIGKILL");
+  const failure = await starting;
+  assert.ok(failure instanceof CogsEgressRuntimeManagerError);
+  assert.equal(fixture.scopeReleased, true);
+});
+
+test("post-acquisition startup failure retains lexical material until process retirement", async () => {
+  const fixture = fixtureRuntime({ openBaoMode: true, processStartupRevokes: true, processCloseWaits: true });
+  const starting = startCogsEgressRuntimeManager(fixture.options());
+  await flush();
+  await flush();
+  assert.ok(fixture.events.includes("process.close"));
+  assert.equal(fixture.scopeReleased, false);
+  let observed = false;
+  void starting
+    .finally(() => {
+      observed = true;
+    })
+    .catch(() => undefined);
+  await flush();
+  assert.equal(observed, false);
+  fixture.settleProcessClose?.();
+  await assert.rejects(starting, generic);
+  assert.equal(fixture.scopeReleased, true);
 });
 
 test("close timeout aborts work but waits for settlement before rejecting and remains idempotent", async () => {
@@ -369,7 +566,7 @@ test("pre-aborted and expired close options still run exact cleanup once", async
     const first = manager.close(mode === "preabort" ? { signal: controller.signal } : { deadlineAt: Date.now() - 1 });
     assert.equal(manager.close(), first);
     await assert.rejects(first, generic);
-    await flush();
+    for (let attempt = 0; attempt < 20 && !fixture.events.includes("wal.close"); attempt += 1) await flush();
     assert.deepEqual(
       fixture.events.filter((event) => event !== "process.start"),
       ["authz.close", "process.close", "wal.close"],
@@ -433,6 +630,8 @@ function fixtureRuntime(
     abortDuringCredential?: boolean;
     malformedBinding?: boolean;
     authzCloseWaits?: boolean;
+    realHydratedIdentity?: boolean;
+    processCloseWaits?: boolean;
   } = {},
 ) {
   const timers = new ManualTimers();
@@ -450,6 +649,7 @@ function fixtureRuntime(
   let rejectScope: ((error: Error) => void) | undefined;
   let records: readonly EgressAuditWalRecord[] = [];
   let settleAuthzClose: (() => void) | undefined;
+  let settleProcessClose: (() => void) | undefined;
   const wal: EgressAuditWal = {
     get ready() {
       return true;
@@ -501,6 +701,10 @@ function fixtureRuntime(
         },
         async close() {
           events.push("process.close");
+          if (flags.processCloseWaits)
+            await new Promise<void>((resolve) => {
+              settleProcessClose = resolve;
+            });
           records = [
             await wal.append({
               session_id: "session",
@@ -583,8 +787,34 @@ function fixtureRuntime(
         scopeReleased = true;
       }
     },
-    async bindOpenBaoRevocation(request: { userId: string; routePlan: unknown; signal?: AbortSignal }) {
+    getOpenBaoHydratedMaterial(binding: Parameters<typeof getOpenBaoHydratedMaterial>[0]) {
+      if (flags.realHydratedIdentity) return getOpenBaoHydratedMaterial(binding);
+      return Object.freeze({
+        manifest: Object.freeze({
+          schema: "openbao-hydrated-manifest-v1" as const,
+          identities: Object.freeze([]),
+          baseline: snap({ credentialVersion: binding.credentialVersion }),
+        }),
+        release: () => undefined,
+      });
+    },
+    async bindOpenBaoRevocation(request: Parameters<typeof createOpenBaoEgressRevocationBinding>[0]) {
       events.push(`openbao.bind:${request.userId}`);
+      if (flags.realHydratedIdentity) {
+        return createOpenBaoEgressRevocationBinding({
+          ...request,
+          identity: {
+            withToken: async (signal, consume) => {
+              if (!signal.aborted) await consume("synthetic-token");
+            },
+          },
+          fetchImpl: async (url) =>
+            new Response(JSON.stringify(String(url).includes("/data/") ? hydratedData() : hydratedMetadata()), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        });
+      }
       if (flags.malformedBinding) return { credentialVersion: "bad version" } as never;
       assert.equal(Object.isFrozen(request.routePlan), true);
       const source = Object.freeze({
@@ -672,6 +902,9 @@ function fixtureRuntime(
     get settleAuthzClose() {
       return settleAuthzClose;
     },
+    get settleProcessClose() {
+      return settleProcessClose;
+    },
     get openWalCalls() {
       return openWalCalls;
     },
@@ -706,6 +939,56 @@ function fixtureRuntime(
     },
     secretCalls,
     timers,
+  };
+}
+
+function hydratedMetadata() {
+  const created = "2026-01-01T00:00:00.123456789Z";
+  return {
+    request_id: "req",
+    lease_id: "",
+    renewable: false,
+    lease_duration: 0,
+    data: {
+      cas_required: false,
+      created_time: created,
+      current_metadata_version: 0,
+      current_version: 1,
+      custom_metadata: null,
+      delete_version_after: "0s",
+      max_versions: 0,
+      metadata_cas_required: false,
+      oldest_version: 0,
+      updated_time: created,
+      versions: { "1": { created_time: created, deletion_time: "", destroyed: false } },
+    },
+    wrap_info: null,
+    warnings: null,
+    auth: null,
+    mount_type: "kv",
+  };
+}
+
+function hydratedData() {
+  return {
+    request_id: "req",
+    lease_id: "",
+    renewable: false,
+    lease_duration: 0,
+    data: {
+      data: { api_key: "synthetic-integration-value" },
+      metadata: {
+        created_time: "2026-01-01T00:00:00.123456789Z",
+        deletion_time: "",
+        destroyed: false,
+        version: 1,
+        custom_metadata: null,
+      },
+    },
+    wrap_info: null,
+    warnings: null,
+    auth: null,
+    mount_type: "kv",
   };
 }
 

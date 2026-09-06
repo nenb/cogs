@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import type { ClientChannel, SFTPWrapper } from "ssh2";
 import ssh2, { type ConnectConfig } from "ssh2";
 import type { LaunchConfig } from "../launch/config.ts";
@@ -173,11 +174,17 @@ export class SshConnectionManager {
   readonly #telemetry: CogsTelemetry;
   #phase: Phase = "created";
   #connection: SshTransportConnection | undefined;
+  #startupPhaseRetired: Promise<void> = Promise.resolve();
+  #resolveStartupPhase: (() => void) | undefined;
+  #startupConnectionWork: Promise<SshTransportConnection> | undefined;
   #privateKey: Buffer | undefined;
   #waiters: Waiter[] = [];
   #active = new Set<ActivePermit>();
+  #activeRetired: Promise<void> = Promise.resolve();
+  #resolveActiveRetired: (() => void) | undefined;
   #lost = false;
   #shutdownPromise: Promise<void> | undefined;
+  #shutdownActual: Promise<void> | undefined;
   #boundLost: ((error?: unknown) => void) | undefined;
 
   public constructor(options: SshConnectionManagerOptions) {
@@ -195,28 +202,33 @@ export class SshConnectionManager {
     const start = telemetryStart();
     if (this.#phase !== "created") throw new SshConnectionError("ssh manager can start only once");
     this.#phase = "starting";
+    this.#startupPhaseRetired = new Promise<void>((resolve) => {
+      this.#resolveStartupPhase = resolve;
+    });
     let connection: SshTransportConnection | undefined;
     try {
       throwIfAbortedSync(signal);
       const key = await readPrivateKey(this.#config.clientKeyPath, this.#config.maxPrivateKeyBytes);
       this.#privateKey = key;
+      if (this.#phase !== "starting") throw new SshConnectionError("ssh start interrupted");
       const { host, port } = parseEndpoint(this.#config.endpoint);
       const timeoutMs = this.#config.connectTimeoutMs + this.#config.handshakeTimeoutMs;
       const controller = linkedSignal(signal);
       try {
+        this.#startupConnectionWork = this.#transport.connect(
+          {
+            host,
+            port,
+            username: this.#config.username,
+            hostKeySha256: this.#config.hostKeySha256,
+            privateKey: key,
+            connectTimeoutMs: this.#config.connectTimeoutMs,
+            handshakeTimeoutMs: this.#config.handshakeTimeoutMs,
+          },
+          controller.signal,
+        );
         connection = await raceBounded(
-          this.#transport.connect(
-            {
-              host,
-              port,
-              username: this.#config.username,
-              hostKeySha256: this.#config.hostKeySha256,
-              privateKey: key,
-              connectTimeoutMs: this.#config.connectTimeoutMs,
-              handshakeTimeoutMs: this.#config.handshakeTimeoutMs,
-            },
-            controller.signal,
-          ),
+          this.#startupConnectionWork,
           timeoutMs,
           "ssh start timed out",
           () => controller.abort(),
@@ -239,6 +251,7 @@ export class SshConnectionManager {
       connection.on("close", this.#boundLost);
       connection.on("error", this.#boundLost);
       this.#phase = "ready";
+      this.#retireStartupPhase();
       emitSpan(this.#telemetry, "ssh.connect", {
         operation: "connect",
         outcome: "ok",
@@ -251,7 +264,7 @@ export class SshConnectionManager {
         // Transport cleanup is best-effort; start must still fail closed and clear key material.
       }
       this.#phase = "failed";
-      this.#clearKey();
+      this.#retireStartupPhase();
       await this.shutdown().catch(() => undefined);
       emitSpan(this.#telemetry, "ssh.connect", {
         operation: "connect",
@@ -293,24 +306,35 @@ export class SshConnectionManager {
     let operationError: unknown;
     let operationFailed = false;
     let timedOut = false;
+    let openActual: Promise<SshSftpChannel> | undefined;
+    let operationActual: Promise<T> | undefined;
+    let closeActual: Promise<void> | undefined;
+    let lateCloseActual: Promise<void> | undefined;
     try {
       const connection = this.#connection;
       if (this.#phase !== "ready" || connection === undefined) throw new SshConnectionError("ssh connection is closed");
+      openActual = connection.openSftp(controller.signal);
       channel = await raceBounded(
-        connection.openSftp(controller.signal),
+        openActual,
         input?.openTimeoutMs ?? this.#config.sftpOpenTimeoutMs,
         "ssh sftp open timed out",
         () => {
           timedOut = true;
           controller.abort();
         },
-        (late) => late.destroy(),
+        (late) => {
+          late.destroy();
+          lateCloseActual = Promise.resolve().then(() => late.close());
+          void lateCloseActual.catch(() => undefined);
+        },
         controller.signal,
       );
       if (this.#phase !== "ready") throw new SshConnectionError("ssh connection is closed");
       opened = true;
+      const activeChannel = channel;
+      operationActual = Promise.resolve().then(() => operation(activeChannel.port, controller.signal));
       result = await raceBounded(
-        operation(channel.port, controller.signal),
+        operationActual,
         input?.operationTimeoutMs ?? this.#config.shutdownTimeoutMs,
         "ssh sftp operation timed out",
         () => {
@@ -335,8 +359,9 @@ export class SshConnectionManager {
     try {
       if (channel !== undefined) {
         const closingChannel = channel;
+        closeActual = Promise.resolve().then(() => closingChannel.close());
         await raceBounded(
-          closingChannel.close(),
+          closeActual,
           input?.closeTimeoutMs ?? this.#config.shutdownTimeoutMs,
           "ssh sftp close timed out",
           () => {
@@ -354,11 +379,14 @@ export class SshConnectionManager {
       }
     } finally {
       controller.dispose();
-      await lease.release();
+      const retirement = retirePermit(lease, () => [openActual, operationActual, closeActual, lateCloseActual]);
+      if (!timedOut) await retirement;
+      else void retirement.catch(() => undefined);
     }
 
     if (closeFailed) this.#failClosed("sftp-close-failed");
     if (operationFailed) {
+      if (timedOut) this.#failClosed("sftp-operation-uncertain");
       const outcome = timedOut ? "timeout" : input?.signal?.aborted === true ? "cancelled" : "error";
       emitSpan(this.#telemetry, "ssh.channel", {
         operation: "channel",
@@ -433,30 +461,47 @@ export class SshConnectionManager {
     let operationError: unknown;
     let operationFailed = false;
     let terminalSignal = false;
+    let timedOut = false;
+    let openActual: Promise<SshExecChannel> | undefined;
+    let operationActual: Promise<T> | undefined;
+    let closeActual: Promise<void> | undefined;
+    let lateCloseActual: Promise<void> | undefined;
     try {
       const connection = this.#connection;
       if (this.#phase !== "ready" || connection === undefined) throw new SshConnectionError("ssh connection is closed");
+      openActual = connection.openExec(input.wrappedCommand, openSignal.signal);
       channel = await raceBounded(
-        connection.openExec(input.wrappedCommand, openSignal.signal),
+        openActual,
         input.openTimeoutMs ?? this.#config.execOpenTimeoutMs,
         "ssh exec open timed out",
-        () => openSignal.abort(),
-        (late) => late.destroy(),
+        () => {
+          timedOut = true;
+          openSignal.abort();
+        },
+        (late) => {
+          late.destroy();
+          lateCloseActual = Promise.resolve().then(() => late.close());
+          void lateCloseActual.catch(() => undefined);
+        },
         openSignal.signal,
       );
       openSignal.dispose();
       if (this.#phase !== "ready") throw new SshConnectionError("ssh connection is closed");
       opened = true;
+      operationActual = (async () => {
+        const operationResult = await operation(channel.port);
+        const terminal = await channel.port.terminal();
+        terminalSignal = terminal.signal !== null;
+        return operationResult;
+      })();
       result = await raceBounded(
-        (async () => {
-          const operationResult = await operation(channel.port);
-          const terminal = await channel.port.terminal();
-          terminalSignal = terminal.signal !== null;
-          return operationResult;
-        })(),
+        operationActual,
         input.operationTimeoutMs ?? this.#config.shutdownTimeoutMs,
         "ssh exec operation timed out",
-        () => channel?.destroy(),
+        () => {
+          timedOut = true;
+          channel?.destroy();
+        },
       );
     } catch (error) {
       operationFailed = true;
@@ -472,11 +517,15 @@ export class SshConnectionManager {
     try {
       if (channel !== undefined) {
         const closingChannel = channel;
+        closeActual = Promise.resolve().then(() => closingChannel.close());
         await raceBounded(
-          closingChannel.close(),
+          closeActual,
           input.closeTimeoutMs ?? this.#config.shutdownTimeoutMs,
           "ssh exec close timed out",
-          () => closingChannel.destroy(),
+          () => {
+            timedOut = true;
+            closingChannel.destroy();
+          },
         );
       }
     } catch {
@@ -488,7 +537,9 @@ export class SshConnectionManager {
       }
     } finally {
       openSignal.dispose();
-      await lease.release();
+      const retirement = retirePermit(lease, () => [openActual, operationActual, closeActual, lateCloseActual]);
+      if (!timedOut) await retirement;
+      else void retirement.catch(() => undefined);
     }
 
     if (!operationFailed && terminalSignal) this.#failClosed("exec-ended-by-signal");
@@ -499,7 +550,7 @@ export class SshConnectionManager {
         outcome: "error",
         duration_ms: telemetryDuration(undefined, start),
       });
-      if (opened) this.#failClosed("exec-operation-failed");
+      if (opened || timedOut) this.#failClosed("exec-operation-failed");
       if (opened && isErrorInstance(operationError) && !isSshConnectionError(operationError)) throw operationError;
       throw redactError(operationError, "ssh exec operation failed");
     }
@@ -545,47 +596,59 @@ export class SshConnectionManager {
 
   public shutdown(): Promise<void> {
     if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
-    this.#shutdownPromise = this.#shutdown();
+    this.#phase = "closing";
+    for (const waiter of this.#waiters.splice(0))
+      this.#settleWaiter(waiter, new SshConnectionError("ssh connection is closed"));
+    const connection = this.#connection;
+    // Store actual ownership before timers/destroy callbacks can reenter.
+    this.#shutdownActual = this.#shutdownOwned(connection);
+    void this.#shutdownActual.catch(() => undefined);
+    this.#shutdownPromise = raceBounded(
+      this.#shutdownActual,
+      this.#config.shutdownTimeoutMs,
+      "ssh shutdown timed out",
+      () => connection?.destroy(),
+    ).catch(() => {
+      this.#phase = "failed";
+      throw new SshConnectionError("ssh shutdown uncertain");
+    });
     return this.#shutdownPromise;
   }
 
-  async #shutdown(): Promise<void> {
+  async #shutdownOwned(connection: SshTransportConnection | undefined): Promise<void> {
     if (this.#phase === "closed") return;
-    this.#phase = "closing";
+    await this.#startupPhaseRetired;
+    let startupConnection: SshTransportConnection | undefined;
     try {
-      for (const waiter of this.#waiters.splice(0))
-        this.#settleWaiter(waiter, new SshConnectionError("ssh connection is closed"));
-      this.#active.clear();
-      const connection = this.#connection;
-      this.#connection = undefined;
-      if (connection !== undefined) {
-        if (this.#boundLost !== undefined) {
-          try {
-            connection.off("close", this.#boundLost);
-          } catch {
-            // Listener cleanup must not block fail-closed shutdown.
-          }
-          try {
-            connection.off("error", this.#boundLost);
-          } catch {
-            // Listener cleanup must not block fail-closed shutdown.
-          }
-        }
-        await raceBounded(
-          Promise.resolve().then(() => connection.close()),
-          this.#config.shutdownTimeoutMs,
-          "ssh shutdown timed out",
-          () => connection.destroy(),
-        ).catch(() => undefined);
-      }
-    } finally {
-      this.#clearKey();
-      this.#phase = this.#lost ? "failed" : "closed";
+      startupConnection = await this.#startupConnectionWork;
+    } catch {
+      // Rejection occurs only after the transport's acquisition path retires.
     }
+    const ownedConnection = connection ?? startupConnection;
+    let connectionRetirement = Promise.resolve();
+    if (ownedConnection !== undefined) {
+      if (this.#boundLost !== undefined) {
+        ownedConnection.off("close", this.#boundLost);
+        ownedConnection.off("error", this.#boundLost);
+      }
+      // Safe transport termination starts independently, while key/material
+      // release remains behind both transport and active-operation retirement.
+      connectionRetirement = ownedConnection.close();
+    }
+    await Promise.all([this.#activeRetired, connectionRetirement]);
+    if (this.#connection === connection || this.#connection === ownedConnection) this.#connection = undefined;
+    this.#startupConnectionWork = undefined;
+    this.#clearKey();
+    this.#phase = this.#lost ? "failed" : "closed";
   }
 
   #createPermit(kind: SshPermitKind): SshPermitLease {
     const permit: ActivePermit = { released: false };
+    if (this.#active.size === 0) {
+      this.#activeRetired = new Promise<void>((resolve) => {
+        this.#resolveActiveRetired = resolve;
+      });
+    }
     this.#active.add(permit);
     return { kind, release: async () => this.#releasePermit(permit) };
   }
@@ -594,6 +657,10 @@ export class SshConnectionManager {
     if (permit.released) return;
     permit.released = true;
     this.#active.delete(permit);
+    if (this.#active.size === 0) {
+      this.#resolveActiveRetired?.();
+      this.#resolveActiveRetired = undefined;
+    }
     this.#drainQueue();
   }
 
@@ -633,6 +700,11 @@ export class SshConnectionManager {
       // Lifecycle callbacks are safety notifications and must not block cleanup.
     }
     void this.shutdown().catch(() => undefined);
+  }
+
+  #retireStartupPhase(): void {
+    this.#resolveStartupPhase?.();
+    this.#resolveStartupPhase = undefined;
   }
 
   #clearKey(): void {
@@ -677,7 +749,8 @@ export class Ssh2Transport implements SshTransport {
       const client = new Client();
       const wrapped = new Ssh2Connection(client);
       let settled = false;
-      const onPreReadyLost = () => finish(new SshConnectionError("ssh connection failed"));
+      let cancelled = false;
+      let terminalError: Error | undefined;
       const cleanup = () => {
         signal.removeEventListener("abort", onAbort);
         try {
@@ -685,27 +758,37 @@ export class Ssh2Transport implements SshTransport {
         } catch {
           // ssh2 listener cleanup is best-effort after terminal failure.
         }
-        wrapped.off("close", onPreReadyLost);
-        wrapped.off("error", onPreReadyLost);
+        wrapped.off("close", onPreReadyClose);
+        wrapped.off("error", onPreReadyError);
       };
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         cleanup();
-        if (error !== undefined) {
-          try {
-            client.destroy();
-          } catch {
-            // Connection is already failing; preserve the redacted rejection.
-          }
-          rejectConnect(error);
-        } else resolveConnect(wrapped);
+        error === undefined ? resolveConnect(wrapped) : rejectConnect(error);
       };
-      const onAbort = () => finish(new SshConnectionError("ssh connection aborted"));
-      const onReady = () => finish();
+      const destroyPending = (error: Error) => {
+        terminalError ??= error;
+        try {
+          client.destroy();
+        } catch {
+          // Absence of a close event preserves the pending acquisition owner.
+        }
+      };
+      const onAbort = () => {
+        cancelled = true;
+        destroyPending(new SshConnectionError("ssh connection aborted"));
+      };
+      const onReady = () => {
+        if (cancelled || terminalError !== undefined)
+          destroyPending(terminalError ?? new SshConnectionError("ssh connection aborted"));
+        else finish();
+      };
+      const onPreReadyError = () => destroyPending(new SshConnectionError("ssh connection failed"));
+      const onPreReadyClose = () => finish(terminalError ?? new SshConnectionError("ssh connection failed"));
       signal.addEventListener("abort", onAbort, { once: true });
-      wrapped.on("close", onPreReadyLost);
-      wrapped.on("error", onPreReadyLost);
+      wrapped.on("close", onPreReadyClose);
+      wrapped.on("error", onPreReadyError);
       client.once("ready", onReady);
       const pinHex = decodeOpenSshSha256Pin(options.hostKeySha256).toString("hex");
       const config: ConnectConfig = {
@@ -733,7 +816,7 @@ export class Ssh2Transport implements SshTransport {
       try {
         client.connect(config);
       } catch {
-        finish(new SshConnectionError("ssh connection failed"));
+        destroyPending(new SshConnectionError("ssh connection failed"));
       }
     });
   }
@@ -748,7 +831,12 @@ export class Ssh2Connection implements SshTransportConnection {
   readonly #onClientClose = () => this.#recordLost("close");
   readonly #sinkClientError = () => undefined;
   #lost: { event: "close" | "error"; error?: unknown } | undefined;
+  #closing = false;
   #closed = false;
+  #resolveRetirement: (() => void) | undefined;
+  readonly #retirement = new Promise<void>((resolve) => {
+    this.#resolveRetirement = resolve;
+  });
   public constructor(private readonly client: InstanceType<typeof Client>) {
     client.on("error", this.#onClientError);
     client.on("close", this.#onClientClose);
@@ -765,7 +853,7 @@ export class Ssh2Connection implements SshTransportConnection {
   }
   public openSftp(signal: AbortSignal): Promise<SshSftpChannel> {
     return new Promise((resolveOpen, rejectOpen) => {
-      if (this.#closed || this.#lost !== undefined) {
+      if (this.#closing || this.#closed || this.#lost !== undefined) {
         rejectOpen(new SshConnectionError("ssh connection is closed"));
         return;
       }
@@ -774,6 +862,7 @@ export class Ssh2Connection implements SshTransportConnection {
         return;
       }
       let settled = false;
+      let cancelled = false;
       let channel: Ssh2SftpChannel | undefined;
       const finish = (error?: Error, sftp?: SFTPWrapper) => {
         if (settled) {
@@ -782,34 +871,51 @@ export class Ssh2Connection implements SshTransportConnection {
         }
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        if (error !== undefined || sftp === undefined || signal.aborted) {
-          if (sftp !== undefined) destroySftpWrapper(sftp);
+        if (error !== undefined || sftp === undefined || signal.aborted || cancelled) {
+          if (sftp !== undefined) {
+            const failure =
+              error ?? new SshConnectionError(signal.aborted ? "ssh sftp open aborted" : "ssh sftp open failed");
+            void retireSftpWrapper(sftp).then(() => rejectOpen(failure));
+          }
+          // Error/no-channel callbacks after client.sftp issuance cannot prove
+          // the peer did not open the subsystem. No wrapper means no local
+          // retirement mechanism, so preserve uncertainty.
           channel?.destroy();
-          rejectOpen(
-            error ?? new SshConnectionError(signal.aborted ? "ssh sftp open aborted" : "ssh sftp open failed"),
-          );
           return;
         }
-        channel = new Ssh2SftpChannel(sftp);
-        resolveOpen(channel);
+        try {
+          channel = new Ssh2SftpChannel(sftp);
+          resolveOpen(channel);
+        } catch {
+          void retireSftpWrapper(sftp).then(() => rejectOpen(new SshConnectionError("ssh sftp open failed")));
+        }
       };
-      const onAbort = () => finish(new SshConnectionError("ssh sftp open aborted"));
+      // Abort bounds caller observation only. The actual open remains pending
+      // until ssh2 invokes its callback, at which point any late channel is destroyed.
+      const onAbort = () => {
+        cancelled = true;
+      };
       signal.addEventListener("abort", onAbort, { once: true });
       try {
         this.client.sftp((error, sftp) =>
           finish(error === undefined ? undefined : new SshConnectionError("ssh sftp open failed"), sftp),
         );
       } catch {
-        finish(new SshConnectionError("ssh sftp open failed"));
+        if (!settled) {
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          rejectOpen(new SshConnectionError("ssh sftp open failed"));
+        }
       }
     });
   }
   public openExec(command: string, signal: AbortSignal): Promise<SshExecChannel> {
     return new Promise((resolveOpen, rejectOpen) => {
-      if (this.#closed || this.#lost !== undefined)
+      if (this.#closing || this.#closed || this.#lost !== undefined)
         return rejectOpen(new SshConnectionError("ssh connection is closed"));
       if (signal.aborted) return rejectOpen(new SshConnectionError("ssh exec open aborted"));
       let settled = false;
+      let cancelled = false;
       const finish = (error?: Error | null, channel?: ClientChannel) => {
         if (settled) {
           if (channel !== undefined) destroyExecChannel(channel);
@@ -817,56 +923,68 @@ export class Ssh2Connection implements SshTransportConnection {
         }
         settled = true;
         signal.removeEventListener("abort", onAbort);
-        if ((error !== undefined && error !== null) || channel === undefined || signal.aborted) {
+        if (signal.aborted || cancelled) {
+          // Even an error/no-channel callback cannot prove the peer did not
+          // accept the exec request before transport loss. Keep the acquisition
+          // owner permanently unresolved for the outer VM/process owner.
           if (channel !== undefined) destroyExecChannel(channel);
-          rejectOpen(new SshConnectionError(signal.aborted ? "ssh exec open aborted" : "ssh exec open failed"));
+          return;
+        }
+        if ((error !== undefined && error !== null) || channel === undefined) {
+          // Once client.exec accepted the request, callback failure cannot prove
+          // that the peer did not start it. Preserve permanent uncertainty.
+          if (channel !== undefined) destroyExecChannel(channel);
           return;
         }
         try {
           resolveOpen(new Ssh2ExecChannel(channel));
         } catch {
           destroyExecChannel(channel);
-          rejectOpen(new SshConnectionError("ssh exec open failed"));
+          // The exec success callback proves remote acceptance; failed local
+          // channel wrapping cannot retire that command.
         }
       };
-      const onAbort = () => finish(new SshConnectionError("ssh exec open aborted"));
+      // Keep the actual callback owner alive after caller cancellation.
+      const onAbort = () => {
+        cancelled = true;
+      };
       signal.addEventListener("abort", onAbort, { once: true });
       try {
         this.client.exec(command, { pty: false, x11: false, agentForward: false } as never, (error, channel) =>
           finish(error, channel),
         );
       } catch {
-        finish(new SshConnectionError("ssh exec open failed"));
+        if (!settled) {
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          rejectOpen(new SshConnectionError("ssh exec open failed"));
+        }
       }
     });
   }
   public close(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
-    if (this.#lost?.event === "error") {
-      this.destroy();
-      return Promise.resolve();
-    }
-    return new Promise((resolveClose) => {
-      const resolveOnce = () => resolveClose();
+    if (this.#closed) return this.#retirement;
+    if (!this.#closing) {
+      this.#closing = true;
       try {
-        this.client.once("close", resolveOnce);
-        this.client.end();
+        if (this.#lost?.event === "error") this.client.destroy();
+        else this.client.end();
       } catch {
         try {
-          this.client.off("close", resolveOnce);
+          this.client.destroy();
         } catch {
-          // Already terminal or listener cleanup failed; close remains best-effort.
+          // Absence of the client close event preserves retirement uncertainty.
         }
-        this.destroy();
-        resolveClose();
       }
-    });
+    }
+    return this.#retirement;
   }
   public destroy(): void {
+    this.#closing = true;
     try {
       this.client.destroy();
-    } finally {
-      this.#markClosed();
+    } catch {
+      // Absence of the client close event preserves retirement uncertainty.
     }
   }
   #recordLost(event: "close" | "error", error?: unknown): void {
@@ -896,7 +1014,10 @@ export class Ssh2Connection implements SshTransportConnection {
   }
   #markClosed(): void {
     if (this.#closed) return;
+    this.#closing = true;
     this.#closed = true;
+    this.#resolveRetirement?.();
+    this.#resolveRetirement = undefined;
     this.#markErrored();
     try {
       this.client.off("close", this.#onClientClose);
@@ -908,6 +1029,7 @@ export class Ssh2Connection implements SshTransportConnection {
 
 class Ssh2SftpChannel implements SshSftpChannel {
   public readonly port: CogsSftpPort;
+  readonly #concretePort: Ssh2SftpPort;
   #closed = false;
   readonly #closeWaiters = new Set<() => void>();
   readonly #onClose = () => {
@@ -917,16 +1039,18 @@ class Ssh2SftpChannel implements SshSftpChannel {
     this.#closeWaiters.clear();
   };
   public constructor(private readonly sftp: SFTPWrapper) {
-    this.port = new Ssh2SftpPort(sftp);
+    this.#concretePort = new Ssh2SftpPort(sftp);
+    this.port = this.#concretePort;
     try {
       this.sftp.once("close", this.#onClose);
     } catch {
-      this.#onClose();
+      destroySftpWrapper(this.sftp);
+      throw new Error("sftp close observation failed");
     }
   }
   public close(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
-    return new Promise((resolveClose, rejectClose) => {
+    if (this.#closed) return this.#concretePort.retirement();
+    const channelClose = new Promise<void>((resolveClose, rejectClose) => {
       let settled = false;
       const done = () => {
         if (settled) return;
@@ -945,11 +1069,22 @@ class Ssh2SftpChannel implements SshSftpChannel {
         }
       }
     });
+    return channelClose.then(() => this.#concretePort.retirement());
   }
   public destroy(): void {
     destroySftpWrapper(this.sftp);
-    this.#onClose();
   }
+}
+
+function retireSftpWrapper(sftp: SFTPWrapper): Promise<void> {
+  return new Promise<void>((resolve) => {
+    try {
+      sftp.once("close", resolve);
+    } catch {
+      return;
+    }
+    destroySftpWrapper(sftp);
+  });
 }
 
 function destroySftpWrapper(sftp: SFTPWrapper): void {
@@ -968,9 +1103,13 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   readonly #stderr = new Set<(chunk: Buffer) => void>();
   #terminalResolve: ((value: CogsExecTerminal) => void) | undefined;
   #terminalReject: ((error: Error) => void) | undefined;
+  #retirementResolve: (() => void) | undefined;
   readonly #terminal = new Promise<CogsExecTerminal>((resolve, reject) => {
     this.#terminalResolve = resolve;
     this.#terminalReject = reject;
+  });
+  readonly #retirement = new Promise<void>((resolve) => {
+    this.#retirementResolve = resolve;
   });
   #exit: CogsExecTerminal | undefined;
   #settled = false;
@@ -1023,21 +1162,13 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
     });
   }
   public close(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
-    return new Promise((resolveClose, rejectClose) => {
-      const done = () => resolveClose();
-      try {
-        this.channel.once("close", done);
-        this.channel.close();
-      } catch {
-        try {
-          this.channel.off("close", done);
-        } catch {
-          // Listener cleanup is best-effort.
-        }
-        rejectClose(new Error("exec close failed"));
-      }
-    });
+    if (this.#closed) return this.#retirement;
+    try {
+      this.channel.close();
+    } catch {
+      // A failed close request cannot retire an accepted remote command.
+    }
+    return this.#retirement;
   }
   public destroy(): void {
     destroyExecChannel(this.channel);
@@ -1091,6 +1222,10 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
     this.#settled = true;
     this.#cleanup();
     this.#terminalResolve?.(this.#exit);
+    if (this.#exit.code !== null) {
+      this.#retirementResolve?.();
+      this.#retirementResolve = undefined;
+    }
   }
   #fail(): void {
     if (this.#settled) return;
@@ -1157,7 +1292,20 @@ function destroyExecChannel(channel: ClientChannel): void {
 }
 
 class Ssh2SftpPort implements CogsSftpPort {
+  readonly #lateWork = new Set<Promise<unknown>>();
   public constructor(private readonly sftp: SFTPWrapper) {}
+  public async retirement(): Promise<void> {
+    for (;;) {
+      const pending = [...this.#lateWork];
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+      await Promise.resolve();
+    }
+  }
+  private trackLate(work: Promise<unknown>): void {
+    this.#lateWork.add(work);
+    void work.finally(() => this.#lateWork.delete(work)).catch(() => undefined);
+  }
   public lstat(path: string, _signal: AbortSignal): Promise<CogsSftpStats> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -1200,32 +1348,45 @@ class Ssh2SftpPort implements CogsSftpPort {
   public open(path: string, mode: "r" | "wx", signal: AbortSignal): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const cleanupLateHandle = (handle: Buffer) => {
-        this.closeHandle(handle, new AbortController().signal)
+      let cancelled = false;
+      const cleanupLateHandle = (handle: Buffer): Promise<void> => {
+        const cleanup = this.closeHandle(handle, new AbortController().signal)
           .then(() => (mode === "wx" ? this.unlink(path, new AbortController().signal) : undefined))
           .catch(() => {
             destroySftpWrapper(this.sftp);
+            throw new Error("sftp late handle cleanup failed");
           });
+        this.trackLate(cleanup);
+        return cleanup;
       };
       const finish = (error?: unknown, handle?: Buffer) => {
         if (settled) {
-          if (Buffer.isBuffer(handle)) cleanupLateHandle(handle);
+          if (Buffer.isBuffer(handle)) void cleanupLateHandle(handle).catch(() => undefined);
           return;
         }
         settled = true;
         signal.removeEventListener("abort", onAbort);
         try {
-          if (error !== undefined && error !== null) reject(toCogsSftpError(error));
-          else if (signal.aborted) {
-            if (Buffer.isBuffer(handle)) cleanupLateHandle(handle);
-            reject(new Error("sftp open aborted"));
+          if (error !== undefined && error !== null) {
+            const mapped = toCogsSftpError(error);
+            if (mapped instanceof SftpCallbackUncertainError) return;
+            reject(mapped);
+          } else if (signal.aborted || cancelled) {
+            if (Buffer.isBuffer(handle)) {
+              void cleanupLateHandle(handle).then(
+                () => reject(new Error("sftp open aborted")),
+                () => reject(new Error("sftp operation failed")),
+              );
+            } else reject(new Error("sftp open aborted"));
           } else if (isValidHandle(handle)) resolve(handle);
           else reject(new Error("invalid handle"));
         } catch {
           reject(new Error("sftp operation failed"));
         }
       };
-      const onAbort = () => finish(new Error("sftp open aborted"));
+      const onAbort = () => {
+        cancelled = true;
+      };
       signal.addEventListener("abort", onAbort, { once: true });
       if (mode === "r") this.sftp.open(path, mode, finish);
       else this.sftp.open(path, mode, { mode: 0o600 }, finish);
@@ -1446,10 +1607,13 @@ function settleSftpCallback<T>(
   convert: () => T,
 ): void {
   if (isSettled()) return;
-  markSettled();
   try {
-    resolve(convert());
+    const value = convert();
+    markSettled();
+    resolve(value);
   } catch (error) {
+    if (error instanceof SftpCallbackUncertainError) return;
+    markSettled();
     reject(sanitizeSftpError(error));
   }
 }
@@ -1474,14 +1638,21 @@ function isCogsSftpStatus(value: unknown): value is CogsSftpStatus {
   return value === "eof" || value === "no_such_file" || value === "permission_denied" || value === "failure";
 }
 
+class SftpCallbackUncertainError extends Error {}
+
 function toCogsSftpError(error: unknown): Error {
   try {
     const status = sftpStatusFromError(error);
     if (status !== undefined) return new CogsSftpStatusError(status);
+    if (error !== null && typeof error === "object") {
+      const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+      if (descriptor !== undefined && "value" in descriptor && Number.isSafeInteger(descriptor.value))
+        return new Error("sftp operation failed");
+    }
   } catch {
-    // Hostile error objects/proxies are redacted below.
+    // Hostile error objects/proxies remain uncertain below.
   }
-  return new Error("sftp operation failed");
+  return new SftpCallbackUncertainError("sftp callback outcome uncertain");
 }
 
 function sftpStatusFromError(error: unknown): CogsSftpStatus | undefined {
@@ -1656,6 +1827,23 @@ function linkedSignal(parent: AbortSignal | undefined): AbortController & { disp
   return controller;
 }
 
+async function retirePermit(
+  lease: SshPermitLease,
+  current: () => readonly (Promise<unknown> | undefined)[],
+): Promise<void> {
+  const joined = new Set<Promise<unknown>>();
+  for (;;) {
+    const pending = current().filter((work): work is Promise<unknown> => work !== undefined && !joined.has(work));
+    if (pending.length === 0) break;
+    for (const work of pending) joined.add(work);
+    await Promise.allSettled(pending);
+    // Allow late-open cleanup callbacks registered on the same promises to add
+    // their actual close work before the registration frontier is sealed.
+    await Promise.resolve();
+  }
+  await lease.release();
+}
+
 function raceBounded<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -1664,9 +1852,17 @@ function raceBounded<T>(
   onLate?: (value: T) => void,
   signal?: AbortSignal,
 ): Promise<T> {
+  const deadlineAt = performance.now() + timeoutMs;
   let settled = false;
   let timer: NodeJS.Timeout | undefined;
   let abort: (() => void) | undefined;
+  const invokeTimeout = () => {
+    try {
+      onTimeout();
+    } catch {
+      // Timeout cleanup is best-effort and must not mask the bounded failure.
+    }
+  };
   const timeout = new Promise<never>((_, reject) => {
     const rejectOnce = (error: SshConnectionError) => {
       if (settled) return;
@@ -1676,37 +1872,38 @@ function raceBounded<T>(
     timer = setTimeout(() => {
       if (settled) return;
       rejectOnce(new SshConnectionError(timeoutMessage));
-      try {
-        onTimeout();
-      } catch {
-        // Timeout cleanup is best-effort and must not mask the bounded failure.
-      }
+      invokeTimeout();
     }, timeoutMs);
     if (signal !== undefined) {
       abort = () => {
-        try {
-          onTimeout();
-        } catch {
-          // Abort cleanup is best-effort and must not mask the bounded failure.
-        }
+        invokeTimeout();
         rejectOnce(new SshConnectionError("ssh operation aborted"));
       };
       if (signal.aborted) abort();
       else signal.addEventListener("abort", abort, { once: true });
     }
   });
-  promise.then(
-    (value) => {
-      if (!settled) return;
+  const observed = promise.then((value) => {
+    if (!settled && performance.now() >= deadlineAt) {
+      settled = true;
+      invokeTimeout();
+      try {
+        onLate?.(value);
+      } catch {
+        // Late cleanup is best-effort; the deadline result remains failure.
+      }
+      throw new SshConnectionError(timeoutMessage);
+    }
+    if (settled) {
       try {
         onLate?.(value);
       } catch {
         // Late cleanup is best-effort; the caller has already observed the bounded failure.
       }
-    },
-    () => undefined,
-  );
-  return Promise.race([promise, timeout]).finally(() => {
+    }
+    return value;
+  });
+  return Promise.race([observed, timeout]).finally(() => {
     settled = true;
     if (timer !== undefined) clearTimeout(timer);
     if (signal !== undefined && abort !== undefined) signal.removeEventListener("abort", abort);

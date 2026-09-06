@@ -586,12 +586,12 @@ test("SFTP adversarial cases cover overlap, growth, cleanup failure, Unicode bou
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(fixture.transport.connection.destroyCalls > 0, "late channel was destroyed");
   } finally {
-    await fixture.manager.shutdown();
+    await fixture.manager.shutdown().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("real manager withSftp hard timeout destroys noncooperative operation before releasing permit", async () => {
+test("real manager withSftp timeout destroys channel but retains permit until actual operation retires", async () => {
   const sftp = new FakeSftp();
   const fixture = await managerFor(sftp, 1);
   try {
@@ -606,10 +606,14 @@ test("real manager withSftp hard timeout destroys noncooperative operation befor
     assert.ok(Date.now() - startedAt < 250);
     assert.equal(sftp.active, 0);
     assert.ok(fixture.transport.connection.destroyCalls > 0);
-    await fixture.manager.withSftp({ operationTimeoutMs: 50, closeTimeoutMs: 10 }, async () => undefined);
+    await assert.rejects(
+      fixture.manager.withSftp({ operationTimeoutMs: 50, closeTimeoutMs: 10 }, async () => undefined),
+      /ssh connection is closed|permit acquisition timed out/,
+    );
+    await assert.rejects(fixture.manager.shutdown(), /shutdown uncertain/);
     assert.equal(sftp.active, 0);
   } finally {
-    await fixture.manager.shutdown();
+    await fixture.manager.shutdown().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -705,7 +709,7 @@ test("successful SFTP operation rejects and revokes readiness when channel close
     assert.deepEqual(lost, ["sftp-close-failed"]);
     await assert.rejects(ports.read({ path: "/workspace/a.txt" }), /closed/);
   } finally {
-    await fixture.manager.shutdown();
+    await assert.rejects(fixture.manager.shutdown(), /shutdown uncertain/);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

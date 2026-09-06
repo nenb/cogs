@@ -65,6 +65,8 @@ Stop and preserve uncertainty on any request to bypass the VM, use a container f
 
 ## Egress raw-path capability
 
+**Section authority:** [Authority: ADR 0308 route/path remediation](../../adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md#narrow-implementation-choices).
+
 Cogs authorizes the exact raw HTTP origin-form target received by Envoy. It does not URL-decode, Unicode-normalize, merge slashes, remove dot segments, or reinterpret a target before authorization. Envoy does not normalize paths and rejects escaped slashes. Authorization rejects percent encoding, non-ASCII bytes, whitespace/control bytes, backslashes, fragments, semicolons, repeated slashes, and segments made only of dots. Query-bearing routes accept only their sorted exact ASCII `key=value` list.
 
 The supported built-in path capabilities are GitHub smart HTTP fetch for ASCII owner/repository names, unscoped npm metadata and tarballs with ASCII names, and the declared ASCII PyPI index/file targets. Real npm clients encode scoped metadata as `/@scope%2fpackage`; scoped npm is therefore unsupported. Encoded or Unicode Git, npm, and PyPI names are unsupported. Requests outside this capability fail closed.
@@ -72,6 +74,8 @@ The supported built-in path capabilities are GitHub smart HTTP fetch for ASCII o
 Route patterns use a closed exact/prefix/segment-glob grammar. A star consumes one or more bytes within one segment. Cogs uses bounded iterative matching and emits separately derived RE2 for Envoy; it never executes configured or rendered route text as a JavaScript regular expression.
 
 ## Injected credential confidentiality
+
+**Section authority:** [Authority: ADR 0308 credential-reflection boundary](../../adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md#narrow-implementation-choices).
 
 Cogs removes the configured credential header from upstream responses and excludes injected credentials from its structured logs, telemetry, route plan, and ordinary errors. This blocks direct same-name response-header reflection by the configured route.
 

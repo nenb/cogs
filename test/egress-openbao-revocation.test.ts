@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import type { OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
 import {
@@ -718,34 +719,63 @@ test("hung and late fetch/token sources have bounded safe failure with no creden
         return json(String(url).includes("/data/") ? dataSecret("synthetic-value") : meta(1));
       },
     });
-    await assert.rejects(capture, generic);
+    let observed = false;
+    void capture
+      .finally(() => {
+        observed = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(observed, false, "deadline requests abort but retains actual fetch ownership");
     settle?.(json(stage === 2 ? dataSecret("synthetic-value") : meta(1)));
-    await flush();
+    await assert.rejects(capture, generic);
     assert.equal(count, stage);
   }
   let callback: ((token: string) => Promise<void>) | undefined;
+  let finishIdentity!: () => void;
   let fetches = 0;
-  await assert.rejects(
-    createOpenBaoEgressRevocationBinding({
-      ...aggregateBase({
-        timeoutMs: 10,
-        identity: {
-          withToken: async (_s, op) => {
-            callback = op;
-            await new Promise<void>(() => undefined);
-          },
+  const identityCapture = createOpenBaoEgressRevocationBinding({
+    ...aggregateBase({
+      timeoutMs: 10,
+      identity: {
+        withToken: async (_s, op) => {
+          callback = op;
+          await new Promise<void>((resolve) => {
+            finishIdentity = resolve;
+          });
         },
-      }),
-      routePlan: plan(["users/user-a/a"]),
-      fetchImpl: async () => {
-        fetches++;
-        return json(meta(1));
       },
     }),
-    generic,
-  );
+    routePlan: plan(["users/user-a/a"]),
+    fetchImpl: async () => {
+      fetches++;
+      return json(meta(1));
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
   await assert.rejects(callback?.("synthetic-token") ?? Promise.resolve());
+  finishIdentity();
+  await assert.rejects(identityCapture, generic);
   assert.equal(fetches, 0);
+});
+
+test("OpenBao deadline rejects completion after an event-loop stall before the timer callback", async () => {
+  let calls = 0;
+  const capture = createOpenBaoEgressRevocationBinding({
+    ...aggregateBase({ timeoutMs: 10 }),
+    routePlan: plan(["users/user-a/a"]),
+    fetchImpl: async (url) => {
+      calls += 1;
+      await Promise.resolve();
+      const until = performance.now() + 25;
+      while (performance.now() < until) {
+        // Synthetic event-loop stall proves completion-time deadline checking.
+      }
+      return json(String(url).includes("/data/") ? dataSecret("synthetic-value") : meta(1));
+    },
+  });
+  await assert.rejects(capture, generic);
+  assert.equal(calls, 1);
 });
 
 test("authority, mount and canonical handle qualify identity, not only numeric version", async () => {

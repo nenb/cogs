@@ -15,6 +15,7 @@ import {
   readReadyWorkerDescriptor,
   readWorkerDescriptor,
   verifyWorkerIdentity,
+  writeWorkerCleanupReceipt,
 } from "../dev/launcher/control.ts";
 import { startOtlpFixture } from "../dev/launcher/otlp-fixture.ts";
 import { createState, readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
@@ -83,6 +84,10 @@ async function readyWorker(s: Awaited<ReturnType<typeof state>>["state"], childI
     seams(childIdentity) as never,
   );
   startup.startup.dispose();
+  await writeWorkerCleanupReceipt(
+    s,
+    Object.freeze({ identity: Object.freeze(() => childIdentity), receiptPid: childPid }),
+  );
 }
 
 test("control writes 0600 token and worker descriptor without exposing token in metadata", async () => {
@@ -511,7 +516,7 @@ test("control enforces admission ordering and repeated transitions", async () =>
   }
 });
 
-test("control cleanup keys pre-spawn to parent and child-bound to child only", async () => {
+test("control cleanup permits absent pre-spawn parent but retains every child-bound generation", async () => {
   const first = await state();
   try {
     await createApiToken(first.state, seams());
@@ -547,16 +552,19 @@ test("control cleanup keys pre-spawn to parent and child-bound to child only", a
     });
     await assert.rejects(() => cleanupControlFiles(second.state, childOnlySeams as never));
     await assert.rejects(() => verifyWorkerIdentity(second.state, seams(digest)));
-    await cleanupControlFiles(
-      second.state,
-      Object.freeze({
-        randomBytes: seams().randomBytes,
-        identity: Object.freeze((pid: number) => {
-          if (pid === 888) throw new Error("parent identity must not be observed");
-          return pid === 999 ? digest : null;
-        }),
-      }) as never,
+    await assert.rejects(() =>
+      cleanupControlFiles(
+        second.state,
+        Object.freeze({
+          randomBytes: seams().randomBytes,
+          identity: Object.freeze((pid: number) => {
+            if (pid === 888) throw new Error("parent identity must not be observed");
+            return pid === 999 ? digest : null;
+          }),
+        }) as never,
+      ),
     );
+    assert.equal((await readWorkerDescriptor(second.state)).stage, "child-bound");
   } finally {
     await rm(second.dir, { recursive: true, force: true });
   }

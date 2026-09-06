@@ -233,7 +233,10 @@ test("bash publisher failure cancels command and poisons SSH readiness", async (
 test("bash hard timeout aborts acquire/open before channel starts", async () => {
   const { manager, transport } = await started(50);
   const ports = createSshBashToolPort({ manager, timeoutMs: 5, idleTimeoutMs: 100 });
-  await assert.rejects(ports.bash({ command: "printf late" }), /ssh exec operation failed|ssh exec open aborted/);
+  await assert.rejects(
+    ports.bash({ command: "printf late" }),
+    /ssh operation aborted|ssh exec operation failed|ssh exec open aborted/,
+  );
   assert.equal(transport.connection.openSignals[0]?.aborted, true);
 });
 

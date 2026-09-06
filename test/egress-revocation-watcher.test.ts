@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import {
   type CogsEgressRevocationActions,
@@ -7,6 +8,7 @@ import {
   type CogsEgressRevocationSource,
   type CogsEgressRevocationTimers,
   createCogsEgressRevocationWatcher,
+  failedCogsEgressRevocationRetirement,
 } from "../src/egress/revocation-watcher.ts";
 
 const raw = "host.example/path?token=secret credential handle workspace";
@@ -143,6 +145,57 @@ test("poll throw, timeout, malformed snapshots, extra keys, unsafe clock, and un
     ),
     generic,
   );
+});
+
+test("initial source completion after a synchronous event-loop stall cannot publish ready", async () => {
+  const actions = actionLog();
+  await assert.rejects(
+    createCogsEgressRevocationWatcher(
+      {
+        read: () => {
+          const until = performance.now() + 75;
+          while (performance.now() < until) {
+            // Hold the loop so promise continuations can precede timer callbacks.
+          }
+          return Promise.resolve(snap());
+        },
+      },
+      actions.sink,
+      opts({ setTimeout, clearTimeout }),
+    ),
+    generic,
+  );
+  assert.deepEqual(actions.calls, [
+    "denyNew:source_unavailable",
+    "drain:source_unavailable",
+    "replace:source_unavailable",
+  ]);
+});
+
+test("initial source timeout rejects observation but exposes actual retirement", async () => {
+  const timers = new ManualTimers();
+  let finish!: (value: CogsEgressRevocationSnapshot) => void;
+  const creating = createCogsEgressRevocationWatcher(
+    { read: () => new Promise<CogsEgressRevocationSnapshot>((resolve) => (finish = resolve)) },
+    actionLog().sink,
+    opts(timers),
+  );
+  timers.tick(50);
+  await flush();
+  await flush();
+  const failure = await creating.catch((error: unknown) => error);
+  assert.ok(failure instanceof CogsEgressRevocationError);
+  const retirement = failedCogsEgressRevocationRetirement(failure);
+  assert.ok(retirement);
+  let retired = false;
+  void retirement.then(() => {
+    retired = true;
+  });
+  await flush();
+  assert.equal(retired, false);
+  finish(snap());
+  await retirement;
+  assert.equal(retired, true);
 });
 
 test("initial source failure and changed snapshots run transition actions before create rejects", async () => {
@@ -296,12 +349,21 @@ test("close is concurrent/idempotent, cancels active work and timers, and preven
   const a = watcher.close();
   const b = watcher.close();
   assert.equal(a, b);
-  timers.tick(50);
-  await Promise.all([a, b]);
+  timers.tick(200);
+  await assert.rejects(a, generic);
+  await assert.rejects(b, generic);
   assert.equal(aborted, true);
   assert.equal(watcher.ready, false);
-  assert.equal(timers.live, 0);
+  let retired = false;
+  void watcher.retirement().then(() => {
+    retired = true;
+  });
+  await flush();
+  assert.equal(retired, false);
   finish(snap({ revoked: true }));
+  await watcher.retirement();
+  assert.equal(retired, true);
+  assert.equal(timers.live, 0);
   await flush();
   timers.tick(500);
   await flush();
@@ -345,7 +407,10 @@ function symbolExtra(): CogsEgressRevocationSnapshot {
   return { ...baseline, [Symbol(raw)]: raw } as unknown as CogsEgressRevocationSnapshot;
 }
 
-function opts(timers: ManualTimers, patch: Partial<Parameters<typeof createCogsEgressRevocationWatcher>[2]> = {}) {
+function opts(
+  timers: CogsEgressRevocationTimers,
+  patch: Partial<Parameters<typeof createCogsEgressRevocationWatcher>[2]> = {},
+) {
   return {
     baseline,
     pollIntervalMs: 50,

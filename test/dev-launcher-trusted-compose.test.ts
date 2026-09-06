@@ -96,9 +96,9 @@ test("trusted composition factory starts in exact order, proves ready, and close
     assert.equal(close1, close2);
     await close1;
     assert.deepEqual(calls, [
+      "lifecycle-shutdown",
       "api-close",
       "pi-dispose",
-      "lifecycle-shutdown",
       "egress-close",
       "ssh-shutdown",
       "telemetry-close",
@@ -115,7 +115,7 @@ test("trusted composition factory starts in exact order, proves ready, and close
   }
 });
 
-test("trusted composition attempts all registered cleanup despite close failures", async () => {
+test("trusted composition starts API and Pi cleanup but blocks dependents on failure", async () => {
   const fixture = await makeFixture();
   try {
     const calls: string[] = [];
@@ -146,21 +146,40 @@ test("trusted composition attempts all registered cleanup despite close failures
     const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
     calls.length = 0;
     await assert.rejects(runtime.close(), /launcher trusted composition failed/);
-    assert.deepEqual(calls, [
-      "bad-api-close",
-      "pi-dispose",
-      "lifecycle-shutdown",
-      "egress-close",
-      "ssh-shutdown",
-      "bad-telemetry-close",
-      "fixture-close",
-      "otlp-reset",
-      "otlp-close",
-      "openbao-close",
-      "api-token-dispose",
-      "skills-close",
-      "ssh-key-close",
-    ]);
+    assert.deepEqual(calls, ["lifecycle-shutdown", "bad-api-close", "pi-dispose"]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted lifecycle shutdown owns real cleanup and cannot report stopped after Pi uncertainty", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    let lifecycle: ReturnType<typeof fakeLifecycle> | undefined;
+    const wrapped = Object.freeze({
+      ...base,
+      createLifecycle: (options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0]) => {
+        lifecycle = fakeLifecycle(options, calls);
+        return lifecycle as never;
+      },
+      createPi: async (options: Parameters<NonNullable<typeof base.createPi>>[0]) => {
+        const pi = await (base.createPi as NonNullable<typeof base.createPi>)(options);
+        return Object.freeze({
+          ...pi,
+          disposeOwnedRuntime: async () => {
+            throw new Error("synthetic uncertain Pi cleanup");
+          },
+        });
+      },
+    });
+    await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
+    assert.ok(lifecycle);
+    await assert.rejects(lifecycle.requestShutdown("api-shutdown"), /launcher trusted composition failed/);
+    assert.equal(lifecycle.state, "failed");
+    assert.equal(calls.includes("egress-close"), false);
+    assert.equal(calls.includes("ssh-shutdown"), false);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -541,7 +560,7 @@ test("trusted composition uses Pi-owned cleanup success and rejects cleanup fail
     const runtime = await createTrustedWorkerRuntime(fixture.state, new AbortController().signal, wrapped);
     await assert.rejects(runtime.close(), /launcher trusted composition failed/);
     assert.equal(calls.includes("pi-owned-fail"), true);
-    assert.equal(calls.includes("egress-close"), true);
+    assert.equal(calls.includes("egress-close"), false);
     assert.equal(JSON.stringify(calls).includes("SECRET"), false);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -963,7 +982,7 @@ test("trusted composition lifecycle stopped after return enters same cleanup", a
   }
 });
 
-test("trusted composition continues all later cleanup after individual cleanup failures", async () => {
+test("trusted composition blocks dependent cleanup after an owner failure", async () => {
   for (const failing of [
     "api",
     "pi",
@@ -1112,7 +1131,7 @@ test("trusted composition continues all later cleanup after individual cleanup f
         wrapped as unknown as Partial<TrustedCompositionSeams>,
       );
       await assert.rejects(runtime.close(), /launcher trusted composition failed/);
-      assert.equal(calls.includes("ssh-key-close"), true);
+      assert.equal(calls.includes("ssh-key-close"), failing === "ssh-key");
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -1365,6 +1384,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
         server.once("error", reject);
         server.listen(0, "127.0.0.1", () => resolve());
       });
+      server.unref();
       const address = server.address();
       const port = typeof address === "object" && address !== null ? address.port : 0;
       let closePromise: Promise<void> | undefined;
@@ -1456,6 +1476,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
         cleanup: "owned" as const,
       });
     },
+    cleanupEnvoyBinary: async () => undefined,
     startEnvoyEgress: async (options) => {
       calls.push("egress-start");
       captured.launch = options.launchDocument;
@@ -1605,12 +1626,14 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
 }
 function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0], calls: string[]) {
   let ready = false;
+  let failed = false;
+  let shutdown: Promise<void> | undefined;
   return Object.freeze({
     get ready() {
       return ready;
     },
     get state() {
-      return ready ? "ready" : "created";
+      return failed ? "failed" : ready ? "ready" : shutdown === undefined ? "created" : "stopped";
     },
     start: async () => {
       for (const dep of options.dependencies) {
@@ -1620,10 +1643,29 @@ function fakeLifecycle(options: Parameters<TrustedCompositionSeams["createLifecy
       ready = true;
       calls.push("lifecycle-ready");
     },
-    requestShutdown: async () => {
+    requestShutdown: (_reason?: string) => {
+      if (shutdown !== undefined) return shutdown;
       calls.push("lifecycle-shutdown");
-      for (const dep of [...options.dependencies].reverse()) await dep.shutdown(new AbortController().signal);
       ready = false;
+      shutdown = (async () => {
+        try {
+          if (options.shutdownOwner !== undefined) {
+            const controller = new AbortController();
+            const work = options.shutdownOwner(
+              Object.freeze({ signal: controller.signal, deadlineAt: performance.now() + 10_000 }),
+            );
+            await Promise.all([work.done, work.retired]);
+          } else {
+            for (const dep of [...options.dependencies].reverse()) await dep.shutdown(new AbortController().signal);
+          }
+          options.onEvent?.({ state: "stopped", ready: false, reason: "test" });
+        } catch (error) {
+          failed = true;
+          options.onEvent?.({ state: "failed", ready: false, reason: "cleanup-uncertain" });
+          throw error;
+        }
+      })();
+      return shutdown;
     },
   });
 }
