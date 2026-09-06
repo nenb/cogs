@@ -440,17 +440,15 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "bad_limit");
     const after = decodeCursor(url.searchParams.get("after"));
     const page = validateEntriesPage(await callPort((signal) => options.history.entries({ after, limit, signal })));
-    return safeWriteJson(
-      response,
-      200,
-      {
-        version: "cogs.entries/v1alpha1",
-        entries: page.entries,
-        next: page.nextAfter === undefined ? undefined : encodeCursor(page.nextAfter),
-      },
-      maxResponseBytes,
-      correlationId,
-    );
+    const body = {
+      version: "cogs.entries/v1alpha1",
+      entries: page.entries,
+      next: page.nextAfter === undefined ? undefined : encodeCursor(page.nextAfter),
+    };
+    // v1 contains whole entries only. Never advance over omitted content.
+    if (Buffer.byteLength(JSON.stringify(body)) > maxResponseBytes)
+      throw new HttpError(413, "history_entry_requires_fragments");
+    return safeWriteJson(response, 200, body, maxResponseBytes, correlationId);
   }
 
   function handleEvents(url: URL, request: IncomingMessage, response: ServerResponse): void {

@@ -116,7 +116,7 @@ test("accepts first real WAL sequence zero and rejects recovered-baseline comple
   assert.equal(recoveredQueue.ready, false);
 });
 
-test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, and malformed denied logs poison", async () => {
+test("unknown, duplicate, old, route mismatch, WAL readiness loss, and malformed denied logs poison", async () => {
   const cases: Array<(wal: FakeWal, queue: ReturnType<typeof createCogsEgressCompletionQueue>) => Promise<void>> = [
     async (_wal, queue) => queue.onCompletionLine(line({ intent_id: "unknown" })),
     async (wal, queue) => {
@@ -139,11 +139,6 @@ test("unknown, duplicate, old, route mismatch, WAL readiness loss, full queue, a
     async (wal, queue) => {
       wal.ready = false;
       await queue.onCompletionLine(line());
-    },
-    async (wal, queue) => {
-      wal.records = [record(2, "i", "r"), record(3, "j", "r")];
-      await queue.onCompletionLine(line());
-      await queue.onCompletionLine(line({ intent_id: "j" }));
     },
     async (_wal, queue) => queue.onCompletionLine(line({ intent_id: "-", route_id: raw })),
     async (_wal, queue) => queue.onCompletionLine(line({ intent_id: "", route_id: "" })),
@@ -234,6 +229,53 @@ test("constructor, drain bounds, close idempotence, and accept-after-close are g
   wal.ready = true;
   assert.equal(loss.ready, false);
   assert.throws(() => loss.drain(1), generic);
+});
+
+test("continuous correlation survives diagnostic saturation and collector outage with exact accounting", async () => {
+  const wal = fakeWal([]);
+  let observed = 0;
+  const telemetry = Object.freeze({
+    ready: true,
+    enqueue: () => {
+      observed++;
+      throw new Error("synthetic outage");
+    },
+    close: async () => undefined,
+    snapshot: () => ({ queued: 0, exported: 0, dropped: observed, failed: 0, depth: 0 }),
+  });
+  const queue = createCogsEgressCompletionQueue(wal, { capacity: 64, nowMs: () => 5, telemetry });
+  for (let i = 0; i < 1200; i++) {
+    wal.records = [...wal.records, record(i, `i${i}`, "r")];
+    await queue.onCompletionLine(line({ intent_id: `i${i}`, response_code: i % 2 ? 200 : 0 }));
+  }
+  assert.equal(queue.ready, true);
+  assert.equal(observed, 1200);
+  assert.deepEqual(queue.snapshot(), { accepted: 1200, drained: 0, dropped: 1136, retained: 64, failed: false });
+  assert.equal(queue.drain(64)[0]?.responseCode, 0);
+  await queue.close();
+  assert.deepEqual(queue.snapshot(), { accepted: 1200, drained: 64, dropped: 1136, retained: 0, failed: false });
+});
+
+test("code domain is exactly zero or HTTP status, and first failure retains accepted diagnostics", async () => {
+  for (const code of [0, 100, 199, 200, 599, ...Array.from({ length: 99 }, (_, i) => i + 1)]) {
+    const wal = fakeWal([]);
+    const queue = createCogsEgressCompletionQueue(wal, { capacity: 1, nowMs: () => 5 });
+    wal.records = [...wal.records, record(0, "i", "r")];
+    if (code > 0 && code < 100) await assert.rejects(queue.onCompletionLine(line({ response_code: code })), generic);
+    else {
+      await queue.onCompletionLine(line({ response_code: code }));
+      let first: unknown;
+      try {
+        await queue.onCompletionLine("bad");
+      } catch (error) {
+        first = error;
+      }
+      await assert.rejects(queue.onCompletionLine("bad again"), (error) => error === first);
+      assert.equal(queue.snapshot().retained, 1);
+      await queue.close();
+      assert.equal(queue.snapshot().dropped, 1);
+    }
+  }
 });
 
 function base(

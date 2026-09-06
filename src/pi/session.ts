@@ -47,6 +47,7 @@ import {
   createCogsJsonlHistoryStore,
 } from "../session/jsonl-history.ts";
 import { type CogsLocalExporter, createCogsLocalExporter } from "../session/local-export.ts";
+import { permittedJson } from "../session/permitted-history.ts";
 import type {
   CogsAgentsFile,
   CogsPreparedSkillMetadata,
@@ -441,6 +442,10 @@ export async function createAuthenticatedCogsPiSession({
                   ...(authenticatedGit.manager === undefined ? {} : { manager: authenticatedGit.manager }),
                   ...(authenticatedGit.observer === undefined ? {} : { observer: authenticatedGit.observer }),
                   ...(authenticatedGit.enableNotes === undefined ? {} : { enableNotes: authenticatedGit.enableNotes }),
+                  ...(authenticatedGit.checkpoint === undefined ? {} : { checkpoint: authenticatedGit.checkpoint }),
+                  ...(authenticatedGit.checkpointer === undefined
+                    ? {}
+                    : { checkpointer: authenticatedGit.checkpointer }),
                 }),
               }),
         }),
@@ -665,6 +670,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       operationTimeoutMs,
       abortTimeoutMs,
       preparedResources,
+      historicalSecretsAvailable: resumeFile === undefined,
       historyStore,
       gitMapStore,
       gitBinding,
@@ -1728,6 +1734,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly operationTimeoutMs: number | undefined;
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
+      readonly historicalSecretsAvailable: boolean;
       readonly historyStore: CogsJsonlHistoryStore;
       readonly gitMapStore: CogsGitMapStore | undefined;
       readonly gitBinding: CogsGitBoundary | undefined;
@@ -1862,9 +1869,18 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
       throw new Error("invalid history limit");
     try {
+      // A resumed transcript may contain prior credentials unavailable to this owner.
+      // Raw export stays separately explicit and sensitive; never guess its secret view.
+      if (!this.runtime.historicalSecretsAvailable) throw new Error("historical redaction unavailable");
       const page = await this.runtime.historyStore.entries(input);
       return {
-        entries: sanitizeJson(page.entries, { secrets: [this.runtime.secret.value] }) as JsonValue[],
+        entries: page.entries.map((entry) =>
+          permittedJson(entry, {
+            secrets: [this.runtime.secret.value],
+            maxInputBytes: 4 * 1024 * 1024,
+            maxOutputBytes: 64 * 1024 * 1024,
+          }),
+        ),
         ...(page.nextAfter === undefined ? {} : { nextAfter: page.nextAfter }),
       };
     } catch (error) {
@@ -2907,7 +2923,12 @@ function toolUpdate(
     if (processed.emit.length > 0) await safeEmitChunkPieces(template, stream, processed.emit);
   };
   return async (update: { content: [{ type: "text"; text: string }]; details: JsonValue }) => {
-    assertToolJson(update, 64 * 1024);
+    permittedJson(update, {
+      secrets: [],
+      maxInputBytes: 64 * 1024,
+      maxOutputBytes: 64 * 1024,
+      maxNodes: 2048,
+    });
     const parsed = parseBashChunkUpdate(update);
     if (parsed === undefined) {
       if (!isBashTerminalUpdate(update)) throw new Error("invalid bash update");
@@ -3056,49 +3077,12 @@ function isToolUpdateResult(
 }
 
 function normalizeToolResult(value: unknown, maxBytes: number, apiKey: string): JsonValue {
-  assertToolJson(value, maxBytes);
-  const normalized = sanitizeJson(value, { secrets: [apiKey] });
-  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > maxBytes) throw new Error("tool result too large");
-  return normalized;
-}
-
-function assertToolJson(value: unknown, maxBytes: number): void {
-  const seen = new WeakSet<object>();
-  let bytes = 0;
-  let nodes = 0;
-  const visit = (entry: unknown): void => {
-    nodes += 1;
-    if (nodes > 2048) throw new Error("tool result too complex");
-    if (entry === null || typeof entry === "boolean") return;
-    if (typeof entry === "number") {
-      if (!Number.isFinite(entry)) throw new Error("tool result contains non-finite number");
-      return;
-    }
-    if (typeof entry === "string") {
-      bytes += Buffer.byteLength(entry, "utf8");
-      if (bytes > maxBytes) throw new Error("tool result too large");
-      return;
-    }
-    if (Array.isArray(entry)) {
-      if (seen.has(entry)) throw new Error("tool result contains cycle");
-      seen.add(entry);
-      for (const item of entry) visit(item);
-      return;
-    }
-    if (typeof entry === "object") {
-      if (seen.has(entry)) throw new Error("tool result contains cycle");
-      if (Object.getPrototypeOf(entry) !== Object.prototype) throw new Error("tool result has unsupported prototype");
-      seen.add(entry);
-      for (const key of Object.keys(entry)) {
-        const descriptor = Object.getOwnPropertyDescriptor(entry, key);
-        if (descriptor === undefined || !("value" in descriptor)) throw new Error("tool result contains accessor");
-        visit(descriptor.value);
-      }
-      return;
-    }
-    throw new Error("tool result is not JSON");
-  };
-  visit(value);
+  return permittedJson(value, {
+    secrets: [apiKey],
+    maxInputBytes: maxBytes,
+    maxOutputBytes: maxBytes,
+    maxNodes: 2048,
+  });
 }
 
 function sanitizeJson(value: unknown, options: { secrets: readonly string[] }): JsonValue {

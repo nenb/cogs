@@ -292,7 +292,10 @@ function safeRecord(event: CogsEgressTelemetryEvent): SafeRecord {
       "cogs.route_id": validOpaque(intent.route_id),
       "cogs.method": intent.method === "GET" || intent.method === "POST" ? intent.method : fail(),
       "cogs.credential_required": typeof intent.credential_required === "boolean" ? intent.credential_required : fail(),
-      "cogs.status_class": Math.floor(safeInteger(completion.responseCode, 100, 599) / 100),
+      "cogs.status_class":
+        completion.responseCode === 0
+          ? "no-response"
+          : Math.floor(safeInteger(completion.responseCode, 100, 599) / 100),
       "cogs.duration_ms": safeInteger(completion.durationMs, 0, 86_400_000),
       "cogs.completed_lag_ms": lag,
     }),
