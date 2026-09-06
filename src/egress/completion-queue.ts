@@ -26,6 +26,7 @@ export type CogsEgressCompletionQueue = Readonly<{
   onCompletionLine(line: string): Promise<void>;
   drain(limit: number): readonly CogsEgressCompletion[];
   close(): Promise<void>;
+  snapshot(): Readonly<{ accepted: number; drained: number; dropped: number; retained: number; failed: boolean }>;
 }>;
 
 export type CogsEgressCompletionQueueOptions = Readonly<{
@@ -76,6 +77,10 @@ export function createCogsEgressCompletionQueue(
 class CompletionQueue {
   private closed = false;
   private poisoned = false;
+  private accepted = 0;
+  private drained = 0;
+  private dropped = 0;
+  private failure: CogsEgressCompletionError | undefined;
   private readonly retained: CogsEgressCompletion[] = [];
   private readonly completed = new Set<string>();
   private readonly telemetryHealth = new TelemetryHealthCursor();
@@ -99,6 +104,14 @@ class CompletionQueue {
       onCompletionLine: (line) => queue.accept(line),
       drain: (limit) => queue.drain(limit),
       close: () => queue.close(),
+      snapshot: () =>
+        Object.freeze({
+          accepted: queue.accepted,
+          drained: queue.drained,
+          dropped: queue.dropped,
+          retained: queue.retained.length,
+          failed: queue.poisoned,
+        }),
     });
   }
 
@@ -111,25 +124,28 @@ class CompletionQueue {
         throw new Error("bad denied route");
       }
       const match = this.matchRecord(parsed.intent_id, parsed.route_id);
-      if (this.completed.has(parsed.intent_id) || this.retained.length >= this.capacity)
-        throw new Error("duplicate/full");
+      if (this.completed.has(parsed.intent_id)) throw new Error("duplicate");
       const completion = Object.freeze({
         intentId: parsed.intent_id,
         sequence: match.sequence,
         routeId: match.route_id,
-        responseCode: parseDecimal(parsed.response_code, 100, 599),
+        responseCode: responseCode(parsed.response_code),
         durationMs: parseDecimal(parsed.duration_ms, 0, 86_400_000),
         completedAtMs: safeNow(this.nowMs()),
       });
       this.completed.add(parsed.intent_id);
-      this.retained.push(completion);
+      this.accepted++;
+      // Correlation is consumed now, not at shutdown. This queue is only optional
+      // diagnostic retention; durable credential-use intents remain in the WAL.
+      if (this.retained.length < this.capacity) this.retained.push(completion);
+      else this.dropped++;
       try {
         // Telemetry is best-effort; sink exceptions must not poison durable completion correlation.
         this.telemetry?.enqueue(Object.freeze({ intent: safeIntent(match), completion }));
       } catch {}
       emitSpan(this.workerTelemetry, "egress.complete", {
         operation: "complete",
-        outcome: "ok",
+        outcome: completion.responseCode === 0 ? "error" : "ok",
         status_bucket: statusBucket(completion.responseCode),
         duration_ms: completion.durationMs,
       });
@@ -137,7 +153,7 @@ class CompletionQueue {
       emitTelemetryHealth(this.workerTelemetry, this.telemetryHealth);
     } catch {
       this.poison();
-      throw new CogsEgressCompletionError();
+      throw this.failure;
     }
   }
 
@@ -159,7 +175,9 @@ class CompletionQueue {
         throw new Error("not ready");
       }
       const count = bound(limit, 1, this.capacity);
-      return Object.freeze(this.retained.splice(0, count));
+      const records = this.retained.splice(0, count);
+      this.drained += records.length;
+      return Object.freeze(records);
     } catch {
       throw new CogsEgressCompletionError();
     }
@@ -167,14 +185,15 @@ class CompletionQueue {
 
   private async close(): Promise<void> {
     this.closed = true;
+    this.dropped += this.retained.length;
     this.retained.length = 0;
     this.completed.clear();
   }
 
   private poison(): void {
     this.poisoned = true;
-    this.retained.length = 0;
-    this.completed.clear();
+    this.failure ??= new CogsEgressCompletionError();
+    // Preserve accepted diagnostics and the first failure until explicit close.
   }
 }
 
@@ -219,7 +238,7 @@ function parseLine(line: string): {
     duration_ms: ownDecimalField(record, "duration_ms"),
   });
   if (parsed.event !== "request-complete") throw new Error("bad event");
-  parseDecimal(parsed.response_code, 100, 599);
+  responseCode(parsed.response_code);
   parseDecimal(parsed.duration_ms, 0, 86_400_000);
   return Object.freeze(parsed);
 }
@@ -251,7 +270,12 @@ function safeNow(value: number): number {
   return bound(value, 0, Number.MAX_SAFE_INTEGER);
 }
 
-function statusBucket(code: number): "1xx" | "2xx" | "3xx" | "4xx" | "5xx" {
+export function responseCode(code: number): number {
+  return code === 0 ? 0 : bound(code, 100, 599);
+}
+
+function statusBucket(code: number): "no-response" | "1xx" | "2xx" | "3xx" | "4xx" | "5xx" {
+  if (code === 0) return "no-response";
   if (code < 200) return "1xx";
   if (code < 300) return "2xx";
   if (code < 400) return "3xx";

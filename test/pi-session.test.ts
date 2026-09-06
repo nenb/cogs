@@ -1753,8 +1753,17 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
         },
       }),
     );
-    const resumedEntries = await resumed.entries({ after: undefined, limit: 100 });
-    assert.ok(resumedEntries.entries.length > 0);
+    await assert.rejects(
+      resumed.entries({ after: undefined, limit: 100 }),
+      /invalid session history/,
+      "permitted history fails closed without the prior secret registry",
+    );
+    const resumedEntries = (await readFile(validFile, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .slice(1)
+      .map((line) => JSON.parse(line) as unknown);
+    assert.ok(resumedEntries.length > 0);
     await resumed.input({
       requestId: "resume-next",
       correlationId: "resume-next-corr",
@@ -1763,7 +1772,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
     });
     await eventually(async () => assert.equal((await resumed.state()).runState, "settled"));
     assert.match(resumedContexts.join("\n"), /persist/);
-    const firstEntry = resumedEntries.entries.find((entry) => {
+    const firstEntry = resumedEntries.find((entry) => {
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
       return (entry as Record<string, unknown>).type === "message";
     });
@@ -3447,6 +3456,98 @@ test("authenticated Pi session derives model auth from launch and performs runti
   }
 });
 
+test("authenticated checkpoint custom/enabled/disabled paths preserve launch repository identity", async () => {
+  for (const mode of ["custom", "enabled", "disabled"] as const) {
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-auth-checkpoint-"));
+    try {
+      await mkdir(resolve(root, "workspace"));
+      await mkdir(resolve(root, "agent"));
+      let checkpoints = 0;
+      let commands = 0;
+      const checkpointer = Object.freeze({
+        checkpoint: async (input: Parameters<CogsGitCheckpointer["checkpoint"]>[0]) => {
+          checkpoints++;
+          assert.equal(input.repo, "workspace-1");
+          return null;
+        },
+        dispose: async () => undefined,
+      });
+      const manager = {
+        withBashExec: async () => {
+          commands++;
+          throw new Error("synthetic unavailable");
+        },
+      } as unknown as NonNullable<NonNullable<Parameters<typeof createCogsPiSession>[0]["git"]>["manager"]>;
+      const adapter = await createAuthenticatedCogsPiSession(
+        authOptions(root, new TestModelApiKeySource("aaaaaaaa"), {
+          streamFn: oneTextStream("done"),
+          git:
+            mode === "custom"
+              ? { repositoryId: "must-be-overridden", observer: fakeObserver(["1".repeat(40)]), checkpointer }
+              : {
+                  repositoryId: "must-be-overridden",
+                  manager,
+                  checkpoint: { enabled: mode === "enabled", timeoutMs: 1234 },
+                },
+        }),
+      );
+      try {
+        await adapter.input({ requestId: mode, correlationId: mode, kind: "prompt", content: "go" });
+        await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+        assert.equal(checkpoints, mode === "custom" ? 1 : 0);
+        assert.equal(commands, mode === "custom" ? 0 : 2);
+      } finally {
+        await adapter.dispose();
+      }
+      await assert.rejects(
+        createAuthenticatedCogsPiSession(
+          authOptions(root, new TestModelApiKeySource("aaaaaaaa"), {
+            git: { repositoryId: "must-be-overridden", manager, checkpoint: { enabled: true }, checkpointer },
+          }),
+        ),
+        /invalid git options/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("accepted 5K tool results persist and history preserves every permitted byte and source flags", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-full-tool-"));
+  try {
+    await mkdir(resolve(root, "workspace"));
+    await mkdir(resolve(root, "agent"));
+    const output = {
+      content: `${"x".repeat(5100)}終`,
+      eof: true,
+      truncated: false,
+      items: Array.from({ length: 200 }, (_, i) => i),
+    };
+    const adapter = await createAuthenticatedCogsPiSession(
+      authOptions(root, new TestModelApiKeySource("aaaaaaaa"), {
+        toolPorts: { ...fakePorts([]), read: async () => output },
+        streamFn: oneToolStream("read", { path: "/workspace/a.txt" }),
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "large", correlationId: "large", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      const raw = await readFile(adapter.sessionFile() ?? "", "utf8");
+      const history = JSON.stringify(await adapter.entries({ after: undefined, limit: 100 }));
+      assert.ok(raw.includes(output.content));
+      assert.ok(history.includes(output.content));
+      assert.equal(raw.includes("[truncated]"), false);
+      assert.equal(history.includes("[truncated]"), false);
+      assert.equal(await readFile(adapter.sessionFile() ?? "", "utf8"), raw);
+    } finally {
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi session sanitizes credential synchronization failures and bounds credential removal", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-credential-fail-"));
   const originalSet = ModelRuntime.prototype.setRuntimeApiKey;
@@ -4673,7 +4774,7 @@ test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it a
     await eventually(async () => assert.equal((await source.state()).runState, "settled"));
     const sourceFile = source.sessionFile();
     assert.ok(sourceFile);
-    const sourceEntries = (await source.entries({ after: undefined, limit: 20 })).entries.length;
+    assert.ok((await source.entries({ after: undefined, limit: 20 })).entries.length > 0);
     await source.dispose();
 
     const ownedAgent = resolve(ownedRoot, "agent");
@@ -4711,7 +4812,7 @@ test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it a
     assert.equal(securedIdentity.dev, preSecureIdentity.dev);
     assert.equal(securedIdentity.ino, preSecureIdentity.ino);
     assert.equal(securedIdentity.mode, 0o600);
-    assert.ok((await resumed.entries({ after: undefined, limit: 30 })).entries.length >= sourceEntries);
+    await assert.rejects(resumed.entries({ after: undefined, limit: 30 }), /invalid session history/);
     await resumed.input({
       requestId: "resume-owned",
       correlationId: "resume-owned-corr",
@@ -4719,7 +4820,7 @@ test("Pi owned runtime explicitly adopts contained resumed JSONL and cleans it a
       content: "append",
     });
     await eventually(async () => assert.equal((await resumed.state()).runState, "settled"));
-    assert.ok((await resumed.entries({ after: undefined, limit: 40 })).entries.length > sourceEntries);
+    await assert.rejects(resumed.entries({ after: undefined, limit: 40 }), /invalid session history/);
     await resumed.disposeOwnedRuntime();
     await assertGone(ownedAgent);
     await assertGone(ownedSessionRoot);

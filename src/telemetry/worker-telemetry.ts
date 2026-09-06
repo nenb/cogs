@@ -137,7 +137,7 @@ const operations = new Set([
 ]);
 const methods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT"]);
 const buckets = new Set(["0", "1", "2_4", "5_16", "17_64", "65_256", "257_1024", "gt_1024"]);
-const statusBuckets = new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]);
+const statusBuckets = new Set(["no-response", "1xx", "2xx", "3xx", "4xx", "5xx"]);
 const attrKeys = [
   "outcome",
   "state",

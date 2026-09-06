@@ -123,7 +123,8 @@ async function editTool(
       await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle, cleanupSignal));
     }
     if (countOccurrences(text, oldText) !== 1) throw new SftpFileToolError("edit text is not unique");
-    const updated = Buffer.from(text.replace(oldText, newText), "utf8");
+    const index = text.indexOf(oldText);
+    const updated = Buffer.from(text.slice(0, index) + newText + text.slice(index + oldText.length), "utf8");
     if (updated.length > config.maxWriteBytes) throw new SftpFileToolError("content is too large");
     return { ...(await atomicWriteWithPort(config, sftp, guestPath, updated, signal)), occurrences: 1 };
   }) as Promise<JsonValue>;

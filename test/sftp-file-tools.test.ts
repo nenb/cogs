@@ -494,6 +494,34 @@ test("SFTP write and edit use fsync plus atomic rename and preserve target on fa
   }
 });
 
+test("SFTP edit replacement tokens are literal with UTF-8 and atomic size/failure bounds", async () => {
+  const sftp = new FakeSftp();
+  const fixture = await managerFor(sftp);
+  try {
+    const ports = createSftpFileToolPorts({ manager: fixture.manager, maxWriteBytes: 128, maxReadBytes: 128 });
+    const content = () => {
+      const node = sftp.files.get("/workspace/literal.txt");
+      if (node?.kind !== "file") assert.fail("missing test file");
+      return node.data.toString();
+    };
+    const replacements = ["$&", "$'", "$`", "$1", "$<name>", "$$", "$&$'$`$1$<name>$$", "", "🙂é"];
+    for (const newText of replacements) {
+      sftp.seed("/workspace/literal.txt", "αOLD終");
+      await ports.edit({ path: "/workspace/literal.txt", oldText: "OLD", newText });
+      assert.equal(content(), `α${newText}終`);
+    }
+    sftp.seed("/workspace/literal.txt", "αOLD終");
+    await assert.rejects(ports.edit({ path: "/workspace/literal.txt", oldText: "OLD", newText: "🙂".repeat(40) }));
+    assert.equal(content(), "αOLD終");
+    sftp.renameFails = true;
+    await assert.rejects(ports.edit({ path: "/workspace/literal.txt", oldText: "OLD", newText: "$$" }));
+    assert.equal(content(), "αOLD終");
+  } finally {
+    await fixture.manager.shutdown();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("SFTP operations are bounded by manager channel permits and abort/timeouts fail closed without fallback", async () => {
   const sftp = new FakeSftp();
   sftp.seed("/workspace/a.txt", "hello");
