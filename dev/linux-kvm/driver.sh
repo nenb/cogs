@@ -2,7 +2,30 @@
 set -euo pipefail
 umask 077
 
+# Pure policy renderer is also consumed by disposable causal mutation fixtures.
+# No network or filesystem effects on this path.
+network_policy() {
+  local interface=$1 input=$2 forward=$3 port=$4
+  cat <<EOF
+*filter
+:$input - [0:0]
+:$forward - [0:0]
+-A $input -i $interface -s 192.0.2.2 -d 192.0.2.1 -p tcp --dport $port -m comment --comment relay-allow -j ACCEPT
+-A $input -d 192.0.2.1 -p tcp --dport $port -m comment --comment relay-exclusion -j DROP
+-A $input -i $interface -s 192.0.2.2 -d 192.0.2.1 -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j ACCEPT
+-A $input -m comment --comment input-deny -j DROP
+-A $forward -m comment --comment forward-deny -j DROP
+-I INPUT 1 -i $interface -j $input
+-I INPUT 1 -d 192.0.2.1 -p tcp --dport $port -j $input
+-I FORWARD 1 -i $interface -j $forward
+COMMIT
+EOF
+}
 operation=${1:-}
+if [[ "$operation" == print-network-policy ]]; then
+  network_policy cgfixture CGFIXI CGFIXF 18080
+  exit 0
+fi
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # shellcheck source=dev/linux-kvm/git-tools.sh
 source "$repo/dev/linux-kvm/git-tools.sh"
@@ -51,6 +74,7 @@ run_ssh() {
 }
 
 remove_firewall() {
+  sudo iptables -D INPUT -d "$host_ip" -p tcp --dport "$proxy_port" -j "$input_chain" 2>/dev/null || true
   sudo iptables -D INPUT -i "$tap" -j "$input_chain" 2>/dev/null || true
   sudo iptables -D FORWARD -i "$tap" -j "$drop_chain" 2>/dev/null || true
   sudo iptables -F "$input_chain" 2>/dev/null || true
@@ -196,14 +220,9 @@ prepare_network() {
   sudo ip tuntap add dev "$tap" mode tap user "$(id -u)"
   sudo ip addr add "$host_ip/30" dev "$tap"
   sudo ip link set "$tap" up
-  sudo iptables -N "$input_chain"
-  sudo iptables -A "$input_chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  sudo iptables -A "$input_chain" -d "$host_ip" -p tcp --dport "$proxy_port" -j ACCEPT
-  sudo iptables -A "$input_chain" -j DROP
-  sudo iptables -I INPUT 1 -i "$tap" -j "$input_chain"
-  sudo iptables -N "$drop_chain"
-  sudo iptables -A "$drop_chain" -j DROP
-  sudo iptables -I FORWARD 1 -i "$tap" -j "$drop_chain"
+  # Destination-wide guards precede ambient established acceptance. Only exact
+  # host-initiated SSH replies have a conntrack exception.
+  network_policy "$tap" "$input_chain" "$drop_chain" "$proxy_port" | sudo iptables-restore --noflush
   sudo ip6tables -I INPUT 1 -i "$tap" -j DROP
   sudo ip6tables -I FORWARD 1 -i "$tap" -j DROP
 }
