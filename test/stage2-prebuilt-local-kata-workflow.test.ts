@@ -39,16 +39,13 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /Independently authenticate exact final H, G, and Q for this ordinal/u);
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
-  assert.match(staging, /stage2-completion-local-control-v4/u);
+  assert.match(staging, /stage2-completion-local-control-v5/u);
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "229ea62bce964086726181974a6fec1c6dfd1f86"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "821149ba4c3dbccef48694efcdb1eb29fa9fd2b9"/u);
-  assert.match(
-    guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876"/u,
-  );
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "8907eba3191d07573cd84573cb0b2adddff17bd6"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = None/u);
+  assert.match(guard, /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None/u);
   assert.match(guard, /control_value\["producer"\]\.get\("control_revision"\) == control/u);
   assert.match(guard, /"qualification_head": qualification/u);
 });
