@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
-import { EgressRoutePolicyError, lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
+import {
+  createEgressPathMatcher,
+  EgressRoutePolicyError,
+  lowerLaunchEgressRoutePlan,
+} from "../src/egress/route-policy.ts";
 import { validateLaunchConfig } from "../src/launch/config.ts";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -60,7 +64,7 @@ test("valid presets lower into frozen secret-free deterministic route policy", (
     launch([preset("npm-v1.json"), preset("github-smart-http-v1.json"), preset("pypi-v1.json")]),
   );
   assert.equal(Object.isFrozen(plan), true);
-  assert.equal(plan.routeCount, 9);
+  assert.equal(plan.routeCount, 7);
   assert.deepEqual(
     plan.integrations.map((integration) => integration.id),
     ["github-smart-http", "npm", "pypi"],
@@ -102,7 +106,7 @@ test("Git fetch exact query and query denial compile into anchored path matches"
 
 test("partial segment globs and prefix boundaries are deterministic and bounded", () => {
   const npm = lowerLaunchEgressRoutePlan(launch([preset("npm-v1.json")])).integrations[0]?.routes ?? [];
-  assert.ok(npm.some((route) => route.pathPattern === "/@*/*" && route.pathMatch.value.includes("@[^/?#]+")));
+  assert.ok(npm.some((route) => route.pathPattern === "/*" && route.pathMatch.value === "^/[^/?#]+$"));
   assert.ok(npm.some((route) => route.pathPattern === "/*/-/*.tgz" && route.pathMatch.value.includes("[^/?#]+\\.tgz")));
   const pypi = lowerLaunchEgressRoutePlan(launch([preset("pypi-v1.json")])).integrations[0]?.routes ?? [];
   const files = pypi.find((route) => route.ruleName === "pypi-files");
@@ -147,7 +151,7 @@ test("hostile query, redirect, path, method, duplicate, and budget policies fail
         }),
     ),
   );
-  for (const bad of ["/%2f", "/**/x", "/../x", "/a//b", "/bad\u0001"]) {
+  for (const bad of ["/%2f", "/**/x", "/../x", "/.../x", "/a//b", "/bad\u0001", "/unicode-é"]) {
     reject(sampleIntegration((integration) => (firstRule(integration).path_patterns = [bad])));
   }
   reject(sampleIntegration((integration) => (firstRule(integration).methods = ["GET", "PUT"])));
@@ -276,6 +280,36 @@ test("hostile query, redirect, path, method, duplicate, and budget policies fail
     EgressRoutePolicyError,
   );
   assert.equal(extraGetterReads, 0);
+
+  const plan = lowerLaunchEgressRoutePlan(launch([preset("github-smart-http-v1.json")]));
+  const refs = plan.integrations[0]?.routes.find((route) => route.ruleName === "github-smart-http-refs");
+  assert.ok(refs);
+  const matcher = createEgressPathMatcher(refs);
+  assert.equal(matcher("/owner/repo.git/info/refs?service=git-upload-pack"), true);
+  for (const denied of [
+    "/owner/repo.git/info/refs",
+    "/owner/repo.git/info/refs?service=git-upload-pack&x=y",
+    "/owner/%72epo.git/info/refs?service=git-upload-pack",
+    "/owner/../repo.git/info/refs?service=git-upload-pack",
+    "/owner//repo.git/info/refs?service=git-upload-pack",
+    `/owner/${"a".repeat(2048)}.git/info/refs?service=git-upload-pack`,
+  ])
+    assert.equal(matcher(denied), false);
+  assert.throws(
+    () => createEgressPathMatcher({ ...refs, pathMatch: { kind: "safe_regex", value: "^.*$" } }),
+    EgressRoutePolicyError,
+  );
+
+  const pathological = sampleIntegration((integration) => {
+    const rule = firstRule(integration);
+    rule.path_patterns = [`/${Array.from({ length: 350 }, () => "a*").join("")}z/x`];
+  });
+  const bounded = lowerLaunchEgressRoutePlan(launch([pathological])).integrations[0]?.routes[0];
+  assert.ok(bounded);
+  const boundedMatcher = createEgressPathMatcher(bounded);
+  assert.equal(boundedMatcher(`/${"a".repeat(700)}z/x?service=git-upload-pack`), true);
+  assert.equal(boundedMatcher(`/${"a".repeat(701)}x/x?service=git-upload-pack`), false);
+
   const many = sampleIntegration((integration) => {
     const rule = firstRule(integration);
     rule.path_patterns = Array.from({ length: 128 }, (_, index) => `/repo${index}/*.git/info/refs`);

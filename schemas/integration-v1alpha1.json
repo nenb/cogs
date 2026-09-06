@@ -77,7 +77,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 2048,
-            "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[?#\\\\\\u0000-\\u001F\\u007F]).*$"
+            "description": "Raw canonical ASCII path, at most 2048 bytes. No percent encoding, whitespace, Unicode, backslash, fragment, query, semicolon, repeated slash or dot-only segments. Semantic lowering also rejects adjacent stars; exact/prefix forbid stars. Segment-glob stars consume one or more bytes within one segment. No regex input.",
+            "pattern": "^/(?!.*[%?#;\\\\])(?!.*//)(?!\\.+(?:/|$))(?!.*?/\\.+(?:/|$))[\\x21-\\x7e]*$"
           }
         },
         "path_policy": {
@@ -86,7 +87,10 @@
           "required": ["strategy", "normalization"],
           "properties": {
             "strategy": { "enum": ["exact", "prefix", "segment-glob"] },
-            "normalization": { "const": "reject-ambiguous" }
+            "normalization": {
+              "const": "reject-ambiguous",
+              "description": "Validate original bytes without URL decoding or normalization; authorized bytes must be forwarded unchanged. Exact queries are sorted nonempty ASCII key=value pairs, never decoded. Scoped npm encoded metadata and encoded/Unicode Git or package paths are unsupported."
+            }
           }
         },
         "query_policy": {

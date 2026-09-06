@@ -1,7 +1,7 @@
 {
   "version": "cogs.integration/v1alpha1",
   "id": "npm",
-  "preset_revision": "sha256:d4be179781e348da4d13e34608a8c85a9a2fa4ea52ce2afb4ecc62897b687bc4",
+  "preset_revision": "sha256:bbdb8fada74b664910e5ffa1f4b335c861994eb75b85a483bd6df4c482673e87",
   "dns": {
     "mode": "proxy-connect-authority",
     "guest_resolution": false
@@ -12,7 +12,7 @@
       "host": "registry.npmjs.org",
       "port": 443,
       "methods": ["GET"],
-      "path_patterns": ["/*", "/@*/*"],
+      "path_patterns": ["/*"],
       "path_policy": {
         "strategy": "segment-glob",
         "normalization": "reject-ambiguous"
@@ -32,7 +32,7 @@
       "host": "registry.npmjs.org",
       "port": 443,
       "methods": ["GET"],
-      "path_patterns": ["/*/-/*.tgz", "/@*/*/-/*.tgz"],
+      "path_patterns": ["/*/-/*.tgz"],
       "path_policy": {
         "strategy": "segment-glob",
         "normalization": "reject-ambiguous"

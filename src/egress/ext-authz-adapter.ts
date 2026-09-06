@@ -1,3 +1,5 @@
+import { isCanonicalEgressTarget } from "./route-policy.ts";
+
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const methodToken = /^[A-Z][A-Z0-9!#$&'*+.^_`|~-]{0,31}$/;
 const hostValue = /^[A-Za-z0-9._:-]{1,253}$/;
@@ -147,7 +149,7 @@ function pathAndQueryField(source: Record<string, unknown>): Partial<CogsExtAuth
   const value = source.path;
   if (value === undefined) return {};
   const pathAndQuery = validateText(value, "path", 2048);
-  if (!pathAndQuery.startsWith("/")) throw new Error("bad path");
+  if (!isCanonicalEgressTarget(pathAndQuery)) throw new Error("bad path");
   return { pathAndQuery };
 }
 

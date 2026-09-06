@@ -14,7 +14,7 @@ import type { EgressAuditWal } from "./audit-wal.ts";
 import { buildExtAuthzResponse, type CogsExtAuthzCheck, parseExtAuthzCheck } from "./ext-authz-adapter.ts";
 import { loadExtAuthzDescriptor } from "./ext-authz-descriptor.ts";
 import { decodeProxyAuthorizationBasic, requireProxyCapability } from "./proxy-capability.ts";
-import type { CogsEgressRoute, CogsEgressRoutePlan } from "./route-policy.ts";
+import { type CogsEgressRoute, type CogsEgressRoutePlan, createEgressPathMatcher } from "./route-policy.ts";
 
 const maxActiveChecks = 32;
 const maxTokenLength = 256;
@@ -60,7 +60,7 @@ interface RouteEntry {
   readonly port: number;
   readonly method: "GET" | "POST";
   readonly credentialRequired: boolean;
-  readonly re: RegExp;
+  readonly matchesPath: (target: string) => boolean;
 }
 
 export async function startCogsExtAuthzServer(options: CogsExtAuthzServerOptions): Promise<CogsExtAuthzServer> {
@@ -119,6 +119,8 @@ class ExtAuthzServerImpl {
   #ready = false;
   #closing = false;
   #active = 0;
+  #activeRetired: Promise<void> = Promise.resolve();
+  #resolveActiveRetired: (() => void) | undefined;
   #closePromise: Promise<void> | undefined;
   #target = "";
   readonly #wal: EgressAuditWal;
@@ -166,6 +168,11 @@ class ExtAuthzServerImpl {
       callback(status(grpc.status.RESOURCE_EXHAUSTED));
       return;
     }
+    if (this.#active === 0) {
+      this.#activeRetired = new Promise<void>((resolve) => {
+        this.#resolveActiveRetired = resolve;
+      });
+    }
     this.#active += 1;
     let appendStarted = false;
     try {
@@ -193,6 +200,9 @@ class ExtAuthzServerImpl {
       if (call.cancelled) throw status(grpc.status.CANCELLED);
       appendStarted = true;
       const record = await this.#wal.append(recordInput);
+      // An await cannot preserve admission. A close/WAL invalidation is terminal
+      // for this check even if its intent append eventually succeeds.
+      if (this.#closing || !this.#ready || !this.#wal.ready || call.cancelled) throw status(grpc.status.UNAVAILABLE);
       emitSpan(this.workerTelemetry, "wal.append", { operation: "append", outcome: "ok" });
       emitMetric(this.workerTelemetry, "wal.depth", record.sequence + 1);
       emitSpan(this.workerTelemetry, "egress.authorize", {
@@ -212,6 +222,10 @@ class ExtAuthzServerImpl {
       callback(isGrpcFailure(error) ? error : status(grpc.status.UNAVAILABLE));
     } finally {
       this.#active -= 1;
+      if (this.#active === 0) {
+        this.#resolveActiveRetired?.();
+        this.#resolveActiveRetired = undefined;
+      }
     }
   }
   #verifyInfrastructure(call: grpc.ServerUnaryCall<unknown, unknown>): void {
@@ -252,7 +266,7 @@ class ExtAuthzServerImpl {
       check.host === undefined ||
       !authorityOk(check.host, entry) ||
       check.pathAndQuery === undefined ||
-      !entry.re.test(check.pathAndQuery)
+      !entry.matchesPath(check.pathAndQuery)
     ) {
       return undefined;
     }
@@ -316,8 +330,9 @@ class ExtAuthzServerImpl {
           force();
         }
       });
-      const deadline = Date.now() + 200;
-      while (this.#active > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+      // Socket shutdown is not handler retirement. Keep verifier/WAL custody
+      // until every accepted check and its actual append continuation settles.
+      await this.#activeRetired;
     } finally {
       this.verifier.clear();
     }
@@ -379,7 +394,7 @@ function routeEntry(route: CogsEgressRoute, parentIntegrationId: string): RouteE
     port: route.port,
     method,
     credentialRequired: route.credentialRequired,
-    re: new RegExp(route.pathMatch.value, "u"),
+    matchesPath: createEgressPathMatcher(route),
   });
 }
 
