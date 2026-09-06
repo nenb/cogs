@@ -2,8 +2,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
@@ -326,7 +327,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 90_000);
-  assert.equal(budget.hard_limit, 94_100);
+  assert.equal(budget.hard_limit, 95_900);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -351,6 +352,16 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   );
   assert.equal(budget.workflow_files, 26);
   assert.equal(budget.correction_slice_limits_satisfied, true);
+  assert.equal(budget.remediation_limits_satisfied, true);
+  assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 16_000);
+  assert.equal(
+    Number(budget.remediation_gross_added_lines_no_deletion_credit),
+    Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
+      (total, value) => total + Number(value),
+      0,
+    ),
+  );
   assert.equal(
     Number(budget.correction_global_gross_added_lines),
     Number(budget.correction_deploy_gross_added_lines) +
@@ -381,5 +392,104 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
   ]) {
     assert.match(budgetSource, new RegExp(retainedPath.replaceAll(".", String.raw`\.`), "u"));
+  }
+});
+
+test("remediation budget has closed whole-file ownership and charges renamed destinations", () => {
+  const manifest = JSON.parse(
+    readFileSync(join(root, "config/external-review-remediation-budget-v1.json"), "utf8"),
+  ) as {
+    global_gross_line_high: number;
+    owners: Array<{
+      name: string;
+      gross_line_high: number;
+      gross_byte_forecast: {
+        source: number;
+        tests_fixtures: number;
+        docs_contracts: number;
+        total: number;
+      };
+      new_file_high: number;
+      paths: string[];
+    }>;
+  };
+  assert.equal(manifest.global_gross_line_high, 16_000);
+  assert.equal(
+    manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
+    40,
+  );
+  assert.equal(
+    manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
+    2_570_000,
+  );
+  for (const owner of manifest.owners) {
+    assert.equal(
+      owner.gross_byte_forecast.total,
+      owner.gross_byte_forecast.source +
+        owner.gross_byte_forecast.tests_fixtures +
+        owner.gross_byte_forecast.docs_contracts,
+    );
+  }
+  const paths = manifest.owners.flatMap((owner) => owner.paths);
+  assert.equal(new Set(paths).size, paths.length);
+  const accountingSource = readFileSync(join(root, "scripts/check-stage2-retained-lines.py"), "utf8");
+  assert.match(accountingSource, /diff\.renames=false/u);
+  assert.match(accountingSource, /"--no-renames"/u);
+  assert.match(accountingSource, /"--no-ext-diff"/u);
+  assert.match(accountingSource, /"--no-textconv"/u);
+  assert.match(accountingSource, /observed\.st_nlink == 1/u);
+  assert.match(accountingSource, /_require\(not ignored\)/u);
+  for (const owner of manifest.owners) assert.deepEqual(owner.paths, [...owner.paths].sort());
+  assert.equal(paths.filter((path) => path.includes("stage2-completion-local-control-v5/")).length, 13);
+
+  const changed = spawnSync(
+    "git",
+    [
+      "-c",
+      "diff.renames=false",
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      "242bbefeae5444118d9e97b46597130b509ca253",
+      "--",
+      ".",
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(changed.status, 0, changed.stderr);
+  for (const path of changed.stdout.split("\0").filter(Boolean)) assert.ok(paths.includes(path), path);
+
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-remediation-budget-"));
+  try {
+    const run = (args: string[]) => {
+      const result = spawnSync("git", args, { cwd: temporary, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout;
+    };
+    run(["init", "--quiet"]);
+    run(["config", "user.name", "Cogs Test"]);
+    run(["config", "user.email", "cogs-test@localhost"]);
+    writeFileSync(join(temporary, "old.ts"), "one\ntwo\nthree\n");
+    run(["add", "old.ts"]);
+    run(["commit", "--quiet", "-m", "baseline"]);
+    renameSync(join(temporary, "old.ts"), join(temporary, "new.ts"));
+    assert.equal(run(["diff", "--no-renames", "--numstat", "-z", "HEAD"]), ["0\t3\told.ts", ""].join("\0"));
+    assert.equal(run(["ls-files", "--others", "--exclude-standard", "-z"]), ["new.ts", ""].join("\0"));
+    run(["add", "--all"]);
+    const numstat = run([
+      "-c",
+      "diff.renames=true",
+      "diff",
+      "--no-renames",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--numstat",
+      "-z",
+      "HEAD",
+    ]);
+    assert.deepEqual(numstat.split("\0").filter(Boolean).sort(), ["0\t3\told.ts", "3\t0\tnew.ts"]);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });

@@ -238,6 +238,13 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     assert.ok(sourcePaths.includes(required), required);
   }
   assert.ok(source.entries.length <= 1460);
+  assert.ok(
+    source.entries.reduce(
+      (total: number, entry: { path: string }) => total + readFileSync(join(root, entry.path)).byteLength,
+      0,
+    ) <=
+      21 * 1024 * 1024,
+  );
   assertEntries(source.entries);
 
   const walk = (directory: string): string[] =>

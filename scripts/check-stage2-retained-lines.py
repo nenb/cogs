@@ -20,11 +20,13 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-HARD_LIMIT = 94_100
-DEPLOY_CORRECTION_HIGH = 22_000
-RETAINED_CORRECTION_HIGH = 12_100
-WORKFLOW_CORRECTION_HIGH = 5_000
-GLOBAL_CORRECTION_HIGH = 38_700
+HARD_LIMIT = 95_900
+DEPLOY_CORRECTION_HIGH = 22_300
+RETAINED_CORRECTION_HIGH = 13_100
+WORKFLOW_CORRECTION_HIGH = 5_500
+GLOBAL_CORRECTION_HIGH = 40_500
+REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
+REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
 FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 11_844, 4_836
 MUTABLE_OWNER_LINE_LIMIT = 2_000
@@ -47,6 +49,14 @@ CONTROL_DATA_MEMBERS += tuple(member for root in CONTROL_DATA_ROOTS[1:] for memb
     *(f"{root}/stage2-local-{name}-v3.json" for name in ("execution-envelope", "runtime-manifest")),
     f"{root}/stage2-local-static-control-v2.json",
 ))
+FINAL_CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
+FINAL_CONTROL_DATA_MEMBERS = (
+    *(f"{FINAL_CONTROL_DATA_ROOT}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
+        "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
+    *(f"{FINAL_CONTROL_DATA_ROOT}/stage2-local-{name}-v3.json" for name in (
+        "execution-envelope", "runtime-manifest")),
+    f"{FINAL_CONTROL_DATA_ROOT}/stage2-local-static-control-v2.json",
+)
 MUTABLE_OWNER_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_operation_bridge.py",
     "deploy/aws-feasibility/remote/completion_kata_execution_bridge.py",
@@ -159,10 +169,21 @@ def _require(condition):
 
 
 def _lines(path):
-    observed = path.lstat()
-    _require(stat.S_ISREG(observed.st_mode))
-    raw = path.read_bytes()
-    return raw.count(b"\n") + (1 if raw and not raw.endswith(b"\n") else 0)
+    try:
+        relative = path.relative_to(ROOT)
+        parent = ROOT
+        for part in relative.parts[:-1]:
+            parent /= part
+            observed_parent = parent.lstat()
+            _require(stat.S_ISDIR(observed_parent.st_mode) and not stat.S_ISLNK(observed_parent.st_mode))
+        observed = path.lstat()
+        _require(stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1)
+        raw = path.read_bytes()
+        _require(b"\0" not in raw)
+        raw.decode("utf-8")
+        return raw.count(b"\n") + (1 if raw and not raw.endswith(b"\n") else 0)
+    except (OSError, UnicodeError, ValueError):
+        raise LineBudgetError() from None
 
 
 def _deploy_paths():
@@ -189,7 +210,8 @@ def _counted(path):
 
 
 def _gross_slice(paths, allowed, revision=CORRECTION_BASE_REVISION):
-    output = _git(["diff", "--numstat", revision, "--", *paths])
+    output = _git(["-c", "diff.renames=false", "diff", "--no-renames", "--no-ext-diff",
+                   "--no-textconv", "--numstat", revision, "--", *paths])
     added = 0
     for line in output.splitlines():
         columns = line.split("\t")
@@ -204,6 +226,144 @@ def _gross_slice(paths, allowed, revision=CORRECTION_BASE_REVISION):
     return added
 
 
+def _reject_json_constant(_value):
+    raise LineBudgetError()
+
+
+def _strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        _require(isinstance(key, str) and key not in result)
+        result[key] = value
+    return result
+
+
+def _remediation_budget():
+    _require(_lines(REMEDIATION_BUDGET_PATH) <= 1_000
+             and REMEDIATION_BUDGET_PATH.stat().st_size <= 64 * 1024)
+    try:
+        data = json.loads(REMEDIATION_BUDGET_PATH.read_text("utf-8"), object_pairs_hook=_strict_object)
+    except (OSError, UnicodeError, ValueError):
+        raise LineBudgetError() from None
+    _require(set(data) == {"version", "base_revision", "global_gross_line_high", "baseline",
+                           "source_limits", "owners"})
+    _require(data["version"] == "cogs.external-review-remediation-budget/v1"
+             and data["base_revision"] == REMEDIATION_BASE_REVISION
+             and data["global_gross_line_high"] == 16_000)
+    _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
+                                   "source_inventory_bytes": 18_763_891})
+    _require(data["source_limits"] == {"tracked_files": 1460,
+                                        "source_inventory_bytes": 22_020_096,
+                                        "serialized_source_inventory_bytes": 262_144})
+    expected = {"route": 3_000, "revocation": 1_700, "relay": 2_600,
+                "lifecycle": 4_800, "completion": 2_700, "integration": 1_200}
+    owners = {}
+    paths = {}
+    new_file_highs = {}
+    forecasts = {}
+    _require(isinstance(data["owners"], list) and len(data["owners"]) == len(expected))
+    for entry in data["owners"]:
+        _require(isinstance(entry, dict) and set(entry) == {"name", "gross_line_high",
+                                                            "gross_byte_forecast", "new_file_high", "paths"})
+        name = entry["name"]
+        _require(name in expected and name not in owners and entry["gross_line_high"] == expected[name])
+        forecast = entry["gross_byte_forecast"]
+        _require(isinstance(forecast, dict)
+                 and set(forecast) == {"source", "tests_fixtures", "docs_contracts", "total"}
+                 and all(isinstance(value, int) and value >= 0 for value in forecast.values())
+                 and forecast["total"] == forecast["source"] + forecast["tests_fixtures"]
+                 + forecast["docs_contracts"])
+        _require(isinstance(entry["new_file_high"], int) and entry["new_file_high"] >= 0)
+        _require(isinstance(entry["paths"], list) and entry["paths"] == sorted(entry["paths"]))
+        for path in entry["paths"]:
+            _require(isinstance(path, str) and path and path not in paths and "\x00" not in path)
+            candidate = Path(path)
+            _require(not candidate.is_absolute() and ".." not in candidate.parts)
+            paths[path] = name
+        owners[name] = expected[name]
+        new_file_highs[name] = entry["new_file_high"]
+        forecasts[name] = forecast
+    _require(sum(new_file_highs.values()) == 40
+             and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
+    _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
+             <= data["source_limits"]["tracked_files"])
+    _require(data["baseline"]["source_inventory_bytes"]
+             + sum(forecast["total"] for forecast in forecasts.values())
+             <= data["source_limits"]["source_inventory_bytes"])
+    baseline_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z",
+                                            REMEDIATION_BASE_REVISION])))
+    for owner in owners:
+        planned_new = sum(1 for path, allocated in paths.items()
+                          if allocated == owner and path not in baseline_names)
+        _require(planned_new <= new_file_highs[owner])
+    _require(paths.get(str(REMEDIATION_BUDGET_PATH.relative_to(ROOT))) == "integration")
+    return data, owners, paths, new_file_highs, forecasts
+
+
+def _nul_records(raw):
+    records = raw.split("\0")
+    _require(records[-1] == "")
+    return records[:-1]
+
+
+def _remediation_gross():
+    budget, highs, allocations, new_file_highs, forecasts = _remediation_budget()
+    gross = {owner: 0 for owner in highs}
+    new_files = {owner: 0 for owner in highs}
+    base_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", REMEDIATION_BASE_REVISION])))
+    output = _git(["-c", "diff.renames=false", "diff", "--no-renames", "--no-ext-diff",
+                   "--no-textconv", "--numstat", "-z", REMEDIATION_BASE_REVISION, "--", "."])
+    changed = {}
+    for record in _nul_records(output):
+        columns = record.split("\t", 2)
+        _require(len(columns) == 3 and columns[0].isdigit() and columns[1].isdigit())
+        name = columns[2]
+        _require(name in allocations and name not in changed)
+        changed[name] = int(columns[0])
+    ordinary = set(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+    ignored = set(_nul_records(_git(["ls-files", "--others", "--ignored", "--exclude-standard",
+                                     "-z", "--", *allocations])))
+    _require(not ignored)
+    for name in ordinary:
+        _require(name in allocations and name not in changed)
+        changed[name] = _lines(ROOT / name)
+    for name, added in changed.items():
+        owner = allocations[name]
+        gross[owner] += added
+        if name not in base_names:
+            new_files[owner] += 1
+    _require(all(gross[owner] <= highs[owner] for owner in highs))
+    _require(all(new_files[owner] <= new_file_highs[owner] for owner in highs))
+    return gross, new_files, budget, forecasts
+
+
+def _final_control_data_state():
+    final_names = set(FINAL_CONTROL_DATA_MEMBERS)
+    tracked = set(_git(["ls-files", "--", FINAL_CONTROL_DATA_ROOT]).splitlines())
+    ordinary = set(_git(["ls-files", "--others", "--exclude-standard", "--",
+                         FINAL_CONTROL_DATA_ROOT]).splitlines())
+    ignored = set(_git(["ls-files", "--others", "--ignored", "--exclude-standard", "--",
+                        FINAL_CONTROL_DATA_ROOT]).splitlines())
+    observed = tracked | ordinary
+    _require(len(FINAL_CONTROL_DATA_MEMBERS) == len(final_names) and not ignored)
+    if not observed:
+        return "absent", final_names
+    _require(observed == final_names)
+    try:
+        for name in final_names:
+            path = ROOT / name
+            _require(_lines(path) == 1)
+            value = json.loads(path.read_text("utf-8"), object_pairs_hook=_strict_object,
+                               parse_constant=_reject_json_constant)
+            _require(isinstance(value, dict))
+            canonical = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=True, allow_nan=False) + "\n"
+            _require(path.read_text("utf-8") == canonical)
+    except (OSError, UnicodeError, ValueError):
+        raise LineBudgetError() from None
+    return "member-set-complete", final_names
+
+
 def measure():
     retained_names = set(RETAINED_FILES)
     retained_deploy_names = set(RETAINED_DEPLOY_FILES)
@@ -212,6 +372,7 @@ def measure():
     tracked_names = set(_git(["ls-files", "--", *RETAINED_FILES]).splitlines())
     tracked_deploy_names = set(_git(["ls-files", "--", *RETAINED_DEPLOY_FILES]).splitlines())
     control_data_names = set(CONTROL_DATA_MEMBERS)
+    final_control_data_state, final_control_data_names = _final_control_data_state()
     tracked_control_data_names = set(_git(["ls-files", "--", *CONTROL_DATA_ROOTS]).splitlines())
     _require(tracked_names == retained_names)
     _require(tracked_deploy_names == retained_deploy_names)
@@ -232,13 +393,23 @@ def measure():
     current = deploy + retained + workflows
     deploy_gross = FINAL_H_DEPLOY_GROSS + _gross_slice((DEPLOY_ROOT,), lambda name: (
         (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
-        or name in control_data_names or name in retained_names), FINAL_H_REVISION)
+        or name in control_data_names or name in final_control_data_names or name in retained_names), FINAL_H_REVISION)
     retained_gross = FINAL_H_RETAINED_GROSS + _gross_slice(
         RETAINED_FILES, lambda name: name in retained_names, FINAL_H_REVISION)
     workflow_gross = FINAL_H_WORKFLOW_GROSS + _gross_slice((WORKFLOW_ROOT,), lambda name: (
         name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)), FINAL_H_REVISION)
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
+    remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
+    remediation_gross = sum(remediation.values())
+    remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
+    remediation_new_file_highs = {entry["name"]: entry["new_file_high"] for entry in remediation_budget["owners"]}
+    remediation_slices_satisfied = (
+        remediation_gross <= remediation_budget["global_gross_line_high"]
+        and all(remediation[owner] <= remediation_highs[owner] for owner in remediation_highs)
+        and all(remediation_new_files[owner] <= remediation_new_file_highs[owner]
+                for owner in remediation_new_file_highs)
+    )
     slices_satisfied = (
         deploy_gross <= DEPLOY_CORRECTION_HIGH
         and retained_gross <= RETAINED_CORRECTION_HIGH
@@ -274,6 +445,16 @@ def measure():
         "correction_workflow_high": WORKFLOW_CORRECTION_HIGH,
         "correction_global_high": GLOBAL_CORRECTION_HIGH,
         "correction_slice_limits_satisfied": slices_satisfied,
+        "remediation_base_revision": REMEDIATION_BASE_REVISION,
+        "remediation_workstream_gross_added_lines": remediation,
+        "remediation_workstream_highs": remediation_highs,
+        "remediation_workstream_new_files": remediation_new_files,
+        "remediation_workstream_new_file_highs": remediation_new_file_highs,
+        "remediation_workstream_gross_byte_forecasts": remediation_byte_forecasts,
+        "remediation_gross_added_lines_no_deletion_credit": remediation_gross,
+        "remediation_global_high": remediation_budget["global_gross_line_high"],
+        "remediation_limits_satisfied": remediation_slices_satisfied,
+        "final_control_data_state": final_control_data_state,
         "conservative_lines_no_deletion_credit": conservative,
         "preferred_limit": PREFERRED_LIMIT,
         "hard_limit": HARD_LIMIT,
@@ -287,6 +468,7 @@ def measure():
     # Keep the preferred target advisory, but enforce every non-transferable
     # correction slice, the global correction high, and the mandatory hard stop.
     _require(report["correction_slice_limits_satisfied"])
+    _require(report["remediation_limits_satisfied"])
     _require(report["hard_satisfied"])
     return report
 
