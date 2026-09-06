@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { ModelCredentialResolver, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../auth/model-auth.ts";
+import {
+  ModelCredentialResolver,
+  type OpenBaoIdentityPort,
+  OpenBaoModelApiKeyStore,
+  openBaoDeadline,
+  parseOpenBaoJson,
+  validateOpenBaoTimestamp,
+} from "../auth/model-auth.ts";
 import { ModelBackedEgressCredentialSource } from "./egress-material.ts";
 import type { CogsEnvoyCredentialSource } from "./envoy-runtime-config.ts";
 import type { CogsEgressRevocationSnapshot, CogsEgressRevocationSource } from "./revocation-watcher.ts";
@@ -74,11 +81,53 @@ export type OpenBaoEgressRevocationBindingRequest = Readonly<
   }
 >;
 
+/** Trusted in-memory only: never put raw tuples/handles in logs, status or durable storage.
+ * Authority is the canonical configured endpoint, under a stable backend binding (ADR 0308).
+ * No namespace, replica fallback or backend substitution is supported.
+ */
+export type OpenBaoHydratedIdentity = readonly [
+  schema: "openbao-kv2-generation-v1",
+  authority: string,
+  mount: string,
+  handle: string,
+  currentVersion: number,
+  keyCreatedTime: string,
+  versionCreatedTime: string,
+];
+export type OpenBaoHydratedManifest = Readonly<{
+  schema: "openbao-hydrated-manifest-v1";
+  identities: readonly OpenBaoHydratedIdentity[];
+  baseline: CogsEgressRevocationSnapshot;
+}>;
 export type OpenBaoEgressRevocationBinding = Readonly<{
   source: CogsEgressRevocationSource;
   credentialSource: CogsEnvoyCredentialSource;
   credentialVersion: string;
 }>;
+export type OpenBaoHydratedMaterial = Readonly<{ manifest: OpenBaoHydratedManifest; release: () => void }>;
+const hydratedMaterials = new WeakMap<OpenBaoEgressRevocationBinding, OpenBaoHydratedMaterial>();
+
+/** Requires the original binding object, not a reconstructed or legacy numeric baseline. */
+export function getOpenBaoHydratedMaterial(binding: OpenBaoEgressRevocationBinding): OpenBaoHydratedMaterial {
+  const material = hydratedMaterials.get(binding);
+  if (!material) throw new CogsEgressOpenBaoRevocationError();
+  return material;
+}
+
+/** Lifecycle seam: hydrate before rendering; start watcher with manifest.baseline and validate
+ * the whole source against it immediately before admission. Never establish another baseline.
+ * On invalidation close the terminal admission gate synchronously, including after WAL awaits.
+ * Retain this binding and secret material until all users/late starters actually retire, then
+ * call release(). Timeout is not retirement. Abort prevents further credential callbacks.
+ *
+ * Conditional detection <= P + 2R + J: P is post-poll wait, R one entire aggregate read,
+ * J total scheduler/gate allowance. Retirement adds independently enforced/proven D;
+ * replacement-ready requires an external provisioner bound. This module proves neither J nor D.
+ * Requires non-repeating full creation identities, trusted clock/storage and consistent reads
+ * from the same authoritative endpoint. Identical restore, rollback, backend substitution,
+ * malicious metadata, and delete/undelete wholly between samples are excluded. No immediate
+ * revocation, issuer revocation, erasure/zeroization, or transactional multi-key snapshot claim.
+ */
 
 export async function createOpenBaoEgressRevocationBinding(
   request: OpenBaoEgressRevocationBindingRequest,
@@ -86,18 +135,84 @@ export async function createOpenBaoEgressRevocationBinding(
   try {
     const authority = normalizeOpenBaoEgressRevocationAuthorityOptions(authorityOptions(request));
     const source = new AggregateOpenBaoEgressRevocationSource({ ...request, ...authority });
-    const first = await source.read(request.signal ?? new AbortController().signal);
-    if (first.revoked) throw new Error("revoked");
-    const credentialSource = new ModelBackedEgressCredentialSource({
-      userId: validOpaque(request.userId),
-      resolver: new ModelCredentialResolver(
-        new OpenBaoModelApiKeyStore({
-          ...authority,
+    const userId = validOpaque(request.userId);
+    const handles = routeCredentialHandles(request.routePlan, userId);
+    const values = new Map<string, string>();
+    const identities: OpenBaoHydratedIdentity[] = [];
+    let released = false;
+    const release = () => {
+      released = true;
+      values.clear();
+    };
+    const signal = request.signal ?? new AbortController().signal;
+    const store = new OpenBaoModelApiKeyStore(authority);
+    try {
+      await openBaoDeadline(signal, authority.timeoutMs ?? 5000, async (captureSignal) => {
+        for (const handle of handles) {
+          const reader = new OpenBaoEgressRevocationSource({
+            ...request,
+            ...authority,
+            credentialHandle: handle,
+          });
+          const m0 = await reader.readIdentity(captureSignal);
+          if (m0.revoked || m0.identity === null) throw new Error("revoked");
+          const expected = m0.identity;
+          let captured = "";
+          try {
+            await store.withPinnedApiKey(
+              {
+                userId,
+                provider: "egress",
+                model: "egress-hydration",
+                credentialHandle: handle,
+                signal: captureSignal,
+              },
+              { version: expected[4], createdTime: expected[6] },
+              async (key) => {
+                captured = key;
+              },
+            );
+            const m1 = await reader.readIdentity(captureSignal);
+            if (captureSignal.aborted || m1.revoked || JSON.stringify(m1.identity) !== JSON.stringify(expected))
+              throw new Error("identity mismatch");
+            values.set(handle, captured);
+            identities.push(expected);
+          } finally {
+            captured = "";
+          }
+        }
+      });
+      if (signal.aborted) throw new Error("aborted");
+      const baseline = aggregateSnapshot(
+        request.presetRevision,
+        identities.map((entry) => [handleDigest(entry[3]), identityVersion(entry)]),
+        false,
+        request.pkiExpiresAtMs,
+      );
+      const manifest: OpenBaoHydratedManifest = Object.freeze({
+        schema: "openbao-hydrated-manifest-v1",
+        identities: Object.freeze(identities),
+        baseline,
+      });
+      const credentialSource = new ModelBackedEgressCredentialSource({
+        userId,
+        resolver: new ModelCredentialResolver({
+          async withApiKey(input, consume) {
+            if (released || signal.aborted || input.signal?.aborted) throw new Error("closed");
+            const value = values.get(input.credentialHandle);
+            if (value === undefined) throw new Error("unbound handle");
+            await consume(value);
+          },
         }),
-      ),
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-    });
-    return Object.freeze({ source, credentialSource, credentialVersion: first.credentialVersion });
+        signal,
+      });
+      const binding = Object.freeze({ source, credentialSource, credentialVersion: baseline.credentialVersion });
+      hydratedMaterials.set(binding, Object.freeze({ manifest, release }));
+      return binding;
+    } catch {
+      release();
+      throw new Error("capture failed");
+    }
   } catch {
     throw new CogsEgressOpenBaoRevocationError();
   }
@@ -108,6 +223,7 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
   readonly #mount: string;
   readonly #identity: OpenBaoIdentityPort;
   readonly #path: string;
+  readonly #handle: string;
   readonly #presetRevision: string;
   readonly #pkiExpiresAtMs: number;
   readonly #timeoutMs: number;
@@ -120,6 +236,7 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
       this.#mount = named(options.mount);
       this.#identity = options.identity;
       this.#path = credentialPath(options.credentialHandle, validOpaque(options.userId));
+      this.#handle = options.credentialHandle;
       this.#presetRevision = validOpaque(options.presetRevision);
       this.#pkiExpiresAtMs = integer(options.pkiExpiresAtMs, 1, Number.MAX_SAFE_INTEGER);
       this.#timeoutMs = integer(options.timeoutMs ?? 5000, 1, 60_000);
@@ -131,42 +248,52 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
   }
 
   public async read(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
+    const result = await this.readIdentity(signal);
+    return Object.freeze({
+      presetRevision: this.#presetRevision,
+      credentialVersion: result.identity === null ? "missing" : identityVersion(result.identity),
+      revoked: result.revoked,
+      pkiExpiresAtMs: this.#pkiExpiresAtMs,
+    });
+  }
+
+  public async readIdentity(
+    parent: AbortSignal,
+  ): Promise<Readonly<{ identity: OpenBaoHydratedIdentity | null; revoked: boolean }>> {
     try {
-      if (signal.aborted) throw new Error("aborted");
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
-      const relay = () => controller.abort();
-      signal.addEventListener("abort", relay, { once: true });
-      try {
-        if (signal.aborted) controller.abort();
-        const result = await withTokenOnce(this.#identity, controller.signal, async (rawToken) => {
+      return await openBaoDeadline(parent, this.#timeoutMs, async (signal) =>
+        withTokenOnce(this.#identity, signal, async (rawToken) => {
+          if (signal.aborted) throw new Error("aborted");
           const response = await this.#fetch(
             `${this.#origin}/v1/${encodeURIComponent(this.#mount)}/metadata/${this.#path}`,
             {
               method: "GET",
               headers: { "x-vault-token": secret(rawToken), accept: "application/json" },
               redirect: "error",
-              signal: controller.signal,
+              signal,
             },
           );
+          if (signal.aborted) {
+            void cancelBody(response).catch(() => undefined);
+            throw new Error("aborted");
+          }
           if (response.status === 404) {
             await cancelBody(response);
-            return { version: "missing", revoked: true };
+            return Object.freeze({ identity: null, revoked: true });
           }
-          const data = parseMetadata(await bounded(response, this.#maxBytes, controller.signal), response);
-          return { version: String(data.current), revoked: data.revoked };
-        });
-        return Object.freeze({
-          presetRevision: this.#presetRevision,
-          credentialVersion: result.version,
-          revoked: result.revoked,
-          pkiExpiresAtMs: this.#pkiExpiresAtMs,
-        });
-      } finally {
-        controller.abort();
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", relay);
-      }
+          const data = parseMetadata(await bounded(response, this.#maxBytes, signal), response);
+          const tuple: OpenBaoHydratedIdentity = Object.freeze([
+            "openbao-kv2-generation-v1",
+            this.#origin,
+            this.#mount,
+            this.#handle,
+            data.current,
+            data.keyCreatedTime,
+            data.versionCreatedTime,
+          ]);
+          return Object.freeze({ identity: tuple, revoked: data.revoked });
+        }),
+      );
     } catch {
       throw new CogsEgressOpenBaoRevocationError();
     }
@@ -192,19 +319,10 @@ class AggregateOpenBaoEgressRevocationSource implements CogsEgressRevocationSour
 
   public async read(signal: AbortSignal): Promise<CogsEgressRevocationSnapshot> {
     if (signal.aborted) throw new CogsEgressOpenBaoRevocationError();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
-    const relay = () => controller.abort();
-    signal.addEventListener("abort", relay, { once: true });
     try {
-      if (signal.aborted) controller.abort();
-      return await this.readInner(controller.signal);
+      return await openBaoDeadline(signal, this.#timeoutMs, (boundedSignal) => this.readInner(boundedSignal));
     } catch {
       throw new CogsEgressOpenBaoRevocationError();
-    } finally {
-      controller.abort();
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", relay);
     }
   }
 
@@ -258,7 +376,8 @@ function routeCredentialHandles(routePlan: CogsEgressRoutePlan, userId: string):
       handles.add(integration.auth.secretHandle);
     }
   }
-  return Object.freeze([...handles].sort((left, right) => left.localeCompare(right)));
+  if (handles.size > 128) throw new Error("too many handles");
+  return Object.freeze([...handles].sort());
 }
 function handleDigest(handle: string): string {
   return `sha256:${createHash("sha256").update(handle).digest("hex")}`;
@@ -268,12 +387,19 @@ function aggregateVersion(pairs: readonly (readonly [string, string])[]): string
   return `sha256:${createHash("sha256").update(JSON.stringify(pairs)).digest("hex")}`;
 }
 
-function parseMetadata(text: string, response: Response): { current: number; revoked: boolean } {
+function identityVersion(identity: OpenBaoHydratedIdentity): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`;
+}
+
+function parseMetadata(
+  text: string,
+  response: Response,
+): { current: number; revoked: boolean; keyCreatedTime: string; versionCreatedTime: string } {
   const length = response.headers.get("content-length");
   const type = response.headers.get("content-type") ?? "";
   if (response.status !== 200 || !jsonType.test(type) || (length !== null && !/^[0-9]+$/.test(length)))
     throw new Error("bad response");
-  const root = JSON.parse(text) as unknown;
+  const root = parseOpenBaoJson(text);
   onlyKnownPlain(root, [
     "request_id",
     "lease_id",
@@ -316,7 +442,8 @@ function parseMetadata(text: string, response: Response): { current: number; rev
   if (data.current_metadata_version !== undefined && !safeNonnegative(data.current_metadata_version))
     throw new Error("bad metadata");
   if (data.custom_metadata !== null) throw new Error("bad metadata");
-  if (!nonemptyString(data.created_time) || !nonemptyString(data.updated_time)) throw new Error("bad metadata");
+  const keyCreatedTime = validateOpenBaoTimestamp(data.created_time);
+  validateOpenBaoTimestamp(data.updated_time);
   if (data.cas_required !== undefined && typeof data.cas_required !== "boolean") throw new Error("bad metadata");
   if (data.delete_version_after !== undefined && !duration(data.delete_version_after)) throw new Error("bad metadata");
   if (data.max_versions !== undefined && !safeNonnegative(data.max_versions)) throw new Error("bad metadata");
@@ -327,7 +454,12 @@ function parseMetadata(text: string, response: Response): { current: number; rev
   const versions = data.versions as Record<string, unknown>;
   const entry = versions[String(current)];
   const currentEntry = versionEntry(entry);
-  return { current, revoked: currentEntry.destroyed || currentEntry.deletion_time !== "" };
+  return {
+    current,
+    keyCreatedTime,
+    versionCreatedTime: currentEntry.created_time,
+    revoked: currentEntry.destroyed || currentEntry.deletion_time !== "",
+  };
 }
 
 async function bounded(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
@@ -359,6 +491,7 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
       if (total > maximum) throw new Error("too large");
       chunks.push(next.value);
     }
+    if (signal.aborted) throw new Error("aborted");
     const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
     failed = false;
     return text;
@@ -386,9 +519,10 @@ async function withTokenOnce<T>(
   let result: Promise<T> | undefined;
   try {
     await identity.withToken(signal, (token) => {
-      if (!active || called) return Promise.reject(new Error("bad token callback"));
+      if (!active || called || signal.aborted) return Promise.reject(new Error("bad token callback"));
       called = true;
       result = operation(token);
+      void result.catch(() => undefined);
       return result.then(() => undefined);
     });
   } finally {
@@ -401,8 +535,8 @@ async function withTokenOnce<T>(
 function versionEntry(value: unknown): { created_time: string; deletion_time: string; destroyed: boolean } {
   onlyPlain(value, ["created_time", "deletion_time", "destroyed"]);
   const entry = value as Record<string, unknown>;
-  if (!nonemptyString(entry.created_time) || typeof entry.deletion_time !== "string") throw new Error("bad version");
-  if (entry.deletion_time !== "" && !strictPrintable(entry.deletion_time)) throw new Error("bad version");
+  validateOpenBaoTimestamp(entry.created_time);
+  if (entry.deletion_time !== "") validateOpenBaoTimestamp(entry.deletion_time);
   if (typeof entry.destroyed !== "boolean") throw new Error("bad version");
   return entry as { created_time: string; deletion_time: string; destroyed: boolean };
 }
@@ -524,9 +658,6 @@ function secret(value: string): string {
 }
 function duration(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128 && strictPrintable(value);
-}
-function nonemptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && strictPrintable(value);
 }
 function strictPrintable(value: string): boolean {
   for (const character of value) {
