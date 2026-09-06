@@ -53,6 +53,8 @@ export type CogsEgressRevocationWatcherOptions = Readonly<{
 export type CogsEgressRevocationWatcher = Readonly<{
   ready: boolean;
   close(): Promise<void>;
+  /** Actual registered source/action settlement, distinct from close outcome. */
+  retirement(): Promise<void>;
 }>;
 
 export class CogsEgressRevocationError extends Error {
@@ -87,7 +89,9 @@ class RevocationWatcher {
   private transition: Promise<void> | undefined;
   private abortListener: (() => void) | undefined;
   private closePromise: Promise<void> | undefined;
+  private retirementPromise: Promise<void> | undefined;
   private actionFailed = false;
+  private readonly actionWork: Promise<void>[] = [];
 
   public constructor(
     private readonly source: CogsEgressRevocationSource,
@@ -126,6 +130,7 @@ class RevocationWatcher {
         return watcher.readyState && !watcher.closed;
       },
       close: () => watcher.close(),
+      retirement: () => watcher.retirement(),
     });
   }
 
@@ -207,9 +212,28 @@ class RevocationWatcher {
       (signal: AbortSignal) => this.actions.replace(reason, signal),
     ];
     for (const attempt of attempts) {
+      const controller = new AbortController();
+      let resolveActual!: () => void;
+      let rejectActual!: (error: unknown) => void;
+      const actual = new Promise<void>((resolve, reject) => {
+        resolveActual = resolve;
+        rejectActual = reject;
+      });
+      this.actionWork.push(actual);
+      // Ownership is recorded before arbitrary action code can reenter.
       try {
-        await this.withTimeout(attempt, new AbortController());
+        Promise.resolve(attempt(controller.signal)).then(resolveActual, rejectActual);
+      } catch (error) {
+        rejectActual(error);
+      }
+      void actual.catch(() => {
+        this.actionFailed = true;
+      });
+      try {
+        await this.observeAction(actual, controller);
       } catch {
+        // Continue to initiate the next independent safety action, but retain
+        // this actual promise for close/recovery ownership.
         this.actionFailed = true;
       }
     }
@@ -218,6 +242,11 @@ class RevocationWatcher {
   public close(): Promise<void> {
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
+  }
+
+  public retirement(): Promise<void> {
+    this.close();
+    return this.retirementPromise ?? Promise.reject(new CogsEgressRevocationError());
   }
 
   private async closeOnce(): Promise<void> {
@@ -236,9 +265,12 @@ class RevocationWatcher {
     }
     this.active?.abort();
     try {
-      const works = [this.activeWork, this.transition].filter((work): work is Promise<void> => work !== undefined);
-      if (works.length > 0)
-        await boundedAwait(Promise.allSettled(works), this.options.operationTimeoutMs * 4, this.options.timers);
+      const works = [this.activeWork, this.transition, ...this.actionWork].filter(
+        (work): work is Promise<void> => work !== undefined,
+      );
+      this.retirementPromise = Promise.allSettled(works).then(() => undefined);
+      if (!this.actionFailed)
+        await boundedAwait(this.retirementPromise, this.options.operationTimeoutMs * 4, this.options.timers);
     } catch {
       failed = true;
     }
@@ -256,6 +288,17 @@ class RevocationWatcher {
   }
 
   private async withTimeout<T>(work: (signal: AbortSignal) => Promise<T>, controller: AbortController): Promise<T> {
+    let actual: Promise<T>;
+    try {
+      actual = Promise.resolve(work(controller.signal));
+    } catch (error) {
+      actual = Promise.reject(error);
+    }
+    void actual.catch(() => undefined);
+    return this.observeAction(actual, controller);
+  }
+
+  private async observeAction<T>(actual: Promise<T>, controller: AbortController): Promise<T> {
     let timer: unknown;
     try {
       return await new Promise<T>((resolve, reject) => {
@@ -263,11 +306,7 @@ class RevocationWatcher {
           controller.abort();
           reject(new Error("timeout"));
         }, this.options.operationTimeoutMs);
-        try {
-          work(controller.signal).then(resolve, reject);
-        } catch (error) {
-          reject(error);
-        }
+        actual.then(resolve, reject);
       });
     } finally {
       if (timer !== undefined) this.options.timers.clearTimeout(timer);
