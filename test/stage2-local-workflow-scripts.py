@@ -316,6 +316,17 @@ def prebuilt_staging_linux_tests():
     assert os.geteuid() == 0 and hasattr(os, "fork") and hasattr(os, "setuid")
     original = (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
                 prebuilt_staging.H_PREPARATION)
+    base = Path("/root/cogs-stage2-bootstrap")
+    parts = [base, base / "Q", base / "Q/deploy", base / "Q/deploy/aws-feasibility",
+             base / "Q/deploy/aws-feasibility/remote", prebuilt_staging.QUALIFICATION_SOURCE]
+    assert not os.path.lexists(base)
+    for path in parts: path.mkdir(); os.chmod(path, 0o700)
+    descriptor = prebuilt_staging._open_source(prebuilt_staging.QUALIFICATION_SOURCE); os.close(descriptor)
+    os.chmod(parts[-2], 0o755)
+    rejected(lambda: prebuilt_staging._open_source(prebuilt_staging.QUALIFICATION_SOURCE),
+             prebuilt_staging.ControlStagingError)
+    os.chmod(parts[-2], 0o700)
+    for path in reversed(parts): path.rmdir()
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         prebuilt_staging.SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
@@ -325,6 +336,14 @@ def prebuilt_staging_linux_tests():
             assert prebuilt_staging.stage() == "80a962f87f35cf1653894168ebe32139d7d32bc0a21f89cf028ac02a67976fc8"
             expected = "b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876"
             assert prebuilt_staging.verify_staged(expected) == expected
+            envelope = prebuilt_staging.DESTINATION / "stage2-local-execution-envelope-v3.json"
+            directory = os.open(prebuilt_staging.DESTINATION, os.O_RDONLY | os.O_DIRECTORY)
+            os.chmod(envelope, 0o600)
+            assert prebuilt_staging._read_regular(directory, envelope.name, 1 << 20, True)
+            os.chmod(envelope, 0o644)
+            rejected(lambda: prebuilt_staging._read_regular(directory, envelope.name, 1 << 20, True),
+                     prebuilt_staging.ControlStagingError)
+            os.chmod(envelope, 0o400); os.close(directory)
             descriptor_count = len(os.listdir("/proc/self/fd"))
             child = os.fork()
             if child == 0:
