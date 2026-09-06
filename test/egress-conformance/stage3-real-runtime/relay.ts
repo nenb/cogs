@@ -1,4 +1,5 @@
 import { createServer, Socket } from "node:net";
+import { relayPeerMatches } from "../../../dev/launcher/kvm-relay.ts";
 
 export type Stage3RelaySnapshot = Readonly<{
   bindHost: string;
@@ -113,7 +114,13 @@ export class Stage3RuntimeRelay {
     this.#sockets.add(socket);
     socket.once("close", () => this.#sockets.delete(socket));
     const target = this.#activeTarget;
-    if (this.#closed || this.#poisoned || target === null || this.#sockets.size + 1 > this.#maxActiveSockets) {
+    if (
+      this.#closed ||
+      this.#poisoned ||
+      target === null ||
+      this.#sockets.size + 1 > this.#maxActiveSockets ||
+      !relayPeerMatches(socket, this.#bindHost, this.#bindPort)
+    ) {
       this.#deniedConnections++;
       socket.destroy();
       return;
@@ -124,6 +131,8 @@ export class Stage3RuntimeRelay {
     this.#sockets.add(upstream);
     upstream.once("close", () => this.#sockets.delete(upstream));
     upstream.once("error", () => socket.destroy());
+    upstream.once("close", () => socket.destroy());
+    socket.once("close", () => upstream.destroy());
     socket.once("error", () => upstream.destroy());
     upstream.connect(target, "127.0.0.1", () => {
       if (this.#closed || this.#activeTarget !== target) {

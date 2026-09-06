@@ -1,5 +1,6 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, Socket } from "node:net";
-import { encodeProxyAuthorizationBasic } from "../../src/egress/proxy-capability.ts";
+import { decodeProxyAuthorizationBasic } from "../../src/egress/proxy-capability.ts";
 import type { SecretHolder } from "./openbao.ts";
 
 export type KvmRelayOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
@@ -229,7 +230,13 @@ export class KvmRelay {
   private accept(socket: Socket): void {
     const target = this.#target,
       gen = this.#generation;
-    if (this.#closed || this.#poisoned || target === null || this.#sockets.size + 2 > this.#max) {
+    if (
+      this.#closed ||
+      this.#poisoned ||
+      target === null ||
+      this.#sockets.size + 2 > this.#max ||
+      !relayPeerMatches(socket, this.#host, this.#port)
+    ) {
       this.count("denied");
       socket.destroy();
       return;
@@ -239,13 +246,19 @@ export class KvmRelay {
       return;
     }
     this.track(socket);
-    socket.setTimeout(5000, () => this.poison());
     const upstream = new Socket();
     this.track(upstream);
-    upstream.setTimeout(5000, () => this.poison());
-    const abort = () => this.poison();
-    socket.once("error", abort);
-    upstream.once("error", abort);
+    const rejectClient = () => {
+      socket.destroy();
+      upstream.destroy();
+    };
+    socket.setTimeout(5000, rejectClient);
+    upstream.setTimeout(5000, rejectClient);
+    socket.once("error", rejectClient);
+    socket.once("close", () => upstream.destroy());
+    upstream.once("close", () => socket.destroy());
+    // Failure of the owned target, unlike malformed guest traffic, is terminal.
+    upstream.once("error", () => this.poison());
     upstream.connect(target, "127.0.0.1", () => {
       if (this.#closed || this.#poisoned || this.#target !== target || this.#generation !== gen) {
         socket.destroy();
@@ -258,7 +271,10 @@ export class KvmRelay {
         upstream.pipe(socket);
         return;
       }
-      void this.proxyHandshake(socket, upstream, holder, target, gen).catch(() => this.poison());
+      void this.proxyHandshake(socket, upstream, holder, target, gen).catch(() => {
+        this.count("denied");
+        rejectClient();
+      });
     });
   }
 
@@ -269,12 +285,25 @@ export class KvmRelay {
     target: number,
     gen: number,
   ): Promise<void> {
-    const header = await readProxyHeader(socket, () => this.poison());
+    const header = await readProxyHeader(socket, () => socket.destroy());
     if (this.#closed || this.#poisoned || this.#target !== target || this.#generation !== gen) fail();
     let injected: Buffer | undefined;
-    withSecretOnce(holder, (secret) => {
-      injected = injectProxyAuthorization(header, secret);
-    });
+    let invalidClient = false;
+    try {
+      withSecretOnce(holder, (secret) => {
+        try {
+          injected = authenticateProxyAuthorization(header, secret);
+        } catch {
+          invalidClient = true;
+        }
+      });
+    } catch {
+      this.poison();
+      fail();
+    } finally {
+      header.fill(0);
+    }
+    if (invalidClient) fail();
     if (!injected || this.#closed || this.#poisoned || this.#target !== target || this.#generation !== gen) fail();
     try {
       await writeAll(upstream, injected);
@@ -353,6 +382,20 @@ export function createLinuxKvmRelayForTests(port = 0): KvmRelay {
   return KvmRelay.linuxKvmTestLoopback(port);
 }
 
+// TCP metadata cannot prove ingress interface. The driver must additionally enforce
+// TAP + source + destination + protocol + port before established-traffic rules.
+export function relayPeerMatches(
+  peer: Pick<Socket, "remoteAddress" | "localAddress" | "localPort">,
+  host: string,
+  port: number,
+): boolean {
+  return (
+    peer.remoteAddress === (host === "192.0.2.1" ? "192.0.2.2" : "127.0.0.1") &&
+    peer.localAddress === host &&
+    peer.localPort === port
+  );
+}
+
 function validPort(port: number): number {
   if (!Number.isInteger(port) || port < 1 || port > 65535) fail();
   return port;
@@ -410,7 +453,7 @@ function readProxyHeader(socket: Socket, onTimeout: () => void): Promise<Buffer>
     let buffered = Buffer.alloc(0);
     const timer = setTimeout(() => {
       onTimeout();
-      reject(new Error("launcher relay failed"));
+      done(false);
     }, 1000);
     let settled = false;
     const done = (ok: boolean, value?: Buffer) => {
@@ -421,13 +464,18 @@ function readProxyHeader(socket: Socket, onTimeout: () => void): Promise<Buffer>
       socket.off("close", onClose);
       socket.off("error", onClose);
       if (ok) socket.pause();
-      else socket.destroy();
+      else {
+        buffered.fill(0);
+        socket.destroy();
+      }
       ok ? resolve(value as Buffer) : reject(new Error("launcher relay failed"));
     };
     const onClose = () => done(false);
     const onData = (chunk: Buffer) => {
-      buffered = Buffer.concat([buffered, chunk], buffered.length + chunk.length);
-      if (buffered.length > 8192) return done(false);
+      if (buffered.length + chunk.length > 8192) return done(false);
+      const previous = buffered;
+      buffered = Buffer.concat([previous, chunk], previous.length + chunk.length);
+      previous.fill(0);
       const end = buffered.indexOf("\r\n\r\n");
       if (end < 0) return;
       const candidate = buffered.subarray(0, end + 4).toString("latin1");
@@ -440,12 +488,12 @@ function readProxyHeader(socket: Socket, onTimeout: () => void): Promise<Buffer>
   });
 }
 
-function injectProxyAuthorization(raw: Buffer, secret: string): Buffer {
+function authenticateProxyAuthorization(raw: Buffer, secret: string): Buffer {
   const end = raw.indexOf("\r\n\r\n");
   if (end < 0 || end > 8192) fail();
   const head = raw.subarray(0, end).toString("latin1");
   if (hasUnsafeHeaderControls(head)) fail();
-  const rest = raw.subarray(end + 4);
+  let authorization: string | undefined;
   const lines = head.split("\r\n");
   if (lines.length < 2 || !/^CONNECT localhost:[1-9][0-9]{0,4} HTTP\/1\.1$/u.test(lines[0] ?? "")) fail();
   const port = Number((lines[0] as string).split(":")[1]?.split(" ")[0]);
@@ -457,15 +505,21 @@ function injectProxyAuthorization(raw: Buffer, secret: string): Buffer {
     const name = line.slice(0, line.indexOf(":")).toLowerCase();
     if (seen.has(name)) fail();
     seen.add(name);
-    if (name === "proxy-authorization") fail();
+    if (name === "proxy-authorization") authorization = line.slice(line.indexOf(":") + 2);
+    if (["content-length", "transfer-encoding", "upgrade"].includes(name)) fail();
     if (name === "host") host++;
   }
   if (host !== 1 || !lines.some((line) => line.toLowerCase() === `host: localhost:${port}`)) fail();
-  const authorization = encodeProxyAuthorizationBasic(secret);
-  return Buffer.concat([
-    Buffer.from(`${lines.join("\r\n")}\r\nProxy-Authorization: ${authorization}\r\n\r\n`, "latin1"),
-    rest,
-  ]);
+  const supplied = decodeProxyAuthorizationBasic(authorization ?? "");
+  const expected = Buffer.from(secret, "ascii");
+  try {
+    if (!supplied || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) fail();
+    // Preserve the caller's capability; never manufacture one for anonymous traffic.
+    return Buffer.from(raw);
+  } finally {
+    supplied?.fill(0);
+    expected.fill(0);
+  }
 }
 
 function hasUnsafeHeaderControls(value: string): boolean {

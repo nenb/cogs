@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createServer, Socket } from "node:net";
 import { test } from "node:test";
 import {
   createLinuxKvmRelay,
   createLinuxKvmRelayForTests,
   createLoopbackFunctionalRelay,
+  relayPeerMatches,
 } from "../dev/launcher/kvm-relay.ts";
 
 function holder(secret = "abcdefghijklmnopqrstuvwxyz012345"): {
@@ -163,7 +165,7 @@ test("loopback functional relay allows registered echo and metadata-only snapsho
   }
 });
 
-test("relay injects callback-scoped proxy capability into fragmented CONNECT only", async () => {
+test("relay forwards existing proxy capability in fragmented CONNECT without fabrication", async () => {
   const upstream = await captureServer();
   const r = createLinuxKvmRelayForTests();
   r.configureProxyCapability(holder());
@@ -174,7 +176,9 @@ test("relay injects callback-scoped proxy capability into fragmented CONNECT onl
     const s = await socketTo(r.snapshot().bindPort);
     s.write("CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\n");
     await new Promise((resolve) => setTimeout(resolve, 10));
-    s.write("User-Agent: curl\r\n\r\nbody");
+    s.write(
+      "Proxy-Authorization: Basic Y29nczphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NQ==\r\nUser-Agent: curl\r\n\r\nbody",
+    );
     assert.match(await readOnce(s), /200 Connection Established/u);
     assert.match(
       upstream.captured(),
@@ -208,8 +212,8 @@ test("relay rejects ambiguous proxy CONNECT without leaking capability", async (
       const s = await socketTo(r.snapshot().bindPort);
       s.end(bad);
       await new Promise((resolve) => s.once("close", resolve));
-      assert.equal(r.snapshot().poisoned, true);
-      assert.equal(upstream.captured().includes("abcdefghijklmnopqrstuvwxyz"), false);
+      assert.equal(r.snapshot().poisoned, false);
+      assert.equal(upstream.captured(), "");
     } finally {
       await r.close();
       await upstream.close();
@@ -376,6 +380,134 @@ test("relay rejects hostile cooperative option bags without getters", async () =
   );
   assert.equal(invoked, false);
   await r.close();
+});
+
+const capabilityHeader = "Proxy-Authorization: Basic Y29nczphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NQ==\r\n";
+const connectPrefix = "CONNECT localhost:3210 HTTP/1.1\r\nHost: localhost:3210\r\n";
+
+function receiveBytes(socket: Socket, length: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("test receive timeout"));
+    }, 4000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("data", data);
+    };
+    const data = (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk));
+      size += chunk.length;
+      if (size >= length) {
+        cleanup();
+        resolve(Buffer.concat(chunks));
+      }
+    };
+    socket.on("data", data);
+  });
+}
+
+test("missing/wrong/duplicate capability and bounded framing never poison a parallel healthy client", async () => {
+  const upstream = await echoServer();
+  const r = createLinuxKvmRelayForTests();
+  r.configureProxyCapability(holder());
+  await r.start();
+  const healthy = await socketTo(r.snapshot().bindPort);
+  try {
+    r.registerTarget(upstream.port);
+    await r.switchTo(upstream.port);
+    // Connect after switching, which deliberately retires existing sockets.
+    healthy.destroy();
+    const good = await socketTo(r.snapshot().bindPort);
+    try {
+      const request = connectPrefix + capabilityHeader + "\r\n";
+      const response = receiveBytes(good, request.length);
+      good.write(request);
+      assert.equal((await response).toString(), request);
+      for (const bad of [
+        connectPrefix + "\r\n",
+        connectPrefix +
+          "Proxy-Authorization: Basic " +
+          Buffer.from("cogs:" + "z".repeat(32)).toString("base64") +
+          "\r\n\r\n",
+        connectPrefix + capabilityHeader + capabilityHeader + "\r\n",
+        connectPrefix + capabilityHeader + "Content-Length: 1\r\n\r\nx",
+        connectPrefix + capabilityHeader + "Transfer-Encoding: chunked\r\n\r\n",
+        connectPrefix + capabilityHeader + "X-Large: " + "x".repeat(8192),
+        connectPrefix, // absolute header deadline, not an idle timeout reset by chunks
+      ]) {
+        const client = await socketTo(r.snapshot().bindPort);
+        let reflected = 0;
+        client.on("data", (chunk) => {
+          reflected += chunk.length;
+        });
+        const closed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+        client.on("error", () => {});
+        client.write(bad);
+        await closed;
+        assert.equal(reflected, 0);
+        assert.equal(r.snapshot().poisoned, false);
+        const ping = receiveBytes(good, 4);
+        good.write("ping");
+        assert.equal((await ping).toString(), "ping");
+      }
+      const diagnostics = JSON.stringify(r.snapshot());
+      assert.ok(!diagnostics.includes(capabilityHeader.trim()));
+      assert.ok(!diagnostics.includes("abcdefghijklmnopqrstuvwxyz"));
+    } finally {
+      good.destroy();
+    }
+  } finally {
+    healthy.destroy();
+    await r.close();
+    await upstream.close();
+  }
+});
+
+test("peer binding rejects wrong source and local tuple; headers cannot supply interface identity", () => {
+  const peer = { remoteAddress: "192.0.2.2", localAddress: "192.0.2.1", localPort: 18080 };
+  assert.equal(relayPeerMatches(peer, "192.0.2.1", 18080), true);
+  for (const remoteAddress of [undefined, "127.0.0.1", "192.0.2.3", "::ffff:192.0.2.2"]) {
+    assert.equal(relayPeerMatches({ ...peer, remoteAddress }, "192.0.2.1", 18080), false);
+  }
+  assert.equal(relayPeerMatches({ ...peer, localPort: 18081 }, "192.0.2.1", 18080), false);
+  assert.equal(relayPeerMatches({ ...peer, localAddress: "127.0.0.1" }, "192.0.2.1", 18080), false);
+  const policy = execFileSync("bash", ["dev/linux-kvm/driver.sh", "print-network-policy"], { encoding: "utf8" });
+  assert.match(policy, /-i cgfixture -s 192\.0\.2\.2 -d 192\.0\.2\.1 -p tcp --dport 18080 .*relay-allow -j ACCEPT/);
+  assert.match(policy, /-I INPUT 1 -d 192\.0\.2\.1 -p tcp --dport 18080 -j CGFIXI/);
+  assert.ok(policy.indexOf("relay-exclusion") < policy.indexOf("ESTABLISHED"));
+  assert.doesNotMatch(policy, /ESTABLISHED,RELATED/);
+});
+
+test("authenticated stream survives receiver backpressure and close retires both sides", async () => {
+  const upstream = await echoServer();
+  const r = createLinuxKvmRelayForTests();
+  r.configureProxyCapability(holder());
+  await r.start();
+  try {
+    r.registerTarget(upstream.port);
+    await r.switchTo(upstream.port);
+    const s = await socketTo(r.snapshot().bindPort);
+    const request = connectPrefix + capabilityHeader + "\r\n";
+    const handshake = receiveBytes(s, request.length);
+    s.write(request);
+    await handshake;
+    const payload = Buffer.alloc(1024 * 1024, 0x5a);
+    s.pause();
+    const received = receiveBytes(s, payload.length);
+    s.write(payload);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    s.resume();
+    assert.deepEqual(await received, payload);
+    s.destroy();
+    await r.close();
+    assert.equal(r.snapshot().activeSockets, 0);
+  } finally {
+    await r.close();
+    await upstream.close();
+  }
 });
 
 test("target connect failure poisons and close remains idempotent", async () => {
