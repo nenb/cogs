@@ -6,6 +6,8 @@ export interface ModelAuthRequest {
   readonly signal?: AbortSignal;
 }
 
+export type OpenBaoPinnedVersion = Readonly<{ version: number; createdTime: string }>;
+
 export interface ModelApiKeySource {
   readonly withApiKey: (request: ModelAuthRequest, operation: (apiKey: string) => Promise<void>) => Promise<void>;
 }
@@ -117,6 +119,28 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
   }
 
   public async withApiKey(request: ModelAuthRequest, operation: (apiKey: string) => Promise<void>): Promise<void> {
+    return this.readApiKey(request, operation);
+  }
+
+  public async withPinnedApiKey(
+    request: ModelAuthRequest,
+    expected: OpenBaoPinnedVersion,
+    operation: (apiKey: string) => Promise<void>,
+  ): Promise<void> {
+    return generic(async () => {
+      const pinned = Object.freeze({
+        version: validateInteger(expected.version, 1, Number.MAX_SAFE_INTEGER),
+        createdTime: validateOpenBaoTimestamp(expected.createdTime),
+      });
+      await this.readApiKey(request, operation, pinned);
+    });
+  }
+
+  private async readApiKey(
+    request: ModelAuthRequest,
+    operation: (apiKey: string) => Promise<void>,
+    expected?: OpenBaoPinnedVersion,
+  ): Promise<void> {
     return generic(async () => {
       const provider = validateOpaqueId(request.provider, "provider");
       const model = validateModelId(request.model);
@@ -130,33 +154,44 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
       request.signal?.addEventListener("abort", onAbort, { once: true });
       let apiKey = "";
       try {
-        apiKey = await withTokenOnce(this.#identity, controller.signal, async (rawToken) => {
-          if (controller.signal.aborted) throw new Error("aborted");
-          let token = "";
-          try {
-            token = validateModelApiKey(rawToken);
-            const response = await this.#fetch(`${this.#origin}/v1/${encodeURIComponent(this.#mount)}/data/${path}`, {
-              method: "GET",
-              headers: { "x-vault-token": token, accept: "application/json" },
-              redirect: "error",
-              signal: controller.signal,
-            });
-            const type = response.headers.get("content-type") ?? "";
-            const length = response.headers.get("content-length");
-            if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.#maxResponseBytes)) {
-              cancelBody(response);
-              throw new Error("too large");
+        apiKey = await openBaoDeadline(controller.signal, this.#timeoutMs, async (signal) =>
+          withTokenOnce(this.#identity, signal, async (rawToken) => {
+            if (controller.signal.aborted) throw new Error("aborted");
+            let token = "";
+            try {
+              token = validateModelApiKey(rawToken);
+              const query = expected === undefined ? "" : `?version=${expected.version}`;
+              const response = await this.#fetch(
+                `${this.#origin}/v1/${encodeURIComponent(this.#mount)}/data/${path}${query}`,
+                {
+                  method: "GET",
+                  headers: { "x-vault-token": token, accept: "application/json" },
+                  redirect: "error",
+                  signal,
+                },
+              );
+              if (signal.aborted) {
+                cancelBody(response);
+                throw new Error("aborted");
+              }
+              const type = response.headers.get("content-type") ?? "";
+              const length = response.headers.get("content-length");
+              if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.#maxResponseBytes)) {
+                cancelBody(response);
+                throw new Error("too large");
+              }
+              if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type)) {
+                cancelBody(response);
+                throw new Error("bad response");
+              }
+              return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, signal), expected);
+            } finally {
+              token = "";
             }
-            if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type)) {
-              cancelBody(response);
-              throw new Error("bad response");
-            }
-            return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, controller.signal));
-          } finally {
-            token = "";
-          }
-        });
+          }),
+        );
       } finally {
+        controller.abort();
         clearTimeout(timeout);
         request.signal?.removeEventListener("abort", onAbort);
       }
@@ -321,6 +356,10 @@ async function boundedText(response: Response, maximum: number, signal: AbortSig
   if (reader === undefined) throw new Error("missing body");
   const chunks: Uint8Array[] = [];
   let total = 0;
+  const abort = () => {
+    reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", abort, { once: true });
   try {
     while (true) {
       if (signal.aborted) throw new Error("aborted");
@@ -330,10 +369,14 @@ async function boundedText(response: Response, maximum: number, signal: AbortSig
       if (total > maximum) throw new Error("too large");
       chunks.push(next.value);
     }
+    if (signal.aborted) throw new Error("aborted");
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
   } catch (error) {
     reader.cancel().catch(() => undefined);
     throw error;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
   }
 }
 
@@ -364,8 +407,8 @@ async function withTokenOnce<T>(
   }
 }
 
-function parseKv2ApiKey(text: string): string {
-  const parsed = JSON.parse(text) as unknown;
+function parseKv2ApiKey(text: string, expected?: OpenBaoPinnedVersion): string {
+  const parsed = parseOpenBaoJson(text);
   const allowedRoot = [
     "request_id",
     "lease_id",
@@ -383,6 +426,12 @@ function parseKv2ApiKey(text: string): string {
   if (!isPlainObject(root.data) || !hasOnlyKeys(root.data, ["data", "metadata"])) throw new Error("bad data");
   const data = root.data as { data: unknown; metadata: unknown };
   validateKv2Metadata(data.metadata);
+  const metadata = data.metadata as Record<string, unknown>;
+  if (
+    expected !== undefined &&
+    (metadata.version !== expected.version || metadata.created_time !== expected.createdTime)
+  )
+    throw new Error("identity mismatch");
   if (!isPlainObject(data.data) || !hasOnlyKeys(data.data, ["api_key"])) throw new Error("bad secret data");
   const secret = data.data as { api_key: unknown };
   if (typeof secret.api_key !== "string") throw new Error("missing api key");
@@ -422,15 +471,10 @@ function validateKv2Metadata(value: unknown): void {
     version: unknown;
     custom_metadata: unknown;
   };
-  if (typeof metadata.created_time !== "string" || typeof metadata.deletion_time !== "string")
-    throw new Error("bad metadata time");
+  validateOpenBaoTimestamp(metadata.created_time);
+  if (metadata.deletion_time !== "") throw new Error("bad metadata time");
   const version = metadata.version;
-  if (
-    typeof metadata.destroyed !== "boolean" ||
-    typeof version !== "number" ||
-    !Number.isSafeInteger(version) ||
-    version < 1
-  )
+  if (metadata.destroyed !== false || typeof version !== "number" || !Number.isSafeInteger(version) || version < 1)
     throw new Error("bad metadata state");
   if (metadata.custom_metadata !== null) throw new Error("bad custom metadata");
 }
@@ -448,6 +492,108 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: string[], allowSubset
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.every((key) => expected.includes(key)) && (allowSubset || actual.length === expected.length);
+}
+
+/** Exact RFC3339 server identity; never convert to Date or collapse fractional precision. */
+export function validateOpenBaoTimestamp(value: unknown): string {
+  if (typeof value !== "string" || value.length > 64) throw new ModelAuthError();
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
+      value,
+    );
+  if (!match) throw new ModelAuthError();
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > (days[month - 1] ?? 0)) throw new ModelAuthError();
+  return value;
+}
+
+/** Bounded parser rejects duplicate (including escaped) keys before JSON.parse loses them. */
+export function parseOpenBaoJson(text: string): unknown {
+  try {
+    const scopes: Array<{ object: boolean; keys: Set<string>; expectsKey: boolean }> = [];
+    for (let index = 0; index < text.length; index++) {
+      const character = text[index];
+      if (character === "{" || character === "[") {
+        if (scopes.length >= 32) throw new Error("depth");
+        scopes.push({ object: character === "{", keys: new Set(), expectsKey: character === "{" });
+      } else if (character === "}" || character === "]") scopes.pop();
+      else if (character === ",") {
+        const scope = scopes.at(-1);
+        if (scope?.object) scope.expectsKey = true;
+      } else if (character === '"') {
+        let end = index + 1;
+        for (; end < text.length; end++) {
+          if (text[end] === "\\") end++;
+          else if (text[end] === '"') break;
+        }
+        if (end >= text.length) throw new Error("string");
+        const scope = scopes.at(-1);
+        if (scope?.object && scope.expectsKey) {
+          const key = JSON.parse(text.slice(index, end + 1)) as string;
+          if (scope.keys.has(key)) throw new Error("duplicate");
+          scope.keys.add(key);
+          scope.expectsKey = false;
+        }
+        index = end;
+      }
+    }
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new ModelAuthError();
+  }
+}
+
+export type OpenBaoDeadlineClock = Readonly<{
+  now: () => number;
+  setTimeout: (callback: () => void, ms: number) => unknown;
+  clearTimeout: (timer: unknown) => void;
+}>;
+const deadlineClock: OpenBaoDeadlineClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
+/** Bounds observation, not retirement of a hostile injected transport/identity implementation. */
+export async function openBaoDeadline<T>(
+  parent: AbortSignal,
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+  clock: OpenBaoDeadlineClock = deadlineClock,
+): Promise<T> {
+  return generic(async () => {
+    validateInteger(timeoutMs, 1, 60_000);
+    if (parent.aborted) throw new ModelAuthError();
+    const deadline = clock.now() + timeoutMs;
+    const controller = new AbortController();
+    let rejectDeadline: (error: Error) => void = () => undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject;
+    });
+    const abort = () => {
+      rejectDeadline(new ModelAuthError());
+      controller.abort();
+    };
+    parent.addEventListener("abort", abort, { once: true });
+    const timer = clock.setTimeout(abort, timeoutMs);
+    try {
+      const work = Promise.resolve().then(async () => {
+        if (controller.signal.aborted || clock.now() >= deadline) throw new ModelAuthError();
+        const value = await operation(controller.signal);
+        if (controller.signal.aborted || clock.now() >= deadline) throw new ModelAuthError();
+        return value;
+      });
+      return await Promise.race([work, expired]);
+    } finally {
+      clock.clearTimeout(timer);
+      parent.removeEventListener("abort", abort);
+      controller.abort();
+    }
+  });
 }
 
 async function generic<T>(operation: () => Promise<T>): Promise<T> {
