@@ -174,9 +174,9 @@ jobs:
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
         run: |
           set -euo pipefail
-          test ! -e /var/lib/cogs
-          test ! -e /opt/kata
-          test ! -e /run/netns
+          sudo -n /usr/bin/test ! -e /var/lib/cogs && sudo -n /usr/bin/test ! -L /var/lib/cogs
+          sudo -n /usr/bin/test ! -e /opt/kata && sudo -n /usr/bin/test ! -L /opt/kata
+          sudo -n /usr/bin/test ! -e /run/netns && sudo -n /usr/bin/test ! -L /run/netns
           sudo -n /bin/mkdir -m 0755 /run/netns
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
@@ -197,12 +197,12 @@ jobs:
           /usr/bin/python3 -I -c 'import json,sys
           value=json.loads(sys.stdin.buffer.read()); assert value == {"version":"cogs.stage2-local-immutable-preparation/v2","rootfs_artifact_count":1,"runtime_archive_count":2,"receipt_sha256":value["receipt_sha256"],"control_verified":True,"authority":"immutable-public-input-preparation-only"}; assert len(value["receipt_sha256"]) == 64
           ' <<<"$immutable"
-          descriptor=$(/usr/bin/python3 -I -B -c 'import json,pathlib,re
-          paths=list(pathlib.Path("/var/lib/cogs/stage2-completion-v1/control").glob("stage2-local-execution-envelope-v3.json")); assert len(paths)==1
-          value=json.loads(paths[0].read_bytes())["rootfs"]["prebuilt_descriptor_sha256"]; assert re.fullmatch("[0-9a-f]{64}",value); print(value)')
-          test "$descriptor" = "${{ steps.gate.outputs.rootfs_descriptor_sha256 }}"
+          verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            scripts/stage2-stage-prebuilt-control.py verify "${{ steps.gate.outputs.rootfs_descriptor_sha256 }}")
+          test "$verified" = "rootfs_descriptor_sha256=${{ steps.gate.outputs.rootfs_descriptor_sha256 }}"
           sudo -n /usr/bin/test -x /opt/kata/bin/containerd-shim-kata-v2
-          test ! -e /run/cogs-stage2-local-private-v2
+          sudo -n /usr/bin/test ! -e /run/cogs-stage2-local-private-v2
+          sudo -n /usr/bin/test ! -L /run/cogs-stage2-local-private-v2
 
       - name: Materialize ordinal and batch bound non-cloud formal grant
         id: grant
@@ -383,7 +383,9 @@ jobs:
         timeout-minutes: 1
         run: |
           sudo -n /bin/rm -rf -- "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"
-          test ! -e "$REPORT_STAGING" && test ! -e "$REPORT_READBACK_STAGING" && test ! -e "$RECEIPT_READBACK_STAGING"
+          test ! -e "$REPORT_STAGING" && test ! -L "$REPORT_STAGING"
+          test ! -e "$REPORT_READBACK_STAGING" && test ! -L "$REPORT_READBACK_STAGING"
+          test ! -e "$RECEIPT_READBACK_STAGING" && test ! -L "$RECEIPT_READBACK_STAGING"
 
       - name: Restore hosted scaffolding after runtime removal
         id: host_scaffold_restore
@@ -392,11 +394,12 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test ! -e /opt/kata
+          sudo -n /usr/bin/test ! -e /opt/kata && sudo -n /usr/bin/test ! -L /opt/kata
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
           sudo -n /bin/rmdir /run/netns
           seen=$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)
           case "$seen" in root:root:755) sudo -n /bin/chmod 0777 /opt ;; root:root:777) ;; *) exit 1 ;; esac
+          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
 
       - name: Run one final supervised cycle residue observation
         id: final_observation

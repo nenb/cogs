@@ -77,6 +77,10 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
             provisional "$DIAGNOSTIC_CONTROL_VERSION")
           [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
+          verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
+            verify-diagnostic 015cb863f9b2ec8582619cc46c1914d41eb1b58ef1abc3384cdf34ed24c89029)
+          test "$verified" = rootfs_descriptor_sha256=015cb863f9b2ec8582619cc46c1914d41eb1b58ef1abc3384cdf34ed24c89029
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
@@ -231,6 +235,10 @@ jobs:
             /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
             provisional "$DIAGNOSTIC_CONTROL_VERSION")
           [[ "$staged" =~ ^control_sha256=[0-9a-f]{64}$ ]]
+          verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-prebuilt-control.py \
+            verify-diagnostic 015cb863f9b2ec8582619cc46c1914d41eb1b58ef1abc3384cdf34ed24c89029)
+          test "$verified" = rootfs_descriptor_sha256=015cb863f9b2ec8582619cc46c1914d41eb1b58ef1abc3384cdf34ed24c89029
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C \
             PATH=/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B \
             /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py
