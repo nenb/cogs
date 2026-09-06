@@ -39,6 +39,8 @@ function plan(extra?: { auth?: CogsEgressAuthRef; route?: Partial<Route>; id?: s
             integrationId: id,
             routeId: "route-b",
             method: "POST",
+            pathPattern: "/owner/repo.git/git-upload-pack",
+            queryPolicy: { mode: "deny" },
             pathMatch: { kind: "safe_regex", value: "^/owner/repo\\.git/git-upload-pack$" },
             ...extra?.route,
           }),
@@ -77,6 +79,8 @@ function multiIntegrationPlan(): CogsEgressRoutePlan {
             host: "registry.npmjs.org",
             port: 443,
             method: "GET",
+            pathPattern: "/left-pad",
+            queryPolicy: { mode: "deny" },
             pathMatch: { kind: "safe_regex", value: "^/left-pad$" },
           }),
         ],
@@ -98,6 +102,8 @@ function multiIntegrationPlan(): CogsEgressRoutePlan {
             host: "pypi.org",
             port: 443,
             method: "GET",
+            pathPattern: "/simple/pkg/",
+            queryPolicy: { mode: "deny" },
             pathMatch: { kind: "safe_regex", value: "^/simple/pkg/$" },
             injectAuth: false,
             credentialRequired: false,
@@ -208,6 +214,9 @@ test("renders deterministic contained Envoy bootstrap JSON with loopback authz m
   );
   const inner = boot.static_resources.listeners[1];
   const innerHcm = inner.filter_chains[0].filters[0].typed_config;
+  assert.equal(innerHcm.normalize_path, false);
+  assert.equal(innerHcm.merge_slashes, false);
+  assert.equal(innerHcm.path_with_escaped_slashes_action, "REJECT_REQUEST");
   const innerFilter = innerHcm.http_filters[0].typed_config;
   assert.deepEqual(innerFilter.allowed_headers, { patterns: [{ exact: "proxy-authorization" }] });
   assert.deepEqual(innerFilter.disallowed_headers.patterns, [
@@ -245,6 +254,7 @@ test("renders deterministic contained Envoy bootstrap JSON with loopback authz m
     },
   ]);
   assert.deepEqual(innerRoute.request_headers_to_remove, ["authorization", "proxy-authorization"]);
+  assert.deepEqual(innerRoute.response_headers_to_remove, ["authorization", "proxy-authorization"]);
   assert.deepEqual(innerRoute.request_headers_to_add, [
     { header: { key: "authorization", value: "Bearer secret-token" }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
   ]);

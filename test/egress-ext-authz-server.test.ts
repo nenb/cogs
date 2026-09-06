@@ -390,7 +390,11 @@ test("loopback server rejects internal auth, malformed requests, bad deadlines, 
 });
 
 test("server enforces concurrency, WAL poison, close races, and start failures", async () => {
-  const slowWal = fakeWal(async () => new Promise(() => undefined));
+  let releaseWal!: (record: EgressAuditWalRecord) => void;
+  const pendingWal = new Promise<EgressAuditWalRecord>((resolve) => {
+    releaseWal = resolve;
+  });
+  const slowWal = fakeWal(async () => pendingWal);
   const server = await startCogsExtAuthzServer({
     userId: "user-1",
     sessionId: session,
@@ -411,7 +415,24 @@ test("server enforces concurrency, WAL poison, close races, and start failures",
         }),
     );
     await boundedUntil(() => results.includes(grpc.status.RESOURCE_EXHAUSTED));
-    await server.close();
+    let closed = false;
+    const closing = server.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false, "socket force-shutdown is not active WAL-handler retirement");
+    releaseWal({
+      version: "cogs.egress-intent/v1alpha1",
+      sequence: 0,
+      intent_id: "intent-fake",
+      timestamp_ms: 1,
+      session_id: session,
+      integration_id: "github",
+      route_id: routeId,
+      method: "GET",
+      credential_required: true,
+    });
+    await closing;
     await Promise.allSettled(calls);
     await server.close();
     assert.equal(server.ready, false);

@@ -1,9 +1,10 @@
 import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
-import type {
-  CogsEgressAuthRef,
-  CogsEgressIntegrationPlan,
-  CogsEgressRoute,
-  CogsEgressRoutePlan,
+import {
+  type CogsEgressAuthRef,
+  type CogsEgressIntegrationPlan,
+  type CogsEgressRoute,
+  type CogsEgressRoutePlan,
+  validatedRoutePathMatch,
 } from "./route-policy.ts";
 
 const envoyType = "type.googleapis.com";
@@ -369,6 +370,8 @@ function envoyRoute(route: CopiedRoute, sessionId: string, credentials: Readonly
     },
     route: { cluster: `upstream_${route.routeId}`, timeout: "30s" },
     request_headers_to_remove: removeHeaders(credential),
+    // Block direct named-header reflection, not arbitrary headers/bodies or upstream storage.
+    response_headers_to_remove: removeHeaders(credential),
     ...(credential === undefined
       ? {}
       : {
@@ -414,7 +417,8 @@ function hcm(name: string, virtualHosts: Json[], filters: Json[], completion: bo
     "@type": `${envoyType}/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager`,
     stat_prefix: name,
     codec_type: "AUTO",
-    normalize_path: true,
+    // Preserve original bytes for reject-ambiguous authz; never erase traversal evidence.
+    normalize_path: false,
     merge_slashes: false,
     path_with_escaped_slashes_action: "REJECT_REQUEST",
     stream_error_on_invalid_http_message: true,
@@ -637,7 +641,7 @@ function copyRoute(route: CogsEgressRoute, integrationId: string, routeIds: Set<
     host,
     port: port(route.port),
     method,
-    pathRegex: route.pathMatch.value,
+    pathRegex: validatedRoutePathMatch(route).value,
     credentialRequired: route.credentialRequired,
   };
 }

@@ -206,12 +206,14 @@ function lowerRule(
   );
 }
 
-function compilePathMatch(
+export function compilePathMatch(
   pattern: string,
   strategy: "exact" | "prefix" | "segment-glob",
   query: CogsEgressRoute["queryPolicy"],
 ): CogsEgressRoute["pathMatch"] {
   validatePathPattern(pattern);
+  validateCompiledQuery(query);
+  if (strategy !== "exact" && strategy !== "prefix" && strategy !== "segment-glob") throw new Error("bad strategy");
   if (strategy === "exact") {
     if (pattern.includes("*")) throw new Error("wildcard exact");
     return query.mode === "exact"
@@ -230,9 +232,70 @@ function compilePathMatch(
   return boundedRegex(`^${body}${query.mode === "exact" ? `\\?${regexEscape(query.canonical)}` : ""}$`);
 }
 
+/** Raw origin-form only. No decoding, URL parser, slash merging or dot removal. */
+export function isCanonicalEgressPath(path: string): boolean {
+  if (typeof path !== "string" || path.length === 0 || path.length > 2048 || !path.startsWith("/")) return false;
+  for (const char of path) {
+    const code = char.charCodeAt(0);
+    if (code < 0x21 || code > 0x7e || "%\\?#;".includes(char)) return false;
+  }
+  return !path.includes("//") && !path.split("/").some((part) => part.length > 0 && [...part].every((c) => c === "."));
+}
+
+export function isCanonicalEgressTarget(target: string): boolean {
+  if (typeof target !== "string" || target.length > 2048) return false;
+  const boundary = target.indexOf("?");
+  if (boundary < 0) return isCanonicalEgressPath(target);
+  if (!isCanonicalEgressPath(target.slice(0, boundary))) return false;
+  try {
+    parseQueryPolicy({ mode: "exact", values: target.slice(boundary + 1).split("&") });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateCompiledQuery(query: CogsEgressRoute["queryPolicy"]): void {
+  const value = object(query);
+  if (value.mode === "deny") {
+    exactKeys(value, ["mode"]);
+    return;
+  }
+  exactKeys(value, ["canonical", "mode", "values"]);
+  const parsed = parseQueryPolicy({ mode: value.mode, values: value.values });
+  if (parsed.mode !== "exact" || parsed.canonical !== value.canonical) throw new Error("bad query");
+}
+
+/** Validate redundant rendered fields at both consumers; frozen is not provenance. */
+export function validatedRoutePathMatch(route: CogsEgressRoute): CogsEgressRoute["pathMatch"] {
+  try {
+    const derived = compilePathMatch(route.pathPattern, route.pathStrategy, route.queryPolicy);
+    if (route.pathMatch.kind !== derived.kind || route.pathMatch.value !== derived.value) throw new Error("bad match");
+    return derived;
+  } catch {
+    throw new EgressRoutePolicyError();
+  }
+}
+
+export function createEgressPathMatcher(route: CogsEgressRoute): (target: string) => boolean {
+  validatedRoutePathMatch(route);
+  const pattern = route.pathPattern;
+  const strategy = route.pathStrategy;
+  const query = route.queryPolicy.mode === "exact" ? route.queryPolicy.canonical : undefined;
+  return (target) => {
+    if (!isCanonicalEgressTarget(target)) return false;
+    const boundary = target.indexOf("?");
+    if (query === undefined ? boundary !== -1 : boundary === -1 || target.slice(boundary + 1) !== query) return false;
+    const path = boundary === -1 ? target : target.slice(0, boundary);
+    if (strategy === "exact") return path === pattern;
+    if (strategy === "prefix") return prefixContains(pattern, path);
+    return globMatchesPath(pattern, path);
+  };
+}
+
 function validatePathPattern(pattern: string): void {
   if (
-    !pattern.startsWith("/") ||
+    !isCanonicalEgressPath(pattern) ||
     pattern.includes("**") ||
     pattern.includes("%") ||
     pattern.includes("\\") ||
@@ -240,7 +303,7 @@ function validatePathPattern(pattern: string): void {
     pattern.includes("#") ||
     pattern.includes("//") ||
     hasControl(pattern) ||
-    pattern.split("/").some((segment) => segment === "." || segment === "..")
+    pattern.split("/").some((segment) => segment.length > 0 && [...segment].every((char) => char === "."))
   ) {
     throw new Error("bad path");
   }
@@ -311,6 +374,7 @@ function rejectDuplicateRoutes(integrations: readonly CogsEgressIntegrationPlan[
   const keys = new Set<string>();
   const routeIds = new Set<string>();
   const routes: CogsEgressRoute[] = [];
+  let overlapWork = 0;
   for (const integration of integrations) {
     for (const route of integration.routes) {
       if (routeIds.has(route.routeId) || route.routeId.length > 128 || !opaque.test(route.routeId)) {
@@ -321,6 +385,9 @@ function rejectDuplicateRoutes(integrations: readonly CogsEgressIntegrationPlan[
       if (keys.has(key)) throw new Error("duplicate route");
       keys.add(key);
       for (const existing of routes) {
+        // Whole-plan bound, including literal/glob DP. No deletion or per-pair reset credit.
+        overlapWork += existing.pathPattern.length * route.pathPattern.length;
+        if (overlapWork > 16_777_216) throw new Error("overlap budget");
         if (routesMayOverlap(existing, route)) throw new Error("overlapping route");
       }
       routes.push(route);
@@ -396,18 +463,33 @@ function globsMayOverlap(left: string, right: string): boolean {
 function globSegmentMatches(glob: string, value: string): boolean {
   if (!glob.includes("*")) return glob === value;
   if (value.length === 0 || value.includes("/") || value.includes("?") || value.includes("#")) return false;
-  return new RegExp(`^${globSegment(glob)}$`).test(value);
+  // Positive-length '*' uses two rows, no recursion or backtracking. At most
+  // 2048 * 2048 cells per request, even for successful pathological inputs.
+  let previous = new Uint8Array(glob.length + 1);
+  let current = new Uint8Array(glob.length + 1);
+  previous[0] = 1;
+  for (const char of value) {
+    current.fill(0);
+    for (let token = 1; token <= glob.length; token += 1) {
+      current[token] =
+        glob[token - 1] === "*"
+          ? previous[token - 1] || previous[token] || 0
+          : char === glob[token - 1]
+            ? previous[token - 1] || 0
+            : 0;
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous[glob.length] === 1;
 }
 
 function globSegmentsMayOverlap(left: string, right: string): boolean {
   if (!left.includes("*") && !right.includes("*")) return left === right;
   if (left.length === 0 || right.length === 0) return left.length === right.length;
-  const leftParts = left.split("*").filter((part) => part.length > 0);
-  const rightParts = right.split("*").filter((part) => part.length > 0);
-  return (
-    leftParts.every((part) => right.includes(part) || right.includes("*")) &&
-    rightParts.every((part) => left.includes(part) || left.includes("*"))
-  );
+  if (!left.includes("*")) return globSegmentMatches(right, left);
+  if (!right.includes("*")) return globSegmentMatches(left, right);
+  // Conservative intersection: two nonempty wildcard segments may overlap.
+  return true;
 }
 
 function assertCanonicalRevision(integration: Record<string, unknown>): void {
