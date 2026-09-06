@@ -165,6 +165,19 @@ with tempfile.TemporaryDirectory() as temporary:
         "resource_changes": [{"address": "aws_launch_template.host",
                               "change": {"after": {"image_id": current.ami_id}}}]}))
 
+    try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("missing SSM command identity accepted")
+    shell = json.loads((provider.STATE_ROOT / "cycle-7/ssm-parameters.json").read_bytes())["commands"][0]
+    assert f'origin {current.qualification_revision}' in shell and '$w/G' not in shell
+    assert 'w=/root/cogs-stage2-bootstrap; owned=0' in shell
+    assert 'umask 022; $g init' in shell and 'checkout -q --detach FETCH_HEAD; umask 077' in shell
+    assert 'GIT_CONFIG_SYSTEM=/dev/null' in shell and 'core.hooksPath=/dev/null' in shell
+    assert '"$w/H/scripts/stage2-stage-prebuilt-control.py" stage-qualification' in shell
+    assert '"$w/Q/scripts/' not in shell and "root:root:700 || rm -rf" in shell
+    assert "trap 'exit 125' HUP INT TERM" in shell and 'trap - EXIT HUP INT TERM' in shell
+    assert shell.index('$w/Q" fetch') < shell.index('stage-qualification') < shell.index('trap - EXIT')
+
     receipt_value = json.loads(boundary.effect(
         "plan", 1, "full", grants[1].grant_commitment, d("intent")))
     receipt_value["resource_commitments"] = tuple(

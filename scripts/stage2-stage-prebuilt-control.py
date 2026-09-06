@@ -10,6 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
+QUALIFICATION_SOURCE = Path(
+    "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v5")
 PROVISIONAL_SOURCE = Path(
     "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
@@ -48,7 +50,7 @@ def _read_complete(descriptor, size):
     return b"".join(chunks)
 
 
-def _read_regular(directory, relative, maximum):
+def _read_regular(directory, relative, maximum, private=False):
     _require(type(relative) is str and relative
              and all(part not in {"", ".", ".."} for part in relative.split("/")))
     parent = os.dup(directory)
@@ -58,12 +60,19 @@ def _read_regular(directory, relative, maximum):
         for component in components[:-1]:
             child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
                             | os.O_CLOEXEC, dir_fd=parent)
+            seen = os.fstat(child)
+            valid = not private or (seen.st_uid == seen.st_gid == 0
+                     and stat.S_IMODE(seen.st_mode) == 0o700)
+            if not valid: os.close(child)
+            _require(valid)
             os.close(parent)
             parent = child
         descriptor = os.open(components[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                              dir_fd=parent)
         before = os.fstat(descriptor)
         _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                 and (not private or (before.st_uid == before.st_gid == 0
+                      and stat.S_IMODE(before.st_mode) == 0o600))
                  and 0 < before.st_size <= maximum)
         raw = _read_complete(descriptor, before.st_size)
         after = os.fstat(descriptor)
@@ -132,9 +141,29 @@ def _write_frozen(path, raw):
         os.close(descriptor)
 
 
+def _open_source(source_path):
+    if source_path != QUALIFICATION_SOURCE:
+        return os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        seen = os.fstat(parent)
+        _require(seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == 0o755)
+        for component in source_path.parts[1:]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                            | os.O_CLOEXEC, dir_fd=parent)
+            seen = os.fstat(child); expected = 0o700
+            valid = seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == expected
+            if not valid: os.close(child)
+            _require(valid)
+            os.close(parent); parent = child
+        return parent
+    except BaseException:
+        os.close(parent); raise
+
+
 def _stage(source_path, diagnostic_version=None):
     _require(os.geteuid() == 0 and not DESTINATION.exists())
-    _require(source_path in {SOURCE, PROVISIONAL_SOURCE})
+    _require(source_path in {SOURCE, QUALIFICATION_SOURCE, PROVISIONAL_SOURCE})
     _require(diagnostic_version is None or (
         source_path == PROVISIONAL_SOURCE and diagnostic_version == DIAGNOSTIC_VERSION))
     codec = (_load_module(DIAGNOSTIC_CONTROL, "completion_kata_diagnostic_control_staging")
@@ -142,10 +171,11 @@ def _stage(source_path, diagnostic_version=None):
              _load_module(H_PREPARATION, "completion_kata_preparation_staging"))
     control_member = DIAGNOSTIC_MEMBER if diagnostic_version is not None else CONTROL_MEMBER
     maximum = codec.MAX_BYTES if diagnostic_version is not None else codec.MAX_CONTROL_BYTES
-    source = os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    source = _open_source(source_path)
     try:
         source_identity = os.fstat(source)
-        control_raw = _read_regular(source, control_member, maximum)
+        private = source_path == QUALIFICATION_SOURCE
+        control_raw = _read_regular(source, control_member, maximum, private)
         control = codec.load_control(control_raw)
         rows = control.value["members"]
         _require(type(rows) is list and 1 <= len(rows) <= MAX_MEMBERS)
@@ -154,7 +184,7 @@ def _stage(source_path, diagnostic_version=None):
             name = row["name"]
             _require(type(name) is str and name not in members)
             members[name] = _read_regular(
-                source, name, _member_maximum(codec, row, diagnostic_version is not None))
+                source, name, _member_maximum(codec, row, diagnostic_version is not None), private)
         codec.validate_control_members(control, members)
         _require(os.fstat(source) == source_identity, "control package directory changed")
     finally:
@@ -200,6 +230,10 @@ def _stage(source_path, diagnostic_version=None):
 
 def stage():
     return _stage(SOURCE)
+
+
+def stage_qualification():
+    return _stage(QUALIFICATION_SOURCE)
 
 
 def _member_maximum(codec, row, diagnostic):
@@ -261,9 +295,11 @@ def main():
         observed = verify_staged(sys.argv[2], sys.argv[1].endswith("-diagnostic"))
         raw = f"rootfs_descriptor_sha256={observed}\n".encode("ascii")
     else:
-        _require(len(sys.argv) == 1 or sys.argv[1] == "provisional")
-        _require(len(sys.argv) < 3 or sys.argv[2] == DIAGNOSTIC_VERSION)
-        digest = (stage() if len(sys.argv) == 1 else
+        _require(len(sys.argv) == 1 or sys.argv[1] in {"provisional", "stage-qualification"})
+        _require(len(sys.argv) < 3 or (sys.argv[1] == "provisional"
+                 and sys.argv[2] == DIAGNOSTIC_VERSION))
+        digest = (stage() if len(sys.argv) == 1 else stage_qualification()
+                  if sys.argv[1] == "stage-qualification" else
                   stage_provisional(None if len(sys.argv) == 2 else sys.argv[2]))
         raw = f"control_sha256={digest}\n".encode("ascii")
     _require(sys.stdout.buffer.write(raw) == len(raw))
