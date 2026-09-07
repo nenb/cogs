@@ -20,7 +20,7 @@ The relay allocation includes the existing Envoy adapter and telemetry fixture w
 The correction must:
 
 1. derive the expected authority from the fixture's trusted dynamically bound port before requests are admitted;
-2. require a positive bounded set of at most three authenticated npm fixture observations, with one case-bound accepted intent and explicit completion per request, exactly one successful 2xx completion, and only explicit failed/no-response class-zero outcomes for additional fetches;
+2. require a positive bounded set of at most three authenticated npm fixture observations, with one case-bound accepted intent and explicit completion per request, at least one successful 2xx completion, and every completion limited to successful 2xx or explicit failed/no-response class-zero outcomes;
 3. validate exact bounded tarball bytes and a bounded numeric npm version;
 4. attribute any npm postcondition failure to `client.npm-tarball` with categorical expected/actual wording; and
 5. preserve the failed run as historical, functional-only, non-release evidence.
