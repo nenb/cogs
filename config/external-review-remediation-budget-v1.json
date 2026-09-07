@@ -182,7 +182,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 2300,
+      "gross_line_high": 2600,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -224,7 +224,7 @@
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 27,
+      "new_file_high": 28,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -263,8 +263,9 @@
         "docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md",
         "docs/adr/0314-raise-final-hostile-integration-ceilings.md",
         "docs/adr/0315-authorize-final-async-transport-ownership.md",
-        "docs/adr/0316-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0317-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0316-authorize-worker-transport-and-response-custody.md",
+        "docs/adr/0317-freeze-remediated-H-and-authorize-control.md",
+        "docs/adr/0318-establish-remediated-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
