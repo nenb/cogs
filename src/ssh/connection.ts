@@ -314,6 +314,7 @@ export class SshConnectionManager {
     let result: T | undefined;
     let operationError: unknown;
     let operationFailed = false;
+    let operationUncertain = false;
     let timedOut = false;
     let openActual: Promise<SshSftpChannel> | undefined;
     let operationActual: Promise<T> | undefined;
@@ -329,6 +330,8 @@ export class SshConnectionManager {
         "ssh sftp open timed out",
         () => {
           timedOut = true;
+          operationUncertain = true;
+          this.#sealFailed("sftp-operation-uncertain");
           controller.abort();
         },
         (late) => {
@@ -348,6 +351,8 @@ export class SshConnectionManager {
         "ssh sftp operation timed out",
         () => {
           timedOut = true;
+          operationUncertain = true;
+          this.#sealFailed("sftp-operation-uncertain");
           controller.abort();
           channel?.destroy();
         },
@@ -357,6 +362,8 @@ export class SshConnectionManager {
     } catch (error) {
       operationFailed = true;
       operationError = error;
+      operationUncertain = timedOut || isSftpUncertainError(error);
+      if (operationUncertain) this.#sealFailed("sftp-operation-uncertain");
       try {
         channel?.destroy();
       } catch {
@@ -375,6 +382,7 @@ export class SshConnectionManager {
           "ssh sftp close timed out",
           () => {
             timedOut = true;
+            this.#sealFailed("sftp-close-failed");
             closingChannel.destroy();
           },
         );
@@ -393,9 +401,9 @@ export class SshConnectionManager {
       else void retirement.catch(() => undefined);
     }
 
-    if (closeFailed) this.#failClosed("sftp-close-failed");
+    if (closeFailed) this.#sealFailed("sftp-close-failed");
+    if (operationUncertain || closeFailed) void this.shutdown().catch(() => undefined);
     if (operationFailed) {
-      if (timedOut || isSftpUncertainError(operationError)) this.#failClosed("sftp-operation-uncertain");
       const outcome = timedOut ? "timeout" : input?.signal?.aborted === true ? "cancelled" : "error";
       emitSpan(this.#telemetry, "ssh.channel", {
         operation: "channel",
@@ -699,16 +707,23 @@ export class SshConnectionManager {
   }
 
   #failClosed(reason: string): void {
-    if (this.#lost) return;
+    if (!this.#sealFailed(reason)) return;
+    void this.shutdown().catch(() => undefined);
+  }
+
+  #sealFailed(reason: string): boolean {
+    if (this.#lost) return false;
     this.#lost = true;
     this.#phase = "failed";
+    for (const waiter of this.#waiters.splice(0))
+      this.#settleWaiter(waiter, new SshConnectionError("ssh connection is closed"));
     emitSpan(this.#telemetry, "dependency.lost", { dependency: "ssh", outcome: "error" });
     try {
       this.#onLost?.(reason);
     } catch {
       // Lifecycle callbacks are safety notifications and must not block cleanup.
     }
-    void this.shutdown().catch(() => undefined);
+    return true;
   }
 
   #retireStartupPhase(): void {

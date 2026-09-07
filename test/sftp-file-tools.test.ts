@@ -8,6 +8,7 @@ import ssh2, { type Stats } from "ssh2";
 import {
   type CogsSftpPort,
   CogsSftpStatusError,
+  CogsSftpUncertainError,
   SshConnectionManager,
   type SshSftpChannel,
   type SshTransportConnection,
@@ -58,6 +59,7 @@ class FakeSftp extends EventEmitter {
     ["/user/skills", { kind: "dir" }],
   ]);
   public handles = new Map<string, string>();
+  public handleNodes = new Map<string, Node>();
   public renameFails = false;
   public fsyncFails = false;
   public fsyncUnavailable = false;
@@ -66,6 +68,9 @@ class FakeSftp extends EventEmitter {
   public hangCloseHandle = false;
   public fstatTypeOverride: "file" | "fifo" | undefined;
   public fstatModeOverride: number | "missing" | undefined;
+  public ignoreFchmod = false;
+  public swapAfterReadOpenMode: number | undefined;
+  public writeCalls = 0;
   public heldOperation: "write" | "fchmod" | "fsync" | "fstat" | "rename" | undefined;
   public releaseHeld: (() => void) | undefined;
   public cleanupStarted = false;
@@ -205,7 +210,6 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       type: typeOf(node),
     } as const;
   };
-  const handlePath = (handle: Buffer) => sftp.handles.get(handle.toString("hex"));
   return {
     lstat: async (p) => {
       if (sftp.permissionPaths.has(p)) throw new CogsSftpStatusError("permission_denied");
@@ -221,7 +225,13 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       if (mode === "r" && sftp.files.get(p)?.kind !== "file") throw new Error("not file");
       if (mode === "wx") sftp.files.set(p, { kind: "file", data: Buffer.alloc(0), mode: 0o600 });
       const handle = Buffer.from(`h${++sftp.openCount}`);
-      sftp.handles.set(handle.toString("hex"), p);
+      const key = handle.toString("hex");
+      sftp.handles.set(key, p);
+      sftp.handleNodes.set(key, sftp.files.get(p) as Node);
+      if (mode === "r" && sftp.swapAfterReadOpenMode !== undefined) {
+        sftp.files.set(p, { kind: "file", data: Buffer.from("swapped"), mode: sftp.swapAfterReadOpenMode });
+        sftp.swapAfterReadOpenMode = undefined;
+      }
       return handle;
     },
     read: async (handle, buffer, offset, length, position) => {
@@ -238,7 +248,7 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
             },
           ),
         );
-      const node = sftp.files.get(handlePath(handle) ?? "");
+      const node = sftp.handleNodes.get(handle.toString("hex"));
       if (node?.kind !== "file") throw new Error("bad handle");
       if (sftp.growRead && position >= node.data.length) {
         buffer[offset] = 0x78;
@@ -248,8 +258,9 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       return { bytesRead: sftp.shortRead && bytesRead > 0 ? 0 : bytesRead, buffer, position };
     },
     write: async (handle, buffer, offset, length, position) => {
+      sftp.writeCalls++;
       await hold(sftp, "write");
-      const node = sftp.files.get(handlePath(handle) ?? "");
+      const node = sftp.handleNodes.get(handle.toString("hex"));
       if (node?.kind !== "file") throw new Error("bad handle");
       const next = Buffer.alloc(Math.max(node.data.length, position + length));
       node.data.copy(next);
@@ -258,7 +269,7 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
     },
     fstat: async (handle) => {
       await hold(sftp, "fstat");
-      const stat = statOf(sftp.files.get(handlePath(handle) ?? ""));
+      const stat = statOf(sftp.handleNodes.get(handle.toString("hex")));
       const typed = sftp.fstatTypeOverride === undefined ? stat : { ...stat, type: sftp.fstatTypeOverride };
       if (sftp.fstatModeOverride === "missing") return { size: typed.size, type: typed.type };
       return sftp.fstatModeOverride === undefined ? typed : { ...typed, mode: sftp.fstatModeOverride };
@@ -268,13 +279,14 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       if (sftp.hangCloseHandle) await new Promise(() => undefined);
       if (sftp.rejectUndefinedCloseHandle) return Promise.reject(undefined);
       sftp.handles.delete(handle.toString("hex"));
+      sftp.handleNodes.delete(handle.toString("hex"));
       if (sftp.closeFails) throw new Error("close failed");
     },
     setModeHandle: async (handle, mode) => {
       await hold(sftp, "fchmod");
-      const node = sftp.files.get(handlePath(handle) ?? "");
+      const node = sftp.handleNodes.get(handle.toString("hex"));
       if (node?.kind !== "file") throw new Error("bad handle");
-      node.mode = mode;
+      if (!sftp.ignoreFchmod) node.mode = mode;
     },
     unlink: async (p) => {
       sftp.cleanupStarted = true;
@@ -308,14 +320,20 @@ async function hold(sftp: FakeSftp, operation: NonNullable<FakeSftp["heldOperati
 
 class FakeConnection extends EventEmitter implements SshTransportConnection {
   public destroyCalls = 0;
+  public openSftpCalls = 0;
   public lateOpen = false;
   public hangClose = false;
   public throwClose = false;
   public rejectUndefinedClose = false;
+  public releaseClose: () => void = () => undefined;
+  readonly #closeRetirement = new Promise<void>((resolve) => {
+    this.releaseClose = resolve;
+  });
   public constructor(private readonly sftp: FakeSftp) {
     super();
   }
   public openSftp(_signal: AbortSignal): Promise<SshSftpChannel> {
+    this.openSftpCalls++;
     const makeChannel = () => {
       let open = true;
       this.sftp.active++;
@@ -323,10 +341,10 @@ class FakeConnection extends EventEmitter implements SshTransportConnection {
       return {
         port: portFor(this.sftp),
         close: async () => {
+          if (this.hangClose) await this.#closeRetirement;
           if (!open) return;
           if (this.rejectUndefinedClose) return Promise.reject(undefined);
           if (this.throwClose) throw new Error("channel close failed");
-          if (this.hangClose) await new Promise(() => undefined);
           if (open) this.sftp.active--;
           open = false;
         },
@@ -524,6 +542,20 @@ test("SFTP write and edit use fsync plus atomic rename and preserve target on fa
       await assert.rejects(ports.write({ path: "/workspace/a.txt", content: "bad" }), /metadata|mode|type/);
     }
     sftp.fstatModeOverride = undefined;
+    const writes = sftp.writeCalls;
+    sftp.fstatModeOverride = 0o100644;
+    await assert.rejects(ports.write({ path: "/workspace/bad-temp-mode", content: "bad" }), /validation/);
+    assert.equal(sftp.writeCalls, writes, "bad initial temp mode is rejected before payload");
+    sftp.fstatModeOverride = undefined;
+    sftp.seed("/workspace/unchanged-mode", "stable", "file", 0o640);
+    sftp.ignoreFchmod = true;
+    await assert.rejects(ports.write({ path: "/workspace/unchanged-mode", content: "bad" }), /validation/);
+    assert.equal((sftp.files.get("/workspace/unchanged-mode") as { data: Buffer }).data.toString(), "stable");
+    sftp.ignoreFchmod = false;
+    sftp.seed("/workspace/swapped-mode", "original", "file", 0o640);
+    sftp.swapAfterReadOpenMode = 0o644;
+    await ports.write({ path: "/workspace/swapped-mode", content: "replacement" });
+    assert.equal((sftp.files.get("/workspace/swapped-mode") as { mode: number }).mode, 0o640);
     sftp.renameFails = true;
     await assert.rejects(ports.write({ path: "/workspace/out.txt", content: "bad" }), /rename|operation/);
     assert.equal((sftp.files.get("/workspace/out.txt") as { data: Buffer }).data.toString(), "new");
@@ -586,7 +618,7 @@ test("SFTP edit replacement tokens are literal with UTF-8 and atomic size/failur
 
 test("SFTP operation timeout accepts the launch-schema millisecond range exactly", () => {
   const manager = {} as SshConnectionManager;
-  for (const operationTimeoutMs of [1, 900_000])
+  for (const operationTimeoutMs of [1, 60_000, 61_000, 900_000])
     assert.doesNotThrow(() => createSftpFileToolPorts({ manager, operationTimeoutMs }));
   for (const operationTimeoutMs of [0, 900_001])
     assert.throws(() => createSftpFileToolPorts({ manager, operationTimeoutMs }), /operation timeout/);
@@ -655,6 +687,39 @@ test("SFTP adversarial cases cover overlap, growth, cleanup failure, Unicode bou
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(fixture.transport.connection.destroyCalls > 0, "late channel was destroyed");
   } finally {
+    await fixture.manager.shutdown().catch(() => undefined);
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("known SFTP uncertainty seals admission while channel retirement remains held", async () => {
+  const lost: string[] = [];
+  const fixture = await managerFor(new FakeSftp(), 2, (reason) => lost.push(reason));
+  fixture.transport.connection.hangClose = true;
+  let settled = false;
+  const first = fixture.manager
+    .withSftp({ closeTimeoutMs: 1_000 }, async () => {
+      throw new CogsSftpUncertainError();
+    })
+    .finally(() => {
+      settled = true;
+    });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fixture.manager.ready, false);
+    assert.deepEqual(lost, ["sftp-operation-uncertain"]);
+    assert.equal(settled, false, "first permit remains owned by held channel retirement");
+    await assert.rejects(
+      fixture.manager.withSftp(undefined, async () => undefined),
+      /closed/,
+    );
+    assert.equal(fixture.transport.connection.openSftpCalls, 1);
+    fixture.transport.connection.releaseClose();
+    await assert.rejects(first, CogsSftpUncertainError);
+    assert.deepEqual(lost, ["sftp-operation-uncertain"]);
+  } finally {
+    fixture.transport.connection.releaseClose();
+    await first.catch(() => undefined);
     await fixture.manager.shutdown().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
