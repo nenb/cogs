@@ -236,8 +236,135 @@ test("KVM workflow artifacts remain metadata reports and do not upload Git tools
   assert.match(workflow, /cogs-exclusive-netns-v1/u);
   assert.match(workflow, /sudo ip netns exec "\$COGS_KVM_NETNS" sudo -u "\$USER"/u);
   assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'stage2-only'\)/u);
-  assert.match(workflow, /test -z "\$\(sudo ip netns pids "\$COGS_KVM_NETNS"\)"/u);
-  assert.match(workflow, /sudo ip netns delete "\$COGS_KVM_NETNS"/u);
+  assert.match(workflow, /if ! pids=\$\(sudo ip netns pids "\$COGS_KVM_NETNS"\); then/u);
+  assert.ok(
+    workflow.indexOf('sudo ip netns delete "$COGS_KVM_NETNS"') < workflow.indexOf('sudo rm -- "$COGS_KVM_LEASE"'),
+  );
+  assert.match(workflow, /printf 'COGS_KVM_NETNS=%s\\n' "\$ns" >>"\$GITHUB_ENV"/u);
+  assert.match(workflow, /trap rollback EXIT/u);
+});
+
+function workflowRunBlock(workflow: string, name: string): string {
+  const marker = `      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `workflow step ${name}`);
+  const run = workflow.indexOf("        run: |\n", start);
+  assert.notEqual(run, -1, `run block ${name}`);
+  const bodyStart = run + "        run: |\n".length;
+  const end = workflow.indexOf("\n      - name:", bodyStart);
+  const body = workflow.slice(bodyStart, end === -1 ? undefined : end);
+  return body
+    .split("\n")
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+}
+
+test("KVM network-domain cleanup rejects uncertain or live observations and retains its lease until deletion", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
+  const cleanup = workflowRunBlock(workflow, "Retire the exclusive disposable driver network domain");
+  const { spawnSync } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-cleanup-faults-"));
+  try {
+    for (const [mode, expectedStatus, expected] of [
+      ["enumeration-fails", 1, { deleted: false, removed: false }],
+      ["process-live", 1, { deleted: false, removed: false }],
+      ["deletion-fails", 1, { deleted: true, removed: false }],
+      ["success", 0, { deleted: true, removed: true }],
+    ] as const) {
+      const calls = join(dir, `${mode}.calls`);
+      const harness = `sudo() {
+  printf '%s\\n' "$*" >> "$CALLS"
+  case "$*" in
+    "ip netns exec fixture stat -Lc %d-%i /proc/self/ns/net") printf '4-42\\n' ;;
+    "ip netns pids fixture")
+      [[ "$MODE" != enumeration-fails ]] || return 7
+      [[ "$MODE" != process-live ]] || printf '123\\n'
+      ;;
+    "ip netns delete fixture") [[ "$MODE" != deletion-fails ]] || return 8 ;;
+    "rm -- "*) ;;
+    *) return 9 ;;
+  esac
+}
+${cleanup}`;
+      const result = spawnSync("bash", ["-c", harness], {
+        cwd: root,
+        env: {
+          ...process.env,
+          CALLS: calls,
+          MODE: mode,
+          COGS_KVM_NETNS: "fixture",
+          COGS_KVM_NETNS_IDENTITY: "4-42",
+          COGS_KVM_LEASE: join(dir, "absent-lease"),
+        },
+        encoding: "utf8",
+      });
+      if (expectedStatus === 0) assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+      else assert.notEqual(result.status, 0, `${mode}: ${result.stderr}`);
+      const recorded = await readFile(calls, "utf8");
+      const deleted = recorded.includes("ip netns delete fixture");
+      const removed = recorded.includes("rm -- ");
+      assert.deepEqual({ deleted, removed }, expected, mode);
+      if (removed) assert.ok(recorded.indexOf("ip netns delete fixture") < recorded.indexOf("rm -- "), mode);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("KVM network-domain provisioning publishes custody and safely rolls back partial acquisition", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
+  const provision = workflowRunBlock(workflow, "Provision the exclusive disposable driver network domain");
+  const { spawnSync } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-provision-faults-"));
+  try {
+    for (const [mode, deleted] of [
+      ["link-fails", true],
+      ["identity-fails", false],
+      ["chmod-fails", true],
+    ] as const) {
+      const calls = join(dir, `${mode}.calls`);
+      const githubEnv = join(dir, `${mode}.env`);
+      await writeFile(githubEnv, "");
+      const harness = `sudo() {
+  printf '%s\\n' "$*" >> "$CALLS"
+  case "$*" in
+    "ip netns add "*) ;;
+    "ip -n "*" link set lo up") [[ "$MODE" != link-fails ]] || return 6 ;;
+    "ip netns exec "*" stat -Lc %d-%i /proc/self/ns/net")
+      [[ "$MODE" != identity-fails ]] || return 7
+      printf '4-42\\n'
+      ;;
+    "ip netns pids "*) ;;
+    "ip netns delete "*) ;;
+    "install -d "*) ;;
+    "tee "*) cat >/dev/null ;;
+    "chmod 0444 "*) [[ "$MODE" != chmod-fails ]] || return 8 ;;
+    "rm -- "*) ;;
+    *) return 9 ;;
+  esac
+}
+${provision}`;
+      const result = spawnSync("bash", ["-c", harness], {
+        cwd: root,
+        env: {
+          ...process.env,
+          CALLS: calls,
+          MODE: mode,
+          GITHUB_ENV: githubEnv,
+          GITHUB_RUN_ID: "42",
+          GITHUB_RUN_ATTEMPT: "1",
+        },
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0, `${mode}: ${result.stderr}`);
+      assert.match(await readFile(githubEnv, "utf8"), /^COGS_KVM_NETNS=cogs-kvm-42-1$/mu);
+      const recorded = await readFile(calls, "utf8");
+      assert.equal(recorded.includes("ip netns delete cogs-kvm-42-1"), deleted, mode);
+      assert.doesNotMatch(recorded, /rm -- .*cogs-kvm-network-domain/u, `${mode}: lease removed before retirement`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 function shellFunction(text: string, name: string): string {

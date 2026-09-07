@@ -55,14 +55,39 @@ jobs:
         run: |
           set -euo pipefail
           ns="cogs-kvm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          identity=
+          lease=
+          acquired=false
+          rollback() {
+            status=$?
+            trap - EXIT
+            if [[ "$status" -ne 0 && "$acquired" == true ]]; then
+              current=
+              pids=
+              if ! current=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net) ||
+                 [[ -n "$identity" && "$current" != "$identity" ]] ||
+                 ! pids=$(sudo ip netns pids "$ns") || [[ -n "$pids" ]] ||
+                 ! sudo ip netns delete "$ns"; then
+                echo 'FAIL: uncertain partial network-domain provisioning; custody retained' >&2
+              elif [[ -n "$lease" && -e "$lease" ]] && ! sudo rm -- "$lease"; then
+                echo 'FAIL: retired namespace left a lease residue' >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
           sudo ip netns add "$ns"
+          acquired=true
+          printf 'COGS_KVM_NETNS=%s\n' "$ns" >>"$GITHUB_ENV"
           sudo ip -n "$ns" link set lo up
           identity=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net)
+          lease="/run/cogs-kvm-network-domain/$identity"
+          printf 'COGS_KVM_NETNS_IDENTITY=%s\nCOGS_KVM_LEASE=%s\n' "$identity" "$lease" >>"$GITHUB_ENV"
           boot=$(cat /proc/sys/kernel/random/boot_id)
           sudo install -d -o root -g root -m 0755 /run/cogs-kvm-network-domain
-          printf 'cogs-exclusive-netns-v1 %s\n' "$boot" | sudo tee "/run/cogs-kvm-network-domain/$identity" >/dev/null
-          sudo chmod 0444 "/run/cogs-kvm-network-domain/$identity"
-          printf 'COGS_KVM_NETNS=%s\nCOGS_KVM_LEASE=%s\n' "$ns" "/run/cogs-kvm-network-domain/$identity" >>"$GITHUB_ENV"
+          printf 'cogs-exclusive-netns-v1 %s\n' "$boot" | sudo tee "$lease" >/dev/null
+          sudo chmod 0444 "$lease"
+          trap - EXIT
 
       - name: Exercise the isolated Debian guest lifecycle
         env:
@@ -100,9 +125,17 @@ jobs:
         if: always() && env.COGS_KVM_NETNS != ''
         run: |
           set -euo pipefail
-          test -z "$(sudo ip netns pids "$COGS_KVM_NETNS")"
-          sudo rm -- "$COGS_KVM_LEASE"
+          current=$(sudo ip netns exec "$COGS_KVM_NETNS" stat -Lc '%d-%i' /proc/self/ns/net)
+          test -n "${COGS_KVM_NETNS_IDENTITY:-}"
+          test "$current" = "$COGS_KVM_NETNS_IDENTITY"
+          pids=
+          if ! pids=$(sudo ip netns pids "$COGS_KVM_NETNS"); then
+            echo 'FAIL: network-domain process enumeration was uncertain' >&2
+            exit 1
+          fi
+          test -z "$pids"
           sudo ip netns delete "$COGS_KVM_NETNS"
+          sudo rm -- "$COGS_KVM_LEASE"
           test ! -e "$COGS_KVM_LEASE"
 
       - name: Validate applicability-aware reports
