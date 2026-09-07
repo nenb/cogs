@@ -21,12 +21,156 @@ import { test } from "node:test";
 import type { LauncherProfile } from "../dev/launcher/contract.ts";
 import { createState, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 import {
+  createGuestProxyControls,
+  GUEST_PROXY_CA,
+  GUEST_PROXY_CONFIG,
+  GUEST_PROXY_ROOT,
   materializeTrustedSshControls,
   preflightTrustedEgressRoot,
   TRUSTED_EGRESS_RUNTIME_ROOT,
   TRUSTED_SSH_RUNTIME_ROOT,
   type TrustedControlSeams,
 } from "../dev/launcher/trusted-controls.ts";
+
+function guestControlsFixture(fault = "") {
+  const files = new Map<string, Buffer>();
+  const commands: string[] = [];
+  const ca = Buffer.from("synthetic-public-ca");
+  const config = Buffer.from(`proxy-user = "cogs:${"a".repeat(43)}"\n`);
+  let current = true;
+  let directory = false;
+  let writes = 0;
+  const sftp = {
+    mkdir: async () => {
+      if (fault === "existing") throw new Error("exists");
+      directory = true;
+    },
+    rmdir: async () => {
+      if (files.size) throw new Error("residue");
+      directory = false;
+    },
+    lstat: async (path: string) => ({
+      type: path === GUEST_PROXY_ROOT ? "directory" : fault === "symlink" ? "symlink" : "file",
+      size: files.get(path)?.length ?? 0,
+    }),
+    realpath: async (path: string) => path,
+    open: async (path: string, mode: string) => {
+      if (mode === "wx") {
+        if (files.has(path)) throw new Error("exists");
+        files.set(path, Buffer.alloc(0));
+      }
+      return Buffer.from(path);
+    },
+    write: async (handle: Buffer, bytes: Buffer) => {
+      writes++;
+      files.set(handle.toString(), Buffer.from(bytes));
+      if (fault === "write") throw new Error(config.toString());
+      if (fault === "generation") current = false;
+    },
+    fsync: async () => {
+      if (fault === "fsync") throw new Error("fsync");
+    },
+    closeHandle: async () => {
+      if (fault === "close") throw new Error("close");
+    },
+    read: async (handle: Buffer, buffer: Buffer, offset: number, length: number, position: number) => {
+      const source = files.get(handle.toString()) as Buffer;
+      const count = Math.min(length, 7);
+      source.copy(buffer, offset, position, position + count);
+      if (fault === "readback") buffer[offset] = 0;
+      return { bytesRead: count, buffer, position };
+    },
+    unlink: async (path: string) => {
+      files.delete(path);
+    },
+  };
+  const ssh = {
+    withBashExec: async (input: { wrappedCommand: string }, consume: (exec: unknown) => Promise<void>) => {
+      commands.push(input.wrappedCommand);
+      await consume({
+        onStdout: () => undefined,
+        onStderr: () => undefined,
+        terminal: async () => ({ code: fault === "tmpfs" ? 1 : 0, signal: null }),
+      });
+    },
+    withSftp: async (_input: unknown, consume: (port: unknown, signal: AbortSignal) => Promise<void>) =>
+      consume(sftp, new AbortController().signal),
+  };
+  const owner = createGuestProxyControls(
+    ssh as never,
+    {
+      withGuestProxyMaterial: async (_signal: AbortSignal, consume: (material: unknown) => Promise<void>) =>
+        consume({
+          ca,
+          config,
+          assertCurrent: () => {
+            if (!current) throw new Error("stale");
+          },
+        }),
+    } as never,
+  );
+  return {
+    owner,
+    files,
+    commands,
+    config,
+    ca,
+    get directory() {
+      return directory;
+    },
+    get writes() {
+      return writes;
+    },
+    expire: () => {
+      current = false;
+    },
+  };
+}
+
+test("guest proxy uses non-tool SFTP, fixed public CA/config paths and exact readback", async () => {
+  const f = guestControlsFixture();
+  await f.owner.provision(new AbortController().signal);
+  f.owner.assertCurrent();
+  assert.equal(f.files.get(GUEST_PROXY_CA)?.equals(f.ca), true);
+  assert.equal(f.files.get(GUEST_PROXY_CONFIG)?.equals(f.config), true);
+  assert.equal(JSON.stringify(f.commands).includes(f.config.toString()), false);
+  assert.equal(JSON.stringify(f.owner).includes("proxy-user"), false);
+  assert.match(f.commands[0] as string, /tmpfs/u);
+  const a = f.owner.close();
+  const b = f.owner.close();
+  assert.notEqual(a, b);
+  await Promise.all([a, b]);
+  assert.equal(f.files.size, 0);
+  assert.equal(f.directory, false);
+  assert.equal(f.writes, 2);
+  assert.throws(() => f.owner.assertCurrent());
+});
+
+test("guest proxy rejects stale generation, wrong readback, unsafe roots and partial acquisition without leaking bytes", async () => {
+  for (const fault of ["existing", "tmpfs", "write", "fsync", "close", "readback", "symlink", "generation"]) {
+    const f = guestControlsFixture(fault);
+    await assert.rejects(
+      f.owner.provision(new AbortController().signal),
+      (error: Error) => !error.message.includes(f.config.toString()),
+    );
+    assert.throws(() => f.owner.assertCurrent());
+    await assert.rejects(f.owner.close());
+  }
+  for (const mutation of ["replacement", "residue", "generation"]) {
+    const f = guestControlsFixture();
+    await f.owner.provision(new AbortController().signal);
+    if (mutation === "replacement") f.files.set(GUEST_PROXY_CONFIG, Buffer.alloc(f.config.length, 42));
+    if (mutation === "residue") f.files.set(`${GUEST_PROXY_ROOT}/foreign`, Buffer.from("foreign"));
+    if (mutation === "generation") {
+      f.expire();
+      assert.throws(() => f.owner.assertCurrent());
+      await f.owner.close();
+    } else {
+      await assert.rejects(f.owner.close());
+      assert.equal(f.files.size > 0, true);
+    }
+  }
+});
 
 const sourceRevision = "a".repeat(40);
 

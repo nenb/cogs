@@ -6,6 +6,18 @@ import { test } from "node:test";
 const reportPath = resolve("docs/test-reports/stage-3-s3-09-linux-kvm-exit.md");
 const report = readFileSync(reportPath, "utf8");
 
+test("S3-09 historical report cannot authorize the corrected positive-only source", () => {
+  for (const required of [
+    "Current-source limitation (ADR 0309)",
+    "historical and has not been rerun or rebound",
+    "allowed coherent absence",
+    "Local synthetic tests are not replacement KVM evidence",
+    "final retired WAL observation remain unavailable",
+    "No new acceptance",
+  ])
+    assert.ok(report.includes(required), required);
+});
+
 test("accepted S3-09 exit report pins exact non-release automatic evidence", () => {
   for (const required of [
     "Issue: #71.",

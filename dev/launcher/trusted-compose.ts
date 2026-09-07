@@ -5,7 +5,13 @@ import { createServer, Socket } from "node:net";
 import { dirname, join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { type ApiEvent, type ApiServer, createApiServer, type ExportPort } from "../../src/api/server.ts";
+import {
+  type ApiEvent,
+  type ApiServer,
+  createApiServer,
+  type ExportPort,
+  type SessionPort,
+} from "../../src/api/server.ts";
 import { OpenBaoModelApiKeyStore } from "../../src/auth/model-auth.ts";
 import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.ts";
 import type { CloseContext, CloseWork } from "../../src/launch/close.ts";
@@ -23,11 +29,17 @@ import { createSftpFileToolPorts } from "../../src/ssh/file-tools.ts";
 import { createCogsWorkerTelemetrySink } from "../../src/telemetry/worker-telemetry.ts";
 import type { LauncherProfile } from "./contract.ts";
 import { type ApiTokenHolder, readApiToken, readWorkerDescriptor } from "./control.ts";
-import { createDeterministicLauncherStream } from "./deterministic-stream.ts";
+import {
+  createDeterministicLauncherStream,
+  LAUNCHER_DETERMINISTIC_S309_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
+  LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
+} from "./deterministic-stream.ts";
 import {
   cleanupEnvoyBinary,
   type EnvoyBinaryDescriptor,
   type EnvoyEgressHandle,
+  observeLauncherClose,
   prepareEnvoyBinary,
   startEnvoyEgress,
 } from "./envoy-egress.ts";
@@ -37,6 +49,7 @@ import { type OtlpFixture, startOtlpFixture } from "./otlp-fixture.ts";
 import type { LauncherState } from "./state.ts";
 import { readManifest } from "./state.ts";
 import {
+  createGuestProxyControls,
   materializeTrustedSshControls,
   preflightTrustedEgressRoot,
   type TrustedSshControls,
@@ -63,6 +76,7 @@ export type TrustedCompositionSeams = Readonly<{
   startEnvoyEgress: typeof startEnvoyEgress;
   createSshManager: (options: ConstructorParameters<typeof SshConnectionManager>[0]) => SshConnectionManager;
   createLifecycle: (options: ConstructorParameters<typeof LaunchLifecycle>[0]) => LaunchLifecycle;
+  createGuestProxyControls: typeof createGuestProxyControls;
   createPi: typeof createAuthenticatedCogsPiSession;
   createApi: typeof createApiServer;
   fetch: typeof fetch;
@@ -152,6 +166,7 @@ const DEFAULT_SEAMS: TrustedCompositionSeams = Object.freeze({
   startEnvoyEgress,
   createSshManager: (options) => new SshConnectionManager(options),
   createLifecycle: (options) => new LaunchLifecycle(options),
+  createGuestProxyControls,
   createPi: createAuthenticatedCogsPiSession,
   createApi: createApiServer,
   fetch,
@@ -392,7 +407,18 @@ export async function createTrustedWorkerRuntime(
       signal: startup.signal,
       deadlineAt,
     });
-    registerCleanup(cleanups, { name: "egress", close: (options) => egress.close(options) });
+    // Guest material is a sub-owner of egress custody, not a new receipt resource.
+    // Register before provisioning; initiate revocation even if guest unlink hangs.
+    let reconcileFixture: () => void = () => undefined;
+    const guestProxy = s.createGuestProxyControls(ssh, egress);
+    registerCleanup(cleanups, {
+      name: "egress",
+      close: async (options) => {
+        const outcomes = await Promise.allSettled([guestProxy.close(options), egress.close(options)]);
+        if (outcomes.some((outcome) => outcome.status === "rejected")) fail();
+        reconcileFixture();
+      },
+    });
     requireEgress(egress, admitted.profile, listenerPort);
     const proxyCapability = ownData(egress, "proxyCapability");
     requireSecretHolder(proxyCapability);
@@ -401,6 +427,8 @@ export async function createTrustedWorkerRuntime(
       if (typeof secret !== "string" || secret.length < 16 || secret.length > 256) fail();
     });
     binaryOwned = false;
+    await guestProxy.provision(startup.signal);
+    guestProxy.assertCurrent();
     checkCooperative(startup.signal, deadlineAt);
 
     const dependencies = nonProducingDependencies(
@@ -442,7 +470,21 @@ export async function createTrustedWorkerRuntime(
 
     const filePorts = createSftpFileToolPorts({ manager: ssh });
     const bashPort = createSshBashToolPort({ manager: ssh });
-    const s309Emit = createS309ProofEmitter(fixture, egress, admitted.profile);
+    const s309Emit = createS309ProofEmitter(
+      fixture,
+      egress,
+      admitted.profile,
+      async () => {
+        guestProxy.assertCurrent();
+        const response = await s.fetch(`${fixture.endpoint()}/allowed`, {
+          signal: AbortSignal.timeout(1000),
+          redirect: "error",
+        });
+        if (response.status !== 200 || (await response.text()) !== '{"ok":true}') fail();
+      },
+      () => guestProxy.assertCurrent(),
+    );
+    reconcileFixture = () => s309Emit.reconcileFixture();
     const piStartup = Promise.resolve().then(() =>
       s.createPi({
         cwd: "/workspace",
@@ -482,7 +524,7 @@ export async function createTrustedWorkerRuntime(
     api = apiToken.withToken((token) =>
       s.createApi({
         lifecycle: lifecycle as LaunchLifecycle,
-        session: pi as CogsPiSessionPorts,
+        session: s309Emit.session(pi as CogsPiSessionPorts),
         history: pi as CogsPiSessionPorts,
         exporter:
           admittedProfile === "linux-kvm"
@@ -506,7 +548,14 @@ export async function createTrustedWorkerRuntime(
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
     startupTimer = undefined;
     markQuiesced();
-    const closeRuntime = Object.freeze(() => cleanup());
+    const closeRuntime = Object.freeze((options: DeadlineOptions = {}) => {
+      // Lifecycle keeps its original failed outcome; public callers observe the
+      // one actual composite retirement, not its first bounded observation.
+      void cleanup().catch(() => undefined);
+      return observeLauncherClose(beginCompositeCleanup().done, options).catch(() => {
+        throw new Error(GENERIC);
+      });
+    });
     return Object.freeze({
       apiPort,
       close: closeRuntime,
@@ -600,57 +649,83 @@ export function createS309ProofEmitter(
   fixture: LocalFixture,
   egress: EnvoyEgressHandle,
   profile: LauncherProfile,
-): (event: ApiEvent) => ApiEvent {
-  if (profile !== "linux-kvm") return (event) => event;
-  const baseline = fixture.snapshot();
-  const baseCounts = baseline.counts;
-  const baseCredential = baseCounts["GET /credential 200"] ?? 0;
-  const baseDenied = baseCounts["GET /allowed 200"] ?? 0;
-  const baseTotal = Object.values(baseCounts).reduce((sum, value) => sum + value, 0);
-  let settledRuns = 0;
-  return (event) => {
-    if (event.kind !== "run_settled" || ++settledRuns !== 3) return event;
+  liveControl: () => Promise<void> = async () => {
+    throw new Error(GENERIC);
+  },
+  assertGeneration: () => void = () => undefined,
+) {
+  const prompts = [
+    LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
+    LAUNCHER_DETERMINISTIC_S309_PROMPT,
+    LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
+  ];
+  let stage = 0;
+  let invalid = false;
+  let busy = false;
+  let active: { requestId: string; correlationId: string; admitted: boolean } | undefined;
+  let baseline: ReturnType<LocalFixture["snapshot"]> | undefined;
+  let reason: string | undefined;
+  const seen = new Set<string>();
+  const observe = (includeEgress = true): string | undefined => {
+    if (includeEgress) assertGeneration();
+    if (!baseline) return "generation";
     const snap = fixture.snapshot();
+    if (!snap.ready) return "fixture-not-ready";
+    if (snap.generation !== baseline.generation || snap.port !== baseline.port) return "generation";
+    if (snap.inflight !== 0) return "inflight";
+    const keys = new Set([...Object.keys(baseline.counts), ...Object.keys(snap.counts)]);
+    for (const key of keys) {
+      const before = baseline.counts[key] ?? 0;
+      const after = snap.counts[key] ?? 0;
+      if (!Number.isSafeInteger(before) || before < 0 || !Number.isSafeInteger(after) || after < before)
+        return "total-count";
+      if (after - before !== (key === "GET /credential 200" ? 1 : 0))
+        return key.includes(" /allowed ") ? "denied-forwarded" : "total-count";
+    }
+    if ((snap.counts["GET /credential 200"] ?? 0) - (baseline.counts["GET /credential 200"] ?? 0) !== 1)
+      return "credential-count";
+    if (!Number.isSafeInteger(snap.total) || snap.total - baseline.total !== 1) return "total-count";
+    if (!includeEgress) return undefined;
     const completion = egress.s309CompletionProof();
-    const counts = snap.counts;
-    const credential = (counts["GET /credential 200"] ?? 0) - baseCredential;
-    const deniedForwarded = (counts["GET /allowed 200"] ?? 0) - baseDenied;
-    const total = Object.values(counts).reduce((sum, value) => sum + value, 0) - baseTotal;
-    const snapTotal = snap.total - baseline.total;
-    const observerOk =
-      (credential === 1 && total === 1 && snapTotal === 1) || (credential === 0 && total === 0 && snapTotal === 0);
-    const reason =
-      snap.ready !== true
-        ? "fixture-not-ready"
-        : snap.generation !== baseline.generation
-          ? "generation"
-          : snap.inflight !== 0
-            ? "inflight"
-            : completion.outcome === "pending"
-              ? completion.reason === "wal"
-                ? "credential-count"
-                : completion.reason
-              : completion.outcome === "fail"
-                ? completion.reason
-                : credential < 0 || deniedForwarded < 0 || total < 0 || snapTotal < 0
-                  ? "total-count"
-                  : deniedForwarded !== 0
-                    ? "denied-forwarded"
-                    : observerOk
-                      ? undefined
-                      : "total-count";
+    return completion.outcome === "pass"
+      ? undefined
+      : completion.outcome === "fail"
+        ? completion.reason
+        : "credential-count";
+  };
+  const emit = (event: ApiEvent): ApiEvent => {
+    if (profile !== "linux-kvm") return event;
+    if (event.kind === "error" || event.kind === "run_aborted") invalid = true;
+    if (event.kind !== "run_settled") return event;
+    if (
+      !active?.admitted ||
+      event.request_id !== active.requestId ||
+      event.correlation_id !== active.correlationId ||
+      event.payload.state !== "settled"
+    ) {
+      invalid = true;
+      return event;
+    }
+    active = undefined;
+    const proofStage = stage++ === 2;
+    if (!proofStage) return event;
+    try {
+      reason = invalid ? "generation" : (observe() ?? reason);
+    } catch {
+      reason = "generation";
+    }
     return Object.freeze({
       ...event,
       payload: Object.freeze({
         ...event.payload,
         s3_09_proof: Object.freeze({
-          version: "cogs.launcher.s3-09-proof/v1alpha1",
+          version: "cogs.launcher.s3-09-proof/v2alpha1",
           scenario: "s3-09",
           profile: "linux-kvm",
           ...(reason === undefined
             ? {
                 outcome: "pass",
-                guest_proxy_fixture_attested: true,
+                trusted_positive_egress_observed: true,
                 runtime_observers_consistent: true,
                 completion_observer_consistent: true,
                 fixture_denied_route_absent: true,
@@ -663,6 +738,80 @@ export function createS309ProofEmitter(
       }),
     });
   };
+  return Object.assign(emit, {
+    reconcileFixture: () => {
+      if (stage === 3 && reason === undefined && (invalid || observe(false) !== undefined)) throw new Error(GENERIC);
+    },
+    session: (delegate: SessionPort): SessionPort =>
+      Object.freeze({
+        state: (input: Parameters<SessionPort["state"]>[0]) => delegate.state(input),
+        abort: (input: Parameters<SessionPort["abort"]>[0]) => {
+          invalid = true;
+          return delegate.abort(input);
+        },
+        input: async (input: Parameters<SessionPort["input"]>[0]) => {
+          if (profile !== "linux-kvm") return delegate.input(input);
+          if (stage >= 3 || active || busy) {
+            invalid = true;
+            throw new Error(GENERIC);
+          }
+          if (
+            invalid ||
+            input.kind !== "prompt" ||
+            input.content !== prompts[stage] ||
+            seen.has(input.requestId) ||
+            seen.has(input.correlationId)
+          ) {
+            invalid = true;
+            if (stage > 0) throw new Error(GENERIC);
+            return delegate.input(input); // ordinary smoke never acquires scenario authority
+          }
+          busy = true;
+          seen.add(input.requestId);
+          seen.add(input.correlationId);
+          active = { requestId: input.requestId, correlationId: input.correlationId, admitted: false };
+          try {
+            if (stage === 1) {
+              await liveControl(); // live denied destination, outside the measured guest window
+              assertGeneration();
+              baseline = structuredClone(fixture.snapshot());
+              if (
+                !baseline.ready ||
+                baseline.inflight !== 0 ||
+                !Number.isSafeInteger(baseline.total) ||
+                baseline.total < 0 ||
+                !Number.isSafeInteger(baseline.generation) ||
+                baseline.generation < 0 ||
+                !Number.isSafeInteger(baseline.port) ||
+                baseline.port < 1 ||
+                baseline.port > 65535 ||
+                Object.values(baseline.counts).some((value) => !Number.isSafeInteger(value) || value < 0) ||
+                Object.values(baseline.counts).reduce((sum, value) => sum + value, 0) !== baseline.total
+              )
+                throw new Error(GENERIC);
+              egress.armS309();
+            }
+            if (stage === 2) {
+              const deadline = Date.now() + 1000;
+              do {
+                reason = observe();
+                if (reason === undefined || reason !== "credential-count") break;
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              } while (Date.now() < deadline && !input.signal?.aborted);
+            }
+            const state = await delegate.input(input);
+            if (state !== "running" || !active || input.signal?.aborted) throw new Error(GENERIC);
+            active.admitted = true;
+            return state;
+          } catch {
+            invalid = true;
+            throw new Error(GENERIC);
+          } finally {
+            busy = false;
+          }
+        },
+      }),
+  });
 }
 
 export function createRawExportOpeningVerifier(

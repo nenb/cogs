@@ -93,8 +93,8 @@ test("trusted composition factory starts in exact order, proves ready, and close
     calls.length = 0;
     const close1 = runtime.close();
     const close2 = runtime.close();
-    assert.equal(close1, close2);
-    await close1;
+    assert.notEqual(close1, close2);
+    await Promise.all([close1, close2]);
     assert.deepEqual(calls, [
       "lifecycle-shutdown",
       "api-close",
@@ -1477,6 +1477,8 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
       });
     },
     cleanupEnvoyBinary: async () => undefined,
+    createGuestProxyControls: () =>
+      Object.freeze({ provision: async () => undefined, assertCurrent: () => undefined, close: async () => undefined }),
     startEnvoyEgress: async (options) => {
       calls.push("egress-start");
       captured.launch = options.launchDocument;
@@ -1685,6 +1687,7 @@ function s309EgressProof(
 ) {
   let calls = 0;
   return Object.freeze({
+    armS309: () => undefined,
     s309CompletionProof: () => {
       const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
       return Object.freeze({
@@ -1706,7 +1709,44 @@ function s309EgressProof(
   }) as never;
 }
 
-test("s3-09 trusted proof channel captures baseline and binds to serialized settled deltas", () => {
+const s309Prompts = ["cogs launcher s3-09 setup", "cogs launcher s3-09 integrated", "cogs launcher s3-09 proof"];
+function scenarioSession(emit: ReturnType<typeof createS309ProofEmitter>) {
+  const session = emit.session({
+    input: async () => "running",
+    state: async () => ({ runState: "idle" }),
+    abort: async () => ({ aborted: true, runState: "idle" }),
+  });
+  return {
+    input: (stage: number) =>
+      session.input({
+        requestId: `request-${stage}`,
+        correlationId: `correlation-${stage}`,
+        kind: "prompt",
+        content: s309Prompts[stage] as string,
+      }),
+    settle: (stage: number) =>
+      emit({
+        kind: "run_settled",
+        request_id: `request-${stage}`,
+        correlation_id: `correlation-${stage}`,
+        payload: { state: "settled" },
+      }),
+    session,
+  };
+}
+async function preparedEmitter(
+  fixture: Parameters<typeof createS309ProofEmitter>[0],
+  egress: Parameters<typeof createS309ProofEmitter>[1],
+) {
+  const emit = createS309ProofEmitter(fixture, egress, "linux-kvm", async () => undefined);
+  const run = scenarioSession(emit);
+  await run.input(0);
+  run.settle(0);
+  await run.input(1);
+  return { emit, run };
+}
+
+test("s3-09 trusted proof channel captures baseline and binds to serialized settled deltas", async () => {
   let resetCalls = 0;
   let total = 5;
   let counts: Readonly<Record<string, number>> = Object.freeze({ "GET /credential 200": 4, "GET /health 200": 1 });
@@ -1716,20 +1756,20 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
       resetCalls += 1;
     },
   } as never;
-  const emit = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
+  const { emit, run } = await preparedEmitter(fixture, s309EgressProof("pass"));
   const event = (correlation_id: string) =>
     Object.freeze({ kind: "run_settled", correlation_id, payload: Object.freeze({}) }) as never;
-  assert.equal("s3_09_proof" in emit(event("setup")).payload, false);
   counts = Object.freeze({ "GET /credential 200": 5, "GET /health 200": 1 });
   total = 6;
-  assert.equal("s3_09_proof" in emit(event("scenario")).payload, false);
-  const settled = emit(event("proof"));
+  assert.equal("s3_09_proof" in run.settle(1).payload, false);
+  await run.input(2);
+  const settled = run.settle(2);
   assert.deepEqual(settled.payload.s3_09_proof, {
-    version: "cogs.launcher.s3-09-proof/v1alpha1",
+    version: "cogs.launcher.s3-09-proof/v2alpha1",
     scenario: "s3-09",
     profile: "linux-kvm",
     outcome: "pass",
-    guest_proxy_fixture_attested: true,
+    trusted_positive_egress_observed: true,
     runtime_observers_consistent: true,
     completion_observer_consistent: true,
     fixture_denied_route_absent: true,
@@ -1741,19 +1781,146 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
   assert.equal(JSON.stringify(settled).includes("1234"), false);
   assert.equal(JSON.stringify(settled).includes("credential"), false);
   assert.equal("s3_09_proof" in emit(event("extra")).payload, false);
-  // An extra early settlement consumes the sole slot, so the fixed proof operation fails closed without proof.
+  // Unregistered settlements never gain proof authority, regardless of ordinal.
   const shifted = createS309ProofEmitter(fixture, s309EgressProof("pass"), "linux-kvm");
   assert.equal("s3_09_proof" in shifted(event("extra-early")).payload, false);
   assert.equal("s3_09_proof" in shifted(event("setup")).payload, false);
-  assert.equal("s3_09_proof" in shifted(event("scenario")).payload, true);
+  assert.equal("s3_09_proof" in shifted(event("scenario")).payload, false);
   assert.equal("s3_09_proof" in shifted(event("proof")).payload, false);
 });
 
-test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", () => {
+test("S3 scope rejects wrong/duplicate admission and terminal identities, abort and stale generation", async () => {
+  for (const mutation of [
+    "request",
+    "correlation",
+    "duplicate",
+    "abort",
+    "error",
+    "follow-up",
+    "repeat-input",
+    "generation",
+  ]) {
+    let count = 0;
+    let current = true;
+    const emit = createS309ProofEmitter(
+      {
+        snapshot: () => ({
+          ready: true,
+          port: 1234,
+          generation: 1,
+          inflight: 0,
+          total: count,
+          counts: count ? { "GET /credential 200": count } : {},
+        }),
+      } as never,
+      s309EgressProof("pass"),
+      "linux-kvm",
+      async () => undefined,
+      () => {
+        if (!current) throw new Error("stale");
+      },
+    );
+    const run = scenarioSession(emit);
+    await run.input(0);
+    run.settle(0);
+    await run.input(1);
+    count = 1;
+    if (mutation === "request" || mutation === "correlation") {
+      const terminal = emit({
+        kind: "run_settled",
+        request_id: mutation === "request" ? "other" : "request-1",
+        correlation_id: mutation === "correlation" ? "other" : "correlation-1",
+        payload: { state: "settled" },
+      });
+      assert.equal(terminal.payload.s3_09_proof, undefined);
+    } else if (mutation === "duplicate") {
+      run.settle(1);
+      run.settle(1);
+    } else if (mutation === "abort") await run.session.abort({ requestId: "abort", correlationId: "abort" });
+    else if (mutation === "error") emit({ kind: "error", correlation_id: "correlation-1", payload: {} });
+    else if (mutation === "generation") current = false;
+    else
+      await assert.rejects(
+        run.session.input({
+          kind: mutation === "follow-up" ? "follow_up" : "prompt",
+          content: s309Prompts[1] as string,
+          requestId: "another",
+          correlationId: "another",
+        } as never),
+      );
+    if (mutation !== "duplicate") run.settle(1);
+    await assert.rejects(run.input(2));
+    assert.equal(run.settle(2).payload.s3_09_proof, undefined);
+  }
+});
+
+test("a provisional positive is invalidated by late fixture traffic before cleanup reconciliation", async () => {
+  let count = 0;
+  let extra = 0;
+  const fixture = {
+    snapshot: () => ({
+      ready: true,
+      port: 1234,
+      generation: 0,
+      inflight: 0,
+      total: count + extra,
+      counts: { "GET /credential 200": count, "GET /allowed 403": extra },
+    }),
+  } as never;
+  const { emit, run } = await preparedEmitter(fixture, s309EgressProof("pass"));
+  count = 1;
+  run.settle(1);
+  await run.input(2);
+  assert.equal((run.settle(2).payload.s3_09_proof as { outcome: string }).outcome, "pass");
+  emit.reconcileFixture();
+  extra = 1;
+  assert.throws(() => emit.reconcileFixture());
+  await assert.rejects(run.input(2));
+});
+
+test("guest provisioning precedes Pi admission and failed guest cleanup independently initiates egress retirement", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    const base = seams(calls, {});
+    await assert.rejects(
+      createTrustedWorkerRuntime(
+        fixture.state,
+        new AbortController().signal,
+        Object.freeze({
+          ...base,
+          createGuestProxyControls: () =>
+            Object.freeze({
+              provision: async () => {
+                calls.push("guest-provision");
+                throw new Error("synthetic provisioning failure");
+              },
+              assertCurrent: () => undefined,
+              close: async () => {
+                calls.push("guest-close");
+                throw new Error("uncertain guest");
+              },
+            }),
+        }),
+      ),
+    );
+    assert.equal(calls.includes("pi"), false);
+    assert.equal(calls.includes("guest-close"), true);
+    assert.equal(calls.includes("egress-close"), true);
+    assert.equal(calls.includes("ssh-shutdown"), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("s3-09 trusted proof channel emits fixed failure reasons without metadata leakage", async () => {
   const make = (baseline: Record<string, unknown>, snapshot: Record<string, unknown> = baseline) => {
     let current = baseline;
     return {
-      fixture: { snapshot: () => Object.freeze(current), reset: () => assert.fail("reset called") } as never,
+      fixture: {
+        snapshot: () => Object.freeze({ port: 1234, ...current }),
+        reset: () => assert.fail("reset called"),
+      } as never,
       advance: () => (current = snapshot),
     };
   };
@@ -1762,10 +1929,10 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     correlation_id: "scenario",
     payload: Object.freeze({}),
   }) as never;
-  const proofOf = (emit: ReturnType<typeof createS309ProofEmitter>) => {
-    assert.equal("s3_09_proof" in emit(settled).payload, false);
-    assert.equal("s3_09_proof" in emit(settled).payload, false);
-    return emit(settled).payload.s3_09_proof;
+  const proofOf = async ({ run }: Awaited<ReturnType<typeof preparedEmitter>>) => {
+    assert.equal("s3_09_proof" in run.settle(1).payload, false);
+    await run.input(2);
+    return run.settle(2).payload.s3_09_proof;
   };
   for (const [baseline, snapshot, reason] of [
     [
@@ -1821,14 +1988,13 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     ],
   ] as const) {
     const { fixture, advance } = make(baseline, snapshot);
-    const emit = createS309ProofEmitter(
+    const prepared = await preparedEmitter(
       fixture,
       s309EgressProof(reason === "credential-count" ? "pending-wal" : "pass"),
-      "linux-kvm",
     );
     advance();
-    assert.deepEqual(proofOf(emit), {
-      version: "cogs.launcher.s3-09-proof/v1alpha1",
+    assert.deepEqual(await proofOf(prepared), {
+      version: "cogs.launcher.s3-09-proof/v2alpha1",
       scenario: "s3-09",
       profile: "linux-kvm",
       outcome: "fail",
@@ -1836,67 +2002,33 @@ test("s3-09 trusted proof channel emits fixed failure reasons without metadata l
     });
   }
   const zeroCredential = make({ ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) });
-  const exactOnce = createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass", "total-count"), "linux-kvm");
-  assert.equal((proofOf(exactOnce) as { outcome: string }).outcome, "pass");
-  assert.equal("s3_09_proof" in exactOnce(settled).payload, false);
-  assert.equal(
-    (
-      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-wal"), "linux-kvm")) as {
-        reason: string;
-      }
-    ).reason,
-    "credential-count",
-  );
-  assert.equal(
-    (
-      proofOf(
-        createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pending-relay-zero-wal-zero"), "linux-kvm"),
-      ) as { reason: string }
-    ).reason,
-    "relay-zero-wal-zero",
-  );
-  for (const [pending, reason] of [
-    ["pending-relay-zero-wal-pass", "relay-zero-wal-pass"],
-    ["pending-relay-one-wal-zero", "relay-one-wal-zero"],
-    ["pending-relay-one-wal-pass", "relay-one-wal-pass"],
-  ] as const) {
-    assert.equal(
-      (
-        proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof(pending), "linux-kvm")) as {
-          reason: string;
-        }
-      ).reason,
-      reason,
-    );
-  }
-  assert.deepEqual(proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("pass"), "linux-kvm")), {
-    version: "cogs.launcher.s3-09-proof/v1alpha1",
-    scenario: "s3-09",
-    profile: "linux-kvm",
-    outcome: "pass",
-    guest_proxy_fixture_attested: true,
-    runtime_observers_consistent: true,
-    completion_observer_consistent: true,
-    fixture_denied_route_absent: true,
-    fixture_observer_consistent: true,
-    fixture_ready: true,
-    fixture_baseline_captured: true,
-  });
-  assert.equal(
-    (
-      proofOf(createS309ProofEmitter(zeroCredential.fixture, s309EgressProof("generation"), "linux-kvm")) as {
-        reason: string;
-      }
-    ).reason,
+  for (const outcome of [
+    "pass",
+    "pending-wal",
+    "pending-relay-zero-wal-zero",
+    "pending-relay-zero-wal-pass",
+    "pending-relay-one-wal-zero",
+    "pending-relay-one-wal-pass",
     "generation",
+  ] as const) {
+    const prepared = await preparedEmitter(zeroCredential.fixture, s309EgressProof(outcome));
+    assert.equal(((await proofOf(prepared)) as { outcome: string }).outcome, "fail");
+    assert.equal("s3_09_proof" in prepared.emit(settled).payload, false);
+  }
+  const positive = make(
+    { ready: true, generation: 1, inflight: 0, total: 0, counts: {} },
+    { ready: true, generation: 1, inflight: 0, total: 1, counts: { "GET /credential 200": 1 } },
   );
+  const late = await preparedEmitter(positive.fixture, s309EgressProof("pass", "total-count"));
+  positive.advance();
+  assert.equal(((await proofOf(late)) as { reason: string }).reason, "total-count");
   const otherTraffic = make(
     { ready: true, generation: 1, inflight: 0, total: 0, counts: Object.freeze({}) },
     { ready: true, generation: 1, inflight: 0, total: 1, counts: Object.freeze({}) },
   );
-  const otherEmit = createS309ProofEmitter(otherTraffic.fixture, s309EgressProof("pass"), "linux-kvm");
+  const otherEmit = await preparedEmitter(otherTraffic.fixture, s309EgressProof("pass"));
   otherTraffic.advance();
-  assert.equal((proofOf(otherEmit) as { reason: string }).reason, "total-count");
+  assert.equal(((await proofOf(otherEmit)) as { reason: string }).reason, "credential-count");
   const wrongProfile = make({
     ready: true,
     generation: 0,

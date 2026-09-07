@@ -212,11 +212,11 @@ function passingS309Client(exportValue: unknown): ApiClient {
             correlation_id: "s309-export-3",
             payload: jsonRecord({
               s3_09_proof: jsonRecord({
-                version: "cogs.launcher.s3-09-proof/v1alpha1",
+                version: "cogs.launcher.s3-09-proof/v2alpha1",
                 scenario: "s3-09",
                 profile: "linux-kvm",
                 outcome: "pass",
-                guest_proxy_fixture_attested: true,
+                trusted_positive_egress_observed: true,
                 runtime_observers_consistent: true,
                 completion_observer_consistent: true,
                 fixture_denied_route_absent: true,
@@ -501,11 +501,11 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
                   correlation_id: "s309-3",
                   payload: jsonRecord({
                     s3_09_proof: jsonRecord({
-                      version: "cogs.launcher.s3-09-proof/v1alpha1",
+                      version: "cogs.launcher.s3-09-proof/v2alpha1",
                       scenario: "s3-09",
                       profile: "linux-kvm",
                       outcome: "pass",
-                      guest_proxy_fixture_attested: true,
+                      trusted_positive_egress_observed: true,
                       runtime_observers_consistent: true,
                       completion_observer_consistent: true,
                       fixture_denied_route_absent: true,
@@ -651,11 +651,11 @@ test("s3-09 proof path rejects live proof at or below replay capacity 32", async
                 correlation_id: "s309-short-2",
                 payload: jsonRecord({
                   s3_09_proof: jsonRecord({
-                    version: "cogs.launcher.s3-09-proof/v1alpha1",
+                    version: "cogs.launcher.s3-09-proof/v2alpha1",
                     scenario: "s3-09",
                     profile: "linux-kvm",
                     outcome: "pass",
-                    guest_proxy_fixture_attested: true,
+                    trusted_positive_egress_observed: true,
                     runtime_observers_consistent: true,
                     completion_observer_consistent: true,
                     fixture_denied_route_absent: true,
@@ -822,18 +822,18 @@ test("s3-09 proof observation run failures use fixed stages", async () => {
 test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shapes", async () => {
   const failProof = (reason: string) =>
     jsonRecord({
-      version: "cogs.launcher.s3-09-proof/v1alpha1",
+      version: "cogs.launcher.s3-09-proof/v2alpha1",
       scenario: "s3-09",
       profile: "linux-kvm",
       outcome: "fail",
       reason,
     });
   const passProof = jsonRecord({
-    version: "cogs.launcher.s3-09-proof/v1alpha1",
+    version: "cogs.launcher.s3-09-proof/v2alpha1",
     scenario: "s3-09",
     profile: "linux-kvm",
     outcome: "pass",
-    guest_proxy_fixture_attested: true,
+    trusted_positive_egress_observed: true,
     runtime_observers_consistent: true,
     completion_observer_consistent: true,
     fixture_denied_route_absent: true,
@@ -849,7 +849,7 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
     },
   });
   const symbolProof = Object.create(null) as Record<string | symbol, unknown>;
-  symbolProof.version = "cogs.launcher.s3-09-proof/v1alpha1";
+  symbolProof.version = "cogs.launcher.s3-09-proof/v2alpha1";
   symbolProof.scenario = "s3-09";
   symbolProof.profile = "linux-kvm";
   symbolProof.outcome = "fail";
@@ -868,6 +868,9 @@ test("s3-09 proof path maps fixed egress reasons and rejects hostile proof shape
     ["total-count", failProof("total-count"), "s3-egress-total"],
     ["extra", jsonRecord({ ...failProof("relay-one-wal-pass"), extra: true }), "s3-egress-shape"],
     ["pass-extra", jsonRecord({ ...passProof, extra: true }), "s3-egress-shape"],
+    ["historical-v1", jsonRecord({ ...passProof, version: "cogs.launcher.s3-09-proof/v1alpha1" }), "s3-egress-shape"],
+    ["missing-positive", jsonRecord({ ...passProof, trusted_positive_egress_observed: false }), "s3-egress-shape"],
+    ["guest-authority", jsonRecord({ ...passProof, guest_proxy_fixture_attested: true }), "s3-egress-shape"],
     ["plain", Object.freeze({ ...failProof("generation") }), "s3-egress-shape"],
     ["getter", Object.freeze(getterProof), "s3-egress-shape"],
     ["symbol", Object.freeze(symbolProof), "s3-egress-shape"],

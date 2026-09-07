@@ -1,10 +1,158 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath, statfs, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { CogsSftpPort, SshConnectionManager } from "../../src/ssh/connection.ts";
 import type { LauncherAuthority, LauncherProfile } from "./contract.ts";
+import type { EnvoyEgressHandle } from "./envoy-egress.ts";
+import { observeLauncherClose } from "./envoy-egress.ts";
 import type { LauncherState } from "./state.ts";
 import { readManifest } from "./state.ts";
+
+export const GUEST_PROXY_ROOT = "/run/cogs-launcher-egress";
+export const GUEST_PROXY_CA = `${GUEST_PROXY_ROOT}/proxy-ca.pem`;
+export const GUEST_PROXY_CONFIG = `${GUEST_PROXY_ROOT}/curl-proxy.conf`;
+
+// Guest metadata is hygiene, not an attestation against guest root. Only the
+// already guest-authorized session capability and public trust anchor cross SSH.
+export function createGuestProxyControls(
+  ssh: Pick<SshConnectionManager, "withSftp" | "withBashExec">,
+  egress: EnvoyEgressHandle,
+) {
+  const files: { path: string; digest: string; size: number }[] = [];
+  let directory = false;
+  let uncertain = false;
+  let provision: Promise<void> | undefined;
+  let closing = false;
+  let actualClose: Promise<void> | undefined;
+  let current: (() => void) | undefined;
+  const owner = Object.freeze({
+    provision(signal: AbortSignal): Promise<void> {
+      if (provision || closing) throw failure();
+      provision = Promise.resolve()
+        .then(async () => {
+          await egress.withGuestProxyMaterial(signal, async (material) => {
+            await ssh.withBashExec(
+              {
+                signal,
+                wrappedCommand:
+                  '/usr/bin/env -i PATH=/usr/bin:/bin /bin/sh -ec \'test "$(id -u)" = 0; test ! -L /run; test "$(readlink -f /run)" = /run; test "$(stat -f -c %T /run)" = tmpfs; test "$(stat -c %u:%g:%a /run)" = 0:0:755\'',
+              },
+              async (exec) => {
+                let output = false;
+                exec.onStdout(() => {
+                  output = true;
+                });
+                exec.onStderr(() => {
+                  output = true;
+                });
+                const result = await exec.terminal();
+                if (output || result.code !== 0 || result.signal !== null) throw failure();
+              },
+            );
+            let actual: Promise<void> | undefined;
+            try {
+              await ssh.withSftp({ signal, operationTimeoutMs: 5000 }, (sftp, operationSignal) => {
+                actual = Promise.resolve().then(async () => {
+                  if (!sftp.mkdir || !sftp.rmdir) throw failure();
+                  material.assertCurrent();
+                  uncertain = true; // before the first remote acquisition effect
+                  await sftp.mkdir(GUEST_PROXY_ROOT, 0o700, operationSignal);
+                  directory = true;
+                  if (
+                    (await sftp.lstat(GUEST_PROXY_ROOT, operationSignal)).type !== "directory" ||
+                    (await sftp.realpath(GUEST_PROXY_ROOT, operationSignal)) !== GUEST_PROXY_ROOT
+                  )
+                    throw failure();
+                  for (const [path, bytes] of [
+                    [GUEST_PROXY_CA, material.ca],
+                    [GUEST_PROXY_CONFIG, material.config],
+                  ] as const) {
+                    const handle = await sftp.open(path, "wx", operationSignal);
+                    files.push({ path, digest: createHash("sha256").update(bytes).digest("hex"), size: bytes.length });
+                    try {
+                      await sftp.write(handle, bytes, 0, bytes.length, 0, operationSignal);
+                      await sftp.fsync(handle, operationSignal);
+                    } finally {
+                      await sftp.closeHandle(handle, operationSignal);
+                    }
+                    await verifyGuestFile(sftp, path, bytes, operationSignal);
+                  }
+                  material.assertCurrent();
+                  current = material.assertCurrent;
+                  uncertain = false;
+                });
+                return actual;
+              });
+            } finally {
+              // withSftp's timeout is an observer, not callback retirement. Keep
+              // its buffers and acquisition ledger until the actual callback ends.
+              await actual;
+            }
+          });
+        })
+        .catch(() => {
+          uncertain = true;
+          throw failure();
+        });
+      return provision;
+    },
+    assertCurrent() {
+      if (closing || uncertain || !current) throw failure();
+      current();
+    },
+    close(options: { signal?: AbortSignal; deadlineAt?: number } = {}): Promise<void> {
+      closing = true;
+      actualClose ??= Promise.resolve().then(async () => {
+        await provision?.catch(() => undefined);
+        if (directory)
+          await ssh.withSftp({ operationTimeoutMs: 5000 }, async (sftp, signal) => {
+            for (const { path, digest, size } of [...files].reverse()) {
+              await verifyGuestFile(sftp, path, { digest, size }, signal);
+              await sftp.unlink(path, signal);
+            }
+            if (!sftp.rmdir) throw failure();
+            await sftp.rmdir(GUEST_PROXY_ROOT, signal); // never recursive, preserve unknown residue
+            directory = false;
+          });
+        if (uncertain) throw failure();
+      });
+      return observeLauncherClose(actualClose, options);
+    },
+  });
+  return owner;
+}
+
+async function verifyGuestFile(
+  sftp: CogsSftpPort,
+  path: string,
+  bytes: Buffer | { digest: string; size: number },
+  signal: AbortSignal,
+): Promise<void> {
+  const size = Buffer.isBuffer(bytes) ? bytes.length : bytes.size;
+  const stat = await sftp.lstat(path, signal);
+  if (stat.type !== "file" || stat.size !== size || (await sftp.realpath(path, signal)) !== path) throw failure();
+  const handle = await sftp.open(path, "r", signal);
+  const readback = Buffer.alloc(size);
+  try {
+    let offset = 0;
+    while (offset < size) {
+      const result = await sftp.read(handle, readback, offset, size - offset, offset, signal);
+      if (!Number.isSafeInteger(result.bytesRead) || result.bytesRead < 1 || result.bytesRead > size - offset)
+        throw failure();
+      offset += result.bytesRead;
+    }
+    if (
+      Buffer.isBuffer(bytes)
+        ? !timingSafeEqual(bytes, readback)
+        : createHash("sha256").update(readback).digest("hex") !== bytes.digest
+    )
+      throw failure();
+  } finally {
+    readback.fill(0);
+    await sftp.closeHandle(handle, signal);
+  }
+}
 
 export const TRUSTED_SSH_RUNTIME_ROOT = "/run/cogs/ssh";
 export const TRUSTED_EGRESS_RUNTIME_ROOT = "/run/cogs/egress";

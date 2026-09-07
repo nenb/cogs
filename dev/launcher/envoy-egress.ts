@@ -19,6 +19,11 @@ import { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import type { EgressAuditWalRecord } from "../../src/egress/audit-wal.ts";
 import type { CogsEgressCompletion } from "../../src/egress/completion-queue.ts";
+import type {
+  CogsEgressPkiMaterial,
+  CogsEgressPkiRequest,
+  CogsEgressPkiSource,
+} from "../../src/egress/egress-material.ts";
 import { createNodeCogsEnvoyProcessPort } from "../../src/egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../../src/egress/openbao-pki.ts";
 import { lowerLaunchEgressRoutePlan } from "../../src/egress/route-policy.ts";
@@ -54,6 +59,7 @@ const MAX_ENVOY_BINARY_BYTES = 256 * 1024 * 1024;
 const LINUX_TMPFS_MAGIC = 0x01021994;
 
 type DeadlineOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
+export type GuestProxyMaterial = Readonly<{ ca: Buffer; config: Buffer; assertCurrent(): void }>;
 type ExecOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
 type Exec = (args: readonly string[], options?: ExecOptions) => Promise<{ status: number; stdout: string }>;
 
@@ -112,6 +118,8 @@ export type EnvoyEgressHandle = Readonly<{
     envoy: { image: typeof ENVOY_IMAGE; binarySha256: string };
     completions: { drained: number; classification: "none" | "present" | "replacement-required" };
   }>;
+  armS309(): void;
+  withGuestProxyMaterial<T>(signal: AbortSignal, consume: (material: GuestProxyMaterial) => Promise<T>): Promise<T>;
   s309CompletionProof(): S309CompletionProof;
   proxyCapability: SecretHolder;
   close(options?: DeadlineOptions): Promise<void>;
@@ -239,6 +247,13 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
   let completionPendingReason: S309PendingReason = "relay-zero-wal-zero";
   let completionMatchesSeen = 0;
+  let armed = false;
+  let relayBaseline: ReturnType<KvmRelay["snapshot"]> | undefined;
+  let walBaseline = "";
+  let matchedIntent: string | undefined;
+  let publicCa: string | undefined;
+  let pkiIssued = false;
+  let pkiActive = false;
   let completionFailReason: "generation" | "total-count" = "generation";
   let replacementEvents = 0;
   let capturedSeams: EnvoyEgressSeams = Object.freeze({});
@@ -280,6 +295,33 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
       openbaoOrigin,
       openbaoIdentity,
       proxyCapability,
+      decoratePki: (source) =>
+        Object.freeze({
+          withPkiMaterial: <T>(
+            request: CogsEgressPkiRequest,
+            consume: (material: CogsEgressPkiMaterial) => Promise<T>,
+          ) => {
+            if (
+              pkiIssued ||
+              closed ||
+              request.sessionId !== launch.session_id ||
+              request.hosts.join(",") !== "localhost"
+            )
+              fail();
+            pkiIssued = true;
+            return source.withPkiMaterial(request, async (material) => {
+              if (closed || pkiActive || material.caCertificatePem.length > 65536) fail();
+              publicCa = material.caCertificatePem;
+              pkiActive = true;
+              try {
+                return await consume(material);
+              } finally {
+                pkiActive = false;
+                publicCa = undefined;
+              }
+            });
+          },
+        }),
       onReplacementRequired: async () => {
         replacementEvents = incrementSaturating(replacementEvents);
       },
@@ -327,15 +369,90 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             classification: completionClassification(manager, drainedCompletions),
           } as const,
         }),
+      withGuestProxyMaterial: async (signal, consume) => {
+        const ca = publicCa;
+        const assertCurrent = () => {
+          if (
+            aborted(signal) ||
+            closed ||
+            !pkiActive ||
+            !ca ||
+            publicCa !== ca ||
+            manager?.ready !== true ||
+            manager.replacementRequired ||
+            replacementEvents !== 0
+          )
+            fail();
+        };
+        assertCurrent();
+        return await proxyCapabilityHolder.withSecret(async (secret) => {
+          if (!/^[A-Za-z0-9_-]{43}$/u.test(secret)) fail();
+          const caBytes = Buffer.from(ca as string);
+          const config = Buffer.from(`proxy-user = "cogs:${secret}"\n`);
+          try {
+            const result = await consume(Object.freeze({ ca: caBytes, config, assertCurrent }));
+            assertCurrent();
+            return result;
+          } catch {
+            fail();
+          } finally {
+            caBytes.fill(0);
+            config.fill(0);
+          }
+        });
+      },
+      armS309: () => {
+        try {
+          if (
+            armed ||
+            closed ||
+            manager?.ready !== true ||
+            manager.replacementRequired ||
+            replacementEvents !== 0 ||
+            !relay
+          )
+            fail();
+          armed = true;
+          relayBaseline = relay.snapshot();
+          const records = manager.auditRecords?.(64);
+          // This launcher owns a dedicated generation, never a reused traffic prefix.
+          if (
+            records?.length !== 0 ||
+            relayProof(relay, manager.listenerPort) !== "relay-zero" ||
+            relayBaseline.activeSockets !== 0 ||
+            manager.drainCompletions(64).length !== 0
+          )
+            fail();
+          walBaseline = JSON.stringify(records);
+        } catch {
+          completionOutcome = "fail";
+          fail();
+        }
+      },
       s309CompletionProof: () => {
         if (completionOutcome !== "fail") {
           try {
-            if (closed || manager?.ready !== true || manager.replacementRequired) throw new Error("bad state");
+            if (
+              !armed ||
+              closed ||
+              manager?.ready !== true ||
+              manager.replacementRequired ||
+              replacementEvents !== 0 ||
+              !relayBaseline ||
+              relay?.snapshot().switchedTargets !== relayBaseline.switchedTargets
+            )
+              throw new Error("bad state");
             const relayState = relayProof(relay, manager.listenerPort);
-            const walState = walProof(manager.auditRecords?.(64), s309RouteId, launch.session_id);
+            const records = manager.auditRecords?.(64);
+            if (walBaseline !== "[]" || records === undefined) throw new Error("missing WAL");
+            const walState = walProof(records, s309RouteId, launch.session_id);
+            const record = walState === "pass" ? records[0] : undefined;
             const drained = manager.drainCompletions(64);
             drainedCompletions = addSaturating(drainedCompletions, drained.length);
-            const matches = drained.filter((item) => completionMatches(item, s309RouteId)).length;
+            const matches = drained.filter((item) => record !== undefined && completionMatches(item, record)).length;
+            if (matchedIntent !== undefined && `[${matchedIntent}]` !== JSON.stringify(records))
+              throw new Error("changed intent");
+            if (record && matches === 1) matchedIntent = JSON.stringify(record);
             completionMatchesSeen = addSaturating(completionMatchesSeen, matches);
             if (
               relayState === "fail" ||
@@ -345,10 +462,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             ) {
               completionOutcome = "fail";
               completionFailReason = "total-count";
-            } else if (
-              (relayState === "relay-zero" && walState === "zero") ||
-              (relayState === "pass" && walState === "pass")
-            ) {
+            } else if (relayState === "pass" && walState === "pass" && completionMatchesSeen === 1) {
               completionOutcome = "pass";
             } else {
               completionOutcome = "pending";
@@ -373,56 +487,75 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         }) as S309CompletionProof;
       },
       proxyCapability: proxyCapabilityHolder,
-      close: once(async (closeOptions = Object.freeze({})) => {
-        const cleanup = cleanupOptions(closeOptions);
-        closed = true;
-        let failed = false;
-        let managerClean = false;
-
-        try {
-          if (relay) {
-            await relay.clear();
-          }
-        } catch {
-          failed = true;
-        }
-
-        if (manager) {
-          const closeProof = await closeManagerAndProveCleanup(manager, seams, cleanup);
-          failed = failed || closeProof.failed;
-          managerClean = closeProof.clean;
-
-          if (closeProof.closeResolved) {
+      close: once(
+        async (closeOptions = Object.freeze({})) => {
+          const cleanup = cleanupOptions(closeOptions);
+          let failed = false;
+          if (armed && completionOutcome === "pass") {
             try {
-              drainedCompletions = addSaturating(drainedCompletions, manager.drainCompletions(64).length);
+              if (
+                JSON.stringify(manager?.auditRecords?.(64)) !== `[${matchedIntent}]` ||
+                relayProof(relay, manager?.listenerPort ?? 0) !== "pass" ||
+                relay?.snapshot().switchedTargets !== relayBaseline?.switchedTargets
+              )
+                failed = true;
             } catch {
               failed = true;
             }
           }
-        }
+          closed = true;
+          let managerClean = false;
 
-        try {
-          if (relay) {
-            await relay.close();
-          }
-        } catch {
-          failed = true;
-        } finally {
-          proxyCapability = "";
-        }
-
-        if (managerClean) {
           try {
-            await cleanupEnvoyBinary(options.state, binary);
+            if (relay) {
+              await relay.clear();
+            }
           } catch {
             failed = true;
           }
-        }
 
-        if (failed) {
-          fail();
-        }
-      }),
+          if (manager) {
+            const closeProof = await closeManagerAndProveCleanup(manager, seams, cleanup);
+            failed = failed || closeProof.failed;
+            managerClean = closeProof.clean;
+
+            if (closeProof.closeResolved) {
+              try {
+                const late = manager.drainCompletions(64);
+                if (armed && completionOutcome === "pass" && late.length !== 0) failed = true;
+                drainedCompletions = addSaturating(drainedCompletions, late.length);
+              } catch {
+                failed = true;
+              }
+            }
+          }
+
+          try {
+            if (relay) {
+              await relay.close();
+            }
+          } catch {
+            failed = true;
+          } finally {
+            proxyCapability = "";
+          }
+
+          if (managerClean) {
+            try {
+              await cleanupEnvoyBinary(options.state, binary);
+            } catch {
+              failed = true;
+            }
+          }
+
+          if (failed) {
+            fail();
+          }
+        },
+        () => {
+          closed = true;
+        },
+      ),
     });
   } catch (startupError) {
     const cleanup = cleanupOptions();
@@ -478,6 +611,7 @@ function createManagerOptions(input: {
   openbaoOrigin: string;
   openbaoIdentity: ReturnType<typeof createOpenBaoIdentity>;
   proxyCapability: string;
+  decoratePki: (source: CogsEgressPkiSource) => CogsEgressPkiSource;
   onReplacementRequired: () => Promise<void>;
 }): CogsEgressRuntimeManagerOptions {
   return {
@@ -501,13 +635,15 @@ function createManagerOptions(input: {
       allowLoopbackHttpDevelopment: true,
     },
     proxyCapability: input.proxyCapability,
-    pkiSource: new OpenBaoEgressPkiSource({
-      origin: input.openbaoOrigin,
-      mount: "pki",
-      role: "cogs-egress",
-      identity: input.openbaoIdentity,
-      allowLoopbackHttpDevelopment: true,
-    }),
+    pkiSource: input.decoratePki(
+      new OpenBaoEgressPkiSource({
+        origin: input.openbaoOrigin,
+        mount: "pki",
+        role: "cogs-egress",
+        identity: input.openbaoIdentity,
+        allowLoopbackHttpDevelopment: true,
+      }),
+    ),
     envoyProcess: createNodeCogsEnvoyProcessPort({
       executablePath: input.binary.path,
       startupTimeoutMs: 5000,
@@ -677,6 +813,11 @@ function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" |
   if (!relay) return "relay-zero";
   const snap = relay.snapshot();
   if (
+    snap.profile !== "linux-kvm" ||
+    snap.bindHost !== "192.0.2.1" ||
+    snap.bindPort !== 18080 ||
+    !Number.isSafeInteger(snap.switchedTargets) ||
+    snap.switchedTargets < 1 ||
     snap.ready !== true ||
     snap.poisoned !== false ||
     snap.closed !== false ||
@@ -684,7 +825,10 @@ function relayProof(relay: KvmRelay | undefined, target: number): "relay-zero" |
     snap.registeredTargets.length !== 1 ||
     snap.registeredTargets[0] !== target ||
     snap.deniedConnections !== 0 ||
-    snap.acceptedConnections > 2
+    !Number.isSafeInteger(snap.acceptedConnections) ||
+    snap.acceptedConnections < 0 ||
+    snap.acceptedConnections > 2 ||
+    snap.activeSockets !== 0
   )
     return "fail";
   return snap.acceptedConnections === 2 ? "pass" : snap.acceptedConnections === 1 ? "relay-one" : "relay-zero";
@@ -725,21 +869,38 @@ function walRecordMatches(input: EgressAuditWalRecord | undefined, routeId: stri
       desc.integration_id?.value === INTEGRATION_ID &&
       desc.route_id?.value === routeId &&
       desc.method?.value === "GET" &&
-      desc.credential_required?.value === true
+      desc.credential_required?.value === true &&
+      desc.sequence?.value === 0 &&
+      typeof desc.intent_id?.value === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(desc.intent_id.value) &&
+      Number.isSafeInteger(desc.timestamp_ms?.value) &&
+      typeof desc.timestamp_ms?.value === "number" &&
+      desc.timestamp_ms.value >= 0
     );
   } catch {
     return false;
   }
 }
 
-function completionMatches(input: CogsEgressCompletion, routeId: string): boolean {
+function completionMatches(input: CogsEgressCompletion, record: EgressAuditWalRecord): boolean {
   try {
     if (!input || typeof input !== "object" || Object.getOwnPropertySymbols(input).length !== 0) fail();
     const desc = Object.getOwnPropertyDescriptors(input);
     if (Object.keys(desc).sort().join(",") !== "completedAtMs,durationMs,intentId,responseCode,routeId,sequence")
       fail();
     for (const d of Object.values(desc)) if (!d || !("value" in d) || d.enumerable !== true) fail();
-    return desc.routeId?.value === routeId && desc.responseCode?.value === 200;
+    return (
+      desc.routeId?.value === record.route_id &&
+      desc.responseCode?.value === 200 &&
+      desc.intentId?.value === record.intent_id &&
+      desc.sequence?.value === record.sequence &&
+      Number.isSafeInteger(desc.durationMs?.value) &&
+      typeof desc.durationMs?.value === "number" &&
+      desc.durationMs.value >= 0 &&
+      Number.isSafeInteger(desc.completedAtMs?.value) &&
+      typeof desc.completedAtMs?.value === "number" &&
+      desc.completedAtMs.value >= record.timestamp_ms
+    );
   } catch {
     return false;
   }
@@ -1358,13 +1519,41 @@ async function proveClosed(port: number): Promise<void> {
   });
 }
 
-function once(fn: (options?: DeadlineOptions) => Promise<void>): (options?: DeadlineOptions) => Promise<void> {
+function once(
+  fn: (options?: DeadlineOptions) => Promise<void>,
+  seal: () => void,
+): (options?: DeadlineOptions) => Promise<void> {
   let pending: Promise<void> | undefined;
   return (options = Object.freeze({})) => {
     validateDeadlineOptions(options);
-    pending ??= fn(options);
-    return pending;
+    // Publish ownership before dependency callbacks can synchronously reenter.
+    pending ??= Promise.resolve().then(() => fn());
+    seal();
+    return observeLauncherClose(pending, options);
   };
+}
+
+// Module-local observers: cancellation/deadlines never discard or repeat actual work.
+export function observeLauncherClose(work: Promise<void>, options: DeadlineOptions = {}): Promise<void> {
+  validateDeadlineOptions(options);
+  const deadlineAt = options.deadlineAt ?? Date.now() + 15_000;
+  const signal = options.signal;
+  return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | undefined;
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (signal) EventTarget.prototype.removeEventListener.call(signal, "abort", cancel);
+      ok ? resolve() : reject(new Error("launcher egress failed"));
+    };
+    const cancel = () => finish(false);
+    work.then(() => finish(!aborted(signal) && Date.now() < deadlineAt), cancel);
+    if (signal) EventTarget.prototype.addEventListener.call(signal, "abort", cancel, { once: true });
+    if (aborted(signal) || Date.now() >= deadlineAt) cancel();
+    else timer = setTimeout(cancel, deadlineAt - Date.now());
+  });
 }
 
 function validateDeadlineOptions(options: unknown): asserts options is DeadlineOptions {
