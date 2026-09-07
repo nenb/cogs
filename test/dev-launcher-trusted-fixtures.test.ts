@@ -902,7 +902,7 @@ test("post-header abort cancels body; backend removal does not retire pending ca
           new URL(String(url)).pathname === target &&
           (target === "/v1/sys/init" || new Headers(init?.headers).get("x-vault-token") === "rootToken123")
         ) {
-          if (!target.endsWith("lookup-self")) setTimeout(() => controller.abort(), 5);
+          setTimeout(() => controller.abort(), 5);
           return new Response(
             new ReadableStream({
               start(c) {
@@ -925,13 +925,13 @@ test("post-header abort cancels body; backend removal does not retire pending ca
       let settled = false;
       const started = startTrustedOpenBaoCooperative(
         s,
-        { signal: controller.signal, deadlineAt: Date.now() + 100 },
+        { signal: controller.signal, deadlineAt: Date.now() + 5_000 },
         seams,
       ).finally(() => {
         settled = true;
       });
       const rejected = assert.rejects(started, /launcher openbao failed/);
-      for (let n = 0; n < 100 && !events.some((e) => e.includes("docker rm -f")); n++)
+      for (let n = 0; n < 100 && !(cancelled && events.some((e) => e.includes("docker rm -f"))); n++)
         await new Promise((r) => setTimeout(r, 5));
       assert.equal(cancelled, true);
       assert.ok(events.some((e) => e.includes("docker rm -f")));
