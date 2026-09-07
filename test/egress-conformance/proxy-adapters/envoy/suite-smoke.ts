@@ -429,6 +429,10 @@ try {
       assert.equal(npmIntents.length, npmObservations.length, "every npm request must have one accepted intent");
       assert.ok(
         npmIntents.every((item) => item.completion?.outcome === "success" && item.completion.status_class === 2),
+        `npm completion classes=${npmIntents
+          .map((item) => `${item.completion?.outcome ?? "missing"}:${item.completion?.status_class ?? 0}`)
+          .sort()
+          .join(",")}`,
       );
       postconditionCaseId = undefined;
     }
