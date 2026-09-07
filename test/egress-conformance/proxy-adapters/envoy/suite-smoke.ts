@@ -387,6 +387,7 @@ try {
     for (const record of records) {
       const intent = snapshot.intents.find((item) => item.intent_id === record.intent_id);
       assert.ok(intent, "completion record has no authorization intent");
+      postconditionCaseId = intent.case_id;
       assert.equal(record.route_id, "route.fixture");
       if (intent.completion === null)
         await completeIntent(faultInjector.origin, record.intent_id, record.response_code, record.duration_ms);
@@ -406,6 +407,7 @@ try {
           duration_ms: record.duration_ms,
         });
       }
+      postconditionCaseId = undefined;
     }
     const observations = fixtures.observations().filter((item) => item.kind === "http");
     const finalSnapshot = faultInjector.snapshot();

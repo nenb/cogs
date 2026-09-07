@@ -13,7 +13,7 @@ The first correction changed the expectation but review found that its authority
 
 ## Decision
 
-Raise only the relay workstream gross-line high from 1,800 to 1,900. Keep the global remediation high at 18,500 and every other owner and source limit unchanged.
+Raise the relay workstream gross-line high from 1,800 to 1,900. Allocate one integration-owned ADR file slot, raising that owner from 30 to 31 and the exact total from 38 to 39. Keep the global remediation high at 18,500, the 1,460 tracked-file source limit, and every other owner and source limit unchanged.
 
 The correction must:
 
