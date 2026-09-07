@@ -78,7 +78,7 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 1900,
+      "gross_line_high": 1950,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 260000,
@@ -115,6 +115,8 @@
         "test/egress-conformance/stage3-real-runtime/ci-smoke.sh",
         "test/egress-conformance/stage3-real-runtime/harness.ts",
         "test/egress-conformance/stage3-real-runtime/relay.ts",
+        "test/egress-conformance/telemetry-fixture/server.test.ts",
+        "test/egress-conformance/telemetry-fixture/server.ts",
         "test/egress-conformance/upstream-fixtures/README.md",
         "test/egress-conformance/upstream-fixtures/server.test.ts",
         "test/egress-conformance/upstream-fixtures/server.ts",

@@ -104,8 +104,9 @@ function decodeEnvelope(value: unknown): OtlpMetadataRecord | undefined {
     !idPattern.test(testId) ||
     (outcome !== "success" && outcome !== "failed") ||
     !Number.isInteger(statusClass) ||
-    statusClass < 1 ||
+    statusClass < 0 ||
     statusClass > 5 ||
+    (statusClass === 0 && outcome !== "failed") ||
     !Number.isInteger(duration) ||
     duration < 0 ||
     duration > 300_000

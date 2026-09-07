@@ -261,7 +261,7 @@ def _remediation_budget():
     _require(data["source_limits"] == {"tracked_files": 1460,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = {"route": 1_800, "revocation": 3_000, "relay": 1_900,
+    expected = {"route": 1_800, "revocation": 3_000, "relay": 1_950,
                 "lifecycle": 7_000, "completion": 2_600, "integration": 3_000}
     owners = {}
     paths = {}

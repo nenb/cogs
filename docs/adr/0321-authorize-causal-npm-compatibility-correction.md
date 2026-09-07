@@ -13,14 +13,14 @@ The first correction changed the expectation but review found that its authority
 
 ## Decision
 
-Raise the relay workstream gross-line high from 1,800 to 1,900. Allocate one integration-owned ADR file slot, raising that owner from 30 to 31 and the exact total from 38 to 39. Keep the global remediation high at 18,500, the 1,460 tracked-file source limit, and every other owner and source limit unchanged.
+Raise the relay workstream gross-line high from 1,800 to 1,950. Allocate one integration-owned ADR file slot, raising that owner from 30 to 31 and the exact total from 38 to 39. Keep the global remediation high at 18,500, the 1,460 tracked-file source limit, and every other owner and source limit unchanged.
 
-The relay allocation includes the existing Envoy adapter and its test only to retain identity-bound response-code-zero completion evidence for bounded canceled fetches.
+The relay allocation includes the existing Envoy adapter and telemetry fixture with their tests only to retain strictly parsed, identity-bound response-code-zero completion and failed/no-response telemetry evidence for bounded additional no-response fetches.
 
 The correction must:
 
 1. derive the expected authority from the fixture's trusted dynamically bound port before requests are admitted;
-2. require a positive bounded set of at most three authenticated npm fixture observations, with one case-bound accepted intent and explicit completion per request, exactly one successful 2xx completion, and only explicit failed/no-response class-zero outcomes for additional canceled fetches;
+2. require a positive bounded set of at most three authenticated npm fixture observations, with one case-bound accepted intent and explicit completion per request, exactly one successful 2xx completion, and only explicit failed/no-response class-zero outcomes for additional fetches;
 3. validate exact bounded tarball bytes and a bounded numeric npm version;
 4. attribute any npm postcondition failure to `client.npm-tarball` with categorical expected/actual wording; and
 5. preserve the failed run as historical, functional-only, non-release evidence.

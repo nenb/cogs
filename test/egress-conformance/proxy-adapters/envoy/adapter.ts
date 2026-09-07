@@ -117,8 +117,24 @@ export function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
     const value = parsed as Record<string, unknown>;
     if (value.event !== "request-complete") continue;
-    const responseCode = Number(value.response_code);
-    const duration = Number(value.duration_ms);
+    const fields = ["event", "intent_id", "route_id", "response_code", "duration_ms"] as const;
+    if (
+      Object.keys(value).length !== fields.length ||
+      fields.some((key) => !(key in value) || [...line.matchAll(new RegExp(`"${key}"\\s*:`, "gu"))].length !== 1)
+    )
+      throw new Error("Envoy emitted a malformed structured completion record");
+    const responseCode =
+      typeof value.response_code === "number"
+        ? value.response_code
+        : typeof value.response_code === "string" && /^(?:0|[1-5][0-9]{2})$/u.test(value.response_code)
+          ? Number(value.response_code)
+          : Number.NaN;
+    const duration =
+      typeof value.duration_ms === "number"
+        ? value.duration_ms
+        : typeof value.duration_ms === "string" && /^(?:0|[1-9][0-9]{0,5})$/u.test(value.duration_ms)
+          ? Number(value.duration_ms)
+          : Number.NaN;
     const intentId = typeof value.intent_id === "string" ? value.intent_id : "";
     const routeId = typeof value.route_id === "string" ? value.route_id : "";
     const intentValid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(intentId);
