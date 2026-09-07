@@ -53,6 +53,12 @@ def read(path):
     return raw, value
 
 
+def eligibility(path):
+    _raw, value = read(path)
+    eligible((value.get("implementation_revision"), value.get("control_revision"),
+              value.get("qualification_revision")))
+
+
 def digest(domain, value):
     return hashlib.sha256(domain + b"\0" + canonical(value)[:-1]).hexdigest()
 
@@ -132,6 +138,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "issue" and len(sys.argv) == 3: issue(sys.argv[2])
         elif sys.argv[1] == "authenticate" and len(sys.argv) == 3:
             authenticate(sys.argv[2])
+        elif sys.argv[1] == "eligibility" and len(sys.argv) == 3:
+            eligibility(sys.argv[2])
         else: raise ApprovalIssuerError()
     except (ApprovalIssuerError, OSError, production.ProductionCampaignError):
         raise SystemExit(2)

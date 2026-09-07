@@ -112,9 +112,13 @@ jobs:
             https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$out/approval-authentication.json" >/dev/null
+          test "$(sha256sum "$out/approval.json" | cut -d' ' -f1)" = \
+            "$(jq -er '.approval_sha256 | select(test("^[0-9a-f]{64}$"))' \
+              "$out/approval-authentication.json")"
           jq -e --arg g "$CONTROL_HEAD" \
             '.version == "cogs.stage2-completion-production-approval/v4" and
              .control_revision == $g and .one_attempt == true' "$out/approval.json" >/dev/null
+          /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
           now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
           test "$duration" -ge 20000

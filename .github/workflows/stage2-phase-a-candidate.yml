@@ -9,7 +9,9 @@ permissions:
 
 jobs:
   candidate:
+    # ADR0319 permanently retires this superseded authority path.
     if: >-
+      github.sha == '' &&
       contains(github.event.pull_request.labels.*.name, 'security') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04

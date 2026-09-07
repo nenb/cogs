@@ -104,6 +104,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           digest-mismatch: error
 
+      - name: Reject retired authenticated package provenance before preparation or credentials
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -B scripts/stage2-production-planner.py eligibility \
+            "$RUNNER_TEMP/qualification/pre-aws-package-v4.json" \
+            "$IMPLEMENTATION_HEAD" "$CONTROL_HEAD" "$QUALIFICATION_HEAD"
+
       - name: Prepare exact control and prebuilt descriptor inputs before credentials
         run: |
           set -euo pipefail

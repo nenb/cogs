@@ -52,7 +52,7 @@ jobs:
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
         run: |
           set -euo pipefail
-          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          # ADR0319 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID" "$MIXED_PREFLIGHT_RUN_ID"; do
             case "$selected" in
               9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
@@ -129,7 +129,7 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          # ADR0319 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
             case "$selected" in
               9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
@@ -469,7 +469,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          # ADR0319 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
             case "$selected" in
               9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;

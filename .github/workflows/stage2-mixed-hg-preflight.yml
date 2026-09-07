@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: ${{ github.sha == '' }} # ADR0319: GitHub supplies a nonempty SHA, so this path is retired.
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     env:
