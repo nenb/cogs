@@ -196,6 +196,7 @@
       "new_file_high": 3,
       "paths": [
         "docs/operations/stage-3-internal-api.md",
+        "docs/operations/stage-3-ssh-connection.md",
         "schemas/entry-fragments-v1.json",
         "src/api/server.ts",
         "src/egress/completion-queue.ts",
