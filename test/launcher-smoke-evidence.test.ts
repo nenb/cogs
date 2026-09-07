@@ -378,6 +378,12 @@ test("launcher preparation excludes retired OpenBao and remains outside active w
     );
     assert.match(workflow, /COGS_SOURCE_REVISION: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   }
+  assert.match(insecure, /id: envoy_response[\s\S]*COGS_ENVOY_RESPONSE_TEST: "1"/u);
+  assert.match(insecure, /docker pull "node@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"/u);
+  assert.match(
+    insecure,
+    /ENVOY_RESPONSE_OUTCOME: \$\{\{ steps\.envoy_response\.outcome \}\}[\s\S]*test "\$ENVOY_RESPONSE_OUTCOME" = success/u,
+  );
   assert.match(kvm, /id: envoy_suite\n {8}if: [^\n]*stage2-only[^\n]*\n {8}continue-on-error: true/);
   assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome == 'success'/);
   assert.match(kvm, /id: domain_cleanup\n {8}if: always\(\) && env\.COGS_KVM_NETNS != ''/);
