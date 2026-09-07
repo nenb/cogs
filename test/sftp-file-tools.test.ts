@@ -47,7 +47,7 @@ class FakeStats implements Stats {
   }
 }
 
-type Node = { kind: "file"; data: Buffer } | { kind: "dir" } | { kind: "symlink" } | { kind: "fifo" };
+type Node = { kind: "file"; data: Buffer; mode: number } | { kind: "dir" } | { kind: "symlink" } | { kind: "fifo" };
 
 class FakeSftp extends EventEmitter {
   public files = new Map<string, Node>([
@@ -65,6 +65,10 @@ class FakeSftp extends EventEmitter {
   public unlinkFails = false;
   public hangCloseHandle = false;
   public fstatTypeOverride: "file" | "fifo" | undefined;
+  public fstatModeOverride: number | "missing" | undefined;
+  public heldOperation: "write" | "fchmod" | "fsync" | "fstat" | "rename" | undefined;
+  public releaseHeld: (() => void) | undefined;
+  public cleanupStarted = false;
   public permissionPaths = new Set<string>();
   public failurePaths = new Set<string>();
   public rejectUndefinedRead = false;
@@ -77,8 +81,8 @@ class FakeSftp extends EventEmitter {
   public active = 0;
   public maxActive = 0;
   public unlinked: string[] = [];
-  public seed(file: string, data: string | Buffer, kind: Node["kind"] = "file") {
-    this.files.set(file, kind === "file" ? { kind, data: Buffer.from(data) } : ({ kind } as Node));
+  public seed(file: string, data: string | Buffer, kind: Node["kind"] = "file", mode = 0o600) {
+    this.files.set(file, kind === "file" ? { kind, data: Buffer.from(data), mode } : ({ kind } as Node));
   }
   public lstat(p: string, cb: (err: Error | undefined, stats: Stats) => void) {
     setImmediate(() => {
@@ -95,7 +99,7 @@ class FakeSftp extends EventEmitter {
       if (mode.includes("x") && this.files.has(p)) return callback(new Error("exists"), undefined as never);
       if (mode.startsWith("r") && this.files.get(p)?.kind !== "file")
         return callback(new Error("not file"), undefined as never);
-      if (mode.startsWith("w")) this.files.set(p, { kind: "file", data: Buffer.alloc(0) });
+      if (mode.startsWith("w")) this.files.set(p, { kind: "file", data: Buffer.alloc(0), mode: 0o600 });
       const handle = Buffer.from(`h${++this.openCount}`);
       this.handles.set(handle.toString("hex"), p);
       callback(undefined, handle);
@@ -178,7 +182,7 @@ class FakeSftp extends EventEmitter {
 
 function stats(node: Node): Stats {
   return node.kind === "file"
-    ? new FakeStats(0o100600, node.data.length, "file")
+    ? new FakeStats(0o100000 | node.mode, node.data.length, "file")
     : new FakeStats(0o040700, 0, node.kind === "dir" ? "dir" : node.kind === "symlink" ? "symlink" : "fifo");
 }
 
@@ -195,7 +199,11 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
             : "unknown";
   const statOf = (node: Node | undefined) => {
     if (!node) throw new CogsSftpStatusError("no_such_file");
-    return { size: node.kind === "file" ? node.data.length : 0, type: typeOf(node) } as const;
+    return {
+      size: node.kind === "file" ? node.data.length : 0,
+      mode: node.kind === "file" ? 0o100000 | node.mode : node.kind === "dir" ? 0o040700 : 0o010600,
+      type: typeOf(node),
+    } as const;
   };
   const handlePath = (handle: Buffer) => sftp.handles.get(handle.toString("hex"));
   return {
@@ -211,7 +219,7 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
     open: async (p, mode) => {
       if (mode === "wx" && sftp.files.has(p)) throw new Error("exists");
       if (mode === "r" && sftp.files.get(p)?.kind !== "file") throw new Error("not file");
-      if (mode === "wx") sftp.files.set(p, { kind: "file", data: Buffer.alloc(0) });
+      if (mode === "wx") sftp.files.set(p, { kind: "file", data: Buffer.alloc(0), mode: 0o600 });
       const handle = Buffer.from(`h${++sftp.openCount}`);
       sftp.handles.set(handle.toString("hex"), p);
       return handle;
@@ -240,6 +248,7 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       return { bytesRead: sftp.shortRead && bytesRead > 0 ? 0 : bytesRead, buffer, position };
     },
     write: async (handle, buffer, offset, length, position) => {
+      await hold(sftp, "write");
       const node = sftp.files.get(handlePath(handle) ?? "");
       if (node?.kind !== "file") throw new Error("bad handle");
       const next = Buffer.alloc(Math.max(node.data.length, position + length));
@@ -248,21 +257,33 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       node.data = next;
     },
     fstat: async (handle) => {
+      await hold(sftp, "fstat");
       const stat = statOf(sftp.files.get(handlePath(handle) ?? ""));
-      return sftp.fstatTypeOverride === undefined ? stat : { ...stat, type: sftp.fstatTypeOverride };
+      const typed = sftp.fstatTypeOverride === undefined ? stat : { ...stat, type: sftp.fstatTypeOverride };
+      if (sftp.fstatModeOverride === "missing") return { size: typed.size, type: typed.type };
+      return sftp.fstatModeOverride === undefined ? typed : { ...typed, mode: sftp.fstatModeOverride };
     },
     closeHandle: async (handle) => {
+      sftp.cleanupStarted = true;
       if (sftp.hangCloseHandle) await new Promise(() => undefined);
       if (sftp.rejectUndefinedCloseHandle) return Promise.reject(undefined);
       sftp.handles.delete(handle.toString("hex"));
       if (sftp.closeFails) throw new Error("close failed");
     },
+    setModeHandle: async (handle, mode) => {
+      await hold(sftp, "fchmod");
+      const node = sftp.files.get(handlePath(handle) ?? "");
+      if (node?.kind !== "file") throw new Error("bad handle");
+      node.mode = mode;
+    },
     unlink: async (p) => {
+      sftp.cleanupStarted = true;
       sftp.unlinked.push(p);
       if (sftp.unlinkFails) throw new Error("unlink failed");
       sftp.files.delete(p);
     },
     fsync: async () => {
+      await hold(sftp, "fsync");
       if (sftp.fsyncUnavailable) throw new Error("fsync unavailable");
       if (sftp.fsyncFails) throw new Error("fsync");
     },
@@ -272,8 +293,17 @@ function portFor(sftp: FakeSftp): CogsSftpPort {
       if (!node) throw new Error("missing");
       sftp.files.set(dst, node);
       sftp.files.delete(src);
+      await hold(sftp, "rename");
     },
   };
+}
+
+async function hold(sftp: FakeSftp, operation: NonNullable<FakeSftp["heldOperation"]>): Promise<void> {
+  if (sftp.heldOperation !== operation) return;
+  sftp.cleanupStarted = false;
+  await new Promise<void>((resolve) => {
+    sftp.releaseHeld = resolve;
+  });
 }
 
 class FakeConnection extends EventEmitter implements SshTransportConnection {
@@ -467,7 +497,7 @@ test("SFTP read validates paths, UTF-8, line bounds, file metadata, and truncati
 
 test("SFTP write and edit use fsync plus atomic rename and preserve target on failures", async () => {
   const sftp = new FakeSftp();
-  sftp.seed("/workspace/a.txt", "hello old world");
+  sftp.seed("/workspace/a.txt", "hello old world", "file", 0o640);
   const fixture = await managerFor(sftp);
   try {
     const ports = createSftpFileToolPorts({ manager: fixture.manager, maxWriteBytes: 100, maxReadBytes: 100 });
@@ -475,21 +505,53 @@ test("SFTP write and edit use fsync plus atomic rename and preserve target on fa
       ((await ports.write({ path: "/workspace/out.txt", content: "new" })) as { bytesWritten: number }).bytesWritten,
       3,
     );
-    assert.equal((sftp.files.get("/workspace/out.txt") as { data: Buffer }).data.toString(), "new");
+    assert.equal((sftp.files.get("/workspace/out.txt") as { data: Buffer; mode: number }).data.toString(), "new");
+    assert.equal((sftp.files.get("/workspace/out.txt") as { data: Buffer; mode: number }).mode, 0o600);
     assert.equal(
       ((await ports.edit({ path: "/workspace/a.txt", oldText: "old", newText: "NEW" })) as { occurrences: number })
         .occurrences,
       1,
     );
-    assert.equal((sftp.files.get("/workspace/a.txt") as { data: Buffer }).data.toString(), "hello NEW world");
+    assert.equal(
+      (sftp.files.get("/workspace/a.txt") as { data: Buffer; mode: number }).data.toString(),
+      "hello NEW world",
+    );
+    assert.equal((sftp.files.get("/workspace/a.txt") as { data: Buffer; mode: number }).mode, 0o640);
     await assert.rejects(ports.edit({ path: "/workspace/a.txt", oldText: "missing", newText: "x" }), /not unique/);
     assert.equal((sftp.files.get("/workspace/a.txt") as { data: Buffer }).data.toString(), "hello NEW world");
+    for (const mode of ["missing", 33_152.5, 0o104600, 0o040600] as const) {
+      sftp.fstatModeOverride = mode;
+      await assert.rejects(ports.write({ path: "/workspace/a.txt", content: "bad" }), /metadata|mode|type/);
+    }
+    sftp.fstatModeOverride = undefined;
     sftp.renameFails = true;
     await assert.rejects(ports.write({ path: "/workspace/out.txt", content: "bad" }), /rename|operation/);
     assert.equal((sftp.files.get("/workspace/out.txt") as { data: Buffer }).data.toString(), "new");
     assert.ok(sftp.unlinked.some((name) => name.includes("/.cogs-") && name.endsWith(".tmp")));
   } finally {
     await fixture.manager.shutdown();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("SFTP held prepublish callbacks do not race handle cleanup", async () => {
+  for (const heldOperation of ["write", "fchmod", "fsync", "fstat", "rename"] as const) {
+    const sftp = new FakeSftp();
+    sftp.heldOperation = heldOperation;
+    const fixture = await managerFor(sftp);
+    const ports = createSftpFileToolPorts({ manager: fixture.manager, idleTimeoutMs: 5, operationTimeoutMs: 50 });
+    const rejected = assert.rejects(ports.write({ path: "/workspace/new", content: "payload" }));
+    for (let index = 0; index < 20 && sftp.releaseHeld === undefined; index++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    await new Promise((resolve) => setTimeout(resolve, 8));
+    assert.equal(sftp.cleanupStarted, false, heldOperation);
+    if (heldOperation === "fstat")
+      assert.equal([...sftp.files.values()].find((node) => node.kind === "file")?.data.length, 0);
+    if (heldOperation === "rename")
+      assert.equal((sftp.files.get("/workspace/new") as { data: Buffer }).data.toString(), "payload");
+    sftp.releaseHeld?.();
+    await rejected;
+    await fixture.manager.shutdown().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -520,6 +582,14 @@ test("SFTP edit replacement tokens are literal with UTF-8 and atomic size/failur
     await fixture.manager.shutdown();
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("SFTP operation timeout accepts the launch-schema millisecond range exactly", () => {
+  const manager = {} as SshConnectionManager;
+  for (const operationTimeoutMs of [1, 900_000])
+    assert.doesNotThrow(() => createSftpFileToolPorts({ manager, operationTimeoutMs }));
+  for (const operationTimeoutMs of [0, 900_001])
+    assert.throws(() => createSftpFileToolPorts({ manager, operationTimeoutMs }), /operation timeout/);
 });
 
 test("SFTP operations are bounded by manager channel permits and abort/timeouts fail closed without fallback", async () => {
@@ -577,12 +647,11 @@ test("SFTP adversarial cases cover overlap, growth, cleanup failure, Unicode bou
     await assert.rejects(ports.write({ path: "/workspace/e\u0301.txt", content: "x" }), /invalid path/);
     await assert.rejects(ports.write({ path: "/workspace/cf\u200d.txt", content: "x" }), /invalid path/);
     await assert.rejects(ports.write({ path: "/workspace/surrogate.txt", content: "\uD800" }), /invalid content/);
-    sftp.renameFails = true;
-    sftp.closeFails = true;
-    await assert.rejects(ports.write({ path: "/workspace/cleanup.txt", content: "x" }), /cleanup failed/);
-    assert.ok(sftp.unlinked.length > 0, "unlink attempted even when close failed");
     fixture.transport.connection.lateOpen = true;
-    await assert.rejects(ports.read({ path: "/workspace/grow.txt" }), /open timed out|operation aborted/);
+    await assert.rejects(
+      ports.read({ path: "/workspace/grow.txt" }),
+      /open timed out|operation aborted|operation failed/,
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(fixture.transport.connection.destroyCalls > 0, "late channel was destroyed");
   } finally {
@@ -623,6 +692,7 @@ test("SFTP focused safety cases cover target status, file types, fsync, and clea
   sftp.seed("/workspace/existing.txt", "stable");
   sftp.seed("/workspace/dir-target", "", "dir");
   sftp.seed("/workspace/fifo-target", "", "fifo");
+  sftp.seed("/workspace/symlink-target", "", "symlink");
   const fixture = await managerFor(sftp);
   try {
     const ports = createSftpFileToolPorts({
@@ -638,6 +708,9 @@ test("SFTP focused safety cases cover target status, file types, fsync, and clea
       /unsupported|invalid path component|operation/,
     );
     await assert.rejects(ports.write({ path: "/workspace/fifo-target", content: "x" }), /unsupported|operation/);
+    const opens = sftp.openCount;
+    await assert.rejects(ports.write({ path: "/workspace/symlink-target", content: "x" }), /unsupported|symlink/);
+    assert.equal(sftp.openCount, opens, "final symlink is rejected before follow-on-open");
 
     assert.equal(
       ((await ports.write({ path: "/workspace/new-from-absent.txt", content: "ok" })) as { bytesWritten: number })
@@ -682,15 +755,16 @@ test("SFTP focused safety cases cover target status, file types, fsync, and clea
     await assert.rejects(ports.read({ path: "/workspace/existing.txt" }), /sftp file operation failed/);
     sftp.rejectUndefinedRead = false;
     sftp.rejectProxyRead = true;
-    await assert.rejects(ports.read({ path: "/workspace/existing.txt" }), /sftp file operation failed/);
+    await assert.rejects(
+      ports.read({ path: "/workspace/existing.txt" }),
+      /sftp file operation failed|ssh sftp operation failed/,
+    );
     sftp.rejectProxyRead = false;
     sftp.rejectUndefinedCloseHandle = true;
-    await assert.rejects(ports.read({ path: "/workspace/existing.txt" }), /cleanup failed/);
-    sftp.rejectUndefinedCloseHandle = false;
-    sftp.hangCloseHandle = true;
-    await assert.rejects(ports.read({ path: "/workspace/existing.txt" }), /cleanup failed|timed out|aborted/);
+    await assert.rejects(ports.read({ path: "/workspace/existing.txt" }), /outcome uncertain/);
+    assert.equal(fixture.manager.ready, false);
   } finally {
-    await fixture.manager.shutdown();
+    await fixture.manager.shutdown().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });

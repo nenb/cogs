@@ -6,6 +6,7 @@ import {
   type CogsSftpPort,
   type CogsSftpStats,
   CogsSftpStatusError,
+  CogsSftpUncertainError,
   SshConnectionError,
   type SshConnectionManager,
 } from "./connection.ts";
@@ -58,6 +59,7 @@ async function readTool(
     const size = sizeOf(attrs);
     if (size > config.maxReadBytes) return nonTextResult(guestPath, "unknown", "too_large", size);
     const handle = await call(config, signal, (callSignal) => sftp.open(guestPath, "r", callSignal));
+    let uncertain = false;
     try {
       const stat = await call(config, signal, (callSignal) => sftp.fstat(handle, callSignal));
       const statSize = sizeOf(stat);
@@ -80,8 +82,11 @@ async function readTool(
       result = bounded.result;
       const exhaustedLines = offset + selected.length >= lines.length;
       return { ...result, eof: exhaustedLines && !bounded.truncated, truncated: !exhaustedLines || bounded.truncated };
+    } catch (error) {
+      uncertain = isUncertain(error);
+      throw error;
     } finally {
-      await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle, cleanupSignal));
+      if (!uncertain) await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle, cleanupSignal));
     }
   }) as Promise<JsonValue>;
 }
@@ -109,31 +114,49 @@ async function editTool(
     const size = sizeOf(attrs);
     if (size > config.maxReadBytes) throw new SftpFileToolError("file is too large");
     const handle = await call(config, signal, (callSignal) => sftp.open(guestPath, "r", callSignal));
-    let text: string;
+    let uncertain = false;
     try {
       const stat = await call(config, signal, (callSignal) => sftp.fstat(handle, callSignal));
       const statSize = sizeOf(stat);
-      if (stat.type !== "file") throw new SftpFileToolError("unsupported file type");
+      const mode = regularModeOf(stat);
       if (statSize > config.maxReadBytes || statSize < size) throw new SftpFileToolError("file size changed");
       const data = await readBounded(sftp, handle, statSize, config, signal);
-      const decoded = decodeUtf8(data);
-      if (decoded === undefined) throw new SftpFileToolError("file is not strict utf8");
-      text = decoded;
+      const text = decodeUtf8(data);
+      if (text === undefined) throw new SftpFileToolError("file is not strict utf8");
+      if (countOccurrences(text, oldText) !== 1) throw new SftpFileToolError("edit text is not unique");
+      const index = text.indexOf(oldText);
+      const updated = Buffer.from(text.slice(0, index) + newText + text.slice(index + oldText.length), "utf8");
+      if (updated.length > config.maxWriteBytes) throw new SftpFileToolError("content is too large");
+      return { ...(await atomicWriteWithPort(config, sftp, guestPath, updated, signal, mode)), occurrences: 1 };
+    } catch (error) {
+      uncertain = isUncertain(error);
+      throw error;
     } finally {
-      await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle, cleanupSignal));
+      if (!uncertain) await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle, cleanupSignal));
     }
-    if (countOccurrences(text, oldText) !== 1) throw new SftpFileToolError("edit text is not unique");
-    const index = text.indexOf(oldText);
-    const updated = Buffer.from(text.slice(0, index) + newText + text.slice(index + oldText.length), "utf8");
-    if (updated.length > config.maxWriteBytes) throw new SftpFileToolError("content is too large");
-    return { ...(await atomicWriteWithPort(config, sftp, guestPath, updated, signal)), occurrences: 1 };
   }) as Promise<JsonValue>;
 }
 
 async function atomicWrite(config: Config, guestPath: string, data: Buffer, signal?: AbortSignal) {
-  return config.manager.withSftp(withBounds(config, signal), (sftp, opSignal) =>
-    atomicWriteWithPort(config, sftp, guestPath, data, opSignal),
-  );
+  return config.manager.withSftp(withBounds(config, signal), async (sftp, opSignal) => {
+    const existing = await validateWritableTarget(sftp, guestPath, config, opSignal);
+    let original: Buffer | undefined;
+    let mode = 0o600;
+    let uncertain = false;
+    try {
+      if (existing) {
+        original = await call(config, opSignal, (callSignal) => sftp.open(guestPath, "r", callSignal));
+        mode = regularModeOf(await call(config, opSignal, (callSignal) => sftp.fstat(original as Buffer, callSignal)));
+      }
+      return await atomicWriteWithPort(config, sftp, guestPath, data, opSignal, mode);
+    } catch (error) {
+      uncertain = isUncertain(error);
+      throw error;
+    } finally {
+      if (original !== undefined && !uncertain)
+        await cleanup(config, (cleanupSignal) => sftp.closeHandle(original as Buffer, cleanupSignal));
+    }
+  });
 }
 
 async function atomicWriteWithPort(
@@ -142,6 +165,7 @@ async function atomicWriteWithPort(
   guestPath: string,
   data: Buffer,
   signal: AbortSignal,
+  mode: number,
 ) {
   await validateWritableTarget(sftp, guestPath, config, signal);
   const temp = `${path.dirname(guestPath)}/.cogs-${randomBytes(18).toString("hex")}.tmp`;
@@ -151,9 +175,16 @@ async function atomicWriteWithPort(
   try {
     handle = await call(config, signal, (callSignal) => sftp.open(temp, "wx", callSignal));
     cleanupTemp = true;
+    const opened = await call(config, signal, (callSignal) => sftp.fstat(handle as Buffer, callSignal));
+    if (sizeOf(opened) !== 0 || regularModeOf(opened) !== 0o600)
+      throw new SftpFileToolError("temporary file validation failed");
     await writeAll(sftp, handle, data, config, signal);
+    if (sftp.setModeHandle === undefined) throw new SftpFileToolError("handle mode operation unavailable");
+    await call(config, signal, (callSignal) =>
+      (sftp.setModeHandle as NonNullable<CogsSftpPort["setModeHandle"]>)(handle as Buffer, mode, callSignal),
+    );
     const stat = await call(config, signal, (callSignal) => sftp.fstat(handle as Buffer, callSignal));
-    if (stat.type !== "file" || sizeOf(stat) !== data.length)
+    if (sizeOf(stat) !== data.length || regularModeOf(stat) !== mode)
       throw new SftpFileToolError("temporary file validation failed");
     await call(config, signal, (callSignal) => sftp.fsync(handle as Buffer, callSignal));
     await call(config, signal, (callSignal) => sftp.closeHandle(handle as Buffer, callSignal));
@@ -162,24 +193,11 @@ async function atomicWriteWithPort(
     cleanupTemp = false;
     return { ok: true, path: guestPath, bytesWritten: data.length, atomic: true, fsync: "openssh" };
   } catch (error) {
+    if (isUncertain(error)) throw error;
     primaryError = error;
   }
-  let cleanupFailed = false;
-  if (handle !== undefined) {
-    try {
-      await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle as Buffer, cleanupSignal));
-    } catch {
-      cleanupFailed = true;
-    }
-  }
-  if (cleanupTemp) {
-    try {
-      await cleanup(config, (cleanupSignal) => sftp.unlink(temp, cleanupSignal));
-    } catch {
-      cleanupFailed = true;
-    }
-  }
-  if (cleanupFailed) throw new SftpFileToolError("cleanup failed");
+  if (handle !== undefined) await cleanup(config, (cleanupSignal) => sftp.closeHandle(handle as Buffer, cleanupSignal));
+  if (cleanupTemp) await cleanup(config, (cleanupSignal) => sftp.unlink(temp, cleanupSignal));
   throw primaryError;
 }
 
@@ -232,13 +250,20 @@ async function validateExistingFile(
   if (attrs.type !== "file") throw new SftpFileToolError("unsupported file type");
 }
 
-async function validateWritableTarget(sftp: CogsSftpPort, guestPath: string, config: Config, signal: AbortSignal) {
+async function validateWritableTarget(
+  sftp: CogsSftpPort,
+  guestPath: string,
+  config: Config,
+  signal: AbortSignal,
+): Promise<boolean> {
   await validateComponents(sftp, guestPath, [WRITE_ROOT], config, signal, false);
   try {
     const attrs = await call(config, signal, (callSignal) => sftp.lstat(guestPath, callSignal));
     if (attrs.type !== "file") throw new SftpFileToolError("unsupported file type");
+    return true;
   } catch (error) {
     if (!(error instanceof SftpFileToolError) || error.message !== "not found") throw error;
+    return false;
   }
 }
 
@@ -289,17 +314,17 @@ async function call<T>(
         if (idle) clearTimeout(idle);
         if (total) clearTimeout(total);
         controller.dispose();
-        reject(redactToolError(error));
+        reject(isUncertain(error) ? error : redactToolError(error));
       };
       idle = setTimeout(() => {
         controller.abort();
-        fail(new SftpFileToolError("operation idle timed out"));
+        fail(new CogsSftpUncertainError());
       }, config.idleTimeoutMs);
       total = setTimeout(() => {
         controller.abort();
-        fail(new SftpFileToolError("operation timed out"));
+        fail(new CogsSftpUncertainError());
       }, config.operationTimeoutMs);
-      controller.signal.addEventListener("abort", () => fail(new SftpFileToolError("operation aborted")), {
+      controller.signal.addEventListener("abort", () => fail(new CogsSftpUncertainError()), {
         once: true,
       });
       operation(controller.signal).then(succeed, fail);
@@ -334,7 +359,7 @@ async function cleanup(config: Config, operation: (signal: AbortSignal) => Promi
       operation(controller.signal).then(succeed, fail);
     });
   } catch {
-    throw new SftpFileToolError("cleanup failed");
+    throw new CogsSftpUncertainError();
   }
 }
 
@@ -396,8 +421,27 @@ function countOccurrences(text: string, needle: string): number {
   return count;
 }
 function sizeOf(attrs: CogsSftpStats): number {
-  if (!Number.isSafeInteger(attrs.size) || attrs.size < 0) throw new SftpFileToolError("invalid file metadata");
-  return attrs.size;
+  const size = metadataValue(attrs, "size");
+  if (!Number.isSafeInteger(size) || (size as number) < 0) throw new SftpFileToolError("invalid file metadata");
+  return size as number;
+}
+function regularModeOf(attrs: CogsSftpStats): number {
+  const mode = metadataValue(attrs, "mode");
+  if (!Number.isSafeInteger(mode) || (mode as number) < 0 || (mode as number) > 0o177777)
+    throw new SftpFileToolError("invalid file metadata");
+  if (((mode as number) & 0o170000) !== 0o100000 || metadataValue(attrs, "type") !== "file")
+    throw new SftpFileToolError("unsupported file type");
+  if (((mode as number) & 0o7000) !== 0) throw new SftpFileToolError("unsupported file mode");
+  return (mode as number) & 0o777;
+}
+function metadataValue(attrs: CogsSftpStats, key: "size" | "mode" | "type"): unknown {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(attrs, key);
+    if (descriptor === undefined || !("value" in descriptor)) throw new Error("invalid metadata");
+    return descriptor.value;
+  } catch {
+    throw new SftpFileToolError("invalid file metadata");
+  }
 }
 function readResult(
   path: string,
@@ -495,7 +539,7 @@ function normalizeOptions(options: SftpFileToolOptions): Config {
     maxWriteBytes: integer(options.maxWriteBytes ?? 1024 * 1024, 0, 16 * 1024 * 1024, "max write bytes"),
     maxPathBytes: integer(options.maxPathBytes ?? 4096, 1, 4096, "max path bytes"),
     maxResultBytes: integer(options.maxResultBytes ?? 16 * 1024, 1, 1024 * 1024, "max result bytes"),
-    operationTimeoutMs: integer(options.operationTimeoutMs ?? 5000, 1, 60_000, "operation timeout"),
+    operationTimeoutMs: integer(options.operationTimeoutMs ?? 5000, 1, 900_000, "operation timeout"),
     idleTimeoutMs: integer(options.idleTimeoutMs ?? 5000, 1, 60_000, "idle timeout"),
     openTimeoutMs: integer(options.openTimeoutMs ?? 5000, 1, 60_000, "open timeout"),
     closeTimeoutMs: integer(options.closeTimeoutMs ?? 2000, 1, 60_000, "close timeout"),
@@ -533,6 +577,13 @@ function redactToolError(error: unknown): SftpFileToolError {
   if (status === "no_such_file") return new SftpFileToolError("not found");
   if (status === "permission_denied") return new SftpFileToolError("permission denied");
   return new SftpFileToolError("sftp file operation failed");
+}
+function isUncertain(error: unknown): error is CogsSftpUncertainError {
+  try {
+    return error instanceof CogsSftpUncertainError;
+  } catch {
+    return false;
+  }
 }
 function cogsSftpStatus(error: unknown): "eof" | "no_such_file" | "permission_denied" | "failure" | undefined {
   try {

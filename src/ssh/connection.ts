@@ -42,6 +42,7 @@ export interface SshPermitLease {
 
 export interface CogsSftpStats {
   readonly size: number;
+  readonly mode?: number;
   readonly type: "file" | "directory" | "symlink" | "fifo" | "block" | "character" | "socket" | "unknown";
 }
 
@@ -52,6 +53,13 @@ export class CogsSftpStatusError extends Error {
   public constructor(public readonly status: CogsSftpStatus) {
     super(`sftp status: ${status}`);
     this.name = "CogsSftpStatusError";
+  }
+}
+
+export class CogsSftpUncertainError extends Error {
+  public constructor() {
+    super("sftp operation outcome uncertain");
+    this.name = "CogsSftpUncertainError";
   }
 }
 
@@ -80,6 +88,7 @@ export interface CogsSftpPort {
   readonly unlink: (path: string, signal: AbortSignal) => Promise<void>;
   readonly mkdir?: (path: string, mode: number, signal: AbortSignal) => Promise<void>;
   readonly setMode?: (path: string, mode: number, signal: AbortSignal) => Promise<void>;
+  readonly setModeHandle?: (handle: Buffer, mode: number, signal: AbortSignal) => Promise<void>;
   readonly rmdir?: (path: string, signal: AbortSignal) => Promise<void>;
   readonly fsync: (handle: Buffer, signal: AbortSignal) => Promise<void>;
   readonly posixRename: (source: string, target: string, signal: AbortSignal) => Promise<void>;
@@ -386,7 +395,7 @@ export class SshConnectionManager {
 
     if (closeFailed) this.#failClosed("sftp-close-failed");
     if (operationFailed) {
-      if (timedOut) this.#failClosed("sftp-operation-uncertain");
+      if (timedOut || isSftpUncertainError(operationError)) this.#failClosed("sftp-operation-uncertain");
       const outcome = timedOut ? "timeout" : input?.signal?.aborted === true ? "cancelled" : "error";
       emitSpan(this.#telemetry, "ssh.channel", {
         operation: "channel",
@@ -1346,7 +1355,7 @@ class Ssh2SftpPort implements CogsSftpPort {
     });
   }
   public open(path: string, mode: "r" | "wx", signal: AbortSignal): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<Buffer>((resolve, reject) => {
       let settled = false;
       let cancelled = false;
       const cleanupLateHandle = (handle: Buffer): Promise<void> => {
@@ -1391,6 +1400,7 @@ class Ssh2SftpPort implements CogsSftpPort {
       if (mode === "r") this.sftp.open(path, mode, finish);
       else this.sftp.open(path, mode, { mode: 0o600 }, finish);
     });
+    return this.owned(work);
   }
   public read(
     handle: Buffer,
@@ -1400,7 +1410,7 @@ class Ssh2SftpPort implements CogsSftpPort {
     position: number,
     _signal: AbortSignal,
   ): Promise<{ bytesRead: number; buffer: Buffer; position: number }> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<{ bytesRead: number; buffer: Buffer; position: number }>((resolve, reject) => {
       let settled = false;
       this.sftp.read(handle, buffer, offset, length, position, (error, bytesRead, returned, returnedPosition) =>
         settleSftpCallback(
@@ -1424,6 +1434,7 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public write(
     handle: Buffer,
@@ -1433,7 +1444,7 @@ class Ssh2SftpPort implements CogsSftpPort {
     position: number,
     _signal: AbortSignal,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<void>((resolve, reject) => {
       let settled = false;
       this.sftp.write(handle, buffer, offset, length, position, (error) =>
         settleSftpCallback(
@@ -1449,9 +1460,10 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public fstat(handle: Buffer, _signal: AbortSignal): Promise<CogsSftpStats> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<CogsSftpStats>((resolve, reject) => {
       let settled = false;
       this.sftp.fstat(handle, (error, stats) =>
         settleSftpCallback(
@@ -1468,9 +1480,10 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public closeHandle(handle: Buffer, _signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<void>((resolve, reject) => {
       let settled = false;
       this.sftp.close(handle, (error) =>
         settleSftpCallback(
@@ -1486,9 +1499,10 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public unlink(path: string, _signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
+    const work = new Promise<void>((resolve, reject) => {
       let settled = false;
       this.sftp.unlink(path, (error) =>
         settleSftpCallback(
@@ -1504,6 +1518,7 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public mkdir(path: string, mode: number, _signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -1541,6 +1556,25 @@ class Ssh2SftpPort implements CogsSftpPort {
       );
     });
   }
+  public setModeHandle(handle: Buffer, mode: number, _signal: AbortSignal): Promise<void> {
+    const work = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      this.sftp.fchmod(handle, mode, (error) =>
+        settleSftpCallback(
+          () => settled,
+          () => {
+            settled = true;
+          },
+          resolve,
+          reject,
+          () => {
+            if (error !== undefined && error !== null) throw toCogsSftpError(error);
+          },
+        ),
+      );
+    });
+    return this.owned(work);
+  }
   public rmdir(path: string, _signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -1561,7 +1595,7 @@ class Ssh2SftpPort implements CogsSftpPort {
   }
   public fsync(handle: Buffer, _signal: AbortSignal): Promise<void> {
     if (typeof this.sftp.ext_openssh_fsync !== "function") return Promise.reject(new Error("fsync unavailable"));
-    return new Promise((resolve, reject) => {
+    const work = new Promise<void>((resolve, reject) => {
       let settled = false;
       this.sftp.ext_openssh_fsync(handle, (error) =>
         settleSftpCallback(
@@ -1577,10 +1611,11 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
   }
   public posixRename(source: string, target: string, _signal: AbortSignal): Promise<void> {
     if (typeof this.sftp.ext_openssh_rename !== "function") return Promise.reject(new Error("rename unavailable"));
-    return new Promise((resolve, reject) => {
+    const work = new Promise<void>((resolve, reject) => {
       let settled = false;
       this.sftp.ext_openssh_rename(source, target, (error) =>
         settleSftpCallback(
@@ -1596,6 +1631,11 @@ class Ssh2SftpPort implements CogsSftpPort {
         ),
       );
     });
+    return this.owned(work);
+  }
+  private owned<T>(work: Promise<T>): Promise<T> {
+    this.trackLate(work);
+    return work;
   }
 }
 
@@ -1721,7 +1761,7 @@ function toCogsStats(stats: unknown): CogsSftpStats {
                   ? "socket"
                   : "unknown";
   if (type === "unknown") throw new Error("invalid stats");
-  return { size, type };
+  return { size, mode, type };
 }
 
 async function readPrivateKey(path: string, maxBytes: number): Promise<Buffer> {
@@ -1925,6 +1965,14 @@ function throwIfAbortedSync(signal: AbortSignal | undefined): void {
 function isSshConnectionError(error: unknown): error is SshConnectionError {
   try {
     return error instanceof SshConnectionError;
+  } catch {
+    return false;
+  }
+}
+
+function isSftpUncertainError(error: unknown): error is CogsSftpUncertainError {
+  try {
+    return error instanceof CogsSftpUncertainError;
   } catch {
     return false;
   }

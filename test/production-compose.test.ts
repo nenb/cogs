@@ -648,6 +648,33 @@ test("production SSH uses the sandbox image's single guest-root identity", async
   await worker.close();
 });
 
+test("production invokes SFTP with the exact schema-maximum operation timeout", async () => {
+  const h = harness();
+  let observed = 0;
+  const ssh = h.seams.createSsh({} as SshConnectionManagerOptions);
+  Object.assign(ssh, {
+    withSftp: async (input: { operationTimeoutMs?: number }) => {
+      observed = input.operationTimeoutMs ?? 0;
+      throw new Error("bounded probe");
+    },
+  });
+  await assert.rejects(
+    startProductionWorker({
+      seams: {
+        ...h.seams,
+        readLaunch: async () => launch({ limits: { ...launch().limits, tool_timeout_seconds: 900 } }),
+        createSsh: () => ssh,
+        createPi: async (options) => {
+          await options.toolPorts.read({ path: "/workspace/f" });
+          return h.seams.createPi(options);
+        },
+      },
+    }),
+    ProductionWorkerError,
+  );
+  assert.equal(observed, 900_000);
+});
+
 test("production composition starts in one exact fail-closed order and closes reverse-owned order", async () => {
   const h = harness();
   const worker = await startProductionWorker({ seams: h.seams }).catch((error) => {
