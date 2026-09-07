@@ -106,11 +106,13 @@ for owner,names in {
  for p in names: assert paths[p]==owner,p
 for owner,names in {
  'revocation':['config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts'],
- 'integration':['.github/workflows/build-openbao-local.yml','.github/workflows/release-openbao-local.yml','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md']}.items():
+ 'integration':['.github/workflows/build-openbao-local.yml','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md']}.items():
  for p in names: assert paths[p]==owner and not Path(p).exists(),p
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
 assert len(set(paths)-baseline)==40
-for number,name in ((310,'freeze-remediated-H-and-authorize-control'),(311,'establish-remediated-Q-and-authorize-qualification')):
+current='docs/adr/0310-authorize-openbao-recognition-correction.md'
+assert paths[current]=='integration' and Path(current).is_file()
+for number,name in ((311,'freeze-remediated-H-and-authorize-control'),(312,'establish-remediated-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
