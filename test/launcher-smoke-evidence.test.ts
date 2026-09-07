@@ -378,16 +378,20 @@ test("launcher preparation excludes retired OpenBao and remains outside active w
     );
     assert.match(workflow, /COGS_SOURCE_REVISION: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   }
-  assert.match(kvm, /id: envoy_suite\n {8}continue-on-error: true/);
-  assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome != 'skipped'/);
+  assert.match(kvm, /id: envoy_suite\n {8}if: [^\n]*stage2-only[^\n]*\n {8}continue-on-error: true/);
+  assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome == 'success'/);
+  assert.match(kvm, /id: domain_cleanup\n {8}if: always\(\) && env\.COGS_KVM_NETNS != ''/);
   assert.match(kvm, /id: evidence\n {8}if: always\(\)/);
   for (const [variable, step] of [
+    ["GUEST_OUTCOME", "guest"],
     ["ENVOY_OUTCOME", "envoy_suite"],
     ["DESTROY_OUTCOME", "destroy"],
+    ["DOMAIN_OUTCOME", "domain_cleanup"],
     ["EVIDENCE_OUTCOME", "evidence"],
   ] as const) {
     assert(kvm.includes(`${variable}: \${{ steps.${step}.outcome }}`));
-    assert(kvm.includes(`test "$${variable}" = success`));
   }
+  assert.match(kvm, /if \[\[ "\$STAGE2_ONLY" == true \]\]; then[\s\S]*"\$GUEST_OUTCOME" = skipped/u);
+  assert.match(kvm, /else[\s\S]*"\$ENVOY_OUTCOME" = success[\s\S]*"\$DESTROY_OUTCOME" = success/u);
   assert.match(kvm, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
 });
