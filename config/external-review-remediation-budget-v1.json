@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 18000,
+  "global_gross_line_high": 18500,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -49,7 +49,7 @@
     },
     {
       "name": "revocation",
-      "gross_line_high": 2900,
+      "gross_line_high": 3000,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
@@ -64,6 +64,7 @@
         "dev/openbao-model-auth/image.ts",
         "dev/openbao-model-auth/smoke.ts",
         "src/auth/model-auth.ts",
+        "src/auth/openbao-workload-identity.ts",
         "src/egress/egress-material.ts",
         "src/egress/openbao-pki.ts",
         "src/egress/openbao-revocation.ts",
@@ -181,7 +182,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 2000,
+      "gross_line_high": 2300,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -200,10 +201,12 @@
         "src/session/local-export.ts",
         "src/session/permitted-history.ts",
         "src/ssh/file-tools.ts",
+        "src/telemetry/otlp-http.ts",
         "src/telemetry/worker-telemetry.ts",
         "test/api-server.test.ts",
         "test/egress-completion-queue.test.ts",
         "test/egress-otlp-telemetry.test.ts",
+        "test/otlp-http.test.ts",
         "test/permitted-history.test.ts",
         "test/pi-session.test.ts",
         "test/session-jsonl-history.test.ts",
@@ -214,14 +217,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 2800,
+      "gross_line_high": 2900,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 26,
+      "new_file_high": 27,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -259,8 +262,9 @@
         "docs/adr/0312-reallocate-final-observer-closure.md",
         "docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md",
         "docs/adr/0314-raise-final-hostile-integration-ceilings.md",
-        "docs/adr/0315-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0316-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0315-authorize-final-async-transport-ownership.md",
+        "docs/adr/0316-freeze-remediated-H-and-authorize-control.md",
+        "docs/adr/0317-establish-remediated-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",

@@ -377,6 +377,44 @@ print(json.dumps({'digest':s.NEW_POLICY,'witnesses':witnesses}))`;
   assert.ok(readFileSync("scripts/validate-schemas.ts", "utf8").includes(`sha256: "${result.digest}", size_bytes: 0`));
 });
 
+test(
+  "Linux installs the exact production filter and x32-tagged getpid is denied by seccomp rather than ENOSYS",
+  { skip: process.platform !== "linux" || process.arch !== "x64" },
+  () => {
+    const script = String.raw`import ctypes,errno,importlib.util,os,sys
+path='deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py'
+spec=importlib.util.spec_from_file_location('cogs_x32_live_probe',path)
+assert spec is not None and spec.loader is not None
+module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+number=0x40000000|39
+ops=module._SystemOps()
+ctypes.set_errno(0);before=ops.libc.syscall(number);before_errno=ctypes.get_errno()
+if before == -1 and before_errno == errno.EPERM: os._exit(3)
+ops.prctl(module._PR_SET_NO_NEW_PRIVS,1)
+digest=ops.install_seccomp()
+ctypes.set_errno(0);after=ops.libc.syscall(number);after_errno=ctypes.get_errno()
+if after != -1 or after_errno != errno.EPERM: os._exit(4)
+expected='8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7'
+if digest != expected: os._exit(5)
+os.write(1,(str(before_errno)+':'+digest+':'+str(after_errno)+'\n').encode('ascii'))
+os._exit(0)`;
+    const run = spawnSync("python3", ["-I", "-B", "-c", script], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+    });
+    assert.equal(run.error, undefined);
+    assert.equal(run.signal, null);
+    assert.equal(run.status, 0, run.stderr);
+    const fields = run.stdout.trim().split(":");
+    assert.equal(fields.length, 3);
+    assert.notEqual(Number(fields[0]), 1, "the pre-filter control must not already be EPERM");
+    assert.equal(fields[1], "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7");
+    assert.equal(Number(fields[2]), 1);
+  },
+);
+
 test("historical pre-x32 digest fails AJV, Python semantics and operation derivation independently", () => {
   const old = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2";
   const current = report("E"); const historical = structuredClone(current); historical.metadata[0].sha256 = old;

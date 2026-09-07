@@ -74,6 +74,8 @@ host_boot=$(cat /proc/sys/kernel/random/boot_id)
 guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 [[ -n "$guest_boot" && "$guest_boot" != "$host_boot" ]]
 "$driver" ssh 'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true'
+# These are bounded defense-in-depth diagnostics only. No listener/route control
+# makes either failure causal firewall evidence, so the report grants no such credit.
 ! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/22"' >/dev/null 2>&1
 ! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/1.1.1.1/443"' >/dev/null 2>&1
 ! "$driver" ssh 'ip route show default | grep -q .'
@@ -137,6 +139,6 @@ second_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 "$driver" ssh grep -qx reset-persistent /workspace/reset-marker
 "$driver" destroy >/dev/null
 acquired=false
-write_report pass 'Active KVM booted a distinct root guest; host TAP policy survived guest-firewall removal, denied non-proxy traffic, allowed only the proxy port, and reset preserved the workspace on a fresh boot.'
+write_report pass 'Active KVM booted a distinct root guest, used the generation-bound proxy probe, and reset preserved the workspace on a fresh boot. Non-proxy connection failures are diagnostic only and grant no firewall-enforcement evidence.'
 passed=true
 printf 'PASS: authoritative Linux/KVM driver smoke wrote %s\n' "$report"
