@@ -13,7 +13,13 @@ import {
   type CogsEgressRuntimeManagerOptions,
   startCogsEgressRuntimeManager,
 } from "../src/egress/runtime-manager.ts";
-import { closeContext, createCloseOwner, registerCloseOwner } from "../src/launch/close.ts";
+import {
+  beginRegisteredClose,
+  closeContext,
+  createCloseOwner,
+  joinCloseWork,
+  registerCloseOwner,
+} from "../src/launch/close.ts";
 import type { LaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
 import { type ProductionMainPort, runProductionMain } from "../src/main.ts";
@@ -24,6 +30,53 @@ import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
 import type { SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+
+test("worker OTLP fetch and first cancellation keep production actual cleanup pending", async () => {
+  for (const mode of ["fetch", "cancel"] as const) {
+    const h = harness(),
+      held = Promise.withResolvers<void>(),
+      entered = Promise.withResolvers<void>();
+    let lifecycle!: LaunchLifecycle;
+    let retired = false,
+      closed = false;
+    const sink = createCogsWorkerTelemetrySink({
+      mode: "otlp",
+      tracesEndpoint: "https://synthetic.invalid/v1/traces",
+      metricsEndpoint: "https://synthetic.invalid/v1/metrics",
+      capacity: 1,
+      timeoutMs: 50,
+      fetch: Object.freeze(async () => {
+        entered.resolve();
+        if (mode === "fetch") await held.promise;
+        return new Response(new ReadableStream({ cancel: () => held.promise }), { status: 503 });
+      }),
+    });
+    const worker = await startProductionWorker({
+      seams: {
+        ...h.seams,
+        createTelemetry: () => sink,
+        createLifecycle: (options) => (lifecycle = new LaunchLifecycle(options)),
+      },
+    });
+    await entered.promise;
+    const closing = worker.close().then(() => {
+      closed = true;
+    });
+    const actual = joinCloseWork(beginRegisteredClose(worker)).then(() => {
+      retired = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(closed, false, mode);
+      assert.equal(retired, false, mode);
+      assert.notEqual(lifecycle.state, "stopped");
+    } finally {
+      held.resolve();
+    }
+    await Promise.all([closing, actual, worker.closed]);
+    assert.equal(lifecycle.state, "stopped", "optional collector failure is nonfatal");
+  }
+});
 
 const secretBearer = "bearer-production-value-000000000000";
 const secretProxy = "proxy-production-capability-00000";

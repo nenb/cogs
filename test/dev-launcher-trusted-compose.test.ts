@@ -23,6 +23,7 @@ import { type CogsToolPorts, createCogsPiSession } from "../src/pi/session.ts";
 import { createCogsJsonlHistoryStore } from "../src/session/jsonl-history.ts";
 import { createCogsLocalExporter } from "../src/session/local-export.ts";
 import type { CogsPreparedSkillMetadata } from "../src/skills/session-preparer.ts";
+import { createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
 
 function owned<T extends { close(): Promise<void> }>(handle: T): T {
   return registerCloseOwner(
@@ -59,6 +60,45 @@ const sourceRevision = "a".repeat(40);
 const stateId = "b".repeat(64);
 const emptyBundle = "sha256:db1d1d550f597a03595794d95ca6c596c16a4b3b4f2304301f03c93bc6b53c0c";
 const emptyManifest = "sha256:726176e9bdb7524fbe935a0235fcbe5d509bf44592b9571421fc9fd8551ff1c1";
+
+test("trusted composition retains telemetry transport before collector and fixture release", async () => {
+  const fixture = await makeFixture(),
+    held = Promise.withResolvers<void>(),
+    entered = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  const sink = createCogsWorkerTelemetrySink({
+    mode: "otlp",
+    tracesEndpoint: "https://synthetic.invalid/v1/traces",
+    metricsEndpoint: "https://synthetic.invalid/v1/metrics",
+    timeoutMs: 50,
+    fetch: Object.freeze(async () => {
+      entered.resolve();
+      return new Response(new ReadableStream({ cancel: () => held.promise }), { status: 503 });
+    }),
+  });
+  let closing: Promise<void> | undefined;
+  try {
+    const runtime = await createTrustedWorkerRuntime(
+      fixture.state,
+      new AbortController().signal,
+      Object.freeze({ ...seams(calls, {}), createTelemetry: () => sink }),
+    );
+    sink.span({ name: "lifecycle.ready", attributes: {} });
+    await entered.promise;
+    let closed = false;
+    closing = runtime.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(closed, false);
+    for (const name of ["fixture-close", "otlp-close", "openbao-close"]) assert.equal(calls.includes(name), false);
+  } finally {
+    held.resolve();
+    await closing;
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+  assert.equal(calls.includes("otlp-close"), true);
+});
 
 test("trusted composition factory starts in exact order, proves ready, and closes in reverse", async () => {
   const fixture = await makeFixture();

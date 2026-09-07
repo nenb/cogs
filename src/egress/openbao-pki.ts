@@ -343,30 +343,31 @@ function parse(text: string, response: Response): Data {
 }
 
 async function bounded(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
-  const type = response.headers.get("content-type") ?? "";
-  const length = response.headers.get("content-length");
-  if (
-    response.status !== 200 ||
-    !jsonType.test(type) ||
-    (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maximum))
-  ) {
-    await response.body?.cancel();
-    throw new Error("bad response");
-  }
-  const reader = response.body?.getReader();
-  if (reader === undefined) throw new Error("missing body");
+  // Response custody precedes header validation and reader acquisition.
+  const body = response.body;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const chunks: Uint8Array[] = [];
   let total = 0;
   let count = 0;
   let cancellation: Promise<void> | undefined;
   const cancel = () => {
-    cancellation ??= reader.cancel();
+    cancellation ??= Promise.resolve().then(() => (reader ? reader.cancel() : body?.cancel()));
     // Observe rejection immediately, but join actual cancellation below.
     cancellation.catch(() => undefined);
   };
-  signal.addEventListener("abort", cancel, { once: true });
-  if (signal.aborted) cancel();
   try {
+    const type = response.headers.get("content-type") ?? "";
+    const length = response.headers.get("content-length");
+    if (
+      response.status !== 200 ||
+      !jsonType.test(type) ||
+      (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maximum))
+    )
+      throw new Error("bad response");
+    reader = body?.getReader();
+    if (!reader) throw new Error("missing body");
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
     while (true) {
       if (signal.aborted) throw new Error("aborted");
       const next = await reader.read();
@@ -385,8 +386,8 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
       await cancellation;
     } finally {
       signal.removeEventListener("abort", cancel);
-      reader.releaseLock();
       for (const chunk of chunks) chunk.fill(0);
+      reader?.releaseLock();
     }
   }
 }

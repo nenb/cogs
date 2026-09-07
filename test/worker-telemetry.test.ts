@@ -3,7 +3,83 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { emitTelemetryHealth, TelemetryHealthCursor } from "../src/telemetry/instrumentation.ts";
-import { createCogsWorkerTelemetrySink, validateCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+import {
+  createCogsWorkerTelemetrySink,
+  retireCogsWorkerTelemetry,
+  validateCogsWorkerTelemetrySink,
+} from "../src/telemetry/worker-telemetry.ts";
+
+test("worker actual transport capacity and retirement survive bounded observations and close reentry", async () => {
+  for (const mode of ["fetch", "cancel", "read", "cancel-reject"] as const) {
+    const hold = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<{ done: true; value: undefined }>();
+    let calls = 0,
+      cancellations = 0,
+      retired = false;
+    let reentrant: Promise<void> | undefined;
+    const sink = createCogsWorkerTelemetrySink({
+      mode: "otlp",
+      tracesEndpoint: "https://synthetic.invalid/v1/traces",
+      metricsEndpoint: "https://synthetic.invalid/v1/metrics",
+      capacity: 1,
+      timeoutMs: 50,
+      fetch: Object.freeze(async () => {
+        calls++;
+        if (mode === "fetch") await hold.promise;
+        const cancel = () => {
+          cancellations++;
+          if (mode === "cancel-reject") reentrant = sink.close();
+          return hold.promise;
+        };
+        const response = new Response(new ReadableStream({ cancel }), {
+          status: mode === "read" ? 200 : 503,
+          headers: { "content-type": "application/json" },
+        });
+        if (mode === "read")
+          Object.defineProperty(response.body, "getReader", {
+            value: () => ({
+              read: () => read.promise,
+              cancel,
+              releaseLock() {},
+            }),
+          });
+        return response;
+      }),
+    });
+    sink.span(goodSpan());
+    await eventually(() => assert.equal(calls, 1));
+    try {
+      await eventually(() => assert.equal(sink.snapshot().failed, 1));
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      for (let n = 0; n < 5; n++) assert.equal(sink.metric(goodMetric()), false);
+      const first = sink.close(),
+        second = sink.close();
+      assert.notEqual(first, second);
+      await Promise.all([first, second]);
+      const actual = retireCogsWorkerTelemetry(sink).then(() => {
+        retired = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(retired, false);
+      assert.equal(calls, 1);
+      assert.equal(sink.snapshot().dropped, 6);
+      if (mode === "cancel-reject") hold.reject(new Error("synthetic-secret"));
+      else hold.resolve();
+      if (mode === "read") {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(retired, false, "first cancel does not retire original read");
+      }
+      read.resolve({ done: true, value: undefined });
+      await actual;
+      await reentrant;
+      assert.equal(cancellations, 1);
+    } finally {
+      hold.resolve();
+      read.resolve({ done: true, value: undefined });
+      await retireCogsWorkerTelemetry(sink);
+    }
+  }
+});
 
 test("worker telemetry sink validator requires frozen exact surface and traps getters generically", () => {
   const sink = createCogsWorkerTelemetrySink();
@@ -481,7 +557,11 @@ test("worker telemetry detects non-Promise fetch and rejects nonzero partial-suc
 });
 
 test("worker telemetry aborted close partitions active accepted item exactly once", async () => {
-  const fetchFn = Object.freeze(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+  const entered = Promise.withResolvers<void>();
+  const fetchFn = Object.freeze(() => {
+    entered.resolve();
+    return new Promise<Response>(() => undefined);
+  }) as unknown as typeof fetch;
   const sink = createCogsWorkerTelemetrySink({
     mode: "otlp",
     tracesEndpoint: "http://127.0.0.1:9/v1/traces",
@@ -493,7 +573,7 @@ test("worker telemetry aborted close partitions active accepted item exactly onc
     timeoutMs: 100,
   });
   assert.equal(sink.span(goodSpan("pi.run")), true);
-  await eventually(() => assert.equal(sink.snapshot().queued, 1));
+  await entered.promise;
   const controller = new AbortController();
   controller.abort();
   await sink.close(controller.signal);
