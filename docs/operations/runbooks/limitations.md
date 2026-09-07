@@ -73,6 +73,20 @@ The supported built-in path capabilities are GitHub smart HTTP fetch for ASCII o
 
 Route patterns use a closed exact/prefix/segment-glob grammar. A star consumes one or more bytes within one segment. Cogs uses bounded iterative matching and emits separately derived RE2 for Envoy; it never executes configured or rendered route text as a JavaScript regular expression.
 
+## Fixed Envoy resource profile
+
+**Section authority:** [Authority: ADR 0309 bounded Envoy corrections](../../adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md#seven-bounded-closures-not-claims-of-implementation).
+
+The renderer owns immutable `cogs-egress-bounded-v1`: 32 admitted external TCP connections, HTTP/1-only outer CONNECT (one request per connection), eight concurrent inner H2 streams, 64 KiB watermarks/internal pipes, bounded H2 windows/frame queues, and application/authz/tunnel circuit breakers. Application capacity is allocated across expanded routes, not multiplied by a per-route default. Application LOGICAL_DNS keeps one logical host per cluster; it does not balance across all resolved addresses. Destination, SNI, certificate and per-request credential authorization are unchanged.
+
+At 256 routes/authorities the conservative Envoy envelope is 256 inner requests, 288 outer-plus-inner streams, 547 external/application/authz network sockets and 1024 internal virtual endpoints, including the documented host/pool connection-breaker allowance. Resolver, process-owner and worker sockets and kernel backlog are additional. Active and pending requests refer to the same downstream streams, not independent additive populations. This assumes the existing single Envoy worker and one connection pool per cluster.
+
+Headers, ClientHello inspection and TLS establishment each have 5-second deadlines; empty connections idle at 30 seconds, streams at 60 seconds. Application streams expire at 30 minutes and CONNECT at 60 minutes, with a separate 60-second blocked-flush timeout. Connection-duration settings initiate drain, not exact FD retirement. Continuous-high-watermark and delayed-close timers are not a universal wall-clock socket deadline; generation retirement remains the final fence.
+
+Bodies intentionally stream without inspection or a cumulative byte ceiling, including accepted GET bodies and Git POST requests. No whole-body global filter, retry, hedge, preconnect override or response-body collector is installed. Healthy large transfers can exceed the former 30-second whole-response timer, but remain subject to idle/absolute lifetimes and backpressure. Git push, npm publish/scoped encoding and PyPI upload remain unsupported. Rate/bandwidth and rapid-reset CPU/fairness protection are deferred.
+
+Heap/shared-cgroup monitors shed new work; they neither establish a memory cgroup nor verify its scope/health. Watermarks and the arithmetic are **not a hard RSS bound**. The externally enforced worker-plus-Envoy 2 GiB shared cgroup and lifecycle admission/retirement are separate requirements, not delivered by this renderer. Pinned-binary validation and sustained resource/client-pressure qualification remain required before a resource-safety claim. Matcher-only real Git/npm/pip tests do not test Envoy; Stage 1's npm CONNECT-auth incompatibility is not erased by them. The optional pinned Linux loopback diagnostic covers only accept/header/TLS-inspection rejection and recovery, not memory shedding, full-duration lifetimes or large-client streaming.
+
 ## Injected credential confidentiality
 
 **Section authority:** [Authority: ADR 0308 credential-reflection boundary](../../adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md#narrow-implementation-choices).

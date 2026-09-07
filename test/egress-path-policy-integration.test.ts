@@ -8,6 +8,9 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { type CogsEgressRoute, compilePathMatch, createEgressPathMatcher } from "../src/egress/route-policy.ts";
 
+// Real Git/npm/pip, but ONLY a Node HTTP fixture applying preset path matchers.
+// No Envoy, CONNECT, TLS, production authz, cgroup or streaming/resource-bound evidence.
+// In particular this npm result does not supersede Stage 1's CONNECT-auth incompatibility.
 function requireCommand(t: TestContext, command: string): boolean {
   const result = spawnSync(command, ["--version"], { stdio: "ignore", timeout: 5_000 });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {

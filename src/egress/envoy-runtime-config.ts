@@ -10,6 +10,8 @@ import {
 const envoyType = "type.googleapis.com";
 const maxBootstrapBytes = 1024 * 1024;
 const maxCredentialBytes = 8192;
+const maxDownstreamConnections = 32;
+const maxInnerStreams = 8;
 const opaque = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const authzTarget = /^(127\.0\.0\.1):([0-9]{1,5})$/;
 const basicPayload = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -36,6 +38,170 @@ const paths = Object.freeze({
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 type Header = Readonly<{ name: string; value: string }>;
+
+/** Renderer-owned v1, not a tuning API. Watermarks are not hard RSS/body-byte limits.
+ * Requires one Envoy worker and an externally enforced shared worker/child 2 GiB cgroup.
+ * The monitors only shed; they neither establish that cgroup nor prove monitor health.
+ */
+export const cogsEnvoyBoundedV1 = deepFreeze({
+  name: "cogs-egress-bounded-v1",
+  downstreamConnections: maxDownstreamConnections,
+  aggregateClusterBudget: 256,
+  network: { per_connection_buffer_limit_bytes: 65536, per_connection_buffer_high_watermark_timeout: "60s" },
+  internalPipe: { buffer_size_kb: 64 },
+  inspector: { max_client_hello_size: 16384, close_connection_on_client_hello_parsing_errors: true },
+  http1: { accept_http_10: false, allow_chunked_length: false },
+  http2: {
+    max_concurrent_streams: maxInnerStreams,
+    initial_stream_window_size: 65536,
+    initial_connection_window_size: 262144,
+    hpack_table_size: 4096,
+    max_header_field_size_kb: 32,
+    max_outbound_frames: 256,
+    max_outbound_control_frames: 32,
+    max_consecutive_inbound_frames_with_empty_payload: 1,
+    max_inbound_priority_frames_per_stream: 100,
+    max_inbound_window_update_frames_per_data_frame_sent: 10,
+    allow_connect: false,
+    allow_metadata: false,
+  },
+  commonHttp: {
+    idle_timeout: "30s",
+    max_connection_duration: "3600s", // Drain, NOT an absolute socket retirement deadline.
+    max_stream_duration: "1800s",
+    max_requests_per_connection: 1024,
+    max_headers_count: 100,
+    headers_with_underscores_action: "REJECT_REQUEST",
+  },
+  earlyHeaders: [
+    {
+      name: "envoy.http.early_header_mutation.header_mutation",
+      typed_config: {
+        "@type": `${envoyType}/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation`,
+        mutations: [{ remove_on_match: { key_matcher: { prefix: "x-envoy-" } } }, { remove: "grpc-timeout" }],
+      },
+    },
+  ],
+  overload: {
+    refresh_interval: "0.1s",
+    resource_monitors: [
+      {
+        name: "envoy.resource_monitors.global_downstream_max_connections",
+        typed_config: {
+          "@type": `${envoyType}/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig`,
+          max_active_downstream_connections: String(maxDownstreamConnections),
+        },
+      },
+      {
+        name: "envoy.resource_monitors.fixed_heap",
+        typed_config: {
+          "@type": `${envoyType}/envoy.extensions.resource_monitors.fixed_heap.v3.FixedHeapConfig`,
+          max_heap_size_bytes: "536870912",
+        },
+      },
+      {
+        name: "envoy.resource_monitors.cgroup_memory",
+        typed_config: {
+          "@type": `${envoyType}/envoy.extensions.resource_monitors.cgroup_memory.v3.CgroupMemoryConfig`,
+          max_memory_bytes: "2147483648",
+        },
+      },
+    ],
+    actions: [
+      { name: "envoy.overload_actions.disable_http_keepalive", triggers: pressureTriggers(0.75, 0.8) },
+      { name: "envoy.overload_actions.stop_accepting_requests", triggers: pressureTriggers(0.85, 0.875) },
+    ],
+    loadshed_points: [{ name: "envoy.load_shed_points.tcp_listener_accept", triggers: pressureTriggers(0.85, 0.875) }],
+  },
+});
+function pressureTriggers(heap: number, cgroup: number) {
+  return [
+    { name: "envoy.resource_monitors.fixed_heap", threshold: { value: heap } },
+    { name: "envoy.resource_monitors.cgroup_memory", threshold: { value: cgroup } },
+  ];
+}
+
+/** Positive cold-connect pending capacity; budgets sum <=256, not 256 per route.
+ * LOGICAL_DNS gives one host, one pool: conservatively allow c+1 connections per
+ * cluster (Envoy's host/pool breaker exception). Internal endpoints aren't FDs.
+ */
+export function cogsEnvoyResourceAllocation(routes: number, authorities: number) {
+  if (
+    !Number.isInteger(routes) ||
+    routes < 1 ||
+    routes > 256 ||
+    !Number.isInteger(authorities) ||
+    authorities < 1 ||
+    authorities > routes
+  )
+    throw new Error("bad resource graph");
+  const b = Math.floor(cogsEnvoyBoundedV1.aggregateClusterBudget / routes);
+  const connections = Math.min(8, b),
+    requests = Math.min(16, b),
+    pending = Math.min(4, b);
+  const d = cogsEnvoyBoundedV1.downstreamConnections;
+  const streams = d * cogsEnvoyBoundedV1.http2.max_concurrent_streams;
+  const tunnels = Math.min(d, Math.floor(cogsEnvoyBoundedV1.aggregateClusterBudget / authorities));
+  return deepFreeze({
+    application: circuitBreakers(connections, requests, pending),
+    authz: circuitBreakers(2, 32, 8),
+    tunnel: circuitBreakers(tunnels, d, tunnels),
+    envelope: {
+      innerStreams: streams,
+      outerAndInnerStreams: d + streams,
+      applicationActive: routes * requests,
+      applicationPending: routes * pending,
+      applicationConnections: routes * (connections + 1),
+      networkSockets: d + routes * (connections + 1) + 3,
+      internalEndpoints: 2 * authorities * (tunnels + 1),
+    },
+  });
+}
+function circuitBreakers(connections: number, requests: number, pending: number) {
+  return {
+    thresholds: [
+      {
+        priority: "DEFAULT",
+        max_connections: connections,
+        max_requests: requests,
+        max_pending_requests: pending,
+        max_retries: 0,
+        max_connection_pools: 1,
+        track_remaining: true,
+      },
+      {
+        priority: "HIGH",
+        max_connections: 0,
+        max_requests: 0,
+        max_pending_requests: 0,
+        max_retries: 0,
+        max_connection_pools: 0,
+        track_remaining: true,
+      },
+    ],
+  };
+}
+export function cogsEnvoyHcmBounds(inner: boolean) {
+  return deepFreeze({
+    codec_type: inner ? "AUTO" : "HTTP1",
+    use_remote_address: true,
+    xff_num_trusted_hops: 0,
+    early_header_mutation_extensions: cogsEnvoyBoundedV1.earlyHeaders,
+    http_protocol_options: cogsEnvoyBoundedV1.http1,
+    ...(inner ? { http2_protocol_options: cogsEnvoyBoundedV1.http2 } : {}),
+    common_http_protocol_options: {
+      ...cogsEnvoyBoundedV1.commonHttp,
+      max_stream_duration: inner ? "1800s" : "3600s",
+      max_requests_per_connection: inner ? 1024 : 1,
+    },
+    request_headers_timeout: "5s",
+    stream_idle_timeout: "60s",
+    stream_flush_timeout: "60s",
+    drain_timeout: "1s",
+    delayed_close_timeout: "1s",
+    request_timeout: "0s",
+  });
+}
 
 export interface CogsEnvoyRuntimeConfigOptions {
   readonly userId: string;
@@ -255,18 +421,23 @@ function render(
   const groups = Map.groupBy(allRoutes, (route) => `${route.host}:${route.port}`);
   const clusters: Json[] = [authzCluster(authorization)];
   const listeners: Json[] = [outerListener(listenerPort, sessionId, groups, internalToken)];
-  for (const route of allRoutes) clusters.push(upstreamCluster(route));
+  const allocation = cogsEnvoyResourceAllocation(allRoutes.length, groups.size);
+  for (const route of allRoutes) clusters.push(upstreamCluster(route, allocation.application));
   for (const [authority, routes] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const first = routes[0];
     if (first === undefined) continue;
     listeners.push(innerListener(authority, sessionId, routes, credentials, internalToken));
-    clusters.push(tunnelCluster(first));
+    clusters.push(tunnelCluster(first, allocation.tunnel));
   }
   const bootstrap = deepFreeze({
+    overload_manager: cogsEnvoyBoundedV1.overload,
     bootstrap_extensions: [
       {
         name: "envoy.bootstrap.internal_listener",
-        typed_config: { "@type": `${envoyType}/envoy.extensions.bootstrap.internal_listener.v3.InternalListener` },
+        typed_config: {
+          "@type": `${envoyType}/envoy.extensions.bootstrap.internal_listener.v3.InternalListener`,
+          ...cogsEnvoyBoundedV1.internalPipe,
+        },
       },
     ],
     static_resources: { listeners, clusters },
@@ -318,15 +489,22 @@ function innerListener(
   return {
     name: `mitm_${first.routeId}`,
     internal_listener: {},
+    ...cogsEnvoyBoundedV1.network,
+    listener_filters_timeout: "5s",
+    continue_on_listener_filters_timeout: false,
     listener_filters: [
       {
         name: "envoy.filters.listener.tls_inspector",
-        typed_config: { "@type": `${envoyType}/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector` },
+        typed_config: {
+          "@type": `${envoyType}/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector`,
+          ...cogsEnvoyBoundedV1.inspector,
+        },
       },
     ],
     filter_chains: [
       {
         filter_chain_match: { server_names: [first.host], transport_protocol: "tls" },
+        transport_socket_connect_timeout: "5s",
         transport_socket: {
           name: "envoy.transport_sockets.tls",
           typed_config: {
@@ -377,7 +555,9 @@ function envoyRoute(route: CopiedRoute, sessionId: string, credentials: Readonly
         { name: ":path", string_match: { safe_regex: { regex: route.pathRegex } } },
       ],
     },
-    route: { cluster: `upstream_${route.routeId}`, timeout: "30s" },
+    // Stream GET bodies and Git POST/pack bytes; no cumulative body ceiling or replay.
+    // Independent HCM idle/absolute/flush timers replace the whole-response timer.
+    route: { cluster: `upstream_${route.routeId}`, timeout: "0s" },
     request_headers_to_remove: removeHeaders(credential),
     // Block direct named-header reflection, not arbitrary headers/bodies or upstream storage.
     response_headers_to_remove: removeHeaders(credential),
@@ -425,14 +605,13 @@ function hcm(name: string, virtualHosts: Json[], filters: Json[], completion: bo
   return {
     "@type": `${envoyType}/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager`,
     stat_prefix: name,
-    codec_type: "AUTO",
+    ...cogsEnvoyHcmBounds(completion),
     // Preserve original bytes for reject-ambiguous authz; never erase traversal evidence.
     normalize_path: false,
     merge_slashes: false,
     path_with_escaped_slashes_action: "REJECT_REQUEST",
     stream_error_on_invalid_http_message: true,
     max_request_headers_kb: 32,
-    common_http_protocol_options: { max_headers_count: 100, headers_with_underscores_action: "REJECT_REQUEST" },
     route_config: { name: `${name}_routes`, virtual_hosts: virtualHosts },
     ...(completion
       ? {
@@ -473,10 +652,17 @@ function authzCluster(target: { address: string; port: number }): Json {
     name: "cogs_authz",
     type: "STATIC",
     connect_timeout: "1s",
+    ...cogsEnvoyBoundedV1.network,
+    circuit_breakers: circuitBreakers(2, 32, 8),
     typed_extension_protocol_options: {
       "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
         "@type": `${envoyType}/envoy.extensions.upstreams.http.v3.HttpProtocolOptions`,
-        explicit_http_config: { http2_protocol_options: {} },
+        common_http_protocol_options: {
+          ...cogsEnvoyBoundedV1.commonHttp,
+          max_stream_duration: "1s",
+          max_response_headers_kb: 32,
+        },
+        explicit_http_config: { http2_protocol_options: { ...cogsEnvoyBoundedV1.http2, max_concurrent_streams: 32 } },
       },
     },
     load_assignment: {
@@ -491,12 +677,15 @@ function authzCluster(target: { address: string; port: number }): Json {
     },
   };
 }
-function upstreamCluster(route: CopiedRoute): Json {
+function upstreamCluster(route: CopiedRoute, breakers: ReturnType<typeof circuitBreakers>): Json {
   const endpointHost = route.host === "localhost" ? "127.0.0.1" : route.host;
   return {
     name: `upstream_${route.routeId}`,
-    type: "STRICT_DNS",
+    type: "LOGICAL_DNS",
+    dns_lookup_family: "AUTO",
     connect_timeout: "2s",
+    ...cogsEnvoyBoundedV1.network,
+    circuit_breakers: breakers,
     load_assignment: {
       cluster_name: `upstream_${route.routeId}`,
       endpoints: [
@@ -510,7 +699,11 @@ function upstreamCluster(route: CopiedRoute): Json {
     typed_extension_protocol_options: {
       "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
         "@type": `${envoyType}/envoy.extensions.upstreams.http.v3.HttpProtocolOptions`,
-        auto_config: { http_protocol_options: {}, http2_protocol_options: {} },
+        common_http_protocol_options: { ...cogsEnvoyBoundedV1.commonHttp, max_response_headers_kb: 32 },
+        auto_config: {
+          http_protocol_options: cogsEnvoyBoundedV1.http1,
+          http2_protocol_options: cogsEnvoyBoundedV1.http2,
+        },
       },
     },
     transport_socket: {
@@ -529,8 +722,12 @@ function upstreamCluster(route: CopiedRoute): Json {
     },
   };
 }
-function tunnelCluster(route: CopiedRoute): Json {
+function tunnelCluster(route: CopiedRoute, breakers: ReturnType<typeof circuitBreakers>): Json {
+  // Raw TCP pools also use max_pending_requests as a connection limit; max_requests
+  // does not count CONNECTs. Outer H1's single request supplies the live tunnel cap.
   return {
+    ...cogsEnvoyBoundedV1.network,
+    circuit_breakers: breakers,
     name: `tunnel_${route.routeId}`,
     type: "STATIC",
     connect_timeout: "2s",
@@ -550,6 +747,11 @@ function listener(name: string, address: Json, hcmConfig: Json): Json {
   return {
     name,
     address,
+    ...cogsEnvoyBoundedV1.network,
+    ignore_global_conn_limit: false,
+    bypass_overload_manager: false,
+    tcp_backlog_size: maxDownstreamConnections,
+    max_connections_to_accept_per_socket_event: 1,
     filter_chains: [{ filters: [{ name: "envoy.filters.network.http_connection_manager", typed_config: hcmConfig }] }],
   };
 }
@@ -574,14 +776,17 @@ function perRoute(ctx: Record<string, string>): Json {
   return {
     "envoy.filters.http.ext_authz": {
       "@type": `${envoyType}/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute`,
-      check_settings: { context_extensions: ctx },
+      check_settings: { context_extensions: ctx, disable_request_body_buffering: true },
     },
   };
 }
 function router(): Json {
   return {
     name: "envoy.filters.http.router",
-    typed_config: { "@type": `${envoyType}/envoy.extensions.filters.http.router.v3.Router` },
+    typed_config: {
+      "@type": `${envoyType}/envoy.extensions.filters.http.router.v3.Router`,
+      respect_expected_rq_timeout: false,
+    },
   };
 }
 function matcher(value: string): Json {

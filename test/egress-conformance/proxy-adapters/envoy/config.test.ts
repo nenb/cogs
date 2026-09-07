@@ -108,6 +108,28 @@ test("generator emits deterministic immutable static Envoy policy with no admini
   assert.equal(exposed[0]?.name, "forward_proxy");
 });
 
+test("fixture adapter shares bounded settings, not production-policy or pressure qualification", () => {
+  const boot = JSON.parse(renderEnvoyConfig(input()));
+  assert.equal(boot.overload_manager.resource_monitors[0].typed_config.max_active_downstream_connections, "32");
+  assert.equal(boot.bootstrap_extensions[0].typed_config.buffer_size_kb, 64);
+  for (const listener of boot.static_resources.listeners) {
+    const hcm = listener.filter_chains[0].filters[0].typed_config;
+    assert.equal(listener.per_connection_buffer_limit_bytes, 65536);
+    assert.equal(hcm.codec_type, listener.name === "forward_proxy" ? "HTTP1" : "AUTO");
+    assert.equal(hcm.stream_flush_timeout, "60s");
+    assert.equal(
+      hcm.early_header_mutation_extensions[0].typed_config.mutations[0].remove_on_match.key_matcher.prefix,
+      "x-envoy-",
+    );
+  }
+  for (const cluster of boot.static_resources.clusters) {
+    assert.equal(cluster.per_connection_buffer_limit_bytes, 65536);
+    assert.equal(cluster.circuit_breakers.thresholds[0].max_retries, 0);
+    assert.equal(cluster.circuit_breakers.thresholds[1].max_connections, 0);
+  }
+  assert.doesNotMatch(JSON.stringify(boot), /retry_policy|hedge_policy|with_request_body|preconnect_policy/);
+});
+
 test("generator rejects ambiguous routes, credential-bearing control origins, and dangerous header choices", () => {
   const mutate = (update: (value: EnvoyCandidateConfigInput) => void, expected: RegExp) => {
     const value = input();
