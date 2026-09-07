@@ -90,11 +90,11 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=1500,revocation=2800,relay=1300,lifecycle=5700,completion=2000,integration=2700)
+assert highs==dict(route=1700,revocation=3000,relay=1700,lifecycle=6300,completion=1900,integration=3300)
 assert b['global_gross_line_high']==16000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(95900,22300,13100,5500,40500,2000)
-assert new==dict(route=1,revocation=5,relay=0,lifecycle=4,completion=4,integration=26)
+assert new==dict(route=1,revocation=5,relay=0,lifecycle=4,completion=3,integration=27)
 assert sum(new.values())==40 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
@@ -110,9 +110,9 @@ for owner,names in {
  for p in names: assert paths[p]==owner and not Path(p).exists(),p
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
 assert len(set(paths)-baseline)==40
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md'):
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md'):
  assert paths[current]=='integration' and Path(current).is_file()
-for number,name in ((313,'freeze-remediated-H-and-authorize-control'),(314,'establish-remediated-Q-and-authorize-qualification')):
+for number,name in ((314,'freeze-remediated-H-and-authorize-control'),(315,'establish-remediated-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
