@@ -3,7 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ApiServer, ApiServerOptions, JsonValue } from "../src/api/server.ts";
 import type { ModelApiKeySource, OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
-import type { CogsEgressRuntimeManager, CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-manager.ts";
+import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
+import type { CogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
+import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
+import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
+import {
+  aggregateCogsEgressRoutePlanRevision,
+  type CogsEgressRuntimeManager,
+  type CogsEgressRuntimeManagerOptions,
+  startCogsEgressRuntimeManager,
+} from "../src/egress/runtime-manager.ts";
 import { closeContext, createCloseOwner, registerCloseOwner } from "../src/launch/close.ts";
 import type { LaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
@@ -18,6 +27,160 @@ import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../
 
 const secretBearer = "bearer-production-value-000000000000";
 const secretProxy = "proxy-production-capability-00000";
+
+test("actual manager/watcher owner cancellation is clean, but revocation before or during shutdown stays failed", async () => {
+  for (const mode of ["requested", "revoked", "racing-revocation"] as const) {
+    const h = harness();
+    const document = launch({
+      integrations: launch().integrations.map((value) => {
+        assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+        return { ...value, preset_revision: canonicalPresetPolicyRevision(value) };
+      }),
+    });
+    const held = Promise.withResolvers<void>();
+    const denied = Promise.withResolvers<void>();
+    const replaced = Promise.withResolvers<void>();
+    let lifecycle!: LaunchLifecycle;
+    let poll!: () => void;
+    let revoked = false,
+      released = false;
+    const events: string[] = [];
+    const config: CogsEnvoyRuntimeConfig = {
+      bootstrapJson: "{}",
+      routeCount: 1,
+      paths: {
+        bootstrap: "/run/cogs/egress/envoy/bootstrap.json",
+        proxyCertificate: "/run/cogs/egress/envoy/proxy-cert.pem",
+        proxyPrivateKey: "/run/cogs/egress/envoy/proxy-key.pem",
+        proxyCaCertificate: "/run/cogs/egress/envoy/proxy-ca.pem",
+      },
+    };
+    const worker = await startProductionWorker({
+      seams: {
+        ...h.seams,
+        readLaunch: async () => document,
+        createLifecycle(options) {
+          lifecycle = new LaunchLifecycle(options);
+          return lifecycle;
+        },
+        createEgress(options) {
+          return startCogsEgressRuntimeManager({
+            ...options,
+            maxSessionExpiresAtMs: 20000,
+            nowMs: () => 5000,
+            randomSecret: () => "S".repeat(32),
+            telemetry: { mode: "injected-stub-evidence" },
+            operationTimeoutMs: 1000,
+            revocationPollIntervalMs: 50,
+            revocationMinPkiRemainingMs: 1000,
+            timers: {
+              setTimeout(callback, ms) {
+                if (ms === 50) {
+                  poll = callback;
+                  return undefined;
+                }
+                return setTimeout(callback, ms);
+              },
+              clearTimeout(timer) {
+                clearTimeout(timer as ReturnType<typeof setTimeout>);
+              },
+            },
+            revocation: {
+              mode: "injected",
+              credentialVersion: "cred1",
+              credentialSource: {
+                withCredential: async (_request, consume) => consume({ type: "bearer", token: "synthetic-token" }),
+              },
+              revocationSource: {
+                read: async () => ({
+                  presetRevision: aggregateCogsEgressRoutePlanRevision(lowerLaunchEgressRoutePlan(options.launch)),
+                  credentialVersion: "cred1",
+                  revoked,
+                  pkiExpiresAtMs: 10000,
+                }),
+              },
+            },
+            pkiSource: {
+              withPkiMaterial: async (_request, consume) =>
+                consume({
+                  certificateChainPem: "cert",
+                  privateKeyPem: "key",
+                  caCertificatePem: "ca",
+                  expiresAtMs: 10000,
+                }),
+            },
+            envoyProcess: {
+              start: async () => ({
+                ready: true,
+                close: async () => {
+                  events.push("process.close");
+                },
+              }),
+            },
+            onReplacementRequired: async (reason, signal) => {
+              events.push(reason);
+              await options.onReplacementRequired(reason, signal);
+              replaced.resolve();
+            },
+            ports: {
+              openWal: async () => ({
+                ready: true,
+                records: [],
+                append: async () => {
+                  throw new Error("unused");
+                },
+                close: async () => {
+                  events.push("wal.close");
+                },
+              }),
+              startAuthz: async () =>
+                ({
+                  ready: true,
+                  target: "127.0.0.1:12345",
+                  close: async () => {
+                    events.push("authz.close");
+                    denied.resolve();
+                    if (mode === "racing-revocation") await held.promise;
+                  },
+                }) as CogsExtAuthzServer,
+              withConfig: async (_options, _source, consume) => consume(config),
+              withTmpfs: async (_config, _pki, consume) => {
+                try {
+                  return await consume(config.paths);
+                } finally {
+                  released = true;
+                }
+              },
+            },
+          });
+        },
+      },
+    }).catch(() => assert.fail(JSON.stringify({ mode, log: h.log, events })));
+    if (mode !== "requested") {
+      revoked = true;
+      poll();
+      await denied.promise;
+    }
+    if (mode === "revoked") await replaced.promise;
+    const closing = worker.close();
+    void closing.catch(() => undefined);
+    held.resolve();
+    if (mode === "requested") {
+      await closing;
+      await worker.closed;
+      assert.equal(lifecycle.state, "stopped");
+      assert.ok(events.includes("cancelled"));
+    } else {
+      await assert.rejects(closing, ProductionWorkerError);
+      await assert.rejects(worker.closed, ProductionWorkerError);
+      assert.equal(lifecycle.state, "failed");
+      assert.ok(events.includes("revoked"));
+    }
+    assert.equal(released, true);
+    for (const event of ["authz.close", "process.close", "wal.close"])
+      assert.equal(events.filter((v) => v === event).length, 1);
+  }
+});
 
 function runtime(): RuntimeConfig {
   return {

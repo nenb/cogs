@@ -1122,6 +1122,54 @@ test("egress adapter closes deferred factory result after shutdown before resolv
   assert.equal(closeCalls, 1);
 });
 
+test("egress startup owner precedes reentrant factory close and retains the late manager", async () => {
+  const acquired = Promise.withResolvers<ReturnType<typeof fakeManager>>();
+  const closed = Promise.withResolvers<void>();
+  let work: CloseWork | undefined;
+  let retired = false,
+    closeCalls = 0;
+  const dependency = createCogsEgressRuntimeLaunchDependency(() => {
+    work = dependency.beginClose?.(closeContext(1000));
+    return acquired.promise;
+  });
+  const start = dependency.start(new AbortController().signal);
+  void start.catch(() => undefined);
+  assert.ok(work);
+  void joinCloseWork(work).then(() => {
+    retired = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(retired, false);
+  } finally {
+    acquired.resolve(
+      fakeManager(
+        () => true,
+        async () => {
+          closeCalls++;
+          await closed.promise;
+        },
+      ),
+    );
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(retired, false);
+    assert.equal(closeCalls, 1);
+  } finally {
+    closed.resolve();
+  }
+  await assert.rejects(start, LaunchLifecycleError);
+  await joinCloseWork(work);
+  assert.equal(dependency.ready?.(), false);
+  assert.equal(closeCalls, 1);
+  const sealed = createCogsEgressRuntimeLaunchDependency(async () => {
+    assert.fail("closed admission");
+  });
+  await joinCloseWork(sealed.beginClose?.(closeContext(1000)) as CloseWork);
+  await assert.rejects(sealed.start(new AbortController().signal), LaunchLifecycleError);
+});
+
 test("egress adapter consumes already-aborted start without invoking factory", async () => {
   let calls = 0;
   const controller = new AbortController();

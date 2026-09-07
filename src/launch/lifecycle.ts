@@ -179,6 +179,11 @@ export class LaunchLifecycle {
     return this.#state === "ready" && this.#readyConfig !== undefined;
   }
 
+  /** Published before abort listeners run; distinguishes owner cancellation from loss. */
+  public get shutdownRequested(): boolean {
+    return this.#shutdownStarted;
+  }
+
   public get recyclePending(): boolean {
     return this.#recyclePending;
   }
@@ -583,11 +588,14 @@ export function createCogsEgressRuntimeLaunchDependency(
   return Object.freeze({
     name: "egressRuntime",
     async start(signal: AbortSignal) {
-      if (started) throw egressRuntimeError();
+      if (started || shutdownRequested) throw egressRuntimeError();
       started = true;
-      startWork = (async () => {
+      const startup = Promise.withResolvers<void>();
+      startWork = startup.promise;
+      void startWork.catch(() => undefined);
+      void (async () => {
         try {
-          if (signal.aborted) throw new Error("aborted");
+          if (signal.aborted || shutdownRequested) throw new Error("aborted");
           manager = await factory(signal);
           if (signal.aborted || shutdownRequested || !manager.ready) throw new Error("egress not ready");
         } catch (error) {
@@ -602,7 +610,7 @@ export function createCogsEgressRuntimeLaunchDependency(
           }
           throw egressRuntimeError();
         }
-      })();
+      })().then(startup.resolve, startup.reject);
       return startWork;
     },
     ready: () => {

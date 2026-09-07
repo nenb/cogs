@@ -117,6 +117,122 @@ async function assertAuthRejects(operation: Promise<unknown>, forbidden: string[
   });
 }
 
+test("pinned data joins one cancellation on every response exit", async () => {
+  for (const mode of ["reading", "post-fetch", "invalid", "oversize"] as const) {
+    for (const rejectCancel of [false, true]) {
+      const held = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      let cancellations = 0,
+        settled = false,
+        consumed = false;
+      const source = store("http://127.0.0.1:8200", new StaticIdentity(), {
+        fetchImpl: async () => {
+          if (mode === "post-fetch") controller.abort();
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                stream.enqueue(new TextEncoder().encode(mode === "oversize" ? "x".repeat(17000) : "{"));
+              },
+              cancel() {
+                cancellations++;
+                entered.resolve();
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": mode === "invalid" ? "text/plain" : "application/json" } },
+          );
+        },
+      });
+      const work = source.withPinnedApiKey(
+        { ...request, signal: controller.signal },
+        { version: 1, createdTime: "2026-07-15T00:00:00Z" },
+        async () => {
+          consumed = true;
+        },
+      );
+      void work.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      if (mode === "reading") {
+        await new Promise((resolve) => setImmediate(resolve));
+        controller.abort();
+      }
+      await entered.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        assert.equal(settled, false, mode);
+        assert.equal(cancellations, 1);
+      } finally {
+        if (rejectCancel) held.reject(new Error("cancel failed"));
+        else held.resolve();
+      }
+      await assertAuthRejects(work);
+      assert.equal(consumed, false);
+      assert.equal(cancellations, 1);
+    }
+  }
+});
+
+test("pinned identity exceptional, detached duplicate and late exits retain acquired callback", async () => {
+  for (const mode of ["throw", "duplicate", "late"] as const) {
+    const held = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<void>();
+    let callback!: (token: string) => Promise<void>;
+    let fetches = 0,
+      settled = false,
+      consumed = false;
+    const source = store(
+      "http://127.0.0.1:8200",
+      {
+        async withToken(_signal, operation) {
+          callback = operation;
+          void operation(token);
+          await entered.promise;
+          if (mode === "duplicate") void operation(token);
+          if (mode === "throw") throw new Error("identity failed");
+        },
+      },
+      {
+        fetchImpl: async () => {
+          fetches++;
+          entered.resolve();
+          return held.promise;
+        },
+      },
+    );
+    const work = source.withPinnedApiKey(request, { version: 1, createdTime: "2026-07-15T00:00:00Z" }, async () => {
+      consumed = true;
+    });
+    void work.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    if (mode === "late") void callback(token);
+    try {
+      assert.equal(settled, false);
+      assert.equal(fetches, 1);
+    } finally {
+      held.resolve(new Response(body(), { headers: { "content-type": "application/json" } }));
+    }
+    await assertAuthRejects(work);
+    await assert.rejects(callback(token));
+    assert.equal(fetches, 1);
+    assert.equal(consumed, false);
+  }
+});
+
 test("OpenBao uses callback-scoped identity/key and exact encoded KV-v2 path", async () => {
   let seenPath = "";
   let seenToken = "";

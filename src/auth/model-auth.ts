@@ -178,17 +178,17 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
                 },
               );
               if (signal.aborted) {
-                cancelBody(response);
+                await cancelBody(response);
                 throw new Error("aborted");
               }
               const type = response.headers.get("content-type") ?? "";
               const length = response.headers.get("content-length");
               if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.#maxResponseBytes)) {
-                cancelBody(response);
+                await cancelBody(response);
                 throw new Error("too large");
               }
               if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type)) {
-                cancelBody(response);
+                await cancelBody(response);
                 throw new Error("bad response");
               }
               return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, signal), expected);
@@ -360,8 +360,8 @@ function validateInteger(value: number, minimum: number, maximum: number): numbe
   return value;
 }
 
-function cancelBody(response: Response): void {
-  response.body?.cancel().catch(() => undefined);
+async function cancelBody(response: Response): Promise<void> {
+  await response.body?.cancel();
 }
 
 async function boundedText(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
@@ -369,8 +369,11 @@ async function boundedText(response: Response, maximum: number, signal: AbortSig
   if (reader === undefined) throw new Error("missing body");
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let cancellation: Promise<void> | undefined;
   const abort = () => {
-    reader.cancel().catch(() => undefined);
+    // Keep the first cancellation: a second stream cancel need not join it.
+    cancellation ??= Promise.resolve().then(() => reader.cancel());
+    void cancellation.catch(() => undefined);
   };
   signal.addEventListener("abort", abort, { once: true });
   try {
@@ -384,12 +387,14 @@ async function boundedText(response: Response, maximum: number, signal: AbortSig
     }
     if (signal.aborted) throw new Error("aborted");
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-  } catch (error) {
-    reader.cancel().catch(() => undefined);
-    throw error;
   } finally {
-    signal.removeEventListener("abort", abort);
-    reader.releaseLock();
+    abort();
+    try {
+      await cancellation;
+    } finally {
+      signal.removeEventListener("abort", abort);
+      reader.releaseLock();
+    }
   }
 }
 
@@ -399,24 +404,35 @@ async function withTokenOnce<T>(
   operation: (token: string) => Promise<T>,
 ): Promise<T> {
   let active = true;
-  let called = false;
-  let callbackPromise: Promise<void> | undefined;
+  let invalid = false;
+  let callback: Promise<void> | undefined;
   let result: { value: T } | undefined;
   try {
-    await identity.withToken(signal, (token) => {
-      if (!active || called) return Promise.reject(new Error("invalid identity callback"));
-      called = true;
-      callbackPromise = (async () => {
-        result = { value: await operation(token) };
-      })();
-      return callbackPromise;
-    });
-    if (!called || callbackPromise === undefined) throw new Error("missing identity callback");
-    await callbackPromise;
-    if (result === undefined) throw new Error("missing identity result");
+    try {
+      await identity.withToken(signal, (token) => {
+        if (!active || callback || signal.aborted) {
+          invalid = true;
+          const rejected = Promise.reject(new Error("invalid identity callback"));
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        callback = Promise.resolve().then(async () => {
+          if (signal.aborted) throw new Error("aborted");
+          result = { value: await operation(token) };
+        });
+        void callback.catch(() => undefined);
+        return callback;
+      });
+    } finally {
+      active = false;
+      // Retain acquired work even if its identity wrapper rejects or returns early.
+      await callback?.catch(() => undefined);
+    }
+    if (invalid || !callback || !result || signal.aborted) throw new Error("invalid identity callback");
+    await callback;
     return result.value;
   } finally {
-    active = false;
+    result = undefined;
   }
 }
 

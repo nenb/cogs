@@ -274,7 +274,7 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
             },
           );
           if (signal.aborted) {
-            void cancelBody(response).catch(() => undefined);
+            await cancelBody(response);
             throw new Error("aborted");
           }
           if (response.status === 404) {
@@ -504,9 +504,11 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
   if (reader === undefined) throw new Error("missing body");
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let failed = true;
+  let cancellation: Promise<void> | undefined;
   const abortRead = () => {
-    reader.cancel().catch(() => undefined);
+    // Publish before cancellation can invoke injected stream code/reenter.
+    cancellation ??= Promise.resolve().then(() => reader.cancel());
+    void cancellation.catch(() => undefined);
   };
   signal.addEventListener("abort", abortRead, { once: true });
   try {
@@ -520,13 +522,13 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
     }
     if (signal.aborted) throw new Error("aborted");
     const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
-    failed = false;
     return text;
   } finally {
-    signal.removeEventListener("abort", abortRead);
+    abortRead();
     try {
-      if (failed) await reader.cancel();
+      await cancellation;
     } finally {
+      signal.removeEventListener("abort", abortRead);
       reader.releaseLock();
     }
   }
@@ -541,22 +543,37 @@ async function withTokenOnce<T>(
   signal: AbortSignal,
   operation: (token: string) => Promise<T>,
 ): Promise<T> {
-  let called = false;
   let active = true;
-  let result: Promise<T> | undefined;
+  let invalid = false;
+  let callback: Promise<void> | undefined;
+  let result: { value: T } | undefined;
   try {
-    await identity.withToken(signal, (token) => {
-      if (!active || called || signal.aborted) return Promise.reject(new Error("bad token callback"));
-      called = true;
-      result = operation(token);
-      void result.catch(() => undefined);
-      return result.then(() => undefined);
-    });
+    try {
+      await identity.withToken(signal, (token) => {
+        if (!active || callback || signal.aborted) {
+          invalid = true;
+          const rejected = Promise.reject(new Error("bad token callback"));
+          void rejected.catch(() => undefined);
+          return rejected;
+        }
+        callback = Promise.resolve().then(async () => {
+          if (signal.aborted) throw new Error("aborted");
+          result = { value: await operation(token) };
+        });
+        void callback.catch(() => undefined);
+        return callback;
+      });
+    } finally {
+      active = false;
+      // Wrapper failure/early return cannot detach acquired callback work.
+      await callback?.catch(() => undefined);
+    }
+    if (invalid || !callback || !result || signal.aborted) throw new Error("bad token callback");
+    await callback;
+    return result.value;
   } finally {
-    active = false;
+    result = undefined;
   }
-  if (!called || result === undefined) throw new Error("missing token callback");
-  return result;
 }
 
 function versionEntry(value: unknown): { created_time: string; deletion_time: string; destroyed: boolean } {
