@@ -111,10 +111,10 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
     except (UnicodeError, ValueError, TypeError, RecursionError) as error: raise StagingError() from error
     require(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                        allow_nan=False).encode("ascii") + b"\n" == approval_raw)
+    eligible((value.get("implementation_revision"), value.get("control_revision"),
+              value.get("qualification_revision")))
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
     approval = production.ProductionApproval(**value)
-    eligible((approval.implementation_revision, approval.control_revision,
-              approval.qualification_revision))
     fixed = {
         "approval.json": approval_raw,
         "approval-authentication.json": read(source / "approval-authentication.json", 256 * 1024),

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Provider-free canonical production approval issuer checks."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,10 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
 import completion_campaign_production as production
+
+stager_spec = importlib.util.spec_from_file_location(
+    "stage2_stage_production_approval_test", ROOT / "scripts/stage2-stage-production-approval.py")
+stager = importlib.util.module_from_spec(stager_spec); stager_spec.loader.exec_module(stager)
 
 
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
@@ -59,12 +64,31 @@ with tempfile.TemporaryDirectory() as temporary:
     assert approval.control_revision == "2" * 40
     assert approval.rate_source_commitment == production.RATE_SOURCE_COMMITMENT
 
-    retired = dict(value)
-    retired["implementation_revision"] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
-    draft.write_text(json.dumps(retired, sort_keys=True, separators=(",", ":")) + "\n")
-    rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
-                               "issue", str(draft)], cwd=ROOT, env=environment,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    assert rejected.returncode == 2 and not rejected.stdout and not rejected.stderr
+    for field in ("implementation_revision", "control_revision", "qualification_revision"):
+        retired = dict(value)
+        retired[field] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+        draft.write_text(json.dumps(retired, sort_keys=True, separators=(",", ":")) + "\n")
+        rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
+                                   "eligibility", str(draft)], cwd=ROOT, env=environment,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        assert rejected.returncode == 2 and not rejected.stdout and not rejected.stderr
+
+    retired_approval = dict(json.loads(result.stdout))
+    retired_approval["implementation_revision"] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+    source = Path(temporary) / "staging"; source.mkdir()
+    (source / "approval.json").write_text(
+        json.dumps(retired_approval, sort_keys=True, separators=(",", ":")) + "\n")
+    original_uid, original_gid = stager.os.geteuid, stager.os.getegid
+    stager.os.geteuid = lambda: 0; stager.os.getegid = lambda: 0
+    try:
+        try:
+            stager.stage(source, Path(temporary) / "unread-budget",
+                         Path(temporary) / "unread-config", Path(temporary) / "unread-credentials")
+        except stager.StagingError:
+            pass
+        else:
+            raise AssertionError("retired approval reached credential reads")
+    finally:
+        stager.os.geteuid, stager.os.getegid = original_uid, original_gid
 
 print("stage2 production approval issuer checks passed")

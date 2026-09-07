@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   admission:
+    if: ${{ github.sha == '' }} # ADR0319: GitHub supplies a nonempty SHA, so this path is retired.
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     outputs:
@@ -209,6 +210,7 @@ jobs:
 
   local-kata:
     needs: admission
+    if: ${{ github.sha == '' }} # ADR0319: GitHub supplies a nonempty SHA, so this path is retired.
     runs-on: ubuntu-24.04
     # Fixed local-job post-admission bounds total 196 minutes inside one 12,060-second envelope.
     # Immutable acquisition has its own bound and completes before custody.

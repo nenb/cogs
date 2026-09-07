@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   candidate:
+    if: ${{ github.sha == '' }} # ADR0319: GitHub supplies a nonempty SHA, so this path is retired.
     runs-on: ubuntu-24.04
     # The 87-minute sum of step bounds leaves a three-minute job-lifecycle reserve.
     timeout-minutes: 90

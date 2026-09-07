@@ -61,6 +61,23 @@ with tempfile.TemporaryDirectory() as temporary:
         root / "pre-aws-package-v4.json", root / "control.json", root / "descriptor.json")
     package_path.write_bytes(planner.canonical(package)); control_path.write_bytes(control_raw)
     descriptor_path.write_bytes(descriptor_raw)
+    planner.eligibility(package_path, (h, g, q))
+    try:
+        planner.eligibility(package_path, ("4" * 40, g, q))
+    except planner.PlanningError:
+        pass
+    else:
+        raise AssertionError("dispatch/package mismatch reached planner effects")
+    for field in ("implementation_revision", "control_revision", "qualification_revision"):
+        retired = {**package, field: "9b9966afffe0ea8de4d0c99147886a95094470a9"}
+        retired_path = root / f"retired-{field}.json"
+        retired_path.write_bytes(planner.canonical(retired))
+        try:
+            planner.eligibility(retired_path)
+        except planner.PlanningError:
+            pass
+        else:
+            raise AssertionError(field + " retired selection reached planner effects")
 
     def fake_run(arguments, timeout, environment, parse=False):
         assert timeout > 0 and environment["AWS_REGION"] == "us-east-1"

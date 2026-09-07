@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   full-build:
+    # ADR0319 permanently retires this superseded authority path.
     if: >-
+      github.sha == '' &&
       github.event_name == 'pull_request' &&
       github.event.action == 'ready_for_review' &&
       github.run_attempt == 1 &&

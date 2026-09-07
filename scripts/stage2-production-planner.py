@@ -57,6 +57,14 @@ def read(path, maximum=MAX):
     return raw, value
 
 
+def eligibility(path, expected=()):
+    _raw, package = read(path)
+    revisions = (package.get("implementation_revision"), package.get("control_revision"),
+                 package.get("qualification_revision"))
+    eligible(revisions)
+    require(not expected or tuple(expected) == revisions)
+
+
 def run(arguments, timeout, environment, parse=False):
     result = subprocess.run(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, cwd=ROOT / "deploy/aws-feasibility", env=environment,
@@ -234,6 +242,8 @@ def main(arguments):
 
 
 if __name__ == "__main__":
-    try: main(sys.argv[1:])
+    try:
+        if len(sys.argv) == 6 and sys.argv[1] == "eligibility": eligibility(sys.argv[2], sys.argv[3:])
+        else: main(sys.argv[1:])
     except (OSError, PlanningError, production.ProductionCampaignError, subprocess.SubprocessError):
         raise SystemExit(2)

@@ -12,16 +12,17 @@ Protected main revision `9b9966afffe0ea8de4d0c99147886a95094470a9`, tree `fa0bae
 A later independent review confirmed three bounded defects:
 
 1. route-level `response_headers_to_remove` does not remove the injected credential name from HTTP response trailers;
-2. the launch schema admits `tool_timeout_seconds` through 900 while the SFTP file adapter rejects an operation timeout above 60 seconds; and
-3. atomic SFTP replacement publishes the temporary inode's `0600` mode instead of preserving an existing ordinary file mode.
+2. model credentials are hydrated into the worker without the integration-route OpenBao revocation watcher;
+3. the launch schema admits `tool_timeout_seconds` through 900 while the SFTP file adapter rejects an operation timeout above 60 seconds; and
+4. atomic SFTP replacement publishes the temporary inode's `0600` mode instead of preserving an existing ordinary file mode.
 
-The same review confirmed that model credentials are hydrated into the worker without the integration-route OpenBao revocation watcher. That fourth finding remains open and is not converted into a claim of closure. This Stage2 correction may only state that model-key containment requires externally owned worker shutdown/replacement; it cannot claim that OpenBao deletion cancels an active or future model call in an existing worker.
+Finding 2 remains open and is not converted into a claim of closure. This Stage2 correction may only state that model-key containment requires externally owned worker shutdown/replacement; it cannot claim that OpenBao deletion cancels an active or future model call in an existing worker.
 
 The existing remediation ceiling has only 17 gross lines remaining. Compressing protocol proof, timeout handling, retirement defense, or hostile metadata/late-callback tests would weaken the correction.
 
 ## Decision
 
-Permanently retire exact H `9b9966afffe0ea8de4d0c99147886a95094470a9` as `ADR0319`. Preserve every older retired revision, run, and artifact. Add the exact H literal to every pre-checkout producer, publisher, static, preflight, qualification, diagnostic, and production mirror. Production scripts must repeat the central retirement selector over authenticated embedded H/G/Q provenance before credentials, signing, staging, or provider effects. A corrected descendant remains only eligible for later review; ancestry is not a veto.
+Permanently retire exact H `9b9966afffe0ea8de4d0c99147886a95094470a9` as `ADR0319`. Preserve every older retired revision, run, and artifact. Add the exact H literal to every current pre-checkout producer, publisher, static, preflight, qualification, diagnostic, and production mirror. Mechanically hard-disable every job in superseded Stage2 candidate/static/preflight/qualification workflows and retain a closed workflow classification test so another selector cannot appear unclassified. Production scripts must repeat the central retirement selector over authenticated embedded H/G/Q provenance before credentials, signing, staging, or provider effects. A corrected descendant remains only eligible for later review; ancestry is not a veto.
 
 Authorize one correction branch and one protected PR for findings 1, 3, and 4 only.
 
@@ -52,7 +53,7 @@ Retain baseline `242bbefeae5444118d9e97b46597130b509ca253`, whole-file ownership
 | integration owner | 3,000 | 3,500 |
 | conservative hard retained lines | 95,900 | 97,000 |
 | correction global | 40,500 | 42,000 |
-| post-H retained/global | 500 / 1,000 | 1,500 / 2,200 |
+| post-H retained/global | 500 / 1,000 | 1,500 / 2,100 |
 | post-H workflow | 350 | 500 |
 | integration/total new-file high | 31 / 39 | 32 / 40 |
 

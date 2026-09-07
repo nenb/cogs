@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -84,6 +84,61 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
       );
     }
   }
+});
+
+test("every Stage2 workflow is guarded, hard-disabled, or the non-authorizing foundations check", () => {
+  const guarded = new Set([
+    "stage2-local-static-control-prebuilt-candidate",
+    "stage2-prebuilt-kvm-integration-diagnostic",
+    "stage2-prebuilt-kvm-rehearsal",
+    "stage2-prebuilt-local-kata-qualification",
+    "stage2-prebuilt-mixed-hg-preflight",
+    "stage2-prebuilt-rootfs-diagnostic-producer",
+    "stage2-prebuilt-rootfs-diagnostic-publisher",
+    "stage2-prebuilt-rootfs-producer",
+    "stage2-prebuilt-rootfs-publisher",
+    "stage2-production-approval",
+    "stage2-production-campaign",
+    "stage2-production-plan",
+  ]);
+  const disabled = new Set([
+    "stage2-local-kata-qualification",
+    "stage2-local-static-admission-diagnostic",
+    "stage2-local-static-control-candidate",
+    "stage2-mixed-hg-preflight",
+    "stage2-package-native-candidate",
+    "stage2-phase-a-candidate",
+    "stage2-rootfs-full-build-qualification",
+  ]);
+  const names = readdirSync(".github/workflows")
+    .filter((name) => /^stage2-.*\.yml$/u.test(name))
+    .map((name) => name.slice(0, -4))
+    .sort();
+  assert.deepEqual(names, [...guarded, ...disabled, "stage2-workload-linux-foundations"].sort());
+  for (const name of disabled) {
+    const source = readFileSync(`.github/workflows/${name}.yml`, "utf8");
+    const starts = [...source.matchAll(/^ {2}([a-z][a-z0-9_-]*):\n/gmu)].filter(
+      (item) => (item.index ?? 0) > source.indexOf("\njobs:\n"),
+    );
+    assert.ok(starts.length > 0, name);
+    for (let index = 0; index < starts.length; index += 1) {
+      const start = starts[index];
+      const next = starts[index + 1];
+      assert.match(
+        source.slice(start.index, next?.index),
+        /^ {4}if:[\s\S]{0,160}github\.sha == ''/mu,
+        `${name}:${start[1]}`,
+      );
+    }
+  }
+});
+
+test("ADR0319 preserves original finding numbers and grants no chain or AWS authority", () => {
+  const adr = readFileSync("docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md", "utf8");
+  assert.match(adr, /1\. route-level[\s\S]*2\. model credentials[\s\S]*3\. the launch schema[\s\S]*4\. atomic SFTP/u);
+  assert.match(adr, /Finding 2 remains open/u);
+  assert.match(adr, /findings 1, 3, and 4 only/u);
+  assert.match(adr, /grants no producer[\s\S]*AWS authority/u);
 });
 
 test("ADR0319 exact allocations preserve hard limits and reserve every bounded future closure", () => {
@@ -211,7 +266,7 @@ test("ADR0319 post-H gross reserves reject overruns even below the legacy correc
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 assert m['POST_H_REVISION']=='6bd12dcd25d877ffac03752fa0f71beeeb86a99e'
-assert m['POST_H_HIGHS']=={'deploy':150,'retained':1500,'workflow':500,'global':2200}
+assert m['POST_H_HIGHS']=={'deploy':150,'retained':1500,'workflow':500,'global':2100}
 f=m['measure']; ns=f.__globals__; original=ns['_gross_slice']; observed=[]
 def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
  if revision!=m['POST_H_REVISION']: return original(paths,allowed,revision)
@@ -224,19 +279,18 @@ def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
   assert all(p in paths and allowed(p) for p in ('scripts/stage2-revision-retirement.py','config/stage2-retired-revisions-v1.json'))
  return values[key]
 ns['_gross_slice']=gross
-values=dict(deploy=150,retained=1500,workflow=500)
+values=dict(deploy=100,retained=1400,workflow=500)
 report=f()
 assert sorted(observed)==['deploy','retained','workflow']
-assert report['post_h_gross_added_lines']==dict(values,**{'global':2150})
+assert report['post_h_gross_added_lines']==dict(values,**{'global':2000})
 assert report['post_h_reserve_limits_satisfied'] is True
 for key in values:
  values=dict(deploy=0,retained=0,workflow=0); values[key]=m['POST_H_HIGHS'][key]+1
  try: f()
  except m['LineBudgetError']: pass
  else: raise AssertionError(key+' reserve not enforced by central measure')
-# Exercise combined enforcement independently while each widened slice remains below its own high.
-ns['POST_H_HIGHS']=dict(m['POST_H_HIGHS'],deploy=250)
-values=dict(deploy=201,retained=1500,workflow=500)
+# Exercise a binding combined limit while every individual slice remains within its own high.
+values=dict(deploy=150,retained=1500,workflow=451)
 try: f()
 except m['LineBudgetError']: pass
 else: raise AssertionError('combined reserve not enforced')
