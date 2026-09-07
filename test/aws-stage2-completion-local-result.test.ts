@@ -416,7 +416,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
   assert.equal(manifest.global_gross_line_high, 18_500);
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    38,
+    39,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
