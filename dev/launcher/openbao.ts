@@ -1,11 +1,14 @@
-import { randomBytes, X509Certificate } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, readFile, realpath, unlink } from "node:fs/promises";
 import { Socket } from "node:net";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { OPENBAO_PKI_BUDGET, OpenBaoEgressPkiSource } from "../../src/egress/openbao-pki.ts";
 import { OPENBAO_IMAGE } from "../openbao-model-auth/image.ts";
 import { hasDuplicateJsonKeys } from "./contract.ts";
-import { commandDescriptor, runCommand } from "./runner.ts";
+import { commandDescriptor, type RunnerResult, runCommand } from "./runner.ts";
 import type { LauncherState } from "./state.ts";
 import { readManifest } from "./state.ts";
 
@@ -35,10 +38,7 @@ export type OpenBaoHandle = Readonly<{
   close(options?: OpenBaoCooperativeOptions): Promise<void>;
 }>;
 export type OpenBaoSeams = Readonly<{
-  docker?: (
-    args: readonly string[],
-    options?: OpenBaoCooperativeOptions,
-  ) => Promise<{ status: number; stdout: string }>;
+  docker?: (args: readonly string[], options?: OpenBaoCooperativeOptions) => Promise<DockerResult>;
   fetch?: typeof fetch;
   randomBytes?: typeof randomBytes;
 }>;
@@ -47,6 +47,30 @@ const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "a
 const EVENT_ADD = EventTarget.prototype.addEventListener;
 const EVENT_REMOVE = EventTarget.prototype.removeEventListener;
 const MAX_COOPERATIVE_DEADLINE_MS = 30_000;
+const deadlines = new WeakMap<OpenBaoCooperativeOptions, number>();
+// 8h session + 30s bootstrap + maximum 300s margin + 15s drain + 5s clock + 1s rounding.
+const tokenSeconds = OPENBAO_PKI_BUDGET.maxSessionMs / 1000 + 30 + OPENBAO_PKI_BUDGET.maxMarginMs / 1000 + 15 + 5 + 1;
+const selfPolicy =
+  'path "auth/token/lookup-self" { capabilities = ["read"] }\npath "auth/token/revoke-self" { capabilities = ["update"] }';
+const tmpfs = "/openbao/file:rw,nosuid,nodev,noexec,size=67108864,mode=0700,uid=100,gid=1000";
+// Strong custody survives failed-start observation. Only actual settlement removes work.
+const custody = new Set<Promise<unknown>>();
+const uncertainRequests = new WeakSet<Set<Promise<unknown>>>();
+function retain<T>(work: Promise<T>, local?: Set<Promise<unknown>>): Promise<T> {
+  custody.add(work);
+  local?.add(work);
+  work.then(
+    () => {
+      custody.delete(work);
+      local?.delete(work);
+    },
+    () => {
+      custody.delete(work);
+      local?.delete(work);
+    },
+  );
+  return work;
+}
 
 const version = /^OpenBao\s+v2\.6\.1(?:[\s,]|$)/u;
 const imageRe = /^quay\.io\/openbao\/openbao:2\.6\.1@sha256:([a-f0-9]{64})$/u;
@@ -58,11 +82,25 @@ const configPath = fileURLToPath(new URL("../openbao-model-auth/config.hcl", imp
 const expectedConfig =
   'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "file" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n';
 
-type Exec = (
-  args: readonly string[],
-  options?: OpenBaoCooperativeOptions,
-) => Promise<{ status: number; stdout: string }>;
-type Meta = { id: string; name: string; image: string; label: string; running: boolean; port: number };
+type DockerResult = {
+  status: number;
+  stdout: string;
+  cleanupUncertain?: boolean;
+  outcome?: RunnerResult["status"];
+  stdoutTruncated?: boolean;
+};
+type Exec = (args: readonly string[], options?: OpenBaoCooperativeOptions) => Promise<DockerResult>;
+type Meta = {
+  id: string;
+  name: string;
+  image: string;
+  imageId: string;
+  label: string;
+  nonce: string;
+  running: boolean;
+  port: number;
+  safe: boolean;
+};
 
 export async function startTrustedOpenBao(state: LauncherState, seams?: OpenBaoSeams): Promise<OpenBaoHandle> {
   return startTrustedOpenBaoCooperative(state, {}, seams);
@@ -73,7 +111,10 @@ export async function startTrustedOpenBaoCooperative(
   options: OpenBaoCooperativeOptions = {},
   seams?: OpenBaoSeams,
 ): Promise<OpenBaoHandle> {
-  const cooperative = cooperativeOptions(options);
+  const supplied = cooperativeOptions(options);
+  const cooperative = within(supplied, 30_000);
+  const startedAt = Date.now(),
+    startedMono = performance.now();
   let root = "",
     unseal = "",
     model = "",
@@ -85,53 +126,100 @@ export async function startTrustedOpenBaoCooperative(
     await validateState(state);
     await validateConfig();
     const s = snapSeams(seams, state.dir);
+    // Retired artifact: only fully injected synthetic-contract fixtures may execute this path.
+    if (!seams || !Object.hasOwn(seams, "docker") || !Object.hasOwn(seams, "fetch")) fail();
     apiKey = key(s.randomBytes);
     integrationCredential = key(s.randomBytes);
     if (integrationCredential === apiKey) fail();
-    const exec = (a: readonly string[], callOptions: OpenBaoCooperativeOptions = cooperative) =>
-      dock(s.docker, a, callOptions);
+    const dockerWork = new Set<Promise<unknown>>();
+    let uncertainProducer = false;
+    const exec = (a: readonly string[], callOptions: OpenBaoCooperativeOptions = cooperative) => {
+      const work = retain(
+        dock(s.docker, a, callOptions).then((result) => {
+          uncertainProducer ||=
+            result.cleanupUncertain === true ||
+            result.stdoutTruncated === true ||
+            result.outcome === "timeout" ||
+            result.outcome === "aborted";
+          return result;
+        }),
+        dockerWork,
+      );
+      return observe(work, callOptions);
+    };
     const name = `cogs-openbao-${state.stateId}`,
       label = `cogs.dev.launcher.state=${state.stateId}`;
-    const fetcher = cooperativeFetch(s.fetch, cooperative);
+    const requests = new Set<Promise<unknown>>();
+    const fetcher = client(s.fetch, cooperative, requests);
     checkCooperative(cooperative);
     const existing = await exec(["ps", "-a", "--filter", `label=${label}`, "--format", "{{.ID}}"]);
     if (existing.status !== 0 || existing.stdout.trim() !== "") fail();
-    const img = await ok(exec(["image", "inspect", OPENBAO_IMAGE, "--format", "{{json .RepoDigests}}"]));
-    if (!repoDigest(img.stdout, digest)) fail();
-    const run = await ok(
-      exec([
-        "run",
-        "--detach",
-        "--rm",
-        "--name",
-        name,
-        "--label",
-        label,
-        "--publish",
-        "127.0.0.1::8200",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--user",
-        "100:1000",
-        "--volume",
-        `${configPath}:/openbao/cogs-config.hcl:ro`,
-        OPENBAO_IMAGE,
-        "server",
-        "-config=/openbao/cogs-config.hcl",
-      ]),
-    );
-    const id = oneLine(run.stdout);
-    if (!idRe.test(id)) fail();
+    const img = JSON.parse(
+      oneLine((await ok(exec(["image", "inspect", OPENBAO_IMAGE, "--format", "{{json .}}"]))).stdout),
+    ) as {
+      Id: string;
+      RepoDigests: unknown;
+      Os: string;
+      Architecture: string;
+      Config: { Volumes?: Record<string, unknown> | null };
+    };
+    if (
+      !repoDigest(JSON.stringify(img.RepoDigests), digest) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(img.Id) ||
+      img.Os !== "linux" ||
+      !["amd64", "arm64"].includes(img.Architecture) ||
+      !img.Config ||
+      Object.keys(img.Config.Volumes ?? {}).some((path) => path !== "/openbao/file")
+    )
+      fail();
+    const imageId = img.Id;
+    const nonce = randomBytes(16).toString("hex");
+    const intent = await acquisitionIntent(state, name, nonce, imageId, img.Architecture);
+    let id = "";
+    let producer: Promise<DockerResult> | undefined;
     let ready = false;
     try {
-      const meta = await inspect(exec, name);
-      if (!owned(meta, id, name, state.stateId) || !meta.running || meta.port < 1) fail();
-      if (!version.test(oneLine((await ok(exec(["exec", name, "bao", "version"]))).stdout))) fail();
+      producer = retain(
+        exec([
+          "create",
+          "--pull",
+          "never",
+          "--read-only",
+          "--tmpfs",
+          tmpfs,
+          "--label",
+          `cogs.dev.launcher.acquisition=${nonce}`,
+          "--name",
+          name,
+          "--label",
+          label,
+          "--publish",
+          "127.0.0.1::8200",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--user",
+          "100:1000",
+          "--volume",
+          `${configPath}:/openbao/cogs-config.hcl:ro`,
+          OPENBAO_IMAGE,
+          "server",
+          "-config=/openbao/cogs-config.hcl",
+        ]),
+      );
+      const run = await observe(producer, cooperative);
+      id = oneLine((await ok(Promise.resolve(run))).stdout);
+      if (!idRe.test(id)) fail();
+      const created = await inspect(exec, id, cooperative);
+      if (!owned(created, id, name, state.stateId, nonce, imageId) || !created.safe) fail();
+      await ok(exec(["start", id]));
+      const meta = await inspect(exec, id, cooperative);
+      if (!owned(meta, id, name, state.stateId, nonce, imageId) || !meta.safe || !meta.running || meta.port < 1) fail();
+      if (!version.test(oneLine((await ok(exec(["exec", id, "bao", "version"]))).stdout))) fail();
       const origin = `http://127.0.0.1:${meta.port}`;
       await waitReachable(fetcher, origin);
-      const init = await bao(
+      let init = await bao(
         fetcher,
         origin,
         "/v1/sys/init",
@@ -142,6 +230,7 @@ export async function startTrustedOpenBaoCooperative(
       );
       root = str(init, "root_token");
       unseal = arrStr(init, "keys_base64");
+      init = undefined;
       await bao(fetcher, origin, "/v1/sys/unseal", "POST", undefined, { key: unseal }, [200]);
       unseal = "";
       await healthReady(fetcher, origin);
@@ -169,7 +258,7 @@ export async function startTrustedOpenBaoCooperative(
         "/v1/sys/policies/acl/cogs-model-auth-read",
         "PUT",
         root,
-        { policy: 'path "model/data/users/alice/anthropic" { capabilities = ["read"] }' },
+        { policy: `${selfPolicy}\npath "model/data/users/alice/anthropic" { capabilities = ["read"] }` },
         [200, 204],
       );
       await bao(
@@ -211,7 +300,11 @@ export async function startTrustedOpenBaoCooperative(
           allow_bare_domains: true,
           allow_subdomains: false,
           allow_localhost: false,
-          max_ttl: "8h",
+          allow_any_name: false,
+          allow_glob_domains: false,
+          allow_wildcard_certificates: false,
+          allow_ip_sans: false,
+          max_ttl: "9h",
           ttl: "2h",
           key_type: "rsa",
           key_bits: 2048,
@@ -226,6 +319,7 @@ export async function startTrustedOpenBaoCooperative(
         root,
         {
           policy: [
+            selfPolicy,
             `path "model/data/${egressHandle}" { capabilities = ["read"] }`,
             `path "model/metadata/${egressHandle}" { capabilities = ["read"] }`,
             'path "pki/issue/cogs-egress" { capabilities = ["update"] }',
@@ -240,9 +334,10 @@ export async function startTrustedOpenBaoCooperative(
           "/v1/auth/token/create-orphan",
           "POST",
           root,
-          { policies: ["cogs-model-auth-read"], ttl: "8h", explicit_max_ttl: "8h", renewable: false },
+          tokenRequest("cogs-model-auth-read"),
           [200],
         ),
+        "cogs-model-auth-read",
       );
       egress = token(
         await bao(
@@ -251,16 +346,35 @@ export async function startTrustedOpenBaoCooperative(
           "/v1/auth/token/create-orphan",
           "POST",
           root,
-          { policies: ["cogs-stage3-runtime"], ttl: "8h", explicit_max_ttl: "8h", renewable: false },
+          tokenRequest("cogs-stage3-runtime"),
           [200],
         ),
+        "cogs-stage3-runtime",
       );
-      if (egress === model || egress === root) fail();
+      if (egress === model || egress === root || model === root) fail();
+      const validateChildren = async () => {
+        await validateChild(fetcher, origin, model, "cogs-model-auth-read", apiKey, startedAt);
+        await validateChild(fetcher, origin, egress, "cogs-stage3-runtime", integrationCredential, startedAt);
+      };
+      await validateChildren();
+      await bao(fetcher, origin, "/v1/auth/token/revoke-self", "POST", root, {}, [204]);
+      await denied(fetcher, origin, root, "/v1/auth/token/lookup-self", "GET");
+      root = "";
+      await validateChildren();
+      await healthReady(fetcher, origin);
+      const final = await inspect(exec, id, cooperative);
+      if (
+        !owned(final, id, name, state.stateId, nonce, imageId) ||
+        !final.safe ||
+        !final.running ||
+        final.port !== meta.port
+      )
+        fail();
+      checkCooperative(cooperative);
+      if (Math.abs(Date.now() - startedAt - (performance.now() - startedMono)) > 1000) fail();
       ready = true;
       const clear = () => {
         ready = false;
-        root = "";
-        unseal = "";
         model = "";
         egress = "";
         apiKey = "";
@@ -287,50 +401,72 @@ export async function startTrustedOpenBaoCooperative(
             } as const,
           }),
         modelToken: holder(
-          () => model,
+          () => (ready ? model : ""),
           (v) => (model = v),
         ),
         modelApiKey: holder(
-          () => apiKey,
+          () => (ready ? apiKey : ""),
           (v) => (apiKey = v),
         ),
         egressToken: holder(
-          () => egress,
+          () => (ready ? egress : ""),
           (v) => (egress = v),
         ),
         integrationCredential: holder(
-          () => integrationCredential,
+          () => (ready ? integrationCredential : ""),
           (v) => (integrationCredential = v),
         ),
-        close: once(async (closeOptions = {}) => {
-          const closeCooperative = cooperativeOptions(closeOptions);
-          const cleanupCooperative = cleanupOptions(closeCooperative);
-          const closeFetch = cooperativeFetch(s.fetch, closeCooperative);
-          try {
-            const before = await inspect(exec, name, cleanupCooperative);
-            if (!ownedLive(before, id, name, state.stateId, meta.port)) fail();
-            await revoke(closeFetch, origin, model);
-            model = "";
-            await revoke(closeFetch, origin, egress);
-            egress = "";
-            await revoke(closeFetch, origin, root);
-            root = "";
-            const latest = await inspect(exec, name, cleanupCooperative);
-            if (!ownedLive(latest, id, name, state.stateId, meta.port)) fail();
-            await ok(exec(["rm", "-f", id], cleanupCooperative));
-            const left = await exec(
-              ["ps", "-a", "--filter", `label=${label}`, "--format", "{{.ID}}"],
-              cleanupCooperative,
-            );
-            if (left.status !== 0 || left.stdout.trim() !== "") fail();
-            await closedPort(meta.port, cleanupCooperative);
-          } finally {
-            clear();
-          }
-        }),
+        close: once(
+          () => {
+            ready = false;
+          },
+          async () => {
+            const cleanupCooperative = cleanupOptions();
+            const closeFetch = client(s.fetch, cleanupCooperative, requests);
+            try {
+              const before = await inspect(exec, id, cleanupCooperative);
+              if (!owned(before, id, name, state.stateId, nonce, imageId) || !before.safe) fail();
+              if (before.running) {
+                if (before.port !== meta.port) fail();
+                await Promise.all([revoke(closeFetch, origin, model), revoke(closeFetch, origin, egress)]);
+              }
+              model = "";
+              egress = "";
+              apiKey = "";
+              integrationCredential = "";
+              const latest = await inspect(exec, id, cleanupCooperative);
+              if (!owned(latest, id, name, state.stateId, nonce, imageId) || !latest.safe) fail();
+              await ok(exec(["rm", "-f", id], cleanupCooperative));
+              const left = await exec(
+                ["ps", "-a", "--filter", `label=${label}`, "--format", "{{.ID}}"],
+                cleanupCooperative,
+              );
+              if (left.status !== 0 || left.stdout.trim() !== "") fail();
+              await closedPort(meta.port, cleanupCooperative);
+              await Promise.allSettled([...requests, ...dockerWork]);
+              if (uncertainProducer || uncertainRequests.has(requests)) fail();
+              await intent.remove();
+            } finally {
+              clear();
+            }
+          },
+        ),
       });
     } catch (e) {
-      await rollbackOwned(exec, name, id, state.stateId, label, cooperative);
+      root = "";
+      unseal = "";
+      const retirement = retain(
+        (async () => {
+          // Never reconcile absence while a create producer can still acquire the backend.
+          await producer?.catch(() => undefined);
+          await Promise.allSettled([...dockerWork]);
+          await rollbackOwned(exec, name, id, state.stateId, label, nonce, imageId);
+          await Promise.allSettled([...requests, ...dockerWork]);
+          if (uncertainProducer || uncertainRequests.has(requests)) fail();
+          await intent.remove();
+        })(),
+      );
+      await observe(retirement, cleanupOptions());
       throw e;
     }
   } catch {
@@ -398,16 +534,29 @@ function defaultDocker(cwd: string): Exec {
       }),
       options.signal === undefined ? {} : { signal: options.signal },
     );
-    return { status: r.status === "ok" && !r.cleanupUncertain ? 0 : 1, stdout: r.stdout };
+    return {
+      status: r.status === "ok" && !r.cleanupUncertain ? 0 : 1,
+      stdout: r.stdout,
+      cleanupUncertain: r.cleanupUncertain,
+      outcome: r.status,
+      stdoutTruncated: r.stdoutTruncated,
+    };
   };
 }
 async function dock(exec: Exec, args: readonly string[], options: OpenBaoCooperativeOptions = {}) {
   checkCooperative(options);
   return exec(Object.freeze(["/usr/bin/docker", ...args]), options);
 }
-async function ok(p: Promise<{ status: number; stdout: string }>) {
+async function ok(p: Promise<DockerResult>) {
   const r = await p;
-  if (r.status !== 0 || r.stdout.length > 8192) fail();
+  if (
+    r.status !== 0 ||
+    r.cleanupUncertain ||
+    r.stdoutTruncated ||
+    (r.outcome !== undefined && r.outcome !== "ok") ||
+    r.stdout.length > 8192
+  )
+    fail();
   return r;
 }
 function oneLine(s: string) {
@@ -423,11 +572,22 @@ function repoDigest(s: string, digest: string) {
   const v = JSON.parse(oneLine(s));
   return Array.isArray(v) && v.some((x) => typeof x === "string" && x === `quay.io/openbao/openbao@${digest}`);
 }
-async function inspect(exec: Exec, name: string, options: OpenBaoCooperativeOptions = {}): Promise<Meta> {
+async function inspect(exec: Exec, name: string, options: OpenBaoCooperativeOptions): Promise<Meta> {
   const j = JSON.parse(oneLine((await ok(exec(["inspect", name, "--format", "{{json .}}"], options))).stdout)) as {
     Id?: string;
+    Image?: string;
     Name?: string;
-    Config?: { Image?: string; Labels?: Record<string, string> };
+    Config?: { Image?: string; User?: string; Labels?: Record<string, string> };
+    HostConfig?: {
+      ReadonlyRootfs?: boolean;
+      Tmpfs?: Record<string, string>;
+      CapDrop?: string[];
+      SecurityOpt?: string[];
+      VolumesFrom?: unknown[] | null;
+      NetworkMode?: string;
+      RestartPolicy?: { Name?: string };
+    };
+    Mounts?: Array<{ Type?: string; Source?: string; Destination?: string; RW?: boolean; Propagation?: string }>;
     State?: { Running?: boolean };
     NetworkSettings?: { Ports?: Record<string, Array<{ HostIp?: string; HostPort?: string }> | null> };
   };
@@ -437,16 +597,51 @@ async function inspect(exec: Exec, name: string, options: OpenBaoCooperativeOpti
     id: j.Id ?? "",
     name: j.Name ?? "",
     image: j.Config?.Image ?? "",
+    imageId: j.Image ?? "",
     label: j.Config?.Labels?.["cogs.dev.launcher.state"] ?? "",
+    nonce: j.Config?.Labels?.["cogs.dev.launcher.acquisition"] ?? "",
     running: j.State?.Running === true,
-    port: b?.HostIp === "127.0.0.1" && Number.isSafeInteger(port) ? port : 0,
+    port:
+      b?.HostIp === "127.0.0.1" &&
+      Number.isSafeInteger(port) &&
+      port > 0 &&
+      port <= 65535 &&
+      j.NetworkSettings?.Ports?.["8200/tcp"]?.length === 1 &&
+      Object.keys(j.NetworkSettings.Ports).length === 1
+        ? port
+        : 0,
+    safe:
+      j.Config?.User === "100:1000" &&
+      j.HostConfig?.ReadonlyRootfs === true &&
+      JSON.stringify(j.HostConfig.Tmpfs) === JSON.stringify({ "/openbao/file": tmpfs.split(":")[1] }) &&
+      JSON.stringify(j.HostConfig.CapDrop) === '["ALL"]' &&
+      JSON.stringify(j.HostConfig.SecurityOpt) === '["no-new-privileges"]' &&
+      (j.HostConfig.VolumesFrom == null || j.HostConfig.VolumesFrom.length === 0) &&
+      j.HostConfig.NetworkMode === "default" &&
+      j.HostConfig.RestartPolicy?.Name === "no" &&
+      Array.isArray(j.Mounts) &&
+      j.Mounts.length === 2 &&
+      j.Mounts.filter((m) => m.Type === "tmpfs" && m.Destination === "/openbao/file" && m.RW === true).length === 1 &&
+      j.Mounts.filter(
+        (m) =>
+          m.Type === "bind" &&
+          m.Source === configPath &&
+          m.Destination === "/openbao/cogs-config.hcl" &&
+          m.RW === false &&
+          m.Propagation === "rprivate",
+      ).length === 1,
   };
 }
-function owned(m: Meta, id: string, name: string, stateId: string) {
-  return m.id === id && m.name === `/${name}` && m.image === OPENBAO_IMAGE && m.label === stateId;
-}
-function ownedLive(m: Meta, id: string, name: string, stateId: string, port: number) {
-  return owned(m, id, name, stateId) && m.running && m.port === port;
+function owned(m: Meta, id: string, name: string, stateId: string, nonce: string, imageId: string) {
+  return (
+    idRe.test(m.id) &&
+    m.id === id &&
+    m.name === `/${name}` &&
+    m.image === OPENBAO_IMAGE &&
+    m.imageId === imageId &&
+    m.label === stateId &&
+    m.nonce === nonce
+  );
 }
 function cooperativeOptions(value: unknown): OpenBaoCooperativeOptions {
   if (value === undefined) return Object.freeze({});
@@ -466,41 +661,43 @@ function cooperativeOptions(value: unknown): OpenBaoCooperativeOptions {
       out.deadlineAt = item.value;
     }
   }
-  return Object.freeze(out);
+  const checked = Object.freeze(out);
+  if (out.deadlineAt !== undefined) deadlines.set(checked, performance.now() + out.deadlineAt - Date.now());
+  return checked;
 }
 function aborted(options: OpenBaoCooperativeOptions): boolean {
   const signalAborted =
     options.signal !== undefined &&
     (ABORTED_GETTER === undefined ? false : ABORTED_GETTER.call(options.signal) === true);
-  return signalAborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt);
+  return signalAborted || deadlineRemaining(options) <= 0;
 }
 function checkCooperative(options: OpenBaoCooperativeOptions): void {
   if (aborted(options)) fail();
 }
-function cleanupOptions(_options: OpenBaoCooperativeOptions): OpenBaoCooperativeOptions {
-  return Object.freeze({ deadlineAt: Date.now() + 15_000 });
+function cleanupOptions(): OpenBaoCooperativeOptions {
+  // Independent owner escalation budget, not a renewed caller observation.
+  return within({}, 15_000);
+}
+function deadlineRemaining(options: OpenBaoCooperativeOptions): number {
+  const end = deadlines.get(options);
+  return end !== undefined
+    ? end - performance.now()
+    : options.deadlineAt === undefined
+      ? Infinity
+      : options.deadlineAt - Date.now();
+}
+function within(options: OpenBaoCooperativeOptions, boundMs: number): OpenBaoCooperativeOptions {
+  const remaining = Math.min(boundMs, deadlineRemaining(options));
+  const checked = Object.freeze({ ...options, deadlineAt: Math.ceil(Date.now() + remaining) });
+  deadlines.set(checked, performance.now() + remaining);
+  return checked;
 }
 function remainingMs(options: OpenBaoCooperativeOptions, boundMs: number): number {
-  if (options.deadlineAt === undefined) return boundMs;
-  return Math.max(1, Math.min(boundMs, options.deadlineAt - Date.now()));
+  return Math.max(1, Math.ceil(Math.min(boundMs, deadlineRemaining(options))));
 }
-function cooperativeFetch(fetcher: typeof fetch, options: OpenBaoCooperativeOptions): typeof fetch {
-  return Object.freeze(async (input: string | URL | Request, init?: RequestInit) => {
-    checkCooperative(options);
-    const parent = options.signal;
-    const child = new AbortController();
-    const relay = () => child.abort();
-    const timer = setTimeout(relay, remainingMs(options, 5000));
-    timer.unref?.();
-    if (parent !== undefined) EVENT_ADD.call(parent, "abort", relay, { once: true });
-    try {
-      const next = { ...(init ?? {}), signal: child.signal };
-      return await fetcher(input, next);
-    } finally {
-      clearTimeout(timer);
-      if (parent !== undefined) EVENT_REMOVE.call(parent, "abort", relay);
-    }
-  }) as typeof fetch;
+type BaoClient = ReturnType<typeof client>;
+function client(fetcher: typeof fetch, options: OpenBaoCooperativeOptions, work: Set<Promise<unknown>>) {
+  return { fetcher, options, work };
 }
 async function rollbackOwned(
   exec: Exec,
@@ -508,18 +705,20 @@ async function rollbackOwned(
   id: string,
   stateId: string,
   label: string,
-  options: OpenBaoCooperativeOptions = {},
+  nonce: string,
+  imageId: string,
 ): Promise<void> {
-  const cleanup = cleanupOptions(options);
-  const meta = await inspect(exec, name, cleanup);
-  if (!owned(meta, id, name, stateId)) fail();
-  await ok(exec(["rm", "-f", id], cleanup));
+  const cleanup = cleanupOptions();
+  const meta = await inspect(exec, idRe.test(id) ? id : name, cleanup);
+  if (!owned(meta, idRe.test(id) ? id : meta.id, name, stateId, nonce, imageId) || !meta.safe) fail();
+  await ok(exec(["rm", "-f", meta.id], cleanup));
   const left = await exec(["ps", "-a", "--filter", `label=${label}`, "--format", "{{.ID}}"], cleanup);
   if (left.status !== 0 || left.stdout.trim() !== "") fail();
   if (meta.port > 0) await closedPort(meta.port, cleanup);
+  // Unknown storage stays attached to its preserved container and retained intent.
 }
 async function bao(
-  fetcher: typeof fetch,
+  client: BaoClient,
   origin: string,
   path: string,
   method: "GET" | "POST" | "PUT",
@@ -528,44 +727,69 @@ async function bao(
   statuses: readonly number[],
 ) {
   if (!path.startsWith("/v1/")) fail();
-  const ac = new AbortController(),
-    t = setTimeout(() => ac.abort(), 5000);
-  try {
-    const h: Record<string, string> = { accept: "application/json" };
-    if (tok) h["x-vault-token"] = tok;
-    let b: string | undefined;
-    if (body !== undefined) {
-      b = JSON.stringify(body);
-      h["content-type"] = "application/json";
-    }
-    const init: RequestInit = { method, headers: h, redirect: "error", signal: ac.signal };
-    if (b !== undefined) init.body = b;
-    const r = await fetcher(`${origin}${path}`, init);
-    try {
-      if (!statuses.includes(r.status)) fail();
-      if (r.status === 204) return undefined;
-      if (!/^application\/json(?:\s*;|$)/iu.test(r.headers.get("content-type") ?? "")) fail();
-      const text = await bounded(r, 65536);
-      if (hasDuplicateJsonKeys(text)) fail();
-      const parsed = JSON.parse(text) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail();
-      return parsed;
-    } finally {
-      await cancel(r);
-    }
-  } finally {
-    clearTimeout(t);
-  }
+  checkCooperative(client.options);
+  const ac = new AbortController();
+  const options = within(client.options, 5000);
+  const abort = () => ac.abort();
+  const t = setTimeout(abort, remainingMs(options, 5000));
+  if (options.signal) EVENT_ADD.call(options.signal, "abort", abort, { once: true });
+  if (aborted(options)) abort();
+  const actual = retain(
+    (async () => {
+      try {
+        const h: Record<string, string> = { accept: "application/json" };
+        if (tok) h["x-vault-token"] = tok;
+        let b: string | undefined;
+        if (body !== undefined) {
+          b = JSON.stringify(body);
+          h["content-type"] = "application/json";
+        }
+        const init: RequestInit = { method, headers: h, redirect: "error", signal: ac.signal };
+        if (b !== undefined) init.body = b;
+        const r = await client.fetcher(`${origin}${path}`, init);
+        const text = await bounded(r, 65536, ac.signal, client.work);
+        checkCooperative(options);
+        if (ac.signal.aborted) fail();
+        if (!statuses.includes(r.status)) fail();
+        if (r.status === 204) {
+          if (text !== "") fail();
+          return undefined;
+        }
+        if (!/^application\/json(?:\s*;|$)/iu.test(r.headers.get("content-type") ?? "")) fail();
+        if (hasDuplicateJsonKeys(text)) fail();
+        const parsed = JSON.parse(text) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail();
+        return parsed;
+      } finally {
+        clearTimeout(t);
+        if (options.signal) EVENT_REMOVE.call(options.signal, "abort", abort);
+      }
+    })(),
+    client.work,
+  );
+  return observe(actual, options);
 }
-async function bounded(r: Response, max: number) {
+async function bounded(r: Response, max: number, signal: AbortSignal, work: Set<Promise<unknown>>) {
   const rd = r.body?.getReader();
   if (!rd) return "";
   let n = 0,
     c = 0;
   const xs: Buffer[] = [];
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= rd.cancel().catch(() => {
+      uncertainRequests.add(work);
+    });
+  };
+  EVENT_ADD.call(signal, "abort", cancel, { once: true });
+  if (signal.aborted) cancel();
   try {
+    const length = r.headers.get("content-length");
+    if (length !== null && (!/^[0-9]+$/u.test(length) || Number(length) > max)) fail();
     for (;;) {
+      if (signal.aborted) fail();
       const x = await rd.read();
+      if (signal.aborted) fail();
       if (x.done) break;
       if (!x.value || ++c > 1024) fail();
       n += x.value.byteLength;
@@ -574,49 +798,37 @@ async function bounded(r: Response, max: number) {
     }
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(xs, n));
   } finally {
+    cancel();
+    await cancellation;
+    EVENT_REMOVE.call(signal, "abort", cancel);
     rd.releaseLock();
-    await cancel(r);
+    for (const bytes of xs) bytes.fill(0);
   }
 }
-async function cancel(r: Response) {
-  await r.body?.cancel().catch(() => undefined);
-}
-async function waitReachable(fetcher: typeof fetch, origin: string) {
+async function waitReachable(fetcher: BaoClient, origin: string) {
   for (let i = 0; i < 20; i++) {
     try {
       await health(fetcher, origin, [200, 429, 472, 473, 501, 503]);
       return;
     } catch {
+      checkCooperative(fetcher.options);
+      if (fetcher.work.size > 0) fail();
       await new Promise((r) => setTimeout(r, 25));
     }
   }
   fail();
 }
-async function healthReady(fetcher: typeof fetch, origin: string) {
+async function healthReady(fetcher: BaoClient, origin: string) {
   const state = await health(fetcher, origin, [200]);
   if (state.initialized !== true || state.sealed !== false) fail();
 }
-async function health(fetcher: typeof fetch, origin: string, statuses: readonly number[]) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 5000);
-  try {
-    const r = await fetcher(`${origin}/v1/sys/health`, { method: "GET", redirect: "error", signal: ac.signal });
-    try {
-      if (!statuses.includes(r.status)) fail();
-      if (!/^application\/json(?:\s*;|$)/iu.test(r.headers.get("content-type") ?? "")) fail();
-      const text = await bounded(r, 4096);
-      if (hasDuplicateJsonKeys(text)) fail();
-      const parsed = JSON.parse(text) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail();
-      const state = parsed as { initialized?: unknown; sealed?: unknown };
-      if (typeof state.initialized !== "boolean" || typeof state.sealed !== "boolean") fail();
-      return { initialized: state.initialized, sealed: state.sealed };
-    } finally {
-      await cancel(r);
-    }
-  } finally {
-    clearTimeout(t);
-  }
+async function health(fetcher: BaoClient, origin: string, statuses: readonly number[]) {
+  const state = (await bao(fetcher, origin, "/v1/sys/health", "GET", undefined, undefined, statuses)) as {
+    initialized?: unknown;
+    sealed?: unknown;
+  };
+  if (typeof state.initialized !== "boolean" || typeof state.sealed !== "boolean") fail();
+  return { initialized: state.initialized, sealed: state.sealed };
 }
 function key(rb: typeof randomBytes) {
   const b = rb(32);
@@ -637,8 +849,160 @@ function arrStr(v: unknown, k: string) {
   if (!Array.isArray(x) || x.length !== 1 || typeof x[0] !== "string" || !secretRe.test(x[0])) fail();
   return x[0];
 }
-function token(v: unknown) {
-  return str((v as { auth?: unknown }).auth, "client_token");
+function exactPolicy(value: unknown, policy: string) {
+  return Array.isArray(value) && value.length === 1 && value[0] === policy;
+}
+function tokenRequest(policy: string) {
+  return {
+    policies: [policy],
+    no_default_policy: true,
+    type: "service",
+    ttl: `${tokenSeconds}s`,
+    explicit_max_ttl: `${tokenSeconds}s`,
+    renewable: false,
+    num_uses: 0,
+  };
+}
+function token(v: unknown, policy: string) {
+  const envelope = v as { auth?: Record<string, unknown>; warnings?: unknown; wrap_info?: unknown };
+  const a = envelope.auth;
+  if (
+    !a ||
+    (envelope.warnings != null && (!Array.isArray(envelope.warnings) || envelope.warnings.length !== 0)) ||
+    envelope.wrap_info != null ||
+    !exactPolicy(a.policies, policy) ||
+    (a.token_policies !== undefined && !exactPolicy(a.token_policies, policy)) ||
+    (a.identity_policies !== undefined && (!Array.isArray(a.identity_policies) || a.identity_policies.length !== 0)) ||
+    a.token_type !== "service" ||
+    a.renewable !== false ||
+    a.lease_duration !== tokenSeconds ||
+    (a.entity_id != null && a.entity_id !== "")
+  )
+    fail();
+  return str(a, "client_token");
+}
+async function denied(
+  c: BaoClient,
+  origin: string,
+  tok: string,
+  path: string,
+  method: "GET" | "POST" = "POST",
+  body: unknown = {},
+) {
+  const response = (await bao(c, origin, path, method, tok, method === "GET" ? undefined : body, [403])) as {
+    errors?: unknown;
+  };
+  if (
+    !Array.isArray(response.errors) ||
+    response.errors.length < 1 ||
+    response.errors.length > 4 ||
+    response.errors.some((x) => x !== "permission denied" && x !== "invalid token")
+  )
+    fail();
+}
+async function validateChild(
+  c: BaoClient,
+  origin: string,
+  tok: string,
+  policy: string,
+  key: string,
+  startedAt: number,
+) {
+  const response = (await bao(c, origin, "/v1/auth/token/lookup-self", "GET", tok, undefined, [200])) as {
+    data?: Record<string, unknown>;
+  };
+  const d = response.data;
+  const elapsed = Math.ceil((Date.now() - startedAt) / 1000);
+  if (
+    !d ||
+    d.id !== tok ||
+    !exactPolicy(d.policies, policy) ||
+    d.orphan !== true ||
+    d.renewable !== false ||
+    d.type !== "service" ||
+    d.explicit_max_ttl !== tokenSeconds ||
+    !Number.isSafeInteger(d.ttl) ||
+    Number(d.ttl) < tokenSeconds - elapsed - 5 ||
+    Number(d.ttl) > tokenSeconds ||
+    d.num_uses !== 0 ||
+    (d.period !== undefined && d.period !== 0) ||
+    (d.entity_id != null && d.entity_id !== "") ||
+    (d.role != null && d.role !== "") ||
+    (d.identity_policies !== undefined && (!Array.isArray(d.identity_policies) || d.identity_policies.length !== 0))
+  )
+    fail();
+  if (elapsed > 30 || elapsed < 0) fail();
+  const model = policy === "cogs-model-auth-read";
+  const path = model ? "users/alice/anthropic" : egressHandle;
+  const data = (await bao(c, origin, `/v1/model/data/${path}`, "GET", tok, undefined, [200])) as {
+    data?: { data?: { api_key?: unknown }; metadata?: { version?: unknown; created_time?: unknown } };
+  };
+  if (
+    data.data?.data?.api_key !== key ||
+    data.data.metadata?.version !== 1 ||
+    typeof data.data.metadata.created_time !== "string"
+  )
+    fail();
+  if (!model) {
+    const metadata = (await bao(c, origin, `/v1/model/metadata/${egressHandle}`, "GET", tok, undefined, [200])) as {
+      data?: { current_version?: unknown; versions?: Record<string, { created_time?: unknown }> };
+    };
+    if (
+      metadata.data?.current_version !== 1 ||
+      metadata.data.versions?.["1"]?.created_time !== data.data.metadata.created_time
+    )
+      fail();
+    const pki = new OpenBaoEgressPkiSource({
+      origin,
+      mount: "pki",
+      role: "cogs-egress",
+      allowLoopbackHttpDevelopment: true,
+      minValidityMarginMs: OPENBAO_PKI_BUDGET.maxMarginMs,
+      identity: { withToken: (_signal, op) => op(tok) },
+      fetchImpl: c.fetcher,
+      timeoutMs: remainingMs(c.options, 5000),
+    });
+    await observe(
+      retain(
+        pki.withPkiMaterial(
+          {
+            sessionId: "bootstrap-proof",
+            hosts: ["localhost"],
+            maxSessionExpiresAtMs: Date.now() + OPENBAO_PKI_BUDGET.maxSessionMs,
+            ...(c.options.signal ? { signal: c.options.signal } : {}),
+          },
+          async () => {},
+        ),
+        c.work,
+      ),
+      c.options,
+    );
+  }
+  if (!model)
+    await bao(c, origin, "/v1/pki/issue/cogs-egress", "POST", tok, { common_name: "other.example", ttl: "60s" }, [400]);
+  const other = model ? egressHandle : "users/alice/anthropic";
+  for (const deniedPath of [
+    `/v1/model/data/${other}`,
+    `/v1/model/metadata/${other}`,
+    "/v1/model/metadata/users/alice?list=true",
+    "/v1/model/data/users/bob/anthropic",
+    "/v1/model/metadata/users/bob/integrations/stage3-localhost",
+    "/v1/sys/policies/acl/cogs-model-auth-read",
+    "/v1/pki/roles/cogs-egress",
+  ])
+    await denied(c, origin, tok, deniedPath, "GET");
+  for (const [deniedPath, body] of [
+    ["/v1/auth/token/create-orphan", tokenRequest(policy)],
+    ["/v1/auth/token/renew-self", {}],
+    ["/v1/auth/token/revoke", { token: "unowned-probe-token" }],
+    [`/v1/model/data/${path}`, { data: { api_key: "denied-probe" } }],
+    ["/v1/sys/mounts/denied-probe", { type: "kv" }],
+    ["/v1/pki/roles/cogs-egress", { allowed_domains: ["example.com"] }],
+    ["/v1/sys/policies/acl/cogs-model-auth-read", { policy: 'path "*" { capabilities = ["sudo"] }' }],
+    ["/v1/pki/root/generate/internal", { common_name: "denied-probe" }],
+    [model ? "/v1/pki/issue/cogs-egress" : "/v1/pki/issue/other-role", { common_name: "localhost", ttl: "60s" }],
+  ] as const)
+    await denied(c, origin, tok, deniedPath, "POST", body);
 }
 function certOnly(v: unknown) {
   const d = (v as { data?: unknown }).data as Record<string, unknown>;
@@ -660,19 +1024,23 @@ function holder(get: () => string, set: (v: string) => void): SecretHolder {
     dispose: Object.freeze(() => set("")),
   });
 }
-async function revoke(fetcher: typeof fetch, origin: string, tok: string) {
+async function revoke(fetcher: BaoClient, origin: string, tok: string) {
   if (tok) await bao(fetcher, origin, "/v1/auth/token/revoke-self", "POST", tok, {}, [200, 204]).catch(() => undefined);
 }
-function once(fn: (options?: OpenBaoCooperativeOptions) => Promise<void>) {
+function once(seal: () => void, fn: () => Promise<void>) {
   let p: Promise<void> | undefined;
   return (options?: OpenBaoCooperativeOptions) => {
-    const checked = options === undefined ? undefined : cooperativeOptions(options);
+    const checked = cooperativeOptions(options);
     if (p === undefined) {
-      p = fn(checked).catch(() => {
-        throw fail();
-      });
+      seal();
+      // Install the owner before callbacks (including reentrant close).
+      p = retain(
+        Promise.resolve()
+          .then(fn)
+          .catch(() => fail()),
+      );
     }
-    return p;
+    return observe(p, within(checked, 15_000));
   };
 }
 async function closedPort(port: number, options: OpenBaoCooperativeOptions = {}) {
@@ -696,11 +1064,91 @@ async function closedPort(port: number, options: OpenBaoCooperativeOptions = {})
       else rej(fail());
     };
     const onConnect = () => done(false);
-    const onError = () => done(true);
+    const onError = (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED");
     if (options.signal !== undefined) EVENT_ADD.call(options.signal, "abort", abort, { once: true });
     s.once("connect", onConnect);
     s.once("error", onError);
     s.connect(port, "127.0.0.1");
+  });
+}
+async function acquisitionIntent(
+  state: LauncherState,
+  name: string,
+  nonce: string,
+  imageId: string,
+  architecture: string,
+) {
+  const path = join(state.controlDir, "openbao-acquisition.json");
+  const file = await open(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  const identity = await file.stat();
+  try {
+    await file.writeFile(
+      JSON.stringify({
+        schema: "openbao-acquisition-v1",
+        stateId: state.stateId,
+        sourceRevision: state.sourceRevision,
+        name,
+        nonce,
+        image: OPENBAO_IMAGE,
+        imageId,
+        architecture,
+        configPath,
+        configSha256: createHash("sha256").update(expectedConfig).digest("hex"),
+        portBinding: "127.0.0.1::8200/tcp",
+        capDrop: ["ALL"],
+        securityOpt: ["no-new-privileges"],
+        volumes: [],
+        tmpfs,
+        user: "100:1000",
+        readonlyRootfs: true,
+        cleanupRequired: true,
+      }),
+    );
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  const syncDir = async () => {
+    const dir = await open(state.controlDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
+  };
+  await syncDir();
+  return {
+    remove: async () => {
+      const current = await lstat(path);
+      if (current.dev !== identity.dev || current.ino !== identity.ino || !current.isFile() || current.isSymbolicLink())
+        fail();
+      await unlink(path);
+      await syncDir();
+    },
+  };
+}
+// A deadline bounds observation, never the lifetime of the promise being observed.
+function observe<T>(work: Promise<T>, options: OpenBaoCooperativeOptions): Promise<T> {
+  const end = performance.now() + remainingMs(options, 30_000);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (ok: boolean, value?: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (options.signal) EVENT_REMOVE.call(options.signal, "abort", abort);
+      if (ok) resolve(value as T);
+      else reject(new Error("launcher openbao failed"));
+    };
+    const abort = () => done(false);
+    const timer = setTimeout(abort, Math.max(1, end - performance.now()));
+    if (options.signal) EVENT_ADD.call(options.signal, "abort", abort, { once: true });
+    if (aborted(options)) abort();
+    work.then((value) => done(!aborted(options) && performance.now() < end, value), abort);
   });
 }
 function fail(): never {

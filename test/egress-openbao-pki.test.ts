@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import type { OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
-import { CogsEgressPkiError, OpenBaoEgressPkiSource } from "../src/egress/openbao-pki.ts";
+import { CogsEgressPkiError, OPENBAO_PKI_BUDGET, OpenBaoEgressPkiSource } from "../src/egress/openbao-pki.ts";
 
 const exec = promisify(execFile);
 
@@ -286,6 +286,154 @@ test("rejects bad HTTP responses, JSON shape, identity callbacks, aborts, getter
     }),
     generic,
   );
+});
+
+test("full eight hours plus every margin and rounding fits 9h; exact expiry passes, clamping fails", async () => {
+  const certs = await fixture(["a.example.com"]);
+  const leafEnd = new X509Certificate(certs.leaf).validToDate.getTime();
+  const realNow = Date.now;
+  const session = OPENBAO_PKI_BUDGET.maxSessionMs;
+  assert.equal(OPENBAO_PKI_BUDGET.maxLeafSeconds, 29101);
+  assert.ok(OPENBAO_PKI_BUDGET.maxLeafSeconds < 9 * 3600);
+  try {
+    for (const margin of [0, 30_000, 90_000, 300_000]) {
+      for (const fraction of [0, 123]) {
+        const now = leafEnd - session - margin + fraction;
+        Date.now = () => now;
+        let ttl = "";
+        const source = new OpenBaoEgressPkiSource({
+          origin: "https://bao.example/",
+          mount: "pki",
+          role: "egress",
+          identity: new Identity(),
+          minValidityMarginMs: margin,
+          fetchImpl: async (_url, init) => {
+            ttl = JSON.parse(String(init?.body)).ttl;
+            return jsonResponse(certs);
+          },
+        });
+        await source.withPkiMaterial(
+          { sessionId: "s", hosts: ["a.example.com"], maxSessionExpiresAtMs: now + session - fraction },
+          async () => {},
+        );
+        assert.equal(ttl, `${Math.ceil((session - fraction + margin) / 1000) + 1}s`);
+        ttl = "";
+        await assert.rejects(
+          source.withPkiMaterial(
+            { sessionId: "s", hosts: ["a.example.com"], maxSessionExpiresAtMs: now + session + 1 },
+            async () => {},
+          ),
+          generic,
+        );
+        assert.equal(ttl, "");
+      }
+    }
+    // A role-clamped 8h leaf at E does not cover E+M, even though the server returns 200.
+    Date.now = () => leafEnd - session;
+    await assert.rejects(callWith({ ...certs, maxSessionExpiresAtMs: leafEnd }), generic);
+    // One second below the required absolute boundary is also rejected.
+    Date.now = () => leafEnd - session - 29_000;
+    await assert.rejects(callWith({ ...certs, maxSessionExpiresAtMs: Date.now() + session }), generic);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("whole-body deadline cancels a stalled read and retains actual cancel/identity work", async () => {
+  for (const mode of ["body", "error-body", "identity-reject"] as const) {
+    let release = () => {},
+      cancelled = false,
+      consumed = false,
+      settled = false;
+    const identity: OpenBaoIdentityPort = {
+      withToken: async (_signal, op) => {
+        const work = op("synthetic-token");
+        if (mode === "identity-reject") {
+          work.catch(() => {});
+          throw new Error("leaky-token-error");
+        }
+        await work;
+      },
+    };
+    const source = new OpenBaoEgressPkiSource({
+      origin: "https://bao.example/",
+      mount: "pki",
+      role: "egress",
+      identity,
+      timeoutMs: 10,
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("{"));
+            },
+            cancel() {
+              cancelled = true;
+              return new Promise<void>((resolve) => {
+                release = resolve;
+              });
+            },
+          }),
+          { status: mode === "error-body" ? 500 : 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+    const result = source
+      .withPkiMaterial(
+        { sessionId: "s", hosts: ["a.example.com"], maxSessionExpiresAtMs: Date.now() + 60_000 },
+        async () => {
+          consumed = true;
+        },
+      )
+      .finally(() => {
+        settled = true;
+      });
+    const rejected = assert.rejects(result, generic);
+    try {
+      for (let n = 0; n < 100 && !cancelled; n++) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(cancelled, true);
+      assert.equal(settled, false);
+      assert.equal(consumed, false);
+    } finally {
+      release();
+    }
+    await rejected;
+  }
+});
+
+test("PKI rejects duplicate escaped JSON keys and gates a late identity callback", async () => {
+  const certs = await fixture(["a.example.com"]);
+  await assert.rejects(
+    callWith(
+      certs,
+      async () => new Response('{"data":{},"d\\u0061ta":{}}', { headers: { "content-type": "application/json" } }),
+    ),
+    generic,
+  );
+  let callback: ((token: string) => Promise<void>) | undefined;
+  let requests = 0;
+  const source = new OpenBaoEgressPkiSource({
+    origin: "https://bao.example/",
+    mount: "pki",
+    role: "egress",
+    identity: {
+      withToken: async (_signal, op) => {
+        callback = op;
+      },
+    },
+    fetchImpl: async () => {
+      requests++;
+      return jsonResponse(certs);
+    },
+  });
+  await assert.rejects(
+    source.withPkiMaterial(
+      { sessionId: "s", hosts: ["a.example.com"], maxSessionExpiresAtMs: Date.now() + 60_000 },
+      async () => {},
+    ),
+    generic,
+  );
+  await assert.rejects(callback?.("synthetic-token") as Promise<void>);
+  assert.equal(requests, 0);
 });
 
 async function callWith(
