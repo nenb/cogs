@@ -523,7 +523,8 @@ test("cleanup wiring retains uncertainty, has no PID-number signaling or suppres
   assert.match(smoke, /smoke requires absent state/u);
   assert.doesNotMatch(smoke, /socat_pid|reuseaddr,fork|EXEC:\/bin\/true|TCP-LISTEN:18080/u);
   assert.match(smoke, /failures are diagnostic only and grant no firewall-enforcement evidence/u);
-  assert.doesNotMatch(smoke, /host TAP policy survived guest-firewall removal|denied non-proxy traffic/u);
+  assert.match(smoke, /'host_enforced_network':False/u);
+  assert.doesNotMatch(smoke, /'host_enforced_network':result=='pass'|host TAP policy survived guest-firewall removal|denied non-proxy traffic/u);
 });
 
 test("network command-boundary replacement cannot retarget ifindex deletion or an admitted writer", async () => {
