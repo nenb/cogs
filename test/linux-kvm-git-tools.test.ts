@@ -230,6 +230,13 @@ test("KVM workflow artifacts remain metadata reports and do not upload Git tools
   assert.doesNotMatch(workflow, /git-tools\.img|\.deb|COGS_KVM_CACHE_DIR/u);
   assert.match(workflow, /dev\/linux-kvm\/ci-smoke\.sh/u);
   assert.match(workflow, /dev\/linux-kvm\/driver\.sh create/u);
+  assert.match(workflow, /driver\.sh prepare-cache/u);
+  assert.ok(workflow.indexOf("driver.sh prepare-cache") < workflow.indexOf("ip netns add"));
+  assert.match(workflow, /cogs-exclusive-netns-v1/u);
+  assert.match(workflow, /sudo ip netns exec "\$COGS_KVM_NETNS" sudo -u "\$USER"/u);
+  assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'stage2-only'\)/u);
+  assert.match(workflow, /test -z "\$\(sudo ip netns pids "\$COGS_KVM_NETNS"\)"/u);
+  assert.match(workflow, /sudo ip netns delete "\$COGS_KVM_NETNS"/u);
 });
 
 function shellFunction(text: string, name: string): string {

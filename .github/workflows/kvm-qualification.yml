@@ -48,36 +48,72 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
 
+      - name: Acquire and authenticate the immutable guest image before network isolation
+        run: dev/linux-kvm/driver.sh prepare-cache
+
+      - name: Provision the exclusive disposable driver network domain
+        run: |
+          set -euo pipefail
+          ns="cogs-kvm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sudo ip netns add "$ns"
+          sudo ip -n "$ns" link set lo up
+          identity=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net)
+          boot=$(cat /proc/sys/kernel/random/boot_id)
+          sudo install -d -o root -g root -m 0755 /run/cogs-kvm-network-domain
+          printf 'cogs-exclusive-netns-v1 %s\n' "$boot" | sudo tee "/run/cogs-kvm-network-domain/$identity" >/dev/null
+          sudo chmod 0444 "/run/cogs-kvm-network-domain/$identity"
+          printf 'COGS_KVM_NETNS=%s\nCOGS_KVM_LEASE=%s\n' "$ns" "/run/cogs-kvm-network-domain/$identity" >>"$GITHUB_ENV"
+
       - name: Exercise the isolated Debian guest lifecycle
         env:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
+        run: |
+          sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env \
+            HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" \
+            dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
 
       - name: Create persistent isolated guest for authoritative conformance
         id: guest
-        run: dev/linux-kvm/driver.sh create
+        if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only')
+        run: sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env HOME="$HOME" PATH="$PATH" dev/linux-kvm/driver.sh create
 
       - name: Run authoritative Stage 1 suite against Envoy
         id: envoy_suite
+        if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only')
         continue-on-error: true
         env:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
           COGS_CONFORMANCE_PROFILE: linux-kvm
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
+        run: |
+          sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env \
+            HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" \
+            COGS_CONFORMANCE_PROFILE="$COGS_CONFORMANCE_PROFILE" \
+            npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
 
       - name: Destroy isolated conformance guest
         id: destroy
-        if: always() && steps.guest.outcome != 'skipped'
-        run: dev/linux-kvm/driver.sh destroy
+        if: always() && steps.guest.outcome == 'success'
+        run: sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env HOME="$HOME" PATH="$PATH" dev/linux-kvm/driver.sh destroy
+
+      - name: Retire the exclusive disposable driver network domain
+        id: domain_cleanup
+        if: always() && env.COGS_KVM_NETNS != ''
+        run: |
+          set -euo pipefail
+          test -z "$(sudo ip netns pids "$COGS_KVM_NETNS")"
+          sudo rm -- "$COGS_KVM_LEASE"
+          sudo ip netns delete "$COGS_KVM_NETNS"
+          test ! -e "$COGS_KVM_LEASE"
 
       - name: Validate applicability-aware reports
         id: evidence
         if: always()
         run: |
-          npm run schemas -- \
-            docs/security-evidence/generated/kvm-qualification.json \
-            docs/security-evidence/generated/kvm-driver-smoke.json \
-            docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json
+          reports=(docs/security-evidence/generated/kvm-qualification.json docs/security-evidence/generated/kvm-driver-smoke.json)
+          if [[ "${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only') }}" == true ]]; then
+            reports+=(docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json)
+          fi
+          npm run schemas -- "${reports[@]}"
 
       - name: Upload qualification evidence
         if: always()
@@ -88,13 +124,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Enforce authoritative conformance after evidence publication
+      - name: Enforce applicable conformance after evidence publication
         if: always()
         env:
+          STAGE2_ONLY: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'stage2-only') }}
+          GUEST_OUTCOME: ${{ steps.guest.outcome }}
           ENVOY_OUTCOME: ${{ steps.envoy_suite.outcome }}
           DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
+          DOMAIN_OUTCOME: ${{ steps.domain_cleanup.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
         run: |
-          test "$ENVOY_OUTCOME" = success
-          test "$DESTROY_OUTCOME" = success
+          test "$DOMAIN_OUTCOME" = success
           test "$EVIDENCE_OUTCOME" = success
+          if [[ "$STAGE2_ONLY" == true ]]; then
+            test "$GUEST_OUTCOME" = skipped
+            test "$ENVOY_OUTCOME" = skipped
+            test "$DESTROY_OUTCOME" = skipped
+          else
+            test "$GUEST_OUTCOME" = success
+            test "$ENVOY_OUTCOME" = success
+            test "$DESTROY_OUTCOME" = success
+          fi

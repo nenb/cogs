@@ -60,7 +60,7 @@ validate_paths
 # A caller nonce is checked under the driver lock, before any existing-state work.
 generation=${COGS_KVM_GENERATION:-}
 [[ -z "$generation" || "$generation" =~ ^[a-f0-9]{32}$ ]] || { echo 'FAIL: invalid generation' >&2; exit 1; }
-if [[ "$operation" != create ]]; then
+if [[ "$operation" != create && "$operation" != prepare-cache ]]; then
   [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: no retained driver custody; absence is not teardown proof' >&2; exit 1; }
   retained=$(<"$sentinel")
   [[ "$retained" =~ ^[a-f0-9]{32}$ && ( -z "$generation" || "$generation" == "$retained" ) ]] || {
@@ -543,6 +543,10 @@ verify() {
 }
 
 case "$operation" in
+  prepare-cache)
+    prepare_image
+    printf '{"status":"prepared","profile":"linux-kvm"}\n'
+    ;;
   create)
     [[ ! -e "$state" ]] || { echo 'FAIL: linux-kvm state already exists' >&2; exit 1; }
     generation=${generation:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}
@@ -585,5 +589,5 @@ case "$operation" in
     shift
     run_ssh "$@"
     ;;
-  *) echo 'usage: driver.sh {create|verify|reset|destroy|ssh}' >&2; exit 2 ;;
+  *) echo 'usage: driver.sh {prepare-cache|create|verify|reset|destroy|ssh}' >&2; exit 2 ;;
 esac
