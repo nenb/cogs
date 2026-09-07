@@ -183,6 +183,7 @@ const fixtures = await startUpstreamFixtures({
     basic: basicCredential,
   },
   redirectLocation: "https://undeclared.invalid/denied",
+  expectedAuthority: (tlsPort) => `localhost:${tlsPort}`,
   delayedResponseMs: 5_000,
 });
 const faultInjector = await startFaultInjector({ initialCapability: capability });
@@ -379,6 +380,7 @@ try {
     teardownTimeoutMs: 20_000,
   });
 
+  let postconditionCaseId: string | undefined;
   try {
     const records = adapter.accessRecords();
     const snapshot = faultInjector.snapshot();
@@ -408,6 +410,7 @@ try {
     const observations = fixtures.observations().filter((item) => item.kind === "http");
     const finalSnapshot = faultInjector.snapshot();
     if (!authoritative) {
+      postconditionCaseId = "client.npm-tarball";
       const npmObservations = observations.filter((item) => item.route === "client-npm");
       assert.equal(npmObservations.length, 1, "npm must reach the exact fixture once");
       assert.deepEqual(
@@ -424,6 +427,7 @@ try {
       assert.ok(
         npmIntents.every((item) => item.completion?.outcome === "success" && item.completion.status_class === 2),
       );
+      postconditionCaseId = undefined;
     }
     const serialized = JSON.stringify({
       report,
@@ -434,7 +438,9 @@ try {
     });
     for (const value of sensitiveValues) assert.equal(serialized.includes(value), false);
   } catch (error) {
-    const result = report.tests.find((item) => item.result !== "fail") ?? report.tests[0];
+    const preferred = report.tests.find((item) => item.id === postconditionCaseId);
+    const result =
+      preferred?.result === "fail" ? undefined : (preferred ?? report.tests.find((item) => item.result !== "fail"));
     if (result) {
       result.result = "fail";
       result.release_eligible = false;

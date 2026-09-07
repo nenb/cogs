@@ -103,6 +103,7 @@ async function withFixtures(run: (fixtures: UpstreamFixtures) => Promise<void>):
   const fixtures = await startUpstreamFixtures({
     expectedCredentials: credentials,
     redirectLocation: "https://allowed.fixture.invalid/next",
+    expectedAuthority: (tlsPort) => `127.0.0.1:${tlsPort}`,
     largeResponseBytes: 128 * 1024,
     streamChunks: 4,
     streamIntervalMs: 5,
@@ -134,6 +135,10 @@ test("HTTP/1.1 and HTTP/2 TLS fixtures provide non-reflecting positive controls"
       ["http/1.1", "h2", "h2"],
     );
     assert.equal(JSON.stringify(observations).includes("never-record"), false);
+    assert.equal(
+      observations.every((item) => item.kind !== "http" || item.authority_matches === true),
+      true,
+    );
   });
 });
 
