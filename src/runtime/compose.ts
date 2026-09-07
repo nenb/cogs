@@ -316,7 +316,12 @@ export async function startProductionWorker(
           closeTimeoutMs: runtime.lifecycle.shutdown_timeout_seconds * 1000,
         }),
         randomSecret: seams.randomSecret,
-        onReplacementRequired: async () => lifecycle?.dependencyLost("egressRuntime"),
+        onReplacementRequired: async (reason) => {
+          // Only the owner's own abort is expected. Real revocation/loss remains
+          // a sticky failure even if it races an already-requested shutdown.
+          if (reason !== "cancelled" || !signal.aborted || !lifecycle?.shutdownRequested)
+            lifecycle?.dependencyLost("egressRuntime");
+        },
         nowMs: seams.now,
         timers: Object.freeze({ setTimeout, clearTimeout }),
         signal,

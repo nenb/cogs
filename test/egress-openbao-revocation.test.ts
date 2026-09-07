@@ -9,7 +9,10 @@ import {
   getOpenBaoHydratedMaterial,
   OpenBaoEgressRevocationSource,
 } from "../src/egress/openbao-revocation.ts";
-import { createCogsEgressRevocationWatcher } from "../src/egress/revocation-watcher.ts";
+import {
+  createCogsEgressRevocationWatcher,
+  failedCogsEgressRevocationRetirement,
+} from "../src/egress/revocation-watcher.ts";
 
 const raw = "tokensecret users/user-a/provider path metadata";
 const base = {
@@ -188,7 +191,7 @@ test("callback-scoped token is exactly once, aborts propagate, redirects are dis
       return json(meta(1));
     },
   });
-  await source.read(new AbortController().signal);
+  await assert.rejects(source.read(new AbortController().signal), generic);
   assert.equal(calls, 1);
   await assert.rejects(late?.("tokensecret") ?? Promise.resolve());
 
@@ -210,10 +213,11 @@ test("callback-scoped token is exactly once, aborts propagate, redirects are dis
         },
       },
       fetchImpl: async (_url, init) =>
-        new Promise<Response>(() => {
+        new Promise<Response>((_resolve, reject) => {
           const requestSignal = init?.signal as AbortSignal | undefined;
           requestSignal?.addEventListener("abort", () => {
             fetchAborted = true;
+            reject(new Error(raw));
           });
         }),
     }).read(new AbortController().signal),
@@ -790,6 +794,166 @@ test("authority, mount and canonical handle qualify identity, not only numeric v
     versions.add(snapshot.credentialVersion);
   }
   assert.equal(versions.size, 4);
+});
+
+test("metadata joins the original cancellation on abort, late fetch and invalid response", async () => {
+  for (const mode of ["reading", "post-fetch", "invalid"] as const) {
+    for (const rejectCancel of [false, true]) {
+      const held = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      let cancellations = 0;
+      let settled = false;
+      const source = src({
+        timeoutMs: 1000,
+        fetchImpl: async () => {
+          if (mode === "post-fetch") controller.abort();
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                stream.enqueue(new TextEncoder().encode("{"));
+              },
+              cancel() {
+                cancellations++;
+                entered.resolve();
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": mode === "invalid" ? "text/plain" : "application/json" } },
+          );
+        },
+      });
+      const work = source.read(controller.signal);
+      void work.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      if (mode === "reading") {
+        await new Promise((resolve) => setImmediate(resolve));
+        controller.abort();
+      }
+      await entered.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        assert.equal(settled, false, mode);
+        assert.equal(cancellations, 1);
+      } finally {
+        if (rejectCancel) held.reject(new Error(raw));
+        else held.resolve();
+      }
+      await assert.rejects(work, generic);
+      assert.equal(cancellations, 1);
+    }
+  }
+});
+
+test("metadata retains callback work on exceptional identity exit and rejects detached duplicate/late calls", async () => {
+  for (const mode of ["throw", "duplicate", "late"] as const) {
+    const held = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<void>();
+    let callback!: (token: string) => Promise<void>;
+    let fetches = 0;
+    let settled = false;
+    const work = src({
+      timeoutMs: 1000,
+      identity: {
+        async withToken(_signal, operation) {
+          callback = operation;
+          void operation("synthetic-token");
+          await entered.promise;
+          if (mode === "duplicate") void operation("synthetic-token");
+          if (mode === "throw") throw new Error(raw);
+        },
+      },
+      fetchImpl: async () => {
+        fetches++;
+        entered.resolve();
+        return held.promise;
+      },
+    }).read(new AbortController().signal);
+    void work.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    if (mode === "late") void callback("synthetic-token");
+    try {
+      assert.equal(settled, false);
+      assert.equal(fetches, 1);
+    } finally {
+      held.resolve(json(meta(1)));
+    }
+    await assert.rejects(work, generic);
+    await assert.rejects(callback("synthetic-token"));
+    assert.equal(fetches, 1);
+  }
+});
+
+test("failed watcher startup retains an identity callback whose fetch outlives observation", async () => {
+  const held = Promise.withResolvers<Response>();
+  const entered = Promise.withResolvers<void>();
+  let expire!: () => void;
+  const starting = createCogsEgressRevocationWatcher(
+    src({
+      timeoutMs: 1000,
+      identity: {
+        async withToken(_signal, consume) {
+          void consume("synthetic-token");
+          await entered.promise;
+          throw new Error(raw);
+        },
+      },
+      fetchImpl: async () => {
+        entered.resolve();
+        return held.promise;
+      },
+    }),
+    { denyNew: async () => undefined, drain: async () => undefined, replace: async () => undefined },
+    {
+      baseline: {
+        presetRevision: base.presetRevision,
+        credentialVersion: "initial",
+        revoked: false,
+        pkiExpiresAtMs: base.pkiExpiresAtMs,
+      },
+      pollIntervalMs: 50,
+      minPkiRemainingMs: 1000,
+      operationTimeoutMs: 50,
+      nowMs: () => 0,
+      timers: {
+        setTimeout(callback) {
+          expire = callback;
+          return undefined;
+        },
+        clearTimeout() {},
+      },
+    },
+  );
+  await entered.promise;
+  expire();
+  const failure = await starting.catch((error: unknown) => error);
+  const retirement = failedCogsEgressRevocationRetirement(failure);
+  assert.ok(retirement);
+  let retired = false;
+  void retirement.then(() => {
+    retired = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(retired, false);
+  } finally {
+    held.resolve(json(meta(1)));
+  }
+  await retirement;
 });
 
 function versionHash(version: number) {

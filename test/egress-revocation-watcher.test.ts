@@ -354,12 +354,13 @@ test("close is concurrent/idempotent, cancels active work and timers, and preven
   await flush();
   const a = watcher.close();
   const b = watcher.close();
-  assert.equal(a, b);
-  assert.equal(a, nested);
+  assert.notEqual(a, b);
+  assert.notEqual(a, nested);
   assert.equal(retirement, watcher.retirement());
   timers.tick(200);
   await assert.rejects(a, generic);
   await assert.rejects(b, generic);
+  await assert.rejects(nested as Promise<void>, generic);
   assert.equal(aborted, true);
   assert.equal(watcher.ready, false);
   let retired = false;
@@ -371,11 +372,76 @@ test("close is concurrent/idempotent, cancels active work and timers, and preven
   finish(snap({ revoked: true }));
   await watcher.retirement();
   assert.equal(retired, true);
+  await watcher.close(); // Fresh observation, without healing any action failure.
   assert.equal(timers.live, 0);
   await flush();
   timers.tick(500);
   await flush();
   assert.deepEqual(actions.calls, []);
+});
+
+test("transition owner precedes action, abort and timer reentry; retirement joins the sealed frontier", async () => {
+  for (const reentry of ["deny", "timer", "source-abort"] as const) {
+    const timers = new ManualTimers();
+    const controller = new AbortController();
+    const held = Promise.withResolvers<void>();
+    let nested: Promise<void> | undefined;
+    let retired = false;
+    const events: string[] = [];
+    let reads = 0;
+    const watcher = await createCogsEgressRevocationWatcher(
+      {
+        read: async (signal) => {
+          if (++reads > 1)
+            signal.addEventListener("abort", () => {
+              if (reentry === "source-abort") nested = watcher.close();
+            });
+          return snap();
+        },
+      },
+      {
+        denyNew: async () => {
+          events.push("deny");
+          if (reentry === "deny") nested = watcher.close();
+        },
+        drain: async () => {
+          events.push("drain");
+          await held.promise;
+          events.push("drained");
+        },
+        replace: async () => {
+          events.push("replace");
+        },
+      },
+      opts(
+        {
+          setTimeout: (cb, ms) => timers.setTimeout(cb, ms),
+          clearTimeout: (timer) => {
+            timers.clearTimeout(timer);
+            if (controller.signal.aborted && reentry === "timer") nested ??= watcher.close();
+          },
+        },
+        { signal: controller.signal, operationTimeoutMs: 1000 },
+      ),
+    );
+    if (reentry === "source-abort") {
+      timers.tick(50);
+    }
+    controller.abort();
+    void watcher.retirement().then(() => {
+      retired = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(retired, false);
+      assert.deepEqual(events, ["deny", "drain"]);
+    } finally {
+      held.resolve();
+    }
+    await nested;
+    await watcher.retirement();
+    assert.deepEqual(events, ["deny", "drain", "drained", "replace"]);
+  }
 });
 
 test("close rejects generic when cleanup times out", async () => {

@@ -189,14 +189,15 @@ class RevocationWatcher {
       if (this.options.signal.aborted) controller.abort();
       else this.options.signal.addEventListener("abort", relay, { once: true });
       const deadlineAt = performance.now() + this.options.operationTimeoutMs;
-      let actual: Promise<CogsEgressRevocationSnapshot>;
-      try {
-        actual = Promise.resolve(this.source.read(controller.signal));
-      } catch (error) {
-        actual = Promise.reject(error);
-      }
+      const owned = Promise.withResolvers<CogsEgressRevocationSnapshot>();
+      const actual = owned.promise;
       this.sourceWork.add(actual);
       void actual.finally(() => this.sourceWork.delete(actual)).catch(() => undefined);
+      try {
+        Promise.resolve(this.source.read(controller.signal)).then(owned.resolve, owned.reject);
+      } catch (error) {
+        owned.reject(error);
+      }
       const snapshot = await this.observeAction(actual, controller, deadlineAt);
       return validateSnapshot(snapshot);
     } finally {
@@ -218,7 +219,12 @@ class RevocationWatcher {
 
   private async trigger(reason: CogsEgressRevocationReason, duringStart = false): Promise<void> {
     if (this.closed && !duringStart) return;
+    if (this.transition) return this.transition;
     if (!reasons.has(reason)) reason = "source_unavailable";
+    const registration = Promise.withResolvers<void>();
+    // Close may reenter through timer cancellation, abort, or the first action.
+    // Publish the registration frontier before any of those callbacks run.
+    this.transition = registration.promise;
     this.readyState = false;
     try {
       this.cancelTimer();
@@ -231,7 +237,7 @@ class RevocationWatcher {
     } catch {
       this.actionFailed = true;
     }
-    if (!this.transition) this.transition = this.runActions(reason);
+    void this.runActions(reason).then(registration.resolve, registration.reject);
     await this.transition;
   }
 
@@ -241,16 +247,11 @@ class RevocationWatcher {
       (signal: AbortSignal) => this.actions.drain(reason, signal),
       (signal: AbortSignal) => this.actions.replace(reason, signal),
     ];
-    for (const attempt of attempts) {
+    const frontier = attempts.map((attempt) => ({ attempt, ...Promise.withResolvers<void>() }));
+    this.actionWork.push(...frontier.map(({ promise }) => promise));
+    for (const { attempt, promise: actual, resolve: resolveActual, reject: rejectActual } of frontier) {
       const controller = new AbortController();
       const deadlineAt = performance.now() + this.options.operationTimeoutMs;
-      let resolveActual!: () => void;
-      let rejectActual!: (error: unknown) => void;
-      const actual = new Promise<void>((resolve, reject) => {
-        resolveActual = resolve;
-        rejectActual = reject;
-      });
-      this.actionWork.push(actual);
       // Ownership is recorded before arbitrary action code can reenter.
       try {
         Promise.resolve(attempt(controller.signal)).then(resolveActual, rejectActual);
@@ -271,6 +272,19 @@ class RevocationWatcher {
   }
 
   public close(): Promise<void> {
+    this.beginClose();
+    const observation = boundedAwait(
+      this.closePromise as Promise<void>,
+      this.options.operationTimeoutMs * 4,
+      this.options.timers,
+    ).catch(() => {
+      throw new CogsEgressRevocationError();
+    });
+    void observation.catch(() => undefined);
+    return observation;
+  }
+
+  private beginClose(): void {
     if (!this.closePromise) {
       const result = Promise.withResolvers<void>();
       const retirement = Promise.withResolvers<void>();
@@ -280,11 +294,10 @@ class RevocationWatcher {
       void retirement.promise.catch(() => undefined);
       void this.closeOnce(retirement).then(result.resolve, result.reject);
     }
-    return this.closePromise;
   }
 
   public retirement(): Promise<void> {
-    this.close();
+    this.beginClose();
     return this.retirementPromise ?? Promise.reject(new CogsEgressRevocationError());
   }
 
@@ -318,8 +331,7 @@ class RevocationWatcher {
         await Promise.allSettled([...this.sourceWork, ...this.actionWork]);
       })();
       void actualRetirement.then(retirement.resolve, retirement.reject);
-      if (!this.actionFailed)
-        await boundedAwait(actualRetirement, this.options.operationTimeoutMs * 4, this.options.timers);
+      if (!this.actionFailed) await actualRetirement;
     } catch {
       failed = true;
     }

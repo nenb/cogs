@@ -7,13 +7,18 @@ import type { CogsEgressPkiMaterial, CogsEgressPkiSource } from "../src/egress/e
 import { type CogsEnvoyProcessPort, createNodeCogsEnvoyProcessPort } from "../src/egress/envoy-process.ts";
 import type { CogsEnvoyCredentialSource, CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
-import { createOpenBaoEgressRevocationBinding, getOpenBaoHydratedMaterial } from "../src/egress/openbao-revocation.ts";
+import {
+  createOpenBaoEgressRevocationBinding,
+  getOpenBaoHydratedMaterial,
+  OpenBaoEgressRevocationSource,
+} from "../src/egress/openbao-revocation.ts";
 import type { CogsEgressRevocationSnapshot, CogsEgressRevocationTimers } from "../src/egress/revocation-watcher.ts";
 import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
 import {
   aggregateCogsEgressRoutePlanRevision,
   CogsEgressRuntimeManagerError,
   failedCogsEgressRuntimeManagerRetirement,
+  observeCogsEgressRuntime,
   startCogsEgressRuntimeManager,
 } from "../src/egress/runtime-manager.ts";
 import type { LaunchConfig } from "../src/launch/config.ts";
@@ -208,6 +213,86 @@ test("canonical path and invalid injected port fail before side effects", async 
     const hostile = fixtureRuntime();
     await assert.rejects(startCogsEgressRuntimeManager(hostile.options({ revocation } as never)), generic);
     assert.equal(hostile.openWalCalls, 0);
+  }
+});
+
+test("actual watcher frontier and OpenBao cancellation bar final retirement, material and WAL release", async () => {
+  for (const mode of ["replacement-reentry", "metadata-cancel"] as const) {
+    const held = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let closing: Promise<void> | undefined;
+    let cancellations = 0;
+    const fixture = fixtureRuntime({
+      onAuthzClose: () => {
+        if (mode === "replacement-reentry") closing = manager.close();
+      },
+    });
+    const options = fixture.options({
+      signal: controller.signal,
+      operationTimeoutMs: 1000,
+      onReplacementRequired: async () => {
+        if (mode === "replacement-reentry") {
+          entered.resolve();
+          await held.promise;
+        }
+      },
+    });
+    if (mode === "metadata-cancel") {
+      let reads = 0;
+      const source = new OpenBaoEgressRevocationSource({
+        ...openBaoConfig(),
+        identity: { withToken: async (_signal, consume) => consume("synthetic-token") },
+        userId: "preset-user",
+        credentialHandle: "users/preset-user/integrations/npm",
+        presetRevision: snap().presetRevision,
+        pkiExpiresAtMs: 10000,
+        timeoutMs: 1000,
+        fetchImpl: async () =>
+          ++reads <= 2
+            ? new Response(JSON.stringify(hydratedMetadata()), { headers: { "content-type": "application/json" } })
+            : new Response(
+                new ReadableStream({
+                  start(stream) {
+                    stream.enqueue(new TextEncoder().encode("{"));
+                  },
+                  cancel() {
+                    cancellations++;
+                    entered.resolve();
+                    return held.promise;
+                  },
+                }),
+                { headers: { "content-type": "application/json" } },
+              ),
+      });
+      const baseline = await source.read(controller.signal);
+      assert.equal(options.revocation.mode, "injected");
+      options.revocation = {
+        ...options.revocation,
+        credentialVersion: baseline.credentialVersion,
+        revocationSource: source,
+      } as typeof options.revocation;
+    }
+    const manager = await startCogsEgressRuntimeManager(options);
+    if (mode === "metadata-cancel") {
+      fixture.timers.tick(50);
+      await new Promise((resolve) => setImmediate(resolve));
+      closing = manager.close();
+    } else controller.abort();
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      assert.equal(observeCogsEgressRuntime(manager).retired, false);
+      assert.equal(fixture.scopeReleased, false);
+      assert.equal(fixture.events.includes("wal.close"), false);
+    } finally {
+      held.resolve();
+    }
+    await closing;
+    assert.equal(observeCogsEgressRuntime(manager).retired, true);
+    assert.equal(fixture.scopeReleased, true);
+    assert.equal(fixture.events.filter((event) => event === "wal.close").length, 1);
+    if (mode === "metadata-cancel") assert.equal(cancellations, 1);
   }
 });
 
