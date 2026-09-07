@@ -14,14 +14,46 @@ import type { LauncherState } from "../dev/launcher/state.ts";
 import {
   createRawExportOpeningVerifier,
   createS309ProofEmitter,
-  createTrustedWorkerRuntime,
+  createTrustedWorkerRuntime as createUnregisteredRuntime,
   type TrustedCompositionSeams,
 } from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
+import { beginRegisteredClose, createCloseOwner, joinCloseWork, registerCloseOwner } from "../src/launch/close.ts";
 import { type CogsToolPorts, createCogsPiSession } from "../src/pi/session.ts";
 import { createCogsJsonlHistoryStore } from "../src/session/jsonl-history.ts";
 import { createCogsLocalExporter } from "../src/session/local-export.ts";
 import type { CogsPreparedSkillMetadata } from "../src/skills/session-preparer.ts";
+
+function owned<T extends { close(): Promise<void> }>(handle: T): T {
+  return registerCloseOwner(
+    handle,
+    createCloseOwner(() => handle.close()),
+  );
+}
+function createTrustedWorkerRuntime(...[state, signal, seams]: Parameters<typeof createUnregisteredRuntime>) {
+  if (
+    seams &&
+    (!Object.isFrozen(seams) || Object.values(Object.getOwnPropertyDescriptors(seams)).some((d) => !("value" in d)))
+  )
+    return createUnregisteredRuntime(state, signal, seams);
+  const createApi = seams?.createApi,
+    startEnvoyEgress = seams?.startEnvoyEgress;
+  return createUnregisteredRuntime(
+    state,
+    signal,
+    seams &&
+      Object.freeze({
+        ...seams,
+        ...(createApi && {
+          createApi: (...args: Parameters<typeof createApi>) => owned(createApi(...args)),
+        }),
+        ...(startEnvoyEgress && {
+          startEnvoyEgress: async (...args: Parameters<typeof startEnvoyEgress>) =>
+            owned(await startEnvoyEgress(...args)),
+        }),
+      }),
+  );
+}
 
 const sourceRevision = "a".repeat(40);
 const stateId = "b".repeat(64);
@@ -959,6 +991,39 @@ test("trusted composition rejects reservation close callback errors and releases
   }
 });
 
+test("actual composite retirement cannot certify a sticky failed lifecycle", async () => {
+  const fixture = await makeFixture();
+  try {
+    const calls: string[] = [];
+    let failed = false;
+    const runtime = await createTrustedWorkerRuntime(
+      fixture.state,
+      new AbortController().signal,
+      Object.freeze({
+        ...seams(calls, {}),
+        createLifecycle: (options: Parameters<TrustedCompositionSeams["createLifecycle"]>[0]) => {
+          const base = fakeLifecycle(options, calls);
+          return Object.freeze({
+            ...base,
+            get ready() {
+              return base.ready;
+            },
+            get state() {
+              return failed ? "failed" : base.state;
+            },
+          }) as never;
+        },
+      }),
+    );
+    failed = true;
+    await runtime.close();
+    await assert.rejects(joinCloseWork(beginRegisteredClose(runtime)));
+    assert.equal(calls.filter((c) => c === "api-close").length, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("trusted composition lifecycle stopped after return enters same cleanup", async () => {
   const fixture = await makeFixture();
   try {
@@ -1686,27 +1751,30 @@ function s309EgressProof(
   )[]
 ) {
   let calls = 0;
-  return Object.freeze({
-    armS309: () => undefined,
-    s309CompletionProof: () => {
-      const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
-      return Object.freeze({
-        version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
-        ...(outcome === "pass"
-          ? {
-              outcome: "pass",
-              runtime_observers_consistent: true,
-              completion_observer_consistent: true,
-            }
-          : outcome === "pending" || outcome.startsWith("pending-")
+  return owned(
+    Object.freeze({
+      close: async () => undefined,
+      armS309: () => undefined,
+      s309CompletionProof: () => {
+        const outcome = outcomes[Math.min(calls++, outcomes.length - 1)] ?? "pass";
+        return Object.freeze({
+          version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+          ...(outcome === "pass"
             ? {
-                outcome: "pending",
-                reason: outcome === "pending" ? "relay-zero-wal-zero" : outcome.slice("pending-".length),
+                outcome: "pass",
+                runtime_observers_consistent: true,
+                completion_observer_consistent: true,
               }
-            : { outcome: "fail", reason: outcome }),
-      });
-    },
-  }) as never;
+            : outcome === "pending" || outcome.startsWith("pending-")
+              ? {
+                  outcome: "pending",
+                  reason: outcome === "pending" ? "relay-zero-wal-zero" : outcome.slice("pending-".length),
+                }
+              : { outcome: "fail", reason: outcome }),
+        });
+      },
+    }),
+  ) as never;
 }
 
 const s309Prompts = ["cogs launcher s3-09 setup", "cogs launcher s3-09 integrated", "cogs launcher s3-09 proof"];
@@ -1787,6 +1855,46 @@ test("s3-09 trusted proof channel captures baseline and binds to serialized sett
   assert.equal("s3_09_proof" in shifted(event("setup")).payload, false);
   assert.equal("s3_09_proof" in shifted(event("scenario")).payload, false);
   assert.equal("s3_09_proof" in shifted(event("proof")).payload, false);
+});
+
+test("S3 proof-only admission joins actual retirement, rejects early terminals and final late fixture deltas", async () => {
+  for (const mode of ["success", "late", "early-terminal", "failed-close"]) {
+    let total = 0;
+    const fixture = {
+      snapshot: () => ({
+        ready: true,
+        port: 1234,
+        generation: 0,
+        inflight: 0,
+        total,
+        counts: { "GET /credential 200": total },
+      }),
+    } as never;
+    const actual = Promise.withResolvers<void>();
+    const base: Parameters<typeof createS309ProofEmitter>[1] = s309EgressProof("pass");
+    const egress = registerCloseOwner(
+      Object.freeze({ ...base, close: async () => undefined }),
+      createCloseOwner(() => actual.promise),
+    );
+    const { run } = await preparedEmitter(fixture, egress);
+    total = 1;
+    run.settle(1);
+    let admitted = false;
+    const input = run.input(2).then(() => {
+      admitted = true;
+    });
+    const result = mode === "failed-close" ? assert.rejects(input) : input;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(admitted, false, "bounded public close success is not actual retirement");
+    if (mode === "early-terminal") assert.equal("s3_09_proof" in run.settle(2).payload, false);
+    if (mode === "late") total = 2;
+    mode === "failed-close" ? actual.reject(new Error("uncertain")) : actual.resolve();
+    await result;
+    if (mode !== "failed-close") {
+      const proof = run.settle(2).payload.s3_09_proof as { outcome: string };
+      assert.equal(proof.outcome, mode === "success" ? "pass" : "fail");
+    }
+  }
 });
 
 test("S3 scope rejects wrong/duplicate admission and terminal identities, abort and stale generation", async () => {

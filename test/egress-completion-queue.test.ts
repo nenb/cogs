@@ -3,6 +3,33 @@ import { test } from "node:test";
 import type { EgressAuditWal, EgressAuditWalRecord } from "../src/egress/audit-wal.ts";
 import { CogsEgressCompletionError, createCogsEgressCompletionQueue } from "../src/egress/completion-queue.ts";
 
+test("trusted completion observation retains exact joins through drains, drops, poison and close", async () => {
+  const { observeCogsEgressCompletions } = await import("../src/egress/completion-queue.ts");
+  const wal = fakeWal([]);
+  const queue = createCogsEgressCompletionQueue(wal, { capacity: 1, nowMs: () => 5 });
+  wal.records = [record(0, "i", "r"), record(1, "j", "r"), record(2, "k", "r")];
+  await queue.onCompletionLine(line());
+  await queue.onCompletionLine(line({ intent_id: "j" }));
+  const before = observeCogsEgressCompletions(queue);
+  queue.drain(1);
+  queue.drain(1);
+  await queue.onCompletionLine(line({ intent_id: "k" }));
+  await queue.onCompletionLine(line({ intent_id: "-", route_id: "-" }));
+  await assert.rejects(queue.onCompletionLine("malformed"));
+  await queue.close();
+  await queue.close();
+  const final = observeCogsEgressCompletions(queue);
+  assert.deepEqual(final.accounting, { accepted: 3, drained: 1, dropped: 2, retained: 0, failed: true });
+  assert.deepEqual(
+    final.completions.map((c) => c.intentId),
+    ["i", "j", "k"],
+  );
+  assert.equal(final.uncorrelated, 1);
+  assert.equal(before.accounting.retained, 1);
+  assert.ok(Object.isFrozen(final.completions));
+  assert.throws(() => observeCogsEgressCompletions({ ...queue }));
+});
+
 const raw = "host.example/path?token=secret credential handle workspace";
 const generic = (error: unknown) => {
   assert.ok(error instanceof CogsEgressCompletionError);

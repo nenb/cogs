@@ -16,8 +16,10 @@ import { type CogsTelemetry, captureTelemetry } from "../telemetry/instrumentati
 import { type EgressAuditWal, type EgressAuditWalRecord, openEgressAuditWal } from "./audit-wal.ts";
 import {
   type CogsEgressCompletion,
+  type CogsEgressCompletionObservation,
   type CogsEgressCompletionQueue,
   createCogsEgressCompletionQueue,
+  observeCogsEgressCompletions,
 } from "./completion-queue.ts";
 import { type CogsEgressPkiMaterial, type CogsEgressPkiSource, egressMaterialFailureCause } from "./egress-material.ts";
 import {
@@ -79,6 +81,30 @@ export type CogsEgressRuntimeManager = Readonly<{
   drainCompletions(limit: number): readonly CogsEgressCompletion[];
   close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void>;
 }>;
+
+export type CogsEgressRuntimeObservation = CogsEgressCompletionObservation &
+  Readonly<{
+    generation: object;
+    sessionId: string;
+    retired: boolean;
+    records: readonly EgressAuditWalRecord[];
+  }>;
+const runtimeObservers = new WeakMap<CogsEgressRuntimeManager, () => CogsEgressRuntimeObservation>();
+
+/** Trusted injection seam; no public handle keys or caller-supplied generation IDs. */
+export function registerCogsEgressRuntimeObserver<T extends CogsEgressRuntimeManager>(
+  handle: T,
+  observe: () => CogsEgressRuntimeObservation,
+): T {
+  if (runtimeObservers.has(handle)) throw new CogsEgressRuntimeManagerError();
+  runtimeObservers.set(handle, observe);
+  return handle;
+}
+export function observeCogsEgressRuntime(handle: CogsEgressRuntimeManager): CogsEgressRuntimeObservation {
+  const observe = runtimeObservers.get(handle);
+  if (!observe) throw new CogsEgressRuntimeManagerError();
+  return observe();
+}
 
 type RuntimeMaterialPaths = Readonly<{
   bootstrap: string;
@@ -236,6 +262,9 @@ class RuntimeManager {
     },
   );
   private readonly finalCompletions: CogsEgressCompletion[] = [];
+  private readonly generation = Object.freeze({});
+  private finalObservation: CogsEgressRuntimeObservation | undefined;
+  private retired = false;
   private readyResolve!: () => void;
   private readyReject!: (error: unknown) => void;
   private readonly startupRetirement: Promise<void>;
@@ -328,7 +357,7 @@ class RuntimeManager {
 
   public handle(): CogsEgressRuntimeManager {
     const manager = this;
-    return registerCloseOwner(
+    const handle: CogsEgressRuntimeManager = registerCloseOwner(
       Object.freeze({
         get ready() {
           return manager.isReady();
@@ -345,6 +374,35 @@ class RuntimeManager {
       }),
       this.beginClose,
     );
+    return registerCogsEgressRuntimeObserver(handle, () => this.observation());
+  }
+
+  private observation(): CogsEgressRuntimeObservation {
+    if (this.finalObservation) return Object.freeze({ ...this.finalObservation, retired: this.retired });
+    if (!this.wal?.ready || !this.queue) throw new CogsEgressRuntimeManagerError();
+    const records = this.wal.records;
+    if (records.length > walLimits.maxRecords) throw new CogsEgressRuntimeManagerError();
+    return Object.freeze({
+      ...observeCogsEgressCompletions(this.queue),
+      generation: this.generation,
+      sessionId: this.options.launch.session_id,
+      retired: false,
+      records: Object.freeze(
+        records.map((r) =>
+          Object.freeze({
+            version: r.version,
+            sequence: r.sequence,
+            intent_id: r.intent_id,
+            timestamp_ms: r.timestamp_ms,
+            session_id: r.session_id,
+            integration_id: r.integration_id,
+            route_id: r.route_id,
+            method: r.method,
+            credential_required: r.credential_required,
+          }),
+        ),
+      ),
+    });
   }
 
   private async runScoped(presetRevision: string): Promise<void> {
@@ -583,6 +641,7 @@ class RuntimeManager {
     let queueRetired = false;
     try {
       await this.closeQueue();
+      if (this.finalObservation?.accounting.failed) failed = true;
       queueRetired = true;
     } catch {
       failed = true;
@@ -616,6 +675,7 @@ class RuntimeManager {
     this.proxyCapability = "";
     if (retirementCertain) this.resolveStartupRetirement();
     if (failed) throw new CogsEgressRuntimeManagerError();
+    this.retired = true;
   }
 
   private async closeWatcher(): Promise<boolean> {
@@ -651,9 +711,15 @@ class RuntimeManager {
   }
 
   private async closeQueue(): Promise<void> {
-    this.captureFinalCompletions();
     const queue = this.queue;
-    if (queue) await queue.close();
+    if (queue && !queue.snapshot().failed) this.captureFinalCompletions();
+    // Called only after both producers' successful actual close. Capture the
+    // complete WAL (not the public 64-record prefix) before releasing it.
+    if (queue) {
+      this.finalObservation = this.observation();
+      await queue.close();
+      this.finalObservation = Object.freeze({ ...this.finalObservation, ...observeCogsEgressCompletions(queue) });
+    }
     if (this.queue === queue) this.queue = undefined;
   }
 

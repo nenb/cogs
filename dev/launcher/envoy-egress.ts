@@ -31,8 +31,17 @@ import {
   type CogsEgressRuntimeManager,
   type CogsEgressRuntimeManagerOptions,
   failedCogsEgressRuntimeManagerRetirement,
+  observeCogsEgressRuntime,
   startCogsEgressRuntimeManager,
 } from "../../src/egress/runtime-manager.ts";
+import {
+  beginRegisteredClose,
+  closeObservationContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+  registerCloseOwner,
+} from "../../src/launch/close.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
 import { otlpEndpoint } from "../../src/telemetry/otlp-http.ts";
 import type { LauncherProfile } from "./contract.ts";
@@ -247,10 +256,13 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
   let completionOutcome: S309CompletionProof["outcome"] = "pending";
   let completionPendingReason: S309PendingReason = "relay-zero-wal-zero";
   let completionMatchesSeen = 0;
+  let generation: object | undefined;
+  let finalValidated = false;
   let armed = false;
   let relayBaseline: ReturnType<KvmRelay["snapshot"]> | undefined;
   let walBaseline = "";
   let matchedIntent: string | undefined;
+  let matchedCompletion: string | undefined;
   let publicCa: string | undefined;
   let pkiIssued = false;
   let pkiActive = false;
@@ -348,7 +360,28 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
     }
     checkCooperative(options);
 
-    return Object.freeze({
+    const observation = (retired: boolean) => {
+      if (!manager || manager.replacementRequired || replacementEvents !== 0) fail();
+      const snap = observeCogsEgressRuntime(manager);
+      const a = snap.accounting;
+      if (
+        snap.generation !== generation ||
+        snap.sessionId !== launch.session_id ||
+        snap.retired !== retired ||
+        a.failed ||
+        snap.uncorrelated !== 0 ||
+        a.dropped !== 0 ||
+        ![a.accepted, a.drained, a.dropped, a.retained].every(
+          (n) => Number.isSafeInteger(n) && n >= 0 && n <= 10_000,
+        ) ||
+        a.accepted !== a.drained + a.dropped + a.retained ||
+        a.accepted !== snap.completions.length ||
+        snap.records.length > 10_000
+      )
+        fail();
+      return snap;
+    };
+    const handle: EnvoyEgressHandle = Object.freeze({
       snapshot: () =>
         Object.freeze({
           ready: !closed && manager?.ready === true,
@@ -414,7 +447,10 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             fail();
           armed = true;
           relayBaseline = relay.snapshot();
-          const records = manager.auditRecords?.(64);
+          generation = observeCogsEgressRuntime(manager).generation;
+          const initial = observation(false);
+          const records = initial.records;
+          if (initial.accounting.accepted !== 0) fail();
           // This launcher owns a dedicated generation, never a reused traffic prefix.
           if (
             records?.length !== 0 ||
@@ -430,6 +466,14 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
         }
       },
       s309CompletionProof: () => {
+        if (closed) {
+          return Object.freeze({
+            version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+            ...(finalValidated && completionOutcome === "pass"
+              ? { outcome: "pass", runtime_observers_consistent: true, completion_observer_consistent: true }
+              : { outcome: "fail", reason: "generation" }),
+          }) as S309CompletionProof;
+        }
         if (completionOutcome !== "fail") {
           try {
             if (
@@ -443,21 +487,28 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             )
               throw new Error("bad state");
             const relayState = relayProof(relay, manager.listenerPort);
-            const records = manager.auditRecords?.(64);
+            const current = observation(false);
+            const records = current.records;
             if (walBaseline !== "[]" || records === undefined) throw new Error("missing WAL");
             const walState = walProof(records, s309RouteId, launch.session_id);
             const record = walState === "pass" ? records[0] : undefined;
             const drained = manager.drainCompletions(64);
             drainedCompletions = addSaturating(drainedCompletions, drained.length);
-            const matches = drained.filter((item) => record !== undefined && completionMatches(item, record)).length;
+            const matches = current.completions.filter(
+              (item) => record !== undefined && completionMatches(item, record),
+            ).length;
             if (matchedIntent !== undefined && `[${matchedIntent}]` !== JSON.stringify(records))
               throw new Error("changed intent");
-            if (record && matches === 1) matchedIntent = JSON.stringify(record);
-            completionMatchesSeen = addSaturating(completionMatchesSeen, matches);
+            if (record && matches === 1) {
+              matchedIntent = JSON.stringify(record);
+              matchedCompletion ??= JSON.stringify(current.completions);
+            }
+            completionMatchesSeen = matches;
             if (
               relayState === "fail" ||
               walState === "fail" ||
-              drained.length !== matches ||
+              current.completions.length !== matches ||
+              (matchedCompletion !== undefined && JSON.stringify(current.completions) !== matchedCompletion) ||
               completionMatchesSeen > 1
             ) {
               completionOutcome = "fail";
@@ -494,7 +545,7 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
           if (armed && completionOutcome === "pass") {
             try {
               if (
-                JSON.stringify(manager?.auditRecords?.(64)) !== `[${matchedIntent}]` ||
+                JSON.stringify(observation(false).records) !== `[${matchedIntent}]` ||
                 relayProof(relay, manager?.listenerPort ?? 0) !== "pass" ||
                 relay?.snapshot().switchedTargets !== relayBaseline?.switchedTargets
               )
@@ -521,9 +572,22 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
 
             if (closeProof.closeResolved) {
               try {
-                const late = manager.drainCompletions(64);
-                if (armed && completionOutcome === "pass" && late.length !== 0) failed = true;
-                drainedCompletions = addSaturating(drainedCompletions, late.length);
+                if (armed) {
+                  const final = observation(true);
+                  const record = final.records[0];
+                  if (
+                    completionOutcome !== "pass" ||
+                    JSON.stringify(final.records) !== `[${matchedIntent}]` ||
+                    walProof(final.records, s309RouteId, launch.session_id) !== "pass" ||
+                    final.completions.length !== 1 ||
+                    JSON.stringify(final.completions) !== matchedCompletion ||
+                    !record ||
+                    !completionMatches(final.completions[0] as CogsEgressCompletion, record)
+                  )
+                    failed = true;
+                } else {
+                  drainedCompletions = addSaturating(drainedCompletions, manager.drainCompletions(64).length);
+                }
               } catch {
                 failed = true;
               }
@@ -548,15 +612,33 @@ export async function startEnvoyEgress(rawOptions: Options): Promise<EnvoyEgress
             }
           }
 
-          if (failed) {
-            fail();
+          if (armed) {
+            const end = relay?.snapshot();
+            if (
+              !end?.closed ||
+              end.poisoned ||
+              end.activeSockets !== 0 ||
+              end.activeTarget !== null ||
+              end.registeredTargets.length !== 0 ||
+              end.acceptedConnections !== 2 ||
+              end.deniedConnections !== 0 ||
+              end.switchedTargets !== relayBaseline?.switchedTargets ||
+              completionOutcome !== "pass"
+            )
+              failed = true;
           }
+          if (failed) fail();
+          finalValidated = armed;
         },
         () => {
           closed = true;
         },
+        () => {
+          if (armed) completionOutcome = "fail";
+        },
       ),
     });
+    return registerCloseOwner(handle, () => beginRegisteredClose(handle.close));
   } catch (startupError) {
     const cleanup = cleanupOptions();
     let failed = false;
@@ -897,6 +979,7 @@ function completionMatches(input: CogsEgressCompletion, record: EgressAuditWalRe
       Number.isSafeInteger(desc.durationMs?.value) &&
       typeof desc.durationMs?.value === "number" &&
       desc.durationMs.value >= 0 &&
+      desc.durationMs.value <= 86_400_000 &&
       Number.isSafeInteger(desc.completedAtMs?.value) &&
       typeof desc.completedAtMs?.value === "number" &&
       desc.completedAtMs.value >= record.timestamp_ms
@@ -942,7 +1025,8 @@ async function closeManagerAndProveCleanup(
   let failed = false;
 
   try {
-    await manager.close(options);
+    void options;
+    await joinCloseWork(beginRegisteredClose(manager));
   } catch {
     return { clean: false, failed: true, closeResolved: false };
   }
@@ -989,7 +1073,8 @@ async function closeManagerAfterStartupFailure(
   }
 
   try {
-    await manager.close(options);
+    void options;
+    await joinCloseWork(beginRegisteredClose(manager));
   } catch {
     return false;
   }
@@ -1511,9 +1596,9 @@ async function proveClosed(port: number): Promise<void> {
       socket.destroy();
       reject(fail());
     });
-    socket.once("error", () => {
+    socket.once("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
-      resolve();
+      error.code === "ECONNREFUSED" ? resolve() : reject(new Error("launcher egress failed"));
     });
     socket.connect(port, "127.0.0.1");
   });
@@ -1522,38 +1607,22 @@ async function proveClosed(port: number): Promise<void> {
 function once(
   fn: (options?: DeadlineOptions) => Promise<void>,
   seal: () => void,
+  onFailure: () => void,
 ): (options?: DeadlineOptions) => Promise<void> {
-  let pending: Promise<void> | undefined;
-  return (options = Object.freeze({})) => {
+  const owner = createCloseOwner(() => Promise.resolve().then(() => fn()), seal);
+  return registerCloseOwner((options: DeadlineOptions = Object.freeze({})) => {
     validateDeadlineOptions(options);
-    // Publish ownership before dependency callbacks can synchronously reenter.
-    pending ??= Promise.resolve().then(() => fn());
-    seal();
-    return observeLauncherClose(pending, options);
-  };
+    return observeLauncherClose(joinCloseWork(owner()), options).catch(() => {
+      onFailure();
+      fail();
+    });
+  }, owner);
 }
 
 // Module-local observers: cancellation/deadlines never discard or repeat actual work.
 export function observeLauncherClose(work: Promise<void>, options: DeadlineOptions = {}): Promise<void> {
   validateDeadlineOptions(options);
-  const deadlineAt = options.deadlineAt ?? Date.now() + 15_000;
-  const signal = options.signal;
-  return new Promise((resolve, reject) => {
-    let timer: NodeJS.Timeout | undefined;
-    let settled = false;
-    const finish = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (signal) EventTarget.prototype.removeEventListener.call(signal, "abort", cancel);
-      ok ? resolve() : reject(new Error("launcher egress failed"));
-    };
-    const cancel = () => finish(false);
-    work.then(() => finish(!aborted(signal) && Date.now() < deadlineAt), cancel);
-    if (signal) EventTarget.prototype.addEventListener.call(signal, "abort", cancel, { once: true });
-    if (aborted(signal) || Date.now() >= deadlineAt) cancel();
-    else timer = setTimeout(cancel, deadlineAt - Date.now());
-  });
+  return observeClose({ done: work, retired: work }, closeObservationContext(options, 15_000)).catch(() => fail());
 }
 
 function validateDeadlineOptions(options: unknown): asserts options is DeadlineOptions {
