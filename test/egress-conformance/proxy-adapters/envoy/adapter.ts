@@ -371,6 +371,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
       }
       await this.#captureLogs();
       await runFile(this.#docker, ["stop", "--time", "3", active.container], { timeoutMs: 10_000 });
+      await this.#captureLogs();
       await runFile(this.#docker, ["container", "rm", active.container], { timeoutMs: 15_000 });
       const listed = await runFile(
         this.#docker,
