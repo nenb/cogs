@@ -21,6 +21,7 @@ test("Stage 1 manifest is immutable, schema-valid, complete by required group, a
     ]),
   );
   const byId = new Map(STAGE_1_CASES.map((item) => [item.id, item]));
+  assert.equal(byId.get("client.npm-tarball")?.probe.expected, "allow");
   for (const item of STAGE_1_CASES) {
     const controlId = item.probe.positiveControl;
     if (item.probe.expected === "deny" || item.probe.expected === "safe")

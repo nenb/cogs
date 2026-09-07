@@ -367,7 +367,7 @@ try {
         : "This is functional-only insecure-container evidence and cannot support a guest-root isolation claim.",
       "Candidate evaluation disables release eligibility until proxy selection and production integration.",
       "The fixture adapter shares cogs-egress-bounded-v1 settings but is not the production renderer. This suite does not qualify aggregate resources, shared-cgroup monitors, sustained streaming or pressure recovery.",
-      "Node 20.19.2 native https/fetch ignore standard proxy variables without an explicit proxy agent; Debian npm 9.2.0 does not present embedded proxy credentials on this CONNECT path. These clients are measured as unsupported and require an explicit proxy agent or launcher decision.",
+      "Node native https/fetch ignore standard proxy variables without an explicit proxy agent. Authorized npm tarball compatibility requires a measured client version, exact artifact identity, and correlated proxy intent/completion plus upstream fixture evidence.",
       "Client compatibility cases are functional insecure-container measurements; Linux/KVM reports them as profile-mismatched while retaining authoritative protocol and bypass evidence.",
       "Direct OpenBao polling and production WAL persistence remain mandatory Stage 3 reruns.",
       "The immutable TLS interception certificate enumerates registered hosts; Envoy does not mint leaves dynamically.",
@@ -406,10 +406,29 @@ try {
       }
     }
     const observations = fixtures.observations().filter((item) => item.kind === "http");
+    const finalSnapshot = faultInjector.snapshot();
+    if (!authoritative) {
+      const npmObservations = observations.filter((item) => item.route === "client-npm");
+      assert.equal(npmObservations.length, 1, "npm must reach the exact fixture once");
+      assert.deepEqual(
+        npmObservations.map(({ method, authority_matches, credential_present, credential_matches }) => ({
+          method,
+          authority_matches,
+          credential_present,
+          credential_matches,
+        })),
+        [{ method: "GET", authority_matches: true, credential_present: true, credential_matches: true }],
+      );
+      const npmIntents = finalSnapshot.intents.filter((item) => item.case_id === "client.npm-tarball");
+      assert.ok(npmIntents.length > 0, "npm must have an accepted authorization intent");
+      assert.ok(
+        npmIntents.every((item) => item.completion?.outcome === "success" && item.completion.status_class === 2),
+      );
+    }
     const serialized = JSON.stringify({
       report,
       observations,
-      snapshot: faultInjector.snapshot(),
+      snapshot: finalSnapshot,
       records,
       telemetry: telemetry.records(),
     });
