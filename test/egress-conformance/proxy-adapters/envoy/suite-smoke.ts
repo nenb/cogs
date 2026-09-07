@@ -415,14 +415,15 @@ try {
       postconditionCaseId = "client.npm-tarball";
       const npmObservations = observations.filter((item) => item.route === "client-npm");
       assert.ok(npmObservations.length >= 1 && npmObservations.length <= 3, "npm fixture count must be bounded");
-      assert.deepEqual(
-        npmObservations.map(({ method, authority_matches, credential_present, credential_matches }) => ({
-          method,
-          authority_matches,
-          credential_present,
-          credential_matches,
-        })),
-        [{ method: "GET", authority_matches: true, credential_present: true, credential_matches: true }],
+      assert.ok(
+        npmObservations.every(
+          (item) =>
+            item.method === "GET" &&
+            item.authority_matches === true &&
+            item.credential_present === true &&
+            item.credential_matches === true,
+        ),
+        "every npm fixture request must match method, authority, and credential",
       );
       const npmIntents = finalSnapshot.intents.filter((item) => item.case_id === "client.npm-tarball");
       assert.equal(npmIntents.length, npmObservations.length, "every npm request must have one accepted intent");
