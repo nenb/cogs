@@ -16,6 +16,7 @@ import {
   createS309ProofEmitter,
   createTrustedWorkerRuntime as createUnregisteredRuntime,
   type TrustedCompositionSeams,
+  validateS309LiveControl,
 } from "../dev/launcher/trusted-compose.ts";
 import type { WorkerProvisionalRuntime } from "../dev/launcher/worker-process.ts";
 import { beginRegisteredClose, createCloseOwner, joinCloseWork, registerCloseOwner } from "../src/launch/close.ts";
@@ -1241,6 +1242,36 @@ test("trusted composition blocks dependent cleanup after an owner failure", asyn
       await rm(fixture.root, { recursive: true, force: true });
     }
   }
+});
+
+test("S3 live control retains failed response bodies until original cancellation settles", async () => {
+  for (const mode of ["status", "throwing-status"] as const) {
+    const held = Promise.withResolvers<void>();
+    let cancelled = false;
+    const body = new ReadableStream({
+      cancel() {
+        cancelled = true;
+        return held.promise;
+      },
+    });
+    const response = new Response(body, { status: 503 });
+    if (mode === "throwing-status")
+      Object.defineProperty(response, "status", {
+        get: () => {
+          throw new Error("status unavailable");
+        },
+      });
+    let settled = false;
+    const result = validateS309LiveControl(response, new AbortController().signal).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cancelled, true);
+    assert.equal(settled, false);
+    held.resolve();
+    await assert.rejects(result);
+  }
+  await validateS309LiveControl(new Response('{"ok":true}', { status: 200 }), new AbortController().signal);
 });
 
 test("trusted composition rejects malformed readiness while retaining original response custody", async () => {

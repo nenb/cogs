@@ -490,11 +490,9 @@ export async function createTrustedWorkerRuntime(
       admitted.profile,
       async () => {
         guestProxy.assertCurrent();
-        const response = await s.fetch(`${fixture.endpoint()}/allowed`, {
-          signal: AbortSignal.timeout(1000),
-          redirect: "error",
-        });
-        if (response.status !== 200 || (await response.text()) !== '{"ok":true}') fail();
+        const signal = AbortSignal.timeout(1000);
+        const response = await s.fetch(`${fixture.endpoint()}/allowed`, { signal, redirect: "error" });
+        await validateS309LiveControl(response, signal);
       },
       () => {
         if (!lifecycle?.ready || cleanupRequested) fail();
@@ -1161,6 +1159,15 @@ async function proveAuditWalAbsent(state: LauncherState): Promise<void> {
 
 async function proveSessionRootsEmpty(roots: RuntimeRoots): Promise<void> {
   if ((await readdir(roots.agentDir)).length !== 0 || (await readdir(roots.sessionRoot)).length !== 0) fail();
+}
+
+export async function validateS309LiveControl(response: Response, signal: AbortSignal): Promise<void> {
+  const body = response.body;
+  try {
+    if (response.status !== 200 || (await boundedResponseText(body, signal, 128)) !== '{"ok":true}') fail();
+  } finally {
+    await body?.cancel();
+  }
 }
 
 async function readyProof(
