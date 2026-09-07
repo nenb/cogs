@@ -772,7 +772,7 @@ test("ssh2 SFTP callbacks contain malformed values without uncaught throws or fa
       position: number,
       cb: (error: unknown, bytesRead: number, buffer: Buffer, position: number) => void,
     ): void {
-      setImmediate(() =>
+      setImmediate(() => {
         cb(
           new Proxy(
             {},
@@ -785,8 +785,9 @@ test("ssh2 SFTP callbacks contain malformed values without uncaught throws or fa
           0,
           buffer,
           position,
-        ),
-      );
+        );
+        cb(undefined, 0, buffer, position); // Uncertain first observation cannot be healed by later success.
+      });
     }
     public end(): void {
       this.emit("close");

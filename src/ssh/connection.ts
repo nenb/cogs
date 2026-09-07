@@ -1662,13 +1662,11 @@ function settleSftpCallback<T>(
   convert: () => T,
 ): void {
   if (isSettled()) return;
+  markSettled();
   try {
-    const value = convert();
-    markSettled();
-    resolve(value);
+    resolve(convert());
   } catch (error) {
     if (error instanceof SftpCallbackUncertainError) return;
-    markSettled();
     reject(sanitizeSftpError(error));
   }
 }
