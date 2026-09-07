@@ -6,7 +6,9 @@ const planning = readFileSync(".github/workflows/stage2-production-plan.yml", "u
 const approval = readFileSync(".github/workflows/stage2-production-approval.yml", "utf8");
 const campaign = readFileSync(".github/workflows/stage2-production-campaign.yml", "utf8");
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
+const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
 const stager = readFileSync("scripts/stage2-stage-production-approval.py", "utf8");
+const retiredH = "9b9966afffe0ea8de4d0c99147886a95094470a9";
 
 test("future planning authority is first-created, exact H/G/Q, and separately authorized", () => {
   assert.match(planning, /authorize-read-only-stage2-production-planning/u);
@@ -27,6 +29,8 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
   assert.match(planner, /qualification_revision/u);
   assert.match(planner, /stage2-pre-aws-qualification-package\/v4/u);
   assert.doesNotMatch(planner, /\bapply\b|\bdestroy\b|send-command/u);
+  assert.ok(planning.indexOf(retiredH) < planning.indexOf("gh api --paginate"));
+  assert.ok(planner.indexOf('eligible((package["implementation_revision"]') < planner.indexOf("os.environ[key]"));
 });
 
 test("approval authenticates only the exact planning workflow artifact", () => {
@@ -35,6 +39,9 @@ test("approval authenticates only the exact planning workflow artifact", () => {
   assert.match(approval, /approval-authentication\.bundle\.json/u);
   assert.match(approval, /--network none/u);
   assert.match(approval, /5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68/u);
+  assert.ok(approval.indexOf(retiredH) < approval.indexOf("gh api --paginate"));
+  assert.match(issuer, /stage2-revision-retirement\.py/u);
+  assert.ok(issuer.indexOf("eligible((draft.get") < issuer.indexOf("production.ProductionApproval"));
 });
 
 test("future campaign has one sealed caller, explicit credential files, recovery, and no retry", () => {
@@ -63,4 +70,7 @@ test("future campaign has one sealed caller, explicit credential files, recovery
   assert.match(stager, /terraform-provider-aws_v6\.54\.0_x5/u);
   assert.match(campaign, /role_duration_seconds/u);
   assert.match(campaign, /expires_unix_ns/u);
+  assert.ok(campaign.indexOf(retiredH) < campaign.indexOf("gh api --paginate"));
+  assert.match(stager, /stage2-revision-retirement\.py/u);
+  assert.ok(stager.indexOf("eligible((approval.implementation_revision") < stager.indexOf("aws_credentials = read"));
 });

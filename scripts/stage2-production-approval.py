@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
 import completion_campaign_production as production
 
+retirement = runpy.run_path(str(ROOT / "scripts/stage2-revision-retirement.py"))
 MAX_BYTES = 256 * 1024
 SHA1 = re.compile(r"[0-9a-f]{40}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -22,6 +24,11 @@ class ApprovalIssuerError(Exception): pass
 
 def require(value):
     if not value: raise ApprovalIssuerError()
+
+
+def eligible(revisions):
+    try: retirement["select"](tuple(revisions))
+    except (TypeError, ValueError) as error: raise ApprovalIssuerError() from error
 
 
 def pairs(rows):
@@ -64,6 +71,8 @@ def environment():
 def issue(path):
     revision, control, run_id, actor = environment()
     _raw, draft = read(path)
+    eligible((draft.get("implementation_revision"), draft.get("control_revision"),
+              draft.get("qualification_revision")))
     require(draft.pop("version", None) == "cogs.stage2-production-approval-draft/v2")
     allowed = {item.name for item in fields(production.ProductionApproval)} - {
         "version", "phrase", "batch_commitment", "issuer_commitment",
@@ -90,6 +99,8 @@ def issue(path):
 def authenticate(approval_path):
     revision, control, run_id, actor = environment()
     approval_raw, approval_value = read(approval_path)
+    eligible((approval_value.get("implementation_revision"), approval_value.get("control_revision"),
+              approval_value.get("qualification_revision")))
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
     approval = production.ProductionApproval(**approval_value)
     require(approval.control_revision == control)

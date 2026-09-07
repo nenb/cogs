@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 18500,
+  "global_gross_line_high": 20500,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -15,7 +15,7 @@
   "owners": [
     {
       "name": "route",
-      "gross_line_high": 1800,
+      "gross_line_high": 2200,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 200000,
@@ -127,7 +127,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 7000,
+      "gross_line_high": 7200,
       "gross_byte_forecast": {
         "source": 250000,
         "tests_fixtures": 430000,
@@ -186,7 +186,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 2600,
+      "gross_line_high": 2800,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -221,14 +221,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 3000,
+      "gross_line_high": 3500,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 31,
+      "new_file_high": 32,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -242,6 +242,9 @@
         ".github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml",
         ".github/workflows/stage2-prebuilt-rootfs-producer.yml",
         ".github/workflows/stage2-prebuilt-rootfs-publisher.yml",
+        ".github/workflows/stage2-production-approval.yml",
+        ".github/workflows/stage2-production-campaign.yml",
+        ".github/workflows/stage2-production-plan.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
         "config/external-review-remediation-budget-v1.json",
         "config/stage2-retired-revisions-v1.json",
@@ -270,9 +273,10 @@
         "docs/adr/0316-authorize-worker-transport-and-response-custody.md",
         "docs/adr/0317-reallocate-worker-transport-integration.md",
         "docs/adr/0318-authorize-s3-live-control-response-custody.md",
-        "docs/adr/0319-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0320-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md",
+        "docs/adr/0320-freeze-corrected-H-and-authorize-control.md",
         "docs/adr/0321-authorize-causal-npm-compatibility-correction.md",
+        "docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
@@ -302,8 +306,11 @@
         "scripts/stage2-prebuilt-rehearsal-grant.py",
         "scripts/stage2-prebuilt-rootfs-producer.py",
         "scripts/stage2-prebuilt-rootfs-publisher.py",
+        "scripts/stage2-production-approval.py",
+        "scripts/stage2-production-planner.py",
         "scripts/stage2-revision-retirement.py",
         "scripts/stage2-stage-prebuilt-control.py",
+        "scripts/stage2-stage-production-approval.py",
         "scripts/stage4-offline-readiness.ts",
         "scripts/stage4-offline-source-inventory.ts",
         "scripts/stage4-runtime-artifact-closure.ts",
@@ -321,6 +328,11 @@
         "test/stage2-prebuilt-rehearsal-workflow.test.ts",
         "test/stage2-prebuilt-rootfs-producer-workflow.test.ts",
         "test/stage2-prebuilt-rootfs-publisher-workflow.test.ts",
+        "test/stage2-production-approval.py",
+        "test/stage2-production-approval.test.ts",
+        "test/stage2-production-planner.py",
+        "test/stage2-production-planner.test.ts",
+        "test/stage2-production-workflows.test.ts",
         "test/stage2-remediation-budget.test.ts",
         "test/stage2-static-control-dispatch-guard.py",
         "test/stage4-offline-readiness.test.ts",

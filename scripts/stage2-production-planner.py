@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
 import completion_campaign_production as production
 
+retirement = runpy.run_path(str(ROOT / "scripts/stage2-revision-retirement.py"))
 AWS = Path("/usr/local/bin/aws")
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
 MAX = 32 * 1024 * 1024
@@ -27,6 +29,11 @@ class PlanningError(Exception): pass
 
 def require(value):
     if not value: raise PlanningError()
+
+
+def eligible(revisions):
+    try: retirement["select"](tuple(revisions))
+    except (TypeError, ValueError) as error: raise PlanningError() from error
 
 
 def pairs(rows):
@@ -100,6 +107,8 @@ def main(arguments):
             and package["static_control_observation"]["artifact_id"] > 0
             and re.fullmatch(r"sha256:[0-9a-f]{64}", package["static_control_observation"]
                              ["artifact_archive_digest"]) is not None)
+    eligible((package["implementation_revision"], package["control_revision"],
+              package["qualification_revision"]))
     require(hashlib.sha256(tofu.read_bytes()).hexdigest() == TOFU_SHA256)
     environment = {key: os.environ[key] for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN")}
