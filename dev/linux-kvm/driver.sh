@@ -36,10 +36,6 @@ image_url="https://cloud.debian.org/images/cloud/trixie/20260712-2537/$image_nam
 image_sha512=78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667
 host_ip=192.0.2.1
 guest_ip=192.0.2.2
-network_suffix=$(printf '%s:%s' "$state" "$(id -u)" | sha256sum | cut -c1-8)
-tap="cgk${network_suffix}"
-input_chain="CGKI${network_suffix}"
-drop_chain="CGKD${network_suffix}"
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
 sentinel="$state/.cogs-linux-kvm-v1"
 lock="$repo/.cogs-dev/linux-kvm.lock"
@@ -60,6 +56,24 @@ for value in (state,cache):
 PY
 }
 validate_paths
+
+# A caller nonce is checked under the driver lock, before any existing-state work.
+generation=${COGS_KVM_GENERATION:-}
+[[ -z "$generation" || "$generation" =~ ^[a-f0-9]{32}$ ]] || { echo 'FAIL: invalid generation' >&2; exit 1; }
+if [[ "$operation" != create ]]; then
+  [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: no retained driver custody; absence is not teardown proof' >&2; exit 1; }
+  retained=$(<"$sentinel")
+  [[ "$retained" =~ ^[a-f0-9]{32}$ && ( -z "$generation" || "$generation" == "$retained" ) ]] || {
+    echo 'FAIL: driver generation mismatch' >&2; exit 1;
+  }
+  generation=$retained
+fi
+select_network_names() {
+  tap="cgk${generation:0:12}"
+  input_chain="CGKI${generation:0:16}"
+  drop_chain="CGKD${generation:0:16}"
+}
+select_network_names
 
 ssh_args() {
   printf '%s\0' -F /dev/null -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
@@ -154,12 +168,60 @@ PY
 # An inverse is authorized only by a successful recorded effect and unchanged
 # snapshots. Pending/failed effects retain custody; absence alone is not proof.
 network_owner() {
-  python3 - "$state" "$1" "$tap" "$input_chain" "$drop_chain" "$proxy_port" <<'PY'
-import json,pathlib,re,subprocess,sys
-state=pathlib.Path(sys.argv[1]); action,tap,chain,forward,port=sys.argv[2:]
+  sudo python3 -I - "$state" "$1" "$tap" "$input_chain" "$drop_chain" "$proxy_port" "$(id -u)" <<'PY'
+import fcntl,json,os,pathlib,re,stat,subprocess,sys
+state=pathlib.Path(sys.argv[1]); action,tap,chain,forward,port,owner_uid=sys.argv[2:]
 record=state/'network.owner'
-def command(args):
-    return subprocess.check_output(['sudo',*args],text=True,timeout=20)
+def domain_lock():
+    # Provisioned externally by trusted root, never created/adopted by this driver.
+    # Every administrator admitted to this isolated netns must use this same lock.
+    global domain_identity
+    ns=os.stat('/proc/self/ns/net'); initial=os.stat('/proc/1/ns/net')
+    domain_identity=[ns.st_dev,ns.st_ino,pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()]
+    if (ns.st_dev,ns.st_ino)==(initial.st_dev,initial.st_ino):
+        raise RuntimeError('isolated network domain required (host PID namespace required)')
+    parent=pathlib.Path('/run/cogs-kvm-network-domain')
+    for path in (pathlib.Path('/run'),parent):
+        info=path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o022:
+            raise RuntimeError('untrusted network-domain parent')
+    fd=os.open(parent/f'{ns.st_dev}-{ns.st_ino}',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or info.st_mode & 0o222:
+            raise RuntimeError('untrusted network-domain lease')
+        expected='cogs-exclusive-netns-v1 '+pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()+'\n'
+        if os.read(fd,256).decode()!=expected: raise RuntimeError('network-domain admission missing')
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        domain_identity.extend([info.st_dev,info.st_ino,info.st_ctime_ns])
+        return fd
+    except BaseException:
+        os.close(fd); raise
+
+def command(args,expected=None):
+    # Revalidation belongs inside the effect adapter, after intent publication.
+    # The domain lock, not this extra observation, excludes admitted writers.
+    if expected is not None and snapshot()!=expected: raise RuntimeError('network changed at effect boundary')
+    if args[:4]==['ip','link','delete','dev']:
+        # RTM_DELLINK resolves the recorded ifindex, never a replaced TAP name.
+        index=expected[1][0]['ifindex']
+        program="""import socket,struct,sys
+index=int(sys.argv[1])
+with socket.socket(socket.AF_NETLINK,socket.SOCK_RAW,socket.NETLINK_ROUTE) as sock:
+ sock.settimeout(20); sock.bind((0,0))
+ payload=struct.pack('=BBHiII',socket.AF_UNSPEC,0,0,index,0,0)
+ sock.sendto(struct.pack('=IHHII',32,17,5,1,0)+payload,(0,0))
+ reply,sender=sock.recvfrom(65536)
+ if sender[0]!=0 or len(reply)<20 or struct.unpack_from('=H',reply,4)[0]!=2 or struct.unpack_from('=I',reply,8)[0]!=1 or struct.unpack_from('=i',reply,16)[0]!=0:
+  raise RuntimeError('ifindex deletion not acknowledged')
+"""
+        args=['python3','-I','-c',program,str(index)]
+    # Run the fixed tools directly, not behind another sudo process. The actual
+    # command inherits the flock: observer death cannot release a live effect's
+    # domain exclusion. A timeout terminates/reaps this direct command, and the
+    # pending journal remains sticky; every remaining descriptor holder excludes
+    # new writers. This fixed-tool contract does not admit daemonizing writers.
+    return subprocess.check_output(args,text=True,timeout=25,pass_fds=(domain_fd,))
 def snapshot():
     rules=[re.sub(r'\[\d+:\d+\]','[0:0]', '\n'.join(
         line for line in command([tool,'-t','filter']).splitlines() if not line.startswith('#')))
@@ -181,12 +243,14 @@ def snapshot():
     return [rules,link,addr]
 def save(value):
     temporary=record.with_suffix('.pending')
-    temporary.write_text(json.dumps(value)); temporary.replace(record)
+    temporary.write_text(json.dumps(value))
+    custody=state.stat(); os.chown(temporary,custody.st_uid,custody.st_gid)
+    temporary.replace(record)
 def effect(value,do,undo):
     before=snapshot()
     if before != value['current']: raise RuntimeError('network changed before effect')
     value['pending']=True; save(value) # acquisition intent precedes every effect
-    command(do)
+    command(do,before)
     after=snapshot()
     if after == before: raise RuntimeError('network effect not observed')
     value['steps'].append([undo,before,after]); value['current']=after
@@ -196,11 +260,12 @@ def run():
     if value.get('failed') or value.get('pending'): raise RuntimeError('sticky network uncertainty')
     if action == 'remove':
         if value['phase'] == 'never': return
+        if value.get('domain')!=domain_identity: raise RuntimeError('network domain changed')
         while value['steps']:
             undo,before,after=value['steps'][-1]
             if snapshot()!=after: raise RuntimeError('network ownership changed')
             value['pending']=True; save(value)
-            command(undo)
+            command(undo,after)
             if snapshot()!=before: raise RuntimeError('network inverse not proven')
             value['steps'].pop(); value['current']=before; value['pending']=False; save(value)
         return
@@ -209,8 +274,8 @@ def run():
     before=snapshot()
     if before[1] or any(chain in rules or forward in rules or tap in rules for rules in before[0]):
         raise RuntimeError('network name collision')
-    value={'phase':'owned','steps':[],'current':before}; save(value)
-    effect(value,['ip','tuntap','add','dev',tap,'mode','tap','user',str(__import__('os').getuid())],
+    value={'phase':'owned','steps':[],'current':before,'domain':domain_identity}; save(value)
+    effect(value,['ip','tuntap','add','dev',tap,'mode','tap','user',owner_uid],
            ['ip','link','delete','dev',tap])
     # Tag before any guest can open the link. A crash between creation/tagging
     # retains pending custody rather than guessing which interface to remove.
@@ -236,7 +301,9 @@ def run():
         effect(value,['iptables','-w','5',*do],['iptables','-w','5',*undo])
     effect(value,['ip','link','set','dev',tap,'up'],['ip','link','set','dev',tap,'down'])
 try:
-    run()
+    domain_fd=domain_lock()
+    try: run()
+    finally: os.close(domain_fd)
 except BaseException:
     value=json.loads(record.read_text()); value['failed']=True; save(value)
     raise
@@ -468,14 +535,19 @@ verify() {
   [[ -n "$guest_boot_id" && "$guest_boot_id" != "$host_boot_id" && -n "$guest_kernel" ]] || {
     echo 'FAIL: guest boot or kernel identity is invalid' >&2; exit 1;
   }
-  printf '{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"%s","guest_image_sha512":"%s","host_ip":"%s","guest_ip":"%s","proxy_port":%s}\n' \
-    "$guest_kernel" "$image_sha512" "$host_ip" "$guest_ip" "$proxy_port"
+  # Preserve the launcher's exact legacy result schema unless nonce custody was requested.
+  local generation_field=''
+  if [[ -n "${COGS_KVM_GENERATION:-}" ]]; then generation_field=",\"generation\":\"$generation\""; fi
+  printf '{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"%s","guest_image_sha512":"%s","host_ip":"%s","guest_ip":"%s","proxy_port":%s%s}\n' \
+    "$guest_kernel" "$image_sha512" "$host_ip" "$guest_ip" "$proxy_port" "$generation_field"
 }
 
 case "$operation" in
   create)
     [[ ! -e "$state" ]] || { echo 'FAIL: linux-kvm state already exists' >&2; exit 1; }
-    mkdir -p "$state"; chmod 0700 "$state"; : > "$sentinel"; chmod 0600 "$sentinel"
+    generation=${generation:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}
+    select_network_names
+    mkdir "$state"; chmod 0700 "$state"; printf '%s\n' "$generation" > "$sentinel"; chmod 0600 "$sentinel"
     printf '{"phase":"never"}\n' > "$state/qemu.owner"
     printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
     trap 'status=$?; if [[ $status -ne 0 ]]; then cleanup_partial && rm -rf "$state"; fi; exit $status' EXIT
