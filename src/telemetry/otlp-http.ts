@@ -154,6 +154,7 @@ async function postAttempt(
   if (!fetched || typeof (fetched as Promise<Response>).then !== "function") throw new Error("bad fetch");
   const response = await fetched;
   if (!response || typeof response !== "object") throw new Error("bad response");
+  const body = response.body;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     if (signal.aborted) throw new Error("aborted");
@@ -165,12 +166,12 @@ async function postAttempt(
     if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maxResponseBytes))
       throw new Error("bad response");
     if (status !== 200 || !jsonContentType(headers.get("content-type"))) throw new Error("bad response");
-    reader = response.body?.getReader();
+    reader = body?.getReader();
     validateOtlpResponse(kind, reader ? await boundedText(reader, maxResponseBytes, signal) : "");
     if (signal.aborted) throw new Error("aborted");
   } finally {
     // Includes late fetches, malformed headers, and reader acquisition failure.
-    if (!reader) await safeCancel(response);
+    if (!reader) await body?.cancel();
   }
 }
 
@@ -199,8 +200,8 @@ async function boundedText(
     cancellation ??= Promise.resolve().then(() => reader.cancel());
     void cancellation.catch(() => undefined);
   };
-  signal.addEventListener("abort", cancel, { once: true });
   try {
+    signal.addEventListener("abort", cancel, { once: true });
     for (;;) {
       if (signal.aborted) throw new Error("aborted");
       const part = await reader.read();

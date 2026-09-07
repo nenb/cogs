@@ -797,7 +797,7 @@ test("authority, mount and canonical handle qualify identity, not only numeric v
 });
 
 test("metadata joins the original cancellation on abort, late fetch and invalid response", async () => {
-  for (const mode of ["reading", "post-fetch", "invalid"] as const) {
+  for (const mode of ["reading", "post-fetch", "invalid", "headers", "header-get", "reader"] as const) {
     for (const rejectCancel of [false, true]) {
       const held = Promise.withResolvers<void>();
       const entered = Promise.withResolvers<void>();
@@ -808,7 +808,7 @@ test("metadata joins the original cancellation on abort, late fetch and invalid 
         timeoutMs: 1000,
         fetchImpl: async () => {
           if (mode === "post-fetch") controller.abort();
-          return new Response(
+          const response = new Response(
             new ReadableStream({
               start(stream) {
                 stream.enqueue(new TextEncoder().encode("{"));
@@ -821,6 +821,13 @@ test("metadata joins the original cancellation on abort, late fetch and invalid 
             }),
             { headers: { "content-type": mode === "invalid" ? "text/plain" : "application/json" } },
           );
+          const fail = () => {
+            throw new Error(raw);
+          };
+          if (mode === "headers") Object.defineProperty(response, "headers", { get: fail });
+          if (mode === "header-get") Object.defineProperty(response.headers, "get", { value: fail });
+          if (mode === "reader") Object.defineProperty(response.body, "getReader", { value: fail });
+          return response;
         },
       });
       const work = source.read(controller.signal);
@@ -836,7 +843,6 @@ test("metadata joins the original cancellation on abort, late fetch and invalid 
         await new Promise((resolve) => setImmediate(resolve));
         controller.abort();
       }
-      await entered.promise;
       await new Promise((resolve) => setImmediate(resolve));
       try {
         assert.equal(settled, false, mode);

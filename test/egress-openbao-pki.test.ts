@@ -339,6 +339,59 @@ test("full eight hours plus every margin and rounding fits 9h; exact expiry pass
   }
 });
 
+test("PKI owns hostile header and reader acquisition exits through original cancellation", async () => {
+  for (const mode of ["headers", "header-get", "reader"] as const)
+    for (const rejectCancel of [false, true]) {
+      const held = Promise.withResolvers<void>();
+      let cancellations = 0,
+        settled = false;
+      const source = new OpenBaoEgressPkiSource({
+        origin: "https://bao.example/",
+        mount: "pki",
+        role: "egress",
+        identity: new Identity(),
+        fetchImpl: async () => {
+          const response = new Response(
+            new ReadableStream({
+              cancel() {
+                cancellations++;
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+          const fail = () => {
+            throw new Error("synthetic-secret");
+          };
+          if (mode === "headers") Object.defineProperty(response, "headers", { get: fail });
+          if (mode === "header-get") Object.defineProperty(response.headers, "get", { value: fail });
+          if (mode === "reader") Object.defineProperty(response.body, "getReader", { value: fail });
+          return response;
+        },
+      });
+      const rejected = assert.rejects(
+        source
+          .withPkiMaterial(
+            { sessionId: "s", hosts: ["a.example.com"], maxSessionExpiresAtMs: Date.now() + 60000 },
+            async () => assert.fail("must not consume"),
+          )
+          .finally(() => {
+            settled = true;
+          }),
+        generic,
+      );
+      try {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(cancellations, 1, mode);
+        assert.equal(settled, false, mode);
+      } finally {
+        if (rejectCancel) held.reject(new Error("synthetic-secret"));
+        else held.resolve();
+        await rejected;
+      }
+    }
+});
+
 test("whole-body deadline cancels a stalled read and retains actual cancel/identity work", async () => {
   for (const mode of ["body", "error-body", "identity-reject"] as const) {
     let release = () => {},

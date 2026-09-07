@@ -273,15 +273,9 @@ export class OpenBaoEgressRevocationSource implements CogsEgressRevocationSource
               signal,
             },
           );
-          if (signal.aborted) {
-            await cancelBody(response);
-            throw new Error("aborted");
-          }
-          if (response.status === 404) {
-            await cancelBody(response);
-            return Object.freeze({ identity: null, revoked: true });
-          }
-          const data = parseMetadata(await bounded(response, this.#maxBytes, signal), response);
+          const text = await bounded(response, this.#maxBytes, signal);
+          if (text === null) return Object.freeze({ identity: null, revoked: true });
+          const data = parseMetadata(text, response);
           const tuple: OpenBaoHydratedIdentity = Object.freeze([
             "openbao-kv2-generation-v1",
             this.#origin,
@@ -489,29 +483,32 @@ function parseMetadata(
   };
 }
 
-async function bounded(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
-  const type = response.headers.get("content-type") ?? "";
-  const length = response.headers.get("content-length");
-  if (
-    response.status !== 200 ||
-    !jsonType.test(type) ||
-    (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maximum))
-  ) {
-    await cancelBody(response);
-    throw new Error("bad response");
-  }
-  const reader = response.body?.getReader();
-  if (reader === undefined) throw new Error("missing body");
+async function bounded(response: Response, maximum: number, signal: AbortSignal): Promise<string | null> {
+  // Capture the original body before hostile headers/reader acquisition.
+  const body = response.body;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const chunks: Uint8Array[] = [];
   let total = 0;
   let cancellation: Promise<void> | undefined;
   const abortRead = () => {
     // Publish before cancellation can invoke injected stream code/reenter.
-    cancellation ??= Promise.resolve().then(() => reader.cancel());
+    cancellation ??= Promise.resolve().then(() => (reader ? reader.cancel() : body?.cancel()));
     void cancellation.catch(() => undefined);
   };
-  signal.addEventListener("abort", abortRead, { once: true });
   try {
+    if (signal.aborted) throw new Error("aborted");
+    if (response.status === 404) return null;
+    const type = response.headers.get("content-type") ?? "";
+    const length = response.headers.get("content-length");
+    if (
+      response.status !== 200 ||
+      !jsonType.test(type) ||
+      (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maximum))
+    )
+      throw new Error("bad response");
+    reader = body?.getReader();
+    if (!reader) throw new Error("missing body");
+    signal.addEventListener("abort", abortRead, { once: true });
     for (;;) {
       if (signal.aborted) throw new Error("aborted");
       const next = await reader.read();
@@ -529,13 +526,9 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
       await cancellation;
     } finally {
       signal.removeEventListener("abort", abortRead);
-      reader.releaseLock();
+      reader?.releaseLock();
     }
   }
-}
-
-async function cancelBody(response: Response): Promise<void> {
-  if (response.body) await response.body.cancel();
 }
 
 async function withTokenOnce<T>(

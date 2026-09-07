@@ -32,7 +32,7 @@ import { authorizeCogsPolicyAction } from "../../src/policy/static-policy.ts";
 import { createSshBashToolPort } from "../../src/ssh/bash-tool.ts";
 import { SshConnectionManager } from "../../src/ssh/connection.ts";
 import { createSftpFileToolPorts } from "../../src/ssh/file-tools.ts";
-import { createCogsWorkerTelemetrySink } from "../../src/telemetry/worker-telemetry.ts";
+import { createCogsWorkerTelemetrySink, retireCogsWorkerTelemetry } from "../../src/telemetry/worker-telemetry.ts";
 import type { LauncherProfile } from "./contract.ts";
 import { type ApiTokenHolder, readApiToken, readWorkerDescriptor } from "./control.ts";
 import {
@@ -324,7 +324,7 @@ export async function createTrustedWorkerRuntime(
         allowLoopbackHttpDevelopment: true,
       }),
     );
-    registerCleanup(cleanups, { name: "telemetry", close: () => telemetry.close() });
+    registerCleanup(cleanups, { name: "telemetry", close: () => retireCogsWorkerTelemetry(telemetry) });
     requireTelemetry(telemetry);
     checkCooperative(startup.signal, deadlineAt);
 

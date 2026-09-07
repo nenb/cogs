@@ -1,4 +1,12 @@
-import { exactPlainObject, frozenFetch, otlpEndpoint, postOtlpJson, raceTimeout, safeInteger } from "./otlp-http.ts";
+import {
+  exactPlainObject,
+  frozenFetch,
+  otlpEndpoint,
+  otlpPostRetirement,
+  postOtlpJson,
+  raceTimeout,
+  safeInteger,
+} from "./otlp-http.ts";
 
 export type CogsWorkerTelemetryMode =
   | Readonly<{ mode: "disabled" }>
@@ -266,7 +274,16 @@ function snapshotConfig(config: CogsWorkerTelemetryMode):
   });
 }
 
+const telemetryRetirements = new WeakMap<CogsWorkerTelemetrySink, () => Promise<void>>();
+
+/** Internal identity-bound transport custody, not successful optional delivery. */
+export async function retireCogsWorkerTelemetry(sink: CogsWorkerTelemetrySink): Promise<void> {
+  const retire = telemetryRetirements.get(sink);
+  await (retire ? retire() : sink.close());
+}
+
 class OtlpWorkerSink {
+  private readonly posts = new Set<Promise<void>>();
   private queue: Item[] = [];
   private nextBatchId = 0;
   private pumping: Promise<void> | undefined;
@@ -287,15 +304,27 @@ class OtlpWorkerSink {
   public constructor(private readonly config: Extract<ReturnType<typeof snapshotConfig>, { mode: "otlp" }>) {}
   public handle(): CogsWorkerTelemetrySink {
     const sink = this;
-    return Object.freeze({
+    const handle: CogsWorkerTelemetrySink = Object.freeze({
       get ready() {
         return !sink.closing && !sink.closed;
       },
       span: (input) => sink.enqueue("span", input),
       metric: (input) => sink.enqueue("metric", input),
       snapshot: () => sink.snapshot(),
-      close: (signal) => (sink.closePromise ??= sink.close(signal)),
+      close: (signal) => {
+        sink.closing = true;
+        // Publish before abort/fetch callbacks can reenter. Each caller observes afresh.
+        sink.closePromise ??= Promise.resolve().then(() => sink.close(signal));
+        return sink.closePromise.then(() => undefined);
+      },
     });
+    telemetryRetirements.set(handle, async () => {
+      await handle.close();
+      await sink.closePromise;
+      await sink.pumping;
+      while (sink.posts.size) await Promise.all([...sink.posts]);
+    });
+    return handle;
   }
   private enqueue(kind: "span" | "metric", input: unknown): boolean {
     try {
@@ -303,6 +332,7 @@ class OtlpWorkerSink {
         this.closing ||
         this.closed ||
         this.inCooldown() ||
+        this.posts.size >= this.config.capacity ||
         this.queue.length + this.inFlight >= this.config.capacity
       ) {
         this.dropped = saturatingAdd(this.dropped, 1);
@@ -344,7 +374,8 @@ class OtlpWorkerSink {
     });
   }
   private startPump(): void {
-    this.pumping = this.pump()
+    this.pumping = Promise.resolve()
+      .then(() => this.pump())
       .catch(() => {
         this.accountFailed(this.inFlightId, this.inFlightUnaccounted);
       })
@@ -501,7 +532,8 @@ class OtlpWorkerSink {
     try {
       parent?.addEventListener("abort", abort, { once: true });
       if (parent?.aborted) abort();
-      await postOtlpJson({
+      if (this.posts.size >= this.config.capacity) throw new Error("transport capacity");
+      const observation = postOtlpJson({
         url,
         kind: url.endsWith("/v1/traces") ? "traces" : "metrics",
         body: bodyObject,
@@ -511,6 +543,10 @@ class OtlpWorkerSink {
         fetch: this.config.fetch,
         parent: controller.signal,
       });
+      const retired = otlpPostRetirement(observation);
+      this.posts.add(retired);
+      void retired.then(() => this.posts.delete(retired));
+      await observation;
     } finally {
       parent?.removeEventListener("abort", abort);
       controller.abort();

@@ -186,7 +186,7 @@ test("shared OTLP hostile body cancel cannot hang", async () => {
 });
 
 test("OTLP observations never retire held fetch, original read, or original cancellation", async () => {
-  for (const mode of ["fetch", "invalid", "reader", "cancel-reject"] as const) {
+  for (const mode of ["fetch", "invalid", "reader", "cancel-reject", "headers", "reader-throw"] as const) {
     const holdFetch = Promise.withResolvers<void>();
     const holdRead = Promise.withResolvers<{ done: true; value: undefined }>();
     const holdCancel = Promise.withResolvers<void>();
@@ -220,6 +220,12 @@ test("OTLP observations never retire held fetch, original read, or original canc
           }),
           { status: mode === "invalid" ? 503 : 200, headers: { "content-type": "application/json" } },
         );
+        const fail = () => {
+          Object.defineProperty(response, "body", { value: null });
+          throw new Error("synthetic-secret");
+        };
+        if (mode === "headers") Object.defineProperty(response, "headers", { get: fail });
+        if (mode === "reader-throw") Object.defineProperty(response.body, "getReader", { value: fail });
         if (mode === "reader")
           Object.defineProperty(response, "body", {
             value: {
@@ -246,6 +252,7 @@ test("OTLP observations never retire held fetch, original read, or original canc
     await rejected;
     assert.equal(retired, false);
     holdFetch.resolve();
+    if (mode === "headers" || mode === "reader-throw") assert.equal(cancellations, 1);
     await cancelling.promise;
     if (mode === "cancel-reject") holdCancel.reject(new Error("synthetic-cancel-secret"));
     else holdCancel.resolve();

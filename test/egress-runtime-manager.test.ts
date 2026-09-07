@@ -221,7 +221,7 @@ test("canonical path and invalid injected port fail before side effects", async 
 });
 
 test("actual watcher frontier and OpenBao cancellation bar final retirement, material and WAL release", async () => {
-  for (const mode of ["replacement-reentry", "metadata-cancel"] as const) {
+  for (const mode of ["replacement-reentry", "metadata-cancel", "headers", "reader"] as const) {
     const held = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     const controller = new AbortController();
@@ -242,7 +242,7 @@ test("actual watcher frontier and OpenBao cancellation bar final retirement, mat
         }
       },
     });
-    if (mode === "metadata-cancel") {
+    if (mode !== "replacement-reentry") {
       let reads = 0;
       const source = new OpenBaoEgressRevocationSource({
         ...openBaoConfig(),
@@ -252,22 +252,31 @@ test("actual watcher frontier and OpenBao cancellation bar final retirement, mat
         presetRevision: snap().presetRevision,
         pkiExpiresAtMs: 10000,
         timeoutMs: 1000,
-        fetchImpl: async () =>
-          ++reads <= 2
-            ? new Response(JSON.stringify(hydratedMetadata()), { headers: { "content-type": "application/json" } })
-            : new Response(
-                new ReadableStream({
-                  start(stream) {
-                    stream.enqueue(new TextEncoder().encode("{"));
-                  },
-                  cancel() {
-                    cancellations++;
-                    entered.resolve();
-                    return held.promise;
-                  },
-                }),
-                { headers: { "content-type": "application/json" } },
-              ),
+        fetchImpl: async () => {
+          if (++reads <= 2)
+            return new Response(JSON.stringify(hydratedMetadata()), {
+              headers: { "content-type": "application/json" },
+            });
+          const response = new Response(
+            new ReadableStream({
+              start(stream) {
+                stream.enqueue(new TextEncoder().encode("{"));
+              },
+              cancel() {
+                cancellations++;
+                entered.resolve();
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+          const fail = () => {
+            throw new Error(raw);
+          };
+          if (mode === "headers") Object.defineProperty(response, "headers", { get: fail });
+          if (mode === "reader") Object.defineProperty(response.body, "getReader", { value: fail });
+          return response;
+        },
       });
       const baseline = await source.read(controller.signal);
       assert.equal(options.revocation.mode, "injected");
@@ -278,12 +287,11 @@ test("actual watcher frontier and OpenBao cancellation bar final retirement, mat
       } as typeof options.revocation;
     }
     const manager = await startCogsEgressRuntimeManager(options);
-    if (mode === "metadata-cancel") {
+    if (mode !== "replacement-reentry") {
       fixture.timers.tick(50);
       await new Promise((resolve) => setImmediate(resolve));
       closing = manager.close();
     } else controller.abort();
-    await entered.promise;
     await new Promise((resolve) => setImmediate(resolve));
     try {
       assert.equal(observeCogsEgressRuntime(manager).retired, false);
@@ -296,7 +304,7 @@ test("actual watcher frontier and OpenBao cancellation bar final retirement, mat
     assert.equal(observeCogsEgressRuntime(manager).retired, true);
     assert.equal(fixture.scopeReleased, true);
     assert.equal(fixture.events.filter((event) => event === "wal.close").length, 1);
-    if (mode === "metadata-cancel") assert.equal(cancellations, 1);
+    if (mode !== "replacement-reentry") assert.equal(cancellations, 1);
   }
 });
 

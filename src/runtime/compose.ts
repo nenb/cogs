@@ -49,7 +49,11 @@ import { createSshBashToolPort } from "../ssh/bash-tool.ts";
 import { SshConnectionManager, type SshConnectionManagerOptions } from "../ssh/connection.ts";
 import { createSftpFileToolPorts } from "../ssh/file-tools.ts";
 import type { CogsTelemetry } from "../telemetry/instrumentation.ts";
-import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../telemetry/worker-telemetry.ts";
+import {
+  type CogsWorkerTelemetrySink,
+  createCogsWorkerTelemetrySink,
+  retireCogsWorkerTelemetry,
+} from "../telemetry/worker-telemetry.ts";
 import { parseRuntimeConfigBytes, type RuntimeConfig } from "./config.ts";
 import { type TrustedFileCaptureOptions, withTrustedFileBytes } from "./trusted-files.ts";
 
@@ -182,7 +186,7 @@ export async function startProductionWorker(
       }
       const dependencyWork = lifecycle?.closeDependencies(closeContext(10_000));
       if (dependencyWork !== undefined) await Promise.all([dependencyWork.done, dependencyWork.retired]);
-      await (telemetry?.close() ?? Promise.resolve());
+      if (telemetry) await retireCogsWorkerTelemetry(telemetry);
       for (const name of startedDependencies) if (!closedDependencies.has(name)) cleanupUncertain = true;
       startup.dispose();
       input.signal?.removeEventListener("abort", onCallerAbort);
