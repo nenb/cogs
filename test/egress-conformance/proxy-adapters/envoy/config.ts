@@ -2,6 +2,8 @@ import { isIP } from "node:net";
 import {
   cogsEnvoyBoundedV1,
   cogsEnvoyHcmBounds,
+  cogsEnvoyLiteralHeaderRuntime,
+  cogsEnvoyLiteralHeaderValue,
   cogsEnvoyResourceAllocation,
 } from "../../../../src/egress/envoy-runtime-config.ts";
 
@@ -336,7 +338,7 @@ function envoyRoute(route: EnvoyRouteConfig, input: EnvoyCandidateConfigInput, i
       : {
           request_headers_to_add: [
             {
-              header: { key: credential.name, value: credential.value },
+              header: { key: credential.name, value: cogsEnvoyLiteralHeaderValue(credential.value) },
               append_action: "OVERWRITE_IF_EXISTS_OR_ADD",
             },
           ],
@@ -595,6 +597,7 @@ export function generateEnvoyConfig(input: EnvoyCandidateConfigInput): Readonly<
   }
 
   return deepFreeze({
+    layered_runtime: cogsEnvoyLiteralHeaderRuntime,
     overload_manager: cogsEnvoyBoundedV1.overload,
     bootstrap_extensions: [
       {

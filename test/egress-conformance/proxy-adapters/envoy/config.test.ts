@@ -130,6 +130,23 @@ test("fixture adapter shares bounded settings, not production-policy or pressure
   assert.doesNotMatch(JSON.stringify(boot), /retry_policy|hedge_policy|with_request_body|preconnect_policy/);
 });
 
+test("conformance credentials share literal percent encoding and disable legacy pre-translation", () => {
+  const value = input();
+  const literal = 'prefix% %% %REQ(x-guest)% %DYNAMIC_METADATA(["a","b"])% %PER_REQUEST_STATE(key)% %REQ(';
+  const apiRoute = value.routes[2];
+  assert.ok(apiRoute);
+  apiRoute.credential = { kind: "api-key", header: "x-api-key", value: literal };
+  const boot = generateEnvoyConfig(value);
+  const added: Array<{ header: { key: string; value: string } }> = [];
+  walk(boot, (key, nested) => {
+    if (key === "request_headers_to_add") added.push(...(nested as typeof added));
+  });
+  assert.equal(added.find((entry) => entry.header.key === "x-api-key")?.header.value, literal.replaceAll("%", "%%"));
+  const rendered = renderEnvoyConfig(value);
+  assert.match(rendered, /"envoy.reloadable_features.remove_legacy_route_formatter": true/);
+  assert.doesNotMatch(rendered, /max_header_field_size_kb|cgroup_memory/);
+});
+
 test("generator rejects ambiguous routes, credential-bearing control origins, and dangerous header choices", () => {
   const mutate = (update: (value: EnvoyCandidateConfigInput) => void, expected: RegExp) => {
     const value = input();

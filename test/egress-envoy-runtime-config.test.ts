@@ -381,6 +381,82 @@ test("supports basic and api-key credentials from integration-scoped callback", 
   assert.equal(text.includes("Token abc123"), true);
 });
 
+// Independent literal-only interpretation of v1.38.3 SubstitutionFormatParser::parse:
+// every percent must be paired; anything else would invoke command parsing.
+function literalHeaderBytes(format: string): string {
+  let bytes = "";
+  for (let i = 0; i < format.length; i++) {
+    if (format[i] === "%") assert.equal(format[++i], "%", "unescaped formatter command");
+    bytes += format[i];
+  }
+  return bytes;
+}
+
+test("credential values and prefixes are literal pinned-formatter bytes, including malformed commands", async () => {
+  const corpus = [
+    "%",
+    "%%",
+    "%REQ(x-guest)%",
+    '%DYNAMIC_METADATA(["a","b"])%',
+    "%PER_REQUEST_STATE(key)%",
+    "%NOT_A_COMMAND%",
+    "%REQ(",
+    "end%",
+  ];
+  for (const value of corpus) {
+    const boot = JSON.parse((await render(baseOptions(), source({ type: "bearer", token: value }))).bootstrapJson);
+    const hcm = boot.static_resources.listeners[1].filter_chains[0].filters[0].typed_config;
+    for (const route of hcm.route_config.virtual_hosts[0].routes)
+      assert.equal(literalHeaderBytes(route.request_headers_to_add[0].header.value), `Bearer ${value}`);
+    const prefix = `${value} `;
+    const config = await render(
+      {
+        ...baseOptions(),
+        routePlan: plan({
+          auth: {
+            type: "api_key_header",
+            header: "x-api-key",
+            prefix,
+            placeholder: "COGS_PLACEHOLDER_KEY",
+            secretHandle: "users/session/key",
+          },
+        }),
+      },
+      source({ type: "api_key", value }),
+    );
+    const apiHcm = JSON.parse(config.bootstrapJson).static_resources.listeners[1].filter_chains[0].filters[0]
+      .typed_config;
+    assert.equal(
+      literalHeaderBytes(apiHcm.route_config.virtual_hosts[0].routes[0].request_headers_to_add[0].header.value),
+      prefix + value,
+    );
+  }
+  for (const prefix of ["bad\r\n", "é", "\ud800", "%".repeat(128)])
+    await assert.rejects(
+      () =>
+        render(
+          {
+            ...baseOptions(),
+            routePlan: plan({
+              auth: {
+                type: "api_key_header",
+                header: "x-api-key",
+                prefix,
+                placeholder: "COGS_PLACEHOLDER_KEY",
+                secretHandle: "users/session/key",
+              },
+            }),
+          },
+          source({ type: "api_key", value: "%".repeat(8192) }),
+        ),
+      CogsEnvoyRuntimeConfigError,
+    );
+  await assert.rejects(
+    () => render({ ...baseOptions(), internalAuthzToken: "%REQ(x-guest-token)%" }),
+    CogsEnvoyRuntimeConfigError,
+  );
+});
+
 test("resolves credentialed integrations once in deterministic order and skips uncredentialed integrations", async () => {
   const seen: string[] = [];
   const credentialSource: CogsEnvoyCredentialSource = {
@@ -657,6 +733,81 @@ function sizedPlan(count: number, authorities: number): CogsEgressRoutePlan {
   });
 }
 
+// Exact Envoy v1.38.3, commit 0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d:
+// api/envoy/config/core/v3/protocol.proto (Http2ProtocolOptions, field 21):
+// max_header_field_size_kb has PGV gte 64/lte 256. HCM config.cc and upstream
+// http/config.cc reject an explicit field bound above their aggregate. Omitting it
+// keeps codec_impl.cc Http2Options' oghttp2 max_header_list_bytes/field_size at
+// max_headers_kb*1024; saveHeader independently checks aggregate size/count.
+// This is a selected exact-API structural regression, NOT full protobuf validation.
+function assertPinnedHeaderApi(boot: ReturnType<typeof JSON.parse>) {
+  assert.deepEqual(boot.layered_runtime, {
+    layers: [
+      {
+        name: "cogs-literal-header-format",
+        static_layer: { "envoy.reloadable_features.remove_legacy_route_formatter": true },
+      },
+    ],
+  });
+  const h2 = (options: Record<string, unknown>, aggregate: number) => {
+    const field = options.max_header_field_size_kb;
+    if (field !== undefined) {
+      assert.ok(typeof field === "number" && field >= 64 && field <= 256);
+      assert.ok(field <= aggregate);
+    }
+    assert.equal(aggregate, 32, "never enlarge the aggregate to admit a field override");
+    assert.equal(field, undefined);
+  };
+  for (const listener of boot.static_resources.listeners) {
+    const hcm = listener.filter_chains[0].filters[0].typed_config;
+    assert.equal(hcm.max_request_headers_kb, 32);
+    assert.equal(hcm.common_http_protocol_options.max_response_headers_kb, undefined);
+    if (hcm.http2_protocol_options) h2(hcm.http2_protocol_options, hcm.max_request_headers_kb);
+  }
+  for (const cluster of boot.static_resources.clusters) {
+    const http = cluster.typed_extension_protocol_options?.["envoy.extensions.upstreams.http.v3.HttpProtocolOptions"];
+    if (http)
+      h2(
+        (http.auto_config ?? http.explicit_http_config).http2_protocol_options,
+        http.common_http_protocol_options.max_response_headers_kb,
+      );
+  }
+  assert.deepEqual(
+    boot.overload_manager.resource_monitors.map((r: { name: string }) => r.name),
+    ["envoy.resource_monitors.global_downstream_max_connections", "envoy.resource_monitors.fixed_heap"],
+  );
+  assert.equal(boot.overload_manager.resource_monitors[1].typed_config.max_heap_size_bytes, "536870912");
+  assert.deepEqual(
+    [...boot.overload_manager.actions, ...boot.overload_manager.loadshed_points].map(
+      (a: { triggers: unknown }) => a.triggers,
+    ),
+    [0.75, 0.85, 0.85].map((value) => [{ name: "envoy.resource_monitors.fixed_heap", threshold: { value } }]),
+  );
+  assert.ok(!JSON.stringify(boot).includes("cgroup_memory"));
+}
+
+test("exact pinned API rejects both invalid32 and explicit64 with aggregate32; no mount-root monitor", async () => {
+  const boot = JSON.parse((await render()).bootstrapJson);
+  assertPinnedHeaderApi(boot);
+  const legacy = structuredClone(boot);
+  legacy.layered_runtime.layers[0].static_layer["envoy.reloadable_features.remove_legacy_route_formatter"] = false;
+  assert.throws(() => assertPinnedHeaderApi(legacy), "legacy pre-translation corrupts escaped metadata literals");
+  for (const field of [32, 64])
+    for (const site of ["downstream", "authz", "upstream"]) {
+      const changed = structuredClone(boot);
+      const hcm = changed.static_resources.listeners[1].filter_chains[0].filters[0].typed_config;
+      const clusters = changed.static_resources.clusters;
+      const http =
+        clusters[site === "authz" ? 0 : 1].typed_extension_protocol_options[
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+        ];
+      (site === "downstream"
+        ? hcm.http2_protocol_options
+        : (http.explicit_http_config ?? http.auto_config).http2_protocol_options).max_header_field_size_kb = field;
+      assert.throws(() => assertPinnedHeaderApi(changed));
+    }
+});
+
 test("fixed profile is deeply immutable and graph arithmetic includes host/pool exceptions", () => {
   assert.equal(cogsEnvoyBoundedV1.name, "cogs-egress-bounded-v1");
   assert.deepEqual(cogsEnvoyBoundedV1.http2, {
@@ -664,7 +815,6 @@ test("fixed profile is deeply immutable and graph arithmetic includes host/pool 
     initial_stream_window_size: 65536,
     initial_connection_window_size: 262144,
     hpack_table_size: 4096,
-    max_header_field_size_kb: 32,
     max_outbound_frames: 256,
     max_outbound_control_frames: 32,
     max_consecutive_inbound_frames_with_empty_payload: 1,
@@ -707,7 +857,7 @@ test("fixed profile is deeply immutable and graph arithmetic includes host/pool 
     applicationActive: 112,
     applicationPending: 28,
     applicationConnections: 63,
-    networkSockets: 98,
+    poolAndDownstreamSockets: 98,
     internalEndpoints: 264,
   });
   assert.deepEqual(cogsEnvoyResourceAllocation(256, 256).envelope, {
@@ -716,14 +866,14 @@ test("fixed profile is deeply immutable and graph arithmetic includes host/pool 
     applicationActive: 256,
     applicationPending: 256,
     applicationConnections: 512,
-    networkSockets: 547,
+    poolAndDownstreamSockets: 547,
     internalEndpoints: 1024,
   });
   for (let r = 1; r <= 256; r++)
     for (const a of [1, r]) {
       const allocation = cogsEnvoyResourceAllocation(r, a);
       assert.ok(allocation.envelope.applicationActive <= 256 && allocation.envelope.applicationPending <= 256);
-      assert.ok(allocation.envelope.networkSockets <= 547 && allocation.envelope.internalEndpoints <= 1024);
+      assert.ok(allocation.envelope.poolAndDownstreamSockets <= 547 && allocation.envelope.internalEndpoints <= 1024);
       assert.ok((allocation.application.thresholds[0]?.max_pending_requests ?? 0) > 0);
       assert.ok((allocation.tunnel.thresholds[0]?.max_connections ?? 0) * a <= 256);
     }
@@ -851,10 +1001,12 @@ test("pinned Envoy validates and bounds silent accept pressure without WAL/crede
     ],
     { timeout: 10_000, maxBuffer: 65536 },
   );
+  const prefix = '%DYNAMIC_METADATA(["a","b"])% %PER_REQUEST_STATE(key)% ';
+  const credential = "% %% %REQ(x-guest)% %REQ(".replaceAll(" ", "_");
   let forwarded = 0;
   const origin = httpsServer({ key: await readFile(key), cert: await readFile(cert) }, (req, res) => {
     forwarded++;
-    assert.equal(req.headers.authorization, "Bearer secret-token");
+    assert.equal(req.headers["x-api-key"], prefix + credential);
     res.end("control");
   });
   origin.on("tlsClientError", () => {});
@@ -868,7 +1020,16 @@ test("pinned Envoy validates and bounds silent accept pressure without WAL/crede
   );
   const address = origin.address();
   assert.ok(address && typeof address !== "string");
-  const routePlan = plan({ route: { host: "localhost", port: address.port } as unknown as Partial<Route> });
+  const routePlan = plan({
+    route: { host: "localhost", port: address.port } as unknown as Partial<Route>,
+    auth: {
+      type: "api_key_header",
+      header: "x-api-key",
+      prefix,
+      placeholder: "COGS_PLACEHOLDER_KEY",
+      secretHandle: "users/session/key",
+    },
+  });
   const wal = await openEgressAuditWal({
     path: join(root, "audit.wal"),
     maxBytes: 8192,
@@ -888,7 +1049,7 @@ test("pinned Envoy validates and bounds silent accept pressure without WAL/crede
   const seen: string[] = [];
   const rendered = await render(
     { ...baseOptions(), routePlan, listenerPort: port, authzTarget: authz.target },
-    source(undefined, seen),
+    source({ type: "api_key", value: credential }, seen),
   );
   const boot = JSON.parse(rendered.bootstrapJson);
   boot.static_resources.listeners[0].address.socket_address.address = "127.0.0.1";
