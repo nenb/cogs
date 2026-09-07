@@ -1247,7 +1247,11 @@ test("trusted composition rejects malformed readiness while retaining original r
   let exceptionalCancelled = false;
   const cases = [
     () => {
-      const body = new ReadableStream({ cancel: () => (exceptionalCancelled = true) });
+      const body = new ReadableStream({
+        cancel() {
+          exceptionalCancelled = true;
+        },
+      });
       const response = new Response(body, { status: 200 });
       Object.defineProperty(response, "headers", {
         get() {
