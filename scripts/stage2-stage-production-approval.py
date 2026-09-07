@@ -5,6 +5,7 @@ import json
 import os
 import re
 from pathlib import Path
+import runpy
 import stat
 import subprocess
 import sys
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
 import completion_campaign_aws_adapter as adapter
 import completion_campaign_production as production
 
+retirement = runpy.run_path(str(ROOT / "scripts/stage2-revision-retirement.py"))
 DESTINATION = adapter.ROOT
 STAGING = DESTINATION.with_name(DESTINATION.name + ".staging")
 STATE = adapter.STATE_ROOT
@@ -25,6 +27,11 @@ class StagingError(Exception): pass
 
 def require(value):
     if not value: raise StagingError()
+
+
+def eligible(revisions):
+    try: retirement["select"](tuple(revisions))
+    except (TypeError, ValueError) as error: raise StagingError() from error
 
 
 def read(path, maximum=MAX):
@@ -106,6 +113,8 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
                        allow_nan=False).encode("ascii") + b"\n" == approval_raw)
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
     approval = production.ProductionApproval(**value)
+    eligible((approval.implementation_revision, approval.control_revision,
+              approval.qualification_revision))
     fixed = {
         "approval.json": approval_raw,
         "approval-authentication.json": read(source / "approval-authentication.json", 256 * 1024),

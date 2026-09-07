@@ -59,4 +59,12 @@ with tempfile.TemporaryDirectory() as temporary:
     assert approval.control_revision == "2" * 40
     assert approval.rate_source_commitment == production.RATE_SOURCE_COMMITMENT
 
+    retired = dict(value)
+    retired["implementation_revision"] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+    draft.write_text(json.dumps(retired, sort_keys=True, separators=(",", ":")) + "\n")
+    rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
+                               "issue", str(draft)], cwd=ROOT, env=environment,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    assert rejected.returncode == 2 and not rejected.stdout and not rejected.stderr
+
 print("stage2 production approval issuer checks passed")

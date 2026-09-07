@@ -11,6 +11,7 @@ const policy = JSON.parse(readFileSync("config/stage2-retired-revisions-v1.json"
   artifacts: Record<string, string>;
 };
 const tombstones = Object.keys({ ...policy.revisions, ...policy.runs, ...policy.artifacts }).sort();
+assert.equal(policy.revisions["9b9966afffe0ea8de4d0c99147886a95094470a9"], "ADR0319");
 
 test("every pre-checkout and second-job retirement mirror equals policy and refuses before effects", () => {
   const lanes: [string, number, string[]][] = [
@@ -35,6 +36,13 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
     ],
     ["stage2-prebuilt-kvm-rehearsal", 1, ["EXACT_H", "PUBLISHER_RUN_ID", "PUBLISHER_ARTIFACT_ID"]],
     ["stage2-prebuilt-kvm-integration-diagnostic", 2, []],
+    [
+      "stage2-production-plan",
+      1,
+      ["IMPLEMENTATION_HEAD", "CONTROL_HEAD", "QUALIFICATION_HEAD", "QUALIFICATION_RUN_ID", "PACKAGE_ARTIFACT_ID"],
+    ],
+    ["stage2-production-approval", 1, ["COGS_STAGE2_CONTROL_REVISION", "PLAN_RUN_ID", "PLAN_ARTIFACT_ID"]],
+    ["stage2-production-campaign", 1, ["CONTROL_HEAD", "APPROVAL_RUN_ID", "APPROVAL_ARTIFACT_ID"]],
   ];
   const equalMirror = (block: string) => {
     const values = block.match(/([0-9a-f]{40}(?:\|[0-9a-f]+)+)\) exit 2/u)?.[1]?.split("|");
@@ -42,13 +50,13 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
   };
   for (const [lane, count, required] of lanes) {
     const source = readFileSync(`.github/workflows/${lane}.yml`, "utf8");
-    const blocks = [...source.matchAll(/ {10}# ADR0309 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
+    const blocks = [...source.matchAll(/ {10}# ADR03(?:09|19) exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
     assert.equal(blocks.length, count, lane);
     for (const match of blocks) {
       const block = match[0].replace(/^ {10}/gmu, "");
       equalMirror(block);
       assert.throws(() => equalMirror(block.replace(`${tombstones[0]}|`, "")), "omission must fail equality");
-      const selectors = [...block.matchAll(/"\$([A-Z_]+)"/gu)].map((item) => item[1] as string);
+      const selectors = [...block.matchAll(/"\$([A-Z0-9_]+)"/gu)].map((item) => item[1] as string);
       for (const name of ["GITHUB_SHA", "GITHUB_RUN_ID", ...required])
         assert.ok(selectors.includes(name), `${lane}:${name}`);
       const job = [...source.slice(0, match.index).matchAll(/^ {2}([a-z][a-z0-9_-]*):\n/gmu)].at(-1);
@@ -78,7 +86,7 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
   }
 });
 
-test("ADR0309 exact allocations preserve hard limits and reserve every bounded future closure", () => {
+test("ADR0319 exact allocations preserve hard limits and reserve every bounded future closure", () => {
   const result = spawnSync(
     "python3",
     [
@@ -90,27 +98,27 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=1800,revocation=3000,relay=1950,lifecycle=7000,completion=2600,integration=3000)
-assert b['global_gross_line_high']==18500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=1950,lifecycle=7200,completion=2800,integration=3500)
+assert b['global_gross_line_high']==20500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(95900,22300,13100,5500,40500,2000)
-assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=31)
-assert sum(new.values())==39 and sum(x['total'] for x in forecasts.values())==2570000
+assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(97000,22300,13100,5500,42000,2000)
+assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=32)
+assert sum(new.values())==40 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
  'lifecycle':['dev/launcher/deterministic-stream.ts','dev/launcher/fixtures.ts','dev/launcher/otlp-fixture.ts','dev/launcher/trusted-controls.ts','test/dev-launcher-envoy-egress.test.ts','test/dev-launcher-deterministic-stream.test.ts','test/dev-launcher-operations.test.ts','test/stage3-s309-exit-evidence.test.ts'],
  'revocation':['dev/launcher/openbao.ts','src/auth/openbao-workload-identity.ts','test/egress-openbao-pki.test.ts','test/dev-launcher-trusted-fixtures.test.ts','test/openbao-workload-identity.test.ts'],
  'relay':['dev/linux-kvm/driver.sh','dev/linux-kvm/README.md','test/linux-kvm-git-tools.test.ts','test/stage3-real-runtime-report.test.ts'],
- 'integration':['deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py','test/outcome-two-runtime-report-portable.py','test/outcome-two-trusted-launcher-portable.py','scripts/native-qualification/common.py','scripts/validate-schemas.ts','schemas/native-qualification-report-v1alpha1.json','test/native-qualification-common.test.ts','docs/test-reports/stage-3-s3-09-linux-kvm-exit.md']}.items():
+ 'integration':['deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py','test/outcome-two-runtime-report-portable.py','test/outcome-two-trusted-launcher-portable.py','scripts/native-qualification/common.py','scripts/validate-schemas.ts','schemas/native-qualification-report-v1alpha1.json','test/native-qualification-common.test.ts','docs/test-reports/stage-3-s3-09-linux-kvm-exit.md','.github/workflows/stage2-production-plan.yml','.github/workflows/stage2-production-approval.yml','.github/workflows/stage2-production-campaign.yml','scripts/stage2-production-planner.py','scripts/stage2-production-approval.py','scripts/stage2-stage-production-approval.py','test/stage2-production-workflows.test.ts','test/stage2-production-planner.py','test/stage2-production-planner.test.ts','test/stage2-production-approval.py','test/stage2-production-approval.test.ts']}.items():
  for p in names: assert paths[p]==owner,p
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==39
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md'):
+assert len(set(paths)-baseline)==40
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md'):
  assert paths[current]=='integration' and Path(current).is_file()
-for number,name in ((319,'freeze-remediated-H-and-authorize-control'),(320,'establish-remediated-Q-and-authorize-qualification')):
+for number,name in ((320,'freeze-corrected-H-and-authorize-control'),(322,'establish-corrected-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
@@ -192,7 +200,7 @@ else: raise AssertionError('unfilled exact guard admitted historical selectors')
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("ADR0309 post-H gross reserves reject overruns even below the legacy correction highs", () => {
+test("ADR0319 post-H gross reserves reject overruns even below the legacy correction highs", () => {
   const result = spawnSync(
     "python3",
     [
@@ -203,7 +211,7 @@ test("ADR0309 post-H gross reserves reject overruns even below the legacy correc
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 assert m['POST_H_REVISION']=='6bd12dcd25d877ffac03752fa0f71beeeb86a99e'
-assert m['POST_H_HIGHS']=={'deploy':150,'retained':500,'workflow':350,'global':1000}
+assert m['POST_H_HIGHS']=={'deploy':150,'retained':1500,'workflow':500,'global':2200}
 f=m['measure']; ns=f.__globals__; original=ns['_gross_slice']; observed=[]
 def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
  if revision!=m['POST_H_REVISION']: return original(paths,allowed,revision)
@@ -216,19 +224,19 @@ def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
   assert all(p in paths and allowed(p) for p in ('scripts/stage2-revision-retirement.py','config/stage2-retired-revisions-v1.json'))
  return values[key]
 ns['_gross_slice']=gross
-values=dict(deploy=150,retained=500,workflow=350)
+values=dict(deploy=150,retained=1500,workflow=500)
 report=f()
 assert sorted(observed)==['deploy','retained','workflow']
-assert report['post_h_gross_added_lines']==dict(values,**{'global':1000})
+assert report['post_h_gross_added_lines']==dict(values,**{'global':2150})
 assert report['post_h_reserve_limits_satisfied'] is True
 for key in values:
  values=dict(deploy=0,retained=0,workflow=0); values[key]=m['POST_H_HIGHS'][key]+1
  try: f()
  except m['LineBudgetError']: pass
  else: raise AssertionError(key+' reserve not enforced by central measure')
-# Exercise combined enforcement independently of the (currently summing-to-1000) slices.
-ns['POST_H_HIGHS']=dict(m['POST_H_HIGHS'],deploy=151)
-values=dict(deploy=151,retained=500,workflow=350)
+# Exercise combined enforcement independently while each widened slice remains below its own high.
+ns['POST_H_HIGHS']=dict(m['POST_H_HIGHS'],deploy=250)
+values=dict(deploy=201,retained=1500,workflow=500)
 try: f()
 except m['LineBudgetError']: pass
 else: raise AssertionError('combined reserve not enforced')

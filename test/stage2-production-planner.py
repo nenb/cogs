@@ -22,6 +22,12 @@ with tempfile.TemporaryDirectory() as temporary:
     planner.ROOT = root
     planner.AWS = root / "aws"; planner.AWS.write_bytes(b"fixed-aws")
     h, g, q = "1" * 40, "2" * 40, "3" * 40
+    try:
+        planner.eligible(("9b9966afffe0ea8de4d0c99147886a95094470a9", g, q))
+    except planner.PlanningError:
+        pass
+    else:
+        raise AssertionError("retired H reached planner effects")
     descriptor = {"version": "cogs.stage2-prebuilt-rootfs-descriptor/v1",
         "producer": {"revision": h, "source_manifest_sha256": d("source"),
             "package_manifest_sha256": d("rootfs-package"), "provenance_sha256": d("provenance"),
