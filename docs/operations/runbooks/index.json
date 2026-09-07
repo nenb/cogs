@@ -148,7 +148,7 @@
       "id": "limitations",
       "path": "docs/operations/runbooks/limitations.md",
       "title": "Draft known limitations and residual risks",
-      "content_sha256": "7a589e4fb0964a960c30a57b795a6e810eaac98c3183aaf2c0cb4d86f462dcc5",
+      "content_sha256": "56abec983b76fe0244751ad3c10b21ff1f89f672ee051e83ced975d09ca51cf7",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
