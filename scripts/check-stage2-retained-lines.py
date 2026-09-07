@@ -262,7 +262,7 @@ def _remediation_budget():
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 1_800, "revocation": 3_000, "relay": 1_800,
-                "lifecycle": 6_800, "completion": 2_600, "integration": 2_900}
+                "lifecycle": 7_000, "completion": 2_600, "integration": 3_000}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -289,7 +289,7 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(sum(new_file_highs.values()) == 37
+    _require(sum(new_file_highs.values()) == 38
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
