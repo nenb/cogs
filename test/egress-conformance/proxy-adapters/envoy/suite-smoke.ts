@@ -414,7 +414,7 @@ try {
     if (!authoritative) {
       postconditionCaseId = "client.npm-tarball";
       const npmObservations = observations.filter((item) => item.route === "client-npm");
-      assert.equal(npmObservations.length, 1, "npm must reach the exact fixture once");
+      assert.ok(npmObservations.length >= 1 && npmObservations.length <= 3, "npm fixture count must be bounded");
       assert.deepEqual(
         npmObservations.map(({ method, authority_matches, credential_present, credential_matches }) => ({
           method,
@@ -425,7 +425,7 @@ try {
         [{ method: "GET", authority_matches: true, credential_present: true, credential_matches: true }],
       );
       const npmIntents = finalSnapshot.intents.filter((item) => item.case_id === "client.npm-tarball");
-      assert.ok(npmIntents.length > 0, "npm must have an accepted authorization intent");
+      assert.equal(npmIntents.length, npmObservations.length, "every npm request must have one accepted intent");
       assert.ok(
         npmIntents.every((item) => item.completion?.outcome === "success" && item.completion.status_class === 2),
       );

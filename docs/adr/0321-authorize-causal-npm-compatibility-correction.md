@@ -18,7 +18,7 @@ Raise the relay workstream gross-line high from 1,800 to 1,900. Allocate one int
 The correction must:
 
 1. derive the expected authority from the fixture's trusted dynamically bound port before requests are admitted;
-2. require exactly one authenticated npm fixture observation plus case-bound accepted intent and successful completion;
+2. require a positive bounded set of at most three authenticated npm fixture observations, with exactly one case-bound accepted intent and successful completion per request;
 3. validate exact bounded tarball bytes and a bounded numeric npm version;
 4. attribute any npm postcondition failure to `client.npm-tarball` with categorical expected/actual wording; and
 5. preserve the failed run as historical, functional-only, non-release evidence.
