@@ -46,13 +46,13 @@ report={
  'environment':{'os':platform.system().lower(),'architecture':platform.machine(),'runner':os.environ.get('RUNNER_NAME','local-linux'),
   'runner_image':os.environ.get('ImageOS','unknown'),'runtime_versions':{'qemu':subprocess.check_output(['qemu-system-x86_64','--version'],text=True).splitlines()[0]},
   'metadata':{'kvm_present':os.path.exists('/dev/kvm'),'kvm_enabled':result=='pass','guest_root':result=='pass',
-   'distinct_boot_ids':result=='pass','host_enforced_network':result=='pass','guest_firewall_trusted':False,
+   'distinct_boot_ids':result=='pass','host_enforced_network':False,'guest_firewall_trusted':False,
    'guest_image_sha512':'78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667'}},
  'components':[{'name':'qemu','version':subprocess.check_output(['qemu-system-x86_64','--version'],text=True).splitlines()[0]}],
  'dependencies':{name:{'mode':'real' if name=='network_enforcement' else 'not-applicable','implementation':'host TAP input/forward policy' if name=='network_enforcement' else 'driver qualification only'} for name in deps},
  'tests':[{'id':'runner.kvm-isolated-driver','group':'runner-qualification','result':result,'release_eligible':False,
   'dependency_modes':{name:'real' if name=='network_enforcement' else 'not-applicable' for name in deps},'diagnostics_redacted':diagnostic}],
- 'known_limitations':['Driver smoke qualifies KVM, guest root, reset, and host network control; full proxy dependency results remain separate and stub-aware.']}
+ 'known_limitations':['Driver smoke observes KVM, guest root, generation-bound proxy reachability, and reset. Non-proxy failures lack live same-destination controls and grant no host-network enforcement evidence.']}
 with open(path,'w') as f: json.dump(report,f,indent=2,sort_keys=True);f.write('\n')
 PY
 }
