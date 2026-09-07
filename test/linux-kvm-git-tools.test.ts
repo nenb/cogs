@@ -202,6 +202,7 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
   const text = await readFile(driver, "utf8");
   assert.match(text, /source "\$repo\/dev\/linux-kvm\/git-tools\.sh"/u);
   assert.match(text, /prepare_git_tools_disk "\$state" "\$cache"/u);
+  assert.match(text, /prepare-cache\)\n {4}prepare_image\n {4}cogs_git_tools_prepare_cache "\$cache"/u);
   assert.match(text, /-drive if=virtio,format=raw,readonly=on,file="\$state\/git-tools\.img"/u);
   assert.match(text, /\[LABEL=COGS_GITTOOLS, \/opt\/cogs-git, auto, 'ro,nosuid,nodev'/u);
   assert.match(

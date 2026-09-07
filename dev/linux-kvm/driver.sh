@@ -545,6 +545,7 @@ verify() {
 case "$operation" in
   prepare-cache)
     prepare_image
+    cogs_git_tools_prepare_cache "$cache"
     printf '{"status":"prepared","profile":"linux-kvm"}\n'
     ;;
   create)
