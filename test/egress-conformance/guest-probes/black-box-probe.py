@@ -2,6 +2,7 @@
 """Guest-root black-box proxy probe. Emits bounded booleans and never response content."""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,6 @@ import ssl
 import struct
 import subprocess
 import sys
-import tarfile
 import tempfile
 
 RAW_DETAIL = "none"
@@ -430,9 +430,10 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
             command = ["python3", "-m", "pip", "download", "--disable-pip-version-check", "--no-deps", "--dest", temporary, "--proxy", proxy, "--cert", ca, target]
         elif scenario == "npm-tarball":
             npm_version = subprocess.run(
-                ["npm", "--version"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True, text=True
+                ["/bin/sh", "-c", "/usr/bin/npm --version 2>/dev/null | /usr/bin/head -c 65"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True, text=True
             ).stdout.strip()
-            if re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", npm_version) is None:
+            if re.fullmatch(r"[0-9]{1,10}(?:\.[0-9]{1,10}){1,3}", npm_version) is None:
                 return False
             environment.update({
                 "HOME": temporary,
@@ -493,14 +494,11 @@ class CogsClient { public static void main(String[] a) throws Exception {
         succeeded = completed.returncode == 0
         if scenario == "npm-tarball" and succeeded:
             archives = [name for name in os.listdir(temporary) if name.endswith(".tgz")]
-            if len(archives) != 1 or os.path.getsize(os.path.join(temporary, archives[0])) > 4096:
-                succeeded = False
-            else:
-                with tarfile.open(os.path.join(temporary, archives[0]), "r:gz") as archive:
-                    members = archive.getmembers()
-                    entry = members[0] if len(members) == 1 else None
-                    payload = archive.extractfile(entry).read() if entry is not None and entry.isfile() else b""
-                    succeeded = entry is not None and entry.name == "package/package.json" and payload == b'{"name":"@cogs/fixture","version":"1.0.0"}'
+            artifact = b""
+            if len(archives) == 1:
+                with open(os.path.join(temporary, archives[0]), "rb") as source:
+                    artifact = source.read(152)
+            succeeded = len(artifact) == 151 and hashlib.sha256(artifact).hexdigest() == "a975e4b9ef8c048914f56aaba8b7f53bdccc481ab367c6554c4d54fa7a508870"
         for sensitive in (capability, password, proxy):
             bounded = bounded.replace(sensitive, "[REDACTED]")
         CLIENT_DETAIL = f"client-{'succeeded' if succeeded else 'failed'}" + (f":npm={npm_version}" if npm_version else "")
@@ -554,8 +552,9 @@ def main():
             if expected == "safe"
             else (allowed if expected == "allow" else not allowed)
         )
+    actual = "allow" if allowed else "deny"
     detail = f" ({RAW_DETAIL})" if kind == "raw-http1" else (f" ({CLIENT_DETAIL})" if kind == "client" and (not passed or scenario == "npm-tarball") else "")
-    emit(passed, f"scenario {scenario} produced the required bounded {expected} observation{detail}")
+    emit(passed, f"scenario {scenario} expected={expected} actual={actual}{detail}")
 
 
 # Narrow diagnostic contract: TCP nonce echo and raw UDP nonce echo, NOT TLS,

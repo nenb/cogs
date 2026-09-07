@@ -70,7 +70,7 @@ export interface UpstreamFixtureOptions {
   delayedResponseMs?: number;
   maxObservations?: number;
   maxConcurrentRequests?: number;
-  expectedAuthority?: string;
+  expectedAuthority?: string | ((tlsPort: number) => string);
 }
 
 export interface UpstreamFixtures {
@@ -305,8 +305,7 @@ export async function startUpstreamFixtures(options: UpstreamFixtureOptions): Pr
     apiKey: digestValue(options.expectedCredentials.apiKey, comparisonKey),
     basic: digestValue(options.expectedCredentials.basic, comparisonKey),
   };
-  const expectedAuthorityDigest =
-    options.expectedAuthority === undefined ? undefined : digestValue(options.expectedAuthority, comparisonKey);
+  let expectedAuthorityDigest: Buffer | undefined;
   const recorded: HttpObservation[] = [];
   const sockets = new Set<Socket>();
   const lifecycle = new AbortController();
@@ -518,6 +517,13 @@ export async function startUpstreamFixtures(options: UpstreamFixtureOptions): Pr
 
   try {
     const [tlsPort, tcpSensorPort, udpSensorPort] = await Promise.all([listen(tls), listen(tcp), listenUdp(udp)]);
+    const expectedAuthority =
+      typeof options.expectedAuthority === "function" ? options.expectedAuthority(tlsPort) : options.expectedAuthority;
+    if (expectedAuthority !== undefined) {
+      if (expectedAuthority.length < 1 || expectedAuthority.length > 512 || /[\r\n]/u.test(expectedAuthority))
+        throw new Error("invalid expected fixture authority");
+      expectedAuthorityDigest = digestValue(expectedAuthority, comparisonKey);
+    }
     return {
       tlsOrigin: `https://127.0.0.1:${tlsPort}`,
       tcpSensorPort,
