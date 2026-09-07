@@ -317,15 +317,22 @@ test("KVM network-domain provisioning publishes custody and safely rolls back pa
   const { spawnSync } = await import("node:child_process");
   const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-provision-faults-"));
   try {
-    for (const [mode, deleted] of [
-      ["link-fails", true],
-      ["identity-fails", false],
-      ["chmod-fails", true],
+    for (const [mode, expected] of [
+      ["link-fails", { deleted: true, removed: false, reachedChmod: false }],
+      ["identity-fails", { deleted: false, removed: false, reachedChmod: false }],
+      ["chmod-fails", { deleted: true, removed: true, reachedChmod: true }],
     ] as const) {
       const calls = join(dir, `${mode}.calls`);
       const githubEnv = join(dir, `${mode}.env`);
       await writeFile(githubEnv, "");
-      const harness = `sudo() {
+      const harness = `cat() {
+  if [[ "$#" -eq 1 && "$1" == /proc/sys/kernel/random/boot_id ]]; then
+    printf '00000000-0000-0000-0000-000000000042\\n'
+  else
+    command cat "$@"
+  fi
+}
+sudo() {
   printf '%s\\n' "$*" >> "$CALLS"
   case "$*" in
     "ip netns add "*) ;;
@@ -359,8 +366,13 @@ ${provision}`;
       assert.notEqual(result.status, 0, `${mode}: ${result.stderr}`);
       assert.match(await readFile(githubEnv, "utf8"), /^COGS_KVM_NETNS=cogs-kvm-42-1$/mu);
       const recorded = await readFile(calls, "utf8");
-      assert.equal(recorded.includes("ip netns delete cogs-kvm-42-1"), deleted, mode);
-      assert.doesNotMatch(recorded, /rm -- .*cogs-kvm-network-domain/u, `${mode}: lease removed before retirement`);
+      const deleted = recorded.includes("ip netns delete cogs-kvm-42-1");
+      const removed = /rm -- .*cogs-kvm-network-domain/u.test(recorded);
+      const reachedChmod = recorded.includes("chmod 0444 /run/cogs-kvm-network-domain/4-42");
+      assert.deepEqual({ deleted, removed, reachedChmod }, expected, mode);
+      if (removed) {
+        assert.ok(recorded.indexOf("ip netns delete cogs-kvm-42-1") < recorded.indexOf("rm -- "), mode);
+      }
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

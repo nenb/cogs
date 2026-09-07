@@ -57,6 +57,7 @@ jobs:
           ns="cogs-kvm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           identity=
           lease=
+          lease_may_exist=false
           acquired=false
           rollback() {
             status=$?
@@ -69,7 +70,7 @@ jobs:
                  ! pids=$(sudo ip netns pids "$ns") || [[ -n "$pids" ]] ||
                  ! sudo ip netns delete "$ns"; then
                 echo 'FAIL: uncertain partial network-domain provisioning; custody retained' >&2
-              elif [[ -n "$lease" && -e "$lease" ]] && ! sudo rm -- "$lease"; then
+              elif [[ "$lease_may_exist" == true ]] && ! sudo rm -- "$lease"; then
                 echo 'FAIL: retired namespace left a lease residue' >&2
               fi
             fi
@@ -85,6 +86,7 @@ jobs:
           printf 'COGS_KVM_NETNS_IDENTITY=%s\nCOGS_KVM_LEASE=%s\n' "$identity" "$lease" >>"$GITHUB_ENV"
           boot=$(cat /proc/sys/kernel/random/boot_id)
           sudo install -d -o root -g root -m 0755 /run/cogs-kvm-network-domain
+          lease_may_exist=true
           printf 'cogs-exclusive-netns-v1 %s\n' "$boot" | sudo tee "$lease" >/dev/null
           sudo chmod 0444 "$lease"
           trap - EXIT
