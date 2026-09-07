@@ -778,7 +778,12 @@ async function bounded(r: Response, max: number, signal: AbortSignal, work: Set<
   } catch (error) {
     const cancellation = Promise.resolve().then(() => body.cancel());
     void cancellation.catch(() => undefined);
-    await cancellation;
+    try {
+      await cancellation;
+    } catch {
+      uncertainRequests.add(work);
+      throw error;
+    }
     throw error;
   }
   let n = 0,

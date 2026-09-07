@@ -1243,8 +1243,20 @@ test("trusted composition blocks dependent cleanup after an owner failure", asyn
   }
 });
 
-test("trusted composition rejects ready proof status headers utf8 and oversize", async () => {
+test("trusted composition rejects malformed readiness while retaining original response custody", async () => {
+  let exceptionalCancelled = false;
   const cases = [
+    () => {
+      const body = new ReadableStream({ cancel: () => (exceptionalCancelled = true) });
+      const response = new Response(body, { status: 200 });
+      Object.defineProperty(response, "headers", {
+        get() {
+          Object.defineProperty(response, "body", { value: null });
+          throw new Error("headers unavailable");
+        },
+      });
+      return response;
+    },
     () =>
       new Response('{"ready":true,"closed":false}', { status: 503, headers: { "content-type": "application/json" } }),
     () => new Response('{"ready":true,"closed":false}', { status: 200, headers: { "content-type": "text/plain" } }),
@@ -1271,6 +1283,7 @@ test("trusted composition rejects ready proof status headers utf8 and oversize",
       await rm(fixture.root, { recursive: true, force: true });
     }
   }
+  assert.equal(exceptionalCancelled, true);
 });
 
 test("trusted composition rejects accessor proxy capability without invoking getter", async () => {

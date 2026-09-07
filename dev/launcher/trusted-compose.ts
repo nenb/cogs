@@ -1177,6 +1177,7 @@ async function readyProof(
       signal,
     }),
   );
+  const body = response.body;
   try {
     if (
       response.status !== 200 ||
@@ -1184,13 +1185,13 @@ async function readyProof(
       !/^application\/json(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? "")
     )
       fail();
-    const text = await boundedResponseText(response, signal, 128);
+    const text = await boundedResponseText(body, signal, 128);
     const parsed = JSON.parse(text) as unknown;
     const record = plainRecord(parsed);
     const keys = Object.keys(record).sort();
     if (keys.join(",") !== "closed,ready" || record.ready !== true || record.closed !== false) fail();
   } finally {
-    await response.body?.cancel().catch(() => undefined);
+    await body?.cancel().catch(() => undefined);
   }
 }
 
@@ -1332,8 +1333,12 @@ async function proveClosed(host: string, portValue: number): Promise<void> {
   });
 }
 
-async function boundedResponseText(response: Response, signal: AbortSignal, maxBytes: number): Promise<string> {
-  const reader = response.body?.getReader();
+async function boundedResponseText(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+  maxBytes: number,
+): Promise<string> {
+  const reader = body?.getReader();
   if (reader === undefined) fail();
   const chunks: Uint8Array[] = [];
   let total = 0;

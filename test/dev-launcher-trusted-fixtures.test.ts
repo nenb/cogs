@@ -909,8 +909,8 @@ test("post-header abort cancels body; backend removal does not retire pending ca
             },
             cancel() {
               cancelled = true;
-              return new Promise<void>((resolve) => {
-                finishCancel = resolve;
+              return new Promise<void>((resolve, reject) => {
+                finishCancel = target.endsWith("lookup-self") ? () => reject(new Error("cancel failed")) : resolve;
               });
             },
           });
@@ -944,7 +944,8 @@ test("post-header abort cancels body; backend removal does not retire pending ca
       await lstat(join(s.controlDir, "openbao-acquisition.json"));
       finishCancel();
       await rejected;
-      await assert.rejects(lstat(join(s.controlDir, "openbao-acquisition.json")), { code: "ENOENT" });
+      if (target.endsWith("lookup-self")) await lstat(join(s.controlDir, "openbao-acquisition.json"));
+      else await assert.rejects(lstat(join(s.controlDir, "openbao-acquisition.json")), { code: "ENOENT" });
     } finally {
       finishCancel();
       await rm(dir, { recursive: true, force: true });
