@@ -90,7 +90,7 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=1500,revocation=3500,relay=1400,lifecycle=4100,completion=1900,integration=3600)
+assert highs==dict(route=1500,revocation=3000,relay=1300,lifecycle=5200,completion=1800,integration=3200)
 assert b['global_gross_line_high']==16000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(95900,22300,13100,5500,40500,2000)
@@ -99,20 +99,20 @@ assert sum(new.values())==40 and sum(x['total'] for x in forecasts.values())==25
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
- 'lifecycle':['dev/launcher/deterministic-stream.ts','dev/launcher/fixtures.ts','dev/launcher/otlp-fixture.ts','test/dev-launcher-envoy-egress.test.ts','test/dev-launcher-deterministic-stream.test.ts','test/stage3-s309-exit-evidence.test.ts'],
+ 'lifecycle':['dev/launcher/deterministic-stream.ts','dev/launcher/fixtures.ts','dev/launcher/otlp-fixture.ts','dev/launcher/trusted-controls.ts','test/dev-launcher-envoy-egress.test.ts','test/dev-launcher-deterministic-stream.test.ts','test/dev-launcher-operations.test.ts','test/stage3-s309-exit-evidence.test.ts'],
  'revocation':['dev/launcher/openbao.ts','test/egress-openbao-pki.test.ts','test/dev-launcher-trusted-fixtures.test.ts'],
  'relay':['dev/linux-kvm/driver.sh','dev/linux-kvm/README.md','test/linux-kvm-git-tools.test.ts','test/stage3-real-runtime-report.test.ts'],
- 'integration':['deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py','test/outcome-two-runtime-report-portable.py','test/outcome-two-trusted-launcher-portable.py','scripts/native-qualification/common.py','scripts/validate-schemas.ts','schemas/native-qualification-report-v1alpha1.json','test/native-qualification-common.test.ts']}.items():
+ 'integration':['deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py','test/outcome-two-runtime-report-portable.py','test/outcome-two-trusted-launcher-portable.py','scripts/native-qualification/common.py','scripts/validate-schemas.ts','schemas/native-qualification-report-v1alpha1.json','test/native-qualification-common.test.ts','docs/test-reports/stage-3-s3-09-linux-kvm-exit.md']}.items():
  for p in names: assert paths[p]==owner,p
 for owner,names in {
  'revocation':['config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts'],
- 'integration':['.github/workflows/build-openbao-local.yml','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md']}.items():
+ 'integration':['docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md']}.items():
  for p in names: assert paths[p]==owner and not Path(p).exists(),p
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
 assert len(set(paths)-baseline)==40
-current='docs/adr/0310-authorize-openbao-recognition-correction.md'
-assert paths[current]=='integration' and Path(current).is_file()
-for number,name in ((311,'freeze-remediated-H-and-authorize-control'),(312,'establish-remediated-Q-and-authorize-qualification')):
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md'):
+ assert paths[current]=='integration' and Path(current).is_file()
+for number,name in ((312,'freeze-remediated-H-and-authorize-control'),(313,'establish-remediated-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)

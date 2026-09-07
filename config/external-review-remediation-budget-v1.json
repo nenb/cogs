@@ -49,7 +49,7 @@
     },
     {
       "name": "revocation",
-      "gross_line_high": 3500,
+      "gross_line_high": 3000,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
@@ -82,7 +82,7 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 1400,
+      "gross_line_high": 1300,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 260000,
@@ -127,7 +127,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 4100,
+      "gross_line_high": 5200,
       "gross_byte_forecast": {
         "source": 250000,
         "tests_fixtures": 430000,
@@ -147,6 +147,7 @@
         "dev/launcher/state.ts",
         "dev/launcher/supervisor.ts",
         "dev/launcher/trusted-compose.ts",
+        "dev/launcher/trusted-controls.ts",
         "dev/launcher/worker-entry.ts",
         "dev/launcher/worker-process.ts",
         "schemas/launcher-cleanup-receipt-v1.json",
@@ -167,6 +168,7 @@
         "test/dev-launcher-control-otlp.test.ts",
         "test/dev-launcher-deterministic-stream.test.ts",
         "test/dev-launcher-envoy-egress.test.ts",
+        "test/dev-launcher-operations.test.ts",
         "test/dev-launcher-supervisor.test.ts",
         "test/dev-launcher-trusted-compose.test.ts",
         "test/dev-launcher-trusted-controls.test.ts",
@@ -184,7 +186,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 1900,
+      "gross_line_high": 1800,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -219,7 +221,7 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 3600,
+      "gross_line_high": 3200,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
@@ -228,7 +230,6 @@
       },
       "new_file_high": 25,
       "paths": [
-        ".github/workflows/build-openbao-local.yml",
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
         ".github/workflows/kvm-qualification.yml",
@@ -261,8 +262,9 @@
         "docs/adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md",
         "docs/adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md",
         "docs/adr/0310-authorize-openbao-recognition-correction.md",
-        "docs/adr/0311-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0312-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0311-reallocate-integrated-post-H-closure.md",
+        "docs/adr/0312-freeze-remediated-H-and-authorize-control.md",
+        "docs/adr/0313-establish-remediated-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/openbao-local-artifact.md",
         "docs/operations/production-runtime-foundation.md",
@@ -279,6 +281,7 @@
         "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
         "docs/security-evidence/stage4-offline-readiness-package.json",
         "docs/security-evidence/stage5-destructive-harness-report.canonical-json",
+        "docs/test-reports/stage-3-s3-09-linux-kvm-exit.md",
         "docs/test-reports/stage-4-offline-readiness.md",
         "schemas/native-qualification-report-v1alpha1.json",
         "scripts/check-image-pins.ts",
