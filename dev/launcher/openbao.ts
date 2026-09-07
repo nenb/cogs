@@ -770,8 +770,17 @@ async function bao(
   return observe(actual, options);
 }
 async function bounded(r: Response, max: number, signal: AbortSignal, work: Set<Promise<unknown>>) {
-  const rd = r.body?.getReader();
-  if (!rd) return "";
+  const body = r.body;
+  if (!body) return "";
+  let rd: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    rd = body.getReader();
+  } catch (error) {
+    const cancellation = Promise.resolve().then(() => body.cancel());
+    void cancellation.catch(() => undefined);
+    await cancellation;
+    throw error;
+  }
   let n = 0,
     c = 0;
   const xs: Buffer[] = [];

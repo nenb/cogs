@@ -903,20 +903,25 @@ test("post-header abort cancels body; backend removal does not retire pending ca
           (target === "/v1/sys/init" || new Headers(init?.headers).get("x-vault-token") === "rootToken123")
         ) {
           setTimeout(() => controller.abort(), 5);
-          return new Response(
-            new ReadableStream({
-              start(c) {
-                c.enqueue(new TextEncoder().encode('{"root_token":'));
+          const body = new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode('{"root_token":'));
+            },
+            cancel() {
+              cancelled = true;
+              return new Promise<void>((resolve) => {
+                finishCancel = resolve;
+              });
+            },
+          });
+          const response = new Response(body, { headers: { "content-type": "application/json" } });
+          if (target.endsWith("lookup-self"))
+            Object.defineProperty(body, "getReader", {
+              value: () => {
+                throw new Error("reader unavailable");
               },
-              cancel() {
-                cancelled = true;
-                return new Promise<void>((resolve) => {
-                  finishCancel = resolve;
-                });
-              },
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
+            });
+          return response;
         }
         return (base.fetch as typeof fetch)(url, init);
       }) as typeof fetch,

@@ -403,8 +403,8 @@ async function boundedText(
     cancellation ??= Promise.resolve().then(() => reader.cancel());
     void cancellation.catch(() => undefined);
   };
-  signal.addEventListener("abort", abort, { once: true });
   try {
+    signal.addEventListener("abort", abort, { once: true });
     while (true) {
       if (signal.aborted) throw new Error("aborted");
       const next = await reader.read();

@@ -265,8 +265,8 @@ async function boundedResponse(response: Response, maximum: number, signal: Abor
     cancellation ??= Promise.resolve().then(() => reader.cancel());
     void cancellation.catch(() => undefined);
   };
-  signal.addEventListener("abort", cancel, { once: true });
   try {
+    signal.addEventListener("abort", cancel, { once: true });
     for (;;) {
       if (signal.aborted) throw new Error("aborted");
       const next = await reader.read();
