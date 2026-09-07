@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emitOtlpMetadata, startOtlpFixture } from "./server.ts";
+import { decodeEnvelope, emitOtlpMetadata, envelope, startOtlpFixture } from "./server.ts";
+
+test("OTLP no-response metadata accepts only canonical decimal strings", () => {
+  const valid = JSON.stringify(envelope({ test_id: "audit.case", outcome: "failed", status_class: 0, duration_ms: 0 }));
+  const replace = (key: string, invalid: string) =>
+    JSON.parse(
+      valid.replace(
+        `"key":"cogs.${key}","value":{"stringValue":"0"}`,
+        `"key":"cogs.${key}","value":{"stringValue":${JSON.stringify(invalid)}}`,
+      ),
+    );
+  assert.deepEqual(decodeEnvelope(JSON.parse(valid)), {
+    test_id: "audit.case",
+    outcome: "failed",
+    status_class: 0,
+    duration_ms: 0,
+  });
+  for (const invalid of ["", " ", "00", "0x0", "0e0", "0.0"]) {
+    assert.equal(decodeEnvelope(replace("status_class", invalid)), undefined);
+    assert.equal(decodeEnvelope(replace("duration_ms", invalid)), undefined);
+  }
+});
 
 test("OTLP fixture accepts only bounded central metadata and retains no forbidden value", async () => {
   const secret = "cogs-secret-value-not-for-telemetry";

@@ -117,6 +117,7 @@ export function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
     const value = parsed as Record<string, unknown>;
     if (value.event !== "request-complete") continue;
+    if (line.includes("\\")) throw new Error("Envoy emitted a malformed structured completion record");
     const fields = ["event", "intent_id", "route_id", "response_code", "duration_ms"] as const;
     if (
       Object.keys(value).length !== fields.length ||
