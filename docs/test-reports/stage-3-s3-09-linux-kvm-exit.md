@@ -1,5 +1,11 @@
 # Stage 3 S3-09 Linux/KVM exit evidence
 
+## Current-source limitation (ADR 0309)
+
+The acceptance below is historical and has not been rerun or rebound. Its observer-consistency checks allowed coherent absence; it does not prove the corrected positive-only scenario or current-generation TLS trust and capability provisioning. Current launcher corrections require positive correlated observations and reject historical proof metadata. Local synthetic tests are not replacement KVM evidence.
+
+Complete inner-request accounting and a final retired WAL observation remain unavailable through the current launcher interfaces. Exact counts in the available observers are not a literal zero-extra-traffic or final-retirement traffic guarantee. No new acceptance, source freeze, dispatch permission, or qualification is recorded here.
+
 ## Accepted scope
 
 - Issue: #71.

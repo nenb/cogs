@@ -132,7 +132,7 @@ const s309ProofFailStages: Record<string, S309FailureStage> = Object.freeze({
 });
 const s309ProofFailKeys = "outcome,profile,reason,scenario,version";
 const s309ProofPassKeys =
-  "completion_observer_consistent,fixture_baseline_captured,fixture_denied_route_absent,fixture_observer_consistent,fixture_ready,guest_proxy_fixture_attested,outcome,profile,runtime_observers_consistent,scenario,version";
+  "completion_observer_consistent,fixture_baseline_captured,fixture_denied_route_absent,fixture_observer_consistent,fixture_ready,outcome,profile,runtime_observers_consistent,scenario,trusted_positive_egress_observed,version";
 export function s309StageExitCode(error: unknown): number {
   const stage = error instanceof Error ? s309Failures.get(error) : undefined;
   return stage ? 40 + s309FailureStages.indexOf(stage) : 1;
@@ -346,7 +346,7 @@ function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
   const proof = exactJsonRecord(exactJsonRecord(terminal.payload).s3_09_proof);
   const keys = Object.keys(proof).sort().join(",");
   if (
-    proof.version !== "cogs.launcher.s3-09-proof/v1alpha1" ||
+    proof.version !== "cogs.launcher.s3-09-proof/v2alpha1" ||
     proof.scenario !== "s3-09" ||
     proof.profile !== "linux-kvm"
   )
@@ -359,7 +359,7 @@ function egressProof(terminal: Awaited<ReturnType<typeof tailTerminalEvent>>) {
   if (
     proof.outcome !== "pass" ||
     keys !== s309ProofPassKeys ||
-    proof.guest_proxy_fixture_attested !== true ||
+    proof.trusted_positive_egress_observed !== true ||
     proof.runtime_observers_consistent !== true ||
     proof.completion_observer_consistent !== true ||
     proof.fixture_denied_route_absent !== true ||

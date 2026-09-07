@@ -1,20 +1,203 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer as httpServer } from "node:http";
+import { createServer as httpsServer } from "node:https";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import {
   ENVOY_IMAGE,
   type EnvoyEgressSeams,
+  observeLauncherClose,
   prepareEnvoyBinary,
-  startEnvoyEgress,
+  startEnvoyEgress as startUnarmedEnvoyEgress,
 } from "../dev/launcher/envoy-egress.ts";
+import { KvmRelay } from "../dev/launcher/kvm-relay.ts";
 import type { OpenBaoHandle, SecretHolder } from "../dev/launcher/openbao.ts";
 import { createState, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
+import { OpenBaoEgressPkiSource } from "../src/egress/openbao-pki.ts";
 import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
 import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
 import type { CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-manager.ts";
+
+// Hold a pristine trusted baseline until arming, then expose the test window.
+async function startEnvoyEgress(options: Parameters<typeof startUnarmedEnvoyEgress>[0]) {
+  let live = false;
+  let canArm = false;
+  const start = options.seams?.startManager;
+  const relay = options.seams?.relay;
+  const h = await startUnarmedEnvoyEgress({
+    ...options,
+    seams: Object.freeze({
+      ...options.seams,
+      ...(start
+        ? {
+            startManager: Object.freeze(async (input: Parameters<NonNullable<typeof start>>[0]) => {
+              const manager = await start(input);
+              canArm = options.profile === "linux-kvm" && manager.auditRecords !== undefined;
+              if (!canArm) return manager;
+              return Object.freeze({
+                ...manager,
+                auditRecords: (limit: number) => (live ? (manager.auditRecords?.(limit) as never) : []),
+                drainCompletions: (limit: number) => (live ? manager.drainCompletions(limit) : []),
+              });
+            }),
+          }
+        : {}),
+      ...(relay
+        ? {
+            relay: Object.freeze(() => {
+              const instance = relay();
+              return Object.freeze({
+                ...instance,
+                snapshot: () => {
+                  const snap = instance.snapshot();
+                  return live
+                    ? snap
+                    : {
+                        ...snap,
+                        acceptedConnections: 0,
+                        deniedConnections: 0,
+                        activeSockets: 0,
+                        activeTarget: 18081,
+                        registeredTargets: [18081],
+                        switchedTargets: 1,
+                      };
+                },
+              }) as never;
+            }),
+          }
+        : {}),
+    }),
+  });
+  if (canArm) h.armS309();
+  live = true;
+  return h;
+}
+
+test("real curl verifies current CA through authenticated relay; unrelated/stale CA and capability fail", async () => {
+  const exec = promisify(execFile);
+  const dir = await mkdtemp(join(tmpdir(), "cogs-s309-tls-"));
+  try {
+    for (const generation of ["a", "b"])
+      await exec(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "ec",
+          "-pkeyopt",
+          "ec_paramgen_curve:P-256",
+          "-nodes",
+          "-keyout",
+          join(dir, `${generation}.key`),
+          "-out",
+          join(dir, `${generation}.pem`),
+          "-days",
+          "1",
+          "-subj",
+          "/CN=localhost",
+          "-addext",
+          "subjectAltName=DNS:localhost",
+        ],
+        { maxBuffer: 4096 },
+      );
+    for (const generation of ["a", "b"]) {
+      let forwarded = 0;
+      const capability = generation.repeat(43);
+      const server = httpsServer(
+        { key: await readFile(join(dir, `${generation}.key`)), cert: await readFile(join(dir, `${generation}.pem`)) },
+        (_req, res) => {
+          forwarded++;
+          res.end("ok");
+        },
+      );
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as { port: number }).port;
+      // Synthetic CONNECT endpoint only; no Envoy/OpenBao qualification claim.
+      const proxy = httpServer();
+      proxy.on("connect", (req, socket, head) => {
+        assert.equal(
+          req.headers["proxy-authorization"] === `Basic ${Buffer.from(`cogs:${capability}`).toString("base64")}`,
+          true,
+        );
+        const upstream = connect(port, "127.0.0.1", () => {
+          socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+          if (head.length) upstream.write(head);
+          socket.pipe(upstream).pipe(socket);
+        });
+        socket.on("error", () => upstream.destroy());
+        upstream.on("error", () => socket.destroy());
+        socket.on("close", () => upstream.destroy());
+        upstream.on("close", () => socket.destroy());
+      });
+      await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+      const relay = KvmRelay.linuxKvmTestLoopback();
+      relay.configureProxyCapability(holder(capability));
+      try {
+        await relay.start();
+        const proxyPort = (proxy.address() as { port: number }).port;
+        relay.registerTarget(proxyPort);
+        await relay.switchTo(proxyPort);
+        const attempt = async (ca: string, token: string) => {
+          const config = join(dir, "curl.conf");
+          await writeFile(config, `proxy-user = "cogs:${token}"\n`, { mode: 0o600 });
+          try {
+            await exec(
+              "curl",
+              [
+                "-q",
+                "--config",
+                config,
+                "--proxy-basic",
+                "--proxy",
+                `http://127.0.0.1:${relay.snapshot().bindPort}`,
+                "--noproxy",
+                "",
+                "--cacert",
+                join(dir, `${ca}.pem`),
+                "--silent",
+                "--http1.1",
+                "--max-time",
+                "3",
+                "-o",
+                "/dev/null",
+                `https://localhost:${port}/credential`,
+              ],
+              { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, maxBuffer: 4096 },
+            );
+            return 0;
+          } catch (error) {
+            return (error as { code: number }).code;
+          }
+        };
+        assert.equal(await attempt(generation, capability), 0);
+        const before = forwarded;
+        // In B, A is the retained public trust anchor of the retired generation.
+        assert.equal(await attempt(generation === "a" ? "b" : "a", capability), 60);
+        assert.equal(forwarded, before);
+        const denied = relay.snapshot().deniedConnections;
+        assert.notEqual(await attempt(generation, generation === "b" ? "a".repeat(43) : "wrong".repeat(9)), 0);
+        assert.equal(relay.snapshot().deniedConnections, denied + 1);
+        assert.equal(forwarded, before);
+        assert.equal(await attempt(generation, capability), 0);
+        assert.equal(forwarded, before + 1);
+      } finally {
+        await relay.close();
+        await new Promise<void>((resolve) => proxy.close(() => resolve()));
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 const sourceRevision = "a".repeat(40);
 const fakeBin = Buffer.alloc(1024 * 1024, 1);
@@ -94,7 +277,7 @@ function holder(secret: string): SecretHolder {
 function walRecord(routeId: string, sessionId: string, overrides: Record<string, unknown> = {}) {
   return Object.freeze({
     version: "cogs.egress-intent/v1alpha1",
-    sequence: 1,
+    sequence: 0,
     intent_id: "intent-1",
     timestamp_ms: 1,
     session_id: sessionId,
@@ -140,7 +323,7 @@ function relaySeam(accepted: () => number, extra: Record<string, unknown> = {}) 
 function completion(routeId: string, responseCode = 200) {
   return Object.freeze({
     intentId: "intent-1",
-    sequence: 1,
+    sequence: 0,
     routeId,
     responseCode,
     durationMs: 1,
@@ -275,12 +458,139 @@ test("envoy egress adapter wires production manager options and insecure loopbac
     assert.equal(captured.telemetry.mode, "otlp");
     if (captured.telemetry.mode !== "otlp") throw new Error("bad telemetry");
     assert.equal(captured.telemetry.endpoint, "http://127.0.0.1:4318/v1/logs");
-    assert.equal(captured.pkiSource.constructor.name, "OpenBaoEgressPkiSource");
+    assert.equal(typeof captured.pkiSource.withPkiMaterial, "function");
     assert.equal(JSON.stringify(snap).includes("token"), false);
     await h.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("public guest material is only the active issuance CA and existing capability; lexical exit and close seal it", async (t) => {
+  const { dir, state } = await launcherState();
+  const material = Object.freeze({
+    caCertificatePem: "synthetic-issued-public-root",
+    certificateChainPem: "synthetic-leaf",
+    privateKeyPem: "PRIVATE_CANARY",
+    expiresAtMs: Date.now() + 60000,
+  });
+  let release!: () => void;
+  const retired = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let issued = 0;
+  t.mock.method(
+    OpenBaoEgressPkiSource.prototype,
+    "withPkiMaterial",
+    async (_request: unknown, consume: (value: typeof material) => Promise<void>) => {
+      issued++;
+      return consume(material);
+    },
+  );
+  try {
+    const runtime = join(state.dir, "runtime");
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+    const bin = join(runtime, "envoy");
+    await writeFile(bin, fakeBin, { mode: 0o500 });
+    const h = await startUnarmedEnvoyEgress({
+      state,
+      profile: "linux-kvm",
+      openbao: openbao(),
+      fixturePort: 31337,
+      launchDocument: launch(state.stateId),
+      listenerPort: 18081,
+      otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+      binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+      seams: Object.freeze({
+        validateTmpfs: Object.freeze(async () => undefined),
+        proveClosed: Object.freeze(async () => undefined),
+        relay: relaySeam(() => 0),
+        startManager: Object.freeze(async (options: CogsEgressRuntimeManagerOptions) => {
+          const task = options.pkiSource.withPkiMaterial(
+            {
+              sessionId: `launcher-${state.stateId}`,
+              hosts: ["localhost"],
+              maxSessionExpiresAtMs: material.expiresAtMs,
+            },
+            async (actual) => {
+              assert.equal(actual, material);
+              await retired;
+            },
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          return {
+            ready: true,
+            replacementRequired: false,
+            listenerPort: 18081,
+            drainCompletions: () => [],
+            close: async () => {
+              release();
+              await task;
+            },
+          };
+        }),
+      }),
+    });
+    let caBuffer!: Buffer;
+    let configBuffer!: Buffer;
+    let assertCurrent!: () => void;
+    await h.withGuestProxyMaterial(new AbortController().signal, async (guest) => {
+      caBuffer = guest.ca;
+      configBuffer = guest.config;
+      assertCurrent = guest.assertCurrent;
+      assert.equal(guest.ca.toString() === material.caCertificatePem, true);
+      assert.equal(
+        h.proxyCapability.withSecret((secret) => guest.config.toString() === `proxy-user = "cogs:${secret}"\n`),
+        true,
+      );
+      assert.equal(JSON.stringify(Object.keys(guest)).includes("private"), false);
+      assert.equal(guest.config.includes("PRIVATE_CANARY"), false);
+    });
+    assert.equal(
+      caBuffer.every((byte) => byte === 0),
+      true,
+    );
+    assert.equal(
+      configBuffer.every((byte) => byte === 0),
+      true,
+    );
+    assert.equal(issued, 1);
+    assertCurrent();
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.throws(assertCurrent);
+    await assert.rejects(h.withGuestProxyMaterial(new AbortController().signal, async () => undefined));
+    await h.close();
+    await assert.rejects(h.withGuestProxyMaterial(new AbortController().signal, async () => undefined));
+  } finally {
+    release();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("local close observers have independent deadlines/abort and never repeat actual work", async () => {
+  let release!: () => void;
+  let calls = 0;
+  const work = Promise.resolve().then(async () => {
+    calls++;
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  });
+  const controller = new AbortController();
+  const a = observeLauncherClose(work, { signal: controller.signal, deadlineAt: Date.now() + 1000 });
+  const b = observeLauncherClose(work, { deadlineAt: Date.now() + 1000 });
+  const short = observeLauncherClose(work, { deadlineAt: Date.now() + 5 });
+  controller.abort();
+  await assert.rejects(a);
+  await assert.rejects(short);
+  release();
+  await b;
+  await observeLauncherClose(work);
+  await assert.rejects(observeLauncherClose(work, { signal: controller.signal }));
+  await assert.rejects(observeLauncherClose(work, { deadlineAt: Date.now() - 1 }));
+  assert.equal(calls, 1);
 });
 
 test("envoy egress S3 completion proof is bounded, cached, and fail closed", async () => {
@@ -330,9 +640,8 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
-      outcome: "pass",
-      runtime_observers_consistent: true,
-      completion_observer_consistent: true,
+      outcome: "pending",
+      reason: "relay-zero-wal-zero",
     });
     assert.deepEqual(h.s309CompletionProof(), {
       version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
@@ -409,6 +718,12 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
     ["wal-route", { relay: {}, wal: { route_id: "wrong" } }],
     ["wal-method", { relay: {}, wal: { method: "POST" } }],
     ["wal-credential", { relay: {}, wal: { credential_required: false } }],
+    ["wal-session", { relay: {}, wal: { session_id: "other" } }],
+    ["wal-sequence", { relay: {}, wal: { sequence: 1 } }],
+    ["wal-intent", { relay: {}, wal: { intent_id: "" } }],
+    ["wal-time", { relay: {}, wal: { timestamp_ms: -1 } }],
+    ["relay-switch", { relay: { switchedTargets: 2 }, wal: {} }],
+    ["relay-extra", { relay: { acceptedConnections: 3 }, wal: {} }],
   ] as const;
   for (const [name, value] of cases) {
     const { dir, state } = await launcherState();
@@ -468,7 +783,11 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
                       ? "relay-one-wal-pass"
                       : "relay-zero-wal-pass",
             }
-          : { version: "cogs.launcher.s3-09-trusted-proof/v1alpha1", outcome: "fail", reason: "total-count" },
+          : {
+              version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
+              outcome: "fail",
+              reason: name === "relay-switch" ? "generation" : "total-count",
+            },
         name,
       );
       await h.close();
@@ -480,13 +799,17 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
 
 test("envoy egress S3 completion proof rejects wrong duplicate status and hostile records", async () => {
   const cases = [
+    ["missing", (_routeId: string) => []],
     ["wrong", (routeId: string) => [completion(`x-${routeId}`)]],
     ["duplicate", (routeId: string) => [completion(routeId), completion(routeId)]],
     ["status", (routeId: string) => [completion(routeId, 500)]],
+    ["code-zero", (routeId: string) => [completion(routeId, 0)]],
+    ["wrong-intent", (routeId: string) => [{ ...completion(routeId), intentId: "other" }]],
+    ["wrong-sequence", (routeId: string) => [{ ...completion(routeId), sequence: 99 }]],
     ["hostile", () => [Object.freeze(Object.create(null, { routeId: { get: () => "x", enumerable: true } }))]],
   ] as const;
   for (const [name, records] of cases) {
-    const { dir, state } = await launcherState("insecure-container");
+    const { dir, state } = await launcherState();
     try {
       const runtime = join(state.dir, "runtime");
       await mkdir(runtime, { mode: 0o700 });
@@ -498,7 +821,7 @@ test("envoy egress S3 completion proof rejects wrong duplicate status and hostil
       const routeId = credentialRouteId(doc);
       const h = await startEnvoyEgress({
         state,
-        profile: "insecure-container",
+        profile: "linux-kvm",
         openbao: openbao(),
         fixturePort: 31337,
         launchDocument: doc,
@@ -508,11 +831,13 @@ test("envoy egress S3 completion proof rejects wrong duplicate status and hostil
         seams: Object.freeze({
           validateTmpfs: Object.freeze(async () => undefined),
           proveClosed: Object.freeze(async () => undefined),
+          relay: relaySeam(() => 2),
           startManager: Object.freeze(async () => {
             return Object.freeze({
               ready: true,
               listenerPort: 18081,
               replacementRequired: false,
+              auditRecords: () => [walRecord(routeId, doc.session_id)] as never,
               drainCompletions: () => Object.freeze(records(routeId)) as never,
               close: async () => undefined,
             });
@@ -523,8 +848,8 @@ test("envoy egress S3 completion proof rejects wrong duplicate status and hostil
         h.s309CompletionProof(),
         {
           version: "cogs.launcher.s3-09-trusted-proof/v1alpha1",
-          outcome: "fail",
-          reason: "total-count",
+          outcome: name === "missing" ? "pending" : "fail",
+          reason: name === "missing" ? "wal" : "total-count",
         },
         name,
       );
@@ -995,7 +1320,10 @@ test("envoy close continues manager after relay failure and stays generic withou
       }),
     });
     const first = h.close({ deadlineAt: Date.now() + 5000 });
-    assert.equal(h.close(), first);
+    assert.equal(h.snapshot().ready, false);
+    const second = h.close();
+    assert.notEqual(second, first);
+    void second.catch(() => undefined);
     await assert.rejects(
       first,
       (error) => String(error).includes("launcher egress failed") && !JSON.stringify(error).includes("SECRET_TOKEN"),

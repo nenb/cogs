@@ -918,14 +918,17 @@ test("deterministic stream drives exact s3-09 setup and scenario tool transcript
     assert.match(command, /test -f "\$curl_path"\ntest ! -L "\$curl_path"\ntest -x "\$curl_path"/u);
     assert.match(command, /stat -c '%u:%g:%a' "\$curl_path"\)" = 0:0:755/u);
     assert.match(command, /curl_verify=\$\(\/usr\/bin\/dpkg --verify curl\)\ntest -z "\$curl_verify"/u);
-    assert.equal(command.match(/"\$curl_path" -q -sS/gmu)?.length, 2);
-    assert.match(command, /--proxy http:\/\/192\.0\.2\.1:18080 --noproxy '' --insecure -D - -o \/dev\/null/u);
+    assert.equal(command.match(/\/usr\/bin\/curl -q --config/gmu)?.length, 2);
+    assert.equal(command.match(/\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin HOME=\/nonexistent/gu)?.length, 2);
+    assert.equal(command.match(/--max-time 10/gu)?.length, 2);
+    assert.doesNotMatch(command, /--retry|--location|--verbose|--trace|-D -/u);
+    assert.doesNotMatch(command, /--insecure|(?:^|\s)-k(?:\s|$)|--proxy-user|proxy-authorization/iu);
+    assert.equal(command.match(/--cacert \/run\/cogs-launcher-egress\/proxy-ca.pem/gu)?.length, 2);
+    assert.equal(command.match(/--config \/run\/cogs-launcher-egress\/curl-proxy.conf/gu)?.length, 2);
     assert.match(command, /https:\/\/localhost:3210\/credential/u);
-    assert.match(command, /x-cogs-writeout: 200 1 192\.0\.2\.1 18080/u);
-    assert.match(command, /x-cogs-writeout: 403 1 192\.0\.2\.1 18080/u);
-    // The current random authority port binds the fixed proxy checks to this fixture instance.
-    assert.match(command, /grep -Fxc 'x-cogs-fixture-proof: launcher-v1-3210'/u);
-    assert.match(command, /grep -Eiq '\^x-cogs-fixture-proof:'/u);
+    assert.match(command, /200 1 192\.0\.2\.1 18080 0/u);
+    assert.match(command, /403 1 192\.0\.2\.1 18080 0/u);
+    assert.doesNotMatch(command, /x-cogs-fixture-proof|x-cogs-run/u);
     assert.match(command, /while \[ "\$i" -lt 300 \]/u);
     assert.match(command, /sleep 0\.02/u);
     assert.equal(LAUNCHER_DETERMINISTIC_S309_BASH_MARKER, "allowed=200 denied=403 committed updates=300");
