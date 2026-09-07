@@ -74,6 +74,7 @@ export class OpenBaoKubernetesWorkloadIdentity implements OpenBaoIdentityPort {
     }
   }
 
+  /** Actual custody, not a deadline observation: callers must join this promise on every exit. */
   public async withToken(signal: AbortSignal, operation: (token: string) => Promise<void>): Promise<void> {
     try {
       if (!(signal instanceof AbortSignal) || signal.aborted || typeof operation !== "function")
@@ -105,23 +106,24 @@ export class OpenBaoKubernetesWorkloadIdentity implements OpenBaoIdentityPort {
       parent.addEventListener("abort", abort, { once: true });
       if (parent.aborted) controller.abort();
       body = JSON.stringify({ role: this.#options.role, jwt });
-      const response = await withAbort(
-        Promise.resolve().then(() =>
-          this.#options.fetchImpl(this.#options.loginUrl, {
-            method: "POST",
-            headers: {
-              accept: "application/json",
-              "content-type": "application/json",
-              "content-length": String(Buffer.byteLength(body)),
-            },
-            body,
-            redirect: "error",
-            signal: controller.signal,
-          }),
-        ),
-        controller.signal,
-      );
-      if (controller.signal.aborted) throw new Error("aborted");
+      const response = await Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw new Error("aborted");
+        return this.#options.fetchImpl(this.#options.loginUrl, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "content-length": String(Buffer.byteLength(body)),
+          },
+          body,
+          redirect: "error",
+          signal: controller.signal,
+        });
+      });
+      if (controller.signal.aborted) {
+        await response.body?.cancel();
+        throw new Error("aborted");
+      }
       const text = await boundedResponse(response, this.#options.maxResponseBytes, controller.signal);
       if (controller.signal.aborted) throw new Error("aborted");
       return parseLogin(text, this.#options.maxTokenTtlSeconds);
@@ -239,91 +241,52 @@ function decodeJwt(bytes: Buffer): string {
 
 async function boundedResponse(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
   if (!(response instanceof Response)) throw new Error("invalid response");
-  const type = response.headers.get("content-type") ?? "";
-  const length = response.headers.get("content-length");
-  if (
-    response.status !== 200 ||
-    response.redirected ||
-    !JSON_CONTENT_TYPE.test(type) ||
-    (length !== null && (!/^[0-9]+$/u.test(length) || Number(length) > maximum))
-  ) {
-    cancelBody(response.body);
-    throw new Error("invalid response");
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    const type = response.headers.get("content-type") ?? "";
+    const length = response.headers.get("content-length");
+    if (
+      response.status !== 200 ||
+      response.redirected ||
+      !JSON_CONTENT_TYPE.test(type) ||
+      (length !== null && (!/^[0-9]+$/u.test(length) || Number(length) > maximum))
+    )
+      throw new Error("invalid response");
+    const acquired = response.body?.getReader();
+    if (acquired === undefined) throw new Error("missing response");
+    reader = acquired;
+  } catch (error) {
+    await response.body?.cancel();
+    throw error;
   }
-  const reader = response.body?.getReader();
-  if (reader === undefined) throw new Error("missing response");
   const chunks: Uint8Array[] = [];
   let total = 0;
-  const cancel = () => cancelReader(reader);
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    // Publish before cancel can reenter; a second cancel need not join the first.
+    cancellation ??= Promise.resolve().then(() => reader.cancel());
+    void cancellation.catch(() => undefined);
+  };
   signal.addEventListener("abort", cancel, { once: true });
   try {
     for (;;) {
       if (signal.aborted) throw new Error("aborted");
-      const next = await withAbort(reader.read(), signal);
+      const next = await reader.read();
       if (next.done) break;
       total += next.value.byteLength;
       if (total > maximum) throw new Error("response too large");
       chunks.push(next.value);
     }
+    if (signal.aborted) throw new Error("aborted");
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
-  } catch (error) {
-    cancelReader(reader);
-    throw error;
   } finally {
-    signal.removeEventListener("abort", cancel);
+    cancel();
     try {
+      await cancellation;
+    } finally {
+      signal.removeEventListener("abort", cancel);
       reader.releaseLock();
-    } catch {
-      // The caller still receives the generic fail-closed identity error.
     }
-  }
-}
-
-function withAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = () => {
-      settled = true;
-      signal.removeEventListener("abort", abort);
-    };
-    const abort = () => {
-      if (settled) return;
-      finish();
-      reject(new Error("aborted"));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    if (signal.aborted) abort();
-    void pending.then(
-      (value) => {
-        if (settled) {
-          if (value instanceof Response) cancelBody(value.body);
-          return;
-        }
-        finish();
-        resolve(value);
-      },
-      () => {
-        if (settled) return;
-        finish();
-        reject(new Error("operation failed"));
-      },
-    );
-  });
-}
-
-function cancelBody(body: ReadableStream<Uint8Array> | null): void {
-  try {
-    void body?.cancel().catch(() => undefined);
-  } catch {
-    // Cancellation is best effort after the request has already failed closed.
-  }
-}
-
-function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  try {
-    void reader.cancel().catch(() => undefined);
-  } catch {
-    // Cancellation is best effort after the request has already failed closed.
   }
 }
 

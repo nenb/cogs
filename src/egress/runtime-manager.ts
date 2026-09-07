@@ -47,6 +47,7 @@ import {
   type CogsEgressTelemetryMode,
   type CogsEgressTelemetrySink,
   createCogsEgressTelemetrySink,
+  retireCogsEgressTelemetry,
 } from "./otlp-telemetry.ts";
 import { requireProxyCapability } from "./proxy-capability.ts";
 import {
@@ -725,7 +726,13 @@ class RuntimeManager {
 
   private async closeTelemetry(): Promise<void> {
     const telemetry = this.telemetry;
-    if (telemetry) await telemetry.close(new AbortController().signal);
+    if (telemetry) {
+      try {
+        await telemetry.close(new AbortController().signal);
+      } finally {
+        await retireCogsEgressTelemetry(telemetry);
+      }
+    }
     if (this.telemetry === telemetry) this.telemetry = undefined;
   }
 

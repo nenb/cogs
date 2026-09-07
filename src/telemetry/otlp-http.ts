@@ -65,7 +65,39 @@ export function jsonContentType(value: string | null): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 }
 
-export async function postOtlpJson(input: OtlpPostConfig): Promise<void> {
+const postRetirements = new WeakMap<Promise<void>, Promise<void>>();
+
+/** Internal actual transport barrier; failure of optional delivery is not retirement failure. */
+export function otlpPostRetirement(observation: Promise<void>): Promise<void> {
+  const retired = postRetirements.get(observation);
+  if (!retired) throw new Error("unowned OTLP observation");
+  return retired;
+}
+
+export function postOtlpJson(input: OtlpPostConfig): Promise<void> {
+  let actual: Promise<void> | undefined;
+  // Publish both identities before serialization, fetch, or abort callbacks run.
+  const observation = Promise.resolve().then(() =>
+    observePost(input, (work) => {
+      actual = work;
+    }),
+  );
+  const retired = observation
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .then(() =>
+      actual?.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+  postRetirements.set(observation, retired);
+  return observation;
+}
+
+async function observePost(input: OtlpPostConfig, retain: (work: Promise<void>) => void): Promise<void> {
   exactPlainObject(
     input,
     ["body", "kind", "maxRequestBytes", "maxResponseBytes", "timeoutMs", "url"],
@@ -86,6 +118,7 @@ export async function postOtlpJson(input: OtlpPostConfig): Promise<void> {
   try {
     input.parent?.addEventListener("abort", abort, { once: true });
     removeParent = () => input.parent?.removeEventListener("abort", abort);
+    if (input.parent?.aborted) abort();
     const init = Object.freeze({
       method: "POST",
       redirect: "error" as const,
@@ -97,12 +130,11 @@ export async function postOtlpJson(input: OtlpPostConfig): Promise<void> {
       body,
       signal: controller.signal,
     });
-    await raceTimeout(
-      postAttempt(input.url, input.kind, init, fetchFn, maxResponseBytes, timeoutMs, controller),
-      timeoutMs,
-      abort,
-      input.parent,
+    const work = Promise.resolve().then(() =>
+      postAttempt(input.url, input.kind, init, fetchFn, maxResponseBytes, controller.signal),
     );
+    retain(work);
+    await raceTimeout(work, timeoutMs, abort, input.parent);
   } finally {
     removeParent?.();
     controller.abort();
@@ -115,33 +147,31 @@ async function postAttempt(
   init: RequestInit,
   fetchFn: OtlpFetch,
   maxResponseBytes: number,
-  timeoutMs: number,
-  controller: AbortController,
+  signal: AbortSignal,
 ): Promise<void> {
+  if (signal.aborted) throw new Error("aborted");
   const fetched = fetchFn(url, init);
   if (!fetched || typeof (fetched as Promise<Response>).then !== "function") throw new Error("bad fetch");
   const response = await fetched;
   if (!response || typeof response !== "object") throw new Error("bad response");
-  const status = response.status;
-  if (!Number.isInteger(status)) throw new Error("bad response");
-  const headers = response.headers;
-  if (!headers || typeof headers.get !== "function") throw new Error("bad response");
-  const length = headers.get("content-length");
-  if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maxResponseBytes)) {
-    safeCancel(response);
-    throw new Error("bad response");
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    if (signal.aborted) throw new Error("aborted");
+    const status = response.status;
+    if (!Number.isInteger(status)) throw new Error("bad response");
+    const headers = response.headers;
+    if (!headers || typeof headers.get !== "function") throw new Error("bad response");
+    const length = headers.get("content-length");
+    if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maxResponseBytes))
+      throw new Error("bad response");
+    if (status !== 200 || !jsonContentType(headers.get("content-type"))) throw new Error("bad response");
+    reader = response.body?.getReader();
+    validateOtlpResponse(kind, reader ? await boundedText(reader, maxResponseBytes, signal) : "");
+    if (signal.aborted) throw new Error("aborted");
+  } finally {
+    // Includes late fetches, malformed headers, and reader acquisition failure.
+    if (!reader) await safeCancel(response);
   }
-  if (status !== 200 || !jsonContentType(headers.get("content-type"))) {
-    safeCancel(response);
-    throw new Error("bad response");
-  }
-  validateOtlpResponse(
-    kind,
-    await raceTimeout(boundedText(response, maxResponseBytes, timeoutMs), Math.max(1, timeoutMs - 1), () => {
-      controller.abort();
-      safeCancel(response);
-    }),
-  );
 }
 
 export function validateOtlpResponse(kind: OtlpSignalKind, text: string): void {
@@ -157,52 +187,43 @@ export function validateOtlpResponse(kind: OtlpSignalKind, text: string): void {
   if (Object.hasOwn(partial, "errorMessage") && partial.errorMessage !== "") throw new Error("partial success");
 }
 
-async function boundedText(response: Response, max: number, timeoutMs: number): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return "";
+async function boundedText(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  max: number,
+  signal: AbortSignal,
+): Promise<string> {
   let total = 0;
   const chunks: Uint8Array[] = [];
-  let done = false;
-  let cancelled = false;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= Promise.resolve().then(() => reader.cancel());
+    void cancellation.catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
   try {
     for (;;) {
-      const part = await raceTimeout(reader.read(), Math.max(1, timeoutMs - 1), () => {
-        void safeReaderCancel(reader).catch(() => undefined);
-      });
-      if (part.done) {
-        done = true;
-        break;
-      }
+      if (signal.aborted) throw new Error("aborted");
+      const part = await reader.read();
+      if (part.done) break;
       total += part.value.byteLength;
-      if (total > max) {
-        await safeReaderCancel(reader);
-        cancelled = true;
-        throw new Error("too large");
-      }
+      if (total > max) throw new Error("too large");
       chunks.push(part.value);
     }
+    if (signal.aborted) throw new Error("aborted");
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
   } finally {
-    if (!done && !cancelled) await safeReaderCancel(reader);
-    else releaseReader(reader);
+    cancel();
+    try {
+      await cancellation;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      releaseReader(reader);
+    }
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 }
 
-export function safeCancel(response: Response): void {
-  void Promise.resolve()
-    .then(() => response.body?.cancel())
-    .catch(() => undefined);
-}
-
-async function safeReaderCancel(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-  await raceTimeout(
-    Promise.resolve()
-      .then(() => reader.cancel())
-      .catch(() => undefined),
-    50,
-    () => undefined,
-  ).catch(() => undefined);
-  releaseReader(reader);
+export async function safeCancel(response: Response): Promise<void> {
+  await response.body?.cancel();
 }
 
 function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {

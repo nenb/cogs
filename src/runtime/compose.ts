@@ -3,7 +3,12 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ApiServer, ApiServerOptions } from "../api/server.ts";
 import { createApiServer } from "../api/server.ts";
-import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../auth/model-auth.ts";
+import {
+  type ModelApiKeySource,
+  type OpenBaoIdentityPort,
+  OpenBaoModelApiKeyStore,
+  retireModelApiKeySource,
+} from "../auth/model-auth.ts";
 import { OpenBaoKubernetesWorkloadIdentity } from "../auth/openbao-workload-identity.ts";
 import { createNodeCogsEnvoyProcessPort } from "../egress/envoy-process.ts";
 import { OpenBaoEgressPkiSource } from "../egress/openbao-pki.ts";
@@ -142,6 +147,7 @@ export async function startProductionWorker(
   let lifecycle: LaunchLifecycle | undefined;
   let pi: CogsPiSessionPorts | undefined;
   let piStartupWork: Promise<CogsPiSessionPorts> | undefined;
+  let modelReadOwner: ModelApiKeySource | undefined;
   let api: ApiServer | undefined;
   let closeStarted = false;
   let resolveClosed!: () => void;
@@ -189,17 +195,22 @@ export async function startProductionWorker(
   );
 
   const closePiStartupOwner = async (): Promise<void> => {
-    const startupWork = piStartupWork;
-    if (startupWork === undefined) return closePi(pi);
-    let acquired: CogsPiSessionPorts;
     try {
-      acquired = await startupWork;
-    } catch (error) {
-      await failedCogsPiSessionRetirement(error);
-      return;
+      const startupWork = piStartupWork;
+      if (startupWork === undefined) return await closePi(pi);
+      let acquired: CogsPiSessionPorts;
+      try {
+        acquired = await startupWork;
+      } catch (error) {
+        await failedCogsPiSessionRetirement(error);
+        return;
+      }
+      if (pi === undefined) pi = acquired;
+      await closePi(acquired);
+    } finally {
+      // Failed auth/Pi observations do not retire their original model reads.
+      if (modelReadOwner) await retireModelApiKeySource(modelReadOwner);
     }
-    if (pi === undefined) pi = acquired;
-    await closePi(acquired);
   };
 
   const close = (reason: CloseReason = "requested", context = closeContext(10_000)): Promise<void> => {
@@ -232,6 +243,7 @@ export async function startProductionWorker(
     telemetry = seams.createTelemetry(runtime);
     if (telemetry.ready !== true) throw new Error("telemetry unavailable");
     const modelStore = seams.createModelStore(runtime, identity);
+    modelReadOwner = modelStore;
     let storage: Storage | undefined;
     let ssh: SshConnectionManager | undefined;
 
@@ -372,7 +384,7 @@ export async function startProductionWorker(
         dependency(
           "auth",
           (signal) => probeModelAuthentication(modelStore, launch, signal),
-          async () => undefined,
+          () => retireModelApiKeySource(modelStore),
           () => true,
         ),
         dependency(

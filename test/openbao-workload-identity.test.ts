@@ -242,16 +242,27 @@ test("pre-abort, caller abort, and login timeout fail closed without callback or
     );
     assert.equal(fetchCalls, 2);
 
-    const ignoringFetch: typeof fetch = async () => await new Promise<Response>(() => undefined);
+    const held = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<void>();
+    const ignoringFetch: typeof fetch = async () => {
+      entered.resolve();
+      return held.promise;
+    };
     const ignoringIdentity = new OpenBaoKubernetesWorkloadIdentity(
       options(item.options(), ignoringFetch, { timeoutMs: 5 }),
     );
-    await rejects(
-      ignoringIdentity.withToken(new AbortController().signal, async () => {
-        callbackCalls += 1;
-      }),
-      [jwtOne, clientToken, item.path],
-    );
+    const actual = ignoringIdentity.withToken(new AbortController().signal, async () => {
+      callbackCalls += 1;
+    });
+    let retired = false;
+    const rejected = rejects(actual, [jwtOne, clientToken, item.path]).then(() => {
+      retired = true;
+    });
+    await entered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(retired, false);
+    held.resolve(new Response(loginBody(), { headers: { "content-type": "application/json" } }));
+    await rejected;
 
     const hangingBody = new ReadableStream<Uint8Array>({
       async pull() {
@@ -343,6 +354,95 @@ test("hostile login status, headers, bounds, JSON, token, TTL, and envelope fiel
         [jwtOne, clientToken, item.path, "openbao.internal"],
       );
       assert.equal(called, false);
+    }
+  } finally {
+    await item.close();
+  }
+});
+
+test("workload login joins original cancellation on abort, malformed and late response exits", async () => {
+  const item = await jwtFixture();
+  try {
+    for (const mode of ["body", "invalid", "late", "headers", "read", "cancel-reject"] as const) {
+      const held = Promise.withResolvers<void>();
+      const reading = Promise.withResolvers<{ done: true; value: undefined }>();
+      const fetched = Promise.withResolvers<Response>();
+      const entered = Promise.withResolvers<void>();
+      const cancelling = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      let cancellations = 0;
+      let retired = false;
+      let consumed = false;
+      const response = new Response(
+        new ReadableStream({
+          start(stream) {
+            stream.enqueue(new TextEncoder().encode("{"));
+          },
+          cancel() {
+            cancellations++;
+            cancelling.resolve();
+            controller.abort();
+            return held.promise;
+          },
+        }),
+        { status: mode === "invalid" ? 503 : 200, headers: { "content-type": "application/json" } },
+      );
+      if (mode === "headers")
+        Object.defineProperty(response, "headers", {
+          get() {
+            throw new Error(clientToken);
+          },
+        });
+      if (mode === "read")
+        Object.defineProperty(response, "body", {
+          value: {
+            getReader: () => ({
+              read: () => reading.promise,
+              cancel: () => {
+                cancellations++;
+                cancelling.resolve();
+                return held.promise;
+              },
+              releaseLock: () => undefined,
+            }),
+          },
+        });
+      const identity = new OpenBaoKubernetesWorkloadIdentity(
+        options(item.options(), async () => {
+          entered.resolve();
+          return mode === "late" ? fetched.promise : response;
+        }),
+      );
+      const actual = rejects(
+        identity.withToken(controller.signal, async () => {
+          consumed = true;
+        }),
+        [jwtOne, clientToken],
+      );
+      void actual.then(() => {
+        retired = true;
+      });
+      await entered.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort();
+      fetched.resolve(response);
+      await cancelling.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        assert.equal(retired, false);
+        assert.equal(consumed, false);
+        assert.equal(cancellations, 1);
+      } finally {
+        if (mode === "cancel-reject") held.reject(new Error(clientToken));
+        else held.resolve();
+      }
+      if (mode === "read") {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(retired, false, "cancellation is not original read settlement");
+        reading.resolve({ done: true, value: undefined });
+      }
+      await actual;
+      assert.equal(cancellations, 1);
     }
   } finally {
     await item.close();

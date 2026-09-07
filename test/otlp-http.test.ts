@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { otlpEndpoint, postOtlpJson, validateOtlpResponse } from "../src/telemetry/otlp-http.ts";
+import { otlpEndpoint, otlpPostRetirement, postOtlpJson, validateOtlpResponse } from "../src/telemetry/otlp-http.ts";
 
 test("shared OTLP endpoint validation is path-specific and rejects noncanonical authority", () => {
   assert.equal(otlpEndpoint("http://127.0.0.1:4318/v1/logs", "logs", true), "http://127.0.0.1:4318/v1/logs");
@@ -183,6 +183,81 @@ test("shared OTLP hostile body cancel cannot hang", async () => {
     }),
   );
   assert.equal(cancelCalled, true);
+});
+
+test("OTLP observations never retire held fetch, original read, or original cancellation", async () => {
+  for (const mode of ["fetch", "invalid", "reader", "cancel-reject"] as const) {
+    const holdFetch = Promise.withResolvers<void>();
+    const holdRead = Promise.withResolvers<{ done: true; value: undefined }>();
+    const holdCancel = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const cancelling = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let cancellations = 0;
+    let retired = false;
+    let retirement: Promise<void> | undefined;
+    const observation = postOtlpJson({
+      url: "https://synthetic.invalid/v1/logs",
+      kind: "logs",
+      body: {},
+      timeoutMs: 1000,
+      maxRequestBytes: 1024,
+      maxResponseBytes: 1024,
+      parent: controller.signal,
+      fetch: Object.freeze(async () => {
+        retirement = otlpPostRetirement(observation).then(() => {
+          retired = true;
+        });
+        entered.resolve();
+        if (mode === "fetch") await holdFetch.promise;
+        const response = new Response(
+          new ReadableStream({
+            cancel() {
+              cancellations++;
+              cancelling.resolve();
+              return holdCancel.promise;
+            },
+          }),
+          { status: mode === "invalid" ? 503 : 200, headers: { "content-type": "application/json" } },
+        );
+        if (mode === "reader")
+          Object.defineProperty(response, "body", {
+            value: {
+              getReader: () => ({
+                read: () => holdRead.promise,
+                cancel: () => {
+                  cancellations++;
+                  cancelling.resolve();
+                  controller.abort();
+                  return holdCancel.promise;
+                },
+                releaseLock: () => undefined,
+              }),
+            },
+          });
+        return response;
+      }),
+    });
+    const rejected = assert.rejects(observation);
+    assert.throws(() => otlpPostRetirement(rejected), /unowned OTLP observation/);
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await rejected;
+    assert.equal(retired, false);
+    holdFetch.resolve();
+    await cancelling.promise;
+    if (mode === "cancel-reject") holdCancel.reject(new Error("synthetic-cancel-secret"));
+    else holdCancel.resolve();
+    if (mode === "reader") {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(retired, false, "cancel settlement is not original read settlement");
+      holdRead.resolve({ done: true, value: undefined });
+    }
+    await retirement;
+    assert.equal(retired, true);
+    assert.equal(cancellations, 1);
+  }
 });
 
 async function eventually(assertion: () => void): Promise<void> {

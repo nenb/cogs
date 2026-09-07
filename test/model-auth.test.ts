@@ -12,6 +12,7 @@ import {
   type OAuthBrokerClient,
   type OpenBaoIdentityPort,
   OpenBaoModelApiKeyStore,
+  retireModelApiKeySource,
 } from "../src/auth/model-auth.ts";
 
 const key = "aaaaaaaa";
@@ -878,6 +879,63 @@ test("OpenBao cancellation cleanup is non-blocking for hostile bodies", async ()
     key,
   ]);
   assert.equal(cancelCalled, true);
+});
+
+test("unpinned reads retain identity-bound actual fetch and original cancel through bounded failure and reentry", async () => {
+  for (const mode of ["fetch", "cancel", "cancel-reject"] as const) {
+    const held = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let cancellations = 0;
+    let retired = false;
+    let retirement: Promise<void> | undefined;
+    let consumed = false;
+    const source = store("http://127.0.0.1:1", new StaticIdentity(), {
+      timeoutMs: 1000,
+      fetchImpl: async () => {
+        // The owner must already exist when arbitrary fetch code reenters.
+        retirement = retireModelApiKeySource(source).then(() => {
+          retired = true;
+        });
+        entered.resolve();
+        if (mode === "fetch") await held.promise;
+        return new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode("{"));
+            },
+            cancel() {
+              cancellations++;
+              return mode === "fetch" ? Promise.resolve() : held.promise;
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    const observed = assertAuthRejects(
+      source.withApiKey({ ...request, signal: controller.signal }, async () => {
+        consumed = true;
+      }),
+      [key, token],
+    );
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await observed;
+    await retireModelApiKeySource(store("http://127.0.0.1:1"));
+    try {
+      assert.equal(retired, false);
+      assert.equal(consumed, false);
+    } finally {
+      if (mode === "cancel-reject") held.reject(new Error("synthetic-cancel-secret"));
+      else held.resolve();
+    }
+    await retirement;
+    assert.equal(retired, true);
+    assert.equal(cancellations, 1);
+    assert.deepEqual(Object.keys(source), []);
+  }
 });
 
 test("OpenBao real envelope accepts metadata and rejects outer secret-like extras", async () => {
