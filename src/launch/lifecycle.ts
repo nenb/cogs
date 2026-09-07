@@ -7,7 +7,16 @@ import {
   telemetryDuration,
   telemetryStart,
 } from "../telemetry/instrumentation.ts";
-import { type CloseContext, type CloseWork, closeClock, closeContext, observeClose } from "./close.ts";
+import {
+  beginRegisteredClose,
+  type CloseContext,
+  type CloseWork,
+  closeClock,
+  closeContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+} from "./close.ts";
 import type { LaunchConfig } from "./config.ts";
 import { deepFreeze, validateLaunchConfig } from "./config.ts";
 
@@ -108,8 +117,25 @@ export class LaunchLifecycle {
   #state: LifecycleState = "created";
   #readyConfig: LaunchConfig | undefined;
   #startPromise: Promise<void> | undefined;
-  #shutdownPromise: Promise<void> | undefined;
   #closeWork: CloseWork | undefined;
+  #shutdownStarted = false;
+  #disposed = false;
+  #bookkeepingFailed = false;
+  #shutdownReason = "requested";
+  #shutdownAt: number | undefined;
+  #ownerContext: CloseContext | undefined;
+  #ownerTimer: TimerHandle | undefined;
+  readonly #beginShutdown = createCloseOwner(
+    () => this.#shutdown(),
+    () => {
+      this.#shutdownStarted = true;
+      this.#readyConfig = undefined;
+      this.#lifecycleAbort.abort();
+      this.#clearRecycleTimers();
+      this.#clearHealthTimer();
+    },
+  );
+  readonly #beginDependencies = createCloseOwner(() => this.#closeDependencies(this.#shutdownContext()));
   readonly #startWork = new Map<LaunchDependencyName, Promise<void>>();
   readonly #shutdownOwner: ((context: CloseContext) => CloseWork) | undefined;
   #recyclePending = false;
@@ -175,8 +201,7 @@ export class LaunchLifecycle {
     this.#dependencyStates.set(name, "ready");
     emitSpan(this.#telemetry, "dependency.ready", { dependency: telemetryDependency(name), outcome: "ok" });
     if (launchDependencyNames.every((dependency) => this.#dependencyStates.get(dependency) === "ready")) {
-      if (this.#lifecycleAbort.signal.aborted || this.#shutdownPromise !== undefined || this.#state !== "starting")
-        return;
+      if (this.#lifecycleAbort.signal.aborted || this.#shutdownStarted || this.#state !== "starting") return;
       this.#readyConfig = deepFreeze(structuredClone(this.#config));
       this.#transition("ready", "dependencies-ready");
       this.#armRecycleTimer();
@@ -206,33 +231,35 @@ export class LaunchLifecycle {
   }
 
   public turnSettled(): Promise<void> | undefined {
-    if (!this.#recyclePending || this.#shutdownPromise !== undefined) return this.#shutdownPromise;
+    if (!this.#recyclePending && !this.#shutdownStarted) return undefined;
     return this.requestShutdown("recycle-turn-settled");
   }
 
   public requestShutdown(reason = "requested", context?: CloseContext): Promise<void> {
-    if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
-    let resolve!: () => void;
-    let reject!: (error: unknown) => void;
-    this.#shutdownPromise = new Promise<void>((yes, no) => {
-      resolve = yes;
-      reject = no;
-    });
-    // Cache before abort/event callbacks can reenter; seal admission on this stack.
-    this.#readyConfig = undefined;
-    this.#lifecycleAbort.abort();
-    this.#clearRecycleTimers();
-    this.#clearHealthTimer();
-    void this.#shutdown(reason, context ?? closeContext(this.#shutdownTimeoutMs, this.#scheduler)).then(
-      resolve,
-      reject,
+    const observation = context ?? closeContext(this.#shutdownTimeoutMs, this.#scheduler);
+    if (!this.#shutdownStarted) this.#shutdownReason = reason;
+    this.#closeWork = this.#beginShutdown();
+    return observeClose(this.#closeWork, observation, this.#scheduler).then(
+      () => {
+        if (this.#state !== "failed" && this.#state !== "stopped") {
+          this.#transition("stopped", this.#shutdownReason);
+          emitSpan(this.#telemetry, "shutdown.ready", {
+            operation: "close",
+            outcome: "ok",
+            duration_ms: telemetryDuration(this.#scheduler, this.#shutdownAt ?? this.#scheduler.now()),
+          });
+        }
+      },
+      () => {
+        this.#cleanupFailed();
+        throw new LaunchLifecycleError("COGS_LAUNCH_CLEANUP_FAILED", "cleanup uncertain");
+      },
     );
-    return this.#shutdownPromise;
   }
 
   /** Actual work is retained after an observation deadline. No replacement permission is implied. */
   public get closeWork(): CloseWork | undefined {
-    return this.#closeWork;
+    return this.#shutdownStarted ? this.#beginShutdown() : undefined;
   }
 
   public dispose(): Promise<void> {
@@ -266,8 +293,8 @@ export class LaunchLifecycle {
         duration_ms: telemetryDuration(this.#scheduler, start),
       });
     } catch (error) {
-      if (this.#shutdownPromise !== undefined || this.#lifecycleAbort.signal.aborted) {
-        await this.#shutdownPromise;
+      if (this.#shutdownStarted || this.#lifecycleAbort.signal.aborted) {
+        await this.requestShutdown();
         return;
       }
       this.dependencyStartFailed(currentDependency);
@@ -278,7 +305,7 @@ export class LaunchLifecycle {
   }
 
   #throwIfStartInterrupted(): void {
-    if (this.#shutdownPromise !== undefined || this.#lifecycleAbort.signal.aborted || this.#state !== "starting") {
+    if (this.#shutdownStarted || this.#lifecycleAbort.signal.aborted || this.#state !== "starting") {
       throw new LaunchLifecycleError("COGS_LAUNCH_START_INTERRUPTED", "launch startup interrupted");
     }
   }
@@ -312,7 +339,7 @@ export class LaunchLifecycle {
 
   #checkDependencyHealth(): void {
     this.#healthTimer = undefined;
-    if (!this.ready || this.#shutdownPromise !== undefined) return;
+    if (!this.ready || this.#shutdownStarted) return;
     for (const name of launchDependencyNames) {
       if (!this.#attemptedDependencies.includes(name)) continue;
       try {
@@ -329,16 +356,27 @@ export class LaunchLifecycle {
     this.#armHealthTimer();
   }
 
+  #cancelTimer(timer: TimerHandle | undefined): void {
+    try {
+      timer?.cancel();
+    } catch {
+      this.#bookkeepingFailed = true;
+    }
+  }
+
   #clearHealthTimer(): void {
-    this.#healthTimer?.cancel();
+    const timer = this.#healthTimer;
     this.#healthTimer = undefined;
+    this.#cancelTimer(timer);
   }
 
   #clearRecycleTimers(): void {
-    this.#recycleTimer?.cancel();
-    this.#emergencyTimer?.cancel();
+    const recycle = this.#recycleTimer,
+      emergency = this.#emergencyTimer;
     this.#recycleTimer = undefined;
     this.#emergencyTimer = undefined;
+    this.#cancelTimer(recycle);
+    this.#cancelTimer(emergency);
   }
 
   #validateDependencies(dependencies: readonly LaunchDependency[]): Map<LaunchDependencyName, LaunchDependency> {
@@ -397,32 +435,56 @@ export class LaunchLifecycle {
     void this.requestShutdown(reason).catch(() => undefined);
   }
 
-  async #shutdown(reason: string, context: CloseContext): Promise<void> {
-    const start = telemetryStart(this.#scheduler);
+  #shutdownContext(): CloseContext {
+    if (this.#ownerContext) return this.#ownerContext;
+    const controller = new AbortController();
+    this.#ownerContext = Object.freeze({
+      signal: controller.signal,
+      deadlineAt: this.#scheduler.now() + this.#shutdownTimeoutMs,
+    });
+    // Owner policy for legacy cooperative destructors, independent of every observer.
+    try {
+      this.#ownerTimer = this.#scheduler.setTimer(this.#shutdownTimeoutMs, () => controller.abort());
+    } catch {
+      this.#bookkeepingFailed = true;
+      controller.abort();
+      this.#cleanupFailed();
+    }
+    return this.#ownerContext;
+  }
+
+  #cleanupFailed(): void {
+    if (this.#state !== "failed" && this.#state !== "stopped") this.#transition("failed", "cleanup-uncertain");
+    this.#disposeResources();
+  }
+
+  async #shutdown(): Promise<void> {
+    const reason = this.#shutdownReason;
+    this.#shutdownAt = telemetryStart(this.#scheduler);
     emitSpan(this.#telemetry, "shutdown.prepare", { operation: "prepare", state: "shutdown" });
     if (this.#state !== "failed" && this.#state !== "stopped") this.#transition("draining", reason);
+    let failed = false;
     try {
-      this.#closeWork = this.#shutdownOwner?.(context) ?? this.closeDependencies(context);
-      await observeClose(this.#closeWork, context, this.#scheduler);
-      if (this.#state !== "failed") {
-        emitSpan(this.#telemetry, "shutdown.ready", {
-          operation: "close",
-          outcome: "ok",
-          duration_ms: telemetryDuration(this.#scheduler, start),
-        });
-        this.#transition("stopped", reason);
-      }
+      const context = this.#shutdownContext();
+      await joinCloseWork(this.#shutdownOwner?.(context) ?? this.closeDependencies(context));
     } catch {
-      this.#transition("failed", "cleanup-uncertain");
+      failed = true;
+    }
+    this.#cancelTimer(this.#ownerTimer);
+    this.#disposeResources();
+    if (failed || this.#bookkeepingFailed) {
+      this.#cleanupFailed();
       throw new LaunchLifecycleError("COGS_LAUNCH_CLEANUP_FAILED", "cleanup uncertain");
-    } finally {
-      this.#disposeResources();
     }
   }
 
   /** Initiate independent migrated owners immediately. Legacy destructors retain reverse-order
    * barriers: a failed/hung callback cannot authorize dependent resource release. */
-  public closeDependencies(context: CloseContext): CloseWork {
+  public closeDependencies(_context: CloseContext): CloseWork {
+    return this.#beginDependencies();
+  }
+
+  #closeDependencies(context: CloseContext): CloseWork {
     const independent: CloseWork[] = [];
     const legacy: LaunchDependency[] = [];
     for (const name of [...this.#attemptedDependencies].reverse()) {
@@ -435,6 +497,9 @@ export class LaunchLifecycle {
       } else legacy.push(dependency);
     }
     const serial = (async () => {
+      // Safe termination starts independently; legacy material/SSH release still
+      // requires every migrated user to prove actual retirement and success.
+      await Promise.all(independent.map(joinCloseWork));
       for (const dependency of legacy) {
         await this.#startWork.get(dependency.name)?.catch(() => undefined);
         await dependency.shutdown(context.signal, context);
@@ -449,10 +514,16 @@ export class LaunchLifecycle {
   }
 
   #disposeResources(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
     this.#lifecycleAbort.abort();
     this.#clearRecycleTimers();
     this.#clearHealthTimer();
-    this.#signalSubscription?.dispose();
+    try {
+      this.#signalSubscription?.dispose();
+    } catch {
+      this.#bookkeepingFailed = true;
+    }
   }
 
   async #withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -489,9 +560,23 @@ export function createCogsEgressRuntimeLaunchDependency(
 ): LaunchDependency {
   if (typeof factory !== "function") throw egressRuntimeError();
   let manager: CogsEgressRuntimeManager | undefined;
-  let closePromise: Promise<void> | undefined;
   let startWork: Promise<void> | undefined;
-  let shutdownPromise: Promise<void> | undefined;
+  const beginClose = createCloseOwner(
+    async () => {
+      try {
+        await startWork?.catch(() => undefined);
+        await failedStartRetirement;
+        if (!manager) return;
+        await joinCloseWork(beginRegisteredClose(manager));
+        manager = undefined;
+      } catch {
+        throw egressRuntimeError();
+      }
+    },
+    () => {
+      shutdownRequested = true;
+    },
+  );
   let failedStartRetirement: Promise<void> | undefined;
   let shutdownRequested = false;
   let started = false;
@@ -509,8 +594,7 @@ export function createCogsEgressRuntimeLaunchDependency(
           failedStartRetirement ??= failedCogsEgressRuntimeManagerRetirement(error);
           if (manager) {
             try {
-              closePromise ??= manager.close();
-              await closePromise;
+              await joinCloseWork(beginRegisteredClose(manager));
               manager = undefined;
             } catch {
               // Retain the owned handle for lifecycle rollback shutdown.
@@ -528,22 +612,11 @@ export function createCogsEgressRuntimeLaunchDependency(
         return false;
       }
     },
-    async shutdown(signal: AbortSignal) {
-      shutdownRequested = true;
-      shutdownPromise ??= (async () => {
-        try {
-          await startWork?.catch(() => undefined);
-          await failedStartRetirement;
-          const current = manager;
-          if (!current) return;
-          closePromise ??= current.close({ signal });
-          await closePromise;
-          manager = undefined;
-        } catch {
-          throw egressRuntimeError();
-        }
-      })();
-      return shutdownPromise;
+    beginClose,
+    shutdown(signal: AbortSignal, context?: CloseContext) {
+      return observeClose(beginClose(), context ?? { ...closeContext(10_000), signal }).catch(() => {
+        throw egressRuntimeError();
+      });
     },
   });
 }

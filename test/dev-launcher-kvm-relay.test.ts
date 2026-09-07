@@ -352,8 +352,12 @@ test("relay close is idempotent under raw sockets and expired deadline still cle
     await r.switchTo(upstream.port);
     const raw = await socketTo(r.snapshot().bindPort);
     const first = r.close({ deadlineAt: Date.now() - 1 });
-    assert.equal(r.close(), first);
-    await first;
+    const later = r.close();
+    assert.notEqual(later, first);
+    await assert.rejects(first, /launcher relay failed/);
+    await later;
+    await assert.rejects(r.close({ signal: AbortSignal.abort() }), /launcher relay failed/);
+    await r.close();
     assert.equal(raw.destroyed, true);
     assert.equal(r.snapshot().activeSockets, 0);
     await assert.rejects(() => socketTo(r.snapshot().bindPort));

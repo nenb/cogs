@@ -618,8 +618,12 @@ test("local fixtures reject reset while inflight and close idempotently under ra
     const closedRaw = new Promise((resolve) => sock.once("close", resolve));
     const started = Date.now();
     const close = f.close({ deadlineAt: Date.now() });
-    assert.equal(f.close(), close);
-    await close;
+    const later = f.close();
+    assert.notEqual(later, close);
+    await assert.rejects(close, /launcher fixture failed/);
+    await later;
+    await assert.rejects(f.close({ signal: AbortSignal.abort() }));
+    await f.close();
     await closedRaw;
     assert.ok(Date.now() - started < 1000);
   } finally {

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { closeObservationContext, createCloseOwner, observeClose, registerCloseOwner } from "../../src/launch/close.ts";
 
 const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
 const EVENT_ADD = EventTarget.prototype.addEventListener;
@@ -44,8 +45,15 @@ export async function startLocalFixtures(options: {
     total = 0;
   const counts: Record<string, number> = {};
   const sockets = new Set<Socket>();
-  let closePromise: Promise<void> | undefined;
-  const server = createServer((req, res) => void handle(req, res).catch(() => reject(req, res, 400)));
+  const requests = new Set<Promise<void>>();
+  const server = createServer((req, res) => {
+    const work = handle(req, res).catch(() => reject(req, res, 400));
+    requests.add(work);
+    void work.then(
+      () => requests.delete(work),
+      () => requests.delete(work),
+    );
+  });
   server.maxConnections = maxInflight;
   server.on("connection", (s) => {
     sockets.add(s);
@@ -100,41 +108,41 @@ export async function startLocalFixtures(options: {
       inflight--;
     }
   }
-  return Object.freeze({
-    endpoint: () => `http://127.0.0.1:${port}`,
-    snapshot: () =>
-      Object.freeze({ ready: !closed, port, generation, inflight, total, counts: Object.freeze({ ...counts }) }),
-    reset: () => {
-      if (closed || inflight !== 0) fail();
+  const beginClose = createCloseOwner(
+    async () => {
+      await closeServer(server, destroyOwnedConnections);
+      destroyOwnedConnections();
+      await Promise.all([...requests]);
+      if (server.listening || inflight !== 0) fail();
+      await closedPort(port);
+      credential = "";
       for (const k of Object.keys(counts)) delete counts[k];
       total = 0;
-      generation++;
     },
-    close: (options) => {
-      const closeOptions = cooperativeOptions(options ?? {}, false);
-      if (closePromise === undefined) {
-        closePromise = (async () => {
-          closed = true;
-          const cleanupAbort = watchAbort(closeOptions, destroyOwnedConnections);
-          const deadlineTimer = armDeadline(closeOptions, destroyOwnedConnections);
-          try {
-            await closeServer(server, destroyOwnedConnections);
-            destroyOwnedConnections();
-            await new Promise((r) => setTimeout(r, 0));
-            if (server.listening || inflight !== 0) fail();
-            await closedPort(port);
-          } finally {
-            cleanupAbort();
-            deadlineTimer();
-            credential = "";
-            for (const k of Object.keys(counts)) delete counts[k];
-            total = 0;
-          }
-        })();
-      }
-      return closePromise;
+    () => {
+      closed = true;
     },
-  });
+  );
+  return registerCloseOwner(
+    Object.freeze({
+      endpoint: () => `http://127.0.0.1:${port}`,
+      snapshot: () =>
+        Object.freeze({ ready: !closed, port, generation, inflight, total, counts: Object.freeze({ ...counts }) }),
+      reset: () => {
+        if (closed || inflight !== 0) fail();
+        for (const k of Object.keys(counts)) delete counts[k];
+        total = 0;
+        generation++;
+      },
+      close: (options?: FixtureCooperativeOptions) => {
+        const context = closeObservationContext(cooperativeOptions(options ?? {}, false), 15_000);
+        return observeClose(beginClose(), context).catch(() => {
+          throw fail();
+        });
+      },
+    }),
+    beginClose,
+  );
   function destroyOwnedConnections(): void {
     for (const s of sockets) s.destroy();
     server.closeAllConnections?.();
@@ -251,17 +259,6 @@ function aborted(options: FixtureCooperativeOptions): boolean {
     (ABORTED_GETTER === undefined ? false : ABORTED_GETTER.call(options.signal) === true);
   return signalAborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt);
 }
-function watchAbort(options: FixtureCooperativeOptions, callback: () => void): () => void {
-  if (options.signal === undefined) return () => undefined;
-  EVENT_ADD.call(options.signal, "abort", callback, { once: true });
-  return () => EVENT_REMOVE.call(options.signal as AbortSignal, "abort", callback);
-}
-function armDeadline(options: FixtureCooperativeOptions, callback: () => void): () => void {
-  if (options.deadlineAt === undefined) return () => undefined;
-  const timer = setTimeout(callback, Math.max(0, options.deadlineAt - Date.now()));
-  timer.unref?.();
-  return () => clearTimeout(timer);
-}
 async function listenServer(
   server: Server,
   options: FixtureCooperativeOptions,
@@ -321,16 +318,17 @@ async function closedPort(port: number) {
     const s = new Socket();
     const t = setTimeout(() => {
       s.destroy();
-      rej(fail());
+      rej(new Error("launcher fixture failed"));
     }, 250);
     s.once("connect", () => {
       clearTimeout(t);
       s.destroy();
-      rej(fail());
+      rej(new Error("launcher fixture failed"));
     });
-    s.once("error", () => {
+    s.once("error", (error: NodeJS.ErrnoException) => {
       clearTimeout(t);
-      res();
+      if (error.code === "ECONNREFUSED") res();
+      else rej(new Error("launcher fixture failed"));
     });
     s.connect(port, "127.0.0.1");
   });

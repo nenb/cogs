@@ -17,6 +17,7 @@ import {
 import { observeProcessIdentity } from "../dev/launcher/runner.ts";
 import { createState, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 import {
+  createWorkerTerminationOwner,
   runWorkerChild,
   startWorkerProcess,
   type WorkerChildChannel,
@@ -33,6 +34,14 @@ import {
   parseChildIdentityHello,
   parseChildReady,
 } from "../dev/launcher/worker-protocol.ts";
+import {
+  closeContext,
+  closeObservationContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+  registerCloseOwner,
+} from "../src/launch/close.ts";
 
 const sourceRevision = "a".repeat(40);
 const parentIdentity = `sha256:${"1".repeat(64)}`;
@@ -124,7 +133,16 @@ class TestChannel implements WorkerChildChannel {
 }
 
 function runtime(close: () => Promise<void>, apiPort = 4321): WorkerProvisionalRuntime {
-  return Object.freeze({ apiPort, close: Object.freeze(close) });
+  const owner = createCloseOwner(close);
+  return registerCloseOwner(
+    Object.freeze({
+      apiPort,
+      close: Object.freeze((options?: Parameters<WorkerProvisionalRuntime["close"]>[0]) =>
+        observeClose(owner(), closeObservationContext(options ?? {}, 1000)),
+      ),
+    }),
+    owner,
+  );
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -214,6 +232,52 @@ test("worker child closes provisional runtime exactly once when parent is lost a
   }
 });
 
+test("reentrant worker termination writes one receipt only after actual retirement and clean status", async () => {
+  for (const mode of ["success", "actual-failure", "status-failure", "unknown"] as const) {
+    const actual = Promise.withResolvers<void>();
+    let executions = 0,
+      seals = 0,
+      receipts = 0;
+    const handle = Object.freeze({
+      apiPort: 1234,
+      close: async () => {
+        if (mode === "status-failure") throw new Error("unclean lifecycle");
+      },
+    });
+    if (mode !== "unknown")
+      registerCloseOwner(
+        handle,
+        createCloseOwner(() => {
+          executions++;
+          return actual.promise;
+        }),
+      );
+    const begin = createWorkerTerminationOwner(
+      Promise.resolve(handle),
+      () => {
+        seals++;
+        begin(); // SIGTERM/abort reentry must not replay receipt execution.
+      },
+      async () => {
+        receipts++;
+      },
+    );
+    const work = begin();
+    assert.equal(work, begin());
+    const completed = joinCloseWork(work);
+    void completed.catch(() => undefined);
+    await assert.rejects(observeClose(work, { ...closeContext(1000), signal: AbortSignal.abort() }));
+    assert.equal(receipts, 0);
+    if (mode === "actual-failure") actual.reject(new Error("actual failed"));
+    else actual.resolve();
+    if (mode === "success") await completed;
+    else await assert.rejects(completed);
+    assert.equal(seals, 1);
+    assert.equal(executions, mode === "unknown" ? 0 : 1);
+    assert.equal(receipts, mode === "success" ? 1 : 0);
+  }
+});
+
 test("worker child survives supervisor disconnect only after durable joint ready acknowledgement", async () => {
   const { dir, state } = await sandboxReady();
   try {
@@ -234,7 +298,13 @@ test("worker child survives supervisor disconnect only after durable joint ready
     assert.deepEqual(channel.listenerCounts(), [0, 0]);
     channel.disconnect();
     assert.equal(closes, 0);
-    await Promise.all([handle.close(), handle.close()]);
+    const expired = handle.close({ deadlineAt: Date.now() - 1 });
+    const later = handle.close({ deadlineAt: Date.now() + 1000 });
+    assert.notEqual(expired, later);
+    await assert.rejects(expired, /deadline/);
+    await later;
+    await assert.rejects(handle.close({ signal: AbortSignal.abort() }), /cancelled/);
+    await handle.close();
     assert.equal(closes, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });

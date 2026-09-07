@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { modelAuthFailureCause } from "../auth/model-auth.ts";
+import {
+  type CloseOwner,
+  closeClock,
+  closeObservationContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+  registerCloseOwner,
+} from "../launch/close.ts";
 import type { LaunchConfig } from "../launch/config.ts";
 import { type CogsPolicyAuthorizer, requireCogsPolicyAllow } from "../policy/require-policy.ts";
 import { type CogsTelemetry, captureTelemetry } from "../telemetry/instrumentation.ts";
@@ -207,6 +216,8 @@ class RuntimeManager {
   private queue: CogsEgressCompletionQueue | undefined;
   private telemetry: CogsEgressTelemetrySink | undefined;
   private authz: CogsExtAuthzServer | undefined;
+  private authzClose: CloseOwner | undefined;
+  private processClose: CloseOwner | undefined;
   private process: CogsEnvoyProcessHandle | undefined;
   private watcher: CogsEgressRevocationWatcher | undefined;
   private internalAuthzToken = "";
@@ -217,8 +228,13 @@ class RuntimeManager {
   private release: (() => void) | undefined;
   private openBaoRelease: (() => void) | undefined;
   private scopePromise: Promise<void> | undefined;
-  private closePromise: Promise<void> | undefined;
-  private actualClosePromise: Promise<void> | undefined;
+  private readonly beginClose = createCloseOwner(
+    () => this.closeOnce(),
+    () => {
+      this.closing = true;
+      this.readyState = false;
+    },
+  );
   private readonly finalCompletions: CogsEgressCompletion[] = [];
   private readyResolve!: () => void;
   private readyReject!: (error: unknown) => void;
@@ -312,20 +328,23 @@ class RuntimeManager {
 
   public handle(): CogsEgressRuntimeManager {
     const manager = this;
-    return Object.freeze({
-      get ready() {
-        return manager.isReady();
-      },
-      get listenerPort() {
-        return manager.options.listenerPort;
-      },
-      get replacementRequired() {
-        return manager.replacement;
-      },
-      auditRecords: (limit) => manager.auditRecords(limit),
-      drainCompletions: (limit) => manager.drainCompletions(limit),
-      close: (options) => manager.close(options),
-    });
+    return registerCloseOwner(
+      Object.freeze({
+        get ready() {
+          return manager.isReady();
+        },
+        get listenerPort() {
+          return manager.options.listenerPort;
+        },
+        get replacementRequired() {
+          return manager.replacement;
+        },
+        auditRecords: (limit) => manager.auditRecords(limit),
+        drainCompletions: (limit) => manager.drainCompletions(limit),
+        close: (options?: CogsEgressRuntimeManagerCloseOptions) => manager.close(options),
+      }),
+      this.beginClose,
+    );
   }
 
   private async runScoped(presetRevision: string): Promise<void> {
@@ -526,24 +545,21 @@ class RuntimeManager {
 
   public close(options?: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
     const context = validCloseOptions(options);
-    if (!this.actualClosePromise) {
-      // Store actual ownership before invoking any callback that can reenter.
-      this.closing = true;
-      this.readyState = false;
-      this.actualClosePromise = this.closeOnce();
-      void this.actualClosePromise.catch(() => undefined);
-    }
-    this.closePromise ??= this.observeClose(this.actualClosePromise, context);
-    return this.closePromise;
+    const clock = {
+      now: closeClock.now,
+      setTimer: (ms: number, callback: () => void) => {
+        const timer = this.options.timers.setTimeout(callback, ms);
+        return { cancel: () => this.options.timers.clearTimeout(timer) };
+      },
+    };
+    const observation = closeObservationContext(context, this.options.operationTimeoutMs, clock);
+    return observeClose(this.beginClose(), observation, clock).catch(() => {
+      throw new CogsEgressRuntimeManagerError();
+    });
   }
 
   public failedStartupRetirement(): Promise<void> {
-    if (this.actualClosePromise === undefined) {
-      this.closing = true;
-      this.readyState = false;
-      this.actualClosePromise = this.closeOnce();
-      void this.actualClosePromise.catch(() => undefined);
-    }
+    this.beginClose();
     return this.startupRetirement;
   }
 
@@ -618,13 +634,19 @@ class RuntimeManager {
 
   private async closeAuthz(): Promise<void> {
     const authz = this.authz;
-    if (authz) await authz.close();
+    if (authz) {
+      this.authzClose ??= createCloseOwner(() => authz.close());
+      await joinCloseWork(this.authzClose());
+    }
     if (this.authz === authz) this.authz = undefined;
   }
 
   private async closeProcess(): Promise<void> {
     const process = this.process;
-    if (process) await process.close();
+    if (process) {
+      this.processClose ??= createCloseOwner(() => process.close());
+      await joinCloseWork(this.processClose());
+    }
     if (this.process === process) this.process = undefined;
   }
 
@@ -663,30 +685,6 @@ class RuntimeManager {
     const wal = this.wal;
     if (wal) await wal.close();
     if (this.wal === wal) this.wal = undefined;
-  }
-
-  private observeClose(actual: Promise<void>, options: CogsEgressRuntimeManagerCloseOptions): Promise<void> {
-    const deadlineAt = options.deadlineAt ?? Date.now() + this.options.operationTimeoutMs;
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let timer: unknown;
-      const finish = (ok: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) this.options.timers.clearTimeout(timer);
-        options.signal?.removeEventListener("abort", abort);
-        ok ? resolve() : reject(new CogsEgressRuntimeManagerError());
-      };
-      const abort = () => finish(false);
-      actual.then(
-        () => finish(Date.now() < deadlineAt),
-        () => finish(false),
-      );
-      options.signal?.addEventListener("abort", abort, { once: true });
-      const remaining = deadlineAt - Date.now();
-      if (options.signal?.aborted || remaining <= 0) finish(false);
-      else timer = this.options.timers.setTimeout(() => finish(false), remaining);
-    });
   }
 
   private captureFinalCompletions(): void {

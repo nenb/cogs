@@ -330,7 +330,9 @@ test("intentional TERM delivers and awaits final stdout line", async () => {
   const ports = new FakePorts([false, true]);
   let release!: () => void;
   const lines: string[] = [];
+  let nested: Promise<void> | undefined;
   ports.killBehavior = () => {
+    nested = handle.close();
     ports.child.stdout.emit("data", Buffer.from("final\n"));
     ports.exitClose();
   };
@@ -359,6 +361,8 @@ test("intentional TERM delivers and awaits final stdout line", async () => {
   assert.equal(closed, false);
   release();
   await closing;
+  await nested;
+  assert.deepEqual(ports.kills, ["SIGTERM"]);
   assert.equal(closed, true);
 });
 
@@ -394,6 +398,7 @@ test("unexpected death, double close, signal failures, and missing terminal even
   exited.child.emit("exit", 0, null);
   assert.equal(exitedHandle.ready, false);
   exited.child.emit("close", 0, null);
+  await assert.rejects(exitedHandle.close(), generic);
   await assert.rejects(exitedHandle.close(), generic);
   assert.deepEqual(exited.kills, ["SIGTERM"]);
 

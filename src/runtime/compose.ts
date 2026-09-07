@@ -13,7 +13,16 @@ import {
   type CogsEgressRuntimeManagerOptions,
   startCogsEgressRuntimeManager,
 } from "../egress/runtime-manager.ts";
-import { type CloseContext, type CloseWork, closeContext } from "../launch/close.ts";
+import {
+  beginRegisteredClose,
+  type CloseContext,
+  type CloseWork,
+  closeContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+  registerCloseOwner,
+} from "../launch/close.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../launch/config.ts";
 import {
   createCogsEgressRuntimeLaunchDependency,
@@ -51,7 +60,7 @@ export interface ProductionWorkerRuntime {
   readonly ready: boolean;
   readonly apiPort: number;
   readonly closed: Promise<void>;
-  readonly close: (reason?: CloseReason) => Promise<void>;
+  readonly close: (reason?: CloseReason, context?: CloseContext) => Promise<void>;
 }
 
 export type ProductionWorkerSeams = Readonly<{
@@ -134,8 +143,7 @@ export async function startProductionWorker(
   let pi: CogsPiSessionPorts | undefined;
   let piStartupWork: Promise<CogsPiSessionPorts> | undefined;
   let api: ApiServer | undefined;
-  let closePromise: Promise<void> | undefined;
-  let compositeCloseWork: CloseWork | undefined;
+  let closeStarted = false;
   let resolveClosed!: () => void;
   let rejectClosed!: (error: Error) => void;
   const closed = new Promise<void>((resolvePromise, rejectPromise) => {
@@ -154,32 +162,31 @@ export async function startProductionWorker(
   };
   input.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
-  const beginCompositeClose = (context: CloseContext): CloseWork => {
-    if (compositeCloseWork !== undefined) return compositeCloseWork;
-    startup.abort();
-    const actual = (async () => {
+  const beginCompositeClose = createCloseOwner(
+    async () => {
       // API admission and Pi work stop before dependency release. Neither a
       // timeout nor one rejection authorizes lifecycle/SSH/material destruction.
       const independent = await Promise.allSettled([
-        api?.close({ signal: context.signal }) ?? Promise.resolve(),
+        api ? Promise.resolve().then(() => joinCloseWork(beginRegisteredClose(api as ApiServer))) : Promise.resolve(),
         closePiStartupOwner(),
       ]);
       if (independent.some((result) => result.status === "rejected")) {
         cleanupUncertain = true;
         throw new ProductionWorkerError();
       }
-      const dependencyWork = lifecycle?.closeDependencies(context);
+      const dependencyWork = lifecycle?.closeDependencies(closeContext(10_000));
       if (dependencyWork !== undefined) await Promise.all([dependencyWork.done, dependencyWork.retired]);
       await (telemetry?.close() ?? Promise.resolve());
       for (const name of startedDependencies) if (!closedDependencies.has(name)) cleanupUncertain = true;
       startup.dispose();
       input.signal?.removeEventListener("abort", onCallerAbort);
       if (cleanupUncertain) throw new ProductionWorkerError();
-    })();
-    void actual.catch(() => undefined);
-    compositeCloseWork = Object.freeze({ done: actual, retired: actual });
-    return compositeCloseWork;
-  };
+    },
+    () => {
+      closeStarted = true;
+      startup.abort();
+    },
+  );
 
   const closePiStartupOwner = async (): Promise<void> => {
     const startupWork = piStartupWork;
@@ -195,23 +202,22 @@ export async function startProductionWorker(
     await closePi(acquired);
   };
 
-  const close = (reason: CloseReason = "requested"): Promise<void> => {
+  const close = (reason: CloseReason = "requested", context = closeContext(10_000)): Promise<void> => {
     if (reason === "dependency-lost" || reason === "pi-fatal" || reason === "startup-failed") spontaneousFailure = true;
-    if (closePromise !== undefined) return closePromise;
+    closeStarted = true;
     const observed = lifecycle
-      ? lifecycle.requestShutdown(`production:${reason}`)
-      : Promise.all(Object.values(beginCompositeClose(closeContext(10_000)))).then(() => undefined);
-    closePromise = observed.then(
-      () => {
-        if (cleanupUncertain || spontaneousFailure) throw new ProductionWorkerError();
-      },
-      () => {
-        cleanupUncertain = true;
+      ? lifecycle.requestShutdown(`production:${reason}`, context)
+      : observeClose(beginCompositeClose(), context);
+    const result = observed
+      .then(() => {
+        if (cleanupUncertain || spontaneousFailure || lifecycle?.state === "failed") throw new ProductionWorkerError();
+      })
+      .catch(() => {
+        if (lifecycle?.state !== "stopped") cleanupUncertain = true;
         throw new ProductionWorkerError();
-      },
-    );
-    closePromise.then(resolveClosed, () => rejectClosed(new ProductionWorkerError()));
-    return closePromise;
+      });
+    result.then(resolveClosed, () => rejectClosed(new ProductionWorkerError()));
+    return result;
   };
 
   try {
@@ -234,6 +240,7 @@ export async function startProductionWorker(
       start: (signal: AbortSignal) => Promise<void>,
       shutdown: (signal: AbortSignal) => Promise<void>,
       ready: () => boolean,
+      beginClose?: (context: CloseContext) => CloseWork,
     ): LaunchDependency =>
       Object.freeze({
         name,
@@ -243,6 +250,24 @@ export async function startProductionWorker(
           await start(signal);
         },
         ready,
+        ...(beginClose === undefined
+          ? {}
+          : {
+              beginClose: (context: CloseContext) => {
+                const work = beginClose(context);
+                const actual = joinCloseWork(work).then(
+                  () => {
+                    closedDependencies.add(name);
+                  },
+                  () => {
+                    cleanupUncertain = true;
+                    throw new ProductionWorkerError();
+                  },
+                );
+                void actual.catch(() => undefined);
+                return { done: actual, retired: work.retired };
+              },
+            }),
         shutdown: async (signal: AbortSignal) => {
           const uncertain = () => {
             cleanupUncertain = true;
@@ -356,6 +381,7 @@ export async function startProductionWorker(
           (signal) => egressDependency.start(signal),
           (signal) => egressDependency.shutdown(signal),
           () => egressDependency.ready?.() === true,
+          egressDependency.beginClose,
         ),
       ]),
       shutdownOwner: beginCompositeClose,
@@ -417,14 +443,21 @@ export async function startProductionWorker(
     const listened = await api.listen(runtime.api.port, runtime.api.listen_host, { signal: startup.signal });
     if (!lifecycle.ready || telemetry.ready !== true) throw new Error("readiness lost");
     published = true;
-    return Object.freeze({
-      get ready() {
-        return published && closePromise === undefined && lifecycle?.ready === true && telemetry?.ready === true;
-      },
-      apiPort: listened.port,
-      closed,
-      close,
-    });
+    return registerCloseOwner(
+      Object.freeze({
+        get ready() {
+          return published && !closeStarted && lifecycle?.ready === true && telemetry?.ready === true;
+        },
+        apiPort: listened.port,
+        closed,
+        close,
+      }),
+      createCloseOwner(async () => {
+        void close().catch(() => undefined);
+        await joinCloseWork(lifecycle?.closeWork ?? beginCompositeClose());
+        if (cleanupUncertain || spontaneousFailure || lifecycle?.state === "failed") throw new ProductionWorkerError();
+      }),
+    );
   } catch {
     await close("startup-failed").catch(() => undefined);
     throw new ProductionWorkerError();

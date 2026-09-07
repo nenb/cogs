@@ -41,7 +41,7 @@ export type LauncherInventory = Readonly<{
 
 export type SupervisorSeams = Readonly<{
   identity(pid: number): string | null | undefined;
-  signal(pid: number, signal: "SIGTERM"): boolean;
+  signal(pid: number, signal: "SIGTERM" | "SIGKILL"): boolean;
   now(): number;
   setTimer(callback: () => void, ms: number): unknown;
   clearTimer(timer: unknown): void;
@@ -49,7 +49,7 @@ export type SupervisorSeams = Readonly<{
 }>;
 
 const defaultIdentity = Object.freeze(observeProcessIdentity);
-const defaultSignal = Object.freeze((pid: number, signal: "SIGTERM") => process.kill(pid, signal));
+const defaultSignal = Object.freeze((pid: number, signal: "SIGTERM" | "SIGKILL") => process.kill(pid, signal));
 const defaultNow = Object.freeze(() => Date.now());
 const defaultSetTimer = Object.freeze((callback: () => void, ms: number) => setTimeout(callback, ms));
 const defaultClearTimer = Object.freeze((timer: unknown) => clearTimeout(timer as NodeJS.Timeout));
@@ -140,7 +140,18 @@ export async function stopWorkerForState(
       if (captured.signal(identity.pid, "SIGTERM") !== true) return await uncertain(state);
       signaled = true;
     }
-    if (signaled) await waitAbsentOrReused(captured, identity.pid, identity.pidIdentity);
+    if (signaled && !(await waitAbsentOrReused(captured, identity.pid, identity.pidIdentity))) {
+      // Caller cancellation cannot disarm this owner-controlled escalation.
+      // Recheck descriptor generation AND PID identity immediately before KILL.
+      validateReadyResult(descriptor, await readReadyWorkerDescriptor(state));
+      const boundary = safeIdentity(captured, identity.pid);
+      if (boundary === undefined) return await uncertain(state);
+      if (boundary === identity.pidIdentity) {
+        if (captured.signal(identity.pid, "SIGKILL") !== true) return await uncertain(state);
+        if (!(await waitAbsentOrReused(captured, identity.pid, identity.pidIdentity))) return await uncertain(state);
+      }
+    }
+    // Process absence grants no resource cleanup authority; the receipt gate remains mandatory.
     await cleanupControlFiles(state, { identity: captured.identity });
     const ready = await readManifest(state);
     const next = await writePhase(state, ready, "sandbox-ready");
@@ -212,16 +223,17 @@ async function descriptorInventory(
   };
 }
 
-async function waitAbsentOrReused(seams: SupervisorSeams, pid: number, pidIdentity: string): Promise<void> {
+async function waitAbsentOrReused(seams: SupervisorSeams, pid: number, pidIdentity: string): Promise<boolean> {
   let now = validNow(seams.now());
   const deadline = deadlineAt(now, waitMs);
   while (true) {
     const observed = safeIdentity(seams, pid);
-    if (observed === null || (observed !== undefined && observed !== pidIdentity)) return;
     const nextNow = validNow(seams.now());
     if (nextNow < now) fail();
     now = nextNow;
-    if (observed === undefined || now >= deadline) fail();
+    if (observed === undefined) fail();
+    if (observed === null || observed !== pidIdentity) return true;
+    if (now >= deadline) return false;
     await sleep(seams, Math.min(pollMs, deadline - now));
   }
 }
@@ -440,6 +452,7 @@ function sleep(seams: Pick<SupervisorSeams, "setTimer" | "clearTimer">, ms: numb
         resolve();
       }, ms);
       synchronous = false;
+      if (settled) seams.clearTimer(timer);
     } catch {
       synchronous = false;
       rejectOnce();

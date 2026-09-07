@@ -4,6 +4,13 @@ import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  beginRegisteredClose,
+  type CloseOwner,
+  createCloseOwner,
+  joinCloseWork,
+  registerCloseOwner,
+} from "../../src/launch/close.ts";
+import {
   bindWorkerChild,
   promoteWorkerReady,
   type ReadyWorkerDescriptor,
@@ -25,8 +32,23 @@ import {
 
 export type WorkerProvisionalRuntime = Readonly<{
   apiPort: number;
-  close(): Promise<void>;
+  close(options?: Readonly<{ signal?: AbortSignal; deadlineAt?: number }>): Promise<void>;
 }>;
+
+/** One termination/receipt task. Clean observation is an additional status gate
+ * AFTER registered actual retirement, never a substitute for it. */
+export function createWorkerTerminationOwner(
+  acquired: Promise<WorkerProvisionalRuntime>,
+  seal: () => void,
+  receipt: () => Promise<void>,
+): CloseOwner {
+  return createCloseOwner(async () => {
+    const runtime = await acquired;
+    await joinCloseWork(beginRegisteredClose(runtime));
+    await runtime.close();
+    await receipt();
+  }, seal);
+}
 
 export type WorkerRuntimeFactory = (state: LauncherState, signal: AbortSignal) => Promise<WorkerProvisionalRuntime>;
 
@@ -319,14 +341,12 @@ export async function runWorkerChild(
   const startupDelayMs = remainingMs(deadline, captured.seams.now());
   const runtimeAbort = new AbortController();
   let runtime: WorkerProvisionalRuntime | undefined;
-  let closePromise: Promise<void> | undefined;
   let recovery = false;
   let acknowledged = false;
-  const closeOnce = (): Promise<void> => {
-    if (!runtime) return Promise.resolve();
-    closePromise ??= runtime.close();
-    return closePromise;
-  };
+  const beginRollback = createCloseOwner(async () => {
+    if (runtime) await joinCloseWork(beginRegisteredClose(runtime));
+  });
+  const closeOnce = (): Promise<void> => (runtime ? joinCloseWork(beginRollback()) : Promise.resolve());
   try {
     return await new Promise<WorkerProvisionalRuntime>((resolveRuntime, rejectRuntime) => {
       let settled = false;
@@ -519,7 +539,7 @@ export async function runWorkerChild(
     });
   } catch {
     runtimeAbort.abort();
-    if (runtime && !closePromise) void closeOnce().catch(() => undefined);
+    if (runtime) void closeOnce().catch(() => undefined);
     throw recovery ? recoveryRequired() : generic();
   }
 }
@@ -694,12 +714,13 @@ function runtimePort(value: unknown): WorkerProvisionalRuntime {
     !Object.isFrozen(close)
   )
     fail();
-  let closing: Promise<void> | undefined;
-  const closeOnce = Object.freeze(async () => {
-    closing ??= Promise.resolve().then(() => close.call(value));
-    await closing;
-  });
-  return Object.freeze({ apiPort, close: closeOnce });
+  const observe = Object.freeze(
+    (options?: Parameters<WorkerProvisionalRuntime["close"]>[0]) => close.call(value, options) as Promise<void>,
+  );
+  return registerCloseOwner(
+    Object.freeze({ apiPort, close: observe }),
+    createCloseOwner(() => joinCloseWork(beginRegisteredClose(value))),
+  );
 }
 
 function digestNonce(nonce: string): string {

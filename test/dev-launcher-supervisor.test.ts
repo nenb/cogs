@@ -304,6 +304,82 @@ test("supervisor stop preserves controls when worker is absent without a generat
   }
 });
 
+test("supervisor identity-rechecks hard escalation; absence never substitutes for a cleanup receipt", async () => {
+  for (const mode of [
+    "no-receipt",
+    "receipt",
+    "reused",
+    "unknown",
+    "kill-false",
+    "kill-throws",
+    "hung",
+    "timer",
+    "rollback",
+  ] as const) {
+    const { dir, state } = await readyState(`kill-${mode}`);
+    const controller = new AbortController();
+    let now = 1,
+      absent = false,
+      boundary = false;
+    const signals: string[] = [];
+    const observed = seams({
+      identity: Object.freeze(() =>
+        absent
+          ? null
+          : boundary && mode === "reused"
+            ? reusedDigest
+            : boundary && mode === "unknown"
+              ? undefined
+              : childDigest,
+      ),
+      now: Object.freeze(() => {
+        if (now >= 10_001) boundary = true;
+        return now;
+      }),
+      setTimer: Object.freeze((callback: () => void, ms: number) => {
+        if (mode === "timer") throw new Error("synthetic timer");
+        now += mode === "rollback" ? -ms : ms;
+        queueMicrotask(callback);
+        return 1;
+      }),
+      signal: Object.freeze((pid: number, signal: "SIGTERM" | "SIGKILL") => {
+        assert.equal(pid, 222);
+        signals.push(signal);
+        if (signal === "SIGTERM")
+          controller.abort(); // Must not disarm KILL.
+        else {
+          assert.ok(now >= 10_001);
+          assert.equal(boundary, true);
+          if (mode === "kill-false") return false;
+          if (mode === "kill-throws") throw new Error("synthetic kill");
+          if (mode !== "hung") absent = true;
+        }
+        return true;
+      }),
+    });
+    try {
+      await makeReadyWorker(state, mode === "receipt");
+      if (mode === "receipt") {
+        await stopWorkerForState(state, controller.signal, observed);
+        assert.equal((await readManifest(state)).phase, "sandbox-ready");
+      } else {
+        await assert.rejects(stopWorkerForState(state, controller.signal, observed), /supervisor failed/);
+        const inventory = await launcherInventory(state, observed);
+        assert.equal(inventory.descriptor, "ready");
+        assert.equal(inventory.cleanupRequired, true);
+        assert.equal(inventory.recovery, "present");
+        assert.equal((await readManifest(state)).phase, "worker-ready");
+      }
+      assert.deepEqual(
+        signals,
+        ["reused", "unknown", "timer", "rollback"].includes(mode) ? ["SIGTERM"] : ["SIGTERM", "SIGKILL"],
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("supervisor stop preserves controls and marks recovery on unknown identity, changed boundary, timeout, and signal failure", async () => {
   for (const [name, override] of [
     ["unknown", seams({ identity: Object.freeze(() => undefined) })],

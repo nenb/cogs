@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { closeObservationContext, createCloseOwner, observeClose, registerCloseOwner } from "../../src/launch/close.ts";
 import { hasDuplicateJsonKeys } from "./contract.ts";
 
 const ABORTED_GETTER = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
@@ -205,9 +206,14 @@ export async function startOtlpFixture(
   const counts: Record<OtlpSignal, number> = { logs: 0, traces: 0, metrics: 0 };
   const names = new Set<string>();
   const sockets = new Set<Socket>();
-  let closePromise: Promise<void> | undefined;
+  const requests = new Set<Promise<void>>();
   const server = createServer((request, response) => {
-    void handle(request, response).catch(() => rejectRequest(request, response, 400));
+    const work = handle(request, response).catch(() => rejectRequest(request, response, 400));
+    requests.add(work);
+    void work.then(
+      () => requests.delete(work),
+      () => requests.delete(work),
+    );
   });
   server.maxConnections = maxInflight;
   server.on("connection", (socket) => {
@@ -254,50 +260,57 @@ export async function startOtlpFixture(
     }
   }
 
-  return Object.freeze({
-    endpoint: (signal) => {
-      if (signal !== "logs" && signal !== "traces" && signal !== "metrics")
-        throw new Error("launcher otlp fixture failed");
-      return `http://127.0.0.1:${port}/v1/${signal}`;
-    },
-    snapshot: () =>
-      Object.freeze({ ready: !closed, port, generation, inflight, ...counts, names: Object.freeze([...names].sort()) }),
-    reset: () => {
-      if (closed || inflight !== 0) throw new Error("launcher otlp fixture failed");
+  const beginClose = createCloseOwner(
+    async () => {
+      await closeServer(server, destroyOwnedConnections);
+      destroyOwnedConnections();
+      await Promise.all([...requests]);
+      if (server.listening || inflight !== 0) throw new Error("launcher otlp fixture failed");
+      await assertClosed(port);
       counts.logs = 0;
       counts.traces = 0;
       counts.metrics = 0;
       names.clear();
       acceptedTotal = 0;
-      generation++;
     },
-    close: (options) => {
-      const closeOptions = cooperativeOptions(options ?? {}, false);
-      if (closePromise === undefined) {
-        closePromise = (async () => {
-          closed = true;
-          const cleanupAbort = watchAbort(closeOptions, destroyOwnedConnections);
-          const deadlineTimer = armDeadline(closeOptions, destroyOwnedConnections);
-          try {
-            await closeServer(server, destroyOwnedConnections);
-            destroyOwnedConnections();
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (server.listening || inflight !== 0) throw new Error("launcher otlp fixture failed");
-            await assertClosed(port);
-          } finally {
-            cleanupAbort();
-            deadlineTimer();
-            counts.logs = 0;
-            counts.traces = 0;
-            counts.metrics = 0;
-            names.clear();
-            acceptedTotal = 0;
-          }
-        })();
-      }
-      return closePromise;
+    () => {
+      closed = true;
     },
-  });
+  );
+  return registerCloseOwner(
+    Object.freeze({
+      endpoint: (signal: OtlpSignal) => {
+        if (signal !== "logs" && signal !== "traces" && signal !== "metrics")
+          throw new Error("launcher otlp fixture failed");
+        return `http://127.0.0.1:${port}/v1/${signal}`;
+      },
+      snapshot: () =>
+        Object.freeze({
+          ready: !closed,
+          port,
+          generation,
+          inflight,
+          ...counts,
+          names: Object.freeze([...names].sort()),
+        }),
+      reset: () => {
+        if (closed || inflight !== 0) throw new Error("launcher otlp fixture failed");
+        counts.logs = 0;
+        counts.traces = 0;
+        counts.metrics = 0;
+        names.clear();
+        acceptedTotal = 0;
+        generation++;
+      },
+      close: (options?: OtlpCooperativeOptions) => {
+        const context = closeObservationContext(cooperativeOptions(options ?? {}, false), 15_000);
+        return observeClose(beginClose(), context).catch(() => {
+          throw new Error("launcher otlp fixture failed");
+        });
+      },
+    }),
+    beginClose,
+  );
 
   function destroyOwnedConnections(): void {
     for (const socket of sockets) socket.destroy();
@@ -619,17 +632,6 @@ function aborted(options: OtlpCooperativeOptions): boolean {
     (ABORTED_GETTER === undefined ? false : ABORTED_GETTER.call(options.signal) === true);
   return signalAborted || (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt);
 }
-function watchAbort(options: OtlpCooperativeOptions, callback: () => void): () => void {
-  if (options.signal === undefined) return () => undefined;
-  EVENT_ADD.call(options.signal, "abort", callback, { once: true });
-  return () => EVENT_REMOVE.call(options.signal as AbortSignal, "abort", callback);
-}
-function armDeadline(options: OtlpCooperativeOptions, callback: () => void): () => void {
-  if (options.deadlineAt === undefined) return () => undefined;
-  const timer = setTimeout(callback, Math.max(0, options.deadlineAt - Date.now()));
-  timer.unref?.();
-  return () => clearTimeout(timer);
-}
 async function listenServer(server: Server, options: OtlpCooperativeOptions, destroyOwned: () => void): Promise<void> {
   if (aborted(options)) throw new Error("launcher otlp fixture failed");
   await new Promise<void>((resolve, reject) => {
@@ -693,7 +695,10 @@ async function assertClosed(port: number): Promise<void> {
       socket.destroy();
       reject(new Error("launcher otlp fixture failed"));
     });
-    socket.once("error", () => resolve());
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNREFUSED") resolve();
+      else reject(new Error("launcher otlp fixture failed"));
+    });
     socket.connect(port, "127.0.0.1");
   });
 }

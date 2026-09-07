@@ -1518,8 +1518,10 @@ test("cooperative close is idempotent, closes SSE and raw sockets, and rejects l
   const closedRaw = new Promise<void>((resolve) => raw.once("close", () => resolve()));
   const close1 = api.close();
   const close2 = api.close();
-  assert.equal(close1, close2);
-  await close1;
+  assert.notEqual(close1, close2);
+  await Promise.all([close1, close2]);
+  await assert.rejects(api.close({ signal: AbortSignal.abort() }));
+  await api.close();
   await closedRaw;
   await events;
   await assert.rejects(api.listen());
