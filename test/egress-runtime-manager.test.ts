@@ -643,6 +643,34 @@ test("startup failures clean already-owned resources and stay generic", async ()
   }
 });
 
+test("final observation is identity bound, complete, immutable and unavailable until actual close", async () => {
+  const { observeCogsEgressRuntime } = await import("../src/egress/runtime-manager.ts");
+  const fixture = fixtureRuntime({ authzCloseWaits: true, processCloseWaits: true, lateAuthzRecords: 65 });
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  const live = observeCogsEgressRuntime(manager);
+  assert.equal(live.retired, false);
+  assert.throws(() => observeCogsEgressRuntime({ ...manager }));
+  await assert.rejects(manager.close({ deadlineAt: Date.now() - 1 }), generic);
+  assert.equal(observeCogsEgressRuntime(manager).retired, false);
+  fixture.settleProcessClose?.();
+  await flush();
+  assert.equal(observeCogsEgressRuntime(manager).retired, false);
+  fixture.settleAuthzClose?.();
+  await manager.close();
+  const final = observeCogsEgressRuntime(manager);
+  assert.equal(final.retired, true);
+  assert.equal(final.generation, live.generation);
+  assert.equal(final.records.length, 66);
+  assert.equal(final.records[65]?.intent_id, "late-64");
+  assert.equal(final.completions.length, 1);
+  assert.equal(final.accounting.accepted, 1);
+  assert.equal(final.accounting.dropped, 0);
+  manager.drainCompletions(2);
+  manager.drainCompletions(2);
+  assert.deepEqual(observeCogsEgressRuntime(manager), final);
+  assert.ok(Object.isFrozen(final.records[0]));
+});
+
 function fixtureRuntime(
   flags: {
     replacementRejects?: boolean;
@@ -664,6 +692,7 @@ function fixtureRuntime(
     malformedBinding?: boolean;
     authzCloseWaits?: boolean;
     onAuthzClose?: () => void;
+    lateAuthzRecords?: number;
     realHydratedIdentity?: boolean;
     processCloseWaits?: boolean;
   } = {},
@@ -773,6 +802,12 @@ function fixtureRuntime(
           authzCloseAttempts++;
           flags.onAuthzClose?.();
           if (flags.authzCloseWaits) await new Promise<void>((resolve) => (settleAuthzClose = resolve));
+          for (let i = 0; i < (flags.lateAuthzRecords ?? 0); i++) {
+            records = [
+              ...records,
+              { ...(records[0] as EgressAuditWalRecord), sequence: i + 2, intent_id: `late-${i}` },
+            ];
+          }
           if (flags.authzCloseFailsOnce && authzCloseAttempts === 1) throw new Error(raw);
         },
       }) as CogsExtAuthzServer;

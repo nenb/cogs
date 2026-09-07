@@ -22,10 +22,18 @@ import { createState, resolveLauncherState, writePhase } from "../dev/launcher/s
 import { OpenBaoEgressPkiSource } from "../src/egress/openbao-pki.ts";
 import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
 import { lowerLaunchEgressRoutePlan } from "../src/egress/route-policy.ts";
-import type { CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-manager.ts";
+import {
+  type CogsEgressRuntimeManagerOptions,
+  type CogsEgressRuntimeObservation,
+  registerCogsEgressRuntimeObserver,
+} from "../src/egress/runtime-manager.ts";
+import { createCloseOwner, registerCloseOwner } from "../src/launch/close.ts";
 
 // Hold a pristine trusted baseline until arming, then expose the test window.
-async function startEnvoyEgress(options: Parameters<typeof startUnarmedEnvoyEgress>[0]) {
+async function startEnvoyEgress(
+  options: Parameters<typeof startUnarmedEnvoyEgress>[0],
+  mutate: (s: CogsEgressRuntimeObservation) => CogsEgressRuntimeObservation = (s) => s,
+) {
   let live = false;
   let canArm = false;
   const start = options.seams?.startManager;
@@ -39,11 +47,54 @@ async function startEnvoyEgress(options: Parameters<typeof startUnarmedEnvoyEgre
             startManager: Object.freeze(async (input: Parameters<NonNullable<typeof start>>[0]) => {
               const manager = await start(input);
               canArm = options.profile === "linux-kvm" && manager.auditRecords !== undefined;
-              if (!canArm) return manager;
-              return Object.freeze({
-                ...manager,
-                auditRecords: (limit: number) => (live ? (manager.auditRecords?.(limit) as never) : []),
-                drainCompletions: (limit: number) => (live ? manager.drainCompletions(limit) : []),
+              if (!canArm)
+                return registerCloseOwner(
+                  manager,
+                  createCloseOwner(() => manager.close()),
+                );
+              const generation = Object.freeze({});
+              const completions: CogsEgressRuntimeObservation["completions"][number][] = [];
+              let pending: typeof completions = [];
+              let retired = false;
+              const owner = createCloseOwner(async () => {
+                await manager.close();
+                retired = true;
+              });
+              const wrapped = registerCloseOwner(
+                Object.freeze({
+                  ...manager,
+                  auditRecords: (limit: number) => (live ? (manager.auditRecords?.(limit) as never) : []),
+                  drainCompletions: () => {
+                    const out = pending;
+                    pending = [];
+                    return out;
+                  },
+                }),
+                owner,
+              );
+              return registerCogsEgressRuntimeObserver(wrapped, () => {
+                const records = live ? (manager.auditRecords?.(64) ?? []) : [];
+                if (live) {
+                  pending = [...manager.drainCompletions(64)];
+                  completions.push(...pending);
+                }
+                return mutate(
+                  Object.freeze({
+                    generation,
+                    sessionId: input.launch.session_id,
+                    uncorrelated: 0,
+                    retired,
+                    records,
+                    completions: Object.freeze([...completions]),
+                    accounting: {
+                      accepted: completions.length,
+                      drained: completions.length,
+                      dropped: 0,
+                      retained: 0,
+                      failed: false,
+                    },
+                  }),
+                );
               });
             }),
           }
@@ -52,12 +103,19 @@ async function startEnvoyEgress(options: Parameters<typeof startUnarmedEnvoyEgre
         ? {
             relay: Object.freeze(() => {
               const instance = relay();
+              let closed = false;
               return Object.freeze({
                 ...instance,
+                close: async () => {
+                  await instance.close();
+                  closed = true;
+                },
                 snapshot: () => {
                   const snap = instance.snapshot();
                   return live
-                    ? snap
+                    ? closed
+                      ? { ...snap, closed: true, ready: false, activeTarget: null, registeredTargets: [] }
+                      : snap
                     : {
                         ...snap,
                         acceptedConnections: 0,
@@ -519,16 +577,20 @@ test("public guest material is only the active issuance CA and existing capabili
             },
           );
           await new Promise((resolve) => setImmediate(resolve));
-          return {
-            ready: true,
-            replacementRequired: false,
-            listenerPort: 18081,
-            drainCompletions: () => [],
-            close: async () => {
-              release();
-              await task;
-            },
+          const close = async () => {
+            release();
+            await task;
           };
+          return registerCloseOwner(
+            {
+              ready: true,
+              replacementRequired: false,
+              listenerPort: 18081,
+              drainCompletions: () => [],
+              close,
+            },
+            createCloseOwner(close),
+          );
         }),
       }),
     });
@@ -654,7 +716,7 @@ test("envoy egress S3 completion proof is bounded, cached, and fail closed", asy
       outcome: "fail",
       reason: "total-count",
     });
-    await h.close();
+    await assert.rejects(h.close());
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -703,6 +765,103 @@ test("envoy egress S3 completion proof keeps draining after pass and remains pas
     await h.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("final S3 proof rejects missing/drop/extra/late/malformed/generation/unretired facts and timed-out attempts", async () => {
+  for (const mode of [
+    "success",
+    "missing",
+    "dropped",
+    "extra",
+    "late-wal",
+    "malformed",
+    "generation",
+    "unretired",
+    "uncorrelated",
+    "failed",
+    "timeout",
+  ]) {
+    const { dir, state } = await launcherState();
+    try {
+      const runtime = join(state.dir, "runtime");
+      await mkdir(runtime, { mode: 0o700 });
+      await writeFile(join(runtime, ".cogs-envoy-owner"), `${state.stateId}\n`, { mode: 0o600 });
+      const bin = join(runtime, "envoy");
+      await writeFile(bin, fakeBin, { mode: 0o500 });
+      const doc = launch(state.stateId),
+        route = credentialRouteId(doc);
+      const held = Promise.withResolvers<void>();
+      let drains = 0,
+        closes = 0;
+      const h = await startEnvoyEgress(
+        {
+          state,
+          profile: "linux-kvm",
+          openbao: openbao(),
+          fixturePort: 31337,
+          launchDocument: doc,
+          listenerPort: 18081,
+          otlpLogsEndpoint: "http://127.0.0.1:4318/v1/logs",
+          binary: { path: bin, sha256: fakeBinHash, image: ENVOY_IMAGE, cleanup: "owned" },
+          seams: Object.freeze({
+            validateTmpfs: Object.freeze(async () => undefined),
+            proveClosed: Object.freeze(async () => undefined),
+            relay: relaySeam(() => 2),
+            startManager: Object.freeze(async () =>
+              Object.freeze({
+                ready: true,
+                listenerPort: 18081,
+                replacementRequired: false,
+                auditRecords: () => [walRecord(route, doc.session_id)],
+                drainCompletions: () => (++drains === 1 ? [completion(route)] : []),
+                close: async () => {
+                  closes++;
+                  await held.promise;
+                },
+              }),
+            ),
+          }),
+        },
+        (s) =>
+          !s.retired
+            ? s
+            : {
+                ...s,
+                ...(mode === "missing"
+                  ? { completions: [], accounting: { ...s.accounting, accepted: 0, drained: 0 } }
+                  : {}),
+                ...(mode === "dropped" ? { accounting: { ...s.accounting, drained: 0, dropped: 1 } } : {}),
+                ...(mode === "extra"
+                  ? {
+                      completions: [...s.completions, completion(route)],
+                      accounting: { ...s.accounting, accepted: 2, drained: 2 },
+                    }
+                  : {}),
+                ...(mode === "late-wal"
+                  ? { records: [...s.records, walRecord(route, doc.session_id, { sequence: 1 })] }
+                  : {}),
+                ...(mode === "malformed" ? { completions: [{ ...completion(route), durationMs: 86_400_001 }] } : {}),
+                ...(mode === "generation" ? { generation: {} } : {}),
+                ...(mode === "unretired" ? { retired: false } : {}),
+                ...(mode === "uncorrelated" ? { uncorrelated: 1 } : {}),
+                ...(mode === "failed" ? { accounting: { ...s.accounting, failed: true } } : {}),
+              },
+      );
+      assert.equal(h.s309CompletionProof().outcome, "pass", mode);
+      const closing = h.close(mode === "timeout" ? { deadlineAt: Date.now() - 1 } : {});
+      const result = mode === "success" ? closing : assert.rejects(closing);
+      if (mode === "timeout") await result;
+      assert.equal(h.s309CompletionProof().outcome, "fail", "no final proof while actual close is held");
+      held.resolve();
+      await result;
+      if (mode !== "success") await assert.rejects(h.close());
+      else await h.close();
+      assert.equal(h.s309CompletionProof().outcome, mode === "success" ? "pass" : "fail", mode);
+      assert.equal(closes, 1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -790,7 +949,7 @@ test("envoy egress S3 proof rejects relay and WAL anomalies", async () => {
             },
         name,
       );
-      await h.close();
+      await assert.rejects(h.close());
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -853,7 +1012,7 @@ test("envoy egress S3 completion proof rejects wrong duplicate status and hostil
         },
         name,
       );
-      await h.close();
+      await assert.rejects(h.close());
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -3,7 +3,6 @@ import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { createServer, Socket } from "node:net";
 import { dirname, join, relative } from "node:path";
-import { performance } from "node:perf_hooks";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   type ApiEvent,
@@ -14,7 +13,14 @@ import {
 } from "../../src/api/server.ts";
 import { OpenBaoModelApiKeyStore } from "../../src/auth/model-auth.ts";
 import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.ts";
-import type { CloseContext, CloseWork } from "../../src/launch/close.ts";
+import {
+  beginRegisteredClose,
+  type CloseContext,
+  type CloseWork,
+  createCloseOwner,
+  joinCloseWork,
+  registerCloseOwner,
+} from "../../src/launch/close.ts";
 import { type LaunchConfig, validateLaunchConfig } from "../../src/launch/config.ts";
 import { type LaunchDependency, type LaunchDependencyName, LaunchLifecycle } from "../../src/launch/lifecycle.ts";
 import {
@@ -208,17 +214,20 @@ export async function createTrustedWorkerRuntime(
   if (aborted(callerSignal)) startup.abort();
   startupTimer = setTimeout(() => startup.abort(), STARTUP_DEADLINE_MS);
 
-  const beginCompositeCleanup = (context?: CloseContext): CloseWork => {
-    cleanupRequested = true;
-    startup.abort();
-    const inheritedDeadlineAt =
-      context === undefined ? undefined : Date.now() + Math.max(0, context.deadlineAt - performance.now());
-    outerCleanup ??= (async () => {
-      await startupQuiesced;
-      await cleanupAll(cleanups, startup, inheritedDeadlineAt);
-    })();
-    return Object.freeze({ done: outerCleanup, retired: outerCleanup });
-  };
+  const compositeOwner = createCloseOwner(
+    () => {
+      outerCleanup = Promise.resolve().then(async () => {
+        await startupQuiesced;
+        await cleanupAll(cleanups, startup);
+      });
+      return outerCleanup;
+    },
+    () => {
+      cleanupRequested = true;
+      startup.abort();
+    },
+  );
+  const beginCompositeCleanup = (_context?: CloseContext): CloseWork => compositeOwner();
 
   const cleanup = () => {
     cleanupRequested = true;
@@ -414,7 +423,10 @@ export async function createTrustedWorkerRuntime(
     registerCleanup(cleanups, {
       name: "egress",
       close: async (options) => {
-        const outcomes = await Promise.allSettled([guestProxy.close(options), egress.close(options)]);
+        const outcomes = await Promise.allSettled([
+          Promise.resolve().then(() => guestProxy.close(options)),
+          Promise.resolve().then(() => joinCloseWork(beginRegisteredClose(egress))),
+        ]);
         if (outcomes.some((outcome) => outcome.status === "rejected")) fail();
         reconcileFixture();
       },
@@ -431,12 +443,14 @@ export async function createTrustedWorkerRuntime(
     guestProxy.assertCurrent();
     checkCooperative(startup.signal, deadlineAt);
 
+    let proofOnly = false;
     const dependencies = nonProducingDependencies(
       ssh,
       egress,
       () => sessionStorageReady,
       () => authReady,
       () => auditWalReady,
+      () => proofOnly,
     );
     lifecycle = s.createLifecycle({
       launchDocument: launch,
@@ -482,7 +496,22 @@ export async function createTrustedWorkerRuntime(
         });
         if (response.status !== 200 || (await response.text()) !== '{"ok":true}') fail();
       },
-      () => guestProxy.assertCurrent(),
+      () => {
+        if (!lifecycle?.ready || cleanupRequested) fail();
+        if (!proofOnly) guestProxy.assertCurrent();
+      },
+      async () => {
+        // Only the fixed proof-only input remains admissible; no guest tools
+        // run after intentionally retiring this dedicated egress generation.
+        proofOnly = true;
+        try {
+          await egress.close();
+          await joinCloseWork(beginRegisteredClose(egress));
+        } catch {
+          void cleanup().catch(() => undefined);
+          throw new Error(GENERIC);
+        }
+      },
     );
     reconcileFixture = () => s309Emit.reconcileFixture();
     const piStartup = Promise.resolve().then(() =>
@@ -535,7 +564,7 @@ export async function createTrustedWorkerRuntime(
         eventReplayCapacity: 32,
       }),
     );
-    registerCleanup(cleanups, { name: "api", close: (options) => api?.close(options) });
+    registerCleanup(cleanups, { name: "api", close: () => api && joinCloseWork(beginRegisteredClose(api)) });
     requireApi(api);
     const listened = await api.listen(0, "127.0.0.1", { signal: startup.signal, deadlineAt });
     const apiPort = port(listened.port);
@@ -556,10 +585,21 @@ export async function createTrustedWorkerRuntime(
         throw new Error(GENERIC);
       });
     });
-    return Object.freeze({
-      apiPort,
-      close: closeRuntime,
-    });
+    return registerCloseOwner(
+      Object.freeze({ apiPort, close: closeRuntime }),
+      createCloseOwner(() => {
+        const status = cleanup();
+        void status.catch(() => undefined);
+        const retired = joinCloseWork(beginCompositeCleanup());
+        return {
+          retired,
+          done: retired.then(async () => {
+            await status;
+            if (lifecycle?.state === "failed") fail();
+          }),
+        };
+      }),
+    );
   } catch {
     cleanupStartupTimer(startupTimer, callerSignal, onAbort);
     startupTimer = undefined;
@@ -632,16 +672,17 @@ function nonProducingDependencies(
   sessionStorageReady: () => boolean,
   authReady: () => boolean,
   auditWalReady: () => boolean,
+  proofOnly: () => boolean,
 ): readonly LaunchDependency[] {
   const dep = (name: LaunchDependencyName, ready: () => boolean) =>
     Object.freeze({ name, start: async () => undefined, shutdown: async () => undefined, ready });
   return Object.freeze([
     dep("sessionStorage", sessionStorageReady),
     dep("ssh", () => ssh.ready === true),
-    dep("proxy", () => egress.snapshot().ready === true),
+    dep("proxy", () => proofOnly() || egress.snapshot().ready === true),
     dep("auth", authReady),
     dep("auditWal", auditWalReady),
-    dep("egressRuntime", () => egress.snapshot().ready === true),
+    dep("egressRuntime", () => proofOnly() || egress.snapshot().ready === true),
   ]);
 }
 
@@ -653,6 +694,10 @@ export function createS309ProofEmitter(
     throw new Error(GENERIC);
   },
   assertGeneration: () => void = () => undefined,
+  retire: () => Promise<void> = async () => {
+    await egress.close();
+    await joinCloseWork(beginRegisteredClose(egress));
+  },
 ) {
   const prompts = [
     LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
@@ -660,6 +705,7 @@ export function createS309ProofEmitter(
     LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   ];
   let stage = 0;
+  let retired = false;
   let invalid = false;
   let busy = false;
   let active: { requestId: string; correlationId: string; admitted: boolean } | undefined;
@@ -710,7 +756,7 @@ export function createS309ProofEmitter(
     const proofStage = stage++ === 2;
     if (!proofStage) return event;
     try {
-      reason = invalid ? "generation" : (observe() ?? reason);
+      reason = invalid || (!retired && reason === undefined) ? "generation" : (observe() ?? reason);
     } catch {
       reason = "generation";
     }
@@ -798,6 +844,11 @@ export function createS309ProofEmitter(
                 if (reason === undefined || reason !== "credential-count") break;
                 await new Promise((resolve) => setTimeout(resolve, 10));
               } while (Date.now() < deadline && !input.signal?.aborted);
+              if (reason === undefined) {
+                await retire();
+                retired = true;
+                reason = observe();
+              }
             }
             const state = await delegate.input(input);
             if (state !== "running" || !active || input.signal?.aborted) throw new Error(GENERIC);

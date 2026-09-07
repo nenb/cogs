@@ -29,6 +29,20 @@ export type CogsEgressCompletionQueue = Readonly<{
   snapshot(): Readonly<{ accepted: number; drained: number; dropped: number; retained: number; failed: boolean }>;
 }>;
 
+export type CogsEgressCompletionObservation = Readonly<{
+  accounting: ReturnType<CogsEgressCompletionQueue["snapshot"]>;
+  completions: readonly CogsEgressCompletion[];
+  uncorrelated: number;
+}>;
+const observers = new WeakMap<CogsEgressCompletionQueue, () => CogsEgressCompletionObservation>();
+
+/** Trusted, volatile metadata only; handle copies do not carry observation authority. */
+export function observeCogsEgressCompletions(queue: CogsEgressCompletionQueue): CogsEgressCompletionObservation {
+  const observe = observers.get(queue);
+  if (!observe) throw new CogsEgressCompletionError();
+  return observe();
+}
+
 export type CogsEgressCompletionQueueOptions = Readonly<{
   capacity: number;
   nowMs: () => number;
@@ -80,9 +94,10 @@ class CompletionQueue {
   private accepted = 0;
   private drained = 0;
   private dropped = 0;
+  private uncorrelated = 0;
   private failure: CogsEgressCompletionError | undefined;
   private readonly retained: CogsEgressCompletion[] = [];
-  private readonly completed = new Set<string>();
+  private readonly completed = new Map<string, CogsEgressCompletion>();
   private readonly telemetryHealth = new TelemetryHealthCursor();
 
   public constructor(
@@ -96,9 +111,9 @@ class CompletionQueue {
 
   public handle(): CogsEgressCompletionQueue {
     const queue = this;
-    return Object.freeze({
+    const handle: CogsEgressCompletionQueue = Object.freeze({
       get ready() {
-        if (!queue.wal.ready) queue.poison();
+        if (!queue.closed && !queue.wal.ready) queue.poison();
         return !queue.closed && !queue.poisoned && queue.wal.ready;
       },
       onCompletionLine: (line) => queue.accept(line),
@@ -113,6 +128,14 @@ class CompletionQueue {
           failed: queue.poisoned,
         }),
     });
+    observers.set(handle, () =>
+      Object.freeze({
+        accounting: handle.snapshot(),
+        completions: Object.freeze([...queue.completed.values()]),
+        uncorrelated: queue.uncorrelated,
+      }),
+    );
+    return handle;
   }
 
   private async accept(line: string): Promise<void> {
@@ -120,11 +143,14 @@ class CompletionQueue {
       if (this.closed || this.poisoned || !this.wal.ready) throw new Error("not ready");
       const parsed = parseLine(line);
       if (parsed.intent_id === "-") {
-        if (parsed.route_id === "-" || opaque.test(parsed.route_id)) return;
+        if (parsed.route_id === "-" || opaque.test(parsed.route_id)) {
+          this.uncorrelated = bound(this.uncorrelated + 1, 1, Number.MAX_SAFE_INTEGER);
+          return;
+        }
         throw new Error("bad denied route");
       }
       const match = this.matchRecord(parsed.intent_id, parsed.route_id);
-      if (this.completed.has(parsed.intent_id)) throw new Error("duplicate");
+      if (this.completed.has(parsed.intent_id) || this.completed.size >= 10_000) throw new Error("duplicate or full");
       const completion = Object.freeze({
         intentId: parsed.intent_id,
         sequence: match.sequence,
@@ -133,7 +159,7 @@ class CompletionQueue {
         durationMs: parseDecimal(parsed.duration_ms, 0, 86_400_000),
         completedAtMs: safeNow(this.nowMs()),
       });
-      this.completed.add(parsed.intent_id);
+      this.completed.set(parsed.intent_id, completion);
       this.accepted++;
       // Correlation is consumed now, not at shutdown. This queue is only optional
       // diagnostic retention; durable credential-use intents remain in the WAL.
@@ -187,7 +213,8 @@ class CompletionQueue {
     this.closed = true;
     this.dropped += this.retained.length;
     this.retained.length = 0;
-    this.completed.clear();
+    // Bounded correlation metadata survives destructive diagnostic drains/close.
+    // The owning generation's WeakMap lifetime is the only retention lifetime.
   }
 
   private poison(): void {
