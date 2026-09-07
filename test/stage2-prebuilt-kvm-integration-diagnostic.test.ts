@@ -32,6 +32,8 @@ test("both attempt-one jobs materialize and execute GITHUB_SHA, never the prior 
   const full = workflow.slice(workflow.indexOf("  full:"), workflow.indexOf("  readiness:"));
   const readiness = workflow.slice(workflow.indexOf("  readiness:"), workflow.indexOf("  aggregate:"));
   for (const route of [full, readiness]) {
+    assert.ok(route.indexOf("# ADR0309 exact retirement mirror") < route.indexOf("/usr/bin/git init"));
+    assert.ok(route.includes('for selected in "$GITHUB_SHA" "$GITHUB_RUN_ID"; do'));
     assert.equal(occurrences(route, 'test "$GITHUB_RUN_ATTEMPT" = 1'), 2);
     assert.equal(occurrences(route, 'fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"'), 1);
     assert.equal(occurrences(route, "timeout-minutes: 250"), 1);

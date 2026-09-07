@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import stat
 import sys
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 sys.dont_write_bytecode = True
 REPOSITORY = Path(__file__).resolve().parents[1]
 LOCK_PATH = REPOSITORY / "config/stage2-prebuilt-kvm-diagnostic-lock-v1.json"
@@ -161,6 +163,8 @@ def sync(path):
     finally:
         os.close(descriptor)
 def materialize(stage):
+    manifest, _ = retirement["document"](Path("/var/lib/cogs/stage2-completion-v1/source/.cogs-stage2-source-manifest-v1.json"), 4 * 1024 * 1024)
+    select_runtime(manifest["revision"])
     require(os.geteuid() == 0 and stage in {"descriptor", "adjuncts"})
     _value, raws = load_lock()
     if stage == "descriptor":
@@ -178,9 +182,14 @@ def materialize(stage):
         for name in sorted(set(MEMBERS) - {"descriptor.json"}):
             write_frozen(DESTINATION / name, raws[name])
     sync(DESTINATION)
+def select_runtime(revision=None):
+    retirement["select"]((revision or os.environ.get("GITHUB_SHA", ""),
+                          os.environ.get("GITHUB_SHA", revision or ""), IMPLEMENTATION, CONTROL),
+                          runs=("33615572679",), artifacts=("9840794063",))
 def main():
     require(len(sys.argv) == 2 and sys.argv[1] in {"verify", "descriptor", "adjuncts"})
     if sys.argv[1] == "verify":
+        select_runtime()
         load_lock()
         os.write(1, b"stage2 prebuilt KVM diagnostic lock verified\n")
     else:
@@ -188,5 +197,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (DiagnosticLockError, OSError, prebuilt.PrebuiltRootfsError):
+    except (DiagnosticLockError, OSError, prebuilt.PrebuiltRootfsError, retirement["RetirementError"]):
         raise SystemExit(2)

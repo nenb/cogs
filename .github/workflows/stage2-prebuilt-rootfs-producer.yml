@@ -26,6 +26,12 @@ jobs:
           EXACT_H: ${{ inputs.exact_implementation_head }}
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -63,6 +69,16 @@ jobs:
       package_sha256: ${{ steps.produce.outputs.package_sha256 }}
       provenance_sha256: ${{ steps.produce.outputs.provenance_sha256 }}
     steps:
+      - name: Recheck retirement before build checkout
+        env: { EXACT_H: "${{ needs.admit.outputs.head }}" }
+        run: |
+          set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
       - name: Check out exact H without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -75,6 +91,7 @@ jobs:
           EXACT_H: ${{ needs.admit.outputs.head }}
         run: |
           set -euo pipefail
+          /usr/bin/python3 -I -B scripts/stage2-revision-retirement.py "$GITHUB_SHA" "$EXACT_H"
           test "$(git rev-parse HEAD)" = "$EXACT_H"
           test "$GITHUB_RUN_ATTEMPT" = 1
           workflow_sha=$(sha256sum .github/workflows/stage2-prebuilt-rootfs-producer.yml | cut -d' ' -f1)

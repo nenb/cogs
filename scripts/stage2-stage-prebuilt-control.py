@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
@@ -185,7 +187,24 @@ def _stage(source_path, diagnostic_version=None):
             _require(type(name) is str and name not in members)
             members[name] = _read_regular(
                 source, name, _member_maximum(codec, row, diagnostic_version is not None), private)
-        codec.validate_control_members(control, members)
+        validated = codec.validate_control_members(control, members)
+        if diagnostic_version is None:
+            implementation = control.value["implementation"]["revision"]
+            control_revision = control.value["producer"]["control_revision"]
+            rootfs = validated[0].value["rootfs"]
+        else:
+            implementation = control.value["runtime_implementation"]["revision"]
+            control_revision = control.value["publication_producer"]["control_revision"]
+            rootfs = control.value["rootfs"]
+        custody = rootfs["custody"]
+        publication = custody["publication_receipt"]
+        retirement["select"]((implementation, control_revision, publication["control_revision"],
+            rootfs["prebuilt_descriptor"]["producer"]["revision"],
+            custody["provenance"]["builder"]["implementation_revision"],
+            custody["qualification_receipt"]["implementation_revision"], publication["implementation_revision"]),
+            runs=(str(publication["producer_run_id"]), str(publication["publisher_run_id"]),
+                  str(custody["provenance"]["builder"]["run_id"]), str(custody["qualification_receipt"]["run_id"])),
+            artifacts=(str(publication["producer_artifact_id"]),))
         _require(os.fstat(source) == source_identity, "control package directory changed")
     finally:
         os.close(source)

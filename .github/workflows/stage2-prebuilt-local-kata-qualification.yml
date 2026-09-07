@@ -52,6 +52,12 @@ jobs:
           CONFIGURED_AUTHORIZED_ACTOR: ${{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID" "$MIXED_PREFLIGHT_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -123,6 +129,12 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
@@ -457,6 +469,12 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
           "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
@@ -481,7 +499,7 @@ jobs:
 
       - name: Materialize authenticated exact custody for all seven cycle uploads
         id: cycle_custody
-        if: always() && needs.local-kata.result == 'success'
+        if: always() && needs.local-kata.result == 'success' && steps.gate.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         env:
