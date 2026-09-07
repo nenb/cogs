@@ -330,6 +330,8 @@ test("alternating valid-to-NaN clock and timer set failure trigger source_unavai
 test("close is concurrent/idempotent, cancels active work and timers, and prevents post-close transitions", async () => {
   const timers = new ManualTimers();
   let aborted = false;
+  let nested: Promise<void> | undefined;
+  let retirement: Promise<void> | undefined;
   let finish!: (value: CogsEgressRevocationSnapshot) => void;
   let first = true;
   const actions = actionLog();
@@ -339,7 +341,11 @@ test("close is concurrent/idempotent, cancels active work and timers, and preven
         first = false;
         return Promise.resolve(snap());
       }
-      signal.addEventListener("abort", () => (aborted = true));
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        nested = watcher.close();
+        retirement = watcher.retirement();
+      });
       return new Promise<CogsEgressRevocationSnapshot>((resolve) => (finish = resolve));
     },
   };
@@ -349,6 +355,8 @@ test("close is concurrent/idempotent, cancels active work and timers, and preven
   const a = watcher.close();
   const b = watcher.close();
   assert.equal(a, b);
+  assert.equal(a, nested);
+  assert.equal(retirement, watcher.retirement());
   timers.tick(200);
   await assert.rejects(a, generic);
   await assert.rejects(b, generic);

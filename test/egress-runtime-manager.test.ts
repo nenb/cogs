@@ -63,7 +63,7 @@ test("revocation performs deny authz, process drain final completion, replacemen
   const manager = await startCogsEgressRuntimeManager(fixture.options());
   fixture.revocation = snap({ revoked: true });
   fixture.timers.tick(50);
-  await flush();
+  for (let attempt = 0; attempt < 20 && !fixture.events.includes("replacement:revoked"); attempt++) await flush();
   assert.deepEqual(
     fixture.events.filter((event) => event !== "process.start"),
     ["authz.close", "process.close", "replacement:revoked"],
@@ -115,7 +115,7 @@ test("scope rejection and unexpected normal completion after publication fail cl
   assert.ok(completing.events.includes("wal.close"));
 });
 
-test("sticky dependency readiness loss initiates cleanup and close failure keeps one rejected close promise", async () => {
+test("sticky dependency readiness loss initiates one cleanup and every close observes actual failure", async () => {
   const fixture = fixtureRuntime({ authzCloseFailsOnce: true });
   const manager = await startCogsEgressRuntimeManager(fixture.options());
   fixture.processReady = false;
@@ -123,7 +123,7 @@ test("sticky dependency readiness loss initiates cleanup and close failure keeps
   await flush();
   const first = manager.close();
   const second = manager.close();
-  assert.equal(first, second);
+  assert.notEqual(first, second);
   await assert.rejects(first, generic);
   await assert.rejects(second, generic);
   assert.equal(fixture.authzCloseAttempts, 1);
@@ -211,13 +211,13 @@ test("canonical path and invalid injected port fail before side effects", async 
   }
 });
 
-test("normal close uses one promise, closes in order, and preserves final completions", async () => {
+test("normal close uses fresh observers, closes once in order, and preserves final completions", async () => {
   const fixture = fixtureRuntime();
   const manager = await startCogsEgressRuntimeManager(fixture.options());
   const first = manager.close();
   const second = manager.close();
-  assert.equal(first, second);
-  await first;
+  assert.notEqual(first, second);
+  await Promise.all([first, second]);
   assert.deepEqual(
     fixture.events.filter((event) => event !== "process.start"),
     ["authz.close", "process.close", "wal.close"],
@@ -503,7 +503,7 @@ test("post-acquisition startup failure retains lexical material until process re
   assert.equal(fixture.scopeReleased, true);
 });
 
-test("close timeout aborts work but waits for settlement before rejecting and remains idempotent", async () => {
+test("close timeout leaves actual work owned and a longer observer sees late retirement", async () => {
   const fixture = fixtureRuntime();
   let settleProcess!: () => void;
   const manager = await startCogsEgressRuntimeManager(
@@ -524,16 +524,44 @@ test("close timeout aborts work but waits for settlement before rejecting and re
     }),
   );
   const closed = manager.close();
-  assert.equal(manager.close(), closed);
+  const failed = assert.rejects(closed, generic);
+  const later = manager.close({ deadlineAt: Date.now() + 5000 });
+  assert.notEqual(later, closed);
   fixture.timers.tick(50);
   await flush();
-  await assert.rejects(closed, generic);
+  await failed;
   assert.equal(fixture.events.includes("wal.close"), false);
   settleProcess();
   await flush();
   await flush();
+  await later;
+  await manager.close();
   assert.ok(fixture.events.includes("process.close.done"));
   assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("manager publishes retirement before a synchronous child close reenters", async () => {
+  let nested: Promise<void> | undefined;
+  const fixture = fixtureRuntime({
+    authzCloseWaits: true,
+    onAuthzClose: () => {
+      nested = manager.close();
+    },
+  });
+  const manager = await startCogsEgressRuntimeManager(fixture.options());
+  const first = manager.close({ signal: AbortSignal.abort() });
+  await assert.rejects(first, generic);
+  assert.equal(fixture.authzCloseAttempts, 1);
+  assert.equal(fixture.scopeReleased, false);
+  assert.equal(fixture.events.includes("process.close"), true);
+  assert.equal(fixture.events.includes("wal.close"), false);
+  assert.notEqual(first, nested);
+  fixture.settleAuthzClose?.();
+  await nested;
+  await manager.close();
+  assert.equal(fixture.authzCloseAttempts, 1);
+  assert.equal(fixture.scopeReleased, true);
+  assert.equal(fixture.events.filter((event) => event === "wal.close").length, 1);
 });
 
 test("runtime close option accessors are rejected without invocation", async () => {
@@ -564,8 +592,12 @@ test("pre-aborted and expired close options still run exact cleanup once", async
     const controller = new AbortController();
     if (mode === "preabort") controller.abort();
     const first = manager.close(mode === "preabort" ? { signal: controller.signal } : { deadlineAt: Date.now() - 1 });
-    assert.equal(manager.close(), first);
+    const later = manager.close();
+    assert.notEqual(later, first);
     await assert.rejects(first, generic);
+    await later;
+    await assert.rejects(manager.close({ signal: AbortSignal.abort() }), generic);
+    await manager.close();
     for (let attempt = 0; attempt < 20 && !fixture.events.includes("wal.close"); attempt += 1) await flush();
     assert.deepEqual(
       fixture.events.filter((event) => event !== "process.start"),
@@ -574,7 +606,7 @@ test("pre-aborted and expired close options still run exact cleanup once", async
   }
 });
 
-test("close parent abort waits for active close settlement and continues independent cleanup", async () => {
+test("close parent abort leaves active work owned and continues independent cleanup", async () => {
   const fixture = fixtureRuntime({ authzCloseWaits: true });
   const manager = await startCogsEgressRuntimeManager(fixture.options());
   const controller = new AbortController();
@@ -588,8 +620,9 @@ test("close parent abort waits for active close settlement and continues indepen
   fixture.settleAuthzClose?.();
   await flush();
   await flush();
-  assert.equal(manager.close(), first);
-  await assert.rejects(manager.close(), generic);
+  const later = manager.close();
+  assert.notEqual(later, first);
+  await later;
   assert.ok(fixture.events.includes("process.close"));
   assert.ok(fixture.events.includes("wal.close"));
 });
@@ -630,6 +663,7 @@ function fixtureRuntime(
     abortDuringCredential?: boolean;
     malformedBinding?: boolean;
     authzCloseWaits?: boolean;
+    onAuthzClose?: () => void;
     realHydratedIdentity?: boolean;
     processCloseWaits?: boolean;
   } = {},
@@ -737,6 +771,7 @@ function fixtureRuntime(
         async close() {
           events.push("authz.close");
           authzCloseAttempts++;
+          flags.onAuthzClose?.();
           if (flags.authzCloseWaits) await new Promise<void>((resolve) => (settleAuthzClose = resolve));
           if (flags.authzCloseFailsOnce && authzCloseAttempts === 1) throw new Error(raw);
         },

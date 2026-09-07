@@ -4,6 +4,7 @@ import test from "node:test";
 import type { ApiServer, ApiServerOptions, JsonValue } from "../src/api/server.ts";
 import type { ModelApiKeySource, OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
 import type { CogsEgressRuntimeManager, CogsEgressRuntimeManagerOptions } from "../src/egress/runtime-manager.ts";
+import { closeContext, createCloseOwner, registerCloseOwner } from "../src/launch/close.ts";
 import type { LaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
 import { type ProductionMainPort, runProductionMain } from "../src/main.ts";
@@ -159,6 +160,10 @@ function harness() {
       if (cleanupFailure === "egress") throw new Error("egress close secret");
     },
   });
+  registerCloseOwner(
+    egress,
+    createCloseOwner(() => egress.close()),
+  );
   const pi = Object.freeze({
     input: async () => "running" as const,
     abort: async () => ({ aborted: false, runState: "idle" as const }),
@@ -200,6 +205,10 @@ function harness() {
     },
     publish: () => true,
   });
+  registerCloseOwner(
+    api,
+    createCloseOwner(() => api.close()),
+  );
   let telemetry: CogsWorkerTelemetrySink;
   const seams: ProductionWorkerSeams = Object.freeze({
     readRuntime: async () => {
@@ -352,6 +361,7 @@ test("production composition starts in one exact fail-closed order and closes re
     "api.listen",
   ]);
   await worker.close();
+  await assert.rejects(worker.close("requested", { ...closeContext(1000), signal: AbortSignal.abort() }));
   await worker.close();
   await worker.closed;
   assert.deepEqual(h.log.slice(-7), [
@@ -389,6 +399,26 @@ test("production cleanup starts API and Pi retirement together and gates depende
   releasePi();
   await closing;
   assert.equal(h.log.includes("egress.close"), true);
+});
+
+test("production late actual success cannot heal failed status or certify clean shutdown", async () => {
+  const h = harness(),
+    held = Promise.withResolvers<void>();
+  h.setCleanupWait("api", held.promise);
+  const worker = await startProductionWorker({ seams: h.seams });
+  const first = worker.close("requested", { ...closeContext(1000), signal: AbortSignal.abort() });
+  const later = worker.close();
+  const rejectedLater = assert.rejects(later, ProductionWorkerError);
+  assert.notEqual(first, later);
+  await assert.rejects(first, ProductionWorkerError);
+  assert.equal(h.log.includes("egress.close"), false);
+  assert.equal(h.log.includes("ssh.close"), false);
+  held.resolve();
+  await rejectedLater;
+  await assert.rejects(worker.closed, ProductionWorkerError);
+  await assert.rejects(worker.close(), ProductionWorkerError);
+  assert.equal(h.log.filter((entry) => entry === "api.close").length, 1);
+  assert.equal(h.log.filter((entry) => entry === "egress.close").length, 1);
 });
 
 test("production Pi cleanup uncertainty blocks dependency and telemetry release", async () => {
@@ -513,6 +543,10 @@ test("late egress startup remains owned and is closed after startup abort", asyn
       closes += 1;
     },
   });
+  registerCloseOwner(
+    manager,
+    createCloseOwner(() => manager.close()),
+  );
   const seams: ProductionWorkerSeams = Object.freeze({
     ...h.seams,
     createEgress: async () => {

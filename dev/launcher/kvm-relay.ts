@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, Socket } from "node:net";
 import { decodeProxyAuthorizationBasic } from "../../src/egress/proxy-capability.ts";
+import { closeObservationContext, createCloseOwner, observeClose, registerCloseOwner } from "../../src/launch/close.ts";
 import type { SecretHolder } from "./openbao.ts";
 
 export type KvmRelayOptions = Readonly<{ signal?: AbortSignal; deadlineAt?: number }>;
@@ -46,7 +47,7 @@ export class KvmRelay {
   #poisoned = false;
   #generation = 0;
   #proxyCapability: SecretHolder | undefined;
-  #closePromise: Promise<void> | undefined;
+  readonly #beginClose = createCloseOwner(() => this.closeInner());
 
   private constructor(
     profile: "linux-kvm" | "loopback-functional",
@@ -62,6 +63,7 @@ export class KvmRelay {
     this.#requestedPort = port;
     this.#max = max;
     this.#server.on("error", () => this.poison());
+    registerCloseOwner(this, this.#beginClose);
   }
 
   static linuxKvm(): KvmRelay {
@@ -202,12 +204,10 @@ export class KvmRelay {
   }
 
   close(options?: KvmRelayOptions): Promise<void> {
-    cooperativeOptions(options);
-    if (!this.#closePromise)
-      this.#closePromise = this.closeInner().catch(() => {
-        throw fail();
-      });
-    return this.#closePromise;
+    const context = closeObservationContext(cooperativeOptions(options), 15_000);
+    return observeClose(this.#beginClose(), context).catch(() => {
+      throw fail();
+    });
   }
 
   private async closeInner(): Promise<void> {

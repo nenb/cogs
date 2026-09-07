@@ -939,8 +939,12 @@ test("otlp fixture reset rejects inflight trickle and close is idempotent bounde
     const closedRaw = new Promise((resolve) => socket.once("close", resolve));
     const started = Date.now();
     const close = fixture.close({ deadlineAt: Date.now() });
-    assert.equal(fixture.close(), close);
-    await close;
+    const later = fixture.close();
+    assert.notEqual(later, close);
+    await assert.rejects(close, /launcher otlp fixture failed/);
+    await later;
+    await assert.rejects(fixture.close({ signal: AbortSignal.abort() }));
+    await fixture.close();
     await closedRaw;
     assert.ok(Date.now() - started < 1000);
     assert.equal(fixture.snapshot().traces, 0);

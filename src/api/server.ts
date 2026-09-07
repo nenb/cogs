@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import { URL } from "node:url";
+import { closeObservationContext, createCloseOwner, observeClose, registerCloseOwner } from "../launch/close.ts";
 import type { LaunchLifecycle } from "../launch/lifecycle.ts";
 
 export type InputKind = "prompt" | "steer" | "follow_up";
@@ -160,8 +161,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let abortPromise: Promise<{ aborted: boolean; runState: RunState }> | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let shutdownAccepted = false;
-  let closePromise: Promise<void> | undefined;
-  let actualClosePromise: Promise<void> | undefined;
+  const beginClose = createCloseOwner(
+    () => ensureServerClosed({}),
+    () => {
+      closed = true;
+    },
+  );
   let listenPromise: Promise<{ port: number }> | undefined;
   let listenEventPromise: Promise<void> | undefined;
   let closeServerPromise: Promise<void> | undefined;
@@ -842,43 +847,39 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
-  return Object.freeze({
-    listen: (port = 0, host = "127.0.0.1", rawOptions?: ApiListenOptions) => {
-      let cooperative: CooperativeOptions;
-      try {
-        cooperative = captureCooperativeOptions(rawOptions);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      if (closed) return Promise.reject(new Error("api server is closed"));
-      if (listenPromise !== undefined) return Promise.reject(new Error("api server is already listening"));
-      listenPromise = listenOnce(port, host, cooperative);
-      listenPromise.catch(() => {
-        if (!listenStarted && !closed) listenPromise = undefined;
-      });
-      return listenPromise;
-    },
-    close: (rawOptions?: ApiCloseOptions) => {
-      let cooperative: CooperativeOptions;
-      try {
-        cooperative = captureCooperativeOptions(rawOptions);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      if (closePromise !== undefined) return closePromise;
-      let resolveObserved!: () => void;
-      let rejectObserved!: (error: Error) => void;
-      closePromise = new Promise<void>((resolve, reject) => {
-        resolveObserved = resolve;
-        rejectObserved = reject;
-      });
-      actualClosePromise = closeOnce(cooperative);
-      void actualClosePromise.catch(() => undefined);
-      observeApiClose(actualClosePromise, cooperative).then(resolveObserved, rejectObserved);
-      return closePromise;
-    },
-    publish,
-  });
+  return registerCloseOwner(
+    Object.freeze({
+      listen: (port = 0, host = "127.0.0.1", rawOptions?: ApiListenOptions) => {
+        let cooperative: CooperativeOptions;
+        try {
+          cooperative = captureCooperativeOptions(rawOptions);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+        if (closed) return Promise.reject(new Error("api server is closed"));
+        if (listenPromise !== undefined) return Promise.reject(new Error("api server is already listening"));
+        listenPromise = listenOnce(port, host, cooperative);
+        listenPromise.catch(() => {
+          if (!listenStarted && !closed) listenPromise = undefined;
+        });
+        return listenPromise;
+      },
+      close: (rawOptions?: ApiCloseOptions) => {
+        let cooperative: CooperativeOptions;
+        try {
+          cooperative = captureCooperativeOptions(rawOptions);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+        const context = closeObservationContext(cooperative, portTimeoutMs);
+        return observeClose(beginClose(), context).catch(() => {
+          throw new Error("api server close uncertain");
+        });
+      },
+      publish,
+    }),
+    beginClose,
+  );
 
   async function listenOnce(port = 0, host = "127.0.0.1", cooperative: CooperativeOptions): Promise<{ port: number }> {
     if (closed) throw new Error("api server is closed");
@@ -967,42 +968,6 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     });
   }
 
-  function observeApiClose(actual: Promise<void>, cooperative: CooperativeOptions): Promise<void> {
-    const deadlineAt = cooperative.deadlineAt ?? Date.now() + portTimeoutMs;
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let timer: NodeJS.Timeout | undefined;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        cooperative.signal?.removeEventListener("abort", abort);
-        error === undefined ? resolve() : reject(error);
-      };
-      const abort = () => finish(new Error("api server close uncertain"));
-      actual.then(
-        () => finish(Date.now() < deadlineAt ? undefined : new Error("api server close uncertain")),
-        () => finish(new Error("api server close uncertain")),
-      );
-      cooperative.signal?.addEventListener("abort", abort, { once: true });
-      const remaining = deadlineAt - Date.now();
-      if (cooperative.signal?.aborted || remaining <= 0) abort();
-      else timer = setTimeout(abort, remaining);
-    });
-  }
-
-  async function closeOnce(cooperative: CooperativeOptions): Promise<void> {
-    closed = true;
-    const cleanupAbort = watchAbort(cooperative, destroyOwnedConnections);
-    const deadlineTimer = armDeadline(cooperative, destroyOwnedConnections);
-    try {
-      await ensureServerClosed(cooperative);
-    } finally {
-      cleanupAbort();
-      deadlineTimer();
-    }
-  }
-
   function destroyOwnedConnections(): void {
     for (const client of clients) {
       client.close();
@@ -1019,7 +984,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
     destroyOwnedConnections();
     if (bindState === "listening" || server.listening) {
-      closeServerPromise ??= closeServerHandle();
+      closeServerPromise ??= Promise.resolve().then(closeServerHandle);
       const closeError = await closeServerPromise.then(
         () => undefined,
         (error: unknown) => error,

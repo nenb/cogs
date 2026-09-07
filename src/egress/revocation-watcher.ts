@@ -271,7 +271,15 @@ class RevocationWatcher {
   }
 
   public close(): Promise<void> {
-    this.closePromise ??= this.closeOnce();
+    if (!this.closePromise) {
+      const result = Promise.withResolvers<void>();
+      const retirement = Promise.withResolvers<void>();
+      this.closePromise = result.promise;
+      this.retirementPromise = retirement.promise;
+      void result.promise.catch(() => undefined);
+      void retirement.promise.catch(() => undefined);
+      void this.closeOnce(retirement).then(result.resolve, result.reject);
+    }
     return this.closePromise;
   }
 
@@ -280,7 +288,7 @@ class RevocationWatcher {
     return this.retirementPromise ?? Promise.reject(new CogsEgressRevocationError());
   }
 
-  private async closeOnce(): Promise<void> {
+  private async closeOnce(retirement: PromiseWithResolvers<void>): Promise<void> {
     let failed = false;
     this.closed = true;
     this.readyState = false;
@@ -294,19 +302,24 @@ class RevocationWatcher {
     } catch {
       failed = true;
     }
-    this.active?.abort();
+    try {
+      this.active?.abort();
+    } catch {
+      failed = true;
+    }
     try {
       const registration = [this.activeWork, this.transition].filter(
         (work): work is Promise<void> => work !== undefined,
       );
-      this.retirementPromise = (async () => {
+      const actualRetirement = (async () => {
         // transition completion seals the action-registration frontier. Source
         // and action promises are the actual work, not timeout observations.
         await Promise.allSettled(registration);
         await Promise.allSettled([...this.sourceWork, ...this.actionWork]);
       })();
+      void actualRetirement.then(retirement.resolve, retirement.reject);
       if (!this.actionFailed)
-        await boundedAwait(this.retirementPromise, this.options.operationTimeoutMs * 4, this.options.timers);
+        await boundedAwait(actualRetirement, this.options.operationTimeoutMs * 4, this.options.timers);
     } catch {
       failed = true;
     }

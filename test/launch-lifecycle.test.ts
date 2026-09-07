@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  beginRegisteredClose,
+  CloseObservationError,
+  type CloseWork,
+  closeContext,
+  createCloseOwner,
+  joinCloseWork,
+  observeClose,
+  registerCloseOwner,
+} from "../src/launch/close.ts";
 import { LaunchConfigError, validateLaunchConfig } from "../src/launch/config.ts";
 import {
   createCogsEgressRuntimeLaunchDependency,
@@ -120,6 +130,129 @@ function abortableBlock(signal: AbortSignal, onAbort: () => void): Promise<void>
     );
   });
 }
+
+test("close owners publish before seal/body reentry and reject unknown or failed ownership", async () => {
+  let calls = 0;
+  let nested: CloseWork | undefined;
+  let sealed: CloseWork | undefined;
+  const begin = createCloseOwner(
+    () => {
+      calls++;
+      nested = begin();
+      return Promise.resolve();
+    },
+    () => {
+      sealed = begin();
+    },
+  );
+  const handle = registerCloseOwner(Object.freeze({ close: () => observeClose(begin(), closeContext(1000)) }), begin);
+  const work = beginRegisteredClose(handle);
+  assert.equal(work, nested);
+  assert.equal(work, sealed);
+  assert.equal(calls, 1);
+  assert.deepEqual(Object.keys(handle), ["close"]);
+  assert.throws(() => beginRegisteredClose({ close: handle.close }), CloseObservationError);
+  await joinCloseWork(work);
+  for (const execute of [
+    () => {
+      throw new Error("synthetic secret");
+    },
+    () => ({}) as CloseWork,
+  ]) {
+    const failed = createCloseOwner(execute);
+    await assert.rejects(observeClose(failed(), closeContext(1000)), /cleanup error/);
+    await assert.rejects(observeClose(failed(), closeContext(1000)), /cleanup error/);
+    await assert.rejects(failed().retired);
+  }
+});
+
+test("close observers have independent reversed deadlines, aborts, and no actual cancellation", async () => {
+  for (const reversed of [false, true]) {
+    const clock = new FakeScheduler();
+    const actual = Promise.withResolvers<void>();
+    const begin = createCloseOwner(() => actual.promise);
+    const short = closeContext(5, clock),
+      long = closeContext(20, clock);
+    const contexts = reversed ? [long, short] : [short, long];
+    const observers = contexts.map((context) => observeClose(begin(), context, clock));
+    const shortObserver = observers[reversed ? 1 : 0];
+    assert.ok(shortObserver);
+    const expires = assert.rejects(shortObserver, /cleanup deadline/);
+    clock.advance(5);
+    await expires;
+    assert.equal(short.signal.aborted, false);
+    assert.equal(long.signal.aborted, false);
+    assert.equal(clock.pendingTimers, 1);
+    actual.resolve();
+    await observers[reversed ? 0 : 1];
+    assert.equal(clock.pendingTimers, 0);
+    await assert.rejects(observeClose(begin(), { ...long, signal: AbortSignal.abort() }, clock), /cancelled/);
+    await assert.rejects(observeClose(begin(), short, clock), /deadline/);
+    await observeClose(begin(), long, clock);
+  }
+  const clock = new FakeScheduler(),
+    controller = new AbortController();
+  let getterCalls = 0;
+  for (const key of ["aborted", "addEventListener", "removeEventListener"])
+    Object.defineProperty(controller.signal, key, {
+      get: () => {
+        getterCalls++;
+        throw new Error("shadow");
+      },
+    });
+  const actual = Promise.withResolvers<void>(),
+    work = { done: actual.promise, retired: actual.promise };
+  const a = observeClose(work, { ...closeContext(10, clock), signal: controller.signal }, clock);
+  const failed = assert.rejects(a, /cancelled/);
+  const b = observeClose(work, closeContext(10, clock), clock);
+  controller.abort();
+  await failed;
+  actual.resolve();
+  await b;
+  assert.equal(getterCalls, 0);
+  assert.equal(clock.pendingTimers, 0);
+});
+
+test("close deadline wins exact-time completion in either order; timer failure never poisons actual work", async () => {
+  for (const timerFirst of [false, true]) {
+    const clock = new FakeScheduler(),
+      actual = Promise.withResolvers<void>();
+    const work = { done: actual.promise, retired: actual.promise };
+    const failed = assert.rejects(observeClose(work, closeContext(5, clock), clock), /deadline/);
+    if (timerFirst) clock.advance(5);
+    else clock.current += 5;
+    actual.resolve();
+    await failed;
+    assert.equal(clock.pendingTimers, 0);
+    await observeClose(work, closeContext(5, clock), clock);
+  }
+  for (const sync of [false, true]) {
+    let cancelled = 0;
+    const clock = {
+      now: () => 0,
+      setTimer: (_ms: number, cb: () => void) => {
+        if (!sync) throw new Error("timer setup");
+        cb();
+        return {
+          cancel: () => {
+            cancelled++;
+          },
+        };
+      },
+    };
+    const work = { done: Promise.resolve(), retired: Promise.resolve() };
+    await assert.rejects(observeClose(work, closeContext(10, clock), clock), sync ? /deadline/ : /error/);
+    assert.equal(cancelled, sync ? 1 : 0);
+    await observeClose(work, closeContext(1000));
+  }
+  for (const field of ["done", "retired"] as const) {
+    const pending = Promise.withResolvers<void>();
+    const work = { done: pending.promise, retired: pending.promise, [field]: Promise.reject(new Error("secret")) };
+    await assert.rejects(observeClose(work, closeContext(1000)), /cleanup error/);
+    pending.resolve();
+    await assert.rejects(observeClose(work, closeContext(1000)), /cleanup error/);
+  }
+});
 
 test("launch validation is strict, redacted, clone-safe, and immutable", () => {
   const source = validLaunch() as Record<string, unknown>;
@@ -366,6 +499,74 @@ test("public dispose fails closed and cannot leave a ready worker ready", async 
   assert.equal(scheduler.pendingTimers, 0);
 });
 
+test("lifecycle abort, event, and dependency callbacks reenter one published shutdown owner", async () => {
+  const nested: Promise<void>[] = [];
+  let closes = 0,
+    readyEvents = 0;
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    dependencies: dependencies({
+      egressRuntime: {
+        start: async (signal) => {
+          signal.addEventListener("abort", () => {
+            assert.ok(lifecycle.closeWork);
+            nested.push(lifecycle.requestShutdown("abort-reentry"));
+          });
+        },
+        beginClose: () => {
+          closes++;
+          nested.push(lifecycle.requestShutdown("dependency-reentry"));
+          return { done: Promise.resolve(), retired: Promise.resolve() };
+        },
+      },
+    }),
+    onEvent: (event) => {
+      if (event.state === "draining") nested.push(lifecycle.requestShutdown("event-reentry"));
+      if (event.state === "stopped") readyEvents++;
+    },
+  });
+  await lifecycle.start();
+  await lifecycle.requestShutdown();
+  await Promise.all(nested);
+  assert.equal(closes, 1);
+  assert.equal(readyEvents, 1);
+  assert.equal(lifecycle.state, "stopped");
+});
+
+test("lifecycle timer setup/cancellation failures cannot suppress independent retirement", async () => {
+  let failing = false,
+    closes = 0;
+  const lifecycle = new LaunchLifecycle({
+    launchDocument: validLaunch(),
+    scheduler: {
+      now: () => 0,
+      setTimer: () => {
+        if (failing) throw new Error("timer setup failed");
+        return {
+          cancel: () => {
+            if (failing) throw new Error("timer cancel failed");
+          },
+        };
+      },
+    },
+    dependencies: dependencies({
+      egressRuntime: {
+        beginClose: () => {
+          closes++;
+          return { done: Promise.resolve(), retired: Promise.resolve() };
+        },
+      },
+    }),
+  });
+  await lifecycle.start();
+  failing = true;
+  await assert.rejects(lifecycle.requestShutdown(), /cleanup uncertain/);
+  assert.ok(lifecycle.closeWork);
+  await assert.rejects(joinCloseWork(lifecycle.closeWork));
+  assert.equal(closes, 1);
+  assert.equal(lifecycle.state, "failed");
+});
+
 test("migrated close owners all initiate once and any failure is sticky without stopped success", async () => {
   const calls: string[] = [];
   const lifecycle = new LaunchLifecycle({
@@ -389,8 +590,11 @@ test("migrated close owners all initiate once and any failure is sticky without 
   });
   await lifecycle.start();
   const first = lifecycle.requestShutdown("all-fail");
-  assert.equal(lifecycle.requestShutdown("again"), first);
+  const second = lifecycle.requestShutdown("again");
+  assert.notEqual(second, first);
   await assert.rejects(first, /cleanup uncertain/);
+  await assert.rejects(second, /cleanup uncertain/);
+  assert.equal(lifecycle.closeDependencies(closeContext(100)), lifecycle.closeDependencies(closeContext(100)));
   assert.equal(lifecycle.state, "failed");
   assert.deepEqual(new Set(calls), new Set(["sessionStorage", "ssh", "proxy", "auth", "auditWal", "egressRuntime"]));
   assert.equal(calls.length, 6);
@@ -412,6 +616,11 @@ test("deadline rejects observation while all independent work stays owned throug
     scheduler,
     shutdownTimeoutMs: 5,
     dependencies: dependencies({
+      ssh: {
+        shutdown: async () => {
+          calls.push("ssh.close");
+        },
+      },
       egressRuntime: {
         beginClose: () => {
           calls.push("egressRuntime");
@@ -437,7 +646,8 @@ test("deadline rejects observation while all independent work stays owned throug
   finishDone();
   finishRetired();
   await Promise.all([lifecycle.closeWork.done, lifecycle.closeWork.retired]);
-  await assert.rejects(lifecycle.requestShutdown("late"), /cleanup uncertain/);
+  await lifecycle.requestShutdown("late");
+  assert.equal(calls.filter((call) => call === "ssh.close").length, 1);
   assert.equal(lifecycle.state, "failed");
 });
 
@@ -794,15 +1004,19 @@ test("health poll getter throw and scheduler throw fail closed", async () => {
 });
 
 function fakeManager(ready: () => boolean, close: () => Promise<void> = async () => undefined) {
-  return Object.freeze({
-    get ready() {
-      return ready();
-    },
-    listenerPort: 15001,
-    replacementRequired: false,
-    drainCompletions: () => [],
-    close,
-  });
+  const owner = createCloseOwner(close);
+  return registerCloseOwner(
+    Object.freeze({
+      get ready() {
+        return ready();
+      },
+      listenerPort: 15001,
+      replacementRequired: false,
+      drainCompletions: () => [],
+      close: () => observeClose(owner(), closeContext(1000)),
+    }),
+    owner,
+  );
 }
 
 test("egress runtime adapter rejects second start and redacts raw factory and close failures", async () => {

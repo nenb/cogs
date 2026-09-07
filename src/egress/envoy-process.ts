@@ -192,7 +192,12 @@ class Runtime {
 
   public async shutdown(intentional: boolean): Promise<void> {
     this.readyState = false;
-    this.closing ??= this.doShutdown(intentional);
+    if (!this.closing) {
+      const owned = Promise.withResolvers<void>();
+      this.closing = owned.promise;
+      void this.closing.catch(() => undefined);
+      void this.doShutdown(intentional).then(owned.resolve, owned.reject);
+    }
     try {
       await this.closing;
     } catch {
