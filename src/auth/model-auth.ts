@@ -188,6 +188,7 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
                     signal,
                   },
                 );
+                const body = response.body; // Capture once, before hostile response validation can replace it.
                 try {
                   if (signal.aborted) throw new Error("aborted");
                   const type = response.headers.get("content-type") ?? "";
@@ -197,10 +198,10 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
                   if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type))
                     throw new Error("bad response");
                 } catch (error) {
-                  await cancelBody(response);
+                  await body?.cancel();
                   throw error;
                 }
-                return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, signal), expected);
+                return parseKv2ApiKey(await boundedText(body, this.#maxResponseBytes, signal), expected);
               } finally {
                 token = "";
               }
@@ -380,18 +381,18 @@ function validateInteger(value: number, minimum: number, maximum: number): numbe
   return value;
 }
 
-async function cancelBody(response: Response): Promise<void> {
-  await response.body?.cancel();
-}
-
-async function boundedText(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
+async function boundedText(
+  body: ReadableStream<Uint8Array> | null,
+  maximum: number,
+  signal: AbortSignal,
+): Promise<string> {
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
-    const acquired = response.body?.getReader();
+    const acquired = body?.getReader();
     if (acquired === undefined) throw new Error("missing body");
     reader = acquired;
   } catch (error) {
-    await cancelBody(response);
+    await body?.cancel();
     throw error;
   }
   const chunks: Uint8Array[] = [];

@@ -938,6 +938,96 @@ test("unpinned reads retain identity-bound actual fetch and original cancel thro
   }
 });
 
+test("model reads retain original body custody across response reference replacement", async () => {
+  for (const pinned of [false, true]) {
+    for (const mode of ["headers-throw", "headers-return", "getReader-throw"] as const) {
+      for (const rejectCancel of [false, true]) {
+        const held = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        const controller = new AbortController();
+        let bodyReads = 0,
+          cancellations = 0,
+          retired = false,
+          consumed = false;
+        const original = new ReadableStream<Uint8Array>({
+          pull: () => held.promise.catch(() => undefined),
+          cancel() {
+            cancellations++;
+            return held.promise;
+          },
+        });
+        const response = new Response(original, { headers: { "content-type": "application/json" } });
+        Object.defineProperty(response, "body", {
+          configurable: true,
+          get() {
+            bodyReads++;
+            return original;
+          },
+        });
+        const replace = () => {
+          Object.defineProperty(response, "body", {
+            configurable: true,
+            get() {
+              bodyReads++;
+              return null;
+            },
+          });
+          entered.resolve();
+        };
+        const headers = response.headers;
+        if (mode !== "getReader-throw")
+          Object.defineProperty(response, "headers", {
+            get() {
+              replace();
+              if (mode === "headers-throw") throw new Error(token);
+              return headers;
+            },
+          });
+        Object.defineProperty(original, "getReader", {
+          value() {
+            if (mode === "getReader-throw") replace();
+            throw new Error(token);
+          },
+        });
+        const source = store("http://127.0.0.1:1", new StaticIdentity(), { fetchImpl: async () => response });
+        const input = { ...request, signal: controller.signal };
+        const consume = async () => {
+          consumed = true;
+        };
+        const actual = assertAuthRejects(
+          pinned
+            ? source.withPinnedApiKey(input, { version: 1, createdTime: "2026-07-15T00:00:00Z" }, consume)
+            : source.withApiKey(input, consume),
+        );
+        let retirement: Promise<void> | undefined;
+        try {
+          await entered.promise;
+          retirement = retireModelApiKeySource(source).then(() => {
+            retired = true;
+          });
+          controller.abort();
+          if (!pinned) await actual;
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(retired, false, mode);
+          assert.equal(cancellations, 1, mode);
+          assert.equal(bodyReads, 1, mode);
+          assert.equal(consumed, false);
+        } finally {
+          if (rejectCancel) held.reject(new Error(token));
+          else held.resolve();
+          await actual;
+          await retirement;
+          await original.cancel().catch(() => undefined);
+        }
+        assert.equal(retired, true);
+        assert.equal(consumed, false);
+        assert.equal(cancellations, 1);
+        assert.equal(bodyReads, 1);
+      }
+    }
+  }
+});
+
 test("OpenBao real envelope accepts metadata and rejects outer secret-like extras", async () => {
   const ok = await fixture((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" }).end(body());

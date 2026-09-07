@@ -120,10 +120,6 @@ export class OpenBaoKubernetesWorkloadIdentity implements OpenBaoIdentityPort {
           signal: controller.signal,
         });
       });
-      if (controller.signal.aborted) {
-        await response.body?.cancel();
-        throw new Error("aborted");
-      }
       const text = await boundedResponse(response, this.#options.maxResponseBytes, controller.signal);
       if (controller.signal.aborted) throw new Error("aborted");
       return parseLogin(text, this.#options.maxTokenTtlSeconds);
@@ -241,8 +237,10 @@ function decodeJwt(bytes: Buffer): string {
 
 async function boundedResponse(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
   if (!(response instanceof Response)) throw new Error("invalid response");
+  const body = response.body; // Retain custody before hostile headers or reader acquisition can replace it.
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
+    if (signal.aborted) throw new Error("aborted");
     const type = response.headers.get("content-type") ?? "";
     const length = response.headers.get("content-length");
     if (
@@ -252,11 +250,11 @@ async function boundedResponse(response: Response, maximum: number, signal: Abor
       (length !== null && (!/^[0-9]+$/u.test(length) || Number(length) > maximum))
     )
       throw new Error("invalid response");
-    const acquired = response.body?.getReader();
+    const acquired = body?.getReader();
     if (acquired === undefined) throw new Error("missing response");
     reader = acquired;
   } catch (error) {
-    await response.body?.cancel();
+    await body?.cancel();
     throw error;
   }
   const chunks: Uint8Array[] = [];
