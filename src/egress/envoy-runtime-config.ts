@@ -178,6 +178,7 @@ function circuitBreakers(connections: number, requests: number, pending: number)
 export function cogsEnvoyHcmBounds(inner: boolean) {
   return deepFreeze({
     codec_type: inner ? "AUTO" : "HTTP1",
+    proxy_100_continue: false,
     use_remote_address: true,
     xff_num_trusted_hops: 0,
     early_header_mutation_extensions: cogsEnvoyBoundedV1.earlyHeaders,
@@ -529,7 +530,7 @@ function innerListener(
                   routes: routes.map((route) => envoyRoute(route, sessionId, credentials)),
                 },
               ],
-              [extAuthz(false, token), router()],
+              [extAuthz(false, token), responseTrailerMutation(credentials), router()],
               true,
             ),
           },
@@ -576,6 +577,17 @@ function envoyRoute(route: CopiedRoute, sessionId: string, credentials: Readonly
 
 function removeHeaders(credential: Header | undefined): string[] {
   return [...new Set(["authorization", "proxy-authorization", ...(credential === undefined ? [] : [credential.name])])];
+}
+function responseTrailerMutation(credentials: ReadonlyMap<string, Header>): Json {
+  const names = new Set(removeHeaders(undefined));
+  for (const credential of credentials.values()) for (const name of removeHeaders(credential)) names.add(name);
+  return {
+    name: "envoy.filters.http.header_mutation",
+    typed_config: {
+      "@type": `${envoyType}/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation`,
+      mutations: { response_trailers_mutations: [...names].sort().map((remove) => ({ remove })) },
+    },
+  };
 }
 function extAuthz(capability: boolean, token: string): Json {
   return {

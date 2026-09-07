@@ -379,6 +379,7 @@ test("supports basic and api-key credentials from integration-scoped callback", 
   const text = JSON.stringify(JSON.parse(api.bootstrapJson));
   assert.equal(text.includes("x-api-key"), true);
   assert.equal(text.includes("Token abc123"), true);
+  assert.match(text, /response_trailers_mutations.*x-api-key/u);
 });
 
 // Independent literal-only interpretation of v1.38.3 SubstitutionFormatParser::parse:
@@ -664,10 +665,12 @@ function assertBounds(boot: ReturnType<typeof JSON.parse>, count: number, author
       assert.equal(hcm.max_request_headers_kb, 32);
       assert.deepEqual(
         hcm.http_filters.map((f: { name: string }) => f.name),
-        ["envoy.filters.http.ext_authz", "envoy.filters.http.router"],
+        inner
+          ? ["envoy.filters.http.ext_authz", "envoy.filters.http.header_mutation", "envoy.filters.http.router"]
+          : ["envoy.filters.http.ext_authz", "envoy.filters.http.router"],
       );
       assert.equal(hcm.http_filters[0].typed_config.failure_mode_allow, false);
-      assert.equal(hcm.http_filters[1].typed_config.respect_expected_rq_timeout, false);
+      assert.equal(hcm.http_filters.at(-1).typed_config.respect_expected_rq_timeout, false);
       for (const host of hcm.route_config.virtual_hosts)
         for (const route of host.routes) {
           assert.equal(route.route.timeout, "0s");
