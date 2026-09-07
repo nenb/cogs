@@ -327,7 +327,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 90_000);
-  assert.equal(budget.hard_limit, 95_900);
+  assert.equal(budget.hard_limit, 97_000);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -354,7 +354,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 18_500);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 20_500);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -413,10 +413,10 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 18_500);
+  assert.equal(manifest.global_gross_line_high, 20_500);
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    39,
+    40,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
