@@ -402,7 +402,7 @@ try {
       if (intent.case_id !== "audit.telemetry-outage-uncredentialed") {
         await emitOtlpMetadata(telemetry.origin, {
           test_id: intent.case_id,
-          outcome: record.response_code < 400 ? "success" : "failed",
+          outcome: record.response_code >= 200 && record.response_code < 400 ? "success" : "failed",
           status_class: Math.floor(record.response_code / 100),
           duration_ms: record.duration_ms,
         });

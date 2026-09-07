@@ -12,6 +12,20 @@ test("OTLP fixture accepts only bounded central metadata and retains no forbidde
       status_class: 2,
       duration_ms: 12,
     });
+    await emitOtlpMetadata(fixture.origin, {
+      test_id: "audit.no-response",
+      outcome: "failed",
+      status_class: 0,
+      duration_ms: 7,
+    });
+    await assert.rejects(() =>
+      emitOtlpMetadata(fixture.origin, {
+        test_id: "audit.no-response",
+        outcome: "success",
+        status_class: 0,
+        duration_ms: 7,
+      }),
+    );
     await assert.rejects(() =>
       emitOtlpMetadata(fixture.origin, {
         test_id: `prefix-${secret}-suffix`,
@@ -34,6 +48,7 @@ test("OTLP fixture accepts only bounded central metadata and retains no forbidde
     assert.equal(extra.status, 400);
     assert.deepEqual(fixture.records(), [
       { test_id: "audit.case", outcome: "success", status_class: 2, duration_ms: 12 },
+      { test_id: "audit.no-response", outcome: "failed", status_class: 0, duration_ms: 7 },
     ]);
     assert.equal(JSON.stringify(fixture.records()).includes(secret), false);
   } finally {

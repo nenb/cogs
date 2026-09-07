@@ -25,6 +25,20 @@ test("zero-response completions remain explicit only with valid intent identity"
     parseAccessRecords('{"event":"request-complete","intent_id":"-","route_id":"-","response_code":0,"duration_ms":0}'),
     [],
   );
+  for (const invalid of ["null", "false", '""', '"00"', "[]", "{}"])
+    assert.throws(
+      () =>
+        parseAccessRecords(
+          `{"event":"request-complete","intent_id":"${intent}","route_id":"route.fixture","response_code":${invalid},"duration_ms":7}`,
+        ),
+      /malformed/,
+    );
+  assert.throws(() => parseAccessRecords(valid.replace('"duration_ms":7', '"duration_ms":false')), /malformed/);
+  assert.throws(() => parseAccessRecords(valid.replace('"duration_ms":7', '"duration_ms":7,"extra":1')), /malformed/);
+  assert.throws(
+    () => parseAccessRecords(valid.replace('"response_code":0', '"response_code":0,"response_code":0')),
+    /malformed/,
+  );
 });
 
 test("external case results accept only the bounded adapter contract", () => {

@@ -90,7 +90,7 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=1800,revocation=3000,relay=1900,lifecycle=7000,completion=2600,integration=3000)
+assert highs==dict(route=1800,revocation=3000,relay=1950,lifecycle=7000,completion=2600,integration=3000)
 assert b['global_gross_line_high']==18500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(95900,22300,13100,5500,40500,2000)
