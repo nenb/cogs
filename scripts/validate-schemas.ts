@@ -208,7 +208,7 @@ function nativeMetadata(job: keyof typeof nativeChecks): unknown[] {
       parser: { closure_sha256: hash(parserView), objects: parserObjects } }];
   }
   if (job === "E") return [{ id: "sandbox-policy", role: "policy",
-    sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2", size_bytes: 0 }];
+    sha256: "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7", size_bytes: 0 }];
   if (job === "integration") return [
     { id: "closure", role: "digest", sha256: "7".repeat(64), size_bytes: 0 },
     { id: "gzip_output", role: "digest", sha256: markerHash, size_bytes: 0 },
@@ -290,8 +290,8 @@ const nativeSummary = nativeReport("B", true);
 assert.equal(nativeValidator(nativeSummary), false, "native B aggregate/parser summary required");
 const nativePolicy = nativeReport("E", true);
 const policyRow = (nativePolicy.metadata as Array<Record<string, unknown>>)[0]; assert.ok(policyRow);
-policyRow.sha256 = "6".repeat(64);
-assert.equal(nativeValidator(nativePolicy), false, "native E fixed policy digest");
+for (const wrong of ["6".repeat(64), "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"]) {
+  policyRow.sha256 = wrong; assert.equal(nativeValidator(nativePolicy), false, "native E wrong/historical pre-x32 policy"); }
 for (const id of ["gzip_output", "zstd_output"]) {
   const nativeOutput = nativeReport("integration", true);
   const row = (nativeOutput.metadata as Array<Record<string, unknown>>).find((item) => item.id === id); assert.ok(row);

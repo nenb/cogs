@@ -12,7 +12,7 @@ WORKFLOW, FAST_B_WORKFLOW = ROOT / ".github/workflows/ci.yml", ROOT / ".github/w
 COMMON = ROOT / "scripts/native-qualification/common.py"
 SCHEMA, REPORT_LIMIT, OBJECT_LIMIT = ROOT / "schemas/native-qualification-report-v1alpha1.json", 32_768, 134_217_728
 MARKER_SHA256 = "6381d4535b13c7f030ca94bce250c1ec817c4aea8fa45c91e25c88995216f6b8"
-POLICY_SHA256 = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
+POLICY_SHA256 = "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7"
 SOURCE_PATHS = ("deploy/aws-feasibility/remote/completion_elf.py", "deploy/aws-feasibility/remote/completion_trusted_runtime_closure.py",
     "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py", "schemas/trusted-runtime-closure-v1.json")
 LAUNCHER_PATH = SOURCE_PATHS[2]

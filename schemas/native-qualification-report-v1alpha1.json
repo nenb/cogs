@@ -204,7 +204,7 @@
       "required": ["id", "role", "sha256", "size_bytes"],
       "properties": {
         "id": { "const": "sandbox-policy" }, "role": { "const": "policy" },
-        "sha256": { "const": "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2" },
+        "sha256": { "const": "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7" },
         "size_bytes": { "const": 0 }
       }
     },
