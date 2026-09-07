@@ -49,7 +49,7 @@
     },
     {
       "name": "revocation",
-      "gross_line_high": 3000,
+      "gross_line_high": 2800,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
@@ -127,7 +127,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 5200,
+      "gross_line_high": 5700,
       "gross_byte_forecast": {
         "source": 250000,
         "tests_fixtures": 430000,
@@ -186,18 +186,17 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 1800,
+      "gross_line_high": 2000,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
         "docs_contracts": 40000,
         "total": 500000
       },
-      "new_file_high": 5,
+      "new_file_high": 4,
       "paths": [
         "docs/operations/stage-3-internal-api.md",
         "schemas/entry-fragments-v1.json",
-        "src/api/history-fragments.ts",
         "src/api/server.ts",
         "src/egress/completion-queue.ts",
         "src/egress/otlp-telemetry.ts",
@@ -221,14 +220,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 3200,
+      "gross_line_high": 2700,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 25,
+      "new_file_high": 26,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -263,8 +262,9 @@
         "docs/adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md",
         "docs/adr/0310-authorize-openbao-recognition-correction.md",
         "docs/adr/0311-reallocate-integrated-post-H-closure.md",
-        "docs/adr/0312-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0313-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0312-reallocate-final-observer-closure.md",
+        "docs/adr/0313-freeze-remediated-H-and-authorize-control.md",
+        "docs/adr/0314-establish-remediated-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/openbao-local-artifact.md",
         "docs/operations/production-runtime-foundation.md",
