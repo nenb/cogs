@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,9 @@ import {
 import { createState, readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 
 const sourceRevision = "a".repeat(40);
+let certificates: { certificate: string; private_key: string; issuing_ca: string } | undefined;
 function testCaPem() {
+  if (certificates) return certificates;
   const dir = mkdtempSync(join(tmpdir(), "cogs-launcher-ca-"));
   try {
     const key = join(dir, "ca.key"),
@@ -42,7 +44,54 @@ function testCaPem() {
       ],
       { stdio: "ignore" },
     );
-    return readFileSync(cert, "utf8");
+    const leafKey = join(dir, "leaf.key"),
+      csr = join(dir, "leaf.csr"),
+      leaf = join(dir, "leaf.crt");
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost",
+        "-keyout",
+        leafKey,
+        "-out",
+        csr,
+      ],
+      { stdio: "ignore" },
+    );
+    execFileSync(
+      "openssl",
+      [
+        "x509",
+        "-req",
+        "-in",
+        csr,
+        "-CA",
+        cert,
+        "-CAkey",
+        key,
+        "-CAcreateserial",
+        "-days",
+        "1",
+        "-copy_extensions",
+        "copy",
+        "-out",
+        leaf,
+      ],
+      { stdio: "ignore" },
+    );
+    certificates = {
+      certificate: readFileSync(leaf, "utf8"),
+      private_key: readFileSync(leafKey, "utf8"),
+      issuing_ca: readFileSync(cert, "utf8"),
+    };
+    return certificates;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -64,31 +113,80 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
     inspectCount = 0,
     keyCount = 0,
     tokenCount = 0,
-    healthy = false;
+    healthy = false,
+    running = false,
+    rootLive = true;
+  let nonce = "",
+    config = "";
+  const keys = new Map<string, string>();
+  const tokens = new Map<string, string>();
   const id = "a".repeat(64);
   const docker = Object.freeze(async (raw: readonly string[]) => {
     events.push(`docker ${raw.join(" ")}`);
     assert.equal(raw[0], "/usr/bin/docker");
     const args = raw.slice(1);
-    assert.equal(args.includes("--pull"), false);
     if (args[0] === "image")
-      return { status: 0, stdout: `${JSON.stringify([OPENBAO_IMAGE.replace(":2.6.1@", "@")])}\n` };
-    if (args[0] === "run") {
-      assert.deepEqual(args.slice(0, 2), ["run", "--detach"]);
+      return {
+        status: 0,
+        stdout: `${JSON.stringify({ Id: `sha256:${"b".repeat(64)}`, RepoDigests: [OPENBAO_IMAGE.replace(":2.6.1@", "@")], Os: "linux", Architecture: "amd64", Config: { Volumes: { "/openbao/file": {} } } })}\n`,
+      };
+    if (args[0] === "create") {
+      assert.equal(args[args.indexOf("--pull") + 1], "never");
+      assert.ok(args.includes("--read-only"));
+      assert.ok(args.includes("/openbao/file:rw,nosuid,nodev,noexec,size=67108864,mode=0700,uid=100,gid=1000"));
+      nonce = String(args[args.indexOf("--label") + 1]).split("=")[1] ?? "";
+      config = String(args[args.indexOf("--volume") + 1]).split(":")[0] ?? "";
       assert.ok(args.includes("--cap-drop") && args.includes("ALL"));
       assert.ok(args.includes("no-new-privileges"));
-      assert.ok(args.includes("--rm"));
+      assert.equal(args.includes("--rm"), false);
       assert.ok(args.includes("100:1000"));
       assert.ok(args.includes("127.0.0.1::8200"));
       assert.ok(args.includes(OPENBAO_IMAGE));
       container = String(args[args.indexOf("--name") + 1]);
       return { status: 0, stdout: `${id}\n` };
     }
+    if (args[0] === "start") {
+      running = true;
+      return { status: 0, stdout: `${id}\n` };
+    }
     if (args[0] === "inspect") {
       inspectCount++;
       return {
         status: 0,
-        stdout: `${JSON.stringify({ Id: badInspect || (badClose && inspectCount > 1) ? "c".repeat(64) : id, Name: `/${container}`, Config: { Image: OPENBAO_IMAGE, Labels: { "cogs.dev.launcher.state": container.replace("cogs-openbao-", "") } }, State: { Running: true }, NetworkSettings: { Ports: { "8200/tcp": [{ HostIp: "127.0.0.1", HostPort: "9" }] } } })}\n`,
+        stdout: `${JSON.stringify({
+          Id: badInspect || (badClose && inspectCount > 3) ? "c".repeat(64) : id,
+          Image: `sha256:${"b".repeat(64)}`,
+          Name: `/${container}`,
+          Config: {
+            User: "100:1000",
+            Image: OPENBAO_IMAGE,
+            Labels: {
+              "cogs.dev.launcher.state": container.replace("cogs-openbao-", ""),
+              "cogs.dev.launcher.acquisition": nonce,
+            },
+          },
+          HostConfig: {
+            ReadonlyRootfs: true,
+            Tmpfs: { "/openbao/file": "rw,nosuid,nodev,noexec,size=67108864,mode=0700,uid=100,gid=1000" },
+            CapDrop: ["ALL"],
+            SecurityOpt: ["no-new-privileges"],
+            VolumesFrom: null,
+            NetworkMode: "default",
+            RestartPolicy: { Name: "no" },
+          },
+          Mounts: [
+            { Type: "tmpfs", Destination: "/openbao/file", RW: true },
+            {
+              Type: "bind",
+              Source: config,
+              Destination: "/openbao/cogs-config.hcl",
+              RW: false,
+              Propagation: "rprivate",
+            },
+          ],
+          State: { Running: running },
+          NetworkSettings: { Ports: { "8200/tcp": [{ HostIp: "127.0.0.1", HostPort: "9" }] } },
+        })}\n`,
       };
     }
     if (args[0] === "exec") return { status: 0, stdout: "OpenBao v2.6.1\n" };
@@ -100,6 +198,43 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
     const u = new URL(String(url));
     events.push(`${init?.method ?? "GET"} ${u.pathname}`);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const tok = new Headers(init?.headers).get("x-vault-token") ?? "";
+    const policy = tokens.get(tok);
+    const denial = () => json({ errors: ["permission denied"] }, 403);
+    if (tok === "rootToken123" && !rootLive) return denial();
+    if (policy) {
+      const ownPath =
+        policy === "cogs-model-auth-read" ? "users/alice/anthropic" : "users/alice/integrations/stage3-localhost";
+      if (u.pathname === "/v1/auth/token/lookup-self")
+        return json({
+          data: {
+            id: tok,
+            policies: [policy],
+            orphan: true,
+            renewable: false,
+            type: "service",
+            explicit_max_ttl: 29151,
+            ttl: 29151,
+            num_uses: 0,
+          },
+        });
+      if (u.pathname === "/v1/auth/token/revoke-self") {
+        tokens.delete(tok);
+        return new Response(null, { status: 204 });
+      }
+      if (init?.method === "GET" && u.pathname === `/v1/model/data/${ownPath}`)
+        return json({
+          data: {
+            data: { api_key: keys.get(ownPath) },
+            metadata: { version: 1, created_time: "2026-09-07T00:00:00Z" },
+          },
+        });
+      if (policy === "cogs-stage3-runtime" && init?.method === "GET" && u.pathname === `/v1/model/metadata/${ownPath}`)
+        return json({ data: { current_version: 1, versions: { "1": { created_time: "2026-09-07T00:00:00Z" } } } });
+      if (policy === "cogs-stage3-runtime" && u.pathname === "/v1/pki/issue/cogs-egress")
+        return body.common_name === "localhost" ? json({ data: testCaPem() }) : json({ errors: ["invalid name"] }, 400);
+      return denial();
+    }
     assert.equal(u.hostname, "127.0.0.1");
     assert.equal(init?.redirect, "error");
     if (u.pathname === "/v1/sys/health") return json({ initialized: healthy, sealed: !healthy }, healthy ? 200 : 501);
@@ -111,14 +246,22 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
       healthy = true;
       return json({ sealed: false });
     }
-    if (u.pathname === "/v1/pki/root/generate/internal") return json({ data: { certificate: testCaPem() } });
+    if (u.pathname === "/v1/pki/root/generate/internal") return json({ data: { certificate: testCaPem().issuing_ca } });
+    if (u.pathname.startsWith("/v1/model/data/") && tok === "rootToken123") {
+      keys.set(u.pathname.slice("/v1/model/data/".length), body.data.api_key);
+      return json({});
+    }
     if (u.pathname === "/v1/pki/roles/cogs-egress") {
       assert.deepEqual(body, {
         allowed_domains: ["localhost"],
         allow_bare_domains: true,
         allow_subdomains: false,
         allow_localhost: false,
-        max_ttl: "8h",
+        allow_any_name: false,
+        allow_glob_domains: false,
+        allow_wildcard_certificates: false,
+        allow_ip_sans: false,
+        max_ttl: "9h",
         ttl: "2h",
         key_type: "rsa",
         key_bits: 2048,
@@ -133,14 +276,38 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
     }
     if (u.pathname === "/v1/auth/token/create-orphan") {
       tokenCount++;
-      assert.equal(body.ttl, "8h");
-      assert.equal(body.explicit_max_ttl, "8h");
+      assert.equal(body.ttl, "29151s");
+      assert.equal(body.explicit_max_ttl, "29151s");
+      assert.equal(body.no_default_policy, true);
+      assert.equal(body.type, "service");
+      assert.equal(body.num_uses, 0);
       assert.equal(body.renewable, false);
       assert.deepEqual(body.policies, [tokenCount === 1 ? "cogs-model-auth-read" : "cogs-stage3-runtime"]);
-      return json({ auth: { client_token: tokenCount === 1 ? "modelToken123" : "egressToken123" } });
+      const token = tokenCount === 1 ? "modelToken123" : "egressToken123";
+      tokens.set(token, body.policies[0]);
+      return json({
+        auth: {
+          client_token: token,
+          policies: body.policies,
+          token_type: "service",
+          renewable: false,
+          lease_duration: 29151,
+        },
+      });
     }
-    if (u.pathname === "/v1/auth/token/revoke-self") return json({});
-    return json({ ok: true });
+    if (u.pathname === "/v1/auth/token/revoke-self" && tok === "rootToken123") {
+      rootLive = false;
+      events.push("root-retired");
+      return new Response(null, { status: 204 });
+    }
+    if (
+      tok === "rootToken123" &&
+      (u.pathname === "/v1/sys/mounts/model" ||
+        u.pathname === "/v1/sys/mounts/pki" ||
+        u.pathname === "/v1/sys/policies/acl/cogs-model-auth-read")
+    )
+      return json({});
+    return denial();
   }) as typeof fetch;
   return Object.freeze({
     docker,
@@ -317,7 +484,7 @@ test("openbao abort after run removes exact owned container before rejecting", a
     ...base,
     docker: Object.freeze(async (args: readonly string[], options?: { signal?: AbortSignal }) => {
       const result = await base.docker?.(args, options);
-      if (args[1] === "run") queueMicrotask(() => controller.abort());
+      if (args[1] === "create") queueMicrotask(() => controller.abort());
       return result ?? { status: 1, stdout: "" };
     }),
   }) as OpenBaoSeams;
@@ -333,7 +500,7 @@ test("openbao abort after run removes exact owned container before rejecting", a
   }
 });
 
-test("openbao cooperative close is same promise, wipes secrets, and rejects hostile close options", async () => {
+test("openbao cooperative close has fresh observers, wipes secrets, and rejects hostile close options", async () => {
   const { dir, state: s } = await state();
   const events: string[] = [];
   try {
@@ -343,7 +510,7 @@ test("openbao cooperative close is same promise, wipes secrets, and rejects host
       bao.close(Object.defineProperty({}, "deadlineAt", { get: () => Date.now(), enumerable: true }) as never),
     );
     const close = bao.close({ deadlineAt: Date.now() + 5000 });
-    assert.equal(bao.close(), close);
+    assert.notEqual(bao.close(), close);
     await close;
     assert.throws(() => bao.modelToken.withSecret(() => undefined));
     assert.throws(() => bao.egressToken.withSecret(() => undefined));
@@ -360,7 +527,7 @@ test("openbao expired deadline after run rolls back exactly once with fresh clea
     ...base,
     docker: Object.freeze(async (args: readonly string[], options?: { signal?: AbortSignal; deadlineAt?: number }) => {
       const result = await base.docker?.(args, options);
-      if (args[1] === "run") await new Promise((resolve) => setTimeout(resolve, 120));
+      if (args[1] === "create") await new Promise((resolve) => setTimeout(resolve, 120));
       return result ?? { status: 1, stdout: "" };
     }),
   }) as OpenBaoSeams;
@@ -389,7 +556,7 @@ test("openbao rollback cleanup failures dominate generically", async () => {
           if (mode === "inventory" && args[1] === "ps" && events.some((e) => e.includes("docker rm -f")))
             return { status: 0, stdout: `${"a".repeat(64)}\n` };
           const result = await base.docker?.(args, options);
-          if (args[1] === "run") queueMicrotask(() => controller.abort());
+          if (args[1] === "create") queueMicrotask(() => controller.abort());
           return result ?? { status: 1, stdout: "" };
         },
       ),
@@ -415,7 +582,11 @@ test("openbao revoke failures are redacted while exact removal and secret wiping
     ...base,
     fetch: Object.freeze(async (url: string | URL | Request, init?: RequestInit) => {
       const u = new URL(String(url));
-      if (u.pathname === "/v1/auth/token/revoke-self") return json({ failed: true }, 500);
+      if (
+        u.pathname === "/v1/auth/token/revoke-self" &&
+        new Headers(init?.headers).get("x-vault-token") !== "rootToken123"
+      )
+        return json({ failed: true }, 500);
       return (base.fetch as typeof fetch)(url, init);
     }) as typeof fetch,
   }) as OpenBaoSeams;
@@ -519,6 +690,300 @@ test("openbao docker seams receive cooperative signal and deadline", async () =>
     assert.equal(sawSignal, true);
     assert.equal(sawDeadline, true);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("synthetic-only launcher blocks the retired default artifact before effects", async () => {
+  const { dir, state: s } = await state();
+  try {
+    await assert.rejects(startTrustedOpenBao(s), /launcher openbao failed/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("intent precedes create; failed, malformed, late and uncertain acquisition retains exact custody", async () => {
+  for (const mode of ["malformed", "nonzero", "throw", "late", "uncertain"] as const) {
+    const { dir, state: s } = await state();
+    const events: string[] = [],
+      base = openBaoSeams(events);
+    let producerSettled = false;
+    const intentPath = join(s.controlDir, "openbao-acquisition.json");
+    const seams = Object.freeze({
+      ...base,
+      docker: Object.freeze(async (args: readonly string[]) => {
+        if (args[1] === "create") {
+          const intent = JSON.parse(await readFile(intentPath, "utf8"));
+          assert.equal((await lstat(intentPath)).mode & 0o777, 0o600);
+          assert.equal(intent.name, args[args.indexOf("--name") + 1]);
+          assert.equal(args.includes(`cogs.dev.launcher.acquisition=${intent.nonce}`), true);
+          assert.doesNotMatch(JSON.stringify(intent), /Token123|PRIVATE|api_key/);
+          if (mode === "late") await new Promise((resolve) => setTimeout(resolve, 80));
+          await base.docker?.(args);
+          producerSettled = true;
+          if (mode === "throw") throw new Error("rootToken123");
+          return {
+            status: mode === "nonzero" ? 1 : 0,
+            stdout: mode === "uncertain" ? `${"a".repeat(64)}\n` : "truncated",
+            cleanupUncertain: mode === "uncertain",
+          };
+        }
+        if (args[1] === "rm") {
+          assert.equal(producerSettled, true);
+          assert.equal(args[3], "a".repeat(64));
+        }
+        return (await base.docker?.(args)) ?? { status: 1, stdout: "" };
+      }),
+    });
+    try {
+      await assert.rejects(
+        startTrustedOpenBaoCooperative(s, mode === "late" ? { deadlineAt: Date.now() + 40 } : {}, seams),
+        /launcher openbao failed/,
+      );
+      assert.equal(events.filter((e) => e.includes("docker rm -f")).length, 1);
+      assert.equal(events.includes("POST /v1/sys/init"), false);
+      if (mode === "uncertain") {
+        await lstat(intentPath);
+        const creates = events.filter((e) => e.includes("docker create")).length;
+        await assert.rejects(startTrustedOpenBao(s, seams));
+        assert.equal(events.filter((e) => e.includes("docker create")).length, creates);
+      } else await assert.rejects(lstat(intentPath), { code: "ENOENT" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("root ack, denial and exact orphan capabilities are mandatory, never rescued by cleanup", async () => {
+  for (const mode of [
+    "root403",
+    "root500",
+    "root200",
+    "still-root",
+    "wrong-denial",
+    "bad-denial",
+    "model-root",
+    "default-policy",
+    "identity-policy",
+    "renewable",
+    "clipped",
+    "warning",
+    "not-orphan",
+    "overprivileged",
+    "post-root-failure",
+  ] as const) {
+    const { dir, state: s } = await state();
+    const events: string[] = [],
+      base = openBaoSeams(events);
+    const seams = Object.freeze({
+      ...base,
+      fetch: Object.freeze(async (url: string | URL | Request, init?: RequestInit) => {
+        const path = new URL(String(url)).pathname,
+          tok = new Headers(init?.headers).get("x-vault-token");
+        if (tok === "rootToken123" && path.endsWith("revoke-self") && mode.startsWith("root"))
+          return json({}, Number(mode.slice(4)));
+        if (tok === "rootToken123" && path.endsWith("lookup-self")) {
+          if (mode === "still-root") return json({ data: {} });
+          if (mode === "wrong-denial") return json({ errors: ["no"] }, 404);
+          if (mode === "bad-denial") return json({ errors: "rootToken123" }, 403);
+        }
+        if (mode === "overprivileged" && path.endsWith("users/bob/anthropic")) return json({});
+        if (mode === "post-root-failure" && events.includes("root-retired") && tok === "modelToken123")
+          return json({}, 500);
+        const r = await (base.fetch as typeof fetch)(url, init);
+        if (path.endsWith("create-orphan") && tok === "rootToken123") {
+          const value = (await r.json()) as {
+            auth: {
+              client_token: string;
+              policies: string[];
+              identity_policies?: string[];
+              renewable: boolean;
+              lease_duration: number;
+            };
+            warnings?: string[];
+          };
+          if (mode === "model-root") value.auth.client_token = "rootToken123";
+          if (mode === "default-policy") value.auth.policies.push("default");
+          if (mode === "identity-policy") value.auth.identity_policies = ["extra"];
+          if (mode === "renewable") value.auth.renewable = true;
+          if (mode === "clipped") value.auth.lease_duration = 28800;
+          if (mode === "warning") value.warnings = ["TTL clipped"];
+          return json(value);
+        }
+        if (mode === "not-orphan" && path.endsWith("lookup-self") && tok !== "rootToken123") {
+          const value = (await r.json()) as { data: { orphan: boolean } };
+          value.data.orphan = false;
+          return json(value);
+        }
+        return r;
+      }) as typeof fetch,
+    });
+    try {
+      await assert.rejects(startTrustedOpenBao(s, seams), (error) => {
+        assert.equal(String(error), "Error: launcher openbao failed");
+        return true;
+      });
+      assert.equal(events.filter((e) => e.includes("docker rm -f")).length, 1);
+      await assert.rejects(lstat(join(s.controlDir, "openbao-acquisition.json")), { code: "ENOENT" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("storage and publication mutations never reach initialization", async () => {
+  for (const mode of [
+    "image-volume",
+    "image-id",
+    "volume",
+    "writable",
+    "uid",
+    "tmpfs",
+    "extra-port",
+    "public-port",
+  ] as const) {
+    const { dir, state: s } = await state();
+    const events: string[] = [],
+      base = openBaoSeams(events);
+    const seams = Object.freeze({
+      ...base,
+      docker: Object.freeze(async (args: readonly string[]) => {
+        const result = await (base.docker as NonNullable<OpenBaoSeams["docker"]>)(args);
+        if (mode === "image-volume" && args[1] === "image") {
+          const image = JSON.parse(result.stdout);
+          image.Config.Volumes["/openbao/logs"] = {};
+          return { status: 0, stdout: JSON.stringify(image) };
+        }
+        if (args[1] !== "inspect") return result;
+        const j = JSON.parse(result.stdout);
+        if (mode === "image-id") j.Image = `sha256:${"c".repeat(64)}`;
+        if (mode === "volume") j.Mounts.push({ Type: "volume", Name: "unowned-volume", Destination: "/openbao/logs" });
+        if (mode === "writable") j.HostConfig.ReadonlyRootfs = false;
+        if (mode === "uid") j.Config.User = "0:0";
+        if (mode === "tmpfs") j.HostConfig.Tmpfs["/openbao/file"] = "rw";
+        if (mode === "extra-port") j.NetworkSettings.Ports["8200/tcp"].push({ HostIp: "127.0.0.1", HostPort: "10" });
+        if (mode === "public-port") j.NetworkSettings.Ports["8200/tcp"][0].HostIp = "0.0.0.0";
+        return { status: 0, stdout: JSON.stringify(j) };
+      }),
+    });
+    try {
+      await assert.rejects(startTrustedOpenBao(s, seams));
+      assert.equal(events.includes("POST /v1/sys/init"), false);
+      assert.equal(
+        events.some((e) => e.includes("volume rm")),
+        false,
+      );
+      if (mode === "image-volume")
+        assert.equal(
+          events.some((e) => e.includes("docker create")),
+          false,
+        );
+      if (!["image-volume", "extra-port", "public-port"].includes(mode))
+        await lstat(join(s.controlDir, "openbao-acquisition.json"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("post-header abort cancels body; backend removal does not retire pending cancellation", async () => {
+  for (const target of ["/v1/sys/init", "/v1/auth/token/revoke-self", "/v1/auth/token/lookup-self"]) {
+    const { dir, state: s } = await state();
+    const events: string[] = [],
+      base = openBaoSeams(events),
+      controller = new AbortController();
+    let finishCancel = () => {},
+      cancelled = false;
+    const seams = Object.freeze({
+      ...base,
+      fetch: Object.freeze(async (url: string | URL | Request, init?: RequestInit) => {
+        if (
+          new URL(String(url)).pathname === target &&
+          (target === "/v1/sys/init" || new Headers(init?.headers).get("x-vault-token") === "rootToken123")
+        ) {
+          if (!target.endsWith("lookup-self")) setTimeout(() => controller.abort(), 5);
+          return new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"root_token":'));
+              },
+              cancel() {
+                cancelled = true;
+                return new Promise<void>((resolve) => {
+                  finishCancel = resolve;
+                });
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return (base.fetch as typeof fetch)(url, init);
+      }) as typeof fetch,
+    });
+    try {
+      let settled = false;
+      const started = startTrustedOpenBaoCooperative(
+        s,
+        { signal: controller.signal, deadlineAt: Date.now() + 100 },
+        seams,
+      ).finally(() => {
+        settled = true;
+      });
+      const rejected = assert.rejects(started, /launcher openbao failed/);
+      for (let n = 0; n < 100 && !events.some((e) => e.includes("docker rm -f")); n++)
+        await new Promise((r) => setTimeout(r, 5));
+      assert.equal(cancelled, true);
+      assert.ok(events.some((e) => e.includes("docker rm -f")));
+      assert.equal(settled, false);
+      await lstat(join(s.controlDir, "openbao-acquisition.json"));
+      finishCancel();
+      await rejected;
+      await assert.rejects(lstat(join(s.controlDir, "openbao-acquisition.json")), { code: "ENOENT" });
+    } finally {
+      finishCancel();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("close seals holders immediately and gives fresh observers around one root-free retirement", async () => {
+  const { dir, state: s } = await state();
+  const events: string[] = [],
+    base = openBaoSeams(events);
+  let release = () => {},
+    closeStarted = false;
+  const seams = Object.freeze({
+    ...base,
+    docker: Object.freeze(async (args: readonly string[]) => {
+      if (args[1] === "rm")
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      return (await base.docker?.(args)) ?? { status: 1, stdout: "" };
+    }),
+    fetch: Object.freeze(async (url: string | URL | Request, init?: RequestInit) => {
+      if (closeStarted) assert.notEqual(new Headers(init?.headers).get("x-vault-token"), "rootToken123");
+      return (base.fetch as typeof fetch)(url, init);
+    }) as typeof fetch,
+  });
+  try {
+    const bao = await startTrustedOpenBao(s, seams);
+    assert.ok(events.includes("root-retired"));
+    closeStarted = true;
+    const short = bao.close({ deadlineAt: Date.now() + 10 });
+    assert.throws(() => bao.modelToken.withSecret(() => {}));
+    const long = bao.close({ deadlineAt: Date.now() + 5000 });
+    await assert.rejects(short);
+    await lstat(join(s.controlDir, "openbao-acquisition.json"));
+    release();
+    await long;
+    await assert.rejects(bao.close({ deadlineAt: Date.now() }));
+    await bao.close();
+    assert.equal(events.filter((e) => e.includes("docker rm -f")).length, 1);
+    assert.equal(bao.snapshot().ready, false);
+  } finally {
+    release();
     await rm(dir, { recursive: true, force: true });
   }
 });

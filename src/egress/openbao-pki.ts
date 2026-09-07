@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, timingSafeEqual, X509Certificate } from "node:crypto";
-import type { OpenBaoIdentityPort } from "../auth/model-auth.ts";
+import { type OpenBaoIdentityPort, parseOpenBaoJson } from "../auth/model-auth.ts";
 import type { CogsEgressPkiMaterial, CogsEgressPkiRequest, CogsEgressPkiSource } from "./egress-material.ts";
 
 const dns = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -9,8 +9,14 @@ const jsonType = /^application\/json(?:\s*;|$)/i;
 const pemCert = /^-----BEGIN CERTIFICATE-----\n[\s\S]+\n-----END CERTIFICATE-----\n?$/;
 const pemKey =
   /^-----BEGIN (?:PRIVATE|RSA PRIVATE|EC PRIVATE) KEY-----\n[\s\S]+\n-----END (?:PRIVATE|RSA PRIVATE|EC PRIVATE) KEY-----\n?$/;
-const maxSessionMs = 8 * 60 * 60 * 1000;
-const maxRequestMs = 24 * 60 * 60 * 1000;
+// 8h + maximum five-minute validity margin + one second rounding guard = 29101s.
+// The fixed fixture role is 9h; its mount/internal CA remain 24h. Never clamp a leaf.
+export const OPENBAO_PKI_BUDGET = Object.freeze({
+  maxSessionMs: 8 * 60 * 60 * 1000,
+  maxMarginMs: 300_000,
+  roundingSeconds: 1,
+  maxLeafSeconds: 29_101,
+});
 
 type Data = Readonly<{
   certificate: string;
@@ -45,6 +51,7 @@ export class CogsEgressPkiError extends Error {
 }
 
 const pkiFailureCauses = new WeakMap<CogsEgressPkiError, unknown>();
+const actualPkiWork = new Set<Promise<unknown>>();
 
 /** Internal composition seam; public errors remain generic and cause-free. */
 export function egressPkiFailureCause(error: unknown): unknown {
@@ -69,17 +76,31 @@ export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
       this.#identity = options.identity;
       this.#timeoutMs = integer(options.timeoutMs ?? 5_000, 1, 60_000);
       this.#maxBytes = integer(options.maxResponseBytes ?? 64 * 1024, 4096, 1024 * 1024);
-      this.#marginMs = integer(options.minValidityMarginMs ?? 30_000, 0, 5 * 60 * 1000);
+      this.#marginMs = integer(options.minValidityMarginMs ?? 30_000, 0, OPENBAO_PKI_BUDGET.maxMarginMs);
       this.#fetch = options.fetchImpl ?? fetch;
     } catch {
       throw new CogsEgressPkiError();
     }
   }
 
-  public async withPkiMaterial<T>(
+  public withPkiMaterial<T>(
     request: CogsEgressPkiRequest,
     consume: (material: CogsEgressPkiMaterial) => Promise<T>,
   ): Promise<T> {
+    const work = this.withOwnedMaterial(request, consume);
+    actualPkiWork.add(work);
+    work.then(
+      () => actualPkiWork.delete(work),
+      () => actualPkiWork.delete(work),
+    );
+    return work;
+  }
+
+  private async withOwnedMaterial<T>(
+    request: CogsEgressPkiRequest,
+    consume: (material: CogsEgressPkiMaterial) => Promise<T>,
+  ): Promise<T> {
+    let consumerFailure: unknown;
     try {
       const captured = Object.freeze({
         sessionId: request.sessionId,
@@ -92,10 +113,13 @@ export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
       const hosts = hostSet(captured.hosts);
       const now = Date.now();
       const ttlMs = ttl(captured.maxSessionExpiresAtMs, now, this.#marginMs);
+      // The public wrapper registers actual custody before identity/transport effects.
+      await Promise.resolve();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
       const onAbort = () => controller.abort();
       captured.signal?.addEventListener("abort", onAbort, { once: true });
+      if (captured.signal?.aborted) controller.abort();
       try {
         const data = await tokenOnce(this.#identity, controller.signal, async (token) => {
           const body = JSON.stringify({
@@ -103,6 +127,7 @@ export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
             ...(hosts.length === 1 ? {} : { alt_names: hosts.slice(1).join(",") }),
             ttl: `${Math.ceil(ttlMs / 1000)}s`,
           });
+          if (controller.signal.aborted) throw new CogsEgressPkiError();
           const response = await this.#fetch(
             `${this.#origin}/v1/${encodeURIComponent(this.#mount)}/issue/${encodeURIComponent(this.#role)}`,
             {
@@ -121,14 +146,21 @@ export class OpenBaoEgressPkiSource implements CogsEgressPkiSource {
         });
         const material = validateMaterial(data, hosts, captured.maxSessionExpiresAtMs, this.#marginMs);
         if (controller.signal.aborted) throw new Error("aborted");
-        return await consume(material);
+        try {
+          return await consume(material);
+        } catch (error) {
+          consumerFailure = error;
+          throw error;
+        }
       } finally {
         clearTimeout(timeout);
         captured.signal?.removeEventListener("abort", onAbort);
       }
-    } catch (error) {
+    } catch {
       const failure = new CogsEgressPkiError();
-      pkiFailureCauses.set(failure, error);
+      // Preserve only trusted consumer control failures for composition, never raw
+      // token/transport/parser errors which may contain credential material.
+      if (consumerFailure !== undefined) pkiFailureCauses.set(failure, consumerFailure);
       throw failure;
     }
   }
@@ -251,7 +283,7 @@ function parse(text: string, response: Response): Data {
   const type = response.headers.get("content-type") ?? "";
   if (response.status !== 200 || !jsonType.test(type) || (length !== null && !/^[0-9]+$/.test(length)))
     throw new Error("bad response");
-  const root = JSON.parse(text) as unknown;
+  const root = parseOpenBaoJson(text);
   if (!plain(root)) throw new Error("bad json");
   only(root, [
     "request_id",
@@ -318,28 +350,44 @@ async function bounded(response: Response, maximum: number, signal: AbortSignal)
     !jsonType.test(type) ||
     (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maximum))
   ) {
-    response.body?.cancel().catch(() => undefined);
+    await response.body?.cancel();
     throw new Error("bad response");
   }
   const reader = response.body?.getReader();
   if (reader === undefined) throw new Error("missing body");
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let count = 0;
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= reader.cancel();
+    // Observe rejection immediately, but join actual cancellation below.
+    cancellation.catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
   try {
     while (true) {
       if (signal.aborted) throw new Error("aborted");
       const next = await reader.read();
+      if (signal.aborted) throw new Error("aborted");
       if (next.done) break;
       total += next.value.byteLength;
-      if (total > maximum) throw new Error("too large");
+      if (++count > 1024 || total > maximum) throw new Error("too large");
       chunks.push(next.value);
     }
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-  } catch (error) {
-    reader.cancel().catch(() => undefined);
-    throw error;
   } finally {
-    reader.releaseLock();
+    cancel();
+    // This promise is an actual-work barrier, NOT a timeout observation. A hostile
+    // cancellation which never settles keeps custody; callers may observe separately.
+    try {
+      await cancellation;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      reader.releaseLock();
+      for (const chunk of chunks) chunk.fill(0);
+    }
   }
 }
 
@@ -354,19 +402,33 @@ async function tokenOnce<T>(
   let result: { value: T } | undefined;
   try {
     await identity.withToken(signal, (token) => {
-      if (!active || called) return Promise.reject(new Error("bad callback"));
+      if (!active || called || signal.aborted) {
+        active = false;
+        const rejected = Promise.reject(new CogsEgressPkiError());
+        rejected.catch(() => undefined);
+        return rejected;
+      }
       called = true;
-      promise = operation(token).then((value) => {
-        result = { value };
-      });
+      promise = Promise.resolve()
+        .then(() => {
+          if (signal.aborted) throw new CogsEgressPkiError();
+          return operation(token);
+        })
+        .then((value) => {
+          result = { value };
+        });
+      promise.catch(() => undefined);
       return promise;
     });
-    if (!called || promise === undefined) throw new Error("missing callback");
+    if (!active || !called || promise === undefined || signal.aborted) throw new Error("missing callback");
     await promise;
-    if (result === undefined) throw new Error("missing result");
+    if (!active || signal.aborted || result === undefined) throw new Error("missing result");
     return result.value;
   } finally {
     active = false;
+    // An identity rejection/early return does not retire the operation it started.
+    await promise?.catch(() => undefined);
+    result = undefined;
   }
 }
 
@@ -380,10 +442,10 @@ function hostSet(hosts: string[]): string[] {
 }
 
 function ttl(expiresAt: number, now: number, margin: number): number {
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt - now > maxSessionMs)
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt - now > OPENBAO_PKI_BUDGET.maxSessionMs)
     throw new Error("bad expiry");
-  const value = Math.ceil((expiresAt - now + margin) / 1000) + 1;
-  if (value < 1 || value > Math.ceil(maxRequestMs / 1000) + 1) throw new Error("bad ttl");
+  const value = Math.ceil((expiresAt - now + margin) / 1000) + OPENBAO_PKI_BUDGET.roundingSeconds;
+  if (value < 1 || value > OPENBAO_PKI_BUDGET.maxLeafSeconds) throw new Error("bad ttl");
   return value * 1000;
 }
 
