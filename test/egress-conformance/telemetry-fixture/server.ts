@@ -51,7 +51,7 @@ function exactKeys(value: unknown, keys: readonly string[]): value is Record<str
   );
 }
 
-function decodeEnvelope(value: unknown): OtlpMetadataRecord | undefined {
+export function decodeEnvelope(value: unknown): OtlpMetadataRecord | undefined {
   if (!exactKeys(value, ["resourceLogs"]) || !Array.isArray(value.resourceLogs) || value.resourceLogs.length !== 1)
     return undefined;
   const resourceLog = value.resourceLogs[0];
@@ -97,8 +97,13 @@ function decodeEnvelope(value: unknown): OtlpMetadataRecord | undefined {
   }
   const testId = attributes.get("cogs.test_id");
   const outcome = attributes.get("cogs.outcome");
-  const statusClass = Number(attributes.get("cogs.status_class"));
-  const duration = Number(attributes.get("cogs.duration_ms"));
+  const statusText = attributes.get("cogs.status_class");
+  const durationText = attributes.get("cogs.duration_ms");
+  const statusClass = typeof statusText === "string" && /^[0-5]$/u.test(statusText) ? Number(statusText) : Number.NaN;
+  const duration =
+    typeof durationText === "string" && /^(?:0|[1-9][0-9]{0,5})$/u.test(durationText)
+      ? Number(durationText)
+      : Number.NaN;
   if (
     typeof testId !== "string" ||
     !idPattern.test(testId) ||
@@ -115,7 +120,7 @@ function decodeEnvelope(value: unknown): OtlpMetadataRecord | undefined {
   return { test_id: testId, outcome, status_class: statusClass, duration_ms: duration };
 }
 
-function envelope(record: OtlpMetadataRecord): object {
+export function envelope(record: OtlpMetadataRecord): object {
   const attribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
   return {
     resourceLogs: [

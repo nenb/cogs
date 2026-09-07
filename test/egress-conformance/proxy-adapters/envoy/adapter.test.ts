@@ -39,6 +39,10 @@ test("zero-response completions remain explicit only with valid intent identity"
     () => parseAccessRecords(valid.replace('"response_code":0', '"response_code":0,"response_code":0')),
     /malformed/,
   );
+  assert.throws(
+    () => parseAccessRecords(valid.replace('"response_code":0', '"response_code":200,"response_\\u0063ode":0')),
+    /malformed/,
+  );
 });
 
 test("external case results accept only the bounded adapter contract", () => {

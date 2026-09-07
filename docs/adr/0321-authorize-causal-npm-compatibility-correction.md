@@ -29,4 +29,4 @@ A protected rerun may occur only after local tests, regenerated source bindings,
 
 ## Consequences
 
-The additional 100-line owner capacity has no deletion credit and is not transferable. Missing or contradictory client, fixture, authority, credential, intent, completion, artifact, or cleanup evidence remains a failure. ADRs 0319 and 0320 remain reserved for a future protected-main H freeze and Q/qualification decision; this ADR grants neither.
+The additional 150-line owner capacity has no deletion credit and is not transferable. Missing or contradictory client, fixture, authority, credential, intent, completion, artifact, or cleanup evidence remains a failure. ADRs 0319 and 0320 remain reserved for a future protected-main H freeze and Q/qualification decision; this ADR grants neither.
