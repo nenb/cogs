@@ -107,6 +107,8 @@
         "test/egress-conformance/guest-probes/black-box-probe.py",
         "test/egress-conformance/guest-probes/run-black-box-case.sh",
         "test/egress-conformance/guest-probes/run-kvm-black-box-case.sh",
+        "test/egress-conformance/proxy-adapters/envoy/adapter.test.ts",
+        "test/egress-conformance/proxy-adapters/envoy/adapter.ts",
         "test/egress-conformance/proxy-adapters/envoy/config.test.ts",
         "test/egress-conformance/proxy-adapters/envoy/config.ts",
         "test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts",

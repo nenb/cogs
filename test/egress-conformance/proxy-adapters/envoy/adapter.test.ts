@@ -1,12 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseExternalCaseResult } from "./adapter.ts";
+import { parseAccessRecords, parseExternalCaseResult } from "./adapter.ts";
 import { ENVOY_IMAGE, ENVOY_IMAGE_DIGEST, ENVOY_VERSION } from "./image.ts";
 
 test("Envoy candidate identity is an exact version and multi-platform digest pin", () => {
   assert.match(ENVOY_VERSION, /^\d+\.\d+\.\d+$/);
   assert.match(ENVOY_IMAGE_DIGEST, /^sha256:[a-f0-9]{64}$/);
   assert.equal(ENVOY_IMAGE, `envoyproxy/envoy:v${ENVOY_VERSION}@${ENVOY_IMAGE_DIGEST}`);
+});
+
+test("zero-response completions remain explicit only with valid intent identity", () => {
+  const intent = "12345678-1234-4123-8123-123456789abc";
+  const valid = JSON.stringify({
+    event: "request-complete",
+    intent_id: intent,
+    route_id: "route.fixture",
+    response_code: 0,
+    duration_ms: 7,
+  });
+  assert.deepEqual(parseAccessRecords(valid), [
+    { event: "request-complete", intent_id: intent, route_id: "route.fixture", response_code: 0, duration_ms: 7 },
+  ]);
+  assert.deepEqual(
+    parseAccessRecords('{"event":"request-complete","intent_id":"-","route_id":"-","response_code":0,"duration_ms":0}'),
+    [],
+  );
 });
 
 test("external case results accept only the bounded adapter contract", () => {

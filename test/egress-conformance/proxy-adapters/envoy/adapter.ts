@@ -104,7 +104,7 @@ export function parseExternalCaseResult(value: string): AdapterResult {
   };
 }
 
-function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
+export function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
   const records: EnvoyAccessRecord[] = [];
   for (const line of logs.split("\n")) {
     if (!line.trimStart().startsWith("{")) continue;
@@ -123,14 +123,17 @@ function parseAccessRecords(logs: string): EnvoyAccessRecord[] {
     const routeId = typeof value.route_id === "string" ? value.route_id : "";
     const intentValid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(intentId);
     const routeValid = idPattern.test(routeId);
-    if (responseCode === 0) continue;
-    if ((!Number.isInteger(responseCode) || responseCode < 100 || responseCode >= 400) && (!intentValid || !routeValid))
+    if (responseCode === 0 && (!intentValid || !routeValid)) continue;
+    if (
+      (!Number.isInteger(responseCode) || (responseCode !== 0 && responseCode < 100) || responseCode >= 400) &&
+      (!intentValid || !routeValid)
+    )
       continue;
     if (
       !intentValid ||
       !routeValid ||
       !Number.isInteger(responseCode) ||
-      responseCode < 100 ||
+      (responseCode !== 0 && responseCode < 100) ||
       responseCode > 599 ||
       !Number.isInteger(duration) ||
       duration < 0 ||
