@@ -836,7 +836,12 @@ test("ssh2 SFTP callbacks contain malformed values without uncaught throws or fa
       ]),
       /hung read/,
     );
+    let retired = false;
+    void channel.close().then(() => {
+      retired = true;
+    });
     await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(retired, false, "ambiguous callback retains channel ownership");
     assert.deepEqual(uncaught, []);
     assert.equal(sftp.calls, 1);
   } finally {
@@ -931,7 +936,11 @@ test("ssh2 SFTP wrapper validates own-data stats and malformed handles/read tupl
   }
   const sftp = new StrictSftp();
   const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
-  assert.deepEqual(await channel.port.lstat("/file", new AbortController().signal), { size: 7, type: "file" });
+  assert.deepEqual(await channel.port.lstat("/file", new AbortController().signal), {
+    size: 7,
+    mode: 0o100600,
+    type: "file",
+  });
   await assert.rejects(channel.port.fstat(Buffer.from("h"), new AbortController().signal), /sftp operation failed/);
   sftp.openMode = "empty";
   await assert.rejects(channel.port.open("/x", "r", new AbortController().signal), /invalid handle/);
@@ -962,6 +971,10 @@ test("ssh2 SFTP wrapper maps mkdir setMode and rmdir callbacks", async () => {
       this.failNext = false;
       setImmediate(() => cb(fail ? new Error("chmod raw") : undefined));
     }
+    public fchmod(handle: Buffer, mode: number, cb: (error?: Error) => void): void {
+      this.calls.push(`fchmod:${handle.toString()}:${mode.toString(8)}`);
+      setImmediate(() => cb());
+    }
     public rmdir(path: string, cb: (error?: Error) => void): void {
       this.calls.push(`rmdir:${path}`);
       const fail = this.failNext;
@@ -987,14 +1000,14 @@ test("ssh2 SFTP wrapper maps mkdir setMode and rmdir callbacks", async () => {
   const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
   const mkdirPort = channel.port.mkdir?.bind(channel.port);
   const setModePort = channel.port.setMode?.bind(channel.port);
+  const setModeHandle = channel.port.setModeHandle?.bind(channel.port);
   const rmdirPort = channel.port.rmdir?.bind(channel.port);
-  assert.ok(mkdirPort);
-  assert.ok(setModePort);
-  assert.ok(rmdirPort);
+  assert.ok(mkdirPort && setModePort && setModeHandle && rmdirPort);
   await mkdirPort("/dir", 0o555, new AbortController().signal);
   await setModePort("/dir", 0o444, new AbortController().signal);
+  await setModeHandle(Buffer.from("h"), 0o640, new AbortController().signal);
   await rmdirPort("/dir", new AbortController().signal);
-  assert.deepEqual(sftp.calls, ['mkdir:/dir:{"mode":365}', "chmod:/dir:444", "rmdir:/dir"]);
+  assert.deepEqual(sftp.calls, ['mkdir:/dir:{"mode":365}', "chmod:/dir:444", "fchmod:h:640", "rmdir:/dir"]);
   sftp.failNext = true;
   await assert.rejects(
     Promise.race([
@@ -1036,7 +1049,11 @@ test("ssh2 SFTP stats reject POSIX mode high bits and channel observes remote cl
   }
   const sftp = new ModeSftp();
   const channel = await new Ssh2Connection(new FakeClient(sftp) as never).openSftp(new AbortController().signal);
-  assert.deepEqual(await channel.port.lstat("/ok", new AbortController().signal), { size: 1, type: "file" });
+  assert.deepEqual(await channel.port.lstat("/ok", new AbortController().signal), {
+    size: 1,
+    mode: 0o100600,
+    type: "file",
+  });
   sftp.mode = 0o200000;
   await assert.rejects(channel.port.lstat("/bad", new AbortController().signal), /sftp operation failed/);
   sftp.emit("close");
