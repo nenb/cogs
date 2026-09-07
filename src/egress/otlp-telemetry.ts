@@ -1,4 +1,10 @@
-import { exactPlainObject, otlpEndpoint, postOtlpJson, safeInteger } from "../telemetry/otlp-http.ts";
+import {
+  exactPlainObject,
+  otlpEndpoint,
+  otlpPostRetirement,
+  postOtlpJson,
+  safeInteger,
+} from "../telemetry/otlp-http.ts";
 import type { EgressAuditWalRecord } from "./audit-wal.ts";
 import type { CogsEgressCompletion } from "./completion-queue.ts";
 
@@ -114,7 +120,15 @@ export function validateCogsEgressTelemetrySink(value: CogsEgressTelemetrySink |
   if (sink.ready !== true) throw new CogsEgressTelemetryError();
 }
 
+const telemetryRetirements = new WeakMap<CogsEgressTelemetrySink, () => Promise<void>>();
+
+/** Internal identity-bound barrier, separate from optional delivery/close observations. */
+export async function retireCogsEgressTelemetry(sink: CogsEgressTelemetrySink): Promise<void> {
+  await telemetryRetirements.get(sink)?.();
+}
+
 class OtlpSink {
+  private readonly posts = new Set<Promise<void>>();
   private queue: SafeRecord[] = [];
   private pumping: Promise<void> | undefined;
   private controller: AbortController | undefined;
@@ -134,14 +148,23 @@ class OtlpSink {
   ) {}
   public handle(): CogsEgressTelemetrySink {
     const sink = this;
-    return Object.freeze({
+    const handle: CogsEgressTelemetrySink = Object.freeze({
       get ready() {
         return !sink.closing && !sink.closed;
       },
       enqueue: (event) => sink.enqueue(event),
-      close: (signal) => (sink.closePromise ??= sink.close(signal)),
+      close: (signal) => {
+        sink.closing = true;
+        sink.closePromise ??= Promise.resolve().then(() => sink.close(signal));
+        return sink.closePromise;
+      },
       snapshot: () => sink.snapshot(),
     });
+    telemetryRetirements.set(handle, async () => {
+      await handle.close();
+      while (sink.posts.size) await Promise.all([...sink.posts]);
+    });
+    return handle;
   }
   private enqueue(event: CogsEgressTelemetryEvent): void {
     try {
@@ -200,12 +223,14 @@ class OtlpSink {
     }
   }
   private startPump(final: boolean): void {
-    this.pumping = this.pump(final).then((blocked) => {
-      this.pumping = undefined;
-      const retry = this.retryRequested;
-      this.retryRequested = false;
-      if ((!blocked || retry) && !this.closing && this.queue.length > 0) this.startPump(false);
-    });
+    this.pumping = Promise.resolve()
+      .then(() => this.pump(final))
+      .then((blocked) => {
+        this.pumping = undefined;
+        const retry = this.retryRequested;
+        this.retryRequested = false;
+        if ((!blocked || retry) && !this.closing && this.queue.length > 0) this.startPump(false);
+      });
   }
   private async pump(final: boolean, parent?: AbortSignal): Promise<boolean> {
     let sent = 0;
@@ -230,7 +255,9 @@ class OtlpSink {
     try {
       parent?.addEventListener("abort", abort, { once: true });
       if (parent?.aborted) abort();
-      await postOtlpJson({
+      // Bound retained hostile transports as well as the optional delivery queue.
+      if (this.posts.size >= this.capacity) throw new Error("transport capacity");
+      const observation = postOtlpJson({
         url: this.url,
         kind: "logs",
         body: envelope(batch),
@@ -239,6 +266,10 @@ class OtlpSink {
         maxResponseBytes: this.maxResponseBytes,
         parent: controller.signal,
       });
+      const retired = otlpPostRetirement(observation);
+      this.posts.add(retired);
+      void retired.then(() => this.posts.delete(retired));
+      await observation;
     } finally {
       parent?.removeEventListener("abort", abort);
       controller.abort();

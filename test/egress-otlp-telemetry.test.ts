@@ -5,6 +5,7 @@ import {
   CogsEgressTelemetryError,
   type CogsEgressTelemetryEvent,
   createCogsEgressTelemetrySink,
+  retireCogsEgressTelemetry,
 } from "../src/egress/otlp-telemetry.ts";
 
 const secret = "secret-token users/u/handle /path?query=secret";
@@ -76,6 +77,55 @@ test("OTLP telemetry sink emits exact metadata-only batch envelope and counters"
   assert.equal(JSON.stringify(sink.snapshot()).includes(secret), false);
   await sink.close();
   await close(server);
+});
+
+test("OTLP close reentry stays bounded and loss-accounted while its private transport owner remains live", async () => {
+  const original = globalThis.fetch;
+  const held = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  let closing: Promise<void> | undefined;
+  let retirement: Promise<void> | undefined;
+  let retired = false;
+  let calls = 0;
+  const sink = createCogsEgressTelemetrySink({
+    mode: "otlp",
+    endpoint: "https://synthetic.invalid/v1/logs",
+    timeoutMs: 50,
+    capacity: 1,
+  });
+  globalThis.fetch = async () => {
+    calls++;
+    closing = sink.close();
+    retirement = retireCogsEgressTelemetry(sink).then(() => {
+      retired = true;
+    });
+    entered.resolve();
+    return new Response(
+      new ReadableStream({
+        cancel() {
+          assert.equal(sink.close(), closing);
+          return held.promise;
+        },
+      }),
+      { status: 503 },
+    );
+  };
+  try {
+    sink.enqueue(event());
+    await entered.promise;
+    await closing;
+    assert.equal(retired, false);
+    assert.equal(calls, 1);
+    assert.equal(sink.snapshot().dropped, 1);
+    assert.ok(sink.snapshot().failed > 0);
+    assert.deepEqual(Object.keys(sink).sort(), ["close", "enqueue", "ready", "snapshot"]);
+    held.resolve();
+    await retirement;
+    assert.equal(retired, true);
+  } finally {
+    held.resolve();
+    globalThis.fetch = original;
+  }
 });
 
 test("OTLP telemetry retry race, drop-newest, close, and stub lifecycle are bounded", async () => {

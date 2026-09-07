@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import npmPreset from "../integrations/presets/npm-v1.json" with { type: "json" };
+import { OpenBaoKubernetesWorkloadIdentity } from "../src/auth/openbao-workload-identity.ts";
 import type { EgressAuditWal, EgressAuditWalRecord } from "../src/egress/audit-wal.ts";
 import type { CogsEgressPkiMaterial, CogsEgressPkiSource } from "../src/egress/egress-material.ts";
 import { type CogsEnvoyProcessPort, createNodeCogsEnvoyProcessPort } from "../src/egress/envoy-process.ts";
@@ -296,6 +300,100 @@ test("actual watcher frontier and OpenBao cancellation bar final retirement, mat
   }
 });
 
+test("real workload login fetch and original cancellation retain manager material and WAL", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "cogs-login-retirement-")));
+  const path = join(root, "jwt");
+  await writeFile(path, `${"a".repeat(24)}.${"b".repeat(24)}.${"c".repeat(24)}`, { mode: 0o600 });
+  try {
+    for (const mode of ["fetch", "cancel"] as const) {
+      const held = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      let logins = 0;
+      const identity = new OpenBaoKubernetesWorkloadIdentity({
+        origin: "https://synthetic.invalid/",
+        authMount: "kubernetes",
+        role: "worker",
+        jwtFile: {
+          path,
+          minimumBytes: 26,
+          maximumBytes: 16384,
+          allowedModes: [0o600],
+          allowedUids: [process.getuid?.() ?? -1],
+          allowedGids: [process.getgid?.() ?? -1],
+        },
+        fetchImpl: async () => {
+          if (++logins <= 2)
+            return new Response(
+              JSON.stringify({
+                auth: {
+                  client_token: "synthetic-token",
+                  lease_duration: 600,
+                  renewable: false,
+                  token_type: "service",
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          entered.resolve();
+          if (mode === "fetch") await held.promise;
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                stream.enqueue(new TextEncoder().encode("{"));
+              },
+              cancel() {
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        },
+      });
+      const source = new OpenBaoEgressRevocationSource({
+        ...openBaoConfig(),
+        identity,
+        userId: "preset-user",
+        credentialHandle: "users/preset-user/provider",
+        presetRevision: snap().presetRevision,
+        pkiExpiresAtMs: 10000,
+        fetchImpl: async () =>
+          new Response(JSON.stringify(hydratedMetadata()), { headers: { "content-type": "application/json" } }),
+      });
+      const baseline = await source.read(new AbortController().signal);
+      const fixture = fixtureRuntime();
+      const options = fixture.options();
+      assert.equal(options.revocation.mode, "injected");
+      options.revocation = {
+        ...options.revocation,
+        credentialVersion: baseline.credentialVersion,
+        revocationSource: source,
+      } as typeof options.revocation;
+      const manager = await startCogsEgressRuntimeManager(options);
+      fixture.timers.tick(50);
+      await entered.promise;
+      let closed = false;
+      const closing = manager.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      try {
+        assert.equal(closed, false);
+        assert.equal(observeCogsEgressRuntime(manager).retired, false);
+        assert.equal(fixture.scopeReleased, false);
+        assert.equal(fixture.events.includes("wal.close"), false);
+      } finally {
+        held.resolve();
+      }
+      await closing;
+      assert.equal(observeCogsEgressRuntime(manager).retired, true);
+      assert.equal(fixture.scopeReleased, true);
+      assert.equal(fixture.events.filter((event) => event === "wal.close").length, 1);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("normal close uses fresh observers, closes once in order, and preserves final completions", async () => {
   const fixture = fixtureRuntime();
   const manager = await startCogsEgressRuntimeManager(fixture.options());
@@ -333,6 +431,62 @@ test("OTLP telemetry outage does not poison runtime close or completion preserva
     ["intent"],
   );
   assert.ok(fixture.events.includes("wal.close"));
+});
+
+test("optional OTLP held fetch and original cancellation cannot certify manager retirement", async () => {
+  const original = globalThis.fetch;
+  for (const mode of ["fetch", "cancel"] as const) {
+    const held = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    let pending = 0;
+    globalThis.fetch = async () => {
+      if (mode === "fetch") {
+        pending++;
+        entered.resolve();
+        await held.promise;
+        pending--;
+      }
+      return new Response(
+        new ReadableStream({
+          async cancel() {
+            pending++;
+            entered.resolve();
+            await held.promise;
+            pending--;
+          },
+        }),
+        { status: 503 },
+      );
+    };
+    try {
+      const fixture = fixtureRuntime();
+      const manager = await startCogsEgressRuntimeManager(
+        fixture.options({
+          operationTimeoutMs: 1000,
+          telemetry: { mode: "otlp", endpoint: "https://synthetic.invalid/v1/logs", timeoutMs: 50 },
+        }),
+      );
+      let closed = false;
+      const closing = manager.close().then(() => {
+        closed = true;
+      });
+      await entered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(closed, false);
+      assert.ok(pending > 0);
+      assert.equal(observeCogsEgressRuntime(manager).retired, false);
+      assert.equal(fixture.scopeReleased, false);
+      assert.equal(fixture.events.includes("wal.close"), false);
+      held.resolve();
+      await closing;
+      assert.equal(pending, 0);
+      assert.equal(observeCogsEgressRuntime(manager).retired, true);
+      assert.equal(fixture.scopeReleased, true);
+    } finally {
+      held.resolve();
+      globalThis.fetch = original;
+    }
+  }
 });
 
 test("malformed OpenBao binding from port override fails before config rendering", async () => {

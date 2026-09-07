@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ApiServer, ApiServerOptions, JsonValue } from "../src/api/server.ts";
-import type { ModelApiKeySource, OpenBaoIdentityPort } from "../src/auth/model-auth.ts";
+import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../src/auth/model-auth.ts";
 import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
 import { canonicalPresetPolicyRevision } from "../src/egress/preset-revision.ts";
@@ -27,6 +27,103 @@ import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../
 
 const secretBearer = "bearer-production-value-000000000000";
 const secretProxy = "proxy-production-capability-00000";
+
+test("production auth and Pi startup retain unpinned fetch/cancel before dependency release without healing failure", async () => {
+  for (const phase of ["auth", "pi"] as const)
+    for (const mode of ["fetch", "cancel"] as const) {
+      const h = harness();
+      const held = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      let lifecycle!: LaunchLifecycle;
+      let reads = 0;
+      let cancelled = false;
+      const store = new OpenBaoModelApiKeyStore({
+        origin: "https://synthetic.invalid/",
+        mount: "model",
+        identity: { withToken: async (_signal, consume) => consume("synthetic-token") },
+        fetchImpl: async () => {
+          if (++reads === 1 && phase === "pi")
+            return new Response(
+              JSON.stringify({
+                data: {
+                  data: { api_key: "synthetic-model-key" },
+                  metadata: {
+                    version: 1,
+                    created_time: "2026-01-01T00:00:00Z",
+                    deletion_time: "",
+                    destroyed: false,
+                    custom_metadata: null,
+                  },
+                },
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          entered.resolve();
+          if (mode === "fetch") await held.promise;
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                stream.enqueue(new TextEncoder().encode("{"));
+              },
+              cancel() {
+                cancelled = true;
+                return held.promise;
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        },
+      });
+      const starting = assert.rejects(
+        startProductionWorker({
+          seams: {
+            ...h.seams,
+            createModelStore: () => store,
+            createLifecycle: (options) => (lifecycle = new LaunchLifecycle(options)),
+            createPi: async (options) => {
+              await options.modelApiKeys.withApiKey(
+                {
+                  userId: launch().user_id,
+                  provider: launch().model.provider,
+                  model: launch().model.id,
+                  credentialHandle: launch().model.credential_handle,
+                  ...(options.signal ? { signal: options.signal } : {}),
+                },
+                async () => undefined,
+              );
+              return h.seams.createPi(options);
+            },
+          },
+        }),
+        ProductionWorkerError,
+      );
+      await entered.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      const rejected = assert.rejects(lifecycle.requestShutdown("held-auth", closeContext(20)));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      await rejected;
+      let retired = false;
+      const work = lifecycle.closeWork;
+      assert.ok(work);
+      const retirement = Promise.all([work.done, work.retired]).then(() => {
+        retired = true;
+      });
+      try {
+        assert.equal(retired, false);
+        assert.equal(h.log.includes("ssh.close"), false);
+        assert.equal(h.log.includes("telemetry.close"), false);
+        assert.equal(h.log.includes("egress.close"), false);
+        if (mode === "cancel") assert.equal(cancelled, true);
+      } finally {
+        held.resolve();
+      }
+      await starting;
+      await retirement;
+      assert.equal(lifecycle.state, "failed");
+      assert.equal(h.log.includes("ssh.close"), true);
+      assert.equal(h.log.includes("telemetry.close"), true);
+    }
+});
 
 test("actual manager/watcher owner cancellation is clean, but revocation before or during shutdown stays failed", async () => {
   for (const mode of ["requested", "revoked", "racing-revocation"] as const) {

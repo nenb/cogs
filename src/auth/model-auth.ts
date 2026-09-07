@@ -108,6 +108,14 @@ export interface OpenBaoModelApiKeyStoreOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
+const modelReadOwners = new WeakMap<ModelApiKeySource, Set<Promise<void>>>();
+
+/** Internal retirement barrier for a source's actual reads, never its bounded observations. */
+export async function retireModelApiKeySource(source: ModelApiKeySource): Promise<void> {
+  const reads = modelReadOwners.get(source);
+  while (reads?.size) await Promise.all([...reads]);
+}
+
 export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
   readonly #origin: string;
   readonly #mount: string;
@@ -123,6 +131,7 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
     this.#timeoutMs = validateInteger(options.timeoutMs ?? 5_000, 1, 60_000);
     this.#maxResponseBytes = validateInteger(options.maxResponseBytes ?? 16 * 1024, 512, 1024 * 1024);
     this.#fetch = options.fetchImpl ?? fetch;
+    modelReadOwners.set(this, new Set());
   }
 
   public async withApiKey(request: ModelAuthRequest, operation: (apiKey: string) => Promise<void>): Promise<void> {
@@ -161,41 +170,52 @@ export class OpenBaoModelApiKeyStore implements ModelApiKeySource {
       request.signal?.addEventListener("abort", onAbort, { once: true });
       let apiKey = "";
       try {
-        const readOperation = (signal: AbortSignal) =>
-          withTokenOnce(this.#identity, signal, async (rawToken) => {
-            if (controller.signal.aborted) throw new Error("aborted");
-            let token = "";
-            try {
-              token = validateModelApiKey(rawToken);
-              const query = expected === undefined ? "" : `?version=${expected.version}`;
-              const response = await this.#fetch(
-                `${this.#origin}/v1/${encodeURIComponent(this.#mount)}/data/${path}${query}`,
-                {
-                  method: "GET",
-                  headers: { "x-vault-token": token, accept: "application/json" },
-                  redirect: "error",
-                  signal,
-                },
-              );
-              if (signal.aborted) {
-                await cancelBody(response);
-                throw new Error("aborted");
+        const readOperation = (signal: AbortSignal) => {
+          // Publish custody before identity/fetch callbacks or abort can reenter.
+          const work = Promise.resolve().then(() =>
+            withTokenOnce(this.#identity, signal, async (rawToken) => {
+              if (controller.signal.aborted) throw new Error("aborted");
+              let token = "";
+              try {
+                token = validateModelApiKey(rawToken);
+                const query = expected === undefined ? "" : `?version=${expected.version}`;
+                const response = await this.#fetch(
+                  `${this.#origin}/v1/${encodeURIComponent(this.#mount)}/data/${path}${query}`,
+                  {
+                    method: "GET",
+                    headers: { "x-vault-token": token, accept: "application/json" },
+                    redirect: "error",
+                    signal,
+                  },
+                );
+                try {
+                  if (signal.aborted) throw new Error("aborted");
+                  const type = response.headers.get("content-type") ?? "";
+                  const length = response.headers.get("content-length");
+                  if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.#maxResponseBytes))
+                    throw new Error("too large");
+                  if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type))
+                    throw new Error("bad response");
+                } catch (error) {
+                  await cancelBody(response);
+                  throw error;
+                }
+                return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, signal), expected);
+              } finally {
+                token = "";
               }
-              const type = response.headers.get("content-type") ?? "";
-              const length = response.headers.get("content-length");
-              if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > this.#maxResponseBytes)) {
-                await cancelBody(response);
-                throw new Error("too large");
-              }
-              if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(type)) {
-                await cancelBody(response);
-                throw new Error("bad response");
-              }
-              return parseKv2ApiKey(await boundedText(response, this.#maxResponseBytes, signal), expected);
-            } finally {
-              token = "";
-            }
-          });
+            }),
+          );
+          const retired = work.then(
+            () => undefined,
+            () => undefined,
+          );
+          const reads = modelReadOwners.get(this);
+          if (!reads) throw new ModelAuthError();
+          reads.add(retired);
+          void retired.then(() => reads.delete(retired));
+          return work;
+        };
         // Hydration's pinned read is actual owned work. Its timer requests abort,
         // but the caller retains it until the transport/identity callback settles.
         apiKey =
@@ -365,8 +385,15 @@ async function cancelBody(response: Response): Promise<void> {
 }
 
 async function boundedText(response: Response, maximum: number, signal: AbortSignal): Promise<string> {
-  const reader = response.body?.getReader();
-  if (reader === undefined) throw new Error("missing body");
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    const acquired = response.body?.getReader();
+    if (acquired === undefined) throw new Error("missing body");
+    reader = acquired;
+  } catch (error) {
+    await cancelBody(response);
+    throw error;
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
   let cancellation: Promise<void> | undefined;
