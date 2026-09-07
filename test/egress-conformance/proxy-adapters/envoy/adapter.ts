@@ -371,7 +371,12 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
       }
       await this.#captureLogs();
       await runFile(this.#docker, ["stop", "--time", "3", active.container], { timeoutMs: 10_000 });
-      await this.#captureLogs();
+      let terminalCaptureError: unknown;
+      try {
+        await this.#captureLogs();
+      } catch (error) {
+        terminalCaptureError = error;
+      }
       await runFile(this.#docker, ["container", "rm", active.container], { timeoutMs: 15_000 });
       const listed = await runFile(
         this.#docker,
@@ -392,6 +397,7 @@ export class EnvoyConformanceAdapter implements ConformanceAdapter {
         }
       }
       this.#active = undefined;
+      if (terminalCaptureError !== undefined) throw terminalCaptureError;
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : "Envoy case cleanup failed");
     }
