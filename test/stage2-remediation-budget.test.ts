@@ -50,7 +50,7 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
   };
   for (const [lane, count, required] of lanes) {
     const source = readFileSync(`.github/workflows/${lane}.yml`, "utf8");
-    const blocks = [...source.matchAll(/ {10}# ADR03(?:09|19) exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
+    const blocks = [...source.matchAll(/ {10}# ADR0319 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
     assert.equal(blocks.length, count, lane);
     for (const match of blocks) {
       const block = match[0].replace(/^ {10}/gmu, "");
@@ -110,9 +110,15 @@ test("every Stage2 workflow is guarded, hard-disabled, or the non-authorizing fo
     "stage2-phase-a-candidate",
     "stage2-rootfs-full-build-qualification",
   ]);
-  const names = readdirSync(".github/workflows")
-    .filter((name) => /^stage2-.*\.yml$/u.test(name))
-    .map((name) => name.slice(0, -4))
+  const workflowFiles = readdirSync(".github/workflows").filter((name) => /\.ya?ml$/u.test(name));
+  const selector =
+    /reviewed_implementation_head|implementation_head:|EXACT_IMPLEMENTATION_HEAD|EXACT_H|CONTROL_HEAD|COGS_STAGE2_CONTROL_REVISION/u;
+  for (const file of workflowFiles) {
+    if (selector.test(readFileSync(`.github/workflows/${file}`, "utf8"))) assert.match(file, /^stage2-/u);
+  }
+  const names = workflowFiles
+    .filter((name) => /^stage2-.*\.ya?ml$/u.test(name))
+    .map((name) => name.replace(/\.ya?ml$/u, ""))
     .sort();
   assert.deepEqual(names, [...guarded, ...disabled, "stage2-workload-linux-foundations"].sort());
   for (const name of disabled) {
@@ -124,6 +130,7 @@ test("every Stage2 workflow is guarded, hard-disabled, or the non-authorizing fo
     for (let index = 0; index < starts.length; index += 1) {
       const start = starts[index];
       const next = starts[index + 1];
+      assert.ok(start);
       assert.match(
         source.slice(start.index, next?.index),
         /^ {4}if:[\s\S]{0,160}github\.sha == ''/mu,

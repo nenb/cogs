@@ -1075,7 +1075,7 @@ type NativeResponseProbe = {
   final: Record<string, unknown>;
   trailers: Record<string, unknown>;
   body: string;
-  firstDataMs: number;
+  firstDataMs: number | null;
   endMs: number;
   completed: boolean;
   events: { response: number; trailers: number; end: number; aborted: number; error: number; close: number };
@@ -1247,14 +1247,14 @@ for(let attempt=0;attempt<30;attempt++){
   catch(error){client.destroy();client=undefined;if(attempt===29)throw error;await delay(100)}
 }
 const started=Date.now(),events={response:0,trailers:0,end:0,aborted:0,error:0,close:0};
-const output={informational:[],final:{},trailers:{},body:"",firstDataMs:0,endMs:0,completed:false,events};
+const output={informational:[],final:{},trailers:{},body:"",firstDataMs:null,endMs:0,completed:false,events};
 const request=client.request({":path":path});
 request.on("headers",headers=>output.informational.push(headers));
 request.on("response",headers=>{events.response++;output.final=headers});
 request.on("trailers",headers=>{events.trailers++;output.trailers=headers});
 request.on("aborted",()=>events.aborted++);request.on("error",()=>events.error++);request.on("end",()=>events.end++);
 request.setEncoding("utf8");
-request.on("data",chunk=>{output.firstDataMs||=Date.now()-started;output.body+=chunk});
+request.on("data",chunk=>{output.firstDataMs??=Date.now()-started;output.body+=chunk});
 await new Promise(resolve=>{request.once("close",()=>{events.close++;resolve()});request.end()});
 output.endMs=Date.now()-started;
 output.completed=output.final[":status"]===200&&events.response===1&&events.trailers===1&&events.end===1&&events.aborted===0&&events.error===0&&events.close===1;
@@ -1353,9 +1353,10 @@ console.log(JSON.stringify(output));client.close();
   assert.equal(corrected.final["x-control-final"], "present");
   assert.equal(corrected.trailers["x-control-trailer"], "present");
   assert.equal(corrected.body, "ok");
+  assert.equal(typeof corrected.firstDataMs, "number");
   assert.equal(corrected.completed, true);
   assert.deepEqual(corrected.events, { response: 1, trailers: 1, end: 1, aborted: 0, error: 0, close: 1 });
-  assert.ok(corrected.endMs - corrected.firstDataMs >= 800, "body must stream before trailers/end");
+  assert.ok(corrected.endMs - (corrected.firstDataMs ?? Number.NaN) >= 800, "body must stream before trailers/end");
 
   const mixed = structuredClone(controls);
   mixed.responseHeadersToRemove[2] = "X-CoGs-SeNtInEl";

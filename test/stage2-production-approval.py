@@ -68,26 +68,28 @@ with tempfile.TemporaryDirectory() as temporary:
         retired = dict(value)
         retired[field] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
         draft.write_text(json.dumps(retired, sort_keys=True, separators=(",", ":")) + "\n")
-        rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
-                                   "eligibility", str(draft)], cwd=ROOT, env=environment,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        assert rejected.returncode == 2 and not rejected.stdout and not rejected.stderr
+        for operation in ("eligibility", "issue", "authenticate"):
+            rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
+                                       operation, str(draft)], cwd=ROOT, env=environment,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            assert rejected.returncode == 2 and not rejected.stdout and not rejected.stderr
 
-    retired_approval = dict(json.loads(result.stdout))
-    retired_approval["implementation_revision"] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
     source = Path(temporary) / "staging"; source.mkdir()
-    (source / "approval.json").write_text(
-        json.dumps(retired_approval, sort_keys=True, separators=(",", ":")) + "\n")
     original_uid, original_gid = stager.os.geteuid, stager.os.getegid
     stager.os.geteuid = lambda: 0; stager.os.getegid = lambda: 0
     try:
-        try:
-            stager.stage(source, Path(temporary) / "unread-budget",
-                         Path(temporary) / "unread-config", Path(temporary) / "unread-credentials")
-        except stager.StagingError:
-            pass
-        else:
-            raise AssertionError("retired approval reached credential reads")
+        for field in ("implementation_revision", "control_revision", "qualification_revision"):
+            retired_approval = dict(json.loads(result.stdout))
+            retired_approval[field] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+            (source / "approval.json").write_text(
+                json.dumps(retired_approval, sort_keys=True, separators=(",", ":")) + "\n")
+            try:
+                stager.stage(source, Path(temporary) / "unread-budget",
+                             Path(temporary) / "unread-config", Path(temporary) / "unread-credentials")
+            except stager.StagingError:
+                pass
+            else:
+                raise AssertionError(field + " retired approval reached credential reads")
     finally:
         stager.os.geteuid, stager.os.getegid = original_uid, original_gid
 

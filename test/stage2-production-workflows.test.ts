@@ -87,5 +87,7 @@ test("future campaign has one sealed caller, explicit credential files, recovery
       campaign.indexOf("Acquire exact separately approved implementation H"),
   );
   assert.match(stager, /stage2-revision-retirement\.py/u);
-  assert.ok(stager.indexOf('eligible((value.get("implementation_revision")') < stager.indexOf("aws_credentials = read"));
+  assert.ok(
+    stager.indexOf('eligible((value.get("implementation_revision")') < stager.indexOf("aws_credentials = read"),
+  );
 });
