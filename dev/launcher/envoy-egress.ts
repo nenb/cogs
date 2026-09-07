@@ -61,7 +61,6 @@ const INTEGRATION_ID = "stage3-localhost";
 const EGRESS_HANDLE = "users/alice/integrations/stage3-localhost";
 const MODEL_PROVIDER = "anthropic";
 const MODEL_ID = "claude-sonnet-4-5";
-const CONTAINER_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const MIN_ENVOY_BINARY_BYTES = 1024 * 1024;
 const MAX_ENVOY_BINARY_BYTES = 256 * 1024 * 1024;
@@ -168,6 +167,7 @@ export async function prepareEnvoyBinary(
 ): Promise<EnvoyBinaryDescriptor> {
   let ownerCreated = false;
   let finalCreated = false;
+  let extractionUncertain = false;
   try {
     await validateState(state);
 
@@ -193,21 +193,84 @@ export async function prepareEnvoyBinary(
     await provePinnedImagePresent(docker);
 
     const containerName = `cogs-envoy-extract-${state.stateId}`;
-    const containerId = parseSingleLine(
-      (
-        await requireDockerSuccess(
-          docker(["create", "--network", "none", "--name", containerName, "--label", dockerLabel, ENVOY_IMAGE]),
-        )
-      ).stdout,
-    );
-    if (!CONTAINER_ID_PATTERN.test(containerId)) {
-      fail();
-    }
-
     const tempBinaryPath = join(stateRuntimeDir, `.envoy.${randomBytes(16).toString("hex")}.tmp`);
+    const custodyPath = join(stateRuntimeDir, ".cogs-envoy-extraction.jsonl");
+    // Claim before invoking any producer. Incomplete writes/observations are sticky:
+    // no caller receives a binary owner until this separate Docker owner retires.
+    extractionUncertain = true;
+    await writeFile(
+      custodyPath,
+      `${JSON.stringify({
+        version: "cogs.envoy-extraction/v1",
+        phase: "create-intent",
+        stateId: state.stateId,
+        name: containerName,
+        label: dockerLabel,
+        image: ENVOY_IMAGE,
+        tempBinaryPath,
+      })}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
+    await fsyncPath(custodyPath);
+    await fsyncPath(stateRuntimeDir);
+    const record = async (phase: string, id?: string) => {
+      const file = await open(custodyPath, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+      try {
+        await file.writeFile(`${JSON.stringify({ phase, ...(id === undefined ? {} : { id }) })}\n`);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+    };
+    // Await actual command work, not a deadline race. A failed/malformed create
+    // cannot prove non-acquisition. Its intent remains for exact operator recovery.
+    const created = await docker([
+      "create",
+      "--network",
+      "none",
+      "--name",
+      containerName,
+      "--label",
+      dockerLabel,
+      ENVOY_IMAGE,
+    ]);
+    const containerId = /^[a-f0-9]{64}\n?$/.test(created.stdout) ? created.stdout.trim() : undefined;
+    await record(created.status === 0 && containerId ? "created" : "create-uncertain", containerId);
+    if (created.status !== 0 || !containerId) fail();
+    // Rollback is independent of the cancelled acquisition observation. Every
+    // inspect/rm is joined and targets the immutable full ID, never a name inverse.
+    const cleanupDocker = (args: readonly string[]) =>
+      runDocker(capturedSeams.docker ?? defaultDocker(state.dir), args);
+    let removalStarted = false;
+    let extractionRetired = false;
+    let localWorkUncertain = false;
+    const retireExtraction = async () => {
+      removalStarted = true;
+      await record("inspect-intent", containerId);
+      await proveExtractionContainerIdentity(cleanupDocker, containerName, containerId, state.stateId);
+      await record("remove-intent", containerId);
+      await requireDockerSuccess(cleanupDocker(["rm", containerId]));
+      await record("absence-intent", containerId);
+      await proveNoExistingExtractionContainer(cleanupDocker, dockerLabel);
+      const remaining = await requireDockerSuccess(
+        cleanupDocker(["ps", "-a", "--no-trunc", "--filter", `id=${containerId}`, "--format", "{{.ID}}"]),
+      );
+      if (remaining.stdout.trim() !== "") fail();
+      await record("retired", containerId);
+      extractionRetired = true;
+    };
     try {
+      checkCooperative(prepareOptions);
+      await record("inspect-intent", containerId);
+      localWorkUncertain = true;
+      await proveExtractionContainerIdentity(docker, containerName, containerId, state.stateId);
+      localWorkUncertain = false;
+      checkCooperative(prepareOptions);
       await requireFinalBinaryAbsent(finalBinaryPath);
+      await record("copy-intent", containerId);
+      localWorkUncertain = true;
       await requireDockerSuccess(docker(["cp", `${containerId}:/usr/local/bin/envoy`, tempBinaryPath]));
+      localWorkUncertain = false;
 
       const binaryHash = await validateExtractedTempBinary(tempBinaryPath);
       await chmod(tempBinaryPath, 0o500);
@@ -226,22 +289,33 @@ export async function prepareEnvoyBinary(
       await validateBinary(state, descriptor);
 
       checkCooperative(prepareOptions);
+      await record("version-intent", containerId);
+      localWorkUncertain = true;
       const versionOutput = await (capturedSeams.runVersion ?? runEnvoyVersion)(finalBinaryPath, prepareOptions);
+      localWorkUncertain = false;
       const versionMatch = versionOutput.match(
         /^\n(.+\/envoy) {2}version: [a-f0-9]{40}\/1\.38\.3\/Clean\/RELEASE\/BoringSSL\n\n$/u,
       );
       if (versionMatch?.[1] !== finalBinaryPath) fail();
 
-      await proveExtractionContainerIdentity(docker, containerName, containerId, state.stateId);
-      await requireDockerSuccess(docker(["rm", containerId]));
-      await proveNoExistingExtractionContainer(docker, dockerLabel);
+      await retireExtraction();
+      checkCooperative(prepareOptions);
+      await unlink(custodyPath);
+      await fsyncPath(stateRuntimeDir);
+      extractionUncertain = false;
       return descriptor;
     } catch (error) {
-      await cleanupExtractionAttempt(docker, containerName, containerId, tempBinaryPath, state.stateId);
+      if (localWorkUncertain) throw error;
+      if (!removalStarted) await retireExtraction();
+      else if (!extractionRetired) throw error;
+      await rm(tempBinaryPath, { force: true });
+      await unlink(custodyPath);
+      await fsyncPath(stateRuntimeDir);
+      extractionUncertain = false;
       throw error;
     }
   } catch {
-    await cleanupPreparedBinaryAfterFailure(state, ownerCreated, finalCreated);
+    if (!extractionUncertain) await cleanupPreparedBinaryAfterFailure(state, ownerCreated, finalCreated);
     throw fail();
   }
 }
@@ -809,7 +883,7 @@ async function proveExtractionContainerIdentity(
   containerId: string,
   stateId: string,
 ): Promise<void> {
-  const metadata = await inspectContainer(docker, containerName);
+  const metadata = await inspectContainer(docker, containerId);
   if (
     metadata.id !== containerId ||
     metadata.name !== `/${containerName}` ||
@@ -818,20 +892,6 @@ async function proveExtractionContainerIdentity(
   ) {
     fail();
   }
-}
-
-async function cleanupExtractionAttempt(
-  docker: Exec,
-  containerName: string,
-  containerId: string,
-  tempBinaryPath: string,
-  stateId: string,
-): Promise<void> {
-  const metadata = await inspectContainer(docker, containerName).catch(() => undefined);
-  if (metadata?.id === containerId && metadata.image === ENVOY_IMAGE && metadata.label === stateId) {
-    await requireDockerSuccess(docker(["rm", containerId])).catch(() => undefined);
-  }
-  await rm(tempBinaryPath, { force: true }).catch(() => undefined);
 }
 
 async function cleanupPreparedBinaryAfterFailure(

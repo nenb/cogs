@@ -463,6 +463,238 @@ test("prepareEnvoyBinary extracts exact pinned image into owned runtime dir and 
   }
 });
 
+// Permanent form of /tmp/cogs42-holistic-extraction-repro.mts: the Docker
+// fixture acquires an object then returns a truncated ID. No Docker is executed.
+test("extraction failures retain durable intent/exact custody rather than erasing the surviving object", async () => {
+  for (const fault of [
+    "truncated",
+    "create-failed",
+    "create-rejected",
+    "inspect-malformed",
+    "inspect-failed",
+    "foreign-id",
+    "foreign-name",
+    "foreign-image",
+    "foreign-label",
+    "rm-failed",
+    "rm-rejected",
+    "absence-failed",
+    "absence-present",
+    "cp-failed",
+  ]) {
+    const { dir, state } = await launcherState();
+    const id = "b".repeat(64),
+      calls: string[] = [];
+    const runtime = join(state.dir, "runtime"),
+      custody = join(runtime, ".cogs-envoy-extraction.jsonl");
+    let container = false;
+    try {
+      const docker = Object.freeze(async (raw: readonly string[]) => {
+        const args = raw.slice(1),
+          command = String(args[0]);
+        calls.push(command);
+        if (command === "ps") {
+          if (!calls.includes("create")) return { status: 0, stdout: "" };
+          return {
+            status: fault === "absence-failed" ? 1 : 0,
+            stdout: fault === "absence-present" || container ? `${id}\n` : "",
+          };
+        }
+        if (command === "image") return { status: 0, stdout: JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")]) };
+        if (command === "create") {
+          // Observe the fsynced intent before the actual acquisition boundary.
+          const intent = JSON.parse((await readFile(custody, "utf8")).trim());
+          assert.deepEqual(
+            {
+              phase: intent.phase,
+              name: intent.name,
+              label: intent.label,
+              image: intent.image,
+              stateId: intent.stateId,
+            },
+            {
+              phase: "create-intent",
+              name: `cogs-envoy-extract-${state.stateId}`,
+              label: `cogs.dev.launcher.envoy=${state.stateId}`,
+              image: ENVOY_IMAGE,
+              stateId: state.stateId,
+            },
+          );
+          assert.equal((await lstat(custody)).mode & 0o777, 0o600);
+          container = true;
+          if (fault === "create-rejected") throw new Error("lost response");
+          return {
+            status: fault === "create-failed" ? 1 : 0,
+            stdout: fault === "truncated" ? "truncated-container-id\n" : `${id}\n`,
+          };
+        }
+        if (command === "inspect") {
+          assert.equal(args[1], id);
+          if (fault === "inspect-failed" && calls.filter((call) => call === "inspect").length === 1)
+            return { status: 1, stdout: "" };
+          return {
+            status: 0,
+            stdout:
+              fault === "inspect-malformed"
+                ? "{"
+                : JSON.stringify({
+                    Id: fault === "foreign-id" ? "f".repeat(64) : id,
+                    Name: fault === "foreign-name" ? "/foreign" : `/cogs-envoy-extract-${state.stateId}`,
+                    Config: {
+                      Image: fault === "foreign-image" ? "foreign" : ENVOY_IMAGE,
+                      Labels: { "cogs.dev.launcher.envoy": fault === "foreign-label" ? "foreign" : state.stateId },
+                    },
+                  }),
+          };
+        }
+        if (command === "cp") {
+          await writeFile(String(args[2]), fakeBin);
+          return { status: fault === "cp-failed" ? 1 : 0, stdout: "" };
+        }
+        if (command === "rm") {
+          assert.equal(args[1], id);
+          const records = (await readFile(custody, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.deepEqual(records.at(-1), { phase: "remove-intent", id });
+          if (fault === "rm-rejected") throw new Error("lost removal");
+          if (fault === "rm-failed") return { status: 1, stdout: "" };
+          container = false;
+          return { status: 0, stdout: "" };
+        }
+        throw new Error("unexpected fake command");
+      });
+      await assert.rejects(
+        () =>
+          prepareEnvoyBinary(
+            state,
+            Object.freeze({ docker, runVersion: Object.freeze(async (path: string) => envoyVersion(path)) }),
+          ),
+        /launcher egress failed/,
+        fault,
+      );
+      assert.equal(await readFile(join(runtime, ".cogs-envoy-owner"), "utf8"), `${state.stateId}\n`, fault);
+      const records = (await readFile(custody, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(records[0].phase, "create-intent");
+      if (!["truncated", "create-rejected"].includes(fault)) assert.equal(records[1].id, id);
+      assert.equal(container, !fault.startsWith("absence-"), fault);
+      if (fault.startsWith("create-") || fault === "truncated") assert.deepEqual(calls, ["ps", "image", "create"]);
+      if (fault.startsWith("foreign-") || fault.startsWith("inspect-")) {
+        assert.ok(!calls.includes("rm"));
+        assert.equal(
+          calls.filter((call) => call === "inspect").length,
+          1,
+          "never replace a failed observation with a retry",
+        );
+      }
+      assert.ok(calls.filter((call) => call === "rm").length <= 1);
+      const before = calls.length;
+      await assert.rejects(() => prepareEnvoyBinary(state, Object.freeze({ docker })), /launcher egress failed/);
+      assert.equal(calls.length, before, "retained custody blocks reuse before Docker");
+      await lstat(custody);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("cancelled extraction joins late create/inspect/removal work and never releases custody early", async () => {
+  for (const observation of ["create", "inspect", "rm", "create-failed", "inspect-failed", "rm-failed"]) {
+    const late = observation.split("-")[0];
+    const failLate = observation.endsWith("-failed");
+    const { dir, state } = await launcherState();
+    const controller = new AbortController(),
+      id = "c".repeat(64),
+      calls: string[] = [];
+    const arrived = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let container = false,
+      delayed = false,
+      settled = false;
+    const custody = join(state.dir, "runtime", ".cogs-envoy-extraction.jsonl");
+    try {
+      const docker = Object.freeze(async (raw: readonly string[]) => {
+        const args = raw.slice(1),
+          command = String(args[0]);
+        calls.push(command);
+        // The external effect occurs before its response is observable.
+        if (command === "create") container = true;
+        if (command === "rm") container = false;
+        if (command === late && !delayed) {
+          delayed = true;
+          arrived.resolve();
+          await release.promise;
+          await lstat(custody);
+          if (failLate) throw new Error("late observation failed");
+        }
+        if (command === "ps") return { status: 0, stdout: container ? `${id}\n` : "" };
+        if (command === "image") return { status: 0, stdout: JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")]) };
+        if (command === "create") {
+          container = true;
+          return { status: 0, stdout: `${id}\n` };
+        }
+        if (command === "inspect") {
+          assert.equal(args[1], id);
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              Id: id,
+              Name: `/cogs-envoy-extract-${state.stateId}`,
+              Config: { Image: ENVOY_IMAGE, Labels: { "cogs.dev.launcher.envoy": state.stateId } },
+            }),
+          };
+        }
+        if (command === "cp") {
+          await writeFile(String(args[2]), fakeBin);
+          return { status: 0, stdout: "" };
+        }
+        if (command === "rm") {
+          assert.equal(args[1], id);
+          container = false;
+          return { status: 0, stdout: "" };
+        }
+        throw new Error("unexpected command");
+      });
+      const result = prepareEnvoyBinary(state, {
+        signal: controller.signal,
+        seams: Object.freeze({ docker, runVersion: Object.freeze(async (path: string) => envoyVersion(path)) }),
+      })
+        .then(
+          () => "resolved",
+          () => "rejected",
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await arrived.promise;
+      controller.abort();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(settled, false, "cancellation is not actual producer retirement");
+      await lstat(custody);
+      await lstat(join(state.dir, "runtime", ".cogs-envoy-owner"));
+      release.resolve();
+      assert.equal(await result, "rejected");
+      assert.equal(calls.filter((call) => call === "create").length, 1);
+      if (failLate) {
+        assert.equal(container, late !== "rm");
+        await lstat(custody);
+        await lstat(join(state.dir, "runtime", ".cogs-envoy-owner"));
+      } else {
+        assert.equal(container, false);
+        assert.equal(calls.filter((call) => call === "rm").length, 1);
+        await assert.rejects(() => lstat(join(state.dir, "runtime")), { code: "ENOENT" });
+      }
+    } finally {
+      release.resolve();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("envoy egress adapter wires production manager options and insecure loopback listener without relay", async () => {
   const { dir, state } = await launcherState("insecure-container");
   try {
@@ -1614,6 +1846,8 @@ test("envoy runVersion and relay startup receive cooperative cancellation", asyn
       /launcher egress failed/,
     );
     assert.equal(observed, true);
+    await lstat(join(first.state.dir, "runtime", ".cogs-envoy-extraction.jsonl"));
+    await lstat(join(first.state.dir, "runtime", ".cogs-envoy-owner"));
   } finally {
     await rm(first.dir, { recursive: true, force: true });
   }

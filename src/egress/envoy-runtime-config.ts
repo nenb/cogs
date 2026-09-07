@@ -41,7 +41,8 @@ type Header = Readonly<{ name: string; value: string }>;
 
 /** Renderer-owned v1, not a tuning API. Watermarks are not hard RSS/body-byte limits.
  * Requires one Envoy worker and an externally enforced shared worker/child 2 GiB cgroup.
- * The monitors only shed; they neither establish that cgroup nor prove monitor health.
+ * Fixed-heap pressure only sheds; it neither bounds RSS nor establishes/checks the cgroup.
+ * No cgroup monitor: v1.38.3 reads fixed mount-root paths, not process membership.
  */
 export const cogsEnvoyBoundedV1 = deepFreeze({
   name: "cogs-egress-bounded-v1",
@@ -56,7 +57,8 @@ export const cogsEnvoyBoundedV1 = deepFreeze({
     initial_stream_window_size: 65536,
     initial_connection_window_size: 262144,
     hpack_table_size: 4096,
-    max_header_field_size_kb: 32,
+    // Omit the optional single-field override (PGV minimum 64 KiB). The codec
+    // derives its field/list bound from the 32 KiB aggregate supplied by HCM/upstream.
     max_outbound_frames: 256,
     max_outbound_control_frames: 32,
     max_consecutive_inbound_frames_with_empty_payload: 1,
@@ -71,7 +73,7 @@ export const cogsEnvoyBoundedV1 = deepFreeze({
     max_stream_duration: "1800s",
     max_requests_per_connection: 1024,
     max_headers_count: 100,
-    headers_with_underscores_action: "REJECT_REQUEST",
+    headers_with_underscores_action: "REJECT_REQUEST", // Downstream only; no response-header control in clusters.
   },
   earlyHeaders: [
     {
@@ -99,26 +101,16 @@ export const cogsEnvoyBoundedV1 = deepFreeze({
           max_heap_size_bytes: "536870912",
         },
       },
-      {
-        name: "envoy.resource_monitors.cgroup_memory",
-        typed_config: {
-          "@type": `${envoyType}/envoy.extensions.resource_monitors.cgroup_memory.v3.CgroupMemoryConfig`,
-          max_memory_bytes: "2147483648",
-        },
-      },
     ],
     actions: [
-      { name: "envoy.overload_actions.disable_http_keepalive", triggers: pressureTriggers(0.75, 0.8) },
-      { name: "envoy.overload_actions.stop_accepting_requests", triggers: pressureTriggers(0.85, 0.875) },
+      { name: "envoy.overload_actions.disable_http_keepalive", triggers: pressureTriggers(0.75) },
+      { name: "envoy.overload_actions.stop_accepting_requests", triggers: pressureTriggers(0.85) },
     ],
-    loadshed_points: [{ name: "envoy.load_shed_points.tcp_listener_accept", triggers: pressureTriggers(0.85, 0.875) }],
+    loadshed_points: [{ name: "envoy.load_shed_points.tcp_listener_accept", triggers: pressureTriggers(0.85) }],
   },
 });
-function pressureTriggers(heap: number, cgroup: number) {
-  return [
-    { name: "envoy.resource_monitors.fixed_heap", threshold: { value: heap } },
-    { name: "envoy.resource_monitors.cgroup_memory", threshold: { value: cgroup } },
-  ];
+function pressureTriggers(heap: number) {
+  return [{ name: "envoy.resource_monitors.fixed_heap", threshold: { value: heap } }];
 }
 
 /** Positive cold-connect pending capacity; budgets sum <=256, not 256 per route.
@@ -152,7 +144,9 @@ export function cogsEnvoyResourceAllocation(routes: number, authorities: number)
       applicationActive: routes * requests,
       applicationPending: routes * pending,
       applicationConnections: routes * (connections + 1),
-      networkSockets: d + routes * (connections + 1) + 3,
+      // Pool/downstream endpoints only: excludes listener, DNS, worker-side authz,
+      // telemetry and other worker FDs. Not a shared-worker socket/RSS inventory.
+      poolAndDownstreamSockets: d + routes * (connections + 1) + 3,
       internalEndpoints: 2 * authorities * (tunnels + 1),
     },
   });
@@ -289,6 +283,8 @@ export async function withCogsEnvoyRuntimeConfig<T>(
     const listenerPort = port(captured.listenerPort);
     const authorization = parseAuthzTarget(captured.authzTarget);
     const internalToken = visibleSecret(captured.internalAuthzToken, 16, 256);
+    // gRPC initial metadata is not the route-header formatter seam; deny ambiguity.
+    if (internalToken.includes("%")) throw new Error("bad internal token");
     try {
       if (
         captured.policyAuthorizer !== undefined &&
@@ -430,6 +426,7 @@ function render(
     clusters.push(tunnelCluster(first, allocation.tunnel));
   }
   const bootstrap = deepFreeze({
+    layered_runtime: cogsEnvoyLiteralHeaderRuntime,
     overload_manager: cogsEnvoyBoundedV1.overload,
     bootstrap_extensions: [
       {
@@ -565,7 +562,10 @@ function envoyRoute(route: CopiedRoute, sessionId: string, credentials: Readonly
       ? {}
       : {
           request_headers_to_add: [
-            { header: { key: credential.name, value: credential.value }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
+            {
+              header: { key: credential.name, value: cogsEnvoyLiteralHeaderValue(credential.value) },
+              append_action: "OVERWRITE_IF_EXISTS_OR_ADD",
+            },
           ],
         }),
     typed_per_filter_config: perRoute(
@@ -885,6 +885,26 @@ function credentialHeader(auth: CopiedAuth, credential: CogsEnvoyCredentialValue
   if (auth.type === "basic_header" && credential.type === "basic")
     return Object.freeze({ name: "authorization", value: `Basic ${basicSecret(credential.base64)}` });
   throw new Error("wrong credential");
+}
+// v1.38.3 defaults this guard OFF. Legacy metadata translation runs before %%
+// decoding and would rewrite even escaped DYNAMIC_METADATA/PER_REQUEST_STATE text.
+export const cogsEnvoyLiteralHeaderRuntime = deepFreeze({
+  layers: [
+    {
+      name: "cogs-literal-header-format",
+      static_layer: { "envoy.reloadable_features.remove_legacy_route_formatter": true },
+    },
+  ],
+});
+/** v1.38.3 (0ebfcfe5): HeaderParser consumes value(), not raw_value().
+ * SubstitutionFormatParser::parse consumes %% as one literal %, before commands.
+ * Encode the complete prefix+value exactly once; never interpolate secret bytes.
+ */
+export function cogsEnvoyLiteralHeaderValue(value: string): string {
+  if (!/^[\x20-\x7e]+$/.test(value)) throw new Error("bad header bytes");
+  const encoded = value.replaceAll("%", "%%");
+  if (encoded.length > 16384) throw new Error("header formatter too large");
+  return encoded;
 }
 function parseAuthzTarget(value: string): { address: string; port: number } {
   const match = value.match(authzTarget);
