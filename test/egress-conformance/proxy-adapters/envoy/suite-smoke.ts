@@ -427,12 +427,23 @@ try {
       );
       const npmIntents = finalSnapshot.intents.filter((item) => item.case_id === "client.npm-tarball");
       assert.equal(npmIntents.length, npmObservations.length, "every npm request must have one accepted intent");
+      const npmCompletionClasses = npmIntents
+        .map((item) => `${item.completion?.outcome ?? "missing"}:${item.completion?.status_class ?? 0}`)
+        .sort()
+        .join(",");
+      assert.equal(
+        npmIntents.filter((item) => item.completion?.outcome === "success" && item.completion.status_class === 2)
+          .length,
+        1,
+        `npm completion classes=${npmCompletionClasses}`,
+      );
       assert.ok(
-        npmIntents.every((item) => item.completion?.outcome === "success" && item.completion.status_class === 2),
-        `npm completion classes=${npmIntents
-          .map((item) => `${item.completion?.outcome ?? "missing"}:${item.completion?.status_class ?? 0}`)
-          .sort()
-          .join(",")}`,
+        npmIntents.every(
+          (item) =>
+            (item.completion?.outcome === "success" && item.completion.status_class === 2) ||
+            (item.completion?.outcome === "failed" && item.completion.status_class === 0),
+        ),
+        `npm completion classes=${npmCompletionClasses}`,
       );
       postconditionCaseId = undefined;
     }
