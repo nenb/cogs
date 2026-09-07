@@ -6,9 +6,20 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 driver="$repo/dev/linux-kvm/driver.sh"
 started=$(python3 -c 'import time; print(time.time_ns()//1000000)')
 passed=false
+state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
+# Never adopt or pre-delete an ambient generation. This smoke requires fresh custody.
+[[ ! -e "$state" && ! -L "$state" ]] || { echo 'FAIL: smoke requires absent state' >&2; exit 1; }
 cleanup() {
-  "$driver" destroy >/dev/null 2>&1 || true
-  if [[ "$passed" != true && ! -f "$report" ]]; then write_report fail 'Linux/KVM isolated driver setup or teardown failed.' || true; fi
+  local status=$?
+  trap - EXIT INT TERM HUP
+  if [[ "$passed" != true ]]; then
+    if [[ -e "$state" ]] && ! "$driver" destroy >/dev/null; then
+      echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
+    fi
+    write_report fail 'Linux/KVM isolated driver setup or teardown failed.'
+    status=1
+  fi
+  exit "$status"
 }
 write_report() {
   local result=$1 diagnostic=$2
@@ -37,9 +48,9 @@ report={
 with open(path,'w') as f: json.dump(report,f,indent=2,sort_keys=True);f.write('\n')
 PY
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
 
-"$driver" destroy >/dev/null
 "$driver" create >/dev/null
 "$driver" verify >/dev/null
 host_boot=$(cat /proc/sys/kernel/random/boot_id)
@@ -52,7 +63,7 @@ guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 
 socat TCP-LISTEN:18080,bind=0.0.0.0,reuseaddr,fork EXEC:/bin/true &
 socat_pid=$!
-trap 'kill "$socat_pid" 2>/dev/null || true; cleanup' EXIT INT TERM HUP
+trap 'kill "$socat_pid" 2>/dev/null || true; cleanup' EXIT
 for _ in $(seq 1 20); do
   "$driver" ssh 'timeout 1 bash -c "</dev/tcp/192.0.2.1/18080"' >/dev/null 2>&1 && break
   sleep 0.1
@@ -60,7 +71,7 @@ done
 "$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/18080"'
 kill "$socat_pid" 2>/dev/null || true
 wait "$socat_pid" 2>/dev/null || true
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
 
 first_boot=$guest_boot
 "$driver" reset >/dev/null

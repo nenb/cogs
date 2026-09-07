@@ -73,37 +73,179 @@ run_ssh() {
   ssh "${args[@]}" root@"$guest_ip" "$@"
 }
 
-remove_firewall() {
-  sudo iptables -D INPUT -d "$host_ip" -p tcp --dport "$proxy_port" -j "$input_chain" 2>/dev/null || true
-  sudo iptables -D INPUT -i "$tap" -j "$input_chain" 2>/dev/null || true
-  sudo iptables -D FORWARD -i "$tap" -j "$drop_chain" 2>/dev/null || true
-  sudo iptables -F "$input_chain" 2>/dev/null || true
-  sudo iptables -X "$input_chain" 2>/dev/null || true
-  sudo iptables -F "$drop_chain" 2>/dev/null || true
-  sudo iptables -X "$drop_chain" 2>/dev/null || true
-  sudo ip6tables -D INPUT -i "$tap" -j DROP 2>/dev/null || true
-  sudo ip6tables -D FORWARD -i "$tap" -j DROP 2>/dev/null || true
+# State is trusted, private, host-owned custody, not a guest-writable PID hint.
+# No PID-number signal fallback: unsupported pidfds or lost identity stop cleanup.
+qemu_owner() {
+  python3 - "$state" "$1" <<'PY'
+import json,os,pathlib,select,shutil,signal,sys,time
+state=pathlib.Path(sys.argv[1]); action=sys.argv[2]; record=state/'qemu.owner'
+def save(value):
+    temporary=record.with_suffix('.pending')
+    temporary.write_text(json.dumps(value)); temporary.replace(record)
+def identity(pid):
+    proc=pathlib.Path('/proc')/str(pid)
+    fields=(proc/'stat').read_text().rsplit(')',1)[1].split()
+    exe=(proc/'exe').stat()
+    return [pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            fields[19], os.readlink(proc/'exe'), exe.st_dev, exe.st_ino,
+            (proc/'cmdline').read_bytes().hex()]
+def owned(value):
+    pid=value['pid']
+    if type(pid) is not int or pid <= 1: raise RuntimeError('invalid QEMU PID')
+    fd=os.pidfd_open(pid,0)
+    try:
+        if identity(pid) != value['identity']: raise RuntimeError('QEMU generation changed')
+        return fd
+    except BaseException:
+        os.close(fd); raise
+
+def run():
+    value=json.loads(record.read_text())
+    if value.get('failed'): raise RuntimeError('sticky QEMU custody uncertainty')
+    if action == 'preflight':
+        if not callable(getattr(signal,'pidfd_send_signal',None)): raise RuntimeError('pidfd signals unavailable')
+        fd=os.pidfd_open(os.getpid(),0); os.close(fd)
+        return
+    if action == 'capture':
+        if value != {'phase':'launching'}: raise RuntimeError('unexpected launch phase')
+        pid=int((state/'qemu.pid').read_text())
+        if pid <= 1: raise RuntimeError('invalid QEMU PID')
+        expected=os.path.realpath(shutil.which('qemu-system-x86_64'))
+        for _ in range(100):
+            observed=identity(pid)
+            if observed[2] == expected: break
+            time.sleep(.02)
+        argv=bytes.fromhex(observed[5]).split(b'\0')
+        if observed[2] != expected or os.fsencode(f'unix:{state}/qmp.sock,server=on,wait=off') not in argv:
+            raise RuntimeError('not the launched QEMU')
+        value={'phase':'live','pid':pid,'identity':observed}
+    elif value.get('phase') in ('never','retired') and action == 'stop':
+        return
+    elif value.get('phase') != 'live':
+        raise RuntimeError('QEMU launch custody incomplete')
+    fd=owned(value)
+    try:
+        poll=select.poll(); poll.register(fd,select.POLLIN)
+        if action in ('check','capture'):
+            if poll.poll(0): raise RuntimeError('QEMU exited')
+            if action == 'capture': save(value)
+            return
+        if action != 'stop': raise RuntimeError('invalid QEMU owner action')
+        for sig,timeout in ((signal.SIGTERM,10000),(signal.SIGKILL,5000)):
+            if poll.poll(0): break
+            # Revalidate immediately before each signal, but signal the held pidfd:
+            # an exit/reuse after this check cannot target the replacement PID.
+            if identity(value['pid']) != value['identity']: raise RuntimeError('QEMU identity changed')
+            signal.pidfd_send_signal(fd,sig,None,0)
+            if poll.poll(timeout): break
+        else: raise RuntimeError('QEMU retirement deadline exceeded')
+        save({'phase':'retired'})
+    finally:
+        os.close(fd)
+try:
+    run()
+except BaseException:
+    # Lost observation never becomes success on retry or on missing /proc state.
+    value=json.loads(record.read_text()); value['failed']=True; save(value)
+    raise
+PY
 }
-remove_network() {
-  remove_firewall
-  sudo ip link delete "$tap" 2>/dev/null || true
+
+# An inverse is authorized only by a successful recorded effect and unchanged
+# snapshots. Pending/failed effects retain custody; absence alone is not proof.
+network_owner() {
+  python3 - "$state" "$1" "$tap" "$input_chain" "$drop_chain" "$proxy_port" <<'PY'
+import json,pathlib,re,subprocess,sys
+state=pathlib.Path(sys.argv[1]); action,tap,chain,forward,port=sys.argv[2:]
+record=state/'network.owner'
+def command(args):
+    return subprocess.check_output(['sudo',*args],text=True,timeout=20)
+def snapshot():
+    rules=[re.sub(r'\[\d+:\d+\]','[0:0]', '\n'.join(
+        line for line in command([tool,'-t','filter']).splitlines() if not line.startswith('#')))
+        for tool in ('iptables-save','ip6tables-save')]
+    if any(not ruleset.startswith('*filter\n') or not ruleset.endswith('\nCOMMIT')
+           or any(':'+name+' ' not in ruleset for name in ('INPUT','FORWARD','OUTPUT')) for ruleset in rules):
+        raise RuntimeError('incomplete filter-table observation')
+    links=json.loads(command(['ip','-j','-d','link','show']))
+    # Carrier, queue counts and TUN offload/header flags can change when QEMU
+    # opens/closes the TAP. Bind ifindex/alias/kind/uid/gid, not those live fields.
+    link=[{k:item.get(k) for k in ('ifindex','ifname','ifalias','link_type')}
+          | {'up':'UP' in item['flags'], 'kind':item.get('linkinfo',{}).get('info_kind')}
+          | {k:item.get('linkinfo',{}).get('info_data',{}).get(k) for k in ('owner','group')}
+          for item in links if item['ifname']==tap]
+    addresses=json.loads(command(['ip','-j','addr','show']))
+    # Only configured IPv4 addresses; kernel IPv6 link-local/DAD is volatile.
+    addr=[[a for a in item['addr_info'] if a['family']=='inet']
+          for item in addresses if item['ifname']==tap]
+    return [rules,link,addr]
+def save(value):
+    temporary=record.with_suffix('.pending')
+    temporary.write_text(json.dumps(value)); temporary.replace(record)
+def effect(value,do,undo):
+    before=snapshot()
+    if before != value['current']: raise RuntimeError('network changed before effect')
+    value['pending']=True; save(value) # acquisition intent precedes every effect
+    command(do)
+    after=snapshot()
+    if after == before: raise RuntimeError('network effect not observed')
+    value['steps'].append([undo,before,after]); value['current']=after
+    value['pending']=False; save(value)
+def run():
+    value=json.loads(record.read_text())
+    if value.get('failed') or value.get('pending'): raise RuntimeError('sticky network uncertainty')
+    if action == 'remove':
+        if value['phase'] == 'never': return
+        while value['steps']:
+            undo,before,after=value['steps'][-1]
+            if snapshot()!=after: raise RuntimeError('network ownership changed')
+            value['pending']=True; save(value)
+            command(undo)
+            if snapshot()!=before: raise RuntimeError('network inverse not proven')
+            value['steps'].pop(); value['current']=before; value['pending']=False; save(value)
+        return
+    if action != 'prepare' or value['phase'] != 'never': raise RuntimeError('network already acquired')
+    if not port.isdecimal() or not 1 <= int(port) <= 65535: raise RuntimeError('invalid proxy port')
+    before=snapshot()
+    if before[1] or any(chain in rules or forward in rules or tap in rules for rules in before[0]):
+        raise RuntimeError('network name collision')
+    value={'phase':'owned','steps':[],'current':before}; save(value)
+    effect(value,['ip','tuntap','add','dev',tap,'mode','tap','user',str(__import__('os').getuid())],
+           ['ip','link','delete','dev',tap])
+    # Tag before any guest can open the link. A crash between creation/tagging
+    # retains pending custody rather than guessing which interface to remove.
+    import uuid
+    effect(value,['ip','link','set','dev',tap,'alias','cogs-'+uuid.uuid4().hex],
+           ['ip','link','set','dev',tap,'alias',''])
+    effect(value,['ip','addr','add','192.0.2.1/30','dev',tap],
+           ['ip','addr','del','192.0.2.1/30','dev',tap])
+    # IPv6 is denied before bringing up the link (and thus before autoconfig).
+    for builtin in ('INPUT','FORWARD'):
+        rule=[builtin,'-i',tap,'-j','DROP']
+        effect(value,['ip6tables','-w','5','-I',builtin,'1',*rule[1:]],
+               ['ip6tables','-w','5','-D',*rule])
+    # Exact rules, including their multiplicity and original port, are retained.
+    policy=(state/'network.policy').read_text().splitlines()
+    for line in policy:
+        if line.startswith(':'):
+            name=line.split()[0][1:]; do=['-N',name]; undo=['-X',name]
+        elif line.startswith(('-A ','-I ')):
+            do=line.split(); undo=['-D',*do[1:]]
+            if do[0]=='-I': undo.pop(2) # insertion index is not part of rule identity
+        else: continue
+        effect(value,['iptables','-w','5',*do],['iptables','-w','5',*undo])
+    effect(value,['ip','link','set','dev',tap,'up'],['ip','link','set','dev',tap,'down'])
+try:
+    run()
+except BaseException:
+    value=json.loads(record.read_text()); value['failed']=True; save(value)
+    raise
+PY
 }
-stop_vm() {
-  if [[ -f "$state/qemu.pid" ]]; then
-    pid=$(<"$state/qemu.pid")
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-      for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-      kill -KILL "$pid" 2>/dev/null || true
-      for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-      kill -0 "$pid" 2>/dev/null && { echo 'FAIL: QEMU did not terminate' >&2; return 1; }
-    fi
-    rm -f "$state/qemu.pid"
-  fi
-}
+remove_network() { network_owner remove; }
+stop_vm() { qemu_owner stop; }
 cleanup_partial() {
-  stop_vm
-  remove_network
+  stop_vm && remove_network
 }
 
 prepare_image() {
@@ -216,20 +358,16 @@ prepare_disks() {
 }
 
 prepare_network() {
-  remove_network
-  sudo ip tuntap add dev "$tap" mode tap user "$(id -u)"
-  sudo ip addr add "$host_ip/30" dev "$tap"
-  sudo ip link set "$tap" up
-  # Destination-wide guards precede ambient established acceptance. Only exact
-  # host-initiated SSH replies have a conntrack exception.
-  network_policy "$tap" "$input_chain" "$drop_chain" "$proxy_port" | sudo iptables-restore --noflush
-  sudo ip6tables -I INPUT 1 -i "$tap" -j DROP
-  sudo ip6tables -I FORWARD 1 -i "$tap" -j DROP
+  network_policy "$tap" "$input_chain" "$drop_chain" "$proxy_port" > "$state/network.policy"
+  network_owner prepare
 }
 
 start_vm() {
+  qemu_owner preflight
   prepare_network
+  # Legacy stopped-state log retirement only; no UART capture on new launches.
   rm -f "$state/qmp.sock" "$state/serial.log"
+  printf '{"phase":"launching"}\n' > "$state/qemu.owner"
   nohup qemu-system-x86_64 \
     -name cogs-stage1-linux-kvm -machine q35 -accel kvm -cpu host -smp 2 -m 2048M \
     -drive if=virtio,format=qcow2,file="$state/root-overlay.qcow2" \
@@ -238,12 +376,13 @@ start_vm() {
     -drive if=virtio,format=raw,file="$state/workspace.img" \
     -netdev tap,id=cogsnet,ifname="$tap",script=no,downscript=no \
     -device virtio-net-pci,netdev=cogsnet,mac=52:54:00:c0:65:01 \
-    -display none -serial file:"$state/serial.log" -monitor none \
+    -display none -serial null -monitor none \
     -qmp unix:"$state/qmp.sock",server=on,wait=off -no-reboot \
     >"$state/qemu.stdout" 2>"$state/qemu.stderr" 9>&- &
   echo $! > "$state/qemu.pid"
+  qemu_owner capture
   for _ in $(seq 1 600); do
-    kill -0 "$(<"$state/qemu.pid")" 2>/dev/null || { echo 'FAIL: QEMU exited during guest boot' >&2; return 1; }
+    qemu_owner check || return 1
     run_ssh true >/dev/null 2>&1 && return 0
     sleep 0.2
   done
@@ -312,7 +451,7 @@ verify_git_tools() {
 
 verify() {
   [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
-  [[ -f "$state/qemu.pid" ]] && kill -0 "$(<"$state/qemu.pid")"
+  qemu_owner check
   query_kvm >/dev/null
   run_ssh 'test "$(id -u)" = 0'
   run_ssh 'test -d /workspace'
@@ -337,15 +476,19 @@ case "$operation" in
   create)
     [[ ! -e "$state" ]] || { echo 'FAIL: linux-kvm state already exists' >&2; exit 1; }
     mkdir -p "$state"; chmod 0700 "$state"; : > "$sentinel"; chmod 0600 "$sentinel"
-    trap 'status=$?; if [[ $status -ne 0 ]]; then cleanup_partial; rm -rf "$state"; fi; exit $status' EXIT
+    printf '{"phase":"never"}\n' > "$state/qemu.owner"
+    printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
+    trap 'status=$?; if [[ $status -ne 0 ]]; then cleanup_partial && rm -rf "$state"; fi; exit $status' EXIT
     prepare_image; prepare_keys; prepare_disks; prepare_seed; start_vm; verify
     trap - EXIT
     ;;
   verify) verify ;;
   reset)
-    [[ -f "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
+    [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
+    qemu_owner check
     run_ssh 'printf reset-persistent > /workspace/reset-marker; sync'
     stop_vm; remove_network
+    printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
     rm -f "$state/root-overlay.qcow2" "$state/seed.img" "$state/user-data" "$state/meta-data" "$state/network-config"
     qemu-img create -q -f qcow2 -F qcow2 -b "$cache/$image_name" "$state/root-overlay.qcow2" 12G
     cogs_git_tools_verify_image_file "$state/git-tools.img" 2>/dev/null || prepare_git_tools_disk "$state" "$cache"
@@ -359,7 +502,9 @@ case "$operation" in
       [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: refusing unowned state' >&2; exit 1; }
       stop_vm; remove_network; rm -rf "$state"
     else
-      remove_network
+      # No custody: do not touch colliding names or claim observed retirement.
+      echo 'FAIL: no retained driver custody; absence is not teardown proof' >&2
+      exit 1
     fi
     [[ ! -e "$state" ]] || { echo 'FAIL: state remained after destroy' >&2; exit 1; }
     printf '{"status":"destroyed","profile":"linux-kvm"}\n'
