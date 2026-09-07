@@ -300,6 +300,7 @@ async function ownerTest(owner: "qemu" | "network", body: string) {
   const text = shellFunction(await readFile(driver, "utf8"), `${owner}_owner`);
   const program = text.split("<<'PY'\n")[1]?.split("\nPY\n")[0];
   assert.ok(program);
+  const entry = owner === "network" ? "try:\n    domain_fd=domain_lock()" : "try:\n    run()";
   const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-owner-"));
   try {
     const result = spawnSync(
@@ -309,13 +310,21 @@ async function ownerTest(owner: "qemu" | "network", body: string) {
         `
 import copy,json,os,pathlib,subprocess,sys
 from unittest.mock import patch
-sys.argv=['owner',${JSON.stringify(dir)},'stop','cgtap','CGINPUT','CGFORWARD','18080']
+sys.argv=['owner',${JSON.stringify(dir)},'stop','cgtap','CGINPUT','CGFORWARD','18080','1000']
 program=${JSON.stringify(program)}
 def forbidden(*args,**kwargs): raise AssertionError('ambient effect forbidden')
 with patch.object(subprocess,'check_output',forbidden), patch.object(os,'kill',forbidden):
-    exec(program.split('try:\\n    run()\\nexcept BaseException:')[0])
+    entry=${JSON.stringify(entry)}
+    exec(program.split(entry)[0])
+    if 'domain_lock' in globals():
+        real_domain_lock=domain_lock
+        domain_identity=[1,2,'boot']
+        def domain_lock():
+            fd=os.open(state/'fake-domain',os.O_CREAT|os.O_RDONLY,0o600)
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            return fd
     def invoke():
-        exec('try:\\n    run()\\nexcept BaseException:'+program.split('try:\\n    run()\\nexcept BaseException:')[1])
+        exec(entry+program.split(entry)[1],globals())
     def fails():
         try: invoke()
         except (RuntimeError,FileNotFoundError,ValueError,KeyError,ProcessLookupError): pass
@@ -386,7 +395,8 @@ policy='*filter\\n:CGINPUT - [0:0]\\n:CGFORWARD - [0:0]\\n-A CGINPUT -j DROP\\n-
 (state/'network.policy').write_text(policy)
 world=[]; calls=[]; fail_at=None; no_effect=False
 def snapshot(): return [copy.deepcopy(world),[],[]]
-def command(args):
+def command(args,expected=None):
+    assert expected==snapshot()
     calls.append(args)
     if len(calls)==fail_at: raise RuntimeError('injected command failure')
     if action=='prepare': world.append(args)
@@ -505,10 +515,289 @@ test("cleanup wiring retains uncertainty, has no PID-number signaling or suppres
   assert.match(text, /\(proc\/'cmdline'\)\.read_bytes\(\)\.hex\(\)/u);
   const network = shellFunction(text, "network_owner");
   assert.doesNotMatch(network, /\|\| true|2>\/dev\/null/u);
-  assert.ok(network.indexOf("value['pending']=True; save(value)") < network.indexOf("command(do)"));
+  assert.ok(network.indexOf("value['pending']=True; save(value)") < network.indexOf("command(do,before)"));
   assert.match(text, /cleanup_partial\(\) \{\n {2}stop_vm && remove_network/u);
   assert.match(text, /no retained driver custody; absence is not teardown proof/u);
   const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
   assert.doesNotMatch(smoke, /"\$driver" destroy[^\n]*\|\| true/u);
   assert.match(smoke, /smoke requires absent state/u);
+  assert.doesNotMatch(smoke, /socat_pid|reuseaddr,fork|EXEC:\/bin\/true|TCP-LISTEN:18080/u);
+});
+
+test("network command-boundary replacement cannot retarget ifindex deletion or an admitted writer", async () => {
+  await ownerTest(
+    "network",
+    `
+real_command=command
+before=[['baseline'],[],[]]; after=[['baseline'],[{'ifindex':10}],[]]
+world=copy.deepcopy(after); calls=[]
+def snapshot(): return copy.deepcopy(world)
+def reset(undo):
+    global action,world
+    action='remove'; world=copy.deepcopy(after); calls.clear()
+    save({'phase':'owned','domain':domain_identity,'steps':[[undo,before,after]],'current':after})
+def boundary(args,**kwargs):
+    calls.append(args)
+    # Supplied reproduction: replacement occurs INSIDE the actual command boundary.
+    import socket,struct
+    assert args[:3]==['python3','-I','-c'] and args[-1]=='10'
+    assert kwargs['pass_fds']==(domain_fd,) # actual effect inherits domain exclusion
+    class Netlink:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def settimeout(self,ms): pass
+        def bind(self,address): pass
+        def sendto(self,message,destination):
+            assert destination==(0,0)
+            world[1]=[{'ifindex':99}] # replacement at the kernel effect boundary
+            assert struct.unpack_from('=IHH',message)==(32,17,5)
+            assert struct.unpack_from('=i',message,20)[0]==10
+        def recvfrom(self,size): return struct.pack('=IHHIIi',20,2,0,1,0,-19),(0,0)
+    with patch.object(socket,'socket',lambda *args:Netlink()), patch.object(sys,'argv',['netlink','10']), \\
+         patch.object(socket,'AF_NETLINK',16,create=True), patch.object(socket,'NETLINK_ROUTE',0,create=True):
+        exec(args[3],{}) # actual packed RTM_DELLINK; kernel reports old index absent
+with patch.object(subprocess,'check_output',boundary):
+    reset(['ip','link','delete','dev',tap]); fails()
+assert world[1]==[{'ifindex':99}] and len(calls)==1
+assert json.loads(record.read_text())['pending'] and json.loads(record.read_text())['failed']
+# Foreign rules arriving after outer observation but before adapter revalidation.
+def command(args,expected=None):
+    world[0]=['foreign rule']; return real_command(args,expected)
+reset(['iptables','-w','5','-D','INPUT','-j',chain]); fails()
+assert not calls and world[0]==['foreign rule']
+# Every admitted network writer uses the SAME namespace-wide lock, including
+# other checkouts. Attempt replacement inside subprocess, not before snapshot.
+command=real_command
+for undo in (['ip','link','delete','dev',tap],['iptables','-w','5','-D','INPUT','-j',chain]):
+    def boundary(args,**kwargs):
+        assert kwargs['pass_fds']==(domain_fd,)
+        fd=os.open(state/'fake-domain',os.O_RDONLY)
+        try:
+            try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError: pass
+            else: raise AssertionError('foreign writer admitted inside effect')
+        finally: os.close(fd)
+        world[:]=copy.deepcopy(before); calls.append(args); return ''
+    with patch.object(subprocess,'check_output',boundary): reset(undo); invoke()
+    assert len(calls)==1 and not json.loads(record.read_text())['steps']
+reset(['iptables','-D','INPUT','-j',chain]); domain_identity=[1,99,'boot']; fails()
+assert not calls # namespace replacement never adopts a retained journal
+`,
+  );
+});
+
+test("an effect's inherited domain descriptor excludes writers after its observer closes", async () => {
+  await ownerTest(
+    "network",
+    `
+fd=domain_lock()
+# Local pipe-only child, not a network command or privileged operation.
+with subprocess.Popen([sys.executable,'-I','-c','import sys; sys.stdin.buffer.read()'],
+                      stdin=subprocess.PIPE,pass_fds=(fd,)) as child:
+    os.close(fd) # observer retired; actual work still owns the same flock
+    contender=os.open(state/'fake-domain',os.O_RDONLY)
+    try:
+        try: fcntl.flock(contender,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: pass
+        else: raise AssertionError('released live effect exclusion')
+        child.communicate(timeout=5)
+        assert child.returncode==0
+        fcntl.flock(contender,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    finally: os.close(contender)
+`,
+  );
+});
+
+test("network domain admission requires isolated namespace and trusted immutable root lease", async () => {
+  await ownerTest(
+    "network",
+    `
+from types import SimpleNamespace as S
+ns=S(st_dev=1,st_ino=2); initial=S(st_dev=1,st_ino=1)
+parent=S(st_mode=stat.S_IFDIR|0o755,st_uid=0)
+lease=S(st_mode=stat.S_IFREG|0o444,st_uid=0,st_nlink=1,st_dev=3,st_ino=4,st_ctime_ns=5)
+opened=[]; locked=[]; closed=[]
+def open_lease(path,flags):
+    opened.append((str(path),flags)); return 88
+def stat_ns(path): return ns if path=='/proc/self/ns/net' else initial
+with patch.object(os,'stat',stat_ns), patch.object(pathlib.Path,'lstat',lambda path:parent), \\
+     patch.object(pathlib.Path,'read_text',lambda path:'boot'), patch.object(os,'open',open_lease), \\
+     patch.object(os,'fstat',lambda fd:lease), patch.object(os,'read',lambda fd,size:b'cogs-exclusive-netns-v1 boot\\n'), \\
+     patch.object(os,'close',closed.append), patch.object(fcntl,'flock',lambda fd,flags:locked.append((fd,flags))):
+    assert real_domain_lock()==88 and locked==[(88,fcntl.LOCK_EX|fcntl.LOCK_NB)]
+    assert domain_identity==[1,2,'boot',3,4,5]
+    assert opened[0][0]=='/run/cogs-kvm-network-domain/1-2'
+    assert opened[0][1] & os.O_NOFOLLOW and opened[0][1] & os.O_CLOEXEC
+    for obj,field,bad in ((ns,'st_ino',1),(parent,'st_uid',1000),(parent,'st_mode',stat.S_IFLNK|0o777),
+                          (lease,'st_uid',1000),(lease,'st_mode',stat.S_IFREG|0o644),(lease,'st_nlink',2)):
+        old=getattr(obj,field); setattr(obj,field,bad)
+        try: real_domain_lock()
+        except RuntimeError: pass
+        else: raise AssertionError('unsafe domain admitted')
+        setattr(obj,field,old)
+    assert closed==[88,88,88]
+`,
+  );
+});
+
+test("smoke competitor and mismatched receipt never confer cleanup; successful nonce does", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const acquisition = smoke.slice(smoke.indexOf('receipt=$("$driver" create)'), smoke.indexOf('"$driver" verify'));
+  const dir = await mkdtemp(join(tmpdir(), "cogs-smoke-race-"));
+  try {
+    for (const mode of ["competitor", "wrong-receipt", "owned", "retired", "helper-uncertain"]) {
+      const fake = join(dir, "driver");
+      await writeFile(
+        fake,
+        `#!/bin/bash
+if [[ "$1" == create ]]; then
+  printf foreign > "$COGS_KVM_STATE_DIR"
+  [[ "$MODE" != competitor ]] || exit 1
+  nonce=$COGS_KVM_GENERATION
+  [[ "$MODE" != wrong-receipt ]] || nonce=foreign
+  printf '{"status":"ready","profile":"linux-kvm","generation":"%s"}\\n' "$nonce"
+else
+  printf '%s' "$COGS_KVM_GENERATION" > "$COGS_KVM_STATE_DIR.destroyed"
+fi
+`,
+        { mode: 0o700 },
+      );
+      const state = join(dir, mode);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+state=$COGS_KVM_STATE_DIR; driver=${JSON.stringify(fake)}
+passed=false; acquired=false; helper_safe=true
+write_report() { :; }
+${shellFunction(smoke, "cleanup")}
+trap cleanup EXIT
+${acquisition}
+[[ "$MODE" != retired ]] || acquired=false
+[[ "$MODE" != helper-uncertain ]] || helper_safe=false
+exit 1
+`,
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, MODE: mode, COGS_KVM_STATE_DIR: state, COGS_KVM_GENERATION: "a".repeat(32) },
+        },
+      );
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(await readFile(state, "utf8"), "foreign");
+      if (mode === "owned") assert.equal(await readFile(`${state}.destroyed`, "utf8"), "a".repeat(32));
+      else await assert.rejects(lstat(`${state}.destroyed`), { code: "ENOENT" });
+    }
+    const text = await readFile(driver, "utf8");
+    const gate = text.slice(text.indexOf("generation=${COGS_KVM_GENERATION"), text.indexOf("ssh_args()"));
+    const sentinel = join(dir, "sentinel");
+    await writeFile(sentinel, "b".repeat(32));
+    for (const operation of ["destroy", "reset", "verify", "ssh"]) {
+      const result = spawnSync(
+        "bash",
+        ["-c", `set -eu; operation=${operation}; sentinel=${JSON.stringify(sentinel)}; ${gate}`],
+        {
+          encoding: "utf8",
+          env: { ...process.env, COGS_KVM_GENERATION: "a".repeat(32) },
+        },
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /generation mismatch/u);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("KVM nonce receipts preserve the exact launcher schema when custody was not requested", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { normalizeDriverResult } = await import("../dev/launcher/contract.ts");
+  const source = await readFile(driver, "utf8");
+  const receipt = source.slice(
+    source.indexOf("  # Preserve the launcher's exact legacy result schema"),
+    source.indexOf('\ncase "$operation" in'),
+  );
+  for (const nonce of ["", "a".repeat(32)]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+COGS_KVM_GENERATION=${JSON.stringify(nonce)}; generation=${JSON.stringify(nonce)}
+guest_kernel=6.12.95+deb13-amd64; image_sha512=${"a".repeat(128)}
+host_ip=192.0.2.1; guest_ip=192.0.2.2; proxy_port=18080
+receipt() {
+${receipt}
+receipt
+`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    if (nonce) assert.equal(JSON.parse(result.stdout).generation, nonce);
+    else assert.equal(normalizeDriverResult(result.stdout, "linux-kvm", "create").result, "ready");
+  }
+});
+
+test("socat single-child owner retains pidfd through reuse, failures and TERM/KILL retirement", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const text = shellFunction(await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8"), "proxy_probe");
+  const program = text.split("<<'PY'\n")[1]?.split("\nPY\n")[0];
+  assert.ok(program);
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `
+import contextlib,io,os,select,signal,subprocess,sys,time
+from unittest.mock import patch
+from types import SimpleNamespace as S
+program=${JSON.stringify(program)}
+sys.argv=['probe','/fake-driver','19090']
+for mode in ('success','early-exit','kill','timeout','probe-fail','signal','pidfd-fail','exit-failure'):
+    calls=[]; signals=[]; waits=[]; closed=[]; stdout=io.StringIO(); dead=False
+    class Child:
+        pid=42
+        def kill(self): signals.append('unreaped-child')
+        def wait(self,timeout):
+            waits.append(timeout); return 1 if mode=='exit-failure' else 0
+    def spawn(args,**kwargs):
+        assert args==['socat','TCP-LISTEN:19090,bind=0.0.0.0,reuseaddr','OPEN:/dev/null']
+        return Child()
+    def pidfd(pid,flags):
+        assert pid==42 and not waits
+        if mode=='pidfd-fail': raise OSError('unsupported')
+        return 88
+    def send(fd,sig,*args):
+        global dead
+        assert fd==88 # fake numeric PID now reused; only held generation is targeted
+        signals.append(sig)
+        if mode!='timeout' and (mode!='kill' or sig==signal.SIGKILL): dead=True
+    class Poll:
+        def register(self,fd,event): assert fd==88
+        def poll(self,ms): return [1] if dead or mode=='early-exit' else []
+    def probe(args,**kwargs):
+        calls.append(args); assert '/19090' in args[-1]
+        if mode=='signal': raise RuntimeError('interrupted')
+        return S(returncode=1 if mode=='probe-fail' else 0)
+    with patch.object(subprocess,'Popen',spawn), patch.object(subprocess,'run',probe), \\
+         patch.object(os,'pidfd_open',pidfd,create=True), patch.object(os,'close',closed.append), \\
+         patch.object(signal,'pidfd_send_signal',send,create=True), patch.object(select,'poll',Poll), \\
+         patch.object(signal,'signal',lambda *args:None), patch.object(signal,'pthread_sigmask',lambda *args:set()), \\
+         patch.object(time,'sleep',lambda *args:None), contextlib.redirect_stdout(stdout):
+        try: exec(program)
+        except (RuntimeError,OSError): assert mode not in ('success','kill')
+        else: assert mode in ('success','kill')
+    assert stdout.getvalue()==('' if mode=='timeout' else 'retired\\n')
+    assert bool(waits)==(mode!='timeout')
+    if mode=='kill': assert signals==[signal.SIGTERM,signal.SIGKILL]
+    if mode=='early-exit': assert not signals and not calls
+    if mode!='pidfd-fail': assert closed==[88]
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
