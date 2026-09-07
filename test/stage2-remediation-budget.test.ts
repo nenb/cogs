@@ -126,6 +126,131 @@ r['select']((head,))  # A real repaired descendant remains eligible for separate
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("historical H3/G3/Q3 variables fail current exact selectors, not the bounded retirement registry", () => {
+  // ADR0309 snapshot only: no remote-variable audit or mutation. This deliberately
+  // does not map all historical package/rootfs/producer selectors or old workflows.
+  const historical = {
+    IMPLEMENTATION: "229ea62bce964086726181974a6fec1c6dfd1f86",
+    CONTROL: "821149ba4c3dbccef48694efcdb1eb29fa9fd2b9",
+    QUALIFICATION: "06188f67a9a699924d645ce8aa0e91950b6341c7",
+  };
+  const source = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
+  const h = source.match(/^H=([a-f0-9]{40})$/mu)?.[1];
+  const g = source.match(/^G=([a-f0-9]{40})$/mu)?.[1];
+  assert.ok(h && g);
+  const env: Record<string, string> = {
+    H: h,
+    G: g,
+    GITHUB_SHA: "a".repeat(40),
+    EXACT_IMPLEMENTATION_HEAD: h,
+    EXACT_CONTROL_HEAD: g,
+    EXACT_QUALIFICATION_HEAD: "a".repeat(40),
+  };
+  const predicates = [
+    ...source.matchAll(
+      /^ {2}test "\$EXACT_(?:IMPLEMENTATION|CONTROL|QUALIFICATION)_HEAD" = "\$(?:H|G|GITHUB_SHA)" \|\| return$/gmu,
+    ),
+  ];
+  assert.equal(predicates.length, 3);
+  const program = `admit_exact() {\n${predicates.map((m) => m[0]).join("\n")}\n}\nadmit_exact && printf EFFECT`;
+  assert.equal(spawnSync("bash", ["-c", program], { env, encoding: "utf8" }).stdout, "EFFECT");
+  for (const [role, revision] of Object.entries(historical)) {
+    assert.ok(!tombstones.includes(revision), "not a registry veto claim");
+    assert.ok(
+      readFileSync("docs/adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md", "utf8").includes(
+        revision,
+      ),
+    );
+    const result = spawnSync("bash", ["-c", program], {
+      env: { ...env, [`EXACT_${role}_HEAD`]: revision },
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    assert.equal(result.status, 1, role);
+    assert.equal(result.stdout, "", role);
+  }
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import runpy
+r=runpy.run_path('scripts/stage2-revision-retirement.py')
+g=runpy.run_path('scripts/stage2-prebuilt-local-qualification-guard.py')
+e=${JSON.stringify(Object.fromEntries(Object.entries(historical).map(([role, rev]) => [`EXACT_${role}_HEAD`, rev])))}
+e['GITHUB_SHA']='a'*40
+r['select'](tuple(e.values())) # The three-entry registry deliberately does not reject these.
+try: g['guard'](e)
+except g['GuardError'] as error: assert str(error)=='review constants remain blocked',str(error)
+else: raise AssertionError('unfilled exact guard admitted historical selectors')
+`,
+    ],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("ADR0309 post-H gross reserves reject overruns even below the legacy correction highs", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+assert m['POST_H_REVISION']=='6bd12dcd25d877ffac03752fa0f71beeeb86a99e'
+assert m['POST_H_HIGHS']=={'deploy':150,'retained':500,'workflow':350,'global':1000}
+f=m['measure']; ns=f.__globals__; original=ns['_gross_slice']; observed=[]
+def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
+ if revision!=m['POST_H_REVISION']: return original(paths,allowed,revision)
+ assert revision!=m['FINAL_H_REVISION']
+ key='deploy' if paths==(m['DEPLOY_ROOT'],) else 'workflow' if paths==(m['WORKFLOW_ROOT'],) else 'retained'
+ observed.append(key)
+ if key=='deploy':
+  assert all(allowed(p) for p in (*m['CONTROL_DATA_MEMBERS'],*m['FINAL_CONTROL_DATA_MEMBERS']))
+ if key=='retained':
+  assert all(p in paths and allowed(p) for p in ('scripts/stage2-revision-retirement.py','config/stage2-retired-revisions-v1.json'))
+ return values[key]
+ns['_gross_slice']=gross
+values=dict(deploy=150,retained=500,workflow=350)
+report=f()
+assert sorted(observed)==['deploy','retained','workflow']
+assert report['post_h_gross_added_lines']==dict(values,**{'global':1000})
+assert report['post_h_reserve_limits_satisfied'] is True
+for key in values:
+ values=dict(deploy=0,retained=0,workflow=0); values[key]=m['POST_H_HIGHS'][key]+1
+ try: f()
+ except m['LineBudgetError']: pass
+ else: raise AssertionError(key+' reserve not enforced by central measure')
+# Exercise combined enforcement independently of the (currently summing-to-1000) slices.
+ns['POST_H_HIGHS']=dict(m['POST_H_HIGHS'],deploy=151)
+values=dict(deploy=151,retained=500,workflow=350)
+try: f()
+except m['LineBudgetError']: pass
+else: raise AssertionError('combined reserve not enforced')
+# Gross diff never subtracts deletions, and must disable rename/copy/textconv credit.
+ns['_gross_slice']=original
+calls=[]
+def git(args):
+ calls.append(args)
+ if 'diff' in args:
+  assert '--no-renames' in args and '--no-textconv' in args and '--no-ext-diff' in args
+  assert m['POST_H_REVISION'] in args
+  return '151\\t9999\\tdeploy/aws-feasibility/old.py\\n'
+ return ''
+ns['_git']=git
+assert original((m['DEPLOY_ROOT'],),lambda p: p.endswith('.py'),m['POST_H_REVISION'])==151
+`,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("final control accounting requires an absent or safe canonical complete member set", () => {
   const program = String.raw`
 import importlib.util

@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 umask 077
 
+# ADR0313: preserve the historical recipe below, but deny before setup or pulls.
+# There is no environment/argument override and no admitted replacement identity.
+printf '%s\n' 'OpenBao 2.6.1 is retired; no admitted replacement' >&2
+exit 2
+
 OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
 REPORT_DIR="${1:-docs/security-evidence/generated/openbao-model-auth}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

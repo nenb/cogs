@@ -29,6 +29,10 @@ REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
 FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 11_844, 4_836
+# ADR0309 reserves are an independent gross diff, not subtraction of two gross
+# endpoints (which would credit deletion of additions between the anchors).
+POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
+POST_H_HIGHS = {"deploy": 150, "retained": 500, "workflow": 350, "global": 1_000}
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -400,6 +404,17 @@ def measure():
         RETAINED_FILES, lambda name: name in retained_names, FINAL_H_REVISION)
     workflow_gross = FINAL_H_WORKFLOW_GROSS + _gross_slice((WORKFLOW_ROOT,), lambda name: (
         name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)), FINAL_H_REVISION)
+    post_h = {
+        "deploy": _gross_slice((DEPLOY_ROOT,), lambda name: (
+            (name.startswith(DEPLOY_ROOT + "/") and name.endswith(DEPLOY_SUFFIXES))
+            or name in control_data_names or name in final_control_data_names
+            or name in retained_names), POST_H_REVISION),
+        "retained": _gross_slice(RETAINED_FILES, lambda name: name in retained_names, POST_H_REVISION),
+        "workflow": _gross_slice((WORKFLOW_ROOT,), lambda name: (
+            name.startswith(WORKFLOW_ROOT + "/") and name.endswith(WORKFLOW_SUFFIXES)), POST_H_REVISION),
+    }
+    post_h["global"] = sum(post_h.values())
+    post_h_satisfied = all(post_h[name] <= high for name, high in POST_H_HIGHS.items())
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
@@ -447,6 +462,10 @@ def measure():
         "correction_workflow_high": WORKFLOW_CORRECTION_HIGH,
         "correction_global_high": GLOBAL_CORRECTION_HIGH,
         "correction_slice_limits_satisfied": slices_satisfied,
+        "post_h_base_revision": POST_H_REVISION,
+        "post_h_gross_added_lines": post_h,
+        "post_h_reserve_highs": POST_H_HIGHS,
+        "post_h_reserve_limits_satisfied": post_h_satisfied,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
@@ -470,6 +489,7 @@ def measure():
     # Keep the preferred target advisory, but enforce every non-transferable
     # correction slice, the global correction high, and the mandatory hard stop.
     _require(report["correction_slice_limits_satisfied"])
+    _require(report["post_h_reserve_limits_satisfied"])
     _require(report["remediation_limits_satisfied"])
     _require(report["hard_satisfied"])
     return report

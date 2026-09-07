@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import childProcess, { spawnSync } from "node:child_process";
+import { chmod, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +11,7 @@ import {
   LAUNCHER_DOCKER,
   LAUNCHER_IMAGE_ENV,
   LAUNCHER_REQUIRED_IMAGES,
+  prepareLauncherImages,
   verifyImageInspect,
 } from "../scripts/prepare-launcher-images.ts";
 import {
@@ -268,6 +271,63 @@ test("launcher evidence helpers reject non-tmpfs and constrain report filename",
   assert.throws(() => validateReportPath("insecure-container", "/tmp/launcher-insecure-container.json"));
 });
 
+test("historical OpenBao smokes refuse every profile before commands, setup or report writes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cogs-retired-smoke-"));
+  try {
+    const effects = join(dir, "effects");
+    const commands = [
+      "docker",
+      "timeout",
+      "gtimeout",
+      "dirname",
+      "mktemp",
+      "git",
+      "date",
+      "shasum",
+      "sha256sum",
+      "cut",
+      "mkdir",
+      "chmod",
+      "sudo",
+      "node",
+      "python3",
+      "rm",
+      "seq",
+    ];
+    for (const command of commands) {
+      const path = join(dir, command);
+      await writeFile(path, '#!/bin/bash\nprintf EFFECT >> "$EFFECT_LOG"\nexit 97\n');
+      await chmod(path, 0o700);
+    }
+    const before = await readdir(dir);
+    for (const script of [
+      "dev/openbao-model-auth/ci-smoke.sh",
+      "test/egress-conformance/stage3-real-runtime/ci-smoke.sh",
+    ]) {
+      for (const profile of ["insecure-container", "linux-kvm", "invalid"]) {
+        const result = spawnSync("/bin/bash", [join(process.cwd(), script), join(dir, "report")], {
+          env: {
+            PATH: dir,
+            EFFECT_LOG: effects,
+            COGS_STAGE3_REAL_RUNTIME_PROFILE: profile,
+            OPENBAO_IMAGE: "caller-selected:replacement",
+            COGS_SOURCE_REVISION: sourceRevision,
+          },
+          encoding: "utf8",
+          timeout: 2000,
+        });
+        assert.equal(result.status, 2, `${script}:${profile}:${result.stderr}`);
+        assert.equal(result.stdout, "");
+        assert.match(result.stderr, /OpenBao 2\.6\.1 is retired; no admitted replacement/u);
+        assert.deepEqual(await readdir(dir), before, "refusal must precede command/report effects");
+      }
+      assert.ok((await readFile(script, "utf8")).includes(OPENBAO_IMAGE), "retain historical pin bytes");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("sensitive export cleanup treats post-acquisition removal as uncertain", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogs-launcher-export-"));
   try {
@@ -280,12 +340,34 @@ test("sensitive export cleanup treats post-acquisition removal as uncertain", as
   }
 });
 
-test("retired launcher image helper retains exact history but active workflows cannot invoke it", async () => {
+test("launcher preparation excludes retired OpenBao and remains outside active workflows", async (t) => {
   assert.equal(LAUNCHER_DOCKER, "/usr/bin/docker");
   assert.deepEqual(LAUNCHER_IMAGE_ENV, { HOME: "/tmp" });
-  assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [OPENBAO_IMAGE, ENVOY_IMAGE]);
-  assert.throws(() => verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
-  verifyImageInspect(OPENBAO_IMAGE, JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.6.1@", "@")] }]));
+  assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [ENVOY_IMAGE]);
+  assert.ok(Object.isFrozen(LAUNCHER_REQUIRED_IMAGES));
+  const inspect = JSON.stringify([{ RepoDigests: [ENVOY_IMAGE.replace(":v1.38.3@", "@")] }]);
+  assert.throws(() => verifyImageInspect(ENVOY_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
+  verifyImageInspect(ENVOY_IMAGE, inspect);
+  const calls: unknown[][] = [];
+  const exec = t.mock.method(childProcess, "execFileSync", (...args: unknown[]) => {
+    calls.push(args);
+    return inspect;
+  });
+  syncBuiltinESMExports();
+  try {
+    prepareLauncherImages(); // Only the injected recorder runs; never Docker.
+    assert.deepEqual(
+      calls.map((args) => args.slice(0, 2)),
+      [
+        [LAUNCHER_DOCKER, ["pull", ENVOY_IMAGE]],
+        [LAUNCHER_DOCKER, ["image", "inspect", ENVOY_IMAGE]],
+      ],
+    );
+    assert.ok(!JSON.stringify(calls).includes(OPENBAO_IMAGE));
+  } finally {
+    exec.mock.restore();
+    syncBuiltinESMExports();
+  }
 
   const insecure = await readFile(join(process.cwd(), ".github/workflows/insecure-container.yml"), "utf8");
   const kvm = await readFile(join(process.cwd(), ".github/workflows/kvm-qualification.yml"), "utf8");

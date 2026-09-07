@@ -1,10 +1,10 @@
 # Stage 3 S3-09 Linux/KVM exit evidence
 
-## Current-source limitation (ADR 0309)
+## Current-source limitation (ADR 0309; updated under ADR 0312/0313)
 
 The acceptance below is historical and has not been rerun or rebound. Its observer-consistency checks allowed coherent absence; it does not prove the corrected positive-only scenario or current-generation TLS trust and capability provisioning. Current launcher corrections require positive correlated observations and reject historical proof metadata. Local synthetic tests are not replacement KVM evidence.
 
-Complete inner-request accounting and a final retired WAL observation remain unavailable through the current launcher interfaces. Exact counts in the available observers are not a literal zero-extra-traffic or final-retirement traffic guarantee. No new acceptance, source freeze, dispatch permission, or qualification is recorded here.
+The final retired WAL/completion interface is now implemented, with generation-bound immutable metadata exposed only after the producers actually retire. This closes the source interface gap, not the runtime evidence gap. Universal all-inner-attempt accounting and real corrected Linux/KVM evidence remain absent: denied inner requests without an intent can fall outside these observers. Exact observed WAL/completion/fixture/relay counts are not a literal zero-extra-traffic guarantee. ADR 0313 defers this Stage3 runtime qualification outside the Stage2-only graph; it does not mark it passed. No new acceptance, source freeze, dispatch permission, or qualification is recorded here.
 
 ## Accepted scope
 
