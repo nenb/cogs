@@ -90,12 +90,12 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=1800,revocation=3000,relay=1800,lifecycle=6700,completion=2600,integration=2900)
+assert highs==dict(route=1800,revocation=3000,relay=1800,lifecycle=6800,completion=2600,integration=2900)
 assert b['global_gross_line_high']==18500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(95900,22300,13100,5500,40500,2000)
-assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=28)
-assert sum(new.values())==36 and sum(x['total'] for x in forecasts.values())==2570000
+assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=29)
+assert sum(new.values())==37 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -107,10 +107,10 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==36
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md'):
+assert len(set(paths)-baseline)==37
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md'):
  assert paths[current]=='integration' and Path(current).is_file()
-for number,name in ((317,'freeze-remediated-H-and-authorize-control'),(318,'establish-remediated-Q-and-authorize-qualification')):
+for number,name in ((318,'freeze-remediated-H-and-authorize-control'),(319,'establish-remediated-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
