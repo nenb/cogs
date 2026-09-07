@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise report construction and each independent production report codec."""
+"""Report codecs and cBPF oracle (semantic corpus: native-qualification-common.test.ts)."""
 import copy
-import errno
-import fcntl
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import stat
+import struct
 import sys
 from types import SimpleNamespace
 if sys.flags.optimize:
@@ -122,67 +121,83 @@ def encoding_mutation(raw, name):
     if name not in mutations:
         raise AssertionError(f"unknown encoding mutation: {name}")
     return mutations[name]()
-def bpf_result(program, syscall, arguments=(), architecture=0xC000003E):
-    words = {0: syscall, 4: architecture}
-    for index, value in enumerate(arguments):
-        words[16 + index * 8] = value & 0xFFFFFFFF
-        words[20 + index * 8] = value >> 32
-    accumulator = 0
-    pc = 0
-    while pc < len(program):
-        code, yes, no, constant = program[pc]
-        if code == 0x20:
-            accumulator = words.get(constant, 0)
-        elif code == 0x15:
-            pc += yes if accumulator == constant else no
-        elif code == 0x06:
-            return constant
-        else:
-            raise AssertionError(f"unsupported production cBPF opcode: {code:#x}")
-        pc += 1
-    raise AssertionError("production cBPF program fell through")
+# Independent Linux ABI policy specification, not production-derived expectations.
+BIT, ARCH, DENY, ALLOW, KILL = 0x40000000, 0xC000003E, 0x00050001, 0x7FFF0000, 0x80000000
+OLD_POLICY = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2"
+NEW_POLICY = "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7"
+FORBIDDEN = (
+    59, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+    288, 299, 307, 425, 426, 427, 56, 57, 58, 435, 272, 308, 165, 166,
+    155, 161, 428, 429, 430, 431, 432, 433, 442, 250, 248, 249, 298,
+    321, 323, 101, 175, 176, 313, 105, 106, 113, 114, 116, 117, 119,
+    122, 123, 126, 317, 319, 304, 303, 434, 438, 310, 311, 246, 320,
+    444, 445, 446, 32, 33, 292, 72,
+)
+# Frozen pre-change specification: never obtained by deleting production rows.
+OLD_PREFIX = (
+    (0x20, 0, 0, 4), (0x15, 1, 0, ARCH), (0x06, 0, 0, KILL), (0x20, 0, 0, 0),
+    (0x15, 0, 10, 322), (0x20, 0, 0, 16), (0x15, 0, 6, 198), (0x20, 0, 0, 20),
+    (0x15, 0, 4, 0), (0x20, 0, 0, 48), (0x15, 0, 2, 0x1000), (0x20, 0, 0, 52),
+    (0x15, 1, 0, 0), (0x06, 0, 0, DENY), (0x06, 0, 0, ALLOW),
+    (0x15, 0, 4, 157), (0x20, 0, 0, 16), (0x15, 1, 0, 21),
+    (0x06, 0, 0, DENY), (0x06, 0, 0, ALLOW), (0x20, 0, 0, 0),
+)
+OLD_PROGRAM = OLD_PREFIX + tuple(row for n in FORBIDDEN for row in
+    ((0x15, 0, 1, n), (0x06, 0, 0, DENY))) + ((0x06, 0, 0, ALLOW),)
+GUARD = ((0x45, 0, 1, BIT), (0x06, 0, 0, DENY))
+def bpf_bytes(program):
+    return b"".join(struct.pack("<HBBI", *row) for row in program)
+def policy_oracle(nr, args, arch=ARCH):
+    nr &= 0xFFFFFFFF
+    args = tuple(a & 0xFFFFFFFFFFFFFFFF for a in args)
+    if arch & 0xFFFFFFFF != ARCH: return KILL
+    if nr & BIT: return DENY
+    if nr == 322: return ALLOW if args[0] == 198 and args[4] == 0x1000 else DENY
+    if nr == 157: return ALLOW if args[0] & 0xFFFFFFFF == 21 else DENY
+    return DENY if nr in FORBIDDEN else ALLOW
+class BpfInvalid(ValueError): pass
+class BpfMachine:
+    """Strict supported-subset verifier/interpreter, not the full kernel verifier."""
+    def __init__(self, program, mutation=False):
+        self.program = tuple(program)
+        if not 0 < len(program) <= 4096: raise BpfInvalid("length")
+        branches = (0x15, 0x45, 0x35) if mutation else (0x15, 0x45)
+        for pc, row in enumerate(program):
+            if type(row) is not tuple or len(row) != 4: raise BpfInvalid("row")
+            if any(type(v) is not int or not 0 <= v <= high for v, high in
+                   zip(row, (0xFFFF, 0xFF, 0xFF, 0xFFFFFFFF))): raise BpfInvalid("width")
+            code, jt, jf, k = row
+            if code not in (0x20, 0x06, *branches, *((0x54,) if mutation else ())):
+                raise BpfInvalid("opcode")
+            if code not in branches and (jt or jf): raise BpfInvalid("unused jumps")
+            if code == 0x20 and (k % 4 or k > 60): raise BpfInvalid("load")
+            targets = (pc + 1 + jt, pc + 1 + jf) if code in branches else (pc + 1,)
+            if code != 0x06 and any(t >= len(program) for t in targets): raise BpfInvalid("target")
+    def run(self, nr, args=(0,) * 6, arch=ARCH, ip=0, trace=None):
+        if len(args) != 6: raise BpfInvalid("six arguments required")
+        data = struct.pack("<IIQ6Q", nr & 0xFFFFFFFF, arch & 0xFFFFFFFF,
+                           ip & 0xFFFFFFFFFFFFFFFF, *(a & 0xFFFFFFFFFFFFFFFF for a in args))
+        pc, accumulator = 0, 0
+        for _ in range(len(self.program) + 1):
+            if not 0 <= pc < len(self.program): raise BpfInvalid("execution bounds")
+            if trace is not None: trace.append(pc)
+            code, jt, jf, k = self.program[pc]
+            if code == 0x06: return k
+            if code == 0x20: accumulator = struct.unpack_from("<I", data, k)[0]
+            elif code == 0x54: accumulator &= k  # mutation-only AND-K
+            else:
+                match = accumulator == k if code == 0x15 else (
+                    accumulator >= k if code == 0x35 else bool(accumulator & k))
+                pc += jt if match else jf
+            pc += 1
+        raise BpfInvalid("termination")
 def production_seccomp_contract(launcher):
-    socket_routes = {
-        "socket", "connect", "accept", "sendto", "recvfrom", "sendmsg", "recvmsg",
-        "shutdown", "bind", "listen", "getsockname", "getpeername", "socketpair",
-        "setsockopt", "getsockopt", "accept4", "recvmmsg", "sendmmsg",
-    }
-    if not socket_routes <= set(launcher._DENIED_SYSCALLS):
-        raise AssertionError("production seccomp syscall table is incomplete")
     program = launcher._seccomp_program()
-    architecture_first = program[0] == (0x20, 0, 0, 4) and program[3] == (0x20, 0, 0, 0)
-    if not architecture_first or bpf_result(program, 0, architecture=0) != 0x80000000:
-        raise AssertionError("seccomp architecture gate does not precede syscall dispatch")
-    denied = 0x00050000 | errno.EPERM
-    if any(bpf_result(program, number) != denied for number in launcher._DENIED_SYSCALLS.values()):
-        raise AssertionError("modeled seccomp table route was not denied")
-    fcntl_number = launcher._DENIED_SYSCALLS["fcntl"]
-    fcntl_commands = (
-        fcntl.F_GETFD, fcntl.F_GETFL, fcntl.F_DUPFD, fcntl.F_DUPFD_CLOEXEC,
-        fcntl.F_SETFD, fcntl.F_SETFL,
-    )
-    if any(bpf_result(program, fcntl_number, (198, command)) != denied
-           for command in fcntl_commands):
-        raise AssertionError("production fcntl query/mutation/duplication route was admitted")
-    if any(bpf_result(program, launcher._DENIED_SYSCALLS[name]) != denied
-           for name in ("clone", "clone3")):
-        raise AssertionError("production clone route was admitted")
-    fixed = (198, 0, 0, 0, launcher._AT_EMPTY_PATH)
-    hostile = (
-        (199, *fixed[1:]),
-        ((1 << 32) | 198, *fixed[1:]),
-        (*fixed[:4], 0),
-        (*fixed[:4], launcher._AT_EMPTY_PATH | 1),
-        (*fixed[:4], launcher._AT_EMPTY_PATH | (1 << 32)),
-    )
-    if bpf_result(program, 322, fixed) != 0x7FFF0000:
-        raise AssertionError("fixed production execveat shape was not admitted")
-    if any(bpf_result(program, 322, arguments) != denied for arguments in hostile):
-        raise AssertionError("production execveat filter admitted a hostile shape")
-    set_mode = bpf_result(program, 157, (launcher._PR_SET_SECCOMP,))
-    get_mode = bpf_result(program, 157, (launcher._PR_GET_SECCOMP,))
-    if set_mode != denied or get_mode != 0x7FFF0000:
-        raise AssertionError("production prctl seccomp argument filter changed")
+    assert tuple(launcher._DENIED_SYSCALLS.values()) == FORBIDDEN
+    assert program == OLD_PROGRAM[:4] + GUARD + OLD_PROGRAM[4:]
+    assert len(program) == 176 and len(bpf_bytes(program)) == 1408
+    assert hashlib.sha256(bpf_bytes(OLD_PROGRAM)).hexdigest() == OLD_POLICY
+    assert hashlib.sha256(bpf_bytes(program)).hexdigest() == launcher._seccomp_digest() == NEW_POLICY
 def exact_rejection(function, raw, expected_type, expected_code):
     try:
         function(raw)

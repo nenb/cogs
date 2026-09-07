@@ -90,7 +90,7 @@ function metadata(job: keyof typeof checkText): unknown[] {
       parser: { closure_sha256: digestValue(parserView), objects: parserObjects } }];
   }
   if (job === "E") return [{ id: "sandbox-policy", role: "policy",
-    sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2", size_bytes: 0 }];
+    sha256: "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7", size_bytes: 0 }];
   if (job === "integration") return [
     { id: "closure", role: "digest", sha256: "8".repeat(64), size_bytes: 0 },
     { id: "gzip_output", role: "digest", sha256: markerHash, size_bytes: 0 },
@@ -132,7 +132,7 @@ function operationResult(job: keyof typeof checkText): Record<string, unknown> {
   if (job === "D") return { version: "cogs.runtime-lifecycle-qualification/v1", ...identity,
     ...Object.fromEntries(lifecycleObservations.map((name) => [name, true])) };
   if (job === "E") return { version: "cogs.sandbox-qualification/v1", ...identity,
-    seccomp_program_sha256: "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2",
+    seccomp_program_sha256: "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7",
     ...Object.fromEntries(sandboxObservations.map((name) => [name, true])) };
   return { version: "cogs.runtime-qualification/v1", marker: "cogs-runtime-qualification-v1", ...identity,
     closure_sha256: "8".repeat(64), gzip_output_sha256: markerHash, zstd_output_sha256: markerHash,
@@ -245,6 +245,161 @@ test("six strict goldens and isolated structural/semantic mutants", () => {
   const oversize = report("A"); oversize.metadata[0].size_bytes = 134_217_729;
   assert.equal(validate(oversize), false, "A exact object bound");
   pythonValidate(semanticRows);
+});
+
+test("x32 policy has independent semantic mutation witnesses and strict cBPF decoding", () => {
+  const script = `import errno,fcntl,importlib.util,json,random,sys
+spec=importlib.util.spec_from_file_location('policy_test','test/outcome-two-runtime-report-portable.py')
+s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
+m=s.load('completion_trusted_runtime_launcher',s.LAUNCHER_PATH)
+s.production_seccomp_contract(m)
+p=m._seccomp_program();zero=(0,)*6;fixed=(198,0,0,0,4096,0)
+# Preserve the original native tests alongside the exhaustive independent corpus.
+socket_routes={'socket','connect','accept','sendto','recvfrom','sendmsg','recvmsg',
+ 'shutdown','bind','listen','getsockname','getpeername','socketpair',
+ 'setsockopt','getsockopt','accept4','recvmmsg','sendmmsg'}
+assert socket_routes<=set(m._DENIED_SYSCALLS)
+assert tuple(m._DENIED_SYSCALLS.values())==s.FORBIDDEN
+old,new=s.BpfMachine(s.OLD_PROGRAM),s.BpfMachine(p)
+assert p[0]==(0x20,0,0,4) and p[3]==(0x20,0,0,0) and new.run(0,arch=0)==s.KILL
+assert s.DENY==0x00050000|errno.EPERM
+for nr in s.FORBIDDEN:assert new.run(nr)==s.DENY
+for command in (fcntl.F_GETFD,fcntl.F_GETFL,fcntl.F_DUPFD,fcntl.F_DUPFD_CLOEXEC,fcntl.F_SETFD,fcntl.F_SETFL):
+ assert new.run(m._DENIED_SYSCALLS['fcntl'],(198,command,0,0,0,0))==s.DENY
+for name in ('clone','clone3'):assert new.run(m._DENIED_SYSCALLS[name])==s.DENY
+hostile=((199,*fixed[1:]),((1<<32)|198,*fixed[1:]),(*fixed[:4],0,0),
+         (*fixed[:4],0x1001,0),(*fixed[:4],0x1000|(1<<32),0))
+assert new.run(322,fixed)==s.ALLOW
+for args in hostile:assert new.run(322,args)==s.DENY
+assert new.run(157,(22,0,0,0,0,0))==s.DENY and new.run(157,(21,0,0,0,0,0))==s.ALLOW
+shapes=(zero,fixed,*hostile,(21,0,0,0,0,0),(22,0,0,0,0,0),
+        ((1<<32)|21,s.BIT,-1,s.BIT,s.BIT,s.BIT),(198,s.BIT,-1,s.BIT,0x1000,s.BIT))
+numbers=(*range(1025),*s.FORBIDDEN,*(s.BIT|n for n in range(1025)),
+         *(s.BIT|n for n in s.FORBIDDEN),s.BIT,s.BIT|39,s.BIT|157,s.BIT|322,
+         s.BIT|520,s.BIT|521,s.BIT|545,s.BIT|547,0x7FFFFFFF,0xC0000000,
+         0xFFFFFFFF,0x3FFFFFFF,0x80000000,0xBFFFFFFF,-1,-2147483648)
+counts={'oracle':0,'historical':0}
+def check(nr,args,arch,ip=0):
+ result=new.run(nr,args,arch,ip);counts['oracle']+=1
+ assert result==s.policy_oracle(nr,args,arch),(nr,args,arch,result)
+ if arch!=s.ARCH or not nr&s.BIT:
+  assert result==old.run(nr,args,arch,ip);counts['historical']+=1
+for arch in (s.ARCH,0,0x40000003,0xC00000B7):
+ for nr in numbers:
+  for args in shapes:check(nr,args,arch)
+rng=random.Random(0xC032)
+for _ in range(4096):
+ check(rng.getrandbits(32),tuple(rng.getrandbits(64) for _ in range(6)),s.ARCH,rng.getrandbits(64))
+# Bare 512-547 and boundaries stay ALLOW, not EPERM. On pre-5.4 kernels some
+# bare numbers may execute confused-ABI calls. Never live-probe them.
+for nr in range(511,549):assert new.run(nr)==s.ALLOW and new.run(s.BIT|nr)==s.DENY
+for nr,arch,expected_trace in ((s.BIT|39,s.ARCH,[0,1,3,4,5]),(s.BIT|39,0,[0,1,2])):
+ trace=[];new.run(nr,arch=arch,trace=trace);assert trace==expected_trace
+trace=[];new.run(39,trace=trace);assert trace[:5]==[0,1,3,4,6]
+assert counts=={'oracle':101688,'historical':87443}
+witnesses=[]
+def reject(label,rows,cases):
+ machine=s.BpfMachine(tuple(rows),mutation=True)
+ for nr,args,arch in cases:
+  actual=machine.run(nr,args,arch);expected=s.policy_oracle(nr,args,arch)
+  if actual!=expected:
+   witnesses.append((label,nr,args,arch,actual,expected));return
+ raise AssertionError(('semantic mutant survived',label))
+tagged=[(s.BIT|39,zero,s.ARCH),(s.BIT|322,fixed,s.ARCH),(s.BIT|157,(21,0,0,0,0,0),s.ARCH)]
+def replace(pc,row):return p[:pc]+(row,)+p[pc+1:]
+reject('delete guard',p[:4]+p[6:],tagged)
+reject('reverse guard',replace(4,(0x45,1,0,s.BIT)),[(39,zero,s.ARCH)])
+reject('reverse guard tagged bypass',replace(4,(0x45,1,0,s.BIT)),tagged)
+for label,row in [('JEQ',(0x15,0,1,s.BIT)),('wrong mask',(0x45,0,1,0x80000000)),('zero mask',(0x45,0,1,0))]:
+ reject(label,replace(4,row),tagged)
+for action in (s.ALLOW,0x00050026,s.KILL):
+ reject('guard RET '+str(action),replace(5,(0x06,0,0,action)),tagged)
+reject('JGE broadens bit-clear',replace(4,(0x35,0,1,s.BIT)),[(0x80000000,zero,s.ARCH)])
+reject('guard before architecture',((0x20,0,0,0),)+s.GUARD+s.OLD_PROGRAM,[(s.BIT|39,zero,0)])
+delayed=s.OLD_PROGRAM[:4]+((0x15,0,12,322),)+s.OLD_PROGRAM[5:6]+s.GUARD+s.OLD_PROGRAM[6:]
+reject('guard after argument load',delayed,tagged)
+for case in tagged:
+ reject('strip bit '+str(case[0]),p[:4]+((0x54,0,0,0xBFFFFFFF),)+p[6:],[case])
+for action in (s.DENY,0):
+ reject('foreign RET '+str(action),replace(2,(0x06,0,0,action)),[(s.BIT|39,zero,0)])
+shapes=[zero,fixed,(21,0,0,0,0,0),((1<<32)|21,0,0,0,0,0),(22,0,0,0,0,0)]
+for index in (0,4):
+ for value in (0,199,21,4096,4097,(1<<32)|198,(1<<32)|4096,-1):
+  args=list(fixed);args[index]=value;shapes.append(tuple(args))
+cases=[(nr,args,s.ARCH) for nr in (39,157,322,323,s.BIT|157,s.BIT|322) for args in shapes]
+for pc in (6,8,10,12,14,17,19):
+ for field in (1,2):
+  row=list(p[pc]);row[field]=0 if row[field] else 1
+  reject('preserved branch '+str((pc,field)),replace(pc,tuple(row)),cases)
+for pc in (10,14):
+ row=list(p[pc]);row[3]=1
+ reject('high word check '+str(pc),replace(pc,tuple(row)),cases)
+for i,nr in enumerate(s.FORBIDDEN):
+ pc=23+2*i
+ reject('native deny omission '+str(nr),p[:pc]+p[pc+2:],[(nr,zero,s.ARCH)])
+for nr in range(512,548):
+ reject('unauthorized bare denial '+str(nr),p[:23]+((0x15,0,1,nr),(0x06,0,0,s.DENY))+p[23:],[(nr,zero,s.ARCH)])
+# Prevalidate unreachable code too, including both arms and terminal fallthrough.
+ret=(0x06,0,0,s.ALLOW)
+bad=[(),(ret,(0xFF,0,0,0)),(ret,(0x20,0,0,2),ret),(ret,(0x20,0,0,64),ret),
+     (ret,(0x15,255,0,0),ret),(ret,(0x45,0,255,0),ret),(ret,(0x20,0,0,0)),
+     ((0x06,0,0,-1),),((0x06,0,0,1<<32),),((0x06,256,0,0),),((0x06,0,-1,0),),
+     ((1<<16,0,0,0),),((0x06,0,0,True),),((0x06,0,0),),([0x06,0,0,0],),
+     ((0x06,1,0,0),),(ret,)*4097]
+for rows in bad:
+ try:s.BpfMachine(rows)
+ except s.BpfInvalid:pass
+ else:raise AssertionError(('invalid bytecode accepted',rows))
+for opcode in (0x35,0x54):
+ try:s.BpfMachine(((opcode,0,0,0),ret))
+ except s.BpfInvalid:pass
+ else:raise AssertionError('mutation opcode admitted in production interpreter')
+for args in ((),(0,)*5,(0,)*7):
+ try:s.BpfMachine(p).run(39,args)
+ except s.BpfInvalid:pass
+ else:raise AssertionError('argument framing')
+# Exercise unsigned word loads independently of production offsets and branches.
+for offset,word in ((0,0xFFFFFFFF),(4,s.ARCH),(8,0x76543210),(12,0xFEDCBA98),(16,0xFFFFFFFF),(20,0xFFFFFFFF),(60,0xFFFFFFFF)):
+ rows=((0x20,0,0,offset),(0x15,0,1,word),(0x06,0,0,s.DENY),ret)
+ assert s.BpfMachine(rows).run(-1,(-1,)*6,ip=0xFEDCBA9876543210)==s.DENY
+sys.path.insert(0,'scripts/native-qualification');import common
+schema=json.loads(s.ROOT.joinpath('schemas/native-qualification-report-v1alpha1.json').read_text())
+assert common.POLICY_SHA256==schema['$defs']['PolicyMetadata']['properties']['sha256']['const']==s.NEW_POLICY
+assert s.hashlib.sha256(s.bpf_bytes(p)).hexdigest()==s.NEW_POLICY
+print(json.dumps({'digest':s.NEW_POLICY,'witnesses':witnesses}))`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(run.error, undefined);
+  assert.equal(run.status, 0, run.stderr);
+  const result = JSON.parse(run.stdout) as { digest: string; witnesses: unknown[] };
+  assert.ok(result.witnesses.length >= 140);
+  assert.equal((metadata("E")[0] as any).sha256, result.digest);
+  assert.equal(operationResult("E").seccomp_program_sha256, result.digest);
+  assert.ok(readFileSync("scripts/validate-schemas.ts", "utf8").includes(`sha256: "${result.digest}", size_bytes: 0`));
+});
+
+test("historical pre-x32 digest fails AJV, Python semantics and operation derivation independently", () => {
+  const old = "aacfce0e5eeb2fb79a1708b32f5383f89b381898ad7e6bd911905d87483b6bb2";
+  const current = report("E"); const historical = structuredClone(current); historical.metadata[0].sha256 = old;
+  assert.equal(validate(current), true);
+  assert.equal(validate(historical), false);
+  const operation = operationResult("E"); const oldOperation = { ...operation, seccomp_program_sha256: old };
+  const script = `import json,sys
+from types import SimpleNamespace
+sys.path.insert(0,'scripts/native-qualification');import common
+current,historical,operation,old_operation=json.load(sys.stdin)
+common._validate_semantics(current)
+def derive(value):
+ return common._derive_operation(SimpleNamespace(job='E',source_set_sha256='9'*64,_result=common.NativeSession._freeze(value)),'a'*40)
+assert derive(operation)[1][0]['sha256']==common.POLICY_SHA256
+for call,label in ((lambda:common._validate_semantics(historical),'E fixed policy digest'),(lambda:derive(old_operation),'E operation policy')):
+ try:call()
+ except common.QualificationError as error:assert str(error)==label,(label,str(error))
+ else:raise AssertionError(('historical policy accepted',label))`;
+  const run = spawnSync("python3", ["-I", "-B", "-c", script], {
+    input: JSON.stringify([current, historical, operation, oldOperation]), encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(run.error, undefined);
+  assert.equal(run.status, 0, run.stderr);
 });
 
 test("private operation receipts solely derive all six reports and exact baselines", () => {

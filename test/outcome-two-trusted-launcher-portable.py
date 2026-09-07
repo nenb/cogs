@@ -3092,8 +3092,22 @@ def sticky_root_replacement(module):
             module._ROOT_PARENT = old_parent
 
 
+def seccomp_install_bytes_contract(module):
+    # Capture ctypes bytes only: no real prctl, filter installation or syscall.
+    captured = []
+    def prctl(option, mode, pointer):
+        program = pointer._obj
+        if (option, mode, program.len) != (22, 2, 176): raise AssertionError("filter ABI drift")
+        captured.append(ctypes.string_at(program.filter, program.len * 8))
+        return 0
+    ops = object.__new__(module._SystemOps)
+    ops.libc = SimpleNamespace(prctl=prctl)
+    expected = "8689e7141c034a63af052ba0d59c0f7a396e88c22428061d89892440bccf15e7"
+    if ops.install_seccomp() != expected or len(captured) != 1: raise AssertionError("install digest")
+    if hashlib.sha256(captured[0]).hexdigest() != expected: raise AssertionError("installed bytes")
 def parent():
     module = load_module()
+    seccomp_install_bytes_contract(module)
     module._SETUP_SECONDS = 0.25
     module._RUN_SECONDS = 0.25
     module._TERM_SECONDS = 0.05
