@@ -431,11 +431,11 @@ def client_probe(scenario, proxy_host, proxy_port, target_port, capability):
         elif scenario == "npm-tarball":
             npm_output = subprocess.run(
                 ["/bin/bash", "-o", "pipefail", "-c", "/usr/bin/npm --version 2>/dev/null | /usr/bin/head -c 65"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True, text=True
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True
             ).stdout
             if len(npm_output) >= 65:
                 return False
-            npm_version = npm_output.strip()
+            npm_version = npm_output.decode("ascii").strip()
             if re.fullmatch(r"[0-9]{1,10}(?:\.[0-9]{1,10}){1,3}", npm_version) is None:
                 return False
             environment.update({
