@@ -19,6 +19,13 @@ jobs:
       - name: Admit a fresh protected-main attempt without consulting run history
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
+          test "$GITHUB_ACTOR" = nenb && test "$GITHUB_TRIGGERING_ACTOR" = nenb
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -177,6 +184,13 @@ jobs:
       - name: Admit a fresh protected-main attempt without consulting run history
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
+          test "$GITHUB_ACTOR" = nenb && test "$GITHUB_TRIGGERING_ACTOR" = nenb
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main

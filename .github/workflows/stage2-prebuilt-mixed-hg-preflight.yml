@@ -40,6 +40,16 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = nenb && test "$GITHUB_TRIGGERING_ACTOR" = nenb
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$EXACT_QUALIFICATION_HEAD" = "$GITHUB_SHA"
           test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_CONTROL_HEAD"
@@ -79,6 +89,7 @@ jobs:
         timeout-minutes: 1
         run: |
           set -euo pipefail
+          /usr/bin/python3 -I -B "$GITHUB_WORKSPACE/qualification/scripts/stage2-revision-retirement.py" "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD"
           test ! -e /opt/kata && test ! -L /opt/kata
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
           sudo -n /bin/chmod 0755 /opt

@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 REMOTE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
 CONTROL_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control")
@@ -87,6 +89,7 @@ def grant_value(route, run_id, fixed):
                                    ("control_revision", 40),
                                    ("static_control_sha256", 64),
                                    ("rootfs_descriptor_sha256", 64))))
+    retirement["select"]((fixed["implementation_revision"], fixed["control_revision"]), runs=(run_id,))
     batch_input = canonical({"run_id": int(run_id), **fixed})
     fields = {
         "batch_commitment": digest(b"cogs.stage2-prebuilt-rehearsal-batch/v1", batch_input),
@@ -136,5 +139,5 @@ if __name__ == "__main__":
     try:
         require(len(sys.argv) == 2)
         issue(sys.argv[1])
-    except (OSError, RehearsalGrantError, preparation.PreparationError):
+    except (OSError, RehearsalGrantError, preparation.PreparationError, retirement["RetirementError"]):
         raise SystemExit(2)

@@ -45,6 +45,9 @@ marker_matches() {
 
 admit() {
   phase admission
+  /usr/bin/python3 -I -B "${BASH_SOURCE[0]%/*}/stage2-revision-retirement.py" \
+    "$H" "$G" "${EXACT_IMPLEMENTATION_HEAD-}" "${EXACT_CONTROL_HEAD-}" \
+    "${EXACT_QUALIFICATION_HEAD-}" "${GITHUB_SHA-}" || return
   test "$#" -eq 0 && test "$GITHUB_RUN_ATTEMPT" = 1 || return
   test "$GITHUB_EVENT_NAME" = workflow_dispatch || return
   test "$GITHUB_REPOSITORY" = nenb/cogs || return

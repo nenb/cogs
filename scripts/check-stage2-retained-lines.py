@@ -69,6 +69,8 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
 RETAINED_FILES = (
+    "config/stage2-retired-revisions-v1.json",
+    "scripts/stage2-revision-retirement.py",
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v2.json",
     "schemas/aws-stage2-completion-private-evidence-v1.json",
@@ -255,8 +257,8 @@ def _remediation_budget():
     _require(data["source_limits"] == {"tracked_files": 1460,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = {"route": 3_000, "revocation": 1_700, "relay": 2_600,
-                "lifecycle": 4_800, "completion": 2_700, "integration": 1_200}
+    expected = {"route": 1_500, "revocation": 3_500, "relay": 1_400,
+                "lifecycle": 4_100, "completion": 1_900, "integration": 3_600}
     owners = {}
     paths = {}
     new_file_highs = {}

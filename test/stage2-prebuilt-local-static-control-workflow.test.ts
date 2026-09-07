@@ -22,6 +22,8 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   const adjuncts = workflow.indexOf("Stage authenticated publication adjuncts after immutable acquisition");
   const control = workflow.indexOf("Produce deterministic non-authoritative control candidate");
   assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
+  assert.ok(workflow.indexOf("# ADR0309 exact retirement mirror") < workflow.indexOf("/usr/bin/git init"));
+  assert.ok(workflow.indexOf("stage2-revision-retirement.py custody") < workflow.indexOf("sudo -n install -d"));
   assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 1/u);
   assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 6/u);
   assert.match(workflow, /stage2-local-static-control-v2\.json/u);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -111,6 +112,38 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(workflow, /"\$FINAL_OBSERVATION"/u);
   assert.match(workflow, /"\$PACKAGE_DOWNLOAD" "\$READBACK" "\$CLEANUP"/u);
   assert.ok(Buffer.byteLength(workflow) < 94_000);
+});
+
+test("retired preflight admission preserves the independent cleanup-only dispatch", () => {
+  const admission = preflight
+    .slice(preflight.indexOf("admit() {"), preflight.indexOf("acquire_h() {"))
+    .replace(`\${BASH_SOURCE[0]%/*}`, `${process.cwd()}/scripts`);
+  const cleanup = preflight.slice(preflight.indexOf("settle() {"), preflight.indexOf('test "$#" -eq 1'));
+  assert.doesNotMatch(cleanup, /retirement/u);
+  const tail = preflight.slice(preflight.indexOf('test "$#" -eq 1'));
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `${admission}\nH=8907eba3191d07573cd84573cb0b2adddff17bd6\nG=${"b".repeat(40)}\nphase() { :; }\nsettle() { printf cleanup; }\nacquire_h() { printf EFFECT; }\nprepare() { printf EFFECT; }\n${tail}`,
+      "scripts/test-entry",
+      "run",
+    ],
+    {
+      encoding: "utf8",
+      timeout: 5000,
+    },
+  );
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout, "cleanup");
+  const settle = spawnSync(
+    "bash",
+    ["-c", `admit() { printf EFFECT; return 2; }\nsettle() { printf cleanup; }\n${tail}`, "test-entry", "settle"],
+    { encoding: "utf8" },
+  );
+  assert.equal(settle.status, 0);
+  assert.equal(settle.stdout, "cleanup");
 });
 
 test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () => {

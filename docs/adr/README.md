@@ -329,7 +329,7 @@ ADR 0087 was accepted by delegated project lead on 2026-07-27 under Nick Byrne's
 | [0306](0306-retire-first-final-chain-and-correct-Q-bootstrap.md) | Retire first final chain and correct Q bootstrap | Accepted under explicit standing non-AWS authorization; new exact-H chain required |
 | [0307](0307-freeze-bootstrap-corrected-H-and-authorize-G.md) | Freeze bootstrap-corrected H and authorize G | Accepted under explicit standing non-AWS authorization; publisher/static only after protected G |
 | [0308](0308-retire-paused-chain-and-authorize-external-review-remediation.md) | Retire paused H/G and authorize bounded external-review remediation | Accepted by explicit owner instruction; historical decision, see ADR 0309 for post-H retirement and reallocation |
-| [0309](0309-retire-post-review-H-and-authorize-bounded-corrections.md) | Retire post-review H and authorize bounded corrections | Accepted by explicit user acceptance on 2026-09-07 before implementation; local corrections only, no operational authority |
+| [0309](0309-retire-post-review-H-and-authorize-bounded-corrections.md) | Retire post-review H and authorize bounded corrections | Accepted by explicit user acceptance on 2026-09-07 before implementation; includes same-day local-only OpenBao derivative feasibility extension, no operational workflow/AWS authority |
 
 ADR 0309 reserves future freeze/control and Q/qualification decisions under 0310 and 0311 respectively; neither record exists or grants authority now.
 

@@ -34,6 +34,48 @@ test("trusted publisher is directional, numeric-artifact-bound, signed, and byte
   assert.doesNotMatch(workflow, /latest|continue-on-error:\s*true/u);
 });
 
+test("publisher refuses authenticated retired provenance despite matching archive hashes, before output", () => {
+  const program = String.raw`
+import copy,importlib.util,io,json,os,tempfile
+from pathlib import Path
+from contextlib import redirect_stdout
+from types import SimpleNamespace
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('publisher','scripts/stage2-prebuilt-rootfs-publisher.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as directory:
+ m.CANDIDATE=Path(directory); (m.CANDIDATE/'accepted').mkdir()
+ blobs={'rootfs.manifest.json':b'manifest','rootfs.metadata.json':b'metadata','rootfs.tar':b'archive'}
+ for name,raw in blobs.items(): (m.CANDIDATE/'accepted'/name).write_bytes(raw)
+ (m.CANDIDATE/'accepted/.cogs-rootfs-publication-v1').write_bytes(b'cogs-rootfs-publication-v1\n')
+ for prefix,name in [('MANIFEST','rootfs.manifest.json'),('METADATA','rootfs.metadata.json'),('USTAR','rootfs.tar')]:
+  setattr(m.prebuilt,prefix+'_SIZE',len(blobs[name]));setattr(m.prebuilt,prefix+'_SHA256',m.sha(blobs[name]))
+ base=Path('config/stage2-prebuilt-kvm-diagnostic-custody-v1')
+ for revision in [*m.retirement['REVISIONS'],'a'*40]:
+  provenance=json.loads((base/'rootfs.provenance.json').read_bytes())
+  receipt=json.loads((base/'producer-receipt.json').read_bytes())
+  package=json.loads((base/'rootfs.package.json').read_bytes())
+  members=[dict(name=name,size=len(raw),sha256=m.sha(raw)) for name,raw in blobs.items()]
+  provenance['builder'].update(implementation_revision=revision,run_id=123)
+  provenance['subject']=members; provenance_raw=m.canonical(provenance)
+  package['members']=[*members,dict(name='rootfs.provenance.json',size=len(provenance_raw),sha256=m.sha(provenance_raw))]
+  package_raw=m.canonical(package)
+  receipt.update(implementation_revision=revision,run_id=123,package_manifest_sha256=m.sha(package_raw),provenance_sha256=m.sha(provenance_raw),
+   manifest_sha256=m.prebuilt.MANIFEST_SHA256,manifest_size=m.prebuilt.MANIFEST_SIZE,ustar_sha256=m.prebuilt.USTAR_SHA256,ustar_size=m.prebuilt.USTAR_SIZE)
+  for name,raw in [('rootfs.provenance.json',provenance_raw),('rootfs.package.json',package_raw),('producer-receipt.json',m.canonical(receipt))]:
+   (m.CANDIDATE/name).write_bytes(raw)
+  out=io.BytesIO()
+  with patch.dict(os.environ,dict(EXACT_H='a'*40,GITHUB_SHA='b'*40,PRODUCER_RUN_ID='123',PRODUCER_ARTIFACT_ID='124'),clear=True), redirect_stdout(SimpleNamespace(buffer=out)):
+   try:m.validate_candidate()
+   except ValueError as error:
+    assert type(error).__name__=='RetirementError' and revision in m.retirement['REVISIONS']
+   else:assert revision=='a'*40
+  assert bool(out.getvalue())==(revision=='a'*40)
+`;
+  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("trusted descriptor issuer emits the closed fixed descriptor", () => {
   const digest = "1".repeat(64);
   const result = spawnSync("python3", ["-I", "-B", script, "issue-descriptor"], {
@@ -42,6 +84,9 @@ test("trusted descriptor issuer emits the closed fixed descriptor", () => {
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       COGS_PREBUILT_H: "2".repeat(40),
+      GITHUB_SHA: "8".repeat(40),
+      PRODUCER_RUN_ID: "123",
+      PRODUCER_ARTIFACT_ID: "124",
       COGS_PREBUILT_SOURCE_MANIFEST_SHA256: digest,
       COGS_PREBUILT_PACKAGE_MANIFEST_SHA256: "3".repeat(64),
       COGS_PREBUILT_PROVENANCE_SHA256: "4".repeat(64),

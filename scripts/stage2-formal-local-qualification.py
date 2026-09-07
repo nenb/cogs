@@ -3,6 +3,8 @@
 from dataclasses import asdict
 import hashlib, importlib.util, json, os, re, stat, sys
 from pathlib import Path
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_MODULE = ROOT / "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py"
 MAX_RECEIPT_BYTES, MAX_STATUS_BYTES = 96 * 1024, 8 * 1024
@@ -130,8 +132,13 @@ def expected_environment(environ=os.environ):
         require(re.fullmatch(r"[1-9][0-9]*", values[name]) is not None)
     archive_digest(values["EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST"])
     require(values["GITHUB_RUN_ATTEMPT"] == "1")
+    retirement["select"]((*tuple(values[name] for name in revisions),
+                          environ.get("GITHUB_SHA", values["EXPECTED_QUALIFICATION_HEAD"])),
+        runs=tuple(values[name] for name in ("EXPECTED_STATIC_CONTROL_RUN_ID", "EXPECTED_MIXED_PREFLIGHT_RUN_ID", "GITHUB_RUN_ID")),
+        artifacts=(values["EXPECTED_STATIC_CONTROL_ARTIFACT_ID"],))
     return values
 def issue_grant(ordinal, expected, authority=None):
+    expected_environment(expected)
     authority = authority or load_authority()
     require(type(ordinal) is int and 1 <= ordinal <= 7)
     return authority.issue({

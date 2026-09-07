@@ -140,6 +140,19 @@ test("isolated rehearsal entries import only their fixed sibling coordinator", (
   }
 });
 
+test("retirement direct-entry and historical-decoding regressions are offline", () => {
+  for (const flags of [[], ["-O"]]) {
+    const result = spawnSync("python3", [...flags, "-I", "-B", "test/stage2-prebuilt-rehearsal-grant.py"], {
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  assert.ok(
+    rehearsal.indexOf("stage2-revision-retirement.py custody") < rehearsal.indexOf("sudo -n mkdir -m 0755 /run/netns"),
+  );
+});
+
 test("hostile rehearsal grant values are closed, directional, and route-distinct", () => {
   const program = String.raw`
 import hashlib,importlib.util,json,sys

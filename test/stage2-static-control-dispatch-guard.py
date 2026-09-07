@@ -378,4 +378,34 @@ assert TOKEN_VALUE not in diagnostic
 assert "response" not in diagnostic.lower()
 assert TOKEN_VALUE not in GUARD._safe_diagnostic(OSError(TOKEN_VALUE))
 
+# New post-review H and unrelated valid-but-unauthorized inputs remain blocked
+# by legacy exact selectors, before even the synthetic API opener is reached.
+import textwrap
+workflow = (ROOT / ".github/workflows/stage2-local-static-control-candidate.yml").read_text()
+embedded = textwrap.dedent(workflow.split("<<'PY'\n", 1)[1].split("          PY", 1)[0])
+namespace = {"__name__": "legacy_embedded_retirement_test"}
+exec(compile(embedded, "legacy-embedded", "exec"), namespace)
+for selected in ("6bd12dcd25d877ffac03752fa0f71beeeb86a99e", "a" * 40):
+    effects = []
+    synthetic_api = lambda *_a, **_k: effects.append("API")
+    rejection(lambda: GUARD.guard(environment(EXACT_IMPLEMENTATION_HEAD=selected), urlopen=synthetic_api))
+    try:
+        namespace["guard"](environment(EXACT_IMPLEMENTATION_HEAD=selected), urlopen=synthetic_api)
+    except namespace["GuardError"]:
+        pass
+    else:
+        raise AssertionError("legacy embedded selector accepted new H")
+    assert not effects
+    spec = importlib.util.spec_from_file_location("legacy_local", ROOT / "scripts/stage2-local-qualification-guard.py")
+    legacy = importlib.util.module_from_spec(spec); spec.loader.exec_module(legacy)
+    env = environment(EXACT_IMPLEMENTATION_HEAD=selected, CONFIGURED_IMPLEMENTATION_HEAD=selected,
+                      EXACT_CONTROL_HEAD=G, CONFIGURED_CONTROL_HEAD=G)
+    del env["ACTIONS_READ_TOKEN"]
+    try:
+        legacy.guard(env, event={"inputs": {"reviewed_implementation_head": selected}}, first_created=CURRENT_RUN_ID)
+    except legacy.GuardError as error:
+        assert str(error) == "implementation H differs"
+    else:
+        raise AssertionError("legacy qualification accepted new H")
+
 print("stage2 authenticated static-control dispatch guard hostile tests passed")

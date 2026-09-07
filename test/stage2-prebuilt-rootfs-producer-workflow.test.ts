@@ -14,6 +14,11 @@ test("prebuilt producer is an attempt-one exact-H non-AWS candidate with no publ
   assert.match(workflow, /test "\$EXACT_H" = "\$GITHUB_SHA"/u);
   assert.doesNotMatch(workflow, /packages:\s*write|id-token:\s*write|docker login|cosign sign|oras push/u);
   assert.match(producer, /build\._pinned_publication/u);
+  assert.ok(producer.indexOf('retirement["select"]') < producer.indexOf("acquisition.acquire_artifacts"));
+  assert.ok(workflow.indexOf("Recheck retirement before build checkout") < workflow.indexOf("uses: actions/checkout"));
+  assert.ok(
+    workflow.indexOf("scripts/stage2-revision-retirement.py") < workflow.indexOf("Prepare the complete fixed H source"),
+  );
   assert.doesNotMatch(producer, /boto|AWS_|terraform|opentofu|ssm|subprocess|Popen/u);
   assert.match(producer, /"independent_builds": 2, "equal": True, "pins_matched": True/u);
   assert.match(producer, /"remote_published": False/u);

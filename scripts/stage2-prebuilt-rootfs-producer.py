@@ -9,6 +9,8 @@ from pathlib import Path
 import stat
 import sys
 import time
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
@@ -112,6 +114,8 @@ def product_parent(control):
 def main():
     require(os.geteuid() == 0 and sys.argv == [sys.argv[0]])
     revision = fixed_text("COGS_STAGE2_PREBUILT_PRODUCER_H", 40)
+    retirement["select"]((revision, os.environ.get("GITHUB_SHA", revision)),
+                          runs=(os.environ.get("GITHUB_RUN_ID", ""),))
     source_manifest = fixed_text("COGS_STAGE2_PREBUILT_SOURCE_MANIFEST_SHA256", 64)
     workflow_sha256 = fixed_text("COGS_STAGE2_PREBUILT_WORKFLOW_SHA256", 64)
     run_id = fixed_positive("GITHUB_RUN_ID"); run_attempt = fixed_positive("GITHUB_RUN_ATTEMPT")
@@ -199,4 +203,4 @@ def main():
 
 if __name__ == "__main__":
     try: main()
-    except (ProducerError, fs.RootfsFsError): raise SystemExit(2)
+    except (ProducerError, fs.RootfsFsError, retirement["RetirementError"]): raise SystemExit(2)

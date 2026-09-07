@@ -31,6 +31,12 @@ jobs:
       - name: Admit protected directional publisher generation before checkout
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID" "$PRODUCER_RUN_ID" "$PRODUCER_ARTIFACT_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
           test "$GITHUB_REF_PROTECTED" = true
@@ -77,6 +83,7 @@ jobs:
       - name: Require H to be the direct reviewed implementation ancestor
         run: |
           set -euo pipefail
+          /usr/bin/python3 -I -B scripts/stage2-revision-retirement.py "$GITHUB_SHA" "$EXACT_H"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD^)" = "$EXACT_H"
 
@@ -130,6 +137,15 @@ jobs:
       PRODUCER_ARTIFACT_ID: ${{ inputs.producer_artifact_id }}
       PRODUCER_ARTIFACT_DIGEST: ${{ inputs.producer_artifact_digest }}
     steps:
+      - name: Recheck retirement before publication checkout
+        run: |
+          set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID" "$PRODUCER_RUN_ID" "$PRODUCER_ARTIFACT_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
       - name: Check out the same exact publisher G without persisted credentials
         timeout-minutes: 2
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -140,6 +156,7 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
+          /usr/bin/python3 -I -B scripts/stage2-revision-retirement.py "$GITHUB_SHA" "$EXACT_H"
           test "$(git rev-parse HEAD^)" = "$EXACT_H"
           gh api "repos/nenb/cogs/actions/artifacts/$PRODUCER_ARTIFACT_ID" >"$RUNNER_TEMP/artifact.json"
           jq -e --arg digest "$PRODUCER_ARTIFACT_DIGEST" --argjson run "$PRODUCER_RUN_ID" \

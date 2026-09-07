@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 import sys
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
@@ -113,9 +115,13 @@ def _reviewed_constants():
              and re.fullmatch(r"sha256:[0-9a-f]{64}",
                               REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST) is not None,
              "static observation custody remains blocked")
+    retirement["select"]((REVIEWED_IMPLEMENTATION_HEAD, REVIEWED_CONTROL_HEAD),
+        runs=(str(REVIEWED_STATIC_CONTROL_RUN_ID),), artifacts=(str(REVIEWED_STATIC_CONTROL_ARTIFACT_ID),))
 
 
 def guard(environ=os.environ, event=None, first_created=None):
+    retirement["select"](tuple(environ.get(name, "") for name in (
+        "EXACT_IMPLEMENTATION_HEAD", "EXACT_CONTROL_HEAD", "EXACT_QUALIFICATION_HEAD", "GITHUB_SHA")))
     _reviewed_constants()
     _require(not (DENIED_ENVIRONMENT & set(environ)), "credential, provider, proxy, or Python override present")
     _require(_required(environ, "GITHUB_EVENT_NAME") == "workflow_dispatch", "wrong event")
@@ -186,5 +192,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (GuardError, OSError):
+    except (GuardError, OSError, retirement["RetirementError"]):
         raise SystemExit(2)

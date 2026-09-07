@@ -38,8 +38,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXACT_IMPLEMENTATION_HEAD: ${{ inputs.exact_implementation_head }}
+          CONTROL_RUN_ID: ${{ inputs.rootfs_control_run_id }}
+          CONTROL_ARTIFACT_ID: ${{ inputs.rootfs_control_artifact_id }}
         run: |
           set -euo pipefail
+          # ADR0309 exact retirement mirror; selection only, never ancestors.
+          for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$GITHUB_RUN_ID" "$CONTROL_RUN_ID" "$CONTROL_ARTIFACT_ID"; do
+            case "$selected" in
+              6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+            esac
+          done
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -82,6 +90,7 @@ jobs:
           EXACT_IMPLEMENTATION_HEAD: ${{ inputs.exact_implementation_head }}
         run: |
           set -euo pipefail
+          /usr/bin/python3 -I -B scripts/stage2-revision-retirement.py "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD"
           test "${GITHUB_RUN_ATTEMPT}" = 1
           test "$EXACT_IMPLEMENTATION_HEAD" = "$(/usr/bin/git rev-parse HEAD)"
           test -z "$(/usr/bin/git status --porcelain)"
@@ -139,12 +148,14 @@ jobs:
 
       - name: Stage only the descriptor for immutable acquisition
         timeout-minutes: 1
+        env: { EXACT_H: "${{ inputs.exact_implementation_head }}" }
         run: |
           set -euo pipefail
           test "$(find "$RUNNER_TEMP/rootfs-control" -type f | wc -l)" = 6
           for name in descriptor.json publication-receipt.json rootfs.provenance.json rootfs.package.json producer-receipt.json cosign-verification.json; do
             test -f "$RUNNER_TEMP/rootfs-control/$name"
           done
+          /usr/bin/python3 -I -B scripts/stage2-revision-retirement.py custody "$RUNNER_TEMP/rootfs-control" "$EXACT_H" "$GITHUB_SHA"
           sudo -n install -d -m 0700 /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1
           sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/rootfs-control/descriptor.json" \
             /var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1/descriptor.json

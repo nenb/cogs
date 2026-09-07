@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+import runpy
+retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = ROOT / "deploy/aws-feasibility/remote"
@@ -57,6 +59,9 @@ def value(raw):
 
 
 def validate_candidate():
+    retirement["select"]((os.environ.get("EXACT_H", ""), os.environ.get("GITHUB_SHA", "")),
+        runs=(os.environ.get("PRODUCER_RUN_ID", ""),),
+        artifacts=(os.environ.get("PRODUCER_ARTIFACT_ID", ""),))
     expected = {"accepted/.cogs-rootfs-publication-v1", "accepted/rootfs.manifest.json",
                 "accepted/rootfs.metadata.json", "accepted/rootfs.tar", "producer-receipt.json",
                 "rootfs.package.json", "rootfs.provenance.json"}
@@ -116,6 +121,9 @@ def validate_candidate():
             and receipt.get("entry_count") == prebuilt.ENTRY_COUNT
             and receipt.get("input_contract_sha256") == prebuilt.INPUT_CONTRACT_SHA256
             and receipt.get("builds") == 2 and receipt.get("remote_published") is False)
+    retirement["select"]((builder["implementation_revision"], receipt["implementation_revision"]),
+                          runs=(str(builder["run_id"]), str(receipt["run_id"])))
+    require(builder["implementation_revision"] == os.environ["EXACT_H"])
     output = {"implementation_revision":builder["implementation_revision"],
               "source_manifest_sha256":builder["source_manifest_sha256"],
               "producer_run_id":builder["run_id"], "producer_receipt_sha256":sha(receipt_raw),
@@ -124,6 +132,9 @@ def validate_candidate():
 
 
 def issue_descriptor():
+    retirement["select"]((os.environ.get("COGS_PREBUILT_H", ""), os.environ.get("GITHUB_SHA", "")),
+        runs=(os.environ.get("PRODUCER_RUN_ID", ""),),
+        artifacts=(os.environ.get("PRODUCER_ARTIFACT_ID", ""),))
     require(SHA1.fullmatch(os.environ.get("COGS_PREBUILT_H","")))
     fields = {name:os.environ.get(name) for name in (
         "COGS_PREBUILT_SOURCE_MANIFEST_SHA256","COGS_PREBUILT_PACKAGE_MANIFEST_SHA256",
@@ -156,4 +167,4 @@ if __name__ == "__main__":
     try:
         require(len(sys.argv)==2)
         {"validate-candidate":validate_candidate,"issue-descriptor":issue_descriptor}[sys.argv[1]]()
-    except (PublisherError,KeyError,prebuilt.PrebuiltRootfsError): raise SystemExit(2)
+    except (PublisherError,KeyError,prebuilt.PrebuiltRootfsError,retirement["RetirementError"]): raise SystemExit(2)
