@@ -25,8 +25,10 @@ import {
 import { startCogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
 import { encodeProxyAuthorizationBasic } from "../src/egress/proxy-capability.ts";
 import type { CogsEgressAuthRef, CogsEgressRoutePlan } from "../src/egress/route-policy.ts";
+import { ENVOY_IMAGE } from "./egress-conformance/proxy-adapters/envoy/image.ts";
 
 const token = "internal-authz-token";
+const RESPONSE_PROBE_NODE_IMAGE = "node@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f";
 const baseOptions = (): CogsEnvoyRuntimeConfigOptions => ({
   userId: "user-1",
   sessionId: "session-1",
@@ -957,6 +959,293 @@ test("structural guard rejects removed bounds, retry/body collectors and timeout
     mutate(changed);
     assert.throws(() => assertBounds(changed, 2, 1));
   }
+});
+
+function nativeResponseProbeConfig(corrected: boolean): string {
+  const filters: unknown[] = [];
+  if (corrected) {
+    filters.push({
+      name: "envoy.filters.http.header_mutation",
+      typed_config: {
+        "@type": "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation",
+        mutations: {
+          // Configuration is intentionally mixed-case and duplicated; H2 wire names remain valid lower-case.
+          response_trailers_mutations: [{ remove: "X-CoGs-SeNtInEl" }, { remove: "x-cogs-sentinel" }],
+        },
+      },
+    });
+  }
+  filters.push({
+    name: "envoy.filters.http.router",
+    typed_config: { "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router" },
+  });
+  return `${JSON.stringify({
+    static_resources: {
+      listeners: [
+        {
+          name: "response_probe",
+          address: { socket_address: { address: "0.0.0.0", port_value: 10_000 } },
+          filter_chains: [
+            {
+              filters: [
+                {
+                  name: "envoy.filters.network.http_connection_manager",
+                  typed_config: {
+                    "@type":
+                      "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+                    stat_prefix: "response_probe",
+                    codec_type: "HTTP2",
+                    proxy_100_continue: !corrected,
+                    stream_error_on_invalid_http_message: true,
+                    stream_idle_timeout: "5s",
+                    route_config: {
+                      name: "response_probe",
+                      virtual_hosts: [
+                        {
+                          name: "response_probe",
+                          domains: ["*"],
+                          routes: [
+                            {
+                              match: { prefix: "/" },
+                              route: { cluster: "fixture", timeout: "0s" },
+                              ...(corrected
+                                ? { response_headers_to_remove: ["X-CoGs-SeNtInEl", "x-cogs-sentinel"] }
+                                : {}),
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                    http_filters: filters,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      clusters: [
+        {
+          name: "fixture",
+          type: "STRICT_DNS",
+          connect_timeout: "1s",
+          load_assignment: {
+            cluster_name: "fixture",
+            endpoints: [
+              {
+                lb_endpoints: [
+                  { endpoint: { address: { socket_address: { address: "fixture", port_value: 10_001 } } } },
+                ],
+              },
+            ],
+          },
+          typed_extension_protocol_options: {
+            "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+              "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+              explicit_http_config: { http2_protocol_options: {} },
+            },
+          },
+        },
+      ],
+    },
+  })}\n`;
+}
+
+type NativeResponseProbe = {
+  informational: Record<string, unknown>[];
+  final: Record<string, unknown>;
+  trailers: Record<string, unknown>;
+  body: string;
+  firstDataMs: number;
+  endMs: number;
+};
+
+// Synthetic-only native regression: every probe container has --pull=never and only an --internal network.
+test("pinned Envoy strips duplicate final/H2-trailer fields and suppresses duplicate 103 fields", {
+  timeout: 30_000,
+}, async (t) => {
+  if (process.env.COGS_ENVOY_RESPONSE_TEST !== "1") return t.skip("set COGS_ENVOY_RESPONSE_TEST=1");
+  const exec = promisify(execFile);
+  const docker = (args: string[], timeout = 5_000) => exec("docker", args, { timeout, maxBuffer: 128 * 1024 });
+  const root = await mkdtemp(join(tmpdir(), "cogs-envoy-response-"));
+  const suffix = `${process.pid}-${Date.now()}`;
+  const network = `cogs-response-${suffix}`;
+  const owned: string[] = [];
+  let networkOwned = false;
+  const create = async (name: string, args: string[]) => {
+    owned.push(name);
+    await docker(["create", "--pull", "never", "--name", name, ...args]);
+  };
+  t.after(async () => {
+    const failures: string[] = [];
+    for (const name of owned.reverse()) {
+      try {
+        await docker(["rm", "--force", name]);
+      } catch {
+        failures.push(`container:${name}`);
+      }
+    }
+    if (networkOwned) {
+      try {
+        await docker(["network", "rm", network]);
+      } catch {
+        failures.push(`network:${network}`);
+      }
+    }
+    try {
+      await rm(root, { recursive: true });
+    } catch {
+      failures.push("temporary-directory");
+    }
+    assert.deepEqual(failures, [], "all exact native-probe resources must retire");
+  });
+
+  for (const [image, digest] of [
+    [ENVOY_IMAGE, "5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"],
+    [RESPONSE_PROBE_NODE_IMAGE, "8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"],
+  ] as const) {
+    const inspected = await docker(["image", "inspect", image, "--format", "{{json .RepoDigests}}"]);
+    assert.match(inspected.stdout, new RegExp(digest));
+  }
+  const versionContainer = `cogs-response-version-${suffix}`;
+  await create(versionContainer, [
+    "--network",
+    "none",
+    "--entrypoint",
+    "/usr/local/bin/envoy",
+    ENVOY_IMAGE,
+    "--version",
+  ]);
+  const version = await docker(["start", "--attach", versionContainer]);
+  assert.match(version.stdout, /0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d\/1\.38\.3\/Clean\/RELEASE/u);
+
+  const fixturePath = join(root, "fixture.mjs");
+  const clientPath = join(root, "client.mjs");
+  await writeFile(
+    fixturePath,
+    `import { createServer } from "node:http2";
+import { setTimeout as delay } from "node:timers/promises";
+const sentinel="COGS_SYNTHETIC_SENTINEL_DO_NOT_USE";
+const server=createServer();
+server.on("stream",stream=>{void(async()=>{
+  stream.additionalHeaders({":status":103,"x-cogs-sentinel":[sentinel,sentinel+"-duplicate"],"x-control-103":"present"});
+  stream.respond({":status":200,"x-cogs-sentinel":[sentinel,sentinel+"-duplicate"],"x-control-final":"present"},{waitForTrailers:true});
+  stream.once("wantTrailers",()=>stream.sendTrailers({"x-cogs-sentinel":[sentinel,sentinel+"-duplicate"],"x-control-trailer":"present"}));
+  stream.write("o"); await delay(1200); stream.end("k");
+})().catch(()=>stream.destroy());});
+server.listen(10001,"0.0.0.0",()=>console.log("READY"));
+`,
+    { mode: 0o600 },
+  );
+  await writeFile(
+    clientPath,
+    `import { connect } from "node:http2";
+import { setTimeout as delay } from "node:timers/promises";
+const host=process.argv[2];
+let client;
+for(let attempt=0;attempt<30;attempt++){
+  client=connect("http://"+host+":10000");
+  try{await new Promise((resolve,reject)=>{client.once("connect",resolve);client.once("error",reject)});break}
+  catch(error){client.destroy();client=undefined;if(attempt===29)throw error;await delay(100)}
+}
+const started=Date.now(),output={informational:[],final:null,trailers:null,body:"",firstDataMs:null,endMs:null};
+const request=client.request({":path":"/"});
+request.on("headers",headers=>output.informational.push(headers));
+request.on("response",headers=>output.final=headers);
+request.on("trailers",headers=>output.trailers=headers);
+request.setEncoding("utf8");
+request.on("data",chunk=>{output.firstDataMs??=Date.now()-started;output.body+=chunk});
+await new Promise((resolve,reject)=>{request.once("end",resolve);request.once("error",reject);request.end()});
+output.endMs=Date.now()-started;console.log(JSON.stringify(output));client.close();
+`,
+    { mode: 0o600 },
+  );
+
+  await docker(["network", "create", "--internal", network]);
+  networkOwned = true;
+  const fixture = `cogs-response-fixture-${suffix}`;
+  await create(fixture, [
+    "--network",
+    network,
+    "--network-alias",
+    "fixture",
+    "--volume",
+    `${fixturePath}:/tmp/fixture.mjs:ro`,
+    "--entrypoint",
+    "node",
+    RESPONSE_PROBE_NODE_IMAGE,
+    "/tmp/fixture.mjs",
+  ]);
+  await docker(["start", fixture]);
+  let ready = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const logs = await docker(["logs", fixture]);
+    if (logs.stdout.trim() === "READY") {
+      ready = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(ready, true, "fixture must become ready without logging response data");
+
+  const probe = async (label: "baseline" | "corrected", corrected: boolean): Promise<NativeResponseProbe> => {
+    const configPath = join(root, `${label}.json`);
+    const envoy = `cogs-response-${label}-${suffix}`;
+    const client = `cogs-response-client-${label}-${suffix}`;
+    await writeFile(configPath, nativeResponseProbeConfig(corrected), { mode: 0o600 });
+    await create(envoy, [
+      "--network",
+      network,
+      "--network-alias",
+      envoy,
+      "--volume",
+      `${configPath}:/tmp/config.json:ro`,
+      "--entrypoint",
+      "/usr/local/bin/envoy",
+      ENVOY_IMAGE,
+      "--config-path",
+      "/tmp/config.json",
+      "--concurrency",
+      "1",
+      "--disable-hot-restart",
+      "--log-level",
+      "critical",
+    ]);
+    await docker(["start", envoy]);
+    await create(client, [
+      "--network",
+      network,
+      "--volume",
+      `${clientPath}:/tmp/client.mjs:ro`,
+      "--entrypoint",
+      "node",
+      RESPONSE_PROBE_NODE_IMAGE,
+      "/tmp/client.mjs",
+      envoy,
+    ]);
+    const result = await docker(["start", "--attach", client], 8_000);
+    return JSON.parse(result.stdout) as NativeResponseProbe;
+  };
+
+  const baseline = await probe("baseline", false);
+  for (const phase of [baseline.informational[0], baseline.final, baseline.trailers]) {
+    assert.match(
+      String(phase?.["x-cogs-sentinel"]),
+      /COGS_SYNTHETIC_SENTINEL_DO_NOT_USE, COGS_SYNTHETIC_SENTINEL_DO_NOT_USE-duplicate/u,
+    );
+  }
+  assert.equal(baseline.informational[0]?.["x-control-103"], "present");
+  assert.equal(baseline.final["x-control-final"], "present");
+  assert.equal(baseline.trailers["x-control-trailer"], "present");
+
+  const corrected = await probe("corrected", true);
+  assert.deepEqual(corrected.informational, []);
+  assert.equal("x-cogs-sentinel" in corrected.final, false);
+  assert.equal("x-cogs-sentinel" in corrected.trailers, false);
+  assert.equal(corrected.final["x-control-final"], "present");
+  assert.equal(corrected.trailers["x-control-trailer"], "present");
+  assert.equal(corrected.body, "ok");
+  assert.ok(corrected.endMs - corrected.firstDataMs >= 800, "body must stream before trailers/end");
 });
 
 // Opt-in LOCAL Linux diagnostic. No image pull, namespace/firewall changes, or production effect.

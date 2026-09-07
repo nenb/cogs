@@ -53,6 +53,15 @@ jobs:
           COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-suite
 
+      - name: Run pinned Envoy response-phase regression
+        id: envoy_response
+        continue-on-error: true
+        env:
+          COGS_ENVOY_RESPONSE_TEST: "1"
+        run: |
+          docker pull "node@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"
+          npx --no-install tsx --test test/egress-envoy-runtime-config.test.ts
+
       - name: Validate functional-only evidence
         id: evidence
         if: always()
@@ -80,7 +89,9 @@ jobs:
           DRIVER_OUTCOME: ${{ steps.smoke.outcome }}
           ENVOY_OUTCOME: ${{ steps.envoy.outcome }}
           ENVOY_SUITE_OUTCOME: ${{ steps.envoy_suite.outcome }}
+          ENVOY_RESPONSE_OUTCOME: ${{ steps.envoy_response.outcome }}
         run: |
           test "$DRIVER_OUTCOME" = success
           test "$ENVOY_OUTCOME" = success
           test "$ENVOY_SUITE_OUTCOME" = success
+          test "$ENVOY_RESPONSE_OUTCOME" = success
