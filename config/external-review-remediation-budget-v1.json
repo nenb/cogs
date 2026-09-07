@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 16000,
+  "global_gross_line_high": 18000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -15,7 +15,7 @@
   "owners": [
     {
       "name": "route",
-      "gross_line_high": 1700,
+      "gross_line_high": 1800,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 200000,
@@ -49,24 +49,20 @@
     },
     {
       "name": "revocation",
-      "gross_line_high": 3000,
+      "gross_line_high": 2900,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 20000,
         "total": 220000
       },
-      "new_file_high": 5,
+      "new_file_high": 0,
       "paths": [
-        "config/openbao-local-build-v1.json",
         "dev/launcher/openbao.ts",
         "dev/openbao-model-auth/ci-smoke.sh",
         "dev/openbao-model-auth/config.hcl",
         "dev/openbao-model-auth/image.ts",
         "dev/openbao-model-auth/smoke.ts",
-        "images/openbao-local/Dockerfile",
-        "images/openbao-local/dependencies.patch",
-        "scripts/openbao-local-artifact.py",
         "src/auth/model-auth.ts",
         "src/egress/egress-material.ts",
         "src/egress/openbao-pki.ts",
@@ -76,13 +72,12 @@
         "test/egress-openbao-pki.test.ts",
         "test/egress-openbao-revocation.test.ts",
         "test/model-auth.test.ts",
-        "test/openbao-local-artifact.test.ts",
         "test/openbao-workload-identity.test.ts"
       ]
     },
     {
       "name": "relay",
-      "gross_line_high": 1700,
+      "gross_line_high": 1800,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 260000,
@@ -127,7 +122,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 6300,
+      "gross_line_high": 6700,
       "gross_byte_forecast": {
         "source": 250000,
         "tests_fixtures": 430000,
@@ -186,7 +181,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 1900,
+      "gross_line_high": 2000,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -219,14 +214,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 3300,
+      "gross_line_high": 2800,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 27,
+      "new_file_high": 26,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -263,10 +258,10 @@
         "docs/adr/0311-reallocate-integrated-post-H-closure.md",
         "docs/adr/0312-reallocate-final-observer-closure.md",
         "docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md",
-        "docs/adr/0314-freeze-remediated-H-and-authorize-control.md",
-        "docs/adr/0315-establish-remediated-Q-and-authorize-qualification.md",
+        "docs/adr/0314-raise-final-hostile-integration-ceilings.md",
+        "docs/adr/0315-freeze-remediated-H-and-authorize-control.md",
+        "docs/adr/0316-establish-remediated-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
-        "docs/operations/openbao-local-artifact.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
         "docs/operations/runbooks/openbao.md",
@@ -274,7 +269,6 @@
         "docs/operations/stage-3-model-auth.md",
         "docs/operations/stage-4-offline-readiness.md",
         "docs/security-evidence/README.md",
-        "docs/security-evidence/openbao-local-artifact-candidate.md",
         "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
         "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
         "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
