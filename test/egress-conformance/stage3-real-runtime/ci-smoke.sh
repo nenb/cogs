@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 umask 077
 
+# ADR0313: preserve the historical recipe below, but deny every profile before
+# setup, Envoy/OpenBao pulls, KVM, trust-store changes, or evidence writes.
+printf '%s\n' 'OpenBao 2.6.1 is retired; no admitted replacement' >&2
+exit 2
+
 ENVOY_IMAGE="envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
 ENVOY_DIGEST="sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
 OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"

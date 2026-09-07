@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { ENVOY_IMAGE } from "../dev/launcher/envoy-egress.ts";
-import { OPENBAO_IMAGE } from "../dev/openbao-model-auth/image.ts";
 
 export const LAUNCHER_DOCKER = "/usr/bin/docker" as const;
 export const LAUNCHER_IMAGE_ENV = Object.freeze({ HOME: "/tmp" });
-export const LAUNCHER_REQUIRED_IMAGES = Object.freeze([OPENBAO_IMAGE, ENVOY_IMAGE]);
+// OpenBao 2.6.1 remains historical only; no replacement is admitted. Preparing
+// Envoy alone does not make the OpenBao-dependent launcher eligible to start.
+export const LAUNCHER_REQUIRED_IMAGES = Object.freeze([ENVOY_IMAGE]);
 
 function digestRef(image: string): string {
   const at = image.indexOf("@sha256:");

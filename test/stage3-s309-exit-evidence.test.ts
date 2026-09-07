@@ -8,11 +8,15 @@ const report = readFileSync(reportPath, "utf8");
 
 test("S3-09 historical report cannot authorize the corrected positive-only source", () => {
   for (const required of [
-    "Current-source limitation (ADR 0309)",
+    "Current-source limitation (ADR 0309; updated under ADR 0312/0313)",
     "historical and has not been rerun or rebound",
     "allowed coherent absence",
     "Local synthetic tests are not replacement KVM evidence",
-    "final retired WAL observation remain unavailable",
+    "final retired WAL/completion interface is now implemented",
+    "only after the producers actually retire",
+    "Universal all-inner-attempt accounting and real corrected Linux/KVM evidence remain absent",
+    "denied inner requests without an intent can fall outside these observers",
+    "does not mark it passed",
     "No new acceptance",
   ])
     assert.ok(report.includes(required), required);
