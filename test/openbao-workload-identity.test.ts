@@ -449,6 +449,90 @@ test("workload login joins original cancellation on abort, malformed and late re
   }
 });
 
+test("workload login retains the original body across response reference replacement", async () => {
+  const item = await jwtFixture();
+  try {
+    for (const mode of ["headers-throw", "headers-return", "getReader-throw"] as const) {
+      for (const rejectCancel of [false, true]) {
+        const held = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        let bodyReads = 0,
+          cancellations = 0,
+          retired = false,
+          consumed = false;
+        const original = new ReadableStream<Uint8Array>({
+          pull: () => held.promise.catch(() => undefined),
+          cancel() {
+            cancellations++;
+            return held.promise;
+          },
+        });
+        const response = new Response(original, { headers: { "content-type": "application/json" } });
+        Object.defineProperty(response, "body", {
+          configurable: true,
+          get() {
+            bodyReads++;
+            return original;
+          },
+        });
+        const replace = () => {
+          Object.defineProperty(response, "body", {
+            configurable: true,
+            get() {
+              bodyReads++;
+              return null;
+            },
+          });
+          entered.resolve();
+        };
+        const headers = response.headers;
+        if (mode !== "getReader-throw")
+          Object.defineProperty(response, "headers", {
+            get() {
+              replace();
+              if (mode === "headers-throw") throw new Error(clientToken);
+              return headers;
+            },
+          });
+        Object.defineProperty(original, "getReader", {
+          value() {
+            if (mode === "getReader-throw") replace();
+            throw new Error(clientToken);
+          },
+        });
+        const identity = new OpenBaoKubernetesWorkloadIdentity(options(item.options(), async () => response));
+        const actual = rejects(
+          identity.withToken(new AbortController().signal, async () => {
+            consumed = true;
+          }),
+          [jwtOne, clientToken],
+        ).then(() => {
+          retired = true;
+        });
+        try {
+          await entered.promise;
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(retired, false, mode);
+          assert.equal(cancellations, 1, mode);
+          assert.equal(bodyReads, 1, mode);
+          assert.equal(consumed, false);
+        } finally {
+          if (rejectCancel) held.reject(new Error(clientToken));
+          else held.resolve();
+          await actual;
+          await original.cancel().catch(() => undefined);
+        }
+        assert.equal(retired, true);
+        assert.equal(consumed, false);
+        assert.equal(cancellations, 1);
+        assert.equal(bodyReads, 1);
+      }
+    }
+  } finally {
+    await item.close();
+  }
+});
+
 test("trusted JWT capture rejects malformed bytes, symlinks, hard links, and wrong modes before login", async () => {
   const cases: Array<(item: Awaited<ReturnType<typeof jwtFixture>>) => Promise<TrustedFileCaptureOptions>> = [
     async (item) => {
