@@ -30,6 +30,12 @@ test("trusted publisher is directional, numeric-artifact-bound, signed, and byte
     /for name in accepted\/rootfs\.tar accepted\/rootfs\.manifest\.json accepted\/rootfs\.metadata\.json rootfs\.package\.json rootfs\.provenance\.json/u,
   );
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
+  assert.match(
+    workflow,
+    /select\(\.head_sha == \$g and\s*\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-publisher\.yml"\)/u,
+  );
+  assert.doesNotMatch(workflow, /\.head_sha == \$g and \.display_title/u);
+  assert.doesNotMatch(workflow, /stage2-prebuilt-rootfs-publisher\.yml\/runs\?event=workflow_dispatch&branch=/u);
   assert.match(workflow, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-producer\.yml"/u);
   assert.doesNotMatch(workflow, /latest|continue-on-error:\s*true/u);
 });

@@ -149,7 +149,7 @@ test("ADR0319 preserves original finding numbers and grants no chain or AWS auth
   assert.match(adr, /grants no producer[\s\S]*AWS authority/u);
 });
 
-test("ADR0323 exact allocations preserve hard limits and reserve every bounded future closure", () => {
+test("ADR0320 consumes only the bounded control reservation and preserves later hard limits", () => {
   const result = spawnSync(
     "python3",
     [
@@ -179,10 +179,14 @@ for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
 assert len(set(paths)-baseline)==42
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md'):
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md'):
  assert paths[current]=='integration' and Path(current).is_file()
-for number,name in ((320,'freeze-corrected-H-and-authorize-control'),(322,'establish-corrected-Q-and-authorize-qualification')):
- p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
+p='docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md'
+assert paths[p]=='integration' and not Path(p).exists()
+control=Path('docs/adr/0320-freeze-corrected-H-and-authorize-control.md').read_text()
+assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
+assert '34183885618' in control and '10040293103' in control
+assert 'grants no AWS operation' in control
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
 r=runpy.run_path('scripts/stage2-revision-retirement.py')
