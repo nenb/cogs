@@ -13,6 +13,10 @@ const policy = JSON.parse(readFileSync("config/stage2-retired-revisions-v1.json"
 const tombstones = Object.keys({ ...policy.revisions, ...policy.runs, ...policy.artifacts }).sort();
 assert.equal(policy.revisions["0296252721fad0502dd4f41dacb1674e71b42bd6"], "ADR0323");
 assert.equal(policy.revisions["9b9966afffe0ea8de4d0c99147886a95094470a9"], "ADR0319");
+assert.equal(policy.revisions["97bc8eb8520a2116914c65a9ec5929e82c34ebf3"], "ADR0324");
+assert.equal(policy.revisions["942e84cd8f977ee23a97dc47ce4a5d2d7510b346"], "ADR0324");
+assert.equal(policy.runs["34192787285"], "ADR0324");
+assert.equal(policy.artifacts["10042564354"], "ADR0324");
 
 test("every pre-checkout and second-job retirement mirror equals policy and refuses before effects", () => {
   const lanes: [string, number, string[]][] = [
@@ -51,7 +55,7 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
   };
   for (const [lane, count, required] of lanes) {
     const source = readFileSync(`.github/workflows/${lane}.yml`, "utf8");
-    const blocks = [...source.matchAll(/ {10}# ADR0323 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
+    const blocks = [...source.matchAll(/ {10}# ADR0324 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
     assert.equal(blocks.length, count, lane);
     for (const match of blocks) {
       const block = match[0].replace(/^ {10}/gmu, "");
@@ -84,6 +88,29 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
         "not retired is only a veto result, never authorization",
       );
     }
+  }
+});
+
+test("every next-chain first-created query paginates all refs without caller partitions", () => {
+  for (const [file, workflowName] of [
+    ["stage2-prebuilt-rootfs-producer.yml", "stage2-prebuilt-rootfs-producer.yml"],
+    ["stage2-prebuilt-rootfs-publisher.yml", "stage2-prebuilt-rootfs-publisher.yml"],
+    ["stage2-local-static-control-prebuilt-candidate.yml", "stage2-local-static-control-prebuilt-candidate.yml"],
+    ["stage2-prebuilt-mixed-hg-preflight.yml", "stage2-prebuilt-mixed-hg-preflight.yml"],
+    ["stage2-prebuilt-local-kata-qualification.yml", "stage2-prebuilt-local-kata-qualification.yml"],
+  ]) {
+    const source = readFileSync(`.github/workflows/${file}`, "utf8");
+    const endpoint = `actions/workflows/${workflowName}/runs?event=workflow_dispatch&per_page=100`;
+    const endpointAt = source.indexOf(endpoint);
+    assert.ok(endpointAt > 0, file);
+    const queryStart = source.lastIndexOf("gh api", endpointAt);
+    const predicateEnd = source.indexOf("map(.id) == [$current]", endpointAt);
+    assert.ok(queryStart >= 0 && predicateEnd > endpointAt, file);
+    const admission = source.slice(queryStart, predicateEnd + 25);
+    assert.match(admission, /gh api --paginate --slurp/u, file);
+    assert.doesNotMatch(admission, /branch=|display_title|--arg title/u, file);
+    assert.match(admission, /\.head_sha == \$(?:h|g|q)/u, file);
+    assert.match(admission, /\.path == "\.github\/workflows\//u, file);
   }
 });
 
@@ -149,7 +176,7 @@ test("ADR0319 preserves original finding numbers and grants no chain or AWS auth
   assert.match(adr, /grants no producer[\s\S]*AWS authority/u);
 });
 
-test("ADR0320 consumes only the bounded control reservation and preserves later hard limits", () => {
+test("ADR0324 allocates the complete fresh H-G-Q closure under bounded hard limits", () => {
   const result = spawnSync(
     "python3",
     [
@@ -161,12 +188,12 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=3750)
-assert b['global_gross_line_high']==21000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=4150)
+assert b['global_gross_line_high']==21400 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(98000,22300,13100,5500,43000,2000)
-assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=34)
-assert sum(new.values())==42 and sum(x['total'] for x in forecasts.values())==2570000
+assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=36)
+assert sum(new.values())==44 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -178,11 +205,11 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==42
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md'):
+assert len(set(paths)-baseline)==44
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md','docs/adr/0324-retire-failed-static-generation-and-correct-authority.md'):
  assert paths[current]=='integration' and Path(current).is_file()
-p='docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md'
-assert paths[p]=='integration' and not Path(p).exists()
+for p in ('docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md','docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md'):
+ assert paths[p]=='integration' and not Path(p).exists()
 control=Path('docs/adr/0320-freeze-corrected-H-and-authorize-control.md').read_text()
 assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
 assert '34183885618' in control and '10040293103' in control
@@ -190,10 +217,10 @@ assert 'grants no AWS operation' in control
 assert len(m['FINAL_CONTROL_DATA_MEMBERS'])==13 and m['_final_control_data_state']()[0]=='absent'
 assert not any('*' in p for p in paths)
 r=runpy.run_path('scripts/stage2-revision-retirement.py')
-head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+history_head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
 for retired in r['REVISIONS']:
- assert subprocess.run(['git','merge-base','--is-ancestor',retired,head]).returncode==0
-r['select']((head,))  # A real repaired descendant remains eligible for separate review.
+ assert subprocess.run(['git','merge-base','--is-ancestor',retired,history_head]).returncode==0
+r['select'](('f'*40,))  # Exact retirement does not veto a distinct replacement identity.
 `,
     ],
     { encoding: "utf8", timeout: 30_000 },
@@ -256,7 +283,7 @@ r=runpy.run_path('scripts/stage2-revision-retirement.py')
 g=runpy.run_path('scripts/stage2-prebuilt-local-qualification-guard.py')
 e=${JSON.stringify(Object.fromEntries(Object.entries(historical).map(([role, rev]) => [`EXACT_${role}_HEAD`, rev])))}
 e['GITHUB_SHA']='a'*40
-r['select'](tuple(e.values())) # The three-entry registry deliberately does not reject these.
+r['select'](tuple(e.values())) # The typed current registry deliberately does not reject these older selectors.
 try: g['guard'](e)
 except g['GuardError'] as error: assert str(error)=='review constants remain blocked',str(error)
 else: raise AssertionError('unfilled exact guard admitted historical selectors')
