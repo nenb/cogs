@@ -191,6 +191,7 @@ type ActiveRun = {
   abortCorrelationId?: string;
   terminal: boolean;
   suppressLate: boolean;
+  queuedInputOpen: boolean;
   deadline: NodeJS.Timeout | undefined;
   readonly deadlineAt: number;
   promise: Promise<void>;
@@ -1975,11 +1976,12 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (input.kind !== "prompt") {
       const active = this.active;
       if (active === undefined || active.terminal) throw new Error("Pi session is not running");
-      if (this.phase !== "running" || this.expireTurnIfElapsed(active)) throw new Error("Pi session is not running");
+      if (this.phase !== "running" || !active.queuedInputOpen || this.expireTurnIfElapsed(active))
+        throw new Error("Pi session is not running");
       this.runtime.persistence.assertUsable();
       if (input.kind === "steer") await this.session.steer(input.content);
       else if (input.kind === "follow_up") await this.session.followUp(input.content);
-      if (this.expireTurnIfElapsed(active)) throw new Error("Pi session is not running");
+      if (!active.queuedInputOpen || this.expireTurnIfElapsed(active)) throw new Error("Pi session is not running");
       this.emitOrFail("pi_event", input.correlationId, input.requestId, {
         event: { type: "queued_input", kind: input.kind, request_id: input.requestId },
       });
@@ -1993,6 +1995,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       correlationId: input.correlationId,
       terminal: false,
       suppressLate: false,
+      queuedInputOpen: false,
       deadline: undefined,
       deadlineAt: performance.now() + this.turnTimeoutMs,
       promise: Promise.resolve(),
@@ -2303,7 +2306,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       await this.runtime.gitBinding?.beginTurn(active.correlationId, active.requestId);
       if (this.expireTurnIfElapsed(active) || this.phase !== "running") return;
       this.runtime.persistence.assertUsable();
-      await this.runtime.persistence.track(() => this.session.prompt(content, { expandPromptTemplates: false }));
+      active.queuedInputOpen = true;
+      try {
+        await this.runtime.persistence.track(() => this.session.prompt(content, { expandPromptTemplates: false }));
+      } finally {
+        active.queuedInputOpen = false;
+      }
+      if (!this.discardPendingInputs()) {
+        await this.failClosed("queued-input-retirement-failed", active);
+        return;
+      }
       if (this.expireTurnIfElapsed(active)) return;
       try {
         const flushStart = telemetryStart();
@@ -2336,6 +2348,10 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       });
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
+      if (!this.discardPendingInputs()) {
+        await this.failClosed("queued-input-retirement-failed", active).catch(() => undefined);
+        return;
+      }
       if (this.expireTurnIfElapsed(active)) return;
       if (this.phase === "aborting" || this.phase === "failed") return;
       try {
@@ -2358,6 +2374,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         duration_ms: telemetryDuration(undefined, runStart),
       });
       this.terminal(active, "error", { message: "pi operation failed" });
+    }
+  }
+
+  private discardPendingInputs(): boolean {
+    try {
+      if (this.session.pendingMessageCount === 0) return true;
+      this.session.clearQueue();
+      return this.session.pendingMessageCount === 0;
+    } catch {
+      return false;
     }
   }
 
@@ -2385,6 +2411,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private async timeoutActive(active: ActiveRun): Promise<void> {
     if (active.terminal || this.active !== active) return;
     active.suppressLate = true;
+    active.queuedInputOpen = false;
     active.terminal = true;
     this.phase = "aborting";
     if (active.deadline !== undefined) clearTimeout(active.deadline);
@@ -2393,6 +2420,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       return;
     }
     try {
+      if (!this.discardPendingInputs()) throw new Error("queued input cleanup failed");
       await this.abortWithBound("timeout");
       await observerDeadline(active.promise, this.abortTimeoutMs);
       await this.commitPersistence();
@@ -2413,8 +2441,10 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     active.abortRequestId = abortRequestId;
     active.abortCorrelationId = abortCorrelationId;
     active.suppressLate = true;
+    active.queuedInputOpen = false;
     this.phase = "aborting";
     try {
+      if (!this.discardPendingInputs()) throw new Error("queued input cleanup failed");
       await this.abortWithBound(reason);
       await observerDeadline(active.promise, this.abortTimeoutMs);
       await this.commitPersistence();
@@ -2466,6 +2496,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (kind === "run_settled" && this.expireTurnIfElapsed(active)) return;
     active.terminal = true;
     active.suppressLate = true;
+    active.queuedInputOpen = false;
     if (active.deadline !== undefined) clearTimeout(active.deadline);
     const terminalPayload =
       kind === "run_aborted" &&
@@ -2639,13 +2670,16 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     this.shutdownPrepareAbort?.abort();
     if (active !== undefined) {
       active.suppressLate = true;
+      active.queuedInputOpen = false;
       if (active.deadline !== undefined) clearTimeout(active.deadline);
     }
+    const queuedInputsRetired = this.discardPendingInputs();
     this.cleanupPromise = (async () => {
       // Cancellation and its caller deadline do not prove native/model/tool work
       // retired. Keep every dependent resource and credential owner intact until
       // the fence's actual tracked work reaches zero.
       try {
+        if (!queuedInputsRetired) throw new Error("queued input cleanup failed");
         await this.abortWithBound("fail-closed");
         await observerDeadline(this.runtime.persistence.waitForIdle(), this.abortTimeoutMs);
         if (this.runtime.persistence.state().cause === undefined) await this.commitPersistence();

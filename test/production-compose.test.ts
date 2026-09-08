@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { type ApiServer, type ApiServerOptions, createApiServer, type JsonValue } from "../src/api/server.ts";
 import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../src/auth/model-auth.ts";
 import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
@@ -34,7 +35,12 @@ import {
   type CogsPiSessionPorts,
   createAuthenticatedCogsPiSession,
 } from "../src/pi/session.ts";
-import { ProductionWorkerError, type ProductionWorkerSeams, startProductionWorker } from "../src/runtime/compose.ts";
+import {
+  ProductionWorkerError,
+  type ProductionWorkerRuntime,
+  type ProductionWorkerSeams,
+  startProductionWorker,
+} from "../src/runtime/compose.ts";
 import type { RuntimeConfig } from "../src/runtime/config.ts";
 import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts";
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
@@ -783,13 +789,17 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
   const h = harness();
   const events: string[] = [];
   let sessionFile: string | undefined;
-  let stdout: ((chunk: Buffer) => void) | undefined;
-  let stderr: ((chunk: Buffer) => void) | undefined;
+  let piSession: CogsPiSessionPorts | undefined;
+  let worker: ProductionWorkerRuntime | undefined;
   let interval: NodeJS.Timeout | undefined;
   let terminalTimer: NodeJS.Timeout | undefined;
+  let failure: unknown;
+  let cleanupFailure: unknown;
+  let stdout: ((chunk: Buffer) => void) | undefined;
+  let stderr: ((chunk: Buffer) => void) | undefined;
   const terminal = Promise.withResolvers<{ code: number; signal: null }>();
   const shutdownReady = Promise.withResolvers<void>();
-  const port: CogsExecPort = Object.freeze({
+  const longPort: CogsExecPort = Object.freeze({
     onStdout: (listener: (chunk: Buffer) => void) => {
       stdout = listener;
     },
@@ -803,15 +813,25 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
       terminal.resolve({ code: 128, signal: name } as never);
     },
   });
+  const immediatePort = (output: string): CogsExecPort => {
+    let publish: ((chunk: Buffer) => void) | undefined;
+    return Object.freeze({
+      onStdout: (listener: (chunk: Buffer) => void) => {
+        publish = listener;
+      },
+      onStderr: () => undefined,
+      terminal: async () => {
+        if (output) publish?.(Buffer.from(output));
+        return { code: 0, signal: null };
+      },
+      signal: async () => undefined,
+    });
+  };
   const started = performance.now();
   try {
-    const worker = await startProductionWorker({
+    worker = await startProductionWorker({
       seams: {
         ...h.seams,
-        readRuntime: async () => ({
-          ...runtime(),
-          api: { listen_host: "127.0.0.1", port: 0 },
-        }),
         readLaunch: async () =>
           launch({
             model: { ...launch().model, id: "claude-sonnet-4-5" },
@@ -821,9 +841,14 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
           const manager = h.seams.createSsh(options);
           Object.assign(manager, {
             withBashExec: async (
-              _input: unknown,
+              input: { wrappedCommand: string; signal?: AbortSignal },
               operation: (port: CogsExecPort, signal: AbortSignal) => Promise<unknown>,
             ) => {
+              const operationSignal = input.signal ?? new AbortController().signal;
+              if (input.wrappedCommand.includes("/usr/bin/git -C /workspace rev-parse"))
+                return operation(immediatePort(`${"a".repeat(40)}\n`), operationSignal);
+              if (input.wrappedCommand.includes("/usr/bin/git -C /workspace notes"))
+                return operation(immediatePort(""), operationSignal);
               interval = setInterval(() => stdout?.(Buffer.from("progress\n")), 1000);
               terminalTimer = setTimeout(() => {
                 if (interval !== undefined) clearInterval(interval);
@@ -831,15 +856,14 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
                 stderr?.(Buffer.alloc(0));
                 terminal.resolve({ code: 0, signal: null });
               }, 61_500);
-              return operation(port, new AbortController().signal);
+              return operation(longPort, operationSignal);
             },
           });
           return manager;
         },
         createPi: async (options) => {
-          const { git: _git, ...withoutGit } = options;
           const pi = await createAuthenticatedCogsPiSession({
-            ...withoutGit,
+            ...options,
             cwd: workspace,
             agentDir,
             sessionRoot,
@@ -850,11 +874,9 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
               if (event.kind === "shutdown_ready") shutdownReady.resolve();
               return options.emit(event);
             },
-          }).catch((error) => {
-            events.push(`startup:${String(error)}`);
-            throw error;
           });
           sessionFile = pi.sessionFile();
+          piSession = pi;
           return pi;
         },
         createApi: (options) => {
@@ -880,9 +902,7 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
           return facade;
         },
       },
-    }).catch((error) =>
-      assert.fail(`long-turn startup failed after ${h.log.join(",")} / ${events.join(",")}: ${String(error)}`),
-    );
+    });
     const response = await fetch(`http://127.0.0.1:${worker.apiPort}/v1/input`, {
       method: "POST",
       headers: {
@@ -893,31 +913,53 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
       body: JSON.stringify({ request_id: "long-turn-request", type: "prompt", content: "run long tool" }),
     });
     assert.equal(response.status, 202);
-    const deadline = performance.now() + 20_000;
-    while (!events.includes("run_settled") && performance.now() < deadline + 61_500)
+    const observationDeadline = started + 80_000;
+    while (!events.includes("run_settled") && !events.includes("error") && performance.now() < observationDeadline)
       await new Promise((resolveTimer) => setTimeout(resolveTimer, 100));
+    if (events.includes("error")) assert.fail("long production turn emitted an error terminal");
     const elapsed = performance.now() - started;
     assert.ok(elapsed >= 61_000, `turn settled too early: ${elapsed}`);
     assert.equal(events.filter((kind) => kind === "run_settled").length, 1);
-    assert.equal(events.includes("error"), false);
     assert.ok(sessionFile);
+    assert.ok(piSession);
     assert.equal((await lstat(sessionFile)).mode & 0o777, 0o600);
     const durable = await readFile(sessionFile, "utf8");
     assert.match(durable, /run long tool/);
     assert.match(durable, /long turn settled durably/);
     assert.match(durable, /fixed/);
     assert.doesNotMatch(durable, /model-api-key|bearer-production-value/);
-    await worker
-      .close()
-      .catch((error) =>
-        assert.fail(`long-turn close failed after ${h.log.join(",")} / ${events.join(",")}: ${String(error)}`),
-      );
-    await worker.closed;
+    const history = await piSession.entries({ after: undefined, limit: 100 });
+    assert.ok(JSON.stringify(history).includes("long turn settled durably"));
+    assert.ok(piSession.gitMapRecords().some((record) => record.turn === 1));
+  } catch (error) {
+    failure = error;
   } finally {
     if (interval !== undefined) clearInterval(interval);
     if (terminalTimer !== undefined) clearTimeout(terminalTimer);
+    if (worker !== undefined) {
+      try {
+        await worker.close();
+        await worker.closed;
+      } catch (error) {
+        cleanupFailure = error;
+      }
+    }
+    if (failure === undefined && cleanupFailure === undefined && sessionFile !== undefined) {
+      try {
+        const retiredBytes = await readFile(sessionFile, "utf8");
+        const reopened = SessionManager.open(sessionFile, dirname(sessionFile), workspace);
+        assert.ok(reopened.getEntries().some((entry) => entry.type === "message"));
+        assert.match(retiredBytes, /long turn settled durably/);
+      } catch (error) {
+        cleanupFailure = error;
+      }
+    }
     await rm(root, { recursive: true, force: true });
   }
+  if (failure !== undefined && cleanupFailure !== undefined)
+    throw new AggregateError([failure, cleanupFailure], "long-turn assertion and cleanup both failed");
+  if (failure !== undefined) throw failure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
 });
 
 test("production composition starts in one exact fail-closed order and closes reverse-owned order", async () => {

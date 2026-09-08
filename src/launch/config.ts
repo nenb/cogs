@@ -90,8 +90,8 @@ export function validateLaunchConfig(input: unknown): LaunchConfig {
     throw new LaunchConfigError([
       {
         instancePath: "/limits/turn_timeout_seconds",
-        keyword: "minimum",
-        schemaPath: "#/properties/limits/properties/turn_timeout_seconds/minimum",
+        keyword: "toolTimeoutHeadroom",
+        schemaPath: "#/properties/limits/properties/turn_timeout_seconds",
       },
     ]);
   }

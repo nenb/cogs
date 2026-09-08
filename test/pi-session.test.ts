@@ -1645,6 +1645,80 @@ test("Pi turn deadline covers Git setup and settlement", async () => {
   }
 });
 
+test("queued input closes with the native prompt before durable settlement", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-queued-settlement-"));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let observations = 0;
+  const observer: CogsGitObserver = Object.freeze({
+    observeHead: async () => {
+      observations += 1;
+      if (observations === 2) {
+        entered.resolve();
+        await release.promise;
+      }
+      return Object.freeze({
+        kind: "observed" as const,
+        repo: "workspace-1",
+        commit: observations.toString(16).padStart(40, "0"),
+        observed_at: "2026-07-17T00:00:00.000Z",
+      });
+    },
+    nearestAncestor: async (input: { readonly candidates: readonly string[] }) => input.candidates[0] ?? null,
+    appendNote: async () => true,
+    dispose: async () => undefined,
+  });
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const events: string[] = [];
+    const adapter = await createCogsPiSession(
+      withDefaults({
+        cwd: resolve(root, "workspace"),
+        agentDir: resolve(root, "agent"),
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "queued-settlement",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "synthetic-only-key",
+        toolPorts: fakePorts([]),
+        turnTimeoutMs: 1000,
+        streamFn: oneTextStream("done"),
+        git: { repositoryId: "workspace-1", observer, enableNotes: false },
+        emit: (event) => {
+          events.push(`${event.kind}:${JSON.stringify(event.payload)}`);
+          return true;
+        },
+      }),
+    );
+    try {
+      await adapter.input({ requestId: "first", correlationId: "first", kind: "prompt", content: "first" });
+      await entered.promise;
+      for (const kind of ["steer", "follow_up"] as const)
+        await assert.rejects(
+          adapter.input({ requestId: kind, correlationId: kind, kind, content: "must not cross settlement" }),
+          /not running/,
+        );
+      release.resolve();
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.equal(
+        events.some((event) => event.includes("queued_input")),
+        false,
+      );
+      await adapter.input({ requestId: "second", correlationId: "second", kind: "prompt", content: "second" });
+      await eventually(() => assert.equal(events.filter((event) => event.startsWith("run_settled:")).length, 2));
+      assert.equal(
+        events.some((event) => event.includes("must not cross settlement")),
+        false,
+      );
+    } finally {
+      release.resolve();
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi session queue, abort, timeout, publication failure, and containment fail closed", async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-session-race-"));
   const cwd = resolve(temporaryRoot, "workspace");

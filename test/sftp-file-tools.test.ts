@@ -906,14 +906,18 @@ test("SFTP manager treats undefined operation and close rejections as failures",
   }
 });
 
-test("malformed successful wx handle seals admission and retains uncertain ownership", async () => {
+test("malformed successful handles seal both read and wx ownership without healing", async () => {
   class MalformedHandleSftp extends EventEmitter {
     public created = 0;
     public closed = 0;
     public unlinked = 0;
+    public constructor(private readonly malformed: () => unknown) {
+      super();
+    }
     public lstat(path: string, callback: (error?: Error, stats?: unknown) => void): void {
       setImmediate(() => {
         if (path === "/workspace") callback(undefined, { size: 0, mode: 0o040700 });
+        else if (path === "/workspace/existing.txt") callback(undefined, { size: 0, mode: 0o100600 });
         else {
           const absent = new Error("absent");
           Object.defineProperty(absent, "code", { value: 2 });
@@ -924,16 +928,11 @@ test("malformed successful wx handle seals admission and retains uncertain owner
     public realpath(path: string, callback: (error: undefined, resolved: string) => void): void {
       setImmediate(() => callback(undefined, path));
     }
-    public open(
-      _path: string,
-      mode: string,
-      attrs: unknown,
-      callback?: (error: undefined, handle: Buffer) => void,
-    ): void {
-      const finish = (typeof attrs === "function" ? attrs : callback) as (error: undefined, handle: Buffer) => void;
+    public open(_path: string, mode: string, attrs: unknown, callback?: (error: undefined, handle: unknown) => void) {
+      const finish = (typeof attrs === "function" ? attrs : callback) as (error: undefined, handle: unknown) => void;
       setImmediate(() => {
         if (mode === "wx") this.created += 1;
-        finish(undefined, Buffer.alloc(257));
+        finish(undefined, this.malformed());
         finish(undefined, Buffer.from("late-valid-must-not-heal"));
       });
     }
@@ -967,50 +966,65 @@ test("malformed successful wx handle seals admission and retains uncertain owner
     }
   }
 
+  const cases = [
+    { name: "missing", value: () => undefined },
+    { name: "empty", value: () => Buffer.alloc(0) },
+    { name: "oversized", value: () => Buffer.alloc(257) },
+    { name: "hostile", value: () => new Proxy(Buffer.from("h"), {}) },
+  ];
   const root = await mkdtemp(resolve(tmpdir(), "cogs-sftp-malformed-handle-"));
   const keyPath = resolve(root, "id_key");
   await writeFile(keyPath, keyPair.private, { mode: 0o600 });
   await chmod(keyPath, 0o600);
-  const sftp = new MalformedHandleSftp();
-  const lost: string[] = [];
-  const manager = new SshConnectionManager({
-    config: {
-      endpoint: "synthetic.invalid:22",
-      username: "cogs",
-      hostKeySha256: validPin,
-      clientKeyPath: keyPath,
-      connectTimeoutMs: 25,
-      handshakeTimeoutMs: 25,
-      permitAcquireTimeoutMs: 25,
-      sftpOpenTimeoutMs: 25,
-      shutdownTimeoutMs: 25,
-      maxPermits: 1,
-      maxQueue: 1,
-    },
-    transport: {
-      connect: async () => new Ssh2Connection(new MalformedHandleClient(sftp) as never),
-    },
-    onLost: (reason) => lost.push(reason),
-  });
   try {
-    await manager.start();
-    const ports = createSftpFileToolPorts({
-      manager,
-      openTimeoutMs: 25,
-      operationTimeoutMs: 25,
-      idleTimeoutMs: 25,
-      closeTimeoutMs: 25,
-    });
-    await assert.rejects(ports.write({ path: "/workspace/new.txt", content: "payload" }), /operation timed out/);
-    assert.equal(sftp.created, 1);
-    assert.equal(sftp.closed, 0);
-    assert.equal(sftp.unlinked, 0);
-    assert.equal(manager.ready, false);
-    assert.deepEqual(lost, ["sftp-operation-uncertain"]);
-    await assert.rejects(manager.withSftp(undefined, async () => "must not enter"));
-    await assert.rejects(manager.shutdown());
+    for (const mode of ["r", "wx"] as const) {
+      for (const one of cases) {
+        const sftp = new MalformedHandleSftp(one.value);
+        const lost: string[] = [];
+        const manager = new SshConnectionManager({
+          config: {
+            endpoint: "synthetic.invalid:22",
+            username: "cogs",
+            hostKeySha256: validPin,
+            clientKeyPath: keyPath,
+            connectTimeoutMs: 25,
+            handshakeTimeoutMs: 25,
+            permitAcquireTimeoutMs: 25,
+            sftpOpenTimeoutMs: 25,
+            shutdownTimeoutMs: 25,
+            maxPermits: 1,
+            maxQueue: 1,
+          },
+          transport: { connect: async () => new Ssh2Connection(new MalformedHandleClient(sftp) as never) },
+          onLost: (reason) => lost.push(reason),
+        });
+        try {
+          await manager.start();
+          const ports = createSftpFileToolPorts({
+            manager,
+            openTimeoutMs: 25,
+            operationTimeoutMs: 25,
+            idleTimeoutMs: 25,
+            closeTimeoutMs: 25,
+          });
+          const operation =
+            mode === "wx"
+              ? ports.write({ path: "/workspace/new.txt", content: "payload" })
+              : ports.read({ path: "/workspace/existing.txt" });
+          await assert.rejects(operation, /operation timed out/, `${mode}:${one.name}`);
+          assert.equal(sftp.created, mode === "wx" ? 1 : 0, `${mode}:${one.name}`);
+          assert.equal(sftp.closed, 0, `${mode}:${one.name}`);
+          assert.equal(sftp.unlinked, 0, `${mode}:${one.name}`);
+          assert.equal(manager.ready, false, `${mode}:${one.name}`);
+          assert.deepEqual(lost, ["sftp-operation-uncertain"], `${mode}:${one.name}`);
+          await assert.rejects(manager.withSftp(undefined, async () => "must not enter"));
+          await assert.rejects(manager.shutdown());
+        } finally {
+          await manager.shutdown().catch(() => undefined);
+        }
+      }
+    }
   } finally {
-    await manager.shutdown().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });
