@@ -9,6 +9,15 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   assert.match(workflow, /^name: Stage 2 prebuilt no-KVM static control candidate$/mu);
   assert.match(workflow, /stage2-local-static-control-prebuilt-candidate\.yml\/runs/u);
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
+  assert.match(
+    workflow,
+    /select\(\.head_sha == \$g and\s*\.path == "\.github\/workflows\/stage2-local-static-control-prebuilt-candidate\.yml"\)/u,
+  );
+  assert.doesNotMatch(workflow, /\.head_sha == \$g and \.display_title/u);
+  assert.doesNotMatch(
+    workflow,
+    /stage2-local-static-control-prebuilt-candidate\.yml\/runs\?event=workflow_dispatch&branch=/u,
+  );
   assert.match(workflow, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-publisher\.yml"/u);
   assert.match(workflow, /\.status == "completed" and \.conclusion == "success"/u);
   assert.match(workflow, /\.name == \$name/u);

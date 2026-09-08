@@ -57,10 +57,11 @@ jobs:
           test "$GITHUB_TRIGGERING_ACTOR" = nenb
           [[ "$EXACT_IMPLEMENTATION_HEAD" =~ ^[0-9a-f]{40}$ ]]
           test "$GITHUB_SHA" != "$EXACT_IMPLEMENTATION_HEAD"
-          gh api --paginate --slurp             'repos/nenb/cogs/actions/workflows/stage2-local-static-control-prebuilt-candidate.yml/runs?event=workflow_dispatch&branch=main&per_page=100'             >"$RUNNER_TEMP/static-runs.json"
-          jq -e --arg h "$EXACT_IMPLEMENTATION_HEAD" --arg g "$GITHUB_SHA"             --arg title "Non-authoritative Stage 2 static control H=$EXACT_IMPLEMENTATION_HEAD"             --argjson current "$GITHUB_RUN_ID"             '[.[].workflow_runs[] | select(.head_sha == $g and .display_title == $title and
+          gh api --paginate --slurp             'repos/nenb/cogs/actions/workflows/stage2-local-static-control-prebuilt-candidate.yml/runs?event=workflow_dispatch&per_page=100'             >"$RUNNER_TEMP/static-runs.json"
+          jq -e --arg g "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" \
+            '[.[].workflow_runs[] | select(.head_sha == $g and
                              .path == ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml")] |
-             map(.id) == [$current]'             "$RUNNER_TEMP/static-runs.json" >/dev/null
+             map(.id) == [$current]' "$RUNNER_TEMP/static-runs.json" >/dev/null
 
       - name: Check out exact reviewed implementation head without credentials
         timeout-minutes: 2
