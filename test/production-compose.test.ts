@@ -954,7 +954,14 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
         cleanupFailure = error;
       }
     }
-    await rm(root, { recursive: true, force: true });
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      cleanupFailure =
+        cleanupFailure === undefined
+          ? error
+          : new AggregateError([cleanupFailure, error], "long-turn cleanup operations failed");
+    }
   }
   if (failure !== undefined && cleanupFailure !== undefined)
     throw new AggregateError([failure, cleanupFailure], "long-turn assertion and cleanup both failed");
