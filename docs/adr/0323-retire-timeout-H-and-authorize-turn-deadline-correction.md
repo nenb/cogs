@@ -48,7 +48,7 @@ Retain the ADR 0319 baseline and no-deletion-credit rules. Supersede only these 
 | correction global | 42,000 | 43,000 |
 | post-H retained/workflow/global | 1,500 / 500 / 2,100 | 2,000 / 600 / 2,500 |
 
-The integration/total planned new-file highs become 34/42 and the tracked-source ceiling becomes 1,465 for the ADR and isolated long-turn workflow. Every other owner, byte, file, deploy, and mutable-owner limit remains unchanged. No final-v5 control member is authorized.
+The integration/total planned new-file highs become 34/42, the tracked-source ceiling becomes 1,465 for the ADR and isolated long-turn workflow, and the shared `scripts/validate-schemas.ts` readable high becomes 301 and the Outcome Two trusted/portable subtotal becomes 20,560 for that required launch sample and its exact guard. Every other owner, byte, file, deploy, and mutable-owner limit remains unchanged. No final-v5 control member is authorized.
 
 ADR 0320 remains absent and reserved for a later corrected-H control decision. ADR 0322 remains absent and reserved for a later Q/qualification decision. This ADR does not consume either reservation.
 
