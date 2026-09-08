@@ -9,17 +9,13 @@ Issue #357 is **local/static only**. Its canonical instance is [`stage4-offline-
 
 The contemplated replacement H is Stage2-only: complete repository source identity for the independently reviewed rootfs/Kata/custody graph, not qualification of every source file. OpenBao admission, real Stage3 launcher/Envoy/S3/KVM observations, universal all-inner-attempt traffic coverage and production credentials remain blocked. No H/G/Q is assigned here; Stage2 control v5 remains absent until Q. The present Stage4 readiness v5 package is a different contract. Source changes require final deterministic regeneration; the retained package does not establish current-worktree preparation merely because its historical internal bindings validate. All operational, production, cloud, Stage3/Stage4 exit and release authority remains absent.
 
-### Bounded historical selector mapping (not a universal retirement registry)
+### Reconciled Stage2 retirement registry
 
-ADR 0309's historical repository-variable snapshot maps the following three values to the current mixed-preflight exact predicates in `scripts/stage2-prebuilt-mixed-hg-preflight.sh`:
+ADR 0326 reconciles the complete prebuilt/formal generations retired since ADR 0286 into one closed typed exact-selection registry. The canonical JSON, independent Python copy, and all current pre-effect workflow mirrors contain the same revision, run, and artifact identities. Tests derive mirror equality from the canonical policy and independently require the historical H3/G3/Q3 tuple, its custody, and the newest retired producer generation to be rejected before effects.
 
-| Historical variable | Snapshot value | Rejecting exact predicate |
-| --- | --- | --- |
-| `STAGE2_LOCAL_IMPLEMENTATION_HEAD` | `229ea62bce964086726181974a6fec1c6dfd1f86` | selected implementation equals fixed H |
-| `STAGE2_LOCAL_CONTROL_HEAD` | `821149ba4c3dbccef48694efcdb1eb29fa9fd2b9` | selected control equals fixed G (currently unfilled) |
-| `STAGE2_LOCAL_QUALIFICATION_HEAD` | `06188f67a9a699924d645ce8aa0e91950b6341c7` | selected qualification equals current protected workflow source |
+The registry is not authorization and does not patch old immutable workflow versions. Protected-main, actor, attempt-one, first-created, exact H/G/Q ancestry, authenticated custody, authority-label, schema, and operational-hold checks remain independently mandatory. Retirement rejects exact selected identities, never descendants merely because their ancestry contains a tombstone. Historical decoding and cleanup-only settlement remain available.
 
-`test/stage2-remediation-budget.test.ts` executes only these extracted predicates with a sentinel, and separately proves that the current Python qualification guard rejects the historical tuple because exact review constants remain blocked. The closed three-revision retirement registry intentionally does **not** veto these older values by itself. Predicate success alone grants nothing; existing H is retired and G is unfilled. This is not an exhaustive mapping of older package/rootfs selectors, artifacts, producer/diagnostic paths, or historical workflow versions. Their operational hold remains binding; new guards do not patch old source. The snapshot is not a live remote audit. Do not mutate variables, roll back/tag-dispatch, or infer authorization from registry absence; separately authorized remote review must report drift first.
+Earlier failed diagnostics and legacy dual-build evidence retain their narrower typed dispositions. In particular, ADR 0287's fixed publication remains usable only as non-authorizing diagnostic data under its exact no-mint lock. Shared canonical rootfs bytes are not globally retired, and no source, tree, descriptor content, or OCI layer becomes selectable authority merely because it is absent from the scalar registry.
 
 ## Pure classifier boundary
 

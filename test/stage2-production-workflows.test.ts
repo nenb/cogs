@@ -38,7 +38,11 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
     planning.indexOf("stage2-production-planner.py eligibility") <
       planning.indexOf("Acquire short-lived planning identity"),
   );
-  assert.ok(planner.indexOf('eligible((package["implementation_revision"]') < planner.indexOf("os.environ[key]"));
+  const plannerMain = planner.indexOf("def main(arguments):");
+  const plannerEligibility = planner.indexOf("    package_eligible(package)\n", plannerMain);
+  const plannerCredentialRead = planner.indexOf("os.environ[key]", plannerMain);
+  assert.ok(plannerMain >= 0 && plannerEligibility >= 0 && plannerCredentialRead >= 0);
+  assert.ok(plannerEligibility < plannerCredentialRead);
 });
 
 test("approval authenticates only the exact planning workflow artifact", () => {

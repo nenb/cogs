@@ -31,9 +31,32 @@ def require(value):
     if not value: raise PlanningError()
 
 
-def eligible(revisions):
-    try: retirement["select"](tuple(revisions))
+def eligible(revisions, runs=(), artifacts=()):
+    try:
+        retirement["select"](tuple(revisions), runs=tuple(str(value) for value in runs),
+                             artifacts=tuple(str(value) for value in artifacts))
     except (TypeError, ValueError) as error: raise PlanningError() from error
+
+
+def package_eligible(package, expected=()):
+    observation = package.get("static_control_observation")
+    custody = package.get("cycle_artifact_custody")
+    require(type(observation) is dict and type(custody) is dict
+            and type(custody.get("workflow_run")) is dict
+            and type(custody.get("artifacts")) is list
+            and len(custody["artifacts"]) == 7
+            and all(type(row) is dict for row in custody["artifacts"]))
+    qualification = package.get("qualification_revision")
+    custody_head = custody["workflow_run"].get("head_sha")
+    require(custody_head == qualification)
+    revisions = (package.get("implementation_revision"), package.get("control_revision"),
+                 qualification, custody_head)
+    runs = (package.get("mixed_preflight_run_id"), observation.get("run_id"),
+            custody["workflow_run"].get("id"))
+    artifacts = (observation.get("artifact_id"),
+                 *(row.get("artifact_id") for row in custody["artifacts"]))
+    eligible(revisions, runs, artifacts)
+    require(not expected or tuple(expected) == revisions[:3])
 
 
 def pairs(rows):
@@ -59,10 +82,7 @@ def read(path, maximum=MAX):
 
 def eligibility(path, expected=()):
     _raw, package = read(path)
-    revisions = (package.get("implementation_revision"), package.get("control_revision"),
-                 package.get("qualification_revision"))
-    eligible(revisions)
-    require(not expected or tuple(expected) == revisions)
+    package_eligible(package, expected)
 
 
 def run(arguments, timeout, environment, parse=False):
@@ -115,8 +135,7 @@ def main(arguments):
             and package["static_control_observation"]["artifact_id"] > 0
             and re.fullmatch(r"sha256:[0-9a-f]{64}", package["static_control_observation"]
                              ["artifact_archive_digest"]) is not None)
-    eligible((package["implementation_revision"], package["control_revision"],
-              package["qualification_revision"]))
+    package_eligible(package)
     require(hashlib.sha256(tofu.read_bytes()).hexdigest() == TOFU_SHA256)
     environment = {key: os.environ[key] for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN")}

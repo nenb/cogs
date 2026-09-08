@@ -315,7 +315,7 @@ def prebuilt_staging_linux_tests():
     if os.environ.get("COGS_REQUIRE_STAGE2_LOCAL_SETTLEMENT_LINUX") != "1": return
     assert os.geteuid() == 0 and hasattr(os, "fork") and hasattr(os, "setuid")
     original = (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
-                prebuilt_staging.H_PREPARATION)
+                prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"])
     base = Path("/root/cogs-stage2-bootstrap")
     parts = [base, base / "Q", base / "Q/deploy", base / "Q/deploy/aws-feasibility",
              base / "Q/deploy/aws-feasibility/remote", prebuilt_staging.QUALIFICATION_SOURCE]
@@ -333,6 +333,21 @@ def prebuilt_staging_linux_tests():
         prebuilt_staging.DESTINATION = root / "control"
         prebuilt_staging.H_PREPARATION = ROOT / "deploy/aws-feasibility/remote/completion_kata_preparation.py"
         try:
+            rejected(lambda: prebuilt_staging.stage(), prebuilt_staging.retirement["RetirementError"])
+            original_select = prebuilt_staging.retirement["select"]
+            fixture_h = "229ea62bce964086726181974a6fec1c6dfd1f86"
+            fixture_g = "821149ba4c3dbccef48694efcdb1eb29fa9fd2b9"
+            fixture_revisions = (fixture_h, fixture_g, fixture_g, fixture_h,
+                                 fixture_h, fixture_h, fixture_h)
+            fixture_runs = ("33980034976", "33987181596", "33980034976", "33980034976")
+            fixture_artifacts = ("9973726406",)
+            def archival_fixture_select(revisions, runs=(), artifacts=(), **kwargs):
+                assert type(revisions) is tuple and revisions == fixture_revisions
+                assert type(runs) is tuple and runs == fixture_runs
+                assert type(artifacts) is tuple and artifacts == fixture_artifacts and not kwargs
+                return original_select(tuple("f" * 40 for _ in revisions),
+                    runs=tuple("1" for _ in runs), artifacts=tuple("1" for _ in artifacts))
+            prebuilt_staging.retirement["select"] = archival_fixture_select
             assert prebuilt_staging.stage() == "80a962f87f35cf1653894168ebe32139d7d32bc0a21f89cf028ac02a67976fc8"
             expected = "b71c98f1721aca58328f92cdf61408038d3d10465361b84702c555b908ef5876"
             assert prebuilt_staging.verify_staged(expected) == expected
@@ -413,7 +428,7 @@ def prebuilt_staging_linux_tests():
             assert cli.returncode == 2 and cli.stdout == cli.stderr == b""
         finally:
             (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
-             prebuilt_staging.H_PREPARATION) = original
+             prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"]) = original
 
 
 guard_tests()
