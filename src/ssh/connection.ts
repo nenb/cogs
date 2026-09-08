@@ -1372,6 +1372,7 @@ class Ssh2SftpPort implements CogsSftpPort {
   public open(path: string, mode: "r" | "wx", signal: AbortSignal): Promise<Buffer> {
     const work = new Promise<Buffer>((resolve, reject) => {
       let settled = false;
+      let uncertain = false;
       let cancelled = false;
       const cleanupLateHandle = (handle: Buffer): Promise<void> => {
         const cleanup = this.closeHandle(handle, new AbortController().signal)
@@ -1385,7 +1386,12 @@ class Ssh2SftpPort implements CogsSftpPort {
       };
       const finish = (error?: unknown, handle?: Buffer) => {
         if (settled) {
-          if (Buffer.isBuffer(handle)) void cleanupLateHandle(handle).catch(() => undefined);
+          if (uncertain) return;
+          try {
+            if (isValidHandle(handle)) void cleanupLateHandle(handle).catch(() => undefined);
+          } catch {
+            uncertain = true;
+          }
           return;
         }
         settled = true;
@@ -1393,19 +1399,28 @@ class Ssh2SftpPort implements CogsSftpPort {
         try {
           if (error !== undefined && error !== null) {
             const mapped = toCogsSftpError(error);
-            if (mapped instanceof SftpCallbackUncertainError) return;
+            if (mapped instanceof SftpCallbackUncertainError) {
+              uncertain = true;
+              return;
+            }
             reject(mapped);
-          } else if (signal.aborted || cancelled) {
-            if (Buffer.isBuffer(handle)) {
-              void cleanupLateHandle(handle).then(
-                () => reject(new Error("sftp open aborted")),
-                () => reject(new Error("sftp operation failed")),
-              );
-            } else reject(new Error("sftp open aborted"));
-          } else if (isValidHandle(handle)) resolve(handle);
-          else reject(new Error("invalid handle"));
+            return;
+          }
+          if (!isValidHandle(handle)) {
+            // A successful OPEN may already have created a file or allocated a
+            // remote handle. Without a usable handle neither fact can be retired.
+            uncertain = true;
+            return;
+          }
+          if (signal.aborted || cancelled) {
+            void cleanupLateHandle(handle).then(
+              () => reject(new Error("sftp open aborted")),
+              () => reject(new Error("sftp operation failed")),
+            );
+          } else resolve(handle);
         } catch {
-          reject(new Error("sftp operation failed"));
+          // Hostile successful handle validation is mutation/handle uncertainty.
+          uncertain = true;
         }
       };
       const onAbort = () => {

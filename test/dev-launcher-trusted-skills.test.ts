@@ -92,7 +92,7 @@ function launchDocument() {
       user_path: "/user/skills",
     },
     integrations: [],
-    limits: { cpu: 1, memory_bytes: 1, tool_timeout_seconds: 1, max_tool_output_bytes: 1 },
+    limits: { cpu: 1, memory_bytes: 1, tool_timeout_seconds: 1, turn_timeout_seconds: 61, max_tool_output_bytes: 1 },
   } as const;
 }
 

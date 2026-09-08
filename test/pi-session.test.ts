@@ -92,10 +92,10 @@ async function eventually(assertion: () => void | Promise<void>): Promise<void> 
 }
 
 function withDefaults(
-  options: Omit<CogsPiSessionOptions, "userId" | "emit" | "onFatal"> &
-    Partial<Pick<CogsPiSessionOptions, "userId" | "emit" | "onFatal">>,
+  options: Omit<CogsPiSessionOptions, "userId" | "emit" | "onFatal" | "turnTimeoutMs"> &
+    Partial<Pick<CogsPiSessionOptions, "userId" | "emit" | "onFatal" | "turnTimeoutMs">>,
 ): CogsPiSessionOptions {
-  return { userId: "user-1", emit: () => true, onFatal: () => undefined, ...options };
+  return { userId: "user-1", emit: () => true, onFatal: () => undefined, turnTimeoutMs: 10_000, ...options };
 }
 
 function validLaunch(sessionId: string): unknown {
@@ -119,7 +119,13 @@ function validLaunch(sessionId: string): unknown {
       user_path: "/user/skills",
     },
     integrations: [],
-    limits: { cpu: 1, memory_bytes: 268435456, tool_timeout_seconds: 30, max_tool_output_bytes: 4096 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 268435456,
+      tool_timeout_seconds: 30,
+      turn_timeout_seconds: 90,
+      max_tool_output_bytes: 4096,
+    },
   };
 }
 
@@ -180,6 +186,30 @@ function fakeObserver(commits: readonly string[], notes: CogsGitMapRecord[] = []
       notes.push(record);
       return true;
     },
+    dispose: async () => undefined,
+  });
+}
+
+function blockingObserver(blockCall: number, milliseconds: number): CogsGitObserver {
+  let calls = 0;
+  return Object.freeze({
+    observeHead: async (): Promise<CogsGitObservation> => {
+      calls += 1;
+      if (calls === blockCall) {
+        const deadline = performance.now() + milliseconds;
+        while (performance.now() < deadline) {
+          // Delay timer delivery while the monotonic turn deadline advances.
+        }
+      }
+      return Object.freeze({
+        kind: "observed" as const,
+        repo: "workspace-1",
+        commit: calls.toString(16).padStart(40, "0"),
+        observed_at: "2026-07-17T00:00:00.000Z",
+      });
+    },
+    nearestAncestor: async (input: { readonly candidates: readonly string[] }) => input.candidates[0] ?? null,
+    appendNote: async () => true,
     dispose: async () => undefined,
   });
 }
@@ -372,6 +402,17 @@ function internalSession(adapter: Awaited<ReturnType<typeof createCogsPiSession>
   ).session;
 }
 
+function busyTextStream(milliseconds: number, text: string): StreamFn {
+  const delegate = oneTextStream(text);
+  return (...input) => {
+    const deadline = performance.now() + milliseconds;
+    while (performance.now() < deadline) {
+      // Deliberately delay the timer queue while the monotonic clock advances.
+    }
+    return delegate(...input);
+  };
+}
+
 function oneTextStream(text: string): StreamFn {
   return (model) => {
     const stream = createAssistantMessageEventStream();
@@ -440,7 +481,7 @@ test("Pi session adapter constructs locked runtime-only SDK components, only Cog
           });
           return true;
         },
-        operationTimeoutMs: 10_000,
+        turnTimeoutMs: 10_000,
       }),
     );
 
@@ -1473,6 +1514,137 @@ test("Pi session rejects malformed tool args and malformed tool results without 
   }
 });
 
+test("Pi turn deadline is required, distinct from model-operation timeout, and monotonic", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-turn-deadline-"));
+  const cwd = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  const options = {
+    cwd,
+    agentDir,
+    sessionRoot: resolve(root, "sessions"),
+    sessionId: "turn-deadline",
+    model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+    apiKey: "synthetic-only-key",
+    toolPorts: fakePorts([]),
+  } as const;
+  try {
+    for (const invalid of [undefined, 0, 1.5, 3_600_001])
+      await assert.rejects(
+        createCogsPiSession(withDefaults({ ...options, turnTimeoutMs: invalid as number })),
+        /invalid turnTimeoutMs/,
+      );
+
+    const separatedEvents: string[] = [];
+    const separated = await createCogsPiSession(
+      withDefaults({
+        ...options,
+        sessionRoot: resolve(root, "separated"),
+        sessionId: "separated",
+        operationTimeoutMs: 10,
+        turnTimeoutMs: 100,
+        streamFn: busyTextStream(40, "settled after model-operation bound"),
+        emit: (event) => {
+          separatedEvents.push(event.kind);
+          return true;
+        },
+      }),
+    );
+    await separated.input({ requestId: "separated", correlationId: "separated", kind: "prompt", content: "go" });
+    await eventually(async () => assert.equal((await separated.state()).runState, "settled"));
+    assert.equal(separatedEvents.filter((kind) => kind === "run_settled").length, 1);
+    await separated.dispose();
+
+    const expiredEvents: Array<{ kind: string; message?: unknown }> = [];
+    const expired = await createCogsPiSession(
+      withDefaults({
+        ...options,
+        sessionRoot: resolve(root, "expired"),
+        sessionId: "expired",
+        operationTimeoutMs: 1000,
+        turnTimeoutMs: 20,
+        streamFn: busyTextStream(75, "must not settle"),
+        emit: (event) => {
+          expiredEvents.push({ kind: event.kind, message: event.payload.message });
+          return true;
+        },
+      }),
+    );
+    await expired.input({ requestId: "expired", correlationId: "expired", kind: "prompt", content: "go" });
+    await eventually(async () => assert.notEqual((await expired.state()).runState, "running"));
+    assert.deepEqual(
+      expiredEvents.filter((event) => event.kind === "error"),
+      [{ kind: "error", message: "pi operation timed out" }],
+    );
+    assert.equal(
+      expiredEvents.some((event) => event.kind === "run_settled"),
+      false,
+    );
+    const native = expired.sessionFile() ?? assert.fail("missing native session file");
+    for (const line of (await readFile(native, "utf8")).trimEnd().split("\n")) JSON.parse(line);
+    await expired.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi turn deadline covers Git setup and settlement", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-turn-git-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    for (const row of [
+      { name: "begin", blockCall: 1, expectedModelCalls: 0 },
+      { name: "settle", blockCall: 2, expectedModelCalls: 1 },
+    ] as const) {
+      let modelCalls = 0;
+      const events: string[] = [];
+      const stream = oneTextStream("fast");
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd: resolve(root, "workspace"),
+          agentDir: resolve(root, "agent"),
+          sessionRoot: resolve(root, `sessions-${row.name}`),
+          sessionId: `git-${row.name}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "synthetic-only-key",
+          toolPorts: fakePorts([]),
+          operationTimeoutMs: 1000,
+          turnTimeoutMs: 20,
+          streamFn: (...input) => {
+            modelCalls += 1;
+            return stream(...input);
+          },
+          git: {
+            repositoryId: "workspace-1",
+            observer: blockingObserver(row.blockCall, 75),
+            enableNotes: false,
+          },
+          emit: (event) => {
+            events.push(event.kind);
+            return true;
+          },
+        }),
+      );
+      await adapter.input({ requestId: row.name, correlationId: row.name, kind: "prompt", content: "go" });
+      await eventually(async () => assert.notEqual((await adapter.state()).runState, "running"));
+      assert.equal(modelCalls, row.expectedModelCalls, row.name);
+      assert.equal(events.filter((kind) => kind === "error").length, 1, row.name);
+      assert.equal(
+        events.some((kind) => kind === "run_settled"),
+        false,
+        row.name,
+      );
+      const native = adapter.sessionFile() ?? assert.fail("missing native session file");
+      for (const line of (await readFile(native, "utf8")).trimEnd().split("\n")) JSON.parse(line);
+      await adapter.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi session queue, abort, timeout, publication failure, and containment fail closed", async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-session-race-"));
   const cwd = resolve(temporaryRoot, "workspace");
@@ -1574,7 +1746,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
           );
           return true;
         },
-        operationTimeoutMs: 75,
+        turnTimeoutMs: 75,
         abortTimeoutMs: 500,
       }),
     );
@@ -1616,7 +1788,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
           queueEvents.push(`${event.kind}:${event.correlation_id}:${event.request_id ?? "none"}`);
           return true;
         },
-        operationTimeoutMs: 75,
+        turnTimeoutMs: 75,
         abortTimeoutMs: 500,
       }),
     );
@@ -1677,7 +1849,7 @@ test("Pi session queue, abort, timeout, publication failure, and containment fai
         toolPorts: fakePorts(calls),
         streamFn: nonCooperativeStream(),
         emit: () => true,
-        operationTimeoutMs: 25,
+        turnTimeoutMs: 25,
         abortTimeoutMs: 25,
       }),
     );
@@ -1911,7 +2083,7 @@ test("Pi abort completion after a synchronous deadline overrun cannot reopen adm
       apiKey: "synthetic-only-key",
       toolPorts: fakePorts([]),
       streamFn: hangingStream({ count: 0 }),
-      operationTimeoutMs: 1000,
+      turnTimeoutMs: 1000,
       abortTimeoutMs: 10,
     }),
   );
@@ -2711,6 +2883,49 @@ function authOptions(
     ...overrides,
   };
 }
+
+test("authenticated launch is the sole turn-deadline authority", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-auth-turn-deadline-"));
+  try {
+    await mkdir(resolve(root, "workspace"), { recursive: true });
+    await mkdir(resolve(root, "agent"), { recursive: true });
+    const source = new TestModelApiKeySource("aaaaaaaa");
+    const events: string[] = [];
+    const rawOptions = {
+      ...authOptions(root, source, {
+        operationTimeoutMs: 10,
+        streamFn: busyTextStream(40, "validated launch deadline wins"),
+        emit: (event) => {
+          events.push(event.kind);
+          return true;
+        },
+      }),
+      // Untyped callers cannot override the validated launch contract.
+      turnTimeoutMs: 10,
+    };
+    const adapter = await createAuthenticatedCogsPiSession(
+      rawOptions as unknown as Parameters<typeof createAuthenticatedCogsPiSession>[0],
+    );
+    try {
+      await adapter.input({ requestId: "auth-turn", correlationId: "auth-turn", kind: "prompt", content: "go" });
+      await eventually(async () => assert.equal((await adapter.state()).runState, "settled"));
+      assert.equal(events.filter((kind) => kind === "run_settled").length, 1);
+    } finally {
+      await adapter.dispose();
+    }
+
+    const invalidSource = new TestModelApiKeySource("aaaaaaaa");
+    const invalidLaunch = validLaunch("invalid-headroom") as { limits: Record<string, unknown> };
+    invalidLaunch.limits.turn_timeout_seconds = 89;
+    await assert.rejects(
+      createAuthenticatedCogsPiSession(authOptions(root, invalidSource, { launchDocument: invalidLaunch })),
+      /invalid launch document/,
+    );
+    assert.equal(invalidSource.calls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Pi session rejects hostile policy authorizer seam generically before side effects", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "cogs-pi-policy-seam-"));
@@ -4441,7 +4656,7 @@ test("Pi telemetry covers real tool policy denial, malformed paths, failed ports
         },
         streamFn: oneToolStream("read", { path: "/workspace/file.txt" }),
         telemetry: cancelledTelemetry.sink,
-        operationTimeoutMs: 10,
+        turnTimeoutMs: 10,
       }),
     );
     await cancelled.input({ requestId: "cancel", correlationId: "cancel-corr", kind: "prompt", content: "x" });

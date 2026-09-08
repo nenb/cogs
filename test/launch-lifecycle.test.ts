@@ -43,7 +43,13 @@ function validLaunch(): unknown {
       user_path: "/user/skills",
     },
     integrations: [],
-    limits: { cpu: 1, memory_bytes: 268435456, tool_timeout_seconds: 30, max_tool_output_bytes: 4096 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 268435456,
+      tool_timeout_seconds: 30,
+      turn_timeout_seconds: 90,
+      max_tool_output_bytes: 4096,
+    },
   };
 }
 
@@ -286,6 +292,33 @@ test("launch validation is strict, redacted, clone-safe, and immutable", () => {
       },
     );
   }
+});
+
+test("launch turn deadline has exact bounds and minimum configured tool headroom", () => {
+  const base = validLaunch() as Record<string, unknown>;
+  const limits = (tool: number, turn: number) => ({
+    ...(base as { limits: Record<string, unknown> }).limits,
+    tool_timeout_seconds: tool,
+    turn_timeout_seconds: turn,
+  });
+  for (const [tool, turn] of [
+    [900, 1200],
+    [900, 960],
+    [1, 61],
+    [900, 3600],
+  ] as const)
+    assert.equal(validateLaunchConfig({ ...base, limits: limits(tool, turn) }).limits.turn_timeout_seconds, turn);
+  for (const invalid of [
+    { ...base, limits: limits(900, 959) },
+    { ...base, limits: limits(1, 60) },
+    { ...base, limits: limits(900, 3601) },
+    { ...base, limits: limits(1, 61.5) },
+    {
+      ...base,
+      limits: Object.fromEntries(Object.entries(limits(1, 61)).filter(([key]) => key !== "turn_timeout_seconds")),
+    },
+  ])
+    assert.throws(() => validateLaunchConfig(invalid), LaunchConfigError);
 });
 
 test("readiness is false until all fixed dependencies are ready and ready config resists mutation", async () => {

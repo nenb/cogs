@@ -1,0 +1,49 @@
+name: Production turn-timeout composed regression
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  long-turn:
+    name: Production composed turn exceeds 60 seconds
+    if: ${{ github.event.label.name == 'turn-timeout-composed' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact same-repository PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Verify exact requested source
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD_SHA"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Run the single offline production-composed long turn
+        env:
+          COGS_PRODUCTION_TURN_TIMEOUT_COMPOSED: "1"
+          PI_OFFLINE: "1"
+          PI_TELEMETRY: "0"
+          PI_SKIP_VERSION_CHECK: "1"
+        run: npm run test:turn-timeout:composed

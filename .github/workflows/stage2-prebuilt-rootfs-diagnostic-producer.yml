@@ -26,10 +26,10 @@ jobs:
           EXACT_H: ${{ inputs.exact_implementation_head }}
         run: |
           set -euo pipefail
-          # ADR0319 exact retirement mirror; selection only, never ancestors.
+          # ADR0323 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID"; do
             case "$selected" in
-              9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+              0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
             esac
           done
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
@@ -73,10 +73,10 @@ jobs:
         env: { EXACT_H: "${{ needs.admit.outputs.head }}" }
         run: |
           set -euo pipefail
-          # ADR0319 exact retirement mirror; selection only, never ancestors.
+          # ADR0323 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID"; do
             case "$selected" in
-              9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+              0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
             esac
           done
       - name: Check out exact H without credentials

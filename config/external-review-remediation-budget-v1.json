@@ -1,14 +1,14 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 20500,
+  "global_gross_line_high": 21000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1460,
+    "tracked_files": 1465,
     "source_inventory_bytes": 22020096,
     "serialized_source_inventory_bytes": 262144
   },
@@ -127,7 +127,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 7200,
+      "gross_line_high": 7500,
       "gross_byte_forecast": {
         "source": 250000,
         "tests_fixtures": 430000,
@@ -172,6 +172,7 @@
         "test/dev-launcher-supervisor.test.ts",
         "test/dev-launcher-trusted-compose.test.ts",
         "test/dev-launcher-trusted-controls.test.ts",
+        "test/dev-launcher-trusted-skills.test.ts",
         "test/dev-launcher-worker-process.test.ts",
         "test/egress-envoy-process.test.ts",
         "test/egress-revocation-watcher.test.ts",
@@ -186,7 +187,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 2800,
+      "gross_line_high": 3100,
       "gross_byte_forecast": {
         "source": 180000,
         "tests_fixtures": 280000,
@@ -217,23 +218,25 @@
         "test/session-jsonl-history.test.ts",
         "test/session-local-export.test.ts",
         "test/sftp-file-tools.test.ts",
+        "test/skills-session-preparer.test.ts",
         "test/worker-telemetry.test.ts"
       ]
     },
     {
       "name": "integration",
-      "gross_line_high": 3500,
+      "gross_line_high": 3750,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 32,
+      "new_file_high": 34,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
         ".github/workflows/kvm-qualification.yml",
+        ".github/workflows/production-turn-timeout-composed.yml",
         ".github/workflows/stage2-local-kata-qualification.yml",
         ".github/workflows/stage2-local-static-admission-diagnostic.yml",
         ".github/workflows/stage2-local-static-control-candidate.yml",
@@ -285,6 +288,7 @@
         "docs/adr/0320-freeze-corrected-H-and-authorize-control.md",
         "docs/adr/0321-authorize-causal-npm-compatibility-correction.md",
         "docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md",
+        "docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
@@ -301,10 +305,13 @@
         "docs/security-evidence/stage5-destructive-harness-report.canonical-json",
         "docs/test-reports/stage-3-s3-09-linux-kvm-exit.md",
         "docs/test-reports/stage-4-offline-readiness.md",
+        "package.json",
+        "schemas/launch-v1alpha1.json",
         "schemas/native-qualification-report-v1alpha1.json",
         "scripts/check-image-pins.ts",
         "scripts/check-stage2-retained-lines.py",
         "scripts/native-qualification/common.py",
+        "scripts/pi-real-provider-integration.ts",
         "scripts/prepare-launcher-images.ts",
         "scripts/run-launcher-smoke-evidence.ts",
         "scripts/stage2-formal-local-qualification.py",
@@ -323,6 +330,7 @@
         "scripts/stage4-offline-source-inventory.ts",
         "scripts/stage4-runtime-artifact-closure.ts",
         "scripts/validate-schemas.ts",
+        "src/launch/config.ts",
         "test/aws-stage2-completion-kata-runtime.py",
         "test/aws-stage2-completion-local-result.test.ts",
         "test/launcher-smoke-evidence.test.ts",

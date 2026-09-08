@@ -40,6 +40,7 @@ try {
       sessionRoot: sessionDir,
       toolPorts: ports,
       operationTimeoutMs: 120_000,
+      turnTimeoutMs: 120_000,
     }),
   );
   try {

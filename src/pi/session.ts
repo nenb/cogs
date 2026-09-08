@@ -125,7 +125,10 @@ export interface CogsPiSessionOptions {
   readonly streamFn?: StreamFn;
   readonly emit: (event: ApiEvent) => boolean | undefined;
   readonly onFatal: (reason: string) => void | Promise<void>;
+  /** Bounded model-runtime credential operation deadline; not a prompt deadline. */
   readonly operationTimeoutMs?: number;
+  /** Required overall prompt/turn deadline. This is intentionally distinct from bounded model operations. */
+  readonly turnTimeoutMs: number;
   readonly abortTimeoutMs?: number;
   readonly maxToolResultBytes?: number;
   readonly preparedResources?: CogsPreparedSkills;
@@ -146,7 +149,7 @@ export interface CogsPiGitOptions {
 }
 
 export interface AuthenticatedCogsPiSessionOptions
-  extends Omit<CogsPiSessionOptions, "userId" | "sessionId" | "model" | "apiKey"> {
+  extends Omit<CogsPiSessionOptions, "userId" | "sessionId" | "model" | "apiKey" | "turnTimeoutMs"> {
   readonly launchDocument: unknown;
   readonly modelApiKeys: ModelApiKeySource;
   readonly skillPreparer: CogsSkillPreparerPort;
@@ -189,6 +192,7 @@ type ActiveRun = {
   terminal: boolean;
   suppressLate: boolean;
   deadline: NodeJS.Timeout | undefined;
+  readonly deadlineAt: number;
   promise: Promise<void>;
 };
 
@@ -196,6 +200,7 @@ const SENSITIVE_FIELD = /^(api[-_]?key|authorization|credential|secret|token|ref
 
 function validateOptions(options: CogsPiSessionOptions): void {
   validateOptionalInteger(options.operationTimeoutMs, "operationTimeoutMs", 1, 3_600_000);
+  validateInteger(options.turnTimeoutMs, "turnTimeoutMs", 1, 3_600_000);
   if (options.policyAuthorizer !== undefined) validatePolicyAuthorizer(options.policyAuthorizer);
   captureTelemetry(options.telemetry);
   captureCogsCommandAuditHook(options.commandAudit);
@@ -214,7 +219,12 @@ function validatePolicyAuthorizer(value: unknown): asserts value is CogsPolicyAu
 
 function validateOptionalInteger(value: number | undefined, label: string, minimum: number, maximum: number): void {
   if (value === undefined) return;
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`invalid ${label}`);
+  validateInteger(value, label, minimum, maximum);
+}
+
+function validateInteger(value: unknown, label: string, minimum: number, maximum: number): void {
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum)
+    throw new Error(`invalid ${label}`);
 }
 
 function validateGitOptions(value: CogsPiGitOptions | undefined): CogsPiGitOptions | undefined {
@@ -451,6 +461,7 @@ export async function createAuthenticatedCogsPiSession({
           sessionId: launch.session_id,
           model: { provider: launch.model.provider, id: launch.model.id },
           apiKey,
+          turnTimeoutMs: launch.limits.turn_timeout_seconds * 1000,
           preparedResources,
           ...(authenticatedGit === undefined
             ? {}
@@ -500,6 +511,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const onFatal = options.onFatal;
   const toolPorts = options.toolPorts;
   const operationTimeoutMs = options.operationTimeoutMs;
+  const turnTimeoutMs = options.turnTimeoutMs;
   const abortTimeoutMs = options.abortTimeoutMs;
   const maxToolResultBytes = options.maxToolResultBytes ?? 16 * 1024;
   const apiKey = options.apiKey;
@@ -704,6 +716,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       sessionId,
       secret,
       operationTimeoutMs,
+      turnTimeoutMs,
       abortTimeoutMs,
       preparedResources,
       historicalSecretsAvailable: resumeFile === undefined,
@@ -1836,7 +1849,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private modelCallStartedAt: number | undefined;
   private persistenceCommitReady = false;
   private readonly telemetryHealth = new TelemetryHealthCursor();
-  private readonly timeoutMs: number;
+  private readonly turnTimeoutMs: number;
   private readonly abortTimeoutMs: number;
   private readonly unsubscribe: () => void;
 
@@ -1853,6 +1866,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly sessionId: string;
       readonly secret: SecretHolder;
       readonly operationTimeoutMs: number | undefined;
+      readonly turnTimeoutMs: number;
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
       readonly historicalSecretsAvailable: boolean;
@@ -1867,7 +1881,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     },
   ) {
     this.#modelRuntime = modelRuntime;
-    this.timeoutMs = runtime.operationTimeoutMs ?? 60_000;
+    this.turnTimeoutMs = runtime.turnTimeoutMs;
     this.abortTimeoutMs = runtime.abortTimeoutMs ?? 5_000;
     this.unsubscribe = session.subscribe((event) => this.forwardEvent(event));
   }
@@ -1963,10 +1977,11 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     if (input.kind !== "prompt") {
       const active = this.active;
       if (active === undefined || active.terminal) throw new Error("Pi session is not running");
-      if (this.phase !== "running") throw new Error("Pi session is not running");
+      if (this.phase !== "running" || this.expireTurnIfElapsed(active)) throw new Error("Pi session is not running");
       this.runtime.persistence.assertUsable();
       if (input.kind === "steer") await this.session.steer(input.content);
       else if (input.kind === "follow_up") await this.session.followUp(input.content);
+      if (this.expireTurnIfElapsed(active)) throw new Error("Pi session is not running");
       this.emitOrFail("pi_event", input.correlationId, input.requestId, {
         event: { type: "queued_input", kind: input.kind, request_id: input.requestId },
       });
@@ -1981,6 +1996,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       terminal: false,
       suppressLate: false,
       deadline: undefined,
+      deadlineAt: performance.now() + this.turnTimeoutMs,
       promise: Promise.resolve(),
     };
     this.active = active;
@@ -2284,15 +2300,13 @@ class PiSessionAdapter implements CogsPiSessionPorts {
   private async runPrompt(active: ActiveRun, content: string): Promise<void> {
     const runStart = telemetryStart();
     this.usageBase = this.safeUsageBase();
-    active.deadline = setTimeout(() => {
-      void this.timeoutActive(active).catch(() => undefined);
-    }, this.timeoutMs);
+    this.armTurnDeadline(active);
     try {
       await this.runtime.gitBinding?.beginTurn(active.correlationId, active.requestId);
-      if (active.suppressLate || this.phase !== "running" || this.active !== active) return;
+      if (this.expireTurnIfElapsed(active) || this.phase !== "running") return;
       this.runtime.persistence.assertUsable();
       await this.runtime.persistence.track(() => this.session.prompt(content, { expandPromptTemplates: false }));
-      if (active.suppressLate) return;
+      if (this.expireTurnIfElapsed(active)) return;
       try {
         const flushStart = telemetryStart();
         await this.commitPersistence();
@@ -2306,9 +2320,10 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         await this.failClosed("history-flush-failed", active);
         return;
       }
-      if (active.suppressLate) return;
+      if (this.expireTurnIfElapsed(active)) return;
       await this.runtime.gitBinding?.settleTurn(this.sessionManager, active.correlationId, active.requestId);
-      if (active.suppressLate) return;
+      if (this.expireTurnIfElapsed(active)) return;
+      // No await may be inserted between this monotonic check and terminal publication.
       this.emitUsageDeltas();
       emitTelemetryHealth(this.runtime.telemetry, this.telemetryHealth);
       emitSpan(this.runtime.telemetry, "pi.run", {
@@ -2323,13 +2338,15 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       });
       this.terminal(active, "run_settled", { state: "settled" });
     } catch (error) {
-      if (active.terminal || active.suppressLate || this.phase === "aborting" || this.phase === "failed") return;
+      if (this.expireTurnIfElapsed(active)) return;
+      if (this.phase === "aborting" || this.phase === "failed") return;
       try {
         await this.commitPersistence();
       } catch {
         await this.failClosed("native-persistence-failed", active).catch(() => undefined);
         return;
       }
+      if (this.expireTurnIfElapsed(active)) return;
       if (isAbortLike(error)) {
         emitSpan(this.runtime.telemetry, "pi.run", {
           outcome: "cancelled",
@@ -2344,6 +2361,27 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       });
       this.terminal(active, "error", { message: "pi operation failed" });
     }
+  }
+
+  private armTurnDeadline(active: ActiveRun): void {
+    const observe = () => {
+      if (active.terminal || active.suppressLate || this.active !== active) return;
+      const remaining = active.deadlineAt - performance.now();
+      if (remaining > 0) {
+        active.deadline = setTimeout(observe, remaining);
+        return;
+      }
+      void this.timeoutActive(active).catch(() => undefined);
+    };
+    active.deadline = setTimeout(observe, Math.max(0, active.deadlineAt - performance.now()));
+  }
+
+  private expireTurnIfElapsed(active: ActiveRun): boolean {
+    if (active.terminal || active.suppressLate || this.active !== active) return true;
+    if (performance.now() < active.deadlineAt) return false;
+    // timeoutActive seals the run synchronously before its first await.
+    void this.timeoutActive(active).catch(() => undefined);
+    return true;
   }
 
   private async timeoutActive(active: ActiveRun): Promise<void> {
@@ -2427,6 +2465,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     payload: Record<string, JsonValue>,
   ): void {
     if (active.terminal) return;
+    if (kind === "run_settled" && this.expireTurnIfElapsed(active)) return;
     active.terminal = true;
     active.suppressLate = true;
     if (active.deadline !== undefined) clearTimeout(active.deadline);

@@ -17,6 +17,7 @@
     "test": "tsx --test --test-concurrency=1 test/**/*.test.ts",
     "test:pi": "tsx --test test/pi-embedding.test.ts",
     "test:pi:real-provider": "tsx scripts/pi-real-provider-integration.ts",
+    "test:turn-timeout:composed": "tsx --test --test-concurrency=1 --test-name-pattern='^opt-in production turn timeout settles durable authenticated turn after 60 seconds$' test/production-compose.test.ts",
     "schemas": "tsx scripts/validate-schemas.ts",
     "presets:check": "tsx scripts/validate-presets.ts",
     "egress-bindings:check": "tsx scripts/check-envoy-ext-authz-descriptor.ts --static",

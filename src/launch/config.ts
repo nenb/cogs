@@ -36,6 +36,7 @@ export interface LaunchConfig {
     readonly cpu: number;
     readonly memory_bytes: number;
     readonly tool_timeout_seconds: number;
+    readonly turn_timeout_seconds: number;
     readonly max_tool_output_bytes: number;
   };
 }
@@ -85,6 +86,15 @@ export function validateLaunchConfig(input: unknown): LaunchConfig {
     );
   }
   const launch = candidate as LaunchConfig;
+  if (launch.limits.turn_timeout_seconds < launch.limits.tool_timeout_seconds + 60) {
+    throw new LaunchConfigError([
+      {
+        instancePath: "/limits/turn_timeout_seconds",
+        keyword: "minimum",
+        schemaPath: "#/properties/limits/properties/turn_timeout_seconds/minimum",
+      },
+    ]);
+  }
   requireCogsPolicyAllow({
     version: "cogs.policy/v1alpha1",
     action: "config.validate",

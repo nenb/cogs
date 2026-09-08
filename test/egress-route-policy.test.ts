@@ -43,7 +43,13 @@ function launch(integrations: unknown[], userId = "preset-user") {
       user_path: "/user/skills",
     },
     integrations,
-    limits: { cpu: 1, memory_bytes: 268435456, tool_timeout_seconds: 30, max_tool_output_bytes: 4096 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 268435456,
+      tool_timeout_seconds: 30,
+      turn_timeout_seconds: 90,
+      max_tool_output_bytes: 4096,
+    },
   });
 }
 

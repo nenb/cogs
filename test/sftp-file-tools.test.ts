@@ -9,6 +9,7 @@ import {
   type CogsSftpPort,
   CogsSftpStatusError,
   CogsSftpUncertainError,
+  Ssh2Connection,
   SshConnectionManager,
   type SshSftpChannel,
   type SshTransportConnection,
@@ -902,6 +903,115 @@ test("SFTP manager treats undefined operation and close rejections as failures",
   } finally {
     await closeFixture.manager.shutdown();
     await rm(closeFixture.root, { recursive: true, force: true });
+  }
+});
+
+test("malformed successful wx handle seals admission and retains uncertain ownership", async () => {
+  class MalformedHandleSftp extends EventEmitter {
+    public created = 0;
+    public closed = 0;
+    public unlinked = 0;
+    public lstat(path: string, callback: (error?: Error, stats?: unknown) => void): void {
+      setImmediate(() => {
+        if (path === "/workspace") callback(undefined, { size: 0, mode: 0o040700 });
+        else {
+          const absent = new Error("absent");
+          Object.defineProperty(absent, "code", { value: 2 });
+          callback(absent);
+        }
+      });
+    }
+    public realpath(path: string, callback: (error: undefined, resolved: string) => void): void {
+      setImmediate(() => callback(undefined, path));
+    }
+    public open(
+      _path: string,
+      mode: string,
+      attrs: unknown,
+      callback?: (error: undefined, handle: Buffer) => void,
+    ): void {
+      const finish = (typeof attrs === "function" ? attrs : callback) as (error: undefined, handle: Buffer) => void;
+      setImmediate(() => {
+        if (mode === "wx") this.created += 1;
+        finish(undefined, Buffer.alloc(257));
+        finish(undefined, Buffer.from("late-valid-must-not-heal"));
+      });
+    }
+    public close(_handle: Buffer, callback: (error?: Error) => void): void {
+      this.closed += 1;
+      setImmediate(() => callback());
+    }
+    public unlink(_path: string, callback: (error?: Error) => void): void {
+      this.unlinked += 1;
+      setImmediate(() => callback());
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+  class MalformedHandleClient extends EventEmitter {
+    public constructor(private readonly implementation: MalformedHandleSftp) {
+      super();
+    }
+    public sftp(callback: (error: undefined, sftp: MalformedHandleSftp) => void): void {
+      setImmediate(() => callback(undefined, this.implementation));
+    }
+    public end(): void {
+      this.emit("close");
+    }
+    public destroy(): void {
+      this.emit("close");
+    }
+  }
+
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-sftp-malformed-handle-"));
+  const keyPath = resolve(root, "id_key");
+  await writeFile(keyPath, keyPair.private, { mode: 0o600 });
+  await chmod(keyPath, 0o600);
+  const sftp = new MalformedHandleSftp();
+  const lost: string[] = [];
+  const manager = new SshConnectionManager({
+    config: {
+      endpoint: "synthetic.invalid:22",
+      username: "cogs",
+      hostKeySha256: validPin,
+      clientKeyPath: keyPath,
+      connectTimeoutMs: 25,
+      handshakeTimeoutMs: 25,
+      permitAcquireTimeoutMs: 25,
+      sftpOpenTimeoutMs: 25,
+      shutdownTimeoutMs: 25,
+      maxPermits: 1,
+      maxQueue: 1,
+    },
+    transport: {
+      connect: async () => new Ssh2Connection(new MalformedHandleClient(sftp) as never),
+    },
+    onLost: (reason) => lost.push(reason),
+  });
+  try {
+    await manager.start();
+    const ports = createSftpFileToolPorts({
+      manager,
+      openTimeoutMs: 25,
+      operationTimeoutMs: 25,
+      idleTimeoutMs: 25,
+      closeTimeoutMs: 25,
+    });
+    await assert.rejects(ports.write({ path: "/workspace/new.txt", content: "payload" }), /operation timed out/);
+    assert.equal(sftp.created, 1);
+    assert.equal(sftp.closed, 0);
+    assert.equal(sftp.unlinked, 0);
+    assert.equal(manager.ready, false);
+    assert.deepEqual(lost, ["sftp-operation-uncertain"]);
+    await assert.rejects(manager.withSftp(undefined, async () => "must not enter"));
+    await assert.rejects(manager.shutdown());
+  } finally {
+    await manager.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -106,7 +106,7 @@ function launch(shared: string, user: string): LaunchConfig {
     model: { provider: "anthropic", id: "claude-sonnet-4-5", credential_handle: "users/user-1/model" },
     skills: { shared_revision: shared, shared_path: "/shared/skills", user_revision: user, user_path: "/user/skills" },
     integrations: [],
-    limits: { cpu: 1, memory_bytes: 1, tool_timeout_seconds: 1, max_tool_output_bytes: 1 },
+    limits: { cpu: 1, memory_bytes: 1, tool_timeout_seconds: 1, turn_timeout_seconds: 61, max_tool_output_bytes: 1 },
   };
 }
 

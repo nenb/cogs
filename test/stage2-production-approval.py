@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     for field in ("implementation_revision", "control_revision", "qualification_revision"):
         retired = dict(value)
-        retired[field] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+        retired[field] = "0296252721fad0502dd4f41dacb1674e71b42bd6"
         draft.write_text(json.dumps(retired, sort_keys=True, separators=(",", ":")) + "\n")
         for operation in ("eligibility", "issue", "authenticate"):
             rejected = subprocess.run(["python3", "-I", "-B", "scripts/stage2-production-approval.py",
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory() as temporary:
     try:
         for field in ("implementation_revision", "control_revision", "qualification_revision"):
             retired_approval = dict(json.loads(result.stdout))
-            retired_approval[field] = "9b9966afffe0ea8de4d0c99147886a95094470a9"
+            retired_approval[field] = "0296252721fad0502dd4f41dacb1674e71b42bd6"
             (source / "approval.json").write_text(
                 json.dumps(retired_approval, sort_keys=True, separators=(",", ":")) + "\n")
             try:
