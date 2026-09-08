@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 21400,
+  "global_gross_line_high": 21800,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -224,14 +224,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 4150,
+      "gross_line_high": 4550,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 36,
+      "new_file_high": 37,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -291,6 +291,7 @@
         "docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md",
         "docs/adr/0324-retire-failed-static-generation-and-correct-authority.md",
         "docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md",
+        "docs/adr/0326-reconcile-historical-stage2-retirement-policy.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
@@ -344,6 +345,7 @@
         "test/outcome-two-runtime-report-portable.py",
         "test/outcome-two-trusted-launcher-portable.py",
         "test/stage2-local-static-control-candidate-workflow.test.ts",
+        "test/stage2-local-workflow-scripts.py",
         "test/stage2-prebuilt-kvm-integration-diagnostic.test.ts",
         "test/stage2-prebuilt-local-kata-workflow.test.ts",
         "test/stage2-prebuilt-local-static-control-workflow.test.ts",

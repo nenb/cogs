@@ -50,7 +50,8 @@ with tempfile.TemporaryDirectory() as temporary:
         "static_control_sha256": hashlib.sha256(control_raw).hexdigest(),
         "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
         "source_bindings": bindings, "cycle_count": 7, "workload_measurements": 21,
-        "cycle_artifact_custody": {"workflow_run": {"id": 71, "attempt": 1, "head_sha": q}},
+        "cycle_artifact_custody": {"workflow_run": {"id": 71, "attempt": 1, "head_sha": q},
+            "artifacts": [{"artifact_id": value} for value in range(72, 79)]},
         "mixed_preflight_run_id": 63,
         "static_control_observation": {"run_id": 61, "artifact_id": 62,
             "artifact_archive_digest": "sha256:" + d("static-archive")},
@@ -78,6 +79,42 @@ with tempfile.TemporaryDirectory() as temporary:
             pass
         else:
             raise AssertionError(field + " retired selection reached planner effects")
+    nested_retired = (
+        ("mixed_preflight_run_id", "33995592875"),
+        ("static_run", "33987659305"),
+        ("static_artifact", "9975667979"),
+        ("qualification_run", "33995910136"),
+        ("qualification_head", "06188f67a9a699924d645ce8aa0e91950b6341c7"),
+        ("cycle_artifact", "9975524471"),
+    )
+    nested_retired_paths = []
+    for kind, value in nested_retired:
+        candidate = json.loads(planner.canonical(package))
+        if kind == "mixed_preflight_run_id": candidate[kind] = int(value)
+        elif kind == "static_run": candidate["static_control_observation"]["run_id"] = int(value)
+        elif kind == "static_artifact": candidate["static_control_observation"]["artifact_id"] = int(value)
+        elif kind == "qualification_run": candidate["cycle_artifact_custody"]["workflow_run"]["id"] = int(value)
+        elif kind == "qualification_head": candidate["cycle_artifact_custody"]["workflow_run"]["head_sha"] = value
+        else: candidate["cycle_artifact_custody"]["artifacts"][0]["artifact_id"] = int(value)
+        retired_path = root / f"retired-{kind}.json"
+        retired_path.write_bytes(planner.canonical(candidate)); nested_retired_paths.append(retired_path)
+        try:
+            planner.eligibility(retired_path)
+        except planner.PlanningError:
+            pass
+        else:
+            raise AssertionError(kind + " retired selection reached planner effects")
+    for label, head in (("missing", None), ("malformed", 7), ("mismatch", "4" * 40)):
+        candidate = json.loads(planner.canonical(package))
+        candidate["cycle_artifact_custody"]["workflow_run"]["head_sha"] = head
+        path = root / f"invalid-qualification-head-{label}.json"
+        path.write_bytes(planner.canonical(candidate))
+        try:
+            planner.eligibility(path)
+        except planner.PlanningError:
+            pass
+        else:
+            raise AssertionError(label + " nested qualification head reached credential boundary")
 
     def fake_run(arguments, timeout, environment, parse=False):
         assert timeout > 0 and environment["AWS_REGION"] == "us-east-1"
@@ -108,6 +145,20 @@ with tempfile.TemporaryDirectory() as temporary:
         "COGS_STAGE2_INVENTORY_OBSERVER_ROLE_NAME": "observer",
         "AWS_ACCESS_KEY_ID": "ASIA" + "A" * 16,
         "AWS_SECRET_ACCESS_KEY": "a" * 40, "AWS_SESSION_TOKEN": "b" * 80})
+    effect_calls = []
+    def forbidden_effect(*_arguments, **_keywords):
+        effect_calls.append(True); raise AssertionError("retired package reached provider seam")
+    planner.run = forbidden_effect
+    for index, retired_path in enumerate(nested_retired_paths):
+        try:
+            planner.main(tuple(str(path) for path in
+                (retired_path, control_path, descriptor_path, tofu, root / f"retired-output-{index}")))
+        except planner.PlanningError:
+            pass
+        else:
+            raise AssertionError("retired nested identity reached planner effects")
+    assert not effect_calls
+    planner.run = fake_run
     output = root / "output"
     planner.main(tuple(str(path) for path in (package_path, control_path, descriptor_path, tofu, output)))
     draft = json.loads((output / "approval-draft.json").read_bytes())
