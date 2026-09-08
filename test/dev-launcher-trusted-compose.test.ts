@@ -2300,6 +2300,7 @@ test("raw export opening verifier accepts real hardened Pi session export", asyn
       userId: "user-1",
       model: { provider: "anthropic", id: "claude-sonnet-4-5" },
       apiKey: "aaaaaaaa",
+      turnTimeoutMs: 10_000,
       toolPorts: rawVerifierToolPorts,
       streamFn: createDeterministicLauncherStream(Object.freeze({ now: () => 1780000000000 })),
       preparedResources: realPreparedResources(),

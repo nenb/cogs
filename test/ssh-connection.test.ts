@@ -160,7 +160,13 @@ function launchWithKey(path: string) {
       user_path: "/user/skills",
     },
     integrations: [],
-    limits: { cpu: 1, memory_bytes: 268435456, tool_timeout_seconds: 30, max_tool_output_bytes: 4096 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 268435456,
+      tool_timeout_seconds: 30,
+      turn_timeout_seconds: 90,
+      max_tool_output_bytes: 4096,
+    },
   });
 }
 
@@ -943,10 +949,16 @@ test("ssh2 SFTP wrapper validates own-data stats and malformed handles/read tupl
     type: "file",
   });
   await assert.rejects(channel.port.fstat(Buffer.from("h"), new AbortController().signal), /sftp operation failed/);
-  sftp.openMode = "empty";
-  await assert.rejects(channel.port.open("/x", "r", new AbortController().signal), /invalid handle/);
-  sftp.openMode = "oversize";
-  await assert.rejects(channel.port.open("/x", "r", new AbortController().signal), /invalid handle/);
+  for (const openMode of ["empty", "oversize"] as const) {
+    sftp.openMode = openMode;
+    await assert.rejects(
+      Promise.race([
+        channel.port.open("/x", "r", new AbortController().signal),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("malformed handle retained")), 20)),
+      ]),
+      /malformed handle retained/,
+    );
+  }
   for (const mode of ["bad-buffer", "bad-position", "mismatch"] as const) {
     sftp.readMode = mode;
     await assert.rejects(

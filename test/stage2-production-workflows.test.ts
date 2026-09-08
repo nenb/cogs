@@ -8,7 +8,7 @@ const campaign = readFileSync(".github/workflows/stage2-production-campaign.yml"
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
 const stager = readFileSync("scripts/stage2-stage-production-approval.py", "utf8");
-const retiredH = "9b9966afffe0ea8de4d0c99147886a95094470a9";
+const retiredH = "0296252721fad0502dd4f41dacb1674e71b42bd6";
 
 test("future planning authority is first-created, exact H/G/Q, and separately authorized", () => {
   assert.match(planning, /authorize-read-only-stage2-production-planning/u);

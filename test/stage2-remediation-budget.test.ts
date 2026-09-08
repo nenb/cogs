@@ -11,6 +11,7 @@ const policy = JSON.parse(readFileSync("config/stage2-retired-revisions-v1.json"
   artifacts: Record<string, string>;
 };
 const tombstones = Object.keys({ ...policy.revisions, ...policy.runs, ...policy.artifacts }).sort();
+assert.equal(policy.revisions["0296252721fad0502dd4f41dacb1674e71b42bd6"], "ADR0323");
 assert.equal(policy.revisions["9b9966afffe0ea8de4d0c99147886a95094470a9"], "ADR0319");
 
 test("every pre-checkout and second-job retirement mirror equals policy and refuses before effects", () => {
@@ -50,7 +51,7 @@ test("every pre-checkout and second-job retirement mirror equals policy and refu
   };
   for (const [lane, count, required] of lanes) {
     const source = readFileSync(`.github/workflows/${lane}.yml`, "utf8");
-    const blocks = [...source.matchAll(/ {10}# ADR0319 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
+    const blocks = [...source.matchAll(/ {10}# ADR0323 exact retirement mirror[^\n]*\n[\s\S]*? {10}done\n/gu)];
     assert.equal(blocks.length, count, lane);
     for (const match of blocks) {
       const block = match[0].replace(/^ {10}/gmu, "");
@@ -148,7 +149,7 @@ test("ADR0319 preserves original finding numbers and grants no chain or AWS auth
   assert.match(adr, /grants no producer[\s\S]*AWS authority/u);
 });
 
-test("ADR0319 exact allocations preserve hard limits and reserve every bounded future closure", () => {
+test("ADR0323 exact allocations preserve hard limits and reserve every bounded future closure", () => {
   const result = spawnSync(
     "python3",
     [
@@ -160,12 +161,12 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=1950,lifecycle=7200,completion=2800,integration=3500)
-assert b['global_gross_line_high']==20500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=1950,lifecycle=7500,completion=3100,integration=3750)
+assert b['global_gross_line_high']==21000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(97000,22300,13100,5500,42000,2000)
-assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=32)
-assert sum(new.values())==40 and sum(x['total'] for x in forecasts.values())==2570000
+assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(98000,22300,13100,5500,43000,2000)
+assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=34)
+assert sum(new.values())==42 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -177,8 +178,8 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==40
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md'):
+assert len(set(paths)-baseline)==42
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md'):
  assert paths[current]=='integration' and Path(current).is_file()
 for number,name in ((320,'freeze-corrected-H-and-authorize-control'),(322,'establish-corrected-Q-and-authorize-qualification')):
  p=f'docs/adr/{number:04d}-{name}.md'; assert paths[p]=='integration' and not Path(p).exists()
@@ -262,7 +263,7 @@ else: raise AssertionError('unfilled exact guard admitted historical selectors')
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("ADR0319 post-H gross reserves reject overruns even below the legacy correction highs", () => {
+test("ADR0323 post-H gross reserves reject overruns even below the legacy correction highs", () => {
   const result = spawnSync(
     "python3",
     [
@@ -273,7 +274,7 @@ test("ADR0319 post-H gross reserves reject overruns even below the legacy correc
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 assert m['POST_H_REVISION']=='6bd12dcd25d877ffac03752fa0f71beeeb86a99e'
-assert m['POST_H_HIGHS']=={'deploy':150,'retained':1500,'workflow':500,'global':2100}
+assert m['POST_H_HIGHS']=={'deploy':150,'retained':2000,'workflow':600,'global':2500}
 f=m['measure']; ns=f.__globals__; original=ns['_gross_slice']; observed=[]
 def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
  if revision!=m['POST_H_REVISION']: return original(paths,allowed,revision)
@@ -286,10 +287,10 @@ def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
   assert all(p in paths and allowed(p) for p in ('scripts/stage2-revision-retirement.py','config/stage2-retired-revisions-v1.json'))
  return values[key]
 ns['_gross_slice']=gross
-values=dict(deploy=100,retained=1400,workflow=500)
+values=dict(deploy=100,retained=1800,workflow=500)
 report=f()
 assert sorted(observed)==['deploy','retained','workflow']
-assert report['post_h_gross_added_lines']==dict(values,**{'global':2000})
+assert report['post_h_gross_added_lines']==dict(values,**{'global':2400})
 assert report['post_h_reserve_limits_satisfied'] is True
 for key in values:
  values=dict(deploy=0,retained=0,workflow=0); values[key]=m['POST_H_HIGHS'][key]+1
@@ -297,7 +298,7 @@ for key in values:
  except m['LineBudgetError']: pass
  else: raise AssertionError(key+' reserve not enforced by central measure')
 # Exercise a binding combined limit while every individual slice remains within its own high.
-values=dict(deploy=150,retained=1500,workflow=451)
+values=dict(deploy=150,retained=2000,workflow=351)
 try: f()
 except m['LineBudgetError']: pass
 else: raise AssertionError('combined reserve not enforced')

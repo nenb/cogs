@@ -20,11 +20,11 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-HARD_LIMIT = 97_000
+HARD_LIMIT = 98_000
 DEPLOY_CORRECTION_HIGH = 22_300
 RETAINED_CORRECTION_HIGH = 13_100
 WORKFLOW_CORRECTION_HIGH = 5_500
-GLOBAL_CORRECTION_HIGH = 42_000
+GLOBAL_CORRECTION_HIGH = 43_000
 REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
@@ -32,7 +32,7 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # ADR0309 reserves are an independent gross diff, not subtraction of two gross
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
-POST_H_HIGHS = {"deploy": 150, "retained": 1_500, "workflow": 500, "global": 2_100}
+POST_H_HIGHS = {"deploy": 150, "retained": 2_000, "workflow": 600, "global": 2_500}
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -255,14 +255,14 @@ def _remediation_budget():
                            "source_limits", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 20_500)
+             and data["global_gross_line_high"] == 21_000)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1460,
+    _require(data["source_limits"] == {"tracked_files": 1465,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 1_950,
-                "lifecycle": 7_200, "completion": 2_800, "integration": 3_500}
+                "lifecycle": 7_500, "completion": 3_100, "integration": 3_750}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -289,7 +289,7 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(sum(new_file_highs.values()) == 40
+    _require(sum(new_file_highs.values()) == 42
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])

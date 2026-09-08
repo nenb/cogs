@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory() as temporary:
     planner.AWS = root / "aws"; planner.AWS.write_bytes(b"fixed-aws")
     h, g, q = "1" * 40, "2" * 40, "3" * 40
     try:
-        planner.eligible(("9b9966afffe0ea8de4d0c99147886a95094470a9", g, q))
+        planner.eligible(("0296252721fad0502dd4f41dacb1674e71b42bd6", g, q))
     except planner.PlanningError:
         pass
     else:
@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory() as temporary:
     else:
         raise AssertionError("dispatch/package mismatch reached planner effects")
     for field in ("implementation_revision", "control_revision", "qualification_revision"):
-        retired = {**package, field: "9b9966afffe0ea8de4d0c99147886a95094470a9"}
+        retired = {**package, field: "0296252721fad0502dd4f41dacb1674e71b42bd6"}
         retired_path = root / f"retired-{field}.json"
         retired_path.write_bytes(planner.canonical(retired))
         try:

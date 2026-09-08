@@ -308,7 +308,13 @@ function launch(stateId: string, port = 31337) {
       user_path: "/user/skills",
     },
     integrations: [integ],
-    limits: { cpu: 1, memory_bytes: 536870912, tool_timeout_seconds: 60, max_tool_output_bytes: 65536 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 536870912,
+      tool_timeout_seconds: 60,
+      turn_timeout_seconds: 120,
+      max_tool_output_bytes: 65536,
+    },
   };
 }
 async function launcherState(profile: "insecure-container" | "linux-kvm" = "linux-kvm") {

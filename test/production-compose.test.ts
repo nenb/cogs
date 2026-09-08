@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
-import type { ApiServer, ApiServerOptions, JsonValue } from "../src/api/server.ts";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { type ApiServer, type ApiServerOptions, createApiServer, type JsonValue } from "../src/api/server.ts";
 import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../src/auth/model-auth.ts";
 import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
 import type { CogsExtAuthzServer } from "../src/egress/ext-authz-server.ts";
@@ -23,12 +29,16 @@ import {
 import type { LaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
 import { type ProductionMainPort, runProductionMain } from "../src/main.ts";
-import type { AuthenticatedCogsPiSessionOptions, CogsPiSessionPorts } from "../src/pi/session.ts";
+import {
+  type AuthenticatedCogsPiSessionOptions,
+  type CogsPiSessionPorts,
+  createAuthenticatedCogsPiSession,
+} from "../src/pi/session.ts";
 import { ProductionWorkerError, type ProductionWorkerSeams, startProductionWorker } from "../src/runtime/compose.ts";
 import type { RuntimeConfig } from "../src/runtime/config.ts";
 import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts";
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
-import type { SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
+import type { CogsExecPort, SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
 
 test("worker OTLP fetch and first cancellation keep production actual cleanup pending", async () => {
@@ -420,7 +430,13 @@ function launch(overrides: Partial<LaunchConfig> = {}): LaunchConfig {
         ],
       },
     ],
-    limits: { cpu: 1, memory_bytes: 536870912, tool_timeout_seconds: 2, max_tool_output_bytes: 4096 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 536870912,
+      tool_timeout_seconds: 2,
+      turn_timeout_seconds: 62,
+      max_tool_output_bytes: 4096,
+    },
     ...overrides,
   } as LaunchConfig;
 }
@@ -594,6 +610,7 @@ function harness() {
       maybe("pi");
       assert.equal(options.streamFn, undefined);
       assert.equal(options.ownedRuntime, undefined);
+      assert.equal("turnTimeoutMs" in options, false, "authenticated launch remains the sole turn authority");
       return pi;
     },
     createApi: (options: ApiServerOptions) => {
@@ -634,6 +651,82 @@ function harness() {
   };
 }
 
+function longTurnModelStream(): StreamFn {
+  let calls = 0;
+  return (model) => {
+    calls += 1;
+    const stream = createAssistantMessageEventStream();
+    const content =
+      calls === 1
+        ? [{ type: "toolCall" as const, id: "long-tool-1", name: "bash", arguments: { command: "printf fixed" } }]
+        : [{ type: "text" as const, text: "long turn settled durably" }];
+    const message: AssistantMessage = {
+      role: "assistant",
+      content,
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: model.id,
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: calls === 1 ? "toolUse" : "stop",
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: message });
+      if (calls === 1) {
+        const toolCall = message.content[0];
+        if (toolCall?.type !== "toolCall") throw new Error("invalid long-turn fixture");
+        stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+        stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message });
+      }
+      stream.push({ type: "done", reason: calls === 1 ? "toolUse" : "stop", message });
+      stream.end();
+    });
+    return stream;
+  };
+}
+
+function emptyPreparedSkills(): never {
+  const shared = "a".repeat(64);
+  const user = "b".repeat(64);
+  return Object.freeze({
+    piSkills: Object.freeze([]),
+    eagerTrustedSkillPrompt: "",
+    agentsFiles: Object.freeze([]),
+    metadata: Object.freeze({
+      shared: Object.freeze({
+        scope: "shared",
+        revision: `sha256:${shared}`,
+        bundleDigest: `sha256:${shared}`,
+        guestRoot: "/shared/skills",
+        guestSubtree: `/shared/skills/${shared}`,
+        fileCount: 0,
+        byteCount: 0,
+        readOnlyEnforced: false,
+      }),
+      user: Object.freeze({
+        scope: "user",
+        revision: `sha256:${user}`,
+        bundleDigest: `sha256:${user}`,
+        guestRoot: "/user/skills",
+        guestSubtree: `/user/skills/${user}`,
+        fileCount: 0,
+        byteCount: 0,
+        readOnlyEnforced: false,
+      }),
+      agentsStatus: "missing",
+      skillCount: 0,
+    }),
+    dispose: async () => undefined,
+  }) as never;
+}
+
 test("production SSH uses the sandbox image's single guest-root identity", async () => {
   const sshdConfig = await readFile(new URL("../images/sandbox/sshd_config", import.meta.url), "utf8");
   const allowedUsers = sshdConfig
@@ -662,7 +755,8 @@ test("production invokes SFTP with the exact schema-maximum operation timeout", 
     startProductionWorker({
       seams: {
         ...h.seams,
-        readLaunch: async () => launch({ limits: { ...launch().limits, tool_timeout_seconds: 900 } }),
+        readLaunch: async () =>
+          launch({ limits: { ...launch().limits, tool_timeout_seconds: 900, turn_timeout_seconds: 1200 } }),
         createSsh: () => ssh,
         createPi: async (options) => {
           await options.toolPorts.read({ path: "/workspace/f" });
@@ -673,6 +767,157 @@ test("production invokes SFTP with the exact schema-maximum operation timeout", 
     ProductionWorkerError,
   );
   assert.equal(observed, 900_000);
+});
+
+test("opt-in production turn timeout settles durable authenticated turn after 60 seconds", {
+  skip: process.env.COGS_PRODUCTION_TURN_TIMEOUT_COMPOSED !== "1",
+  timeout: 90_000,
+}, async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-production-long-turn-"));
+  const workspace = resolve(root, "workspace");
+  const agentDir = resolve(root, "agent");
+  const sessionRoot = resolve(root, "sessions");
+  await mkdir(workspace, { recursive: true, mode: 0o700 });
+  await mkdir(agentDir, { recursive: true, mode: 0o700 });
+  await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
+  const h = harness();
+  const events: string[] = [];
+  let sessionFile: string | undefined;
+  let stdout: ((chunk: Buffer) => void) | undefined;
+  let stderr: ((chunk: Buffer) => void) | undefined;
+  let interval: NodeJS.Timeout | undefined;
+  let terminalTimer: NodeJS.Timeout | undefined;
+  const terminal = Promise.withResolvers<{ code: number; signal: null }>();
+  const shutdownReady = Promise.withResolvers<void>();
+  const port: CogsExecPort = Object.freeze({
+    onStdout: (listener: (chunk: Buffer) => void) => {
+      stdout = listener;
+    },
+    onStderr: (listener: (chunk: Buffer) => void) => {
+      stderr = listener;
+    },
+    terminal: () => terminal.promise,
+    signal: async (name: "TERM" | "INT") => {
+      if (interval !== undefined) clearInterval(interval);
+      if (terminalTimer !== undefined) clearTimeout(terminalTimer);
+      terminal.resolve({ code: 128, signal: name } as never);
+    },
+  });
+  const started = performance.now();
+  try {
+    const worker = await startProductionWorker({
+      seams: {
+        ...h.seams,
+        readRuntime: async () => ({
+          ...runtime(),
+          api: { listen_host: "127.0.0.1", port: 0 },
+        }),
+        readLaunch: async () =>
+          launch({
+            model: { ...launch().model, id: "claude-sonnet-4-5" },
+            limits: { ...launch().limits, tool_timeout_seconds: 90, turn_timeout_seconds: 150 },
+          }),
+        createSsh: (options) => {
+          const manager = h.seams.createSsh(options);
+          Object.assign(manager, {
+            withBashExec: async (
+              _input: unknown,
+              operation: (port: CogsExecPort, signal: AbortSignal) => Promise<unknown>,
+            ) => {
+              interval = setInterval(() => stdout?.(Buffer.from("progress\n")), 1000);
+              terminalTimer = setTimeout(() => {
+                if (interval !== undefined) clearInterval(interval);
+                stdout?.(Buffer.from("fixed\n"));
+                stderr?.(Buffer.alloc(0));
+                terminal.resolve({ code: 0, signal: null });
+              }, 61_500);
+              return operation(port, new AbortController().signal);
+            },
+          });
+          return manager;
+        },
+        createPi: async (options) => {
+          const { git: _git, ...withoutGit } = options;
+          const pi = await createAuthenticatedCogsPiSession({
+            ...withoutGit,
+            cwd: workspace,
+            agentDir,
+            sessionRoot,
+            streamFn: longTurnModelStream(),
+            skillPreparer: Object.freeze({ prepare: async () => emptyPreparedSkills() }),
+            emit: (event) => {
+              events.push(event.kind);
+              if (event.kind === "shutdown_ready") shutdownReady.resolve();
+              return options.emit(event);
+            },
+          }).catch((error) => {
+            events.push(`startup:${String(error)}`);
+            throw error;
+          });
+          sessionFile = pi.sessionFile();
+          return pi;
+        },
+        createApi: (options) => {
+          const actual = createApiServer(options);
+          const facade: ApiServer = Object.freeze({
+            listen: actual.listen.bind(actual),
+            publish: actual.publish.bind(actual),
+            close: async () => {
+              await new Promise<void>((resolveWait) => {
+                const timer = setTimeout(resolveWait, 5000);
+                void shutdownReady.promise.then(() => {
+                  clearTimeout(timer);
+                  resolveWait();
+                });
+              });
+              await actual.close();
+            },
+          });
+          registerCloseOwner(
+            facade,
+            createCloseOwner(() => facade.close()),
+          );
+          return facade;
+        },
+      },
+    }).catch((error) =>
+      assert.fail(`long-turn startup failed after ${h.log.join(",")} / ${events.join(",")}: ${String(error)}`),
+    );
+    const response = await fetch(`http://127.0.0.1:${worker.apiPort}/v1/input`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secretBearer}`,
+        "content-type": "application/json",
+        "x-cogs-correlation-id": "long-turn-correlation",
+      },
+      body: JSON.stringify({ request_id: "long-turn-request", type: "prompt", content: "run long tool" }),
+    });
+    assert.equal(response.status, 202);
+    const deadline = performance.now() + 20_000;
+    while (!events.includes("run_settled") && performance.now() < deadline + 61_500)
+      await new Promise((resolveTimer) => setTimeout(resolveTimer, 100));
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed >= 61_000, `turn settled too early: ${elapsed}`);
+    assert.equal(events.filter((kind) => kind === "run_settled").length, 1);
+    assert.equal(events.includes("error"), false);
+    assert.ok(sessionFile);
+    assert.equal((await lstat(sessionFile)).mode & 0o777, 0o600);
+    const durable = await readFile(sessionFile, "utf8");
+    assert.match(durable, /run long tool/);
+    assert.match(durable, /long turn settled durably/);
+    assert.match(durable, /fixed/);
+    assert.doesNotMatch(durable, /model-api-key|bearer-production-value/);
+    await worker
+      .close()
+      .catch((error) =>
+        assert.fail(`long-turn close failed after ${h.log.join(",")} / ${events.join(",")}: ${String(error)}`),
+      );
+    await worker.closed;
+  } finally {
+    if (interval !== undefined) clearInterval(interval);
+    if (terminalTimer !== undefined) clearTimeout(terminalTimer);
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("production composition starts in one exact fail-closed order and closes reverse-owned order", async () => {

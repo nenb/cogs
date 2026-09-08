@@ -341,6 +341,9 @@ ADR 0087 was accepted by delegated project lead on 2026-07-27 under Nick Byrne's
 | [0318](0318-authorize-s3-live-control-response-custody.md) | Authorize S3 live-control response custody | Accepted under explicit advance non-AWS correction authority; final adjacent response owner |
 | [0319](0319-retire-frozen-H-and-authorize-bounded-review-corrections.md) | Retire frozen H and authorize bounded review corrections | Accepted under explicit advance non-AWS correction authority; findings 1, 3, and 4 only |
 | [0321](0321-authorize-causal-npm-compatibility-correction.md) | Authorize causal npm compatibility correction | Accepted under explicit advance non-AWS correction authority; protected functional evidence only |
+| [0323](0323-retire-timeout-H-and-authorize-turn-deadline-correction.md) | Retire timeout H and authorize turn-deadline correction | Accepted under explicit advance non-AWS correction authority; replacement H only after bounded gates |
+
+ADR 0323 preserves absent ADR 0320 for a later corrected-H control decision and absent ADR 0322 for a later Q/qualification decision. It grants neither authority.
 
 ADR 0319 supersedes the prior reservation and reserves a corrected-H freeze/control decision under absent ADR 0320 and a later Q/qualification decision under absent ADR 0322. Neither absent record grants authority. ADR 0321 remains a historical correction allocation.
 

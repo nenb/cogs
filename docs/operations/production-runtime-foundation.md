@@ -51,6 +51,12 @@ No OpenBao token appears in the runtime or launch document. There is no HTTP dev
 
 Production composition authenticates SSH/SFTP exactly as `root`, matching the sandbox image's root-only `sshd`. This intentionally preserves DESIGN's guest-root semantics; there is no `cogs` guest account or non-root fallback, and the existing public-key-only, forwarding, tunnel, password, and PAM restrictions remain unchanged.
 
+## Authenticated Pi turn deadline
+
+Every current runnable launch document supplies `turn_timeout_seconds` explicitly. The shared authenticated launch-to-Pi boundary derives the exact millisecond turn deadline from that validated value; production composition cannot override or omit it. The deadline starts with the original prompt and covers Git setup, model/retry/compaction work, queued steering/follow-up, tools, durable persistence, and Git settlement. Queued input never refreshes it, and monotonic expiry suppresses late success even if timer delivery is delayed. The required 60-second margin over the tool limit is minimum configured headroom, not reserved time or a guarantee that a late tool receives its full allowance.
+
+Tool-adapter timing remains separate. In particular, the SFTP operation deadline does not include permit acquisition or channel opening, and cancellation, channel close, cleanup, and actual retirement retain their independent bounds. No deadline proves retirement.
+
 ## Deliberately absent
 
 ADR 0096 and the later image-source changes now provide `src/main.ts`, fail-closed production composition, bounded API bind/shutdown persistence wiring, the canonical Basic proxy capability, worker-owned Envoy process composition, production worker image source, and the Kata guest image/entrypoint source. Egress startup uses retained lifecycle ownership: an abort waits for or subsequently closes any manager that resolves late, so a late Envoy cannot escape rollback ownership. The process entrypoint arms the 31-second hard-exit deadline for signals, startup failure, spontaneous runtime loss, and shutdown failure; it clears that timer only after cleanup completes without uncertainty. The worker dependency stage installs exact Pi 0.84.2, verifies the authenticated shrinkwrap's fixed nested `brace-expansion` 5.0.9, `protobufjs` 7.6.5, and `undici` 8.9.0 bytes, and copies only that reviewed dependency tree into the final image. Those are locally tested source contracts only; they are not runtime, publication, deployment, or isolation observations; a local image build verifies construction but does not promote readiness.

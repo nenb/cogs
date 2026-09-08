@@ -350,8 +350,11 @@ limits:
   cpu: "2"
   memory: 4Gi
   tool_timeout_seconds: 900
+  turn_timeout_seconds: 1200
   max_tool_output_bytes: 1048576
 ```
+
+`turn_timeout_seconds` is the immutable overall Pi prompt-operation deadline and must provide at least 60 seconds of configured headroom beyond `tool_timeout_seconds`; that headroom is not reserved execution time. The tool limit controls each adapter's operation deadline, while SFTP acquisition, opening, cancellation, close, and cleanup keep their existing independent bounds. A deadline requests cancellation and bounds observation but never proves model, tool, channel, or worker retirement.
 
 An integration is a group of host, port, method, and path rules because real operations commonly fan out across API, smart-HTTP, artifact, and CDN hosts. The platform ships versioned, conformance-tested presets for common capabilities such as GitHub clone/fetch, PyPI install, and npm install. Administrators may define additional groups, but Cogs does not silently widen a failing preset.
 

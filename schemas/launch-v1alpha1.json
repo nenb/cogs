@@ -60,11 +60,12 @@
     "limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cpu", "memory_bytes", "tool_timeout_seconds", "max_tool_output_bytes"],
+      "required": ["cpu", "memory_bytes", "tool_timeout_seconds", "turn_timeout_seconds", "max_tool_output_bytes"],
       "properties": {
         "cpu": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 },
         "memory_bytes": { "type": "integer", "minimum": 134217728, "maximum": 17179869184 },
         "tool_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 900 },
+        "turn_timeout_seconds": { "type": "integer", "minimum": 61, "maximum": 3600 },
         "max_tool_output_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 }
       }
     }

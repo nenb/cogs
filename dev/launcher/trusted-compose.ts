@@ -1072,7 +1072,13 @@ function buildLaunch(
       user_path: USER_PATH,
     },
     integrations: [integration],
-    limits: { cpu: 1, memory_bytes: 536870912, tool_timeout_seconds: 60, max_tool_output_bytes: 65536 },
+    limits: {
+      cpu: 1,
+      memory_bytes: 536870912,
+      tool_timeout_seconds: 60,
+      turn_timeout_seconds: 120,
+      max_tool_output_bytes: 65536,
+    },
   });
 }
 

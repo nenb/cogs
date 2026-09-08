@@ -9,7 +9,8 @@ import stat
 import sys
 
 POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v1.json"
-REVISIONS = {"9b9966afffe0ea8de4d0c99147886a95094470a9": "ADR0319",
+REVISIONS = {"0296252721fad0502dd4f41dacb1674e71b42bd6": "ADR0323",
+             "9b9966afffe0ea8de4d0c99147886a95094470a9": "ADR0319",
              "6bd12dcd25d877ffac03752fa0f71beeeb86a99e": "ADR0309",
              "8907eba3191d07573cd84573cb0b2adddff17bd6": "ADR0308",
              "242bbefeae5444118d9e97b46597130b509ca253": "ADR0308"}
