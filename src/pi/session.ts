@@ -715,7 +715,6 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       userId,
       sessionId,
       secret,
-      operationTimeoutMs,
       turnTimeoutMs,
       abortTimeoutMs,
       preparedResources,
@@ -1865,7 +1864,6 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       readonly userId: string;
       readonly sessionId: string;
       readonly secret: SecretHolder;
-      readonly operationTimeoutMs: number | undefined;
       readonly turnTimeoutMs: number;
       readonly abortTimeoutMs: number | undefined;
       readonly preparedResources: CogsPreparedSkills | undefined;
