@@ -40,6 +40,7 @@ Retain the ADR 0319 baseline and no-deletion-credit rules. Supersede only these 
 | Bound | ADR 0319 | ADR 0323 |
 |---|---:|---:|
 | remediation global gross | 20,500 | 21,000 |
+| relay owner | 1,950 | 1,975 |
 | lifecycle owner | 7,200 | 7,500 |
 | completion owner | 2,800 | 3,100 |
 | integration owner | 3,500 | 3,750 |
