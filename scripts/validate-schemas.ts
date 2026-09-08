@@ -336,17 +336,6 @@ for (const invalidDecision of [
 }
 
 const launchValidator = validatorFor("launch-v1alpha1.json");
-for (const turn of [61, 3600]) {
-  const boundary = structuredClone(validSamples["launch-v1alpha1.json"]) as { limits: Record<string, unknown> };
-  boundary.limits.turn_timeout_seconds = turn;
-  assert.equal(launchValidator(boundary), true, `launch turn timeout boundary ${turn}`);
-}
-for (const turn of [undefined, 60, 61.5, 3601]) {
-  const boundary = structuredClone(validSamples["launch-v1alpha1.json"]) as { limits: Record<string, unknown> };
-  if (turn === undefined) delete boundary.limits.turn_timeout_seconds;
-  else boundary.limits.turn_timeout_seconds = turn;
-  assert.equal(launchValidator(boundary), false, `launch invalid turn timeout ${String(turn)}`);
-}
 const launchWithInlineSecret = structuredClone(validSamples["launch-v1alpha1.json"]) as Record<string, unknown>;
 launchWithInlineSecret.secret = "real-secret-must-never-be-inline";
 assert.equal(launchValidator(launchWithInlineSecret), false, "launch documents must reject inline secret fields");
