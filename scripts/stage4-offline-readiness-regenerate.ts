@@ -204,6 +204,12 @@ function stableOutput(bytes: Uint8Array, normalization: CommandSpec["normalizati
   return new TextEncoder().encode(text);
 }
 
+function canonicalCommandExecutable(spec: CommandSpec): string {
+  if (spec.tool === "biome") return "/cogs-readiness-tools/biome";
+  if (spec.tool === "node") return "/cogs-readiness-tools/node";
+  throw new Error("STAGE4_REGENERATE_COMMAND_IDENTITY_INVALID");
+}
+
 function runCommand(spec: CommandSpec): JsonObject {
   verifyExecutable(spec);
   const sourceBindings = spec.sourcePaths.map((path) => ({ path, sha256: hash(path) }));
@@ -244,7 +250,7 @@ function runCommand(spec: CommandSpec): JsonObject {
     stdout_sha256: stage4OfflineReadinessSha256(stdout),
   };
   return {
-    command: { arguments: [...spec.arguments], executable: spec.executable },
+    command: { arguments: [...spec.arguments], executable: canonicalCommandExecutable(spec) },
     id: spec.id,
     normalization: spec.normalization,
     outcome: {

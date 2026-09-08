@@ -309,7 +309,11 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     assert.equal(check.outcome.exit_code, 0, check.id);
     assert.equal(check.outcome.signal, null, check.id);
     assert.match(check.tool.executable_sha256, /^[0-9a-f]{64}$/u, check.id);
-    assert.ok(check.command.executable.startsWith("/"), check.id);
+    assert.ok(
+      ["/cogs-readiness-tools/biome", "/cogs-readiness-tools/node"].includes(check.command.executable),
+      check.id,
+    );
+    assert.doesNotMatch(check.command.executable, /Users|private|runner|workspaces/u, check.id);
     const { digest_sha256, ...outcome } = check.outcome;
     assert.equal(digest_sha256, stage4OfflineReadinessSha256(canonicalStage4OfflineReadinessBytes(outcome)), check.id);
   }

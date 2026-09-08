@@ -343,6 +343,9 @@ ADR 0087 was accepted by delegated project lead on 2026-07-27 under Nick Byrne's
 | [0320](0320-freeze-corrected-H-and-authorize-control.md) | Freeze corrected H and authorize control | Accepted under explicit non-AWS authoritative-chain authorization; publisher/static only after protected direct-child G |
 | [0321](0321-authorize-causal-npm-compatibility-correction.md) | Authorize causal npm compatibility correction | Accepted under explicit advance non-AWS correction authority; protected functional evidence only |
 | [0323](0323-retire-timeout-H-and-authorize-turn-deadline-correction.md) | Retire timeout H and authorize turn-deadline correction | Accepted under explicit advance non-AWS correction authority; replacement H only after bounded gates |
+| [0324](0324-retire-failed-static-generation-and-correct-authority.md) | Retire failed static generation and correct authority | Accepted under explicit non-AWS authoritative-chain correction authority; fresh H/G chain required |
+
+ADR 0324 retires ADR 0320's H/G producer/publisher/static generation after its sole static observation failed closed. ADR 0325 is absent and reserved for the fresh corrected-H control decision; ADR 0322 remains reserved for the later fresh Q and qualification decision.
 
 ADR 0320 consumes the corrected-H control reservation preserved by ADR 0323. ADR 0322 remains absent and reserved for the later exact static-package Q and qualification decision. ADR 0321 remains a historical correction allocation.
 

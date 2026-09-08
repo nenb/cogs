@@ -12,6 +12,11 @@ test("prebuilt producer is an attempt-one exact-H non-AWS candidate with no publ
   assert.match(workflow, /test "\$GITHUB_REF_PROTECTED" = true/u);
   assert.match(workflow, /test "\$GITHUB_RUN_ATTEMPT" = 1/u);
   assert.match(workflow, /test "\$EXACT_H" = "\$GITHUB_SHA"/u);
+  assert.match(
+    workflow,
+    /select\(\.head_sha == \$h and \.path == "\.github\/workflows\/stage2-prebuilt-rootfs-producer\.yml"\)/u,
+  );
+  assert.doesNotMatch(workflow, /stage2-prebuilt-rootfs-producer\.yml\/runs\?[^'\n]*branch=/u);
   assert.doesNotMatch(workflow, /packages:\s*write|id-token:\s*write|docker login|cosign sign|oras push/u);
   assert.match(producer, /build\._pinned_publication/u);
   assert.ok(producer.indexOf('retirement["select"]') < producer.indexOf("acquisition.acquire_artifacts"));

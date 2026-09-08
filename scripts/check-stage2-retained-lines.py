@@ -255,14 +255,14 @@ def _remediation_budget():
                            "source_limits", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 21_000)
+             and data["global_gross_line_high"] == 21_400)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
     _require(data["source_limits"] == {"tracked_files": 1465,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 1_975,
-                "lifecycle": 7_500, "completion": 3_100, "integration": 3_750}
+                "lifecycle": 7_500, "completion": 3_100, "integration": 4_150}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -289,7 +289,7 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(sum(new_file_highs.values()) == 42
+    _require(sum(new_file_highs.values()) == 44
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])

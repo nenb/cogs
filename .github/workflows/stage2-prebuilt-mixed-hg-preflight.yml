@@ -40,10 +40,10 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
-          # ADR0323 exact retirement mirror; selection only, never ancestors.
+          # ADR0324 exact retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
             case "$selected" in
-              0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34023790672|34028384783|9988125363) exit 2 ;;
+              97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34183885618|34192071842|34192787285|34023790672|34028384783|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
@@ -56,12 +56,10 @@ jobs:
           test "$EXACT_IMPLEMENTATION_HEAD" != "$EXACT_QUALIFICATION_HEAD"
           test "$EXACT_CONTROL_HEAD" != "$EXACT_QUALIFICATION_HEAD"
           gh api --paginate --slurp \
-            'repos/nenb/cogs/actions/workflows/stage2-prebuilt-mixed-hg-preflight.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
+            'repos/nenb/cogs/actions/workflows/stage2-prebuilt-mixed-hg-preflight.yml/runs?event=workflow_dispatch&per_page=100' \
             >"$RUNNER_TEMP/preflight-runs.json"
-          jq -e --arg q "$EXACT_QUALIFICATION_HEAD" --arg h "$EXACT_IMPLEMENTATION_HEAD" \
-            --arg g "$EXACT_CONTROL_HEAD" --argjson current "$GITHUB_RUN_ID" \
-            --arg title "Stage 2 prebuilt mixed H-G-Q preflight H=$EXACT_IMPLEMENTATION_HEAD G=$EXACT_CONTROL_HEAD Q=$EXACT_QUALIFICATION_HEAD" \
-            '[.[].workflow_runs[] | select(.head_sha == $q and .display_title == $title and
+          jq -e --arg q "$EXACT_QUALIFICATION_HEAD" --argjson current "$GITHUB_RUN_ID" \
+            '[.[].workflow_runs[] | select(.head_sha == $q and
               .path == ".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml")] |
              map(.id) == [$current]' "$RUNNER_TEMP/preflight-runs.json" >/dev/null
 

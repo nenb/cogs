@@ -31,6 +31,18 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /stage2-prebuilt-mixed-hg-preflight\.yml/u);
   assert.match(workflow, /\.conclusion == "success"/u);
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
+  assert.match(
+    workflow,
+    /select\(\.head_sha == \$q and\s*\.path == "\.github\/workflows\/stage2-prebuilt-local-kata-qualification\.yml"\)/u,
+  );
+  assert.doesNotMatch(workflow, /stage2-prebuilt-local-kata-qualification\.yml\/runs\?[^'\n]*branch=/u);
+  assert.doesNotMatch(workflow, /\.head_sha == \$q and \.display_title/u);
+  assert.match(
+    preflightWorkflow,
+    /select\(\.head_sha == \$q and\s*\.path == "\.github\/workflows\/stage2-prebuilt-mixed-hg-preflight\.yml"\)/u,
+  );
+  assert.doesNotMatch(preflightWorkflow, /stage2-prebuilt-mixed-hg-preflight\.yml\/runs\?[^'\n]*branch=/u);
+  assert.doesNotMatch(preflightWorkflow, /\.head_sha == \$q and \.display_title/u);
   assert.match(workflow, /reviewed_qualification_head/u);
   assert.match(workflow, /CONFIGURED_QUALIFICATION_HEAD: \$\{\{ vars\.STAGE2_LOCAL_QUALIFICATION_HEAD \}\}/u);
   assert.match(workflow, /qualification-commit\.json/u);
