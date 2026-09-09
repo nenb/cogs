@@ -56,9 +56,33 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "8907eba3191d07573cd84573cb0b2adddff17bd6"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = None/u);
-  assert.match(guard, /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "c10fc103532f3e3a8b746727bd0f48c6d8498148"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "eb59cae18e0f041a243f35f253d46713f7e87142"/u);
+  assert.match(
+    guard,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c"/u,
+  );
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "57dd3c09ea16bee5599c6f3e8517b9d4449f9dd1004143e221c1c4e3955b2ba5"/u);
+  assert.match(
+    guard,
+    /REVIEWED_RESULT_SCHEMA_SHA256 = "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27"/u,
+  );
+  assert.match(
+    guard,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5"/u,
+  );
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34293986674/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10082440691/u);
+  assert.match(
+    guard,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:5b294cb46261e4b36b4a7893a507ec353e585109c899f5344e643b61839f4a4f"/u,
+  );
+  assert.match(preflight, /H=c10fc103532f3e3a8b746727bd0f48c6d8498148/u);
+  assert.match(preflight, /G=eb59cae18e0f041a243f35f253d46713f7e87142/u);
+  assert.match(preflight, /MANIFEST=ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c/u);
+  assert.match(preflight, /CONTROL=cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783/u);
+  assert.match(preflight, /DESCRIPTOR=47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5/u);
   assert.match(guard, /control_value\["producer"\]\.get\("control_revision"\) == control/u);
   assert.match(guard, /"qualification_head": qualification/u);
 });

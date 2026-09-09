@@ -128,9 +128,9 @@ with tempfile.TemporaryDirectory() as directory:
     try:
         guard.guard(env)
     except guard.GuardError as error:
-        assert str(error) == "review constants remain blocked"
+        assert str(error) == "missing GITHUB_EVENT_NAME"
     else:
-        raise AssertionError("unretired input became authority")
+        raise AssertionError("incomplete dispatch environment became authority")
 
 # Historical interpretation is still available even when selection is vetoed.
 with patch.dict(lock.retirement, {"select": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("decode gated"))}):
