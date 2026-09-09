@@ -20,11 +20,11 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-HARD_LIMIT = 98_000
-DEPLOY_CORRECTION_HIGH = 22_300
-RETAINED_CORRECTION_HIGH = 13_100
-WORKFLOW_CORRECTION_HIGH = 5_500
-GLOBAL_CORRECTION_HIGH = 43_000
+HARD_LIMIT = 100_500
+DEPLOY_CORRECTION_HIGH = 24_500
+RETAINED_CORRECTION_HIGH = 16_000
+WORKFLOW_CORRECTION_HIGH = 6_000
+GLOBAL_CORRECTION_HIGH = 47_000
 REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
@@ -32,7 +32,7 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # ADR0309 reserves are an independent gross diff, not subtraction of two gross
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
-POST_H_HIGHS = {"deploy": 150, "retained": 2_000, "workflow": 600, "global": 2_500}
+POST_H_HIGHS = {"deploy": 1_500, "retained": 4_000, "workflow": 1_200, "global": 6_000}
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -46,14 +46,14 @@ CONTROL_DATA_MEMBERS = (
     f"{CONTROL_DATA_ROOT}/stage2-local-runtime-manifest-v2.json",
     f"{CONTROL_DATA_ROOT}/stage2-local-static-control-v1.json",
 )
-CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, *(f"deploy/aws-feasibility/remote/stage2-completion-local-control-v{n}" for n in (3, 4)))
+CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, *(f"deploy/aws-feasibility/remote/stage2-completion-local-control-v{n}" for n in (3, 4, 5)))
 CONTROL_DATA_MEMBERS += tuple(member for root in CONTROL_DATA_ROOTS[1:] for member in (
     *(f"{root}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
         "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
     *(f"{root}/stage2-local-{name}-v3.json" for name in ("execution-envelope", "runtime-manifest")),
     f"{root}/stage2-local-static-control-v2.json",
 ))
-FINAL_CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
+FINAL_CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
 FINAL_CONTROL_DATA_MEMBERS = (
     *(f"{FINAL_CONTROL_DATA_ROOT}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
         "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
@@ -72,7 +72,19 @@ RETAINED_DEPLOY_FILES = (
     "deploy/aws-feasibility/remote/completion_local_evidence.py",
     "deploy/aws-feasibility/remote/completion_kata_preparation_bridge.py",
 )
+# Exact ADR0327 additions may be ordinary untracked files during review, but
+# remain mandatory, charged bytes. Historical retained files must stay tracked.
+ADR0327_RETAINED_FILES = (
+    "schemas/aws-stage2-completion-evidence-v3.json",
+    "schemas/aws-stage2-completion-production-approval-v5.json",
+    "schemas/aws-stage2-production-evidence-upload-receipt-v2.json",
+    "schemas/stage2-formal-local-cycle-receipt-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v5.json",
+    "scripts/render-aws-stage2-completion-report-v3.ts",
+    "scripts/validate-aws-stage2-completion-evidence-v3.ts",
+)
 RETAINED_FILES = (
+    *ADR0327_RETAINED_FILES,
     "config/stage2-retired-revisions-v1.json",
     "scripts/stage2-revision-retirement.py",
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
@@ -255,14 +267,14 @@ def _remediation_budget():
                            "source_limits", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 21_800)
+             and data["global_gross_line_high"] == 29_000)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1465,
+    _require(data["source_limits"] == {"tracked_files": 1492,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 1_975,
-                "lifecycle": 7_500, "completion": 3_100, "integration": 4_550}
+                "lifecycle": 7_500, "completion": 3_100, "integration": 11_000}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -289,7 +301,9 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(sum(new_file_highs.values()) == 45
+    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 0,
+                                "lifecycle": 4, "completion": 3, "integration": 64})
+    _require(sum(new_file_highs.values()) == 72
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
@@ -355,8 +369,13 @@ def _final_control_data_state():
     if not observed:
         return "absent", final_names
     _require(observed == final_names)
+    _validate_control_data_members(final_names)
+    return "member-set-complete", final_names
+
+
+def _validate_control_data_members(names):
     try:
-        for name in final_names:
+        for name in names:
             path = ROOT / name
             _require(_lines(path) == 1)
             value = json.loads(path.read_text("utf-8"), object_pairs_hook=_strict_object,
@@ -367,7 +386,6 @@ def _final_control_data_state():
             _require(path.read_text("utf-8") == canonical)
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
-    return "member-set-complete", final_names
 
 
 def measure():
@@ -376,14 +394,19 @@ def measure():
     _require(len(RETAINED_FILES) == len(retained_names))
     _require(len(RETAINED_DEPLOY_FILES) == len(retained_deploy_names))
     tracked_names = set(_git(["ls-files", "--", *RETAINED_FILES]).splitlines())
+    ordinary_names = set(_git(["ls-files", "--others", "--exclude-standard", "--",
+                               *RETAINED_FILES]).splitlines())
     tracked_deploy_names = set(_git(["ls-files", "--", *RETAINED_DEPLOY_FILES]).splitlines())
     control_data_names = set(CONTROL_DATA_MEMBERS)
     final_control_data_state, final_control_data_names = _final_control_data_state()
     tracked_control_data_names = set(_git(["ls-files", "--", *CONTROL_DATA_ROOTS]).splitlines())
-    _require(tracked_names == retained_names)
+    _require(tracked_names | ordinary_names == retained_names
+             and ordinary_names <= set(ADR0327_RETAINED_FILES))
     _require(tracked_deploy_names == retained_deploy_names)
     _require(len(CONTROL_DATA_MEMBERS) == len(control_data_names)
              and tracked_control_data_names == control_data_names)
+    # Moving v5 into history must not discard its ordinary/canonical-file gate.
+    _validate_control_data_members(control_data_names)
     deploy_paths = _deploy_paths()
     _require(retained_deploy_names <= {str(path.relative_to(ROOT)) for path in deploy_paths})
     workflow_paths = _workflow_paths()

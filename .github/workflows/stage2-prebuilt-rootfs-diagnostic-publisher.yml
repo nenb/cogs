@@ -34,7 +34,7 @@ jobs:
           # ADR0326 complete retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID" "$PRODUCER_RUN_ID" "$PRODUCER_ARTIFACT_ID"; do
             case "$selected" in
-              6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
+              c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
           test "$GITHUB_REPOSITORY" = nenb/cogs
@@ -65,13 +65,14 @@ jobs:
                     select(.status == "completed" and .conclusion == "success") | .name] | sort == ["admit","build","readback"]' \
             "$RUNNER_TEMP/producer-jobs.json" >/dev/null
           gh api --paginate --slurp \
-            'repos/nenb/cogs/actions/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml/runs?event=workflow_dispatch&branch=main&per_page=100' \
+            "repos/nenb/cogs/actions/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" \
             >"$RUNNER_TEMP/publisher-runs.json"
           jq -e --arg h "$GITHUB_SHA" --arg title "Pre-H diagnostic prebuilt rootfs publication H=$EXACT_H artifact=$PRODUCER_ARTIFACT_ID" \
             --argjson current "$GITHUB_RUN_ID" \
-            '[.[].workflow_runs[] | select(.head_sha == $h and
-                             .path == ".github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml")] as $runs |
-             ($runs | map(.id)) == [$current] and $runs[0].display_title == $title' \
+            '([.[].total_count] | unique) == [1] and
+             ([.[].workflow_runs[] | select(.head_sha == $h and
+               .path == ".github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml")] as $runs |
+              ($runs | map(.id)) == [$current] and $runs[0].display_title == $title)' \
             "$RUNNER_TEMP/publisher-runs.json" >/dev/null
 
       - name: Check out only trusted publisher G without credentials
@@ -102,13 +103,16 @@ jobs:
           path: ${{ runner.temp }}/candidate
           run-id: ${{ inputs.producer_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          digest-mismatch: error
 
       - id: candidate
         name: Validate candidate package without publisher or OIDC credentials
         env: { COGS_PREBUILT_CANDIDATE_ROOT: "${{ runner.temp }}/candidate" }
         run: |
           set -euo pipefail
-          result=$(/usr/bin/python3 -I -B scripts/stage2-prebuilt-rootfs-publisher.py validate-candidate)
+          expected_workflow=$(git show "$EXACT_H:.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml" | sha256sum | cut -d' ' -f1)
+          result=$(EXPECTED_PRODUCER_WORKFLOW_SHA256="$expected_workflow" \
+            /usr/bin/python3 -I -B scripts/stage2-prebuilt-rootfs-publisher.py validate-candidate)
           RESULT="$result" /usr/bin/python3 -I - <<'PY' >>"$GITHUB_OUTPUT"
           import json,os
           value=json.loads(os.environ['RESULT'])
@@ -140,7 +144,7 @@ jobs:
           # ADR0326 complete retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_H" "$GITHUB_RUN_ID" "$PRODUCER_RUN_ID" "$PRODUCER_ARTIFACT_ID"; do
             case "$selected" in
-              6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
+              c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
       - name: Check out the same exact publisher G without persisted credentials
@@ -166,6 +170,7 @@ jobs:
           path: ${{ runner.temp }}/candidate
           run-id: ${{ inputs.producer_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          digest-mismatch: error
 
       - name: Revalidate candidate and exact validation-job commitments
         env:
@@ -176,7 +181,9 @@ jobs:
           QUALIFICATION_SHA: ${{ needs.validate.outputs.qualification_sha }}
         run: |
           set -euo pipefail
-          result=$(/usr/bin/python3 -I -B scripts/stage2-prebuilt-rootfs-publisher.py validate-candidate)
+          expected_workflow=$(git show "$EXACT_H:.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml" | sha256sum | cut -d' ' -f1)
+          result=$(EXPECTED_PRODUCER_WORKFLOW_SHA256="$expected_workflow" \
+            /usr/bin/python3 -I -B scripts/stage2-prebuilt-rootfs-publisher.py validate-candidate)
           RESULT="$result" /usr/bin/python3 -I - <<'PY'
           import json,os
           value=json.loads(os.environ['RESULT'])

@@ -76,7 +76,11 @@ test("reviewed H itself binds corrected immutable and producer sources in the ru
 test("static-only cleanup uses reviewed source policy and owned process-fd censuses", () => {
   assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" pre/u);
   assert.match(workflow, /stage2-prebuilt-static-control-runtime-boundary\.py" post/u);
-  assert.match(workflow, /Remove owned fixtures and verify the static-only runtime boundary/u);
+  assert.match(workflow, /Remove only acquired fixtures and verify the established static boundary/u);
+  assert.match(workflow, /BOUNDARY_ESTABLISHED: \$\{\{ steps\.boundary\.outputs\.established \}\}/u);
+  assert.match(workflow, /SOURCE_ACQUIRED: \$\{\{ steps\.source_acquisition\.outputs\.acquired \}\}/u);
+  assert.match(workflow, /IMMUTABLE_ACQUIRED: \$\{\{ steps\.immutable_acquisition\.outputs\.acquired \}\}/u);
+  assert.match(workflow, /elif test "\$IMMUTABLE_INTENT" = true; then[\s\S]*test ! -e \/var\/lib\/cogs/u);
   assert.match(workflow, /chmod 0711 "\$root" "\$stage" "\$observation"/u);
   assert.match(workflow, /test -r "\$candidate\/stage2-local-static-control-v2\.json"/u);
   assert.match(workflow, /stat -c '%U:%G:%a'.*root:root:711/u);

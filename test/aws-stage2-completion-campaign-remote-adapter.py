@@ -32,7 +32,7 @@ SOURCE_BINDINGS = {
     "source_head": "1" * 40,
     "source_manifest_sha256": d("source-manifest"),
     "host_attestation_sha256": d("host-attestation"),
-    "runtime_attestation_sha256": d("runtime-attestation"),
+    "runtime_manifest_sha256": d("runtime-manifest"),
     "rootfs_sha256": d("rootfs-content"),
     "rootfs_descriptor_sha256": d("rootfs"),
     "rootfs_package_manifest_sha256": d("rootfs-package-manifest"),
@@ -47,7 +47,7 @@ SOURCE_BINDINGS = {
 
 def approval():
     value = {
-        "version": "cogs.stage2-completion-production-approval/v4",
+        "version": "cogs.stage2-completion-production-approval/v5",
         "phrase": production.APPROVAL_PHRASE,
         "implementation_revision": SOURCE_BINDINGS["source_head"],
         "control_revision": "2" * 40, "qualification_revision": "3" * 40,
@@ -60,7 +60,7 @@ def approval():
         "rootfs_provenance_sha256": SOURCE_BINDINGS["rootfs_provenance_sha256"],
         "rootfs_qualification_receipt_sha256": d("rootfs-qualification"),
         "rootfs_publication_receipt_sha256": SOURCE_BINDINGS["rootfs_publication_receipt_sha256"],
-        "runtime_commitment": SOURCE_BINDINGS["runtime_attestation_sha256"],
+        "runtime_manifest_sha256": SOURCE_BINDINGS["runtime_manifest_sha256"],
         "fixture_commitment": SOURCE_BINDINGS["final_pin_sha256"],
         "provider_binary_sha256": d("provider"), "aws_cli_sha256": d("aws"),
         "account_commitment": d("account"), "partition": "aws", "region": "us-east-1",
@@ -249,6 +249,10 @@ def exhaustive_schema_mutations(current, apply, running, exact):
             parent = locate(mutated, path[:-1])
             parent[path[-1]] = ({str: None, int: False, bool: 1}[type(item)])
             reject_value(mutated, f"wrong scalar type accepted at {path}")
+        if type(item) is int:
+            for impostor in (True, float(item)):
+                mutated = copy.deepcopy(exact); locate(mutated, path[:-1])[path[-1]] = impostor
+                reject_value(mutated, f"numeric impostor accepted at {path}")
 
 
 for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
@@ -270,7 +274,50 @@ for mode, ordinal, command in (("full", 1, adapter.FULL_COMMAND),
     assert receipt.bindings.qemu.runtime_identity_sha256 == exact["qmp_lineage"]["runtime_identity_sha256"]
     if mode == "readiness":
         assert receipt.bindings.qemu.pre_ssh_runtime_fact_sha256 != receipt.bindings.qemu.post_ssh_runtime_fact_sha256
+    assert receipt.bindings.qemu.runtime_identity_sha256 != APPROVAL.runtime_manifest_sha256
+    assert receipt.host_receipt_commitment == hashlib.sha256(
+        b"cogs.stage2-cycle-private-owner-receipt/v2\0" + canonical(exact)).hexdigest()
+    # No compatibility fallback may reinterpret historical production receipts.
+    for version in ("cogs.stage2-cycle-private-owner-receipt/v1", adapter.PRIVATE_VERSION):
+        historical = copy.deepcopy(exact)
+        historical["version"] = version
+        historical["source_bindings"]["runtime_attestation_sha256"] = \
+            historical["source_bindings"].pop("runtime_manifest_sha256")
+        rejected(lambda: adapter.remote_receipt(APPROVAL, current, apply, running, canonical(historical)),
+                 "historical live attestation accepted as static source binding")
+    historical = {**exact, "version": "cogs.stage2-cycle-private-owner-receipt/v1"}
+    rejected(lambda: adapter.remote_receipt(APPROVAL, current, apply, running, canonical(historical)),
+             "historical version accepted with manifest binding")
     exhaustive_schema_mutations(current, apply, running, exact)
+    unsafe = copy.deepcopy(exact)
+    unsafe["qmp_lineage"]["qemu_executable_inode"] = 9_007_199_254_740_992
+    unsafe["qmp_lineage"]["runtime_identity_sha256"] = adapter._runtime_identity(
+        unsafe["qmp_lineage"])
+    if mode == "readiness":
+        unsafe["runtime_readiness_lineage"]["runtime_identity_sha256"] = \
+            unsafe["qmp_lineage"]["runtime_identity_sha256"]
+        unsafe["runtime_readiness_lineage"]["qmp_identity"][3] = \
+            unsafe["qmp_lineage"]["qemu_executable_inode"]
+    rejected(lambda: adapter.remote_receipt(APPROVAL, current, apply, running, canonical(unsafe)),
+             "unsafe integer crossed private/public boundary")
+
+    # A fresh production execution is valid with the same qualified static bytes.
+    # Its PID, observation hashes, mapping and identity are not qualification facts.
+    fresh = copy.deepcopy(exact)
+    qmp = fresh["qmp_lineage"]
+    qmp["qemu_pid"] += 1000
+    qmp["live_mapping_sha256"] = d("fresh-cycle-mapping")
+    qmp["qemu_process_sha256"] = d("fresh-pre-ssh-observation")
+    qmp["runtime_identity_sha256"] = qemu_identity(qmp)
+    if mode == "readiness":
+        lineage = fresh["runtime_readiness_lineage"]
+        lineage["qmp_identity"][0] = qmp["qemu_pid"]
+        lineage["live_mapping_sha256"] = qmp["live_mapping_sha256"]
+        lineage["runtime_identity_sha256"] = qmp["runtime_identity_sha256"]
+        lineage["qemu_process_sha256"] = d("fresh-post-ssh-observation")
+    fresh_receipt = adapter.remote_receipt(APPROVAL, current, apply, running, canonical(fresh))
+    assert fresh_receipt.bindings.source == receipt.bindings.source
+    assert fresh_receipt.bindings.qemu.runtime_identity_sha256 != receipt.bindings.qemu.runtime_identity_sha256
 
     # Valid-looking substitutions at every external/cross-owner seam are denied.
     for path in (("aws_authority",), ("cycle_capability_sha256",),

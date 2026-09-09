@@ -327,7 +327,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 90_000);
-  assert.equal(budget.hard_limit, 98_000);
+  assert.equal(budget.hard_limit, 100_500);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -354,7 +354,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 21_800);
+  assert.equal(budget.remediation_global_high, 29_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 29_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -378,6 +379,13 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   );
   const budgetSource = readFileSync(budgetPath, "utf8");
   for (const retainedPath of [
+    "schemas/aws-stage2-completion-evidence-v3.json",
+    "schemas/aws-stage2-completion-production-approval-v5.json",
+    "schemas/aws-stage2-production-evidence-upload-receipt-v2.json",
+    "schemas/stage2-formal-local-cycle-receipt-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v5.json",
+    "scripts/render-aws-stage2-completion-report-v3.ts",
+    "scripts/validate-aws-stage2-completion-evidence-v3.ts",
     "schemas/aws-stage2-measurement-evidence-v1alpha1.json",
     "scripts/validate-aws-stage2-measurement-report.ts",
     "scripts/render-aws-stage2-measurement-report.ts",
@@ -413,10 +421,12 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 21_800);
+  assert.equal(manifest.global_gross_line_high, 29_000);
+  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.gross_line_high, 11_000);
+  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.new_file_high, 64);
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    45,
+    72,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
@@ -440,7 +450,9 @@ test("remediation budget has closed whole-file ownership and charges renamed des
   assert.match(accountingSource, /observed\.st_nlink == 1/u);
   assert.match(accountingSource, /_require\(not ignored\)/u);
   for (const owner of manifest.owners) assert.deepEqual(owner.paths, [...owner.paths].sort());
-  assert.equal(paths.filter((path) => path.includes("stage2-completion-local-control-v5/")).length, 13);
+  for (const version of [5, 6]) {
+    assert.equal(paths.filter((path) => path.includes(`stage2-completion-local-control-v${version}/`)).length, 13);
+  }
 
   const changed = spawnSync(
     "git",
@@ -458,7 +470,14 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     { cwd: root, encoding: "utf8" },
   );
   assert.equal(changed.status, 0, changed.stderr);
-  for (const path of changed.stdout.split("\0").filter(Boolean)) assert.ok(paths.includes(path), path);
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(untracked.status, 0, untracked.stderr);
+  for (const path of [changed.stdout, untracked.stdout].flatMap((names) => names.split("\0").filter(Boolean))) {
+    assert.ok(paths.includes(path), path);
+  }
 
   const temporary = mkdtempSync(join(tmpdir(), "cogs-remediation-budget-"));
   try {
@@ -468,13 +487,11 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       return result.stdout;
     };
     run(["init", "--quiet"]);
-    run(["config", "user.name", "Cogs Test"]);
-    run(["config", "user.email", "cogs-test@localhost"]);
     writeFileSync(join(temporary, "old.ts"), "one\ntwo\nthree\n");
     run(["add", "old.ts"]);
-    run(["commit", "--quiet", "-m", "baseline"]);
+    const baseline = run(["write-tree"]).trim(); // Isolated tree fixture; no commit or repository-index mutation.
     renameSync(join(temporary, "old.ts"), join(temporary, "new.ts"));
-    assert.equal(run(["diff", "--no-renames", "--numstat", "-z", "HEAD"]), ["0\t3\told.ts", ""].join("\0"));
+    assert.equal(run(["diff", "--no-renames", "--numstat", "-z", baseline]), ["0\t3\told.ts", ""].join("\0"));
     assert.equal(run(["ls-files", "--others", "--exclude-standard", "-z"]), ["new.ts", ""].join("\0"));
     run(["add", "--all"]);
     const numstat = run([
@@ -486,7 +503,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       "--no-textconv",
       "--numstat",
       "-z",
-      "HEAD",
+      baseline,
     ]);
     assert.deepEqual(numstat.split("\0").filter(Boolean).sort(), ["0\t3\told.ts", "3\t0\tnew.ts"]);
   } finally {

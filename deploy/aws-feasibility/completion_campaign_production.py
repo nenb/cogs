@@ -9,7 +9,9 @@ grant and durable intent/settlement identity.
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+from pathlib import Path
 import re
+import runpy
 
 APPROVAL_PHRASE = "run-seven-sequential-stage2-completion-launches"
 VERSION = "cogs.stage2-completion-production-controller/v2"
@@ -97,7 +99,7 @@ RATE_SOURCE_COMMITMENT = _commit(
 
 
 def approval_batch_commitment(value):
-    return _commit(b"cogs.stage2-production-approved-batch/v4", _approval_fields(value))
+    return _commit(b"cogs.stage2-production-approved-batch/v5", _approval_fields(value))
 
 
 def executor_principal_commitment(partition, account_id, role_name):
@@ -143,7 +145,7 @@ class ProductionApproval:
     rootfs_provenance_sha256: str
     rootfs_qualification_receipt_sha256: str
     rootfs_publication_receipt_sha256: str
-    runtime_commitment: str
+    runtime_manifest_sha256: str
     fixture_commitment: str
     provider_binary_sha256: str
     aws_cli_sha256: str
@@ -171,7 +173,7 @@ class ProductionApproval:
     one_attempt: bool
 
     def __post_init__(self):
-        _require(self.version == "cogs.stage2-completion-production-approval/v4"
+        _require(self.version == "cogs.stage2-completion-production-approval/v5"
                  and self.phrase == APPROVAL_PHRASE and self.one_attempt is True,
                  ProductionApprovalError)
         _digest(self.batch_commitment); _sha1(self.implementation_revision); _sha1(self.control_revision)
@@ -184,7 +186,7 @@ class ProductionApproval:
             self.pre_aws_package_sha256, self.rootfs_descriptor_sha256,
             self.rootfs_package_manifest_sha256, self.rootfs_provenance_sha256,
             self.rootfs_qualification_receipt_sha256,
-            self.rootfs_publication_receipt_sha256, self.runtime_commitment,
+            self.rootfs_publication_receipt_sha256, self.runtime_manifest_sha256,
             self.fixture_commitment, self.provider_binary_sha256, self.aws_cli_sha256,
             self.account_commitment,
             self.ami_commitment, self.rate_source_commitment,
@@ -206,7 +208,7 @@ class ProductionApproval:
         _require(type(self.plan_sha256s) is tuple and len(self.plan_sha256s) == 7
                  and len(set(self.plan_sha256s)) == 7, ProductionApprovalError)
         for item in self.plan_sha256s: _digest(item)
-        _require(type(self.not_before_unix_ns) is int
+        _require(type(self.not_before_unix_ns) is int and self.not_before_unix_ns > 0
                  and type(self.effect_deadline_ns) is int
                  and type(self.cleanup_reserve_ns) is int
                  and type(self.expires_unix_ns) is int
@@ -217,6 +219,7 @@ class ProductionApproval:
                  and type(self.maximum_cycle_duration_ns) is int
                  and 0 < self.maximum_cycle_duration_ns <= 150 * 60 * 1_000_000_000
                  and self.maximum_cycle_duration_ns <= self.effect_deadline_ns
+                 and type(self.maximum_cost_micro_usd) is int
                  and 0 < self.maximum_cost_micro_usd < 500_000
                  and self.maximum_cost_micro_usd >= (
                     (self.effect_deadline_ns + self.cleanup_reserve_ns)
@@ -303,10 +306,13 @@ class EffectReceipt:
                               {"pre_destroy_receipt"} if self.kind == "destroy" else set())
         _require({name for name, _value in self.resource_commitments} == expected_resources,
                  ProductionReceiptError)
-        _require(self.kind in EFFECT_KINDS and 1 <= self.ordinal <= 7
+        _require(self.kind in EFFECT_KINDS and type(self.ordinal) is int
+                 and 1 <= self.ordinal <= 7
                  and self.mode == CYCLE_MODES[self.ordinal - 1]
                  and type(self.observed_started_unix_ns) is int
-                 and self.observed_started_unix_ns < self.observed_ended_unix_ns
+                 and type(self.observed_ended_unix_ns) is int
+                 and 0 < self.observed_started_unix_ns < self.observed_ended_unix_ns
+                 and type(self.invocation_count) is int
                  and self.invocation_count == 1 and self.certain is True,
                  ProductionReceiptError)
 
@@ -330,7 +336,7 @@ class RemoteSourceBindings:
     source_head: str
     source_manifest_sha256: str
     host_attestation_sha256: str
-    runtime_attestation_sha256: str
+    runtime_manifest_sha256: str
     rootfs_sha256: str
     rootfs_descriptor_sha256: str
     rootfs_package_manifest_sha256: str
@@ -346,6 +352,202 @@ class RemoteSourceBindings:
         _sha1(self.source_head)
         for name, item in asdict(self).items():
             if name != "source_head": _digest(item)
+
+
+QUALIFICATION_PACKAGE_VERSION = "cogs.stage2-pre-aws-qualification-package/v5"
+QUALIFICATION_PACKAGE_NAME = "pre-aws-package-v5.json"
+QUALIFICATION_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
+_QUALIFICATION_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _qualification_keys(value, names):
+    _require(type(value) is dict and value.keys() == set(names), ProductionApprovalError)
+
+
+def _qualification_positive(value):
+    _require(type(value) is int and value > 0, ProductionApprovalError)
+
+
+def _qualification_archive(value):
+    _require(type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None,
+             ProductionApprovalError)
+
+
+def qualification_source_bindings(package):
+    """Strict, provider-free validation of the complete current v5 prerequisite.
+
+    Only fixed local policy/contract files are read. Recompute every commitment
+    represented by this projection; receipt/status/archive bytes themselves are
+    authenticated upstream, not recoverable from their hashes here. Consensus
+    among substituted rows cannot replace the current workflow/schema contract.
+    This check grants neither artifact authenticity nor execution authority.
+    """
+    _qualification_keys(package, (
+        "version", "authority", "implementation_revision", "control_revision",
+        "qualification_revision", "source_manifest_sha256", "static_control_sha256",
+        "workflow_sha256", "result_schema_sha256", "rootfs_descriptor_sha256",
+        "runtime_manifest_sha256", "fixture_commitment", "source_bindings",
+        "cycle_artifact_custody", "mixed_preflight_run_id", "static_control_observation",
+        "cycle_artifact_custody_sha256", "batch_commitment", "cycle_count",
+        "workload_measurements", "cycles", "predecessor_versions", "claims"))
+    _require(package.get("version") == QUALIFICATION_PACKAGE_VERSION
+             and package.get("authority") == "non-aws-prerequisite-evidence-only"
+             and type(package.get("cycle_count")) is int and package["cycle_count"] == 7
+             and type(package.get("workload_measurements")) is int
+             and package["workload_measurements"] == 21
+             and type(package.get("claims")) is dict
+             and package["claims"].keys() == {
+                 "formal_non_aws_qualification_passed", "aws_authorized", "aws_executed",
+                 "provider_executed", "promotion_authorized"}
+             and package["claims"]["formal_non_aws_qualification_passed"] is True
+             and all(package["claims"][name] is False for name in (
+                 "aws_authorized", "aws_executed", "provider_executed", "promotion_authorized"))
+             and "runtime_commitment" not in package
+             and "runtime_attestation_sha256" not in package,
+             ProductionApprovalError)
+    bindings = package.get("source_bindings")
+    _require(type(bindings) is dict
+             and bindings.keys() == RemoteSourceBindings.__dataclass_fields__.keys(),
+             ProductionApprovalError)
+    source = RemoteSourceBindings(**bindings)
+    revisions = tuple(package.get(name) for name in (
+        "implementation_revision", "control_revision", "qualification_revision"))
+    for revision in revisions: _sha1(revision)
+    _require(len(set(revisions)) == 3
+             and source.source_head == revisions[0]
+             and source.source_manifest_sha256 == package.get("source_manifest_sha256")
+             and source.rootfs_descriptor_sha256 == package.get("rootfs_descriptor_sha256")
+             and source.runtime_manifest_sha256 == package.get("runtime_manifest_sha256")
+             and source.final_pin_sha256 == package.get("fixture_commitment")
+             and source.guest_program_sha256 == FULL_PROGRAM_SHA256,
+             ProductionApprovalError)
+    for name in ("source_manifest_sha256", "static_control_sha256", "workflow_sha256",
+                 "result_schema_sha256", "rootfs_descriptor_sha256", "runtime_manifest_sha256",
+                 "fixture_commitment", "cycle_artifact_custody_sha256", "batch_commitment"):
+        _digest(package[name])
+    _require(type(package["predecessor_versions"]) is list and package["predecessor_versions"] == [
+        f"cogs.stage2-pre-aws-qualification-package/v{version}" for version in range(1, 5)],
+        ProductionApprovalError)
+    try:
+        workflow_raw = (_QUALIFICATION_ROOT /
+            ".github/workflows/stage2-prebuilt-local-kata-qualification.yml").read_bytes()
+        schema_raw = (_QUALIFICATION_ROOT /
+            "schemas/stage2-formal-local-cycle-receipt-v2.json").read_bytes()
+    except OSError as error:
+        raise ProductionApprovalError() from error
+    _require(package["workflow_sha256"] == hashlib.sha256(workflow_raw).hexdigest()
+             and package["result_schema_sha256"] == hashlib.sha256(schema_raw).hexdigest()
+             == QUALIFICATION_RESULT_SCHEMA_SHA256, ProductionApprovalError)
+
+    custody = package["cycle_artifact_custody"]
+    _qualification_keys(custody, ("version", "authority", "repository", "workflow_run", "artifacts"))
+    _require(custody["version"] == "cogs.stage2-formal-local-artifact-custody/v2"
+             and custody["authority"] == "authenticated-github-actions-api-cycle-artifact-custody-only"
+             and custody["repository"] == "nenb/cogs", ProductionApprovalError)
+    run = custody["workflow_run"]
+    _qualification_keys(run, ("id", "attempt", "head_sha"))
+    _qualification_positive(run["id"])
+    _require(type(run["attempt"]) is int and run["attempt"] == 1
+             and run["head_sha"] == revisions[2], ProductionApprovalError)
+    observation = package["static_control_observation"]
+    _qualification_keys(observation, ("run_id", "artifact_id", "artifact_archive_digest"))
+    _qualification_positive(observation["run_id"])
+    _qualification_positive(observation["artifact_id"])
+    _qualification_positive(package["mixed_preflight_run_id"])
+    _qualification_archive(observation["artifact_archive_digest"])
+    runs = (run["id"], observation["run_id"], package["mixed_preflight_run_id"])
+    _require(len(set(runs)) == 3, ProductionApprovalError)
+    _require(type(custody["artifacts"]) is list and len(custody["artifacts"]) == 7
+             and type(package["cycles"]) is list and len(package["cycles"]) == 7,
+             ProductionApprovalError)
+
+    # Same domains and ordinal spelling as FormalCycleGrant, without acquiring
+    # (or importing a claim seam for) any formal or production authority.
+    batch_fields = {name: package[name] for name in (
+        "implementation_revision", "control_revision", "source_manifest_sha256",
+        "static_control_sha256", "workflow_sha256", "result_schema_sha256",
+        "rootfs_descriptor_sha256")}
+    batch_fields.update(authority="non-cloud-formal-qualification-cycle-only",
+                        workflow_run_id=run["id"], workflow_run_attempt=1)
+    batch = _commit(b"cogs.stage2-formal-local-qualification-batch/v1", batch_fields)
+    _require(package["batch_commitment"] == batch, ProductionApprovalError)
+    identities = {name: set() for name in (
+        "host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key")}
+    artifact_ids = {observation["artifact_id"]}
+    archives = {observation["artifact_archive_digest"]}
+    receipt_hashes, status_hashes, grants = set(), set(), set()
+    for ordinal, (cycle, artifact) in enumerate(zip(package["cycles"], custody["artifacts"]), 1):
+        _qualification_keys(cycle, ("ordinal", "mode", "grant_commitment", "receipt_sha256",
+            "status_sha256", "artifact_name", "artifact_id", "artifact_archive_digest", "identities"))
+        _qualification_keys(artifact, ("ordinal", "name", "artifact_id", "archive_digest"))
+        name = f"stage2-formal-cycle-{ordinal}-{revisions[0]}-{revisions[1]}-{run['id']}-1"
+        _require(type(cycle["ordinal"]) is type(artifact["ordinal"]) is int
+                 and cycle["ordinal"] == artifact["ordinal"] == ordinal
+                 and cycle["mode"] == CYCLE_MODES[ordinal - 1]
+                 and cycle["artifact_name"] == artifact["name"] == name,
+                 ProductionApprovalError)
+        _qualification_positive(cycle["artifact_id"])
+        _qualification_positive(artifact["artifact_id"])
+        _qualification_archive(cycle["artifact_archive_digest"])
+        _qualification_archive(artifact["archive_digest"])
+        _require(cycle["artifact_id"] == artifact["artifact_id"]
+                 and cycle["artifact_archive_digest"] == artifact["archive_digest"],
+                 ProductionApprovalError)
+        for field in ("grant_commitment", "receipt_sha256", "status_sha256"):
+            _digest(cycle[field])
+        grant = _commit(b"cogs.stage2-formal-local-cycle-grant/v1", {
+            **batch_fields, "batch_commitment": batch, "ordinal": ordinal,
+            "mode": CYCLE_MODES[ordinal - 1]})
+        _require(cycle["grant_commitment"] == grant, ProductionApprovalError)
+        artifact_ids.add(cycle["artifact_id"]); archives.add(cycle["artifact_archive_digest"])
+        receipt_hashes.add(cycle["receipt_sha256"]); status_hashes.add(cycle["status_sha256"])
+        grants.add(grant)
+        _qualification_keys(cycle["identities"], identities)
+        for role, seen in identities.items():
+            identity = cycle["identities"][role]
+            if role == "host_boot_id":
+                _require(type(identity) is str and re.fullmatch(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", identity)
+                    is not None, ProductionApprovalError)
+            else: _digest(identity)
+            seen.add(identity)
+    _require(len(artifact_ids) == len(archives) == 8
+             and len(receipt_hashes) == len(status_hashes) == len(grants) == 7
+             and len(receipt_hashes | status_hashes) == 14
+             and all(len(seen) == 7 for seen in identities.values())
+             and len(identities["operation"] | identities["rootfs"]) == 14
+             and len(identities["client_key"] | identities["host_key"]) == 14
+             and source.runtime_manifest_sha256 not in identities["runtime"]
+             and package["cycle_artifact_custody_sha256"] == hashlib.sha256(
+                 _canonical(custody) + b"\n").hexdigest(), ProductionApprovalError)
+    try:
+        retirement = runpy.run_path(str(_QUALIFICATION_ROOT / "scripts/stage2-revision-retirement.py"))
+        retirement["select"](revisions, runs=tuple(str(item) for item in runs),
+                             artifacts=tuple(str(item) for item in artifact_ids))
+    except (OSError, TypeError, ValueError) as error:
+        raise ProductionApprovalError() from error
+    return source
+
+
+def validate_approval_package(approval, package, package_sha256):
+    """Bind exact prerequisite bytes to the separately authenticated v5 approval.
+
+    Never compare a qualification execution identity to a production cycle.
+    Authentication of approval bytes remains the sealed adapter's responsibility.
+    """
+    _require(type(approval) is ProductionApproval, ProductionApprovalError)
+    source = qualification_source_bindings(package)
+    _require(package_sha256 == hashlib.sha256(_canonical(package) + b"\n").hexdigest()
+             == approval.pre_aws_package_sha256
+             and all(package[name] == getattr(approval, name) for name in (
+                 "implementation_revision", "control_revision", "qualification_revision",
+                 "source_manifest_sha256", "static_control_sha256", "rootfs_descriptor_sha256",
+                 "runtime_manifest_sha256", "fixture_commitment"))
+             and _commit(b"cogs.stage2-source-bindings/v1", asdict(source)) ==
+                 approval.source_bindings_sha256
+             and all(getattr(source, name) == getattr(approval, name) for name in (
+                 "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
+                 "rootfs_publication_receipt_sha256")), ProductionApprovalError)
 
 
 @dataclass(frozen=True)
@@ -375,15 +577,18 @@ class RemoteQemuBindings:
                      self.qemu_argv_sha256): _digest(item)
         if self.post_ssh_runtime_fact_sha256 is not None:
             _digest(self.post_ssh_runtime_fact_sha256)
+        integers = (self.qemu_pid, self.qemu_starttime, self.qemu_executable_device,
+                    self.qemu_executable_inode, self.observer_qmp_device,
+                    self.observer_qmp_inode, self.kvm_device, self.kvm_inode, self.kvm_rdev)
         _require(self.runtime_identity_sha256 == _runtime_identity(self)
-                 and type(self.qemu_pid) is int and self.qemu_pid > 1
-                 and type(self.qemu_starttime) is int and self.qemu_starttime > 0
+                 and all(type(item) is int and item <= 9_007_199_254_740_991 for item in integers)
+                 and self.qemu_pid > 1 and self.qemu_starttime > 0
                  and all(type(item) is int and item >= 0 for item in (
                      self.qemu_executable_device, self.observer_qmp_device,
                      self.kvm_device, self.kvm_rdev))
                  and all(type(item) is int and item > 0 for item in (
                      self.qemu_executable_inode, self.observer_qmp_inode, self.kvm_inode))
-                 and self.kvm_api == 12 and self.qmp_present is True
+                 and type(self.kvm_api) is int and self.kvm_api == 12 and self.qmp_present is True
                  and self.qmp_enabled is True, ProductionReceiptError)
 
 
@@ -641,7 +846,7 @@ class CampaignCandidate:
                  and len(set(self.cycle_commitments)) == 7, ProductionReceiptError)
         _digest(self.custody_root)
         approval_commitment = _commit(
-            b"cogs.stage2-production-approval/v4", asdict(self.approval))
+            b"cogs.stage2-production-approval/v5", asdict(self.approval))
         expected = _commit(b"cogs.stage2-production-custody/v2", {
             "execution_authority": self.execution_authority,
             "approval": approval_commitment,
@@ -739,7 +944,7 @@ def _validate_remote_bindings(remote, grant, approval):
                  approval.source_bindings_sha256
              and source.source_head == grant.implementation_revision
              and source.source_manifest_sha256 == approval.source_manifest_sha256
-             and source.runtime_attestation_sha256 == approval.runtime_commitment
+             and source.runtime_manifest_sha256 == approval.runtime_manifest_sha256
              and source.rootfs_descriptor_sha256 == grant.rootfs_descriptor_sha256
              and source.rootfs_package_manifest_sha256 == approval.rootfs_package_manifest_sha256
              and source.rootfs_provenance_sha256 == approval.rootfs_provenance_sha256
@@ -788,7 +993,7 @@ class ProductionCampaignController:
         _require(not self.used); self.used = True
         approval = self.ports.approval
         consumed_at = self._now(approval)
-        approval_commitment = _commit(b"cogs.stage2-production-approval/v4", asdict(approval))
+        approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
         consumption = self.ports.consume(approval, approval_commitment, consumed_at)
         _require(type(consumption) is ApprovalConsumptionReceipt
                  and consumption.approval_commitment == approval_commitment,
@@ -797,6 +1002,8 @@ class ProductionCampaignController:
                            consumption.durable_record_commitment)
         grants = []; effects = []; remotes = []; inventories = []; costs = []; cycles = []
         states = []; lineages = []; instances = []; operations = []; boots = []; runtimes = []
+        live_mappings = []; pre_ssh_facts = []; post_ssh_facts = []
+        client_keys = []; host_keys = []; instance_resources = []
         previous_zero_end = None
         first_apply_start = None
         active_grant = None
@@ -847,6 +1054,7 @@ class ProductionCampaignController:
                          and remote.ordinal == ordinal and remote.mode == mode
                          and remote.state_commitment == apply.state_commitment
                          and remote.state_lineage_commitment == apply.state_lineage_commitment
+                         and remote.instance_commitment == running.identity_commitment
                          and remote.provider_launch_started_unix_ns == apply.observed_started_unix_ns
                          and remote.provider_running_observed_unix_ns == running.observed_ended_unix_ns
                          and remote.rootfs_descriptor_sha256 == approval.rootfs_descriptor_sha256
@@ -895,7 +1103,15 @@ class ProductionCampaignController:
                 instances.append(remote.instance_commitment)
                 operations.append(remote.operation_commitment)
                 boots.append(remote.host_boot_commitment)
-                runtimes.append(remote.bindings.qemu.runtime_identity_sha256)
+                qmp = remote.bindings.qemu
+                runtimes.append(qmp.runtime_identity_sha256)
+                live_mappings.append(qmp.live_mapping_sha256)
+                pre_ssh_facts.append(qmp.pre_ssh_runtime_fact_sha256)
+                if qmp.post_ssh_runtime_fact_sha256 is not None:
+                    post_ssh_facts.append(qmp.post_ssh_runtime_fact_sha256)
+                client_keys.append(remote.client_key_commitment)
+                host_keys.append(remote.host_key_commitment)
+                instance_resources.append(dict(running.resource_commitments)["instance"])
                 active_grant = active_state = last_certain = None
                 self.ports.journal("cycle", "sealed", ordinal, mode, cycle)
             active_grant = grants[-1]
@@ -914,7 +1130,13 @@ class ProductionCampaignController:
             inventories.append(final)
             active_grant = active_state = last_certain = None
             _require(all(len(set(values)) == 7 for values in
-                         (states, lineages, instances, operations, boots, runtimes)),
+                         (states, lineages, instances, operations, boots, runtimes,
+                          live_mappings, pre_ssh_facts))
+                     and len(post_ssh_facts) == len(set(post_ssh_facts)) == 6
+                     and len(set(pre_ssh_facts) | set(post_ssh_facts)) == 13
+                     and len(set(client_keys)) == len(set(host_keys)) == 7
+                     and len(set(client_keys) | set(host_keys)) == 14
+                     and len(set(instance_resources)) == 7,
                      ProductionReceiptError)
             for name in ("observer_commitment", "session_commitment",
                          "run_commitment", "zero_commitment"):

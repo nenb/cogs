@@ -1,9 +1,9 @@
 """Closed adapter from controller grants to exact private cycle receipts.
 
 This module crosses the SSM byte boundary without performing an effect.  It
-accepts only the complete canonical full/readiness receipt shapes emitted by
-``completion_cycle_evidence`` and projects those owner facts into controller
-receipts.
+accepts only the complete canonical v2 full/readiness static-manifest receipt
+shapes and projects those owner facts into controller receipts. The historical
+v1 receipts remain blocked; the owner producer emits only this exact v2 contract.
 """
 
 from dataclasses import dataclass
@@ -18,7 +18,8 @@ SOURCE = "/var/lib/cogs/stage2-completion-v1/source"
 FULL_COMMAND = SOURCE + "/deploy/aws-feasibility/remote/run-stage2-completion-full.sh"
 READINESS_COMMAND = SOURCE + "/deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh"
 MAX_RECEIPT_BYTES = 256 * 1024
-PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v1"
+# v1 is historical live-attestation evidence, never a static-manifest receipt.
+PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v2"
 FULL_PROGRAM_SHA256 = production.FULL_PROGRAM_SHA256
 FULL_MARKER_SHA256 = production.FULL_MARKER_SHA256
 READINESS_PROGRAM_SHA256 = production.READINESS_PROGRAM_SHA256
@@ -71,7 +72,7 @@ RESIDUE_FACTS = (
 )
 SOURCE_BINDING_KEYS = {
     "source_head", "source_manifest_sha256", "host_attestation_sha256",
-    "runtime_attestation_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
+    "runtime_manifest_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
     "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
     "rootfs_publication_receipt_sha256", "artifact_sha256", "candidate_sha256",
     "final_pin_sha256", "guest_program_sha256", "owner_implementation_sha256",
@@ -119,7 +120,7 @@ def _digest(value):
 
 
 def _integer(value, minimum=0):
-    _require(type(value) is int and value >= minimum)
+    _require(type(value) is int and minimum <= value <= 9_007_199_254_740_991)
     return value
 
 
@@ -181,7 +182,8 @@ def _receipt(raw, mode):
              and value["route"] == mode
              and value["production_publication_authorized"] is False
              and value["provider_execution_observed"] is False
-             and value["launch_attempts"] == value["ssh_attempts"] == 1)
+             and _integer(value["launch_attempts"], 1) == 1
+             and _integer(value["ssh_attempts"], 1) == 1)
     return value
 
 
@@ -225,9 +227,12 @@ def _validate_common(value, grant, approval):
         "plan_sha256": grant.plan_sha256,
         "grant_commitment": grant.grant_commitment,
     }
-    _require(type(approval) is production.ProductionApproval
+    embedded_grant = value["cycle_grant"]
+    _keys(embedded_grant, expected_grant)
+    _require(_integer(embedded_grant["cycle_ordinal"], 1) == grant.ordinal
+             and type(approval) is production.ProductionApproval
              and grant == production._grant(approval, grant.ordinal)
-             and value["cycle_grant"] == expected_grant
+             and embedded_grant == expected_grant
              and value["aws_authority"] == grant.grant_commitment)
     program, marker = PROGRAMS[grant.mode]
     _require(value["program_sha256"] == program
@@ -240,7 +245,7 @@ def _validate_common(value, grant, approval):
     _keys(bindings, SOURCE_BINDING_KEYS)
     _require(bindings["source_head"] == grant.implementation_revision
              and bindings["source_manifest_sha256"] == approval.source_manifest_sha256
-             and bindings["runtime_attestation_sha256"] == approval.runtime_commitment
+             and bindings["runtime_manifest_sha256"] == approval.runtime_manifest_sha256
              and bindings["rootfs_descriptor_sha256"] == grant.rootfs_descriptor_sha256
              and bindings["rootfs_package_manifest_sha256"] ==
                  approval.rootfs_package_manifest_sha256
@@ -273,7 +278,7 @@ def _validate_common(value, grant, approval):
     marker_time = _integer(timing["ssh_marker_observed_boottime_ns"], 1)
     settled = _integer(timing["ssh_command_settled_boottime_ns"], 1)
     _require(launch < marker_time <= settled
-             and timing["ssh_ready_ns"] == marker_time - launch)
+             and _integer(timing["ssh_ready_ns"], 1) == marker_time - launch)
 
     freshness = value["key_freshness"]
     _keys(freshness, {"client_key_commitment", "host_key_commitment"})
@@ -297,7 +302,7 @@ def _validate_common(value, grant, approval):
              and _integer(qmp["observer_qmp_device"]) >= 0
              and _integer(qmp["observer_qmp_inode"]) > 0
              and _integer(qmp["kvm_device"]) >= 0 and _integer(qmp["kvm_inode"]) > 0
-             and _integer(qmp["kvm_rdev"]) > 0 and qmp["kvm_api"] == 12
+             and _integer(qmp["kvm_rdev"]) > 0 and _integer(qmp["kvm_api"]) == 12
              and qmp["qmp_present"] is True and qmp["qmp_enabled"] is True)
     _require(value["teardown_projection"] == list(TEARDOWN_PROJECTION)
              and value["private_teardown_records"] == list(PRIVATE_TEARDOWN_RECORDS)
@@ -318,7 +323,8 @@ def _validate_full(value):
         category_index, sample = divmod(global_ordinal - 1, 7)
         category = ("GIT", "BUILD", "INSTALL")[category_index]
         expected_label = f"{category}_{sample + 1:02d}"
-        _require(row["ordinal"] == global_ordinal and row["category"] == expected_label
+        _require(_integer(row["ordinal"], 1) == global_ordinal
+                 and row["category"] == expected_label
                  and type(row["duration_ns"]) is int
                  and 1 <= row["duration_ns"] <= 1_200_000_000_000
                  and row["result_sha256"] == WORKLOAD_DIGESTS[category]
@@ -366,7 +372,7 @@ def remote_receipt(approval, grant, apply, running, raw):
         _validate_readiness(value, operation, value["runtime_network_sha256"], qmp)
 
     host_receipt = hashlib.sha256(
-        b"cogs.stage2-cycle-private-owner-receipt/v1\0" + raw).hexdigest()
+        PRIVATE_VERSION.encode("ascii") + b"\0" + raw).hexdigest()
     host_boot_commitment = production._commit(
         b"cogs.stage2-host-boot/v1", {"host_boot_id": timing["host_boot_id"]})
     source = production.RemoteSourceBindings(**value["source_bindings"])

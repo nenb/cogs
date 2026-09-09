@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,35 +11,31 @@ import {
 } from "../scripts/validate-aws-stage2-completion-evidence-v2.ts";
 
 const root = join(import.meta.dirname, "..");
-let rawFixture: string | undefined;
 function raw(): string {
-  if (rawFixture !== undefined) return rawFixture;
-  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
-    cwd: root,
-    encoding: "utf8",
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      PYTHONDONTWRITEBYTECODE: "1",
-      COGS_TEST_EMIT_EVIDENCE: "1",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  rawFixture = result.stdout;
-  return rawFixture;
+  // Synthetic historical codec fixture only: not an upgrade/downgrade issuance route.
+  const value = JSON.parse(
+    readFileSync(join(root, "test/fixtures/stage2-completion/production-v3-test-only.json"), "utf8"),
+  );
+  value.version = "cogs.aws-stage2-completion-evidence/v2";
+  value.bindings.runtime_commitment = "e".repeat(64);
+  delete value.bindings.runtime_manifest_sha256;
+  for (const cycle of value.cycles) {
+    const source = cycle.remote.bindings.source_bindings;
+    source.runtime_attestation_sha256 = value.bindings.runtime_commitment;
+    delete source.runtime_manifest_sha256;
+    cycle.freshness.client_key = cycle.freshness.client_ssh_identity;
+    cycle.freshness.host_key = cycle.freshness.host_ssh_identity;
+    delete cycle.freshness.client_ssh_identity;
+    delete cycle.freshness.host_ssh_identity;
+  }
+  value.bindings.source_bindings_commitment = createHash("sha256")
+    .update("cogs.stage2-source-bindings/v1\0")
+    .update(canonical(value.cycles[0].remote.bindings.source_bindings))
+    .digest("hex");
+  return `${canonical(value)}\n`;
 }
-function issuerReport(): string {
-  const result = spawnSync("python3", ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-production.py")], {
-    cwd: root,
-    encoding: "utf8",
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      PYTHONDONTWRITEBYTECODE: "1",
-      COGS_TEST_EMIT_REPORT: "1",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout;
-}
+const issuerReport = (): string =>
+  readFileSync(join(root, "test/fixtures/stage2-completion/production-v3-test-only.md"), "utf8");
 // biome-ignore lint/suspicious/noExplicitAny: hostile mutations deliberately cross the validated contract
 const fixture = (): Record<string, any> => structuredClone(JSON.parse(raw()));
 // biome-ignore lint/suspicious/noExplicitAny: hostile mutations deliberately cross the validated contract
@@ -59,7 +55,7 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-test("closure-issued canonical v2 validates and renderer requires its validator token", () => {
+test("historical synthetic canonical v2 validates and renderer requires its validator token", () => {
   const validated = parseAwsStage2CompletionEvidence(raw());
   assert.equal(validated.evidence.result, "pass");
   assert.equal(validated.evidence.cycles.length, 7);
@@ -226,7 +222,7 @@ test("failure authority, sensitive strings, noncanonical bytes, and duplicate ke
   }, "synthetic version");
   for (const sensitive of [
     "arn:aws:iam::123456789012:role/x",
-    "AKIAABCDEFGHIJKLMNOP",
+    ["AKIA", "ABCDEFGHIJKLMNOP"].join(""),
     "i-deadbeef12345678",
     "192.0.2.1",
     "/var/lib/custody",

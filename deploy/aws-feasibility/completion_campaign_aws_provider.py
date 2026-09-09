@@ -14,14 +14,32 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import selectors
+import signal
 import stat
 import subprocess
 import sys
 import time
 from typing import Callable
 
-import completion_campaign_production as production
-import completion_campaign_remote_adapter as remote_adapter
+_DIAGNOSTIC = b"stage2-production-provider: owner.failed\n"
+_MODULE_ROOT = Path(__file__).resolve().parent
+
+
+def _fail() -> None:
+    try: os.write(2, _DIAGNOSTIC)
+    except BaseException: pass
+    raise SystemExit(2) from None
+
+
+try:
+    if not _MODULE_ROOT.is_dir(): raise ImportError("fixed provider module root unavailable")
+    sys.path.insert(0, str(_MODULE_ROOT))
+    import completion_campaign_production as production
+    import completion_campaign_remote_adapter as remote_adapter
+except BaseException:
+    if __name__ == "__main__": _fail()
+    raise
 
 ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
@@ -149,10 +167,67 @@ Runner = Callable[[tuple[str, ...], int], Completed]
 
 
 def subprocess_runner(argv: tuple[str, ...], timeout: int) -> Completed:
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, cwd=SOURCE, env=ENV,
-                            timeout=timeout, check=False)
-    return Completed(result.stdout, result.stderr, result.returncode)
+    handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+    previous_handlers = {}
+    process, selector, unblocked = None, None, False
+    interrupted_state = [False]
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    def interrupted(_number, _frame):
+        interrupted_state[0] = True
+        if process is not None:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+    try:
+        for number in handled: previous_handlers[number] = signal.signal(number, interrupted)
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, cwd=SOURCE, env=ENV,
+                                   close_fds=True, start_new_session=True)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask); unblocked = True
+        selector = selectors.DefaultSelector()
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            _require(stream is not None, "provider pipe unavailable")
+            selector.register(stream, selectors.EVENT_READ, name)
+        deadline = time.monotonic() + timeout
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0: raise subprocess.TimeoutExpired(argv, timeout)
+            events = selector.select(remaining)
+            if not events: raise subprocess.TimeoutExpired(argv, timeout)
+            for key, _mask in events:
+                part = os.read(key.fd, 65536)
+                if not part: selector.unregister(key.fileobj); continue
+                buffers[key.data].extend(part)
+                _require(len(buffers["stdout"]) <= MAX_OUTPUT
+                         and len(buffers["stderr"]) <= 64 * 1024,
+                         "provider output bound exceeded")
+        returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        if interrupted_state[0]: raise ProviderBoundaryError("provider interrupted")
+        try: os.killpg(process.pid, 0)
+        except ProcessLookupError: pass
+        else: raise ProviderBoundaryError("provider descendants remain")
+        return Completed(bytes(buffers["stdout"]), bytes(buffers["stderr"]), returncode)
+    except BaseException:
+        signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+        for number in previous_handlers: signal.signal(number, signal.SIG_IGN)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask); unblocked = True
+        if process is not None:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.wait(timeout=10)
+            settlement_deadline = time.monotonic() + 5
+            while True:
+                try: os.killpg(process.pid, 0)
+                except ProcessLookupError: break
+                if time.monotonic() >= settlement_deadline:
+                    raise ProviderBoundaryError("provider descendants uncertain")
+                time.sleep(0.01)
+        raise
+    finally:
+        if selector is not None: selector.close()
+        if not unblocked: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        for number, handler in previous_handlers.items(): signal.signal(number, handler)
+        if interrupted_state[0]: raise ProviderBoundaryError("provider interrupted")
 
 
 INVENTORY_QUERIES = (
@@ -832,8 +907,17 @@ def main(argv: tuple[str, ...] | None = None) -> None:
         raw = provider.recover(int(args[1]), args[2], args[3], args[4])
     else:
         _usage()
-    _require(os.write(1, raw) == len(raw))
+    offset = 0
+    while offset < len(raw):
+        written = os.write(1, raw[offset:])
+        _require(written > 0, "provider stdout made no progress")
+        offset += written
+
+
+def cli() -> None:
+    try: main()
+    except BaseException: _fail()
 
 
 if __name__ == "__main__":
-    main()
+    cli()

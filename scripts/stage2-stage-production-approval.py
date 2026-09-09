@@ -115,8 +115,15 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
               value.get("qualification_revision")))
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
     approval = production.ProductionApproval(**value)
+    package_raw = read(source / production.QUALIFICATION_PACKAGE_NAME, 256 * 1024)
+    try: package = json.loads(package_raw)
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise StagingError() from error
+    require(production._canonical(package) + b"\n" == package_raw)
+    production.validate_approval_package(approval, package, hashlib.sha256(package_raw).hexdigest())
     fixed = {
         "approval.json": approval_raw,
+        production.QUALIFICATION_PACKAGE_NAME: package_raw,
         "approval-authentication.json": read(source / "approval-authentication.json", 256 * 1024),
         "approval-authentication.bundle.json": read(
             source / "approval-authentication.bundle.json", 1024 * 1024),
@@ -265,5 +272,6 @@ if __name__ == "__main__":
         result = stage(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
         raw = f"approval_sha256={result}\n".encode("ascii")
         require(sys.stdout.buffer.write(raw) == len(raw))
-    except (OSError, StagingError, production.ProductionCampaignError):
+    except (OSError, StagingError, KeyError, TypeError, ValueError,
+            production.ProductionCampaignError):
         raise SystemExit(2)

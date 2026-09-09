@@ -101,7 +101,11 @@ def validate_candidate():
     require(observed == {"independent_builds":2,"equal":True,"pins_matched":True,
                          "kvm_executed":False,"aws_executed":False,"provider_executed":False})
     builder = provenance.get("builder"); require(type(builder) is dict and SHA1.fullmatch(builder.get("implementation_revision","")))
-    require(builder.get("source_manifest_sha256") == receipt.get("source_manifest_sha256")
+    require(type(builder.get("run_id")) is int
+            and str(builder["run_id"]) == os.environ.get("PRODUCER_RUN_ID")
+            and HEX.fullmatch(builder.get("source_manifest_sha256", ""))
+            and builder.get("workflow_sha256") == os.environ.get("EXPECTED_PRODUCER_WORKFLOW_SHA256")
+            and builder.get("source_manifest_sha256") == receipt.get("source_manifest_sha256")
             and builder.get("workflow_sha256") == receipt.get("workflow_sha256")
             and builder.get("run_id") == receipt.get("run_id")
             and builder.get("run_attempt") == receipt.get("run_attempt") == 1)
@@ -120,7 +124,9 @@ def validate_candidate():
             and receipt.get("ustar_size") == prebuilt.USTAR_SIZE
             and receipt.get("entry_count") == prebuilt.ENTRY_COUNT
             and receipt.get("input_contract_sha256") == prebuilt.INPUT_CONTRACT_SHA256
-            and receipt.get("builds") == 2 and receipt.get("remote_published") is False)
+            and receipt.get("builds") == 2
+            and receipt.get("publication") == "local-no-replace-accepted"
+            and receipt.get("remote_published") is False)
     retirement["select"]((builder["implementation_revision"], receipt["implementation_revision"]),
                           runs=(str(builder["run_id"]), str(receipt["run_id"])))
     require(builder["implementation_revision"] == os.environ["EXACT_H"])

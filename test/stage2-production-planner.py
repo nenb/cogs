@@ -6,11 +6,59 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
+
+
+def forbidden_audit(event, _args):
+    if event.startswith(("subprocess.", "socket.")) or event in {
+            "os.system", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty"}:
+        raise AssertionError("process/network seam forbidden")
+
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
     "stage2_production_planner_test", ROOT / "scripts/stage2-production-planner.py")
 planner = importlib.util.module_from_spec(spec); spec.loader.exec_module(planner)
+
+# Exercise post-spawn cancellation and selector-construction cuts only with a
+# local sleeping Python child, before the rest of this test forbids subprocesses.
+child = (sys.executable, "-I", "-c", "import time;time.sleep(10)")
+environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+original_popen = planner.subprocess.Popen
+spawned = []
+
+def pending_spawn(*args, **kwargs):
+    process = original_popen(*args, **kwargs); spawned.append(process)
+    os.kill(os.getpid(), planner.signal.SIGTERM)
+    return process
+
+def settled(process):
+    assert process.poll() is not None
+    try: os.killpg(process.pid, 0)
+    except ProcessLookupError: return
+    raise AssertionError("child process group survived settlement")
+
+planner.subprocess.Popen = pending_spawn
+try:
+    try: planner._bounded_process(child, 5, environment)
+    except planner.PlanningError: pass
+    else: raise AssertionError("pending cancellation crossed spawn adoption")
+finally: planner.subprocess.Popen = original_popen
+settled(spawned.pop())
+original_selector = planner.selectors.DefaultSelector
+planner.subprocess.Popen = lambda *args, **kwargs: spawned.append(
+    original_popen(*args, **kwargs)) or spawned[-1]
+planner.selectors.DefaultSelector = lambda: (_ for _ in ()).throw(OSError("selector cut"))
+try:
+    try: planner._bounded_process(child, 5, environment)
+    except OSError: pass
+    else: raise AssertionError("selector failure abandoned child")
+finally:
+    planner.selectors.DefaultSelector = original_selector
+    planner.subprocess.Popen = original_popen
+settled(spawned.pop())
+
+sys.addaudithook(forbidden_audit)
 
 
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
@@ -39,27 +87,23 @@ with tempfile.TemporaryDirectory() as temporary:
         "rootfs_package_manifest_sha256": d("rootfs-package"),
         "rootfs_provenance_sha256": d("provenance"),
         "rootfs_publication_receipt_sha256": d("publication"),
-        "runtime_attestation_sha256": d("runtime"), "final_pin_sha256": d("fixture")}
+        "runtime_manifest_sha256": d("runtime-manifest"), "final_pin_sha256": d("fixture"),
+        "host_attestation_sha256": d("host"), "rootfs_sha256": d("rootfs"),
+        "artifact_sha256": d("artifact"), "candidate_sha256": d("candidate"),
+        "guest_program_sha256": planner.production.FULL_PROGRAM_SHA256,
+        "owner_implementation_sha256": d("owner")}
     control = {"version": "cogs.stage2-local-static-control-package/v2",
-               "producer": {"control_revision": g}}
+               "producer": {"control_revision": g},
+               "members": [{"kind": "runtime-manifest",
+                   "name": "stage2-local-runtime-manifest-v3.json",
+                   "sha256": bindings["runtime_manifest_sha256"]}]}
     control_raw = planner.canonical(control)
-    package = {"version": "cogs.stage2-pre-aws-qualification-package/v4",
-        "authority": "non-aws-prerequisite-evidence-only", "implementation_revision": h,
-        "control_revision": g, "qualification_revision": q,
-        "source_manifest_sha256": bindings["source_manifest_sha256"],
-        "static_control_sha256": hashlib.sha256(control_raw).hexdigest(),
-        "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
-        "source_bindings": bindings, "cycle_count": 7, "workload_measurements": 21,
-        "cycle_artifact_custody": {"workflow_run": {"id": 71, "attempt": 1, "head_sha": q},
-            "artifacts": [{"artifact_id": value} for value in range(72, 79)]},
-        "mixed_preflight_run_id": 63,
-        "static_control_observation": {"run_id": 61, "artifact_id": 62,
-            "artifact_archive_digest": "sha256:" + d("static-archive")},
-        "claims": {"formal_non_aws_qualification_passed": True, "aws_authorized": False,
-                   "aws_executed": False, "provider_executed": False,
-                   "promotion_authorized": False}}
+    fixture_spec = importlib.util.spec_from_file_location(
+        "stage2_approval_fixture", ROOT / "test/stage2-production-approval.py")
+    fixture = importlib.util.module_from_spec(fixture_spec); fixture_spec.loader.exec_module(fixture)
+    package = fixture.qualification_package(bindings, hashlib.sha256(control_raw).hexdigest())
     package_path, control_path, descriptor_path = (
-        root / "pre-aws-package-v4.json", root / "control.json", root / "descriptor.json")
+        root / "pre-aws-package-v5.json", root / "control.json", root / "descriptor.json")
     package_path.write_bytes(planner.canonical(package)); control_path.write_bytes(control_raw)
     descriptor_path.write_bytes(descriptor_raw)
     planner.eligibility(package_path, (h, g, q))
@@ -149,6 +193,27 @@ with tempfile.TemporaryDirectory() as temporary:
     def forbidden_effect(*_arguments, **_keywords):
         effect_calls.append(True); raise AssertionError("retired package reached provider seam")
     planner.run = forbidden_effect
+    # Reject old, missing, mixed, and coherently substituted live bindings before
+    # even the first fake command seam (not merely after acquiring credentials).
+    for kind in ("old-version", "old-field", "mixed-fields", "missing-manifest", "top-drift",
+                 "control-drift", "unqualified"):
+        hostile = json.loads(planner.canonical(package))
+        if kind == "old-version": hostile["version"] = "cogs.stage2-pre-aws-qualification-package/v4"
+        elif kind == "old-field":
+            hostile["source_bindings"]["runtime_attestation_sha256"] = \
+                hostile["source_bindings"].pop("runtime_manifest_sha256")
+        elif kind == "mixed-fields": hostile["source_bindings"]["runtime_attestation_sha256"] = d("live")
+        elif kind == "missing-manifest": hostile.pop("runtime_manifest_sha256")
+        elif kind == "top-drift": hostile["runtime_manifest_sha256"] = d("live")
+        elif kind == "control-drift":
+            hostile["source_bindings"]["runtime_manifest_sha256"] = d("live")
+            hostile["runtime_manifest_sha256"] = d("live")
+        else: hostile["claims"]["formal_non_aws_qualification_passed"] = False
+        path = root / f"hostile-{kind}.json"; path.write_bytes(planner.canonical(hostile))
+        nested_retired_paths.append(path)
+    for index, (_label, hostile) in enumerate(fixture.hostile_packages(package)):
+        path = root / f"hostile-complete-contract-{index}.json"
+        path.write_bytes(planner.canonical(hostile)); nested_retired_paths.append(path)
     for index, retired_path in enumerate(nested_retired_paths):
         try:
             planner.main(tuple(str(path) for path in
@@ -162,16 +227,20 @@ with tempfile.TemporaryDirectory() as temporary:
     output = root / "output"
     planner.main(tuple(str(path) for path in (package_path, control_path, descriptor_path, tofu, output)))
     draft = json.loads((output / "approval-draft.json").read_bytes())
-    assert draft["version"] == "cogs.stage2-production-approval-draft/v2"
+    assert draft["version"] == "cogs.stage2-production-approval-draft/v3"
     assert (draft["implementation_revision"], draft["control_revision"],
             draft["qualification_revision"]) == (h, g, q)
+    assert draft["runtime_manifest_sha256"] == bindings["runtime_manifest_sha256"]
+    assert "runtime_commitment" not in draft
+    assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).read_bytes() == package_path.read_bytes()
+    assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).stat().st_mode & 0o777 == 0o600
     assert len(draft["plan_sha256s"]) == len(set(draft["plan_sha256s"])) == 7
     assert draft["executor_principal_commitment"] == planner.production.executor_principal_commitment(
         "aws", "000000000000", "executor")
     assert draft["inventory_observer_principal_commitment"] == \
         planner.production.executor_principal_commitment("aws", "000000000000", "observer")
     planned_batch = planner.production.approval_batch_commitment(draft)
-    issued_shape = {**draft, "version": "cogs.stage2-completion-production-approval/v4",
+    issued_shape = {**draft, "version": "cogs.stage2-completion-production-approval/v5",
         "phrase": planner.production.APPROVAL_PHRASE,
         "rate_source_commitment": planner.production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": d("issuer"), "one_attempt": True}

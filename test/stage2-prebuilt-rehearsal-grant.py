@@ -125,12 +125,11 @@ with tempfile.TemporaryDirectory() as directory:
         for subject, call in calls:
             with patch.object(subject.retirement["select"], "__defaults__", ((), (), path)), patch.dict(os.environ, env, clear=True), patch.object(os, "geteuid", return_value=0), patch.object(sys, "argv", ["test"]):
                 veto(call)
-    try:
-        guard.guard(env)
-    except guard.GuardError as error:
-        assert str(error) == "missing GITHUB_EVENT_NAME"
-    else:
-        raise AssertionError("incomplete dispatch environment became authority")
+    # ADR0327 retires the checked-in H/G selection too. It must veto before
+    # an incomplete dispatch can reach ordinary environment validation.
+    assert policy["revisions"][guard.REVIEWED_IMPLEMENTATION_HEAD] == "ADR0327"
+    assert policy["revisions"][guard.REVIEWED_CONTROL_HEAD] == "ADR0327"
+    veto(lambda: guard.guard(env))
 
 # Historical interpretation is still available even when selection is vetoed.
 with patch.dict(lock.retirement, {"select": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("decode gated"))}):

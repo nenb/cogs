@@ -6,17 +6,16 @@ import test from "node:test";
 
 const root = join(import.meta.dirname, "..");
 test("provider-free adapter reaches exact fixed full and readiness wrappers", () => {
-  for (const optimize of ["", "1", "2"]) {
+  for (const optimize of [[], ["-O"], ["-OO"]]) {
     const result = spawnSync(
       "python3",
-      ["-I", "-B", join(root, "test/aws-stage2-completion-campaign-remote-adapter.py")],
+      ["-I", "-B", ...optimize, join(root, "test/aws-stage2-completion-campaign-remote-adapter.py")],
       {
         cwd: root,
         encoding: "utf8",
         env: {
           PATH: process.env.PATH ?? "/usr/bin:/bin",
           PYTHONDONTWRITEBYTECODE: "1",
-          PYTHONOPTIMIZE: optimize,
         },
       },
     );

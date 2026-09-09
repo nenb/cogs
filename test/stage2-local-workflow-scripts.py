@@ -315,7 +315,8 @@ def prebuilt_staging_linux_tests():
     if os.environ.get("COGS_REQUIRE_STAGE2_LOCAL_SETTLEMENT_LINUX") != "1": return
     assert os.geteuid() == 0 and hasattr(os, "fork") and hasattr(os, "setuid")
     original = (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
-                prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"])
+                prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"],
+                prebuilt_staging._load_module)
     base = Path("/root/cogs-stage2-bootstrap")
     parts = [base, base / "Q", base / "Q/deploy", base / "Q/deploy/aws-feasibility",
              base / "Q/deploy/aws-feasibility/remote", prebuilt_staging.QUALIFICATION_SOURCE]
@@ -332,6 +333,24 @@ def prebuilt_staging_linux_tests():
         prebuilt_staging.SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v4"
         prebuilt_staging.DESTINATION = root / "control"
         prebuilt_staging.H_PREPARATION = ROOT / "deploy/aws-feasibility/remote/completion_kata_preparation.py"
+        # First prove the real selector rejects this retired archive. The exact
+        # test-only codec adapter restores the historical mandatory-source set;
+        # current production remains strict and v6-only.
+        historical_codec = original[4](
+            prebuilt_staging.H_PREPARATION, "completion_kata_preparation_historical_test")
+        historical_envelope = json.loads((prebuilt_staging.SOURCE /
+            "stage2-local-execution-envelope-v3.json").read_bytes())
+        historical_paths = frozenset(row["path"] for row in
+                                     historical_envelope["implementation"]["selected_sources"])
+        assert len(historical_paths) == len(historical_envelope["implementation"]["selected_sources"])
+        historical_codec.MANDATORY_SECURITY_SOURCES = historical_paths
+        def archival_codec(path, name):
+            if path == prebuilt_staging.H_PREPARATION:
+                assert name in {"completion_kata_preparation_staging",
+                                "completion_kata_control_verification"}
+                return historical_codec
+            return original[4](path, name)
+        prebuilt_staging._load_module = archival_codec
         try:
             rejected(lambda: prebuilt_staging.stage(), prebuilt_staging.retirement["RetirementError"])
             original_select = prebuilt_staging.retirement["select"]
@@ -428,7 +447,8 @@ def prebuilt_staging_linux_tests():
             assert cli.returncode == 2 and cli.stdout == cli.stderr == b""
         finally:
             (prebuilt_staging.SOURCE, prebuilt_staging.DESTINATION,
-             prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"]) = original
+             prebuilt_staging.H_PREPARATION, prebuilt_staging.retirement["select"],
+             prebuilt_staging._load_module) = original
 
 
 guard_tests()

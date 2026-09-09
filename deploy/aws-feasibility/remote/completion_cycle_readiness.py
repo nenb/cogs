@@ -4,12 +4,25 @@ import os
 from pathlib import Path
 import sys
 
-_REMOTE_MODULE_ROOT = Path(__file__).resolve().parent
-if not _REMOTE_MODULE_ROOT.is_dir():
-    raise ImportError("fixed remote module root is unavailable")
-sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
-import completion_cycle_evidence as evidence
-import completion_kata_coordinator as coordinator
+_DIAGNOSTIC = b"stage2-production-cycle-readiness: owner.failed\n"
+
+
+def _fail():
+    try: os.write(2, _DIAGNOSTIC)
+    except BaseException: pass
+    raise SystemExit(2) from None
+
+
+try:
+    _REMOTE_MODULE_ROOT = Path(__file__).resolve().parent
+    if not _REMOTE_MODULE_ROOT.is_dir():
+        raise ImportError("fixed remote module root is unavailable")
+    sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
+    import completion_cycle_evidence as evidence
+    import completion_kata_coordinator as coordinator
+except BaseException:
+    if __name__ == "__main__": _fail()
+    raise
 
 
 def main():
@@ -23,5 +36,9 @@ def main():
         offset += written
 
 
-if __name__ == "__main__":
-    main()
+def cli():
+    try: main()
+    except BaseException: _fail()
+
+
+if __name__ == "__main__": cli()

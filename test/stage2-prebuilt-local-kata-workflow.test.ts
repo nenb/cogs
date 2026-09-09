@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/stage2-prebuilt-local-kata-qualification.yml", "utf8");
 const guard = readFileSync("scripts/stage2-prebuilt-local-qualification-guard.py", "utf8");
+const qualifier = readFileSync("scripts/stage2-formal-local-qualification.py", "utf8");
 const preflightWorkflow = readFileSync(".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml", "utf8");
 const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
 const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
@@ -52,7 +54,10 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /Independently authenticate exact final H, G, and Q for this ordinal/u);
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
-  assert.match(staging, /stage2-completion-local-control-v5/u);
+  for (const source of [staging, guard, qualifier]) {
+    assert.match(source, /stage2-completion-local-control-v6/u);
+    assert.doesNotMatch(source, /stage2-completion-local-control-v5/u);
+  }
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
@@ -64,9 +69,9 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   );
   assert.match(guard, /REVIEWED_CONTROL_SHA256 = "cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783"/u);
   assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "57dd3c09ea16bee5599c6f3e8517b9d4449f9dd1004143e221c1c4e3955b2ba5"/u);
-  assert.match(
-    guard,
-    /REVIEWED_RESULT_SCHEMA_SHA256 = "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27"/u,
+  assert.equal(
+    /REVIEWED_RESULT_SCHEMA_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
+    createHash("sha256").update(readFileSync("schemas/stage2-formal-local-cycle-receipt-v2.json")).digest("hex"),
   );
   assert.match(
     guard,
@@ -83,7 +88,12 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(preflight, /MANIFEST=ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c/u);
   assert.match(preflight, /CONTROL=cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783/u);
   assert.match(preflight, /DESCRIPTOR=47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5/u);
-  assert.match(guard, /control_value\["producer"\]\.get\("control_revision"\) == control/u);
+  assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
+  assert.match(guard, /_authenticate_control\(\)/u);
+  assert.ok(
+    workflow.indexOf("scripts/stage2-prebuilt-local-qualification-guard.py") <
+      workflow.indexOf("Acquire exact reviewed implementation revision H separately"),
+  );
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
@@ -107,6 +117,9 @@ test("each job prepares one rootfs, executes one mode-bound lifecycle, and close
   assert.match(workflow, /Invoke cleanup-only recovery after every cycle outcome/u);
   assert.match(workflow, /Independently prove zero lifecycle residue after cleanup/u);
   assert.match(workflow, /supervise-final/u);
+  for (const id of ["fixed_cleanup", "independent_residue", "final_observation"]) {
+    assert.ok(workflow.includes(`id: ${id}\n        if: always() && steps.gate.outcome == 'success'`));
+  }
   assert.doesNotMatch(workflow, /aws-actions|opentofu|terraform|\bsts\b|\bssm\b/u);
 });
 
@@ -124,12 +137,41 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(workflow, /CYCLE_ARTIFACT_DIGEST: \$\{\{ steps\.cycle_upload\.outputs\.artifact-digest \}\}/u);
   assert.match(workflow, /CYCLE_JOB_RESULT: \$\{\{ needs\.local-kata\.result \}\}/u);
   assert.match(workflow, /test "\$CYCLE_JOB_RESULT" = success/u);
-  assert.match(workflow, /pre-aws-package-v4\.json/u);
+  assert.match(qualifier, /pre-aws-package-v5\.json/u);
+  assert.doesNotMatch(workflow, /pre-aws-package-v4\.json|\.py aggregate\s*>/u);
+  assert.match(workflow, /stage2-formal-local-qualification\.py publish-package\n/u);
+  assert.match(workflow, /stage2-formal-local-qualification\.py package-readback\n/u);
+  const publication = workflow.slice(workflow.indexOf("id: package_create"), workflow.indexOf("id: package_upload"));
+  assert.match(
+    publication,
+    /sudo -n env -i PATH=\/usr\/bin:\/bin[\s\S]*stage2-formal-local-qualification\.py publish-package/u,
+  );
+  assert.doesNotMatch(publication, /install |mkdir |\s>\s*"?\$PACKAGE_STAGING/u);
+  assert.match(workflow, /id: package_upload\n {8}if: always\(\) && steps\.package_create\.outcome == 'success'/u);
+  const aggregateCleanup = workflow.slice(
+    workflow.indexOf("id: aggregate_cleanup"),
+    workflow.indexOf("Enforce complete aggregate custody and cleanup"),
+  );
+  assert.match(aggregateCleanup, /sudo -n chmod 0700 "\$PACKAGE_STAGING"/u);
+  assert.match(aggregateCleanup, /sudo -n rm -rf -- "\$CYCLE_AGGREGATE_ROOT"/u);
   assert.match(workflow, /mixed_preflight_run_id/u);
   assert.match(workflow, /EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST/u);
-  assert.match(workflow, /retention-days: 90/u);
+  assert.equal(workflow.match(/retention-days: 90/gu)?.length, 2);
+  assert.match(workflow, /printf 'netns_intent=true\\n' >>"\$GITHUB_OUTPUT"[\s\S]*mkdir -m 0755 \/run\/netns/u);
+  assert.match(workflow, /printf 'netns_acquired=true\\n' >>"\$GITHUB_OUTPUT"/u);
+  assert.match(workflow, /printf 'opt_original_mode=777\\n' >>"\$GITHUB_OUTPUT"/u);
+  const scaffoldRestore = workflow.slice(
+    workflow.indexOf("Restore only hosted scaffolding acquired by this run"),
+    workflow.indexOf("Run one final supervised cycle residue observation"),
+  );
+  assert.match(scaffoldRestore, /NETNS_INTENT: \$\{\{ steps\.preparation\.outputs\.netns_intent \}\}/u);
+  assert.match(scaffoldRestore, /NETNS_ACQUIRED: \$\{\{ steps\.preparation\.outputs\.netns_acquired \}\}/u);
+  assert.match(scaffoldRestore, /if test "\$NETNS_ACQUIRED" = true; then[\s\S]*rmdir \/run\/netns/u);
+  assert.doesNotMatch(workflow, /\.cogs-stage2-owner-/u);
+  assert.match(scaffoldRestore, /test ! -e \/run\/netns && sudo -n \/usr\/bin\/test ! -L \/run\/netns/u);
+  assert.match(scaffoldRestore, /if test "\$OPT_ORIGINAL_MODE" = 777; then[\s\S]*chmod 0777 \/opt/u);
   assert.match(workflow, /Byte-compare package and fail closed/u);
-  assert.match(workflow, /cycle-artifact-custody-v2\.json/u);
+  assert.match(qualifier, /cycle-artifact-custody-v2\.json/u);
   assert.match(workflow, /PACKAGE_ARTIFACT_DIGEST.*artifact-digest/u);
   assert.match(workflow, /\[\[ "\$PACKAGE_ARTIFACT_DIGEST" =~ \^\[0-9a-f\]\{64\}\$ \]\]/u);
   assert.match(
@@ -186,7 +228,10 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   assert.match(preflightWorkflow, /^name: Stage 2 exact mixed H-G-Q no-KVM preflight$/mu);
   assert.match(preflightWorkflow, /qualification_head/u);
   assert.match(preflightWorkflow, /map\(\.id\) == \[\$current\]/u);
-  assert.match(preflightWorkflow, /rev-parse HEAD\^\)" = "\$EXACT_CONTROL_HEAD"/u);
+  assert.match(
+    preflightWorkflow,
+    /rev-list --parents -n1 "\$EXACT_CONTROL_HEAD"\)" = "\$EXACT_CONTROL_HEAD \$EXACT_IMPLEMENTATION_HEAD"/u,
+  );
   const normalization = preflightWorkflow.indexOf(
     "Normalize the exact hosted opt scaffold before immutable preparation",
   );
@@ -194,7 +239,7 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
     "Execute exact mixed H-G preparation and mandatory settlement without KVM",
   );
   const settlement = preflightWorkflow.indexOf("Independently repeat mandatory settlement after every outcome");
-  const restoration = preflightWorkflow.indexOf("Restore the exact hosted opt scaffold only after settlement");
+  const restoration = preflightWorkflow.indexOf("Restore the exact acquired hosted opt scaffold only after settlement");
   assert.ok(normalization > 0 && execution > normalization && settlement > execution && restoration > settlement);
   const normalized = preflightWorkflow.slice(normalization, execution);
   assert.match(normalized, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
@@ -204,11 +249,16 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   assert.match(preflightWorkflow.slice(settlement, restoration), /if: always\(\)/u);
   const restored = preflightWorkflow.slice(restoration);
   assert.match(restored, /if: always\(\)/u);
+  assert.match(restored, /OPT_ORIGINAL_MODE: \$\{\{ steps\.opt_scaffold\.outputs\.opt_original_mode \}\}/u);
+  assert.match(restored, /if test "\$OPT_ORIGINAL_MODE" = 777; then/u);
   assert.match(restored, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
   assert.match(restored, /root:root:755\) sudo -n \/bin\/chmod 0777 \/opt/u);
   assert.match(restored, /\*\) exit 1/u);
   assert.match(restored, /stat -c '%U:%G:%a' \/opt\)" = root:root:777/u);
-  assert.match(preflightWorkflow, /rev-parse HEAD\^\^\)" = "\$EXACT_IMPLEMENTATION_HEAD"/u);
+  assert.match(
+    preflightWorkflow,
+    /rev-list --parents -n1 "\$EXACT_QUALIFICATION_HEAD"\)" = "\$EXACT_QUALIFICATION_HEAD \$EXACT_CONTROL_HEAD"/u,
+  );
   assert.match(preflight, /stage2-local-immutable-preparation\/v2/u);
   assert.match(preflight, /EXACT_QUALIFICATION_HEAD/u);
   assert.match(preflight, /rootfs_artifact_count/u);

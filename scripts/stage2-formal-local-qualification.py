@@ -4,11 +4,30 @@ from dataclasses import asdict
 import hashlib, importlib.util, json, os, re, stat, sys
 from pathlib import Path
 import runpy
-retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
+
+def _bootstrap_failure():
+    if __name__ == "__main__":
+        print("stage2-formal-local-qualification: initialization.failed", file=sys.stderr)
+        raise SystemExit(2) from None
+    raise
+
+try:
+    retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
+except Exception:
+    _bootstrap_failure()
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_MODULE = ROOT / "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py"
+RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+CONTROL_MEMBER = "stage2-local-static-control-v2.json"
+ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
+RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"
+MAX_CONTROL_BYTES = 4 * 1024 * 1024
 MAX_RECEIPT_BYTES, MAX_STATUS_BYTES = 96 * 1024, 8 * 1024
 MAX_CUSTODY_BYTES, MAX_API_BYTES = 16 * 1024, 1024 * 1024
+PACKAGE_MEMBERS = {"pre-aws-package-v5.json": 96 * 1024,
+                   "cycle-artifact-custody-v2.json": MAX_CUSTODY_BYTES}
+CYCLE_PUBLICATION_ROOT = Path("/var/tmp")
 AUTHORITY = "non-cloud-formal-qualification-cycle-only"
 CYCLE_AUTHORITY = "non-aws-formal-qualification-owner-evidence-only"
 STATUS_AUTHORITY = "non-aws-formal-qualification-cycle-status-only"
@@ -18,21 +37,25 @@ CUSTODY_VERSION = "cogs.stage2-formal-local-artifact-custody/v2"
 REPOSITORY = "nenb/cogs"
 CYCLE_MODES = ("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness")
 SHA1, SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
+SAFE_INTEGER = 9_007_199_254_740_991
 ARCHIVE_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 FULL_PROGRAM, FULL_MARKER = "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406", "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5"
 READINESS_PROGRAM, READINESS_MARKER = "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab", "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010"
 PROGRAMS = {"full": (FULL_PROGRAM, FULL_MARKER), "readiness": (READINESS_PROGRAM, READINESS_MARKER)}
-PARSERS = {
-    "full": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py").read_bytes()).hexdigest(),
-    "readiness": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py").read_bytes()).hexdigest(),
-}
+try:
+    PARSERS = {
+        "full": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_workloads_v3.py").read_bytes()).hexdigest(),
+        "readiness": hashlib.sha256((ROOT / "deploy/aws-feasibility/remote/completion_guest_readiness_v1.py").read_bytes()).hexdigest(),
+    }
+except Exception:
+    _bootstrap_failure()
 NETWORK_MARKERS = ["route-baseline-no-default", "direct-tcp-denied", "direct-udp-denied", "default-route-added", "route-tcp-denied", "route-udp-denied", "default-route-removed", "route-restored-no-default"]
 WORKLOAD_DIGESTS = {"GIT": "73ccf2bce069d96d1dbd7e927e0fbd9205dcedfdb4a8ff104eb29e3f3e9e0b7c",
     "BUILD": "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf",
     "INSTALL": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"}
 SOURCE_KEYS = {"source_head", "source_manifest_sha256", "host_attestation_sha256",
-    "runtime_attestation_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
+    "runtime_manifest_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
     "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
     "rootfs_publication_receipt_sha256", "artifact_sha256", "candidate_sha256",
     "final_pin_sha256", "guest_program_sha256", "owner_implementation_sha256"}
@@ -54,7 +77,14 @@ GRANT_KEYS = {"authority", "batch_commitment", "cycle_ordinal", "mode", "impleme
 TEARDOWN = ["READINESS_REVOKED", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_PROCESSES_ABSENT", "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_AND_MOUNTS_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUTS_ABSENT", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRED"]
 PRIVATE_TEARDOWN = ["READINESS_REVOKED", "RUNTIME_ROLE_IDENTITIES_V1", "RUNTIME_SHARE_IDENTITY_V1", "TASK_STOPPED", "TASK_ABSENT", "RUNTIME_ROLE_ABSENCE_V1", "RUNTIME_ABSENT", "RUNTIME_NETWORK_RELEASED_V1", "NETWORK_ABSENT", "CONTAINER_ABSENT", "SHARE_ABSENT", "FIREWALL_ABSENT", "CONTAINERD_ABSENT", "INPUT_REMOVED", "ROOTFS_RELEASE_READY", "ROOTFS_RELEASE_AUTHORIZED", "ROOTFS_ABSENT", "FINAL_BASELINES", "RETIRE_INTENT", "RETIRED"]
 RESIDUE = ["tasks", "containers", "shim_processes", "qemu_processes", "virtiofsd_processes", "containerd_processes", "child_processes", "cgroups", "namespaces", "veth_devices", "tap_devices", "traffic_control", "firewall", "shares", "mounts", "inputs", "operation_state", "runtime_state", "runtime_cache", "rootfs_lease", "rootfs_build", "rootfs_publication", "unexpected_descriptors", "network_state", "network_routes", "network_addresses", "firewall_baseline", "mount_baseline", "source_identity", "input_control", "share_paths", "runtime_staging", "report_staging", "descriptor_baseline", "process_baseline", "cgroup_baseline", "namespace_baseline"]
-class FormalQualificationError(ValueError): pass
+# Only these fixed categories may cross the stderr boundary; never exception data.
+ERROR_CODES = frozenset({"json.invalid", "json.noncanonical", "receipt.contract",
+    "receipt.source_bindings.keyset", "receipt.source_bindings.authentication",
+    "receipt.schema", "control.authentication", "validation.failed"})
+class FormalQualificationError(ValueError):
+    @property
+    def code(self):
+        return str(self) if str(self) in ERROR_CODES else "validation.failed"
 def require(value, message="formal qualification condition failed"):
     if not value: raise FormalQualificationError(message)
 def pairs(rows):
@@ -68,9 +98,9 @@ def canonical(value):
                           allow_nan=False).encode("ascii") + b"\n"
     except (TypeError, ValueError, UnicodeError, RecursionError) as error:
         raise FormalQualificationError("non-canonical value") from error
-def read_regular(path, maximum):
-    path = Path(path)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+def read_regular(path, maximum, directory=None):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                         dir_fd=directory)
     try:
         before = os.fstat(descriptor)
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
@@ -89,14 +119,14 @@ def decode(raw, maximum):
         value = json.loads(raw, object_pairs_hook=pairs,
                            parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
     except (UnicodeError, ValueError, TypeError, RecursionError) as error:
-        raise FormalQualificationError("invalid JSON") from error
-    require(type(value) is dict and canonical(value) == raw, "non-canonical JSON")
+        raise FormalQualificationError("json.invalid") from error
+    require(type(value) is dict and canonical(value) == raw, "json.noncanonical")
     return value
 def digest(value):
     require(type(value) is str and SHA256.fullmatch(value) is not None, "SHA-256 required")
     return value
 def positive(value):
-    require(type(value) is int and value > 0, "positive integer required")
+    require(type(value) is int and 0 < value <= SAFE_INTEGER, "positive safe integer required")
     return value
 def archive_digest(value):
     require(type(value) is str and ARCHIVE_SHA256.fullmatch(value) is not None,
@@ -106,8 +136,8 @@ def upload_digest(value):
     require(type(value) is str and SHA256.fullmatch(value) is not None,
             "raw upload-artifact output digest required")
     return value
-def exact_keys(value, names):
-    require(type(value) is dict and set(value) == set(names), "exact object members required")
+def exact_keys(value, names, code="validation.failed"):
+    require(type(value) is dict and set(value) == set(names), code)
 def load_authority(path=FORMAL_MODULE):
     spec = importlib.util.spec_from_file_location("stage2_formal_cycle_authority_workflow", path)
     require(spec is not None and spec.loader is not None)
@@ -139,6 +169,8 @@ def expected_environment(environ=os.environ):
     return values
 def issue_grant(ordinal, expected, authority=None):
     expected_environment(expected)
+    require(expected["EXPECTED_RESULT_SCHEMA_SHA256"] == hashlib.sha256(
+        read_regular(RESULT_SCHEMA, MAX_CONTROL_BYTES)).hexdigest(), "receipt.schema")
     authority = authority or load_authority()
     require(type(ordinal) is int and 1 <= ordinal <= 7)
     return authority.issue({
@@ -163,18 +195,57 @@ def validate_grant(value, expected=None, ordinal=None, authority=None):
         wanted = issue_grant(grant.ordinal, expected, authority)
         require(grant == wanted, "grant does not bind exact batch, ordinal, H, and G")
     return grant
+def authenticated_source_bindings(grant):
+    """Recompute all static fields from authenticated control, not batch consensus.
+
+    Fixed member names are intentional: no receipt/dispatch supplied paths or
+    runtime digest override. Each member is read once and hashed as exact bytes.
+    """
+    control_raw = read_regular(CONTROL_PACKAGE / CONTROL_MEMBER, MAX_CONTROL_BYTES)
+    require(hashlib.sha256(control_raw).hexdigest() == grant.static_control_sha256,
+            "control.authentication")
+    control = decode(control_raw, MAX_CONTROL_BYTES)
+    require(control["producer"]["control_revision"] == grant.control_revision
+            and control["implementation"]["revision"] == grant.implementation_revision
+            and control["implementation"]["source_manifest_sha256"] == grant.source_manifest_sha256,
+            "control.authentication")
+    members = {}
+    for name, kind in ((ENVELOPE_MEMBER, "envelope"), (RUNTIME_MEMBER, "runtime-manifest")):
+        rows = [row for row in control["members"] if row["kind"] == kind]
+        require(len(rows) == 1 and rows[0]["name"] == name, "control.authentication")
+        raw = read_regular(CONTROL_PACKAGE / name, MAX_CONTROL_BYTES)
+        require(len(raw) == rows[0]["size"]
+                and hashlib.sha256(raw).hexdigest() == rows[0]["sha256"], "control.authentication")
+        members[name] = (decode(raw, MAX_CONTROL_BYTES), rows[0]["sha256"])
+    envelope, _ = members[ENVELOPE_MEMBER]
+    runtime, runtime_sha256 = members[RUNTIME_MEMBER]
+    require(envelope["implementation"] == control["implementation"]
+            and envelope["runtime"]["manifest_sha256"] == runtime_sha256,
+            "control.authentication")
+    base = envelope["result_binding_base"]
+    exact_keys(base, SOURCE_KEYS - {"host_attestation_sha256", "runtime_manifest_sha256"},
+               "control.authentication")
+    executables = runtime["executables"]
+    require(type(executables) is list and len(executables) >= 5, "control.authentication")
+    return {**base, "host_attestation_sha256": hashlib.sha256(canonical(executables[:5])).hexdigest(),
+            "runtime_manifest_sha256": runtime_sha256}
+
 def validate_receipt(raw, expected=None, ordinal=None):
     value = decode(raw, MAX_RECEIPT_BYTES)
     mode = value.get("route")
     require(mode in {"full", "readiness"})
-    exact_keys(value, COMMON_RECEIPT_KEYS | (FULL_KEYS if mode == "full" else READINESS_KEYS))
-    require(value["version"] == "cogs.stage2-formal-local-cycle-receipt/v1"
+    exact_keys(value, COMMON_RECEIPT_KEYS | (FULL_KEYS if mode == "full" else READINESS_KEYS),
+               "receipt.contract")
+    require(value["version"] == "cogs.stage2-formal-local-cycle-receipt/v2"
             and value["authority"] == CYCLE_AUTHORITY
             and value["production_publication_authorized"] is False
             and value["provider_execution_observed"] is False
             and value["aws_authority"] is None
-            and value["launch_attempts"] == value["ssh_attempts"] == 1)
+            and type(value["launch_attempts"]) is type(value["ssh_attempts"]) is int
+            and value["launch_attempts"] == value["ssh_attempts"] == 1, "receipt.contract")
     grant = validate_grant(value["cycle_grant"], expected, ordinal)
+    require(grant.result_schema_sha256 == hashlib.sha256(
+        read_regular(RESULT_SCHEMA, MAX_CONTROL_BYTES)).hexdigest(), "receipt.schema")
     require(mode == grant.mode and value["formal_qualification_authority"] == grant.grant_commitment)
     program, marker = PROGRAMS[mode]
     capability = hashlib.sha256(b"cogs.stage2-cycle-route/v1\0formal-non-cloud-qualification\0" +
@@ -189,8 +260,11 @@ def validate_receipt(raw, expected=None, ordinal=None):
         digest(value[name])
     require(value["operation_token"] != value["rootfs_token"])
     exact_keys(value["lifecycle_objects"], {"rootfs_leases", "runtime_stages", "task_launches"})
-    require(value["lifecycle_objects"] == {"rootfs_leases": 1, "runtime_stages": 1, "task_launches": 1})
-    bindings = value["source_bindings"]; exact_keys(bindings, SOURCE_KEYS)
+    require(all(type(item) is int and item == 1 for item in value["lifecycle_objects"].values()))
+    bindings = value["source_bindings"]
+    exact_keys(bindings, SOURCE_KEYS, "receipt.source_bindings.keyset")
+    require(bindings == authenticated_source_bindings(grant),
+            "receipt.source_bindings.authentication")
     require(bindings["source_head"] == grant.implementation_revision
             and bindings["source_manifest_sha256"] == grant.source_manifest_sha256
             and bindings["rootfs_descriptor_sha256"] == grant.rootfs_descriptor_sha256
@@ -206,7 +280,7 @@ def validate_receipt(raw, expected=None, ordinal=None):
     start = positive(timing["kata_launch_started_boottime_ns"])
     ready = positive(timing["ssh_marker_observed_boottime_ns"])
     settled = positive(timing["ssh_command_settled_boottime_ns"])
-    require(start < ready <= settled and timing["ssh_ready_ns"] == ready - start)
+    require(start < ready <= settled and positive(timing["ssh_ready_ns"]) == ready - start)
     keys = value["key_freshness"]; exact_keys(keys, {"client_key_commitment", "host_key_commitment"})
     digest(keys["client_key_commitment"]); digest(keys["host_key_commitment"])
     require(keys["client_key_commitment"] != keys["host_key_commitment"])
@@ -222,7 +296,11 @@ def validate_receipt(raw, expected=None, ordinal=None):
                                       "qemu_process_sha256"}}
     require(qmp["runtime_identity_sha256"] == hashlib.sha256(
         b"cogs.stage2-qemu-runtime-identity/v1\0" + canonical(identity_value)).hexdigest())
-    require(positive(qmp["qemu_pid"]) > 1 and positive(qmp["qemu_starttime"]) > 0
+    numeric_qmp = tuple(qmp[name] for name in (
+        "qemu_pid", "qemu_starttime", "qemu_executable_device", "qemu_executable_inode",
+        "observer_qmp_device", "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev"))
+    require(all(type(item) is int and 0 <= item <= SAFE_INTEGER for item in numeric_qmp)
+            and positive(qmp["qemu_pid"]) > 1 and positive(qmp["qemu_starttime"]) > 0
             and type(qmp["qemu_executable_device"]) is int
             and qmp["qemu_executable_device"] >= 0
             and positive(qmp["qemu_executable_inode"]) > 0
@@ -230,7 +308,8 @@ def validate_receipt(raw, expected=None, ordinal=None):
             and positive(qmp["observer_qmp_inode"]) > 0
             and type(qmp["kvm_device"]) is int and qmp["kvm_device"] >= 0
             and positive(qmp["kvm_inode"]) > 0 and positive(qmp["kvm_rdev"]) > 0
-            and qmp["kvm_api"] == 12 and qmp["qmp_present"] is True and qmp["qmp_enabled"] is True)
+            and type(qmp["kvm_api"]) is int and qmp["kvm_api"] == 12
+            and qmp["qmp_present"] is True and qmp["qmp_enabled"] is True)
     require(value["teardown_projection"] == TEARDOWN
             and value["private_teardown_records"] == PRIVATE_TEARDOWN
             and value["independent_residue_absent"] == RESIDUE)
@@ -241,7 +320,8 @@ def validate_receipt(raw, expected=None, ordinal=None):
         for index, row in enumerate(rows, 1):
             exact_keys(row, {"ordinal", "category", "duration_ns", "result_sha256", "deleted"})
             category, sample = ("GIT", "BUILD", "INSTALL")[(index - 1) // 7], (index - 1) % 7 + 1
-            require(row["ordinal"] == index and row["category"] == f"{category}_{sample:02d}"
+            require(type(row["ordinal"]) is int and row["ordinal"] == index
+                    and row["category"] == f"{category}_{sample:02d}"
                     and positive(row["duration_ns"]) <= 1_200_000_000_000
                     and row["deleted"] is True)
             digest(row["result_sha256"]); require(row["result_sha256"] == WORKLOAD_DIGESTS[category])
@@ -259,10 +339,11 @@ def validate_receipt(raw, expected=None, ordinal=None):
         identity = lineage["qmp_identity"]
         require(lineage["operation_token"] == value["operation_token"]
                 and lineage["runtime_network_sha256"] == value["runtime_network_sha256"]
+                and lineage["live_mapping_sha256"] == qmp["live_mapping_sha256"]
                 and lineage["runtime_identity_sha256"] == qmp["runtime_identity_sha256"]
                 and lineage["qemu_process_sha256"] != qmp["qemu_process_sha256"]
                 and type(identity) is list and len(identity) == 10
-                and all(type(item) is int and item >= 0 for item in identity)
+                and all(type(item) is int and 0 <= item <= SAFE_INTEGER for item in identity)
                 and identity[0] == qmp["qemu_pid"] and identity[1] == qmp["qemu_starttime"]
                 and identity[2] == qmp["qemu_executable_device"]
                 and identity[3] == qmp["qemu_executable_inode"]
@@ -293,7 +374,8 @@ def status_value(receipt_raw, expected, ordinal, artifact_name):
 def validate_status(raw, receipt_raw, expected, ordinal):
     value = decode(raw, MAX_STATUS_BYTES)
     artifact = f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1"
-    require(value == status_value(receipt_raw, expected, ordinal, artifact), "cycle status differs")
+    require(raw == canonical(status_value(receipt_raw, expected, ordinal, artifact)),
+            "cycle status differs")
     return value
 def expected_artifact_name(expected, ordinal):
     return (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
@@ -316,6 +398,7 @@ def custody_from_api(raw, expected):
                 "live unique API artifact required")
         workflow_run = item.get("workflow_run")
         require(type(workflow_run) is dict
+                and type(workflow_run.get("id")) is int
                 and workflow_run.get("id") == int(expected["GITHUB_RUN_ID"])
                 and workflow_run.get("head_sha") == expected["EXPECTED_QUALIFICATION_HEAD"],
                 "artifact API workflow run differs")
@@ -343,12 +426,17 @@ def validate_custody(raw, expected):
     require(value["version"] == CUSTODY_VERSION and value["authority"] == CUSTODY_AUTHORITY
             and value["repository"] == REPOSITORY)
     exact_keys(value["workflow_run"], {"id", "attempt", "head_sha"})
-    require(value["workflow_run"] == {"id": int(expected["GITHUB_RUN_ID"]), "attempt": 1,
-                                      "head_sha": expected["EXPECTED_QUALIFICATION_HEAD"]}
+    workflow_run = value["workflow_run"]
+    require(type(workflow_run) is dict
+            and type(workflow_run.get("id")) is int
+            and type(workflow_run.get("attempt")) is int
+            and workflow_run == {"id": int(expected["GITHUB_RUN_ID"]), "attempt": 1,
+                                 "head_sha": expected["EXPECTED_QUALIFICATION_HEAD"]}
             and type(value["artifacts"]) is list and len(value["artifacts"]) == 7)
     for ordinal, row in enumerate(value["artifacts"], 1):
         exact_keys(row, {"ordinal", "name", "artifact_id", "archive_digest"})
-        require(row["ordinal"] == ordinal and row["name"] == expected_artifact_name(expected, ordinal))
+        require(type(row["ordinal"]) is int and row["ordinal"] == ordinal
+                and row["name"] == expected_artifact_name(expected, ordinal))
         positive(row["artifact_id"]); archive_digest(row["archive_digest"])
     require(len({row["artifact_id"] for row in value["artifacts"]}) == 7
             and len({row["archive_digest"] for row in value["artifacts"]}) == 7,
@@ -357,7 +445,8 @@ def validate_custody(raw, expected):
 def write_all(descriptor, raw):
     view = memoryview(raw)
     while view:
-        written = os.write(descriptor, view); require(written > 0); view = view[written:]
+        written = os.write(descriptor, view)
+        require(type(written) is int and 0 < written <= len(view)); view = view[written:]
 def fsync_directory(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try: os.fsync(descriptor)
@@ -375,21 +464,65 @@ def materialize_grant(environ=os.environ, authority_path=FORMAL_MODULE, authorit
     fsync_directory(root)
     return grant
 def publish(staging, expected, ordinal, runner_uid):
-    staging = Path(staging); source = staging / "receipt.partial"
-    require(os.geteuid() == 0 and staging.is_dir() and set(os.listdir(staging)) == {"receipt.partial"})
-    seen = source.lstat(); require(stat.S_ISREG(seen.st_mode) and seen.st_uid == runner_uid and seen.st_nlink == 1)
-    receipt_raw = read_regular(source, MAX_RECEIPT_BYTES); validate_receipt(receipt_raw, expected, ordinal)
-    artifact = f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1"
-    status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact))
-    os.chown(staging, 0, 0); os.chmod(staging, 0o700)
-    for name, raw in (("receipt.json", receipt_raw), ("status.json", status_raw)):
-        descriptor = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        try: write_all(descriptor, raw); os.fchown(descriptor, 0, 0); os.fchmod(descriptor, 0o444); os.fsync(descriptor)
-        finally: os.close(descriptor)
-    source.unlink(); os.chmod(staging, 0o555)
-    validate_status(read_regular(staging / "status.json", MAX_STATUS_BYTES),
-                    read_regular(staging / "receipt.json", MAX_RECEIPT_BYTES), expected, ordinal)
-    validate_cycle_artifact_root(staging.parent, expected, ordinal)
+    """Freeze only the held runner directory; pathname substitution cannot redirect writes."""
+    staging = Path(staging); expected_name = f"cycle-{ordinal}"
+    expected_parent = f"cogs-stage2-local-result-{expected['GITHUB_RUN_ID']}-1"
+    require(os.geteuid() == 0 and staging.name == expected_name
+            and staging.parent.name == expected_parent
+            and staging.parent.parent == CYCLE_PUBLICATION_ROOT and runner_uid > 0)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    ancestor = os.open(CYCLE_PUBLICATION_ROOT, flags); parent = directory = None
+    try:
+        parent = os.open(expected_parent, flags, dir_fd=ancestor)
+        held_ancestor = os.fstat(ancestor)
+        require(stat.S_ISDIR(held_ancestor.st_mode) and held_ancestor.st_uid == 0
+                and stat.S_IMODE(held_ancestor.st_mode) & stat.S_ISVTX)
+        held_parent = os.fstat(parent)
+        directory = os.open(expected_name, flags, dir_fd=parent)
+        held = os.fstat(directory)
+        require(stat.S_ISDIR(held_parent.st_mode) and held_parent.st_uid == runner_uid
+                and stat.S_IMODE(held_parent.st_mode) == 0o700
+                and stat.S_ISDIR(held.st_mode) and held.st_uid == runner_uid
+                and stat.S_IMODE(held.st_mode) == 0o700
+                and set(os.listdir(directory)) == {"receipt.partial"}
+                and set(os.listdir(parent)) == {expected_name})
+        # Root ownership plus read/execute-only mode prevents the runner from
+        # replacing the upload pathname after descriptor-relative publication.
+        os.fchown(parent, 0, 0); os.fchmod(parent, 0o555)
+        partial = os.stat("receipt.partial", dir_fd=directory, follow_symlinks=False)
+        require(stat.S_ISREG(partial.st_mode) and partial.st_uid == runner_uid and partial.st_nlink == 1)
+        receipt_raw = read_regular("receipt.partial", MAX_RECEIPT_BYTES, directory)
+        validate_receipt(receipt_raw, expected, ordinal)
+        artifact = (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
+                    f"{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1")
+        status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact))
+        os.fchown(directory, 0, 0); os.fchmod(directory, 0o700)
+        for name, raw in (("receipt.json", receipt_raw), ("status.json", status_raw)):
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                                 | os.O_CLOEXEC, 0o400, dir_fd=directory)
+            try:
+                write_all(descriptor, raw); os.fchown(descriptor, 0, 0)
+                os.fchmod(descriptor, 0o444); os.fsync(descriptor)
+            finally: os.close(descriptor)
+        os.unlink("receipt.partial", dir_fd=directory); os.fchmod(directory, 0o555)
+        os.fsync(directory); os.fsync(parent); os.fsync(ancestor)
+        named_parent = os.stat(expected_parent, dir_fd=ancestor, follow_symlinks=False)
+        named = os.stat(expected_name, dir_fd=parent, follow_symlinks=False)
+        require((held_parent.st_dev, held_parent.st_ino) ==
+                    (named_parent.st_dev, named_parent.st_ino)
+                and named_parent.st_uid == 0 and stat.S_IMODE(named_parent.st_mode) == 0o555
+                and (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+                and named.st_uid == 0 and stat.S_IMODE(named.st_mode) == 0o555
+                and set(os.listdir(parent)) == {expected_name}
+                and set(os.listdir(directory)) == {"receipt.json", "status.json"})
+        frozen_receipt = read_regular("receipt.json", MAX_RECEIPT_BYTES, directory)
+        frozen_status = read_regular("status.json", MAX_STATUS_BYTES, directory)
+        require(frozen_receipt == receipt_raw and frozen_status == status_raw)
+        validate_status(frozen_status, frozen_receipt, expected, ordinal)
+    finally:
+        if directory is not None: os.close(directory)
+        if parent is not None: os.close(parent)
+        os.close(ancestor)
 def validate_cycle_directory(path, expected, ordinal):
     path = Path(path)
     seen = path.lstat()
@@ -418,6 +551,7 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             "artifact batch inventory differs")
     rows = []; batches = set(); identity_sets = {name: set() for name in
         ("host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key")}
+    live_mappings, pre_ssh_facts, post_ssh_facts = set(), set(), set()
     total = 0; shared_bindings = None
     for ordinal in range(1, 8):
         receipt_raw, status_raw, status = validate_cycle_directory(root / f"cycle-{ordinal}", expected, ordinal)
@@ -429,6 +563,16 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
                     "every immutable source binding must be byte-for-byte common")
         artifact = custody_by_ordinal[ordinal]
         require(status["artifact_name"] == artifact["name"], "status and API artifact names differ")
+        qmp = receipt["qmp_lineage"]
+        require(qmp["live_mapping_sha256"] not in live_mappings
+                and qmp["qemu_process_sha256"] not in pre_ssh_facts,
+                "reused live runtime observation")
+        live_mappings.add(qmp["live_mapping_sha256"]); pre_ssh_facts.add(qmp["qemu_process_sha256"])
+        if receipt["route"] == "readiness":
+            post = receipt["runtime_readiness_lineage"]["qemu_process_sha256"]
+            require(post not in post_ssh_facts and post not in pre_ssh_facts,
+                    "reused post-SSH runtime observation")
+            post_ssh_facts.add(post)
         batches.add(status["batch_commitment"]); total += status["workload_measurements"]
         for name, seen in identity_sets.items():
             identity = status["identities"][name]; require(identity not in seen, f"reused {name}"); seen.add(identity)
@@ -441,12 +585,14 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             "artifact_archive_digest": artifact["archive_digest"],
             "identities": status["identities"]})
     require(len(batches) == 1 and total == 21
+            and len(live_mappings) == len(pre_ssh_facts) == 7 and len(post_ssh_facts) == 6
+            and len(pre_ssh_facts | post_ssh_facts) == 13
             and [row["mode"] for row in rows] == list(CYCLE_MODES)
             and len(identity_sets["operation"] | identity_sets["rootfs"]) == 14
             and len(identity_sets["client_key"] | identity_sets["host_key"]) == 14,
             "batch cardinality, mode, measurement, or cross-role identity differs")
     require(shared_bindings is not None)
-    return canonical({"version": "cogs.stage2-pre-aws-qualification-package/v4",
+    return canonical({"version": "cogs.stage2-pre-aws-qualification-package/v5",
         "authority": PACKAGE_AUTHORITY,
         "implementation_revision": expected["EXPECTED_IMPLEMENTATION_HEAD"],
         "control_revision": expected["EXPECTED_CONTROL_HEAD"],
@@ -456,7 +602,7 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
         "workflow_sha256": expected["EXPECTED_WORKFLOW_SHA256"],
         "result_schema_sha256": expected["EXPECTED_RESULT_SCHEMA_SHA256"],
         "rootfs_descriptor_sha256": expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
-        "runtime_commitment": shared_bindings["runtime_attestation_sha256"],
+        "runtime_manifest_sha256": shared_bindings["runtime_manifest_sha256"],
         "fixture_commitment": shared_bindings["final_pin_sha256"],
         "source_bindings": shared_bindings,
         "cycle_artifact_custody": custody,
@@ -471,14 +617,82 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
         "workload_measurements": total, "cycles": rows,
         "predecessor_versions": ["cogs.stage2-pre-aws-qualification-package/v1",
                                  "cogs.stage2-pre-aws-qualification-package/v2",
-                                 "cogs.stage2-pre-aws-qualification-package/v3"],
+                                 "cogs.stage2-pre-aws-qualification-package/v3",
+                                 "cogs.stage2-pre-aws-qualification-package/v4"],
         "claims": {"formal_non_aws_qualification_passed": True, "aws_authorized": False,
                    "aws_executed": False, "provider_executed": False,
                    "promotion_authorized": False}})
 
+def package_members(directory):
+    require(set(os.listdir(directory)) == set(PACKAGE_MEMBERS), "package inventory differs")
+    members = {name: read_regular(name, maximum, directory)
+               for name, maximum in PACKAGE_MEMBERS.items()}
+    package = decode(members["pre-aws-package-v5.json"], PACKAGE_MEMBERS["pre-aws-package-v5.json"])
+    custody_raw = members["cycle-artifact-custody-v2.json"]
+    require(package["version"] == "cogs.stage2-pre-aws-qualification-package/v5"
+            and canonical(package["cycle_artifact_custody"]) == custody_raw
+            and package["cycle_artifact_custody_sha256"] == hashlib.sha256(custody_raw).hexdigest())
+    require(set(os.listdir(directory)) == set(PACKAGE_MEMBERS), "package inventory changed")
+    return members
+
+def publish_package(staging, root, custody_raw, expected, cycle_job_result):
+    """Exclusive private staging; only a successful durable return enables upload.
+
+    Never adopt, replace, or retry an existing destination, including partial
+    publication after an uncertain fsync. No shell-created output is accepted.
+    """
+    raw = aggregate(root, custody_raw, expected, cycle_job_result)
+    members = {"pre-aws-package-v5.json": raw, "cycle-artifact-custody-v2.json": custody_raw}
+    for name, value in members.items(): decode(value, PACKAGE_MEMBERS[name])
+    staging = Path(staging)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent = os.open(staging.parent, flags); directory = None
+    try:
+        owner = os.fstat(parent)
+        require((owner.st_uid == os.geteuid() and not owner.st_mode & 0o022)
+                or (owner.st_uid == 0 and owner.st_mode & stat.S_ISVTX), "unsafe staging parent")
+        os.mkdir(staging.name, 0o700, dir_fd=parent)
+        directory = os.open(staging.name, flags, dir_fd=parent)
+        seen = os.fstat(directory)
+        require(seen.st_uid == os.geteuid() and stat.S_IMODE(seen.st_mode) == 0o700
+                and not os.listdir(directory), "owned empty staging required")
+        for name, value in members.items():
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                                 | os.O_CLOEXEC, 0o400, dir_fd=directory)
+            try:
+                write_all(descriptor, value); os.fchmod(descriptor, 0o444); os.fsync(descriptor)
+            finally: os.close(descriptor)
+        require(package_members(directory) == members, "package exact readback differs")
+        os.fchmod(directory, 0o555)
+        os.fsync(directory); os.fsync(parent)
+        named = os.stat(staging.name, dir_fd=parent, follow_symlinks=False)
+        require((seen.st_dev, seen.st_ino) == (named.st_dev, named.st_ino)
+                and stat.S_IMODE(named.st_mode) == 0o555 and named.st_uid == os.geteuid())
+        require(package_members(directory) == members, "durable package readback differs")
+    finally:
+        if directory is not None: os.close(directory)
+        os.close(parent)
+
+def package_readback(local, remote):
+    directories = []
+    try:
+        for path in (local, remote):
+            directories.append(os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC))
+        require(package_members(directories[0]) == package_members(directories[1]),
+                "exact package artifact readback differs")
+    finally:
+        for descriptor in reversed(directories): os.close(descriptor)
+
 def main():
-    require(len(sys.argv) == 2 and sys.argv[1] in {"grant", "publish", "readback", "custody", "aggregate"})
-    command = sys.argv[1]; expected = expected_environment(); ordinal = int(os.environ.get("FORMAL_CYCLE_ORDINAL", "0"))
+    require(len(sys.argv) == 2 and sys.argv[1] in {
+        "grant", "publish", "readback", "custody", "aggregate", "publish-package", "package-readback"})
+    command = sys.argv[1]
+    if command == "package-readback":
+        positive(int(os.environ["PACKAGE_ARTIFACT_ID"]))
+        upload_digest(os.environ["PACKAGE_ARTIFACT_DIGEST"])
+        package_readback(os.environ["PACKAGE_STAGING"], os.environ["PACKAGE_READBACK"])
+        return
+    expected = expected_environment(); ordinal = int(os.environ.get("FORMAL_CYCLE_ORDINAL", "0"))
     if command == "grant":
         grant = materialize_grant(); print(f"batch_commitment={grant.batch_commitment}"); print(f"grant_commitment={grant.grant_commitment}")
     elif command == "publish":
@@ -501,12 +715,26 @@ def main():
         fsync_directory(destination.parent)
         custody = validate_custody(read_regular(destination, MAX_CUSTODY_BYTES), expected)
         print("artifact_ids=" + ",".join(str(row["artifact_id"]) for row in custody["artifacts"]))
+    elif command == "publish-package":
+        publish_package(os.environ["PACKAGE_STAGING"], os.environ["CYCLE_AGGREGATE_ROOT"],
+                        read_regular(os.environ["CYCLE_CUSTODY_MAP"], MAX_CUSTODY_BYTES), expected,
+                        os.environ.get("CYCLE_JOB_RESULT", ""))
     else:
         custody_raw = read_regular(os.environ["CYCLE_CUSTODY_MAP"], MAX_CUSTODY_BYTES)
         raw = aggregate(os.environ["CYCLE_AGGREGATE_ROOT"], custody_raw, expected,
                         os.environ.get("CYCLE_JOB_RESULT", ""))
         require(sys.stdout.buffer.write(raw) == len(raw))
 
+def cli():
+    try:
+        main()
+    except Exception as error:
+        code = (error.code if isinstance(error, FormalQualificationError) else
+                "authority.retired" if isinstance(error, retirement["RetirementError"]) else
+                "io.failed" if isinstance(error, OSError) else
+                "input.invalid" if isinstance(error, (KeyError, ValueError, TypeError)) else "internal.failed")
+        print(f"stage2-formal-local-qualification: {code}", file=sys.stderr)
+        raise SystemExit(2) from None
+
 if __name__ == "__main__":
-    try: main()
-    except (FormalQualificationError, KeyError, OSError, ValueError): raise SystemExit(2)
+    cli()

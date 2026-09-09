@@ -9,14 +9,13 @@ const probe = join(root, "test/aws-stage2-completion-campaign-production.py");
 const source = readFileSync(join(root, "deploy/aws-feasibility/completion_campaign_production.py"), "utf8");
 
 test("provider-free production controller enforces seven independent ordered cycles", () => {
-  for (const optimize of ["", "1", "2"]) {
-    const result = spawnSync("python3", ["-I", "-B", probe], {
+  for (const optimize of [[], ["-O"], ["-OO"]]) {
+    const result = spawnSync("python3", ["-I", "-B", ...optimize, probe], {
       cwd: root,
       encoding: "utf8",
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         PYTHONDONTWRITEBYTECODE: "1",
-        PYTHONOPTIMIZE: optimize,
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -26,7 +25,20 @@ test("provider-free production controller enforces seven independent ordered cyc
 
 test("production controller is pure while issuing only adapter-sealed, receipt-bound effects", () => {
   assert.doesNotMatch(source, /\b(?:boto|botocore|subprocess|socket|urllib|requests|terraform|opentofu)\b/iu);
-  assert.doesNotMatch(source, /\bos\.|Path\(|\bopen\(|getenv|environ|FakeCampaignPorts/u);
+  // Only prerequisite validation may read fixed local policy/contract files;
+  // the controller and its receipt types remain free of filesystem effects.
+  const prerequisites = source.slice(
+    source.indexOf("QUALIFICATION_PACKAGE_VERSION ="),
+    source.indexOf("class RemoteQemuBindings:"),
+  );
+  const controller = source.replace(prerequisites, "");
+  assert.doesNotMatch(controller, /\bos\.|Path\(|\bopen\(|getenv|environ|FakeCampaignPorts/u);
+  assert.doesNotMatch(prerequisites, /\bos\.|\bopen\(|getenv|environ|write_bytes|write_text/u);
+  assert.equal((prerequisites.match(/\.read_bytes\(\)/gu) ?? []).length, 2);
+  assert.equal((prerequisites.match(/runpy\.run_path\(/gu) ?? []).length, 1);
+  assert.match(prerequisites, /schemas\/stage2-formal-local-cycle-receipt-v2\.json/u);
+  assert.match(prerequisites, /workflows\/stage2-prebuilt-local-kata-qualification\.yml/u);
+  assert.match(prerequisites, /scripts\/stage2-revision-retirement\.py/u);
   assert.match(
     source,
     /CYCLE_MODES = \("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness"\)/u,

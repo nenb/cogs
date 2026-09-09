@@ -23,7 +23,7 @@ def source_bindings():
     return {
         "source_head": "1" * 40, "source_manifest_sha256": d("source"),
         "host_attestation_sha256": d("host-attestation"),
-        "runtime_attestation_sha256": d("runtime"), "rootfs_sha256": d("rootfs-content"),
+        "runtime_manifest_sha256": d("runtime-manifest"), "rootfs_sha256": d("rootfs-content"),
         "rootfs_descriptor_sha256": d("rootfs"),
         "rootfs_package_manifest_sha256": d("rootfs-package"),
         "rootfs_provenance_sha256": d("rootfs-provenance"),
@@ -37,7 +37,7 @@ def source_bindings():
 
 def approval():
     values = dict(
-        version="cogs.stage2-completion-production-approval/v4",
+        version="cogs.stage2-completion-production-approval/v5",
         phrase=production.APPROVAL_PHRASE,
         implementation_revision="1" * 40,
         control_revision="2" * 40,
@@ -51,7 +51,7 @@ def approval():
         rootfs_provenance_sha256=d("rootfs-provenance"),
         rootfs_qualification_receipt_sha256=d("rootfs-qualification"),
         rootfs_publication_receipt_sha256=d("rootfs-publication"),
-        runtime_commitment=d("runtime"), fixture_commitment=d("fixture"),
+        runtime_manifest_sha256=d("runtime-manifest"), fixture_commitment=d("fixture"),
         provider_binary_sha256=d("provider"), aws_cli_sha256=d("aws"), account_commitment=d("account"), partition="aws", region="us-east-1",
         ami_id="ami-" + "a" * 17, ami_owner_id="099720109477",
         ami_architecture="x86_64", ami_virtualization_type="hvm",
@@ -89,8 +89,8 @@ def pages(sequence):
 
 
 class Harness:
-    def __init__(self, mutate=None, fail=None, uncertain_cleanup=False):
-        self.approval = approval(); self.time = 1_000; self.consumed = False
+    def __init__(self, mutate=None, fail=None, uncertain_cleanup=False, approval_value=None):
+        self.approval = approval_value or approval(); self.time = 1_000; self.consumed = False
         self.active = False; self.mutate = mutate; self.fail = fail
         self.uncertain_cleanup = uncertain_cleanup; self.calls = []
         self.journal_rows = []; self.inventory_count = 0; self.cleanup_count = 0
@@ -114,24 +114,34 @@ class Harness:
             self.active = True
         if kind == "destroy": self.active = False
         state_ordinal = 1 if self.mutate == "state" and grant.ordinal == 2 else grant.ordinal
-        state = d(f"state-{state_ordinal}"); lineage = d(f"lineage-{state_ordinal}")
+        state = production._commit(b"cogs.stage2-provider-state-slot/v1", {
+            "batch_commitment": grant.batch_commitment, "ordinal": state_ordinal})
+        lineage = production._commit(b"cogs.stage2-provider-state-lineage/v1", {
+            "batch_commitment": grant.batch_commitment, "ordinal": state_ordinal,
+            "state_slot": f"cycle-{state_ordinal}"})
         state_bytes = ("0" * 64 if kind == "plan" else
                        d(f"state-bytes-{grant.ordinal}") if kind in {"apply", "running"} else
                        d(f"destroyed-state-bytes-{grant.ordinal}"))
         identity = grant.plan_sha256 if kind == "plan" else d(f"{kind}-{grant.ordinal}")
+        resource_ordinal = (1 if self.mutate == "instance_resource_replay" and grant.ordinal == 2
+                            else grant.ordinal)
         resources = (tuple(sorted((
-            ("instance", d(f"instance-resource-{grant.ordinal}")),
+            ("instance", d(f"instance-resource-{resource_ordinal}")),
             ("root_volume", d(f"root-volume-{grant.ordinal}")),
             ("launch_template_generation", d(f"launch-template-{grant.ordinal}")),
         ))) if kind == "running" else
             (("pre_destroy_receipt", d(f"pre-destroy-{grant.ordinal}")),)
             if kind == "destroy" else ())
         start = self.tick(); end = self.tick()
-        return production.EffectReceipt(
-            kind, grant.grant_commitment, grant.batch_commitment, grant.ordinal,
-            grant.mode, state, state_bytes, lineage, identity, d(f"intent-{kind}-{grant.ordinal}"),
-            d(f"settle-{kind}-{grant.ordinal}"), grant.ami_commitment,
-            resources, start, end, 1, True)
+        fields = dict(kind=kind, grant_commitment=grant.grant_commitment,
+            batch_commitment=grant.batch_commitment, ordinal=grant.ordinal, mode=grant.mode,
+            state_commitment=state, state_bytes_sha256=state_bytes,
+            state_lineage_commitment=lineage, identity_commitment=identity,
+            intent_commitment=d(f"intent-{kind}-{grant.ordinal}"), ami_commitment=grant.ami_commitment,
+            resource_commitments=resources, observed_started_unix_ns=start,
+            observed_ended_unix_ns=end, invocation_count=1, certain=True)
+        return production.EffectReceipt(**fields, settlement_commitment=production._commit(
+            b"cogs.stage2-provider-effect-settlement/v1", fields))
 
     def remote(self, grant, apply, running, effect_deadline):
         if not (type(effect_deadline) is int and effect_deadline > self.time):
@@ -140,7 +150,9 @@ class Harness:
         if self.fail == ("remote", grant.ordinal):
             self.active = True; raise production.ProductionUncertainty()
         rootfs = d("other-rootfs") if self.mutate == "rootfs" and grant.ordinal == 2 else grant.rootfs_descriptor_sha256
-        instance_ordinal = 1 if self.mutate == "instance" and grant.ordinal == 2 else grant.ordinal
+        instance = ((d("running-1") if self.mutate == "instance" else d("foreign-instance"))
+                    if self.mutate in {"instance", "instance_drift"} and grant.ordinal == 2
+                    else running.identity_commitment)
         operation_ordinal = 1 if self.mutate == "operation" and grant.ordinal == 2 else grant.ordinal
         workloads = tuple(
             production.WorkloadMeasurement(category, sample, 100 + sample,
@@ -150,8 +162,14 @@ class Harness:
         operation = d(f"operation-{operation_ordinal}")
         runtime_ordinal = (1 if self.mutate == "qemu_replay" and grant.ordinal == 2
                            else grant.ordinal)
+        mapping_ordinal = (1 if self.mutate == "mapping_replay" and grant.ordinal == 2
+                           else grant.ordinal)
+        pre_ordinal = (1 if self.mutate == "pre_fact_replay" and grant.ordinal == 2
+                       else grant.ordinal)
+        post_ordinal = (2 if self.mutate == "post_fact_replay" and grant.ordinal == 3
+                        else grant.ordinal)
         qemu_values = dict(
-            operation_token=operation, live_mapping_sha256=d(f"mapping-{grant.ordinal}"),
+            operation_token=operation, live_mapping_sha256=d(f"mapping-{mapping_ordinal}"),
             qemu_argv_sha256=d(f"qemu-argv-{runtime_ordinal}"), qemu_pid=100 + runtime_ordinal,
             qemu_starttime=200 + runtime_ordinal, qemu_executable_device=8,
             qemu_executable_inode=300 + runtime_ordinal, observer_qmp_device=9,
@@ -159,11 +177,14 @@ class Harness:
             kvm_inode=500 + runtime_ordinal, kvm_rdev=11, kvm_api=12,
             qmp_present=True, qmp_enabled=True)
         identity = production._runtime_identity(SimpleNamespace(**qemu_values))
+        pre_fact = (d("post-ssh-2") if self.mutate == "cross_pre_from_post"
+                    and grant.ordinal == 3 else d(f"pre-ssh-{pre_ordinal}"))
+        post_fact = (d("pre-ssh-2") if self.mutate == "cross_post_from_pre"
+                     and grant.ordinal == 3 else d(f"post-ssh-{post_ordinal}"))
         qemu = production.RemoteQemuBindings(
             **qemu_values, runtime_identity_sha256=identity,
-            pre_ssh_runtime_fact_sha256=d(f"pre-ssh-{grant.ordinal}"),
-            post_ssh_runtime_fact_sha256=(d(f"post-ssh-{grant.ordinal}")
-                                          if grant.mode == "readiness" else None))
+            pre_ssh_runtime_fact_sha256=pre_fact,
+            post_ssh_runtime_fact_sha256=(post_fact if grant.mode == "readiness" else None))
         program, marker = production.REMOTE_PROGRAMS[grant.mode]
         source_values = source_bindings()
         if self.mutate == "remote_source" and grant.ordinal == 2:
@@ -177,9 +198,11 @@ class Harness:
         receipt = production.RemoteReceipt(
             grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
             apply.state_commitment, apply.state_lineage_commitment,
-            d(f"instance-{instance_ordinal}"), d(f"host-{grant.ordinal}"),
+            instance, d(f"host-{grant.ordinal}"),
             operation, d(f"boot-{grant.ordinal}"),
-            d(f"client-key-{grant.ordinal}"), d(f"host-key-{grant.ordinal}"), rootfs,
+            (d("host-key-1") if self.mutate == "cross_key_replay" and grant.ordinal == 2
+             else d(f"client-key-{grant.ordinal}")),
+            d(f"host-key-{grant.ordinal}"), rootfs,
             grant.ami_commitment, apply.observed_started_unix_ns,
             running.observed_ended_unix_ns, 100, 200, workloads, bindings, True)
         if self.mutate == "remote_qemu" and grant.ordinal == 2:
@@ -249,8 +272,20 @@ assert candidate.actual_duration_ns == candidate.final_zero_unix_ns - candidate.
 assert candidate.total_cost_micro_usd == 7 and len(candidate.cycle_commitments) == 7
 assert len(candidate.launch_ready_samples_ns) == len(candidate.ssh_ready_samples_ns) == 7
 assert len(candidate.workload_measurements) == 21 and len(candidate.inventories) == 8
+assert all(item.bindings.source.runtime_manifest_sha256 == candidate.approval.runtime_manifest_sha256
+           for item in candidate.remotes)
+assert len({item.bindings.qemu.runtime_identity_sha256 for item in candidate.remotes}) == 7
+assert all(item.bindings.qemu.runtime_identity_sha256 != candidate.approval.runtime_manifest_sha256
+           for item in candidate.remotes)
 assert h.inventory_count == 8 and not h.active and h.cleanup_count == 0
 assert [row[2] for row in h.calls if row[0] == "remote"] == list(production.CYCLE_MODES)
+for field, hostile in (("ordinal", True), ("ordinal", 1.0),
+                       ("observed_started_unix_ns", 0),
+                       ("observed_ended_unix_ns", 2.5),
+                       ("invocation_count", True), ("invocation_count", 1.0)):
+    try: replace(candidate.effects[0][0], **{field: hostile})
+    except production.ProductionReceiptError: pass
+    else: raise AssertionError(f"effect accepted noncanonical scalar {field}={hostile!r}")
 
 # Test-only controller candidates can exercise projection/validation, but the
 # publication issuer categorically rejects them as AWS evidence authority.
@@ -271,6 +306,9 @@ with tempfile.TemporaryDirectory() as directory:
         evidence_raw, report_raw = issuer._project_test_candidate(candidate)
         evidence = json.loads(evidence_raw)
         assert evidence_raw.endswith(b"\n") and evidence["result"] == "pass"
+        assert evidence["version"] == "cogs.aws-stage2-completion-evidence/v3"
+        assert evidence["bindings"]["runtime_manifest_sha256"] == candidate.approval.runtime_manifest_sha256
+        assert "runtime_commitment" not in evidence["bindings"]
         assert evidence["deadlines"]["actual_campaign_duration_ns"] == candidate.actual_duration_ns
         assert len(evidence["cycles"]) == 7 and len(evidence["inventories"]) == 8
         assert len(evidence["cycles"][0]["workloads"]) == 21
@@ -280,13 +318,19 @@ with tempfile.TemporaryDirectory() as directory:
         assert qemu_evidence["pre_ssh_runtime_fact_sha256"] != qemu_evidence["post_ssh_runtime_fact_sha256"]
         assert sum(row["cost"]["cost_micro_usd"] for row in evidence["cycles"]) == 7
         assert not list(Path(directory).iterdir())
+        # The committed golden is owned by the stronger formal-byte composition
+        # test. This isolated fake-port controller projection remains deliberately
+        # distinct and cannot overwrite or authorize that fixture.
     finally: os.close(parent_fd)
 try: controller.run()
 except production.ProductionCampaignError: pass
 else: raise AssertionError("controller replay accepted")
 
-for mutation in ("state", "instance", "operation", "rootfs", "observer",
-                 "remote_source", "remote_parser", "remote_qemu", "qemu_replay"):
+for mutation in ("state", "instance", "instance_drift", "operation", "rootfs", "observer",
+                 "remote_source", "remote_parser", "remote_qemu", "qemu_replay",
+                 "mapping_replay", "pre_fact_replay", "post_fact_replay",
+                 "cross_pre_from_post", "cross_post_from_pre", "cross_key_replay",
+                 "instance_resource_replay"):
     h = Harness(mutate=mutation)
     try: production.ProductionCampaignController(h.ports()).run()
     except production.ProductionCampaignError: pass
@@ -294,15 +338,46 @@ for mutation in ("state", "instance", "operation", "rootfs", "observer",
 
 # Evidence independently reconstructs every typed remote commitment; mutating a
 # controller-retained object cannot fall back to trust in the opaque host receipt.
-for mutation in ("remote_source", "remote_parser", "remote_qemu"):
+for mutation in ("remote_source", "remote_parser", "remote_qemu", "remote_instance",
+                 "remote_mapping", "remote_pre_fact", "remote_post_fact",
+                 "remote_cross_pre", "remote_cross_post", "remote_cross_key",
+                 "remote_instance_resource"):
     candidate = production.ProductionCampaignController(Harness().ports()).run()
     binding = candidate.remotes[1].bindings
     if mutation == "remote_source":
         object.__setattr__(binding.source, "host_attestation_sha256", d("evidence-hostile-source"))
     elif mutation == "remote_parser":
         object.__setattr__(binding, "parser_source_sha256", d("evidence-hostile-parser"))
-    else:
+    elif mutation == "remote_qemu":
         object.__setattr__(binding.qemu, "qemu_pid", binding.qemu.qemu_pid + 1)
+    elif mutation == "remote_instance":
+        object.__setattr__(candidate.remotes[1], "instance_commitment", d("foreign-instance"))
+    elif mutation == "remote_mapping":
+        object.__setattr__(binding.qemu, "live_mapping_sha256",
+                           candidate.remotes[0].bindings.qemu.live_mapping_sha256)
+    elif mutation == "remote_pre_fact":
+        object.__setattr__(binding.qemu, "pre_ssh_runtime_fact_sha256",
+                           candidate.remotes[0].bindings.qemu.pre_ssh_runtime_fact_sha256)
+    elif mutation == "remote_post_fact":
+        object.__setattr__(binding.qemu, "post_ssh_runtime_fact_sha256",
+                           candidate.remotes[2].bindings.qemu.post_ssh_runtime_fact_sha256)
+    elif mutation == "remote_cross_pre":
+        object.__setattr__(binding.qemu, "pre_ssh_runtime_fact_sha256",
+                           candidate.remotes[2].bindings.qemu.post_ssh_runtime_fact_sha256)
+    elif mutation == "remote_cross_post":
+        object.__setattr__(binding.qemu, "post_ssh_runtime_fact_sha256",
+                           candidate.remotes[0].bindings.qemu.pre_ssh_runtime_fact_sha256)
+    elif mutation == "remote_cross_key":
+        object.__setattr__(candidate.remotes[1], "client_key_commitment",
+                           candidate.remotes[0].host_key_commitment)
+    else:
+        running = candidate.effects[1][2]
+        resources = dict(running.resource_commitments)
+        resources["instance"] = dict(candidate.effects[0][2].resource_commitments)["instance"]
+        object.__setattr__(running, "resource_commitments", tuple(sorted(resources.items())))
+        fields = dict(running.__dict__); fields.pop("settlement_commitment")
+        object.__setattr__(running, "settlement_commitment", production._commit(
+            b"cogs.stage2-provider-effect-settlement/v1", fields))
     try: issuer._project_test_candidate(candidate)
     except issuer.EvidenceIssuanceError: pass
     else: raise AssertionError(f"evidence accepted {mutation} drift")
@@ -323,7 +398,9 @@ except production.ProductionUncertainty: pass
 else: raise AssertionError("cleanup uncertainty was suppressed")
 
 base = approval()
-for change in ({"phrase": "wrong"}, {"batch_commitment": d("wrong")},
+for change in ({"version": "cogs.stage2-completion-production-approval/v4"},
+               {"phrase": "wrong"}, {"batch_commitment": d("wrong")},
+               {"runtime_manifest_sha256": d("substitute-manifest")},
                {"cleanup_reserve_ns": 1}, {"maximum_cost_micro_usd": 1},
                {"maximum_cycle_duration_ns": base.effect_deadline_ns},
                {"region": "not-a-region"}, {"ami_id": "ami-" + "z" * 17}):
@@ -357,7 +434,9 @@ try: production.ProductionCampaignController(h.ports()).run()
 except production.ProductionApprovalError: pass
 else: raise AssertionError("durably consumed approval was reused")
 
-if os.environ.get("COGS_TEST_EMIT_EVIDENCE") == "1":
+if os.environ.get("COGS_TEST_EMIT_APPROVAL") == "1":
+    sys.stdout.buffer.write(production._canonical(approval().__dict__) + b"\n")
+elif os.environ.get("COGS_TEST_EMIT_EVIDENCE") == "1":
     sys.stdout.buffer.write(evidence_raw)
 elif os.environ.get("COGS_TEST_EMIT_REPORT") == "1":
     sys.stdout.buffer.write(report_raw)
