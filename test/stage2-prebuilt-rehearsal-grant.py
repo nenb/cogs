@@ -125,11 +125,14 @@ with tempfile.TemporaryDirectory() as directory:
         for subject, call in calls:
             with patch.object(subject.retirement["select"], "__defaults__", ((), (), path)), patch.dict(os.environ, env, clear=True), patch.object(os, "geteuid", return_value=0), patch.object(sys, "argv", ["test"]):
                 veto(call)
-    # ADR0327 retires the checked-in H/G selection too. It must veto before
-    # an incomplete dispatch can reach ordinary environment validation.
-    assert policy["revisions"][guard.REVIEWED_IMPLEMENTATION_HEAD] == "ADR0327"
-    assert policy["revisions"][guard.REVIEWED_CONTROL_HEAD] == "ADR0327"
-    veto(lambda: guard.guard(env))
+    # ADR0327's historical H/G selection remains rejected even after Q binds
+    # the fresh generation. Patch only this fixture's selected identities.
+    with patch.multiple(guard,
+            REVIEWED_IMPLEMENTATION_HEAD="c10fc103532f3e3a8b746727bd0f48c6d8498148",
+            REVIEWED_CONTROL_HEAD="eb59cae18e0f041a243f35f253d46713f7e87142"):
+        assert policy["revisions"][guard.REVIEWED_IMPLEMENTATION_HEAD] == "ADR0327"
+        assert policy["revisions"][guard.REVIEWED_CONTROL_HEAD] == "ADR0327"
+        veto(lambda: guard.guard(env))
 
 # Historical interpretation is still available even when selection is vetoed.
 with patch.dict(lock.retirement, {"select": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("decode gated"))}):
