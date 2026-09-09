@@ -8,11 +8,11 @@ const root = join(import.meta.dirname, "..");
 const probe = join(root, "test/aws-stage2-completion-rootfs-prebuilt-acquisition.py");
 
 test("fixed prebuilt rootfs GHCR acquisition passes hostile fake-wire checks", () => {
-  for (const optimize of ["", "1", "2"]) {
-    const result = spawnSync("python3", ["-I", probe], {
+  for (const optimize of [[], ["-O"], ["-OO"]]) {
+    const result = spawnSync("python3", ["-I", ...optimize, probe], {
       cwd: root,
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONOPTIMIZE: optimize },
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "stage2 prebuilt rootfs acquisition fake-wire checks passed\n");

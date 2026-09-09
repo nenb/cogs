@@ -8,6 +8,8 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import threading
+import time
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "deploy/aws-feasibility"))
@@ -21,7 +23,7 @@ def raw(value): return provider.canonical(value)
 
 def approval(plan_digests, account):
     value = {
-        "version": "cogs.stage2-completion-production-approval/v4",
+        "version": "cogs.stage2-completion-production-approval/v5",
         "phrase": production.APPROVAL_PHRASE,
         "implementation_revision": "1" * 40, "control_revision": "2" * 40, "qualification_revision": "3" * 40,
         "source_manifest_sha256": d("source"),
@@ -32,7 +34,7 @@ def approval(plan_digests, account):
         "rootfs_provenance_sha256": d("rootfs-provenance"),
         "rootfs_qualification_receipt_sha256": d("rootfs-qualification"),
         "rootfs_publication_receipt_sha256": d("rootfs-publication"),
-        "runtime_commitment": d("runtime"), "fixture_commitment": d("fixture"),
+        "runtime_manifest_sha256": d("runtime-manifest"), "fixture_commitment": d("fixture"),
         "provider_binary_sha256": d("provider"), "aws_cli_sha256": d("aws"),
         "account_commitment": hashlib.sha256(account.encode()).hexdigest(),
         "partition": "aws", "region": "us-east-1", "ami_id": "ami-" + "a" * 17,
@@ -232,5 +234,74 @@ with tempfile.TemporaryDirectory() as temporary:
     try: boundary.inventory(8, grants[1].grant_commitment, d("state"))
     except provider.ProviderBoundaryError: pass
     else: raise AssertionError("caller-selected final grant accepted")
+
+# Real process custody is exercised only with local Python children: no provider,
+# network, inventory, deployment, or cloud command is reachable.
+with tempfile.TemporaryDirectory() as temporary:
+    original = provider.SOURCE, provider.ENV, provider.MAX_OUTPUT
+    provider.SOURCE = Path(temporary)
+    provider.ENV = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    provider.MAX_OUTPUT = 64
+    try:
+        completed = provider.subprocess_runner(
+            (sys.executable, "-I", "-c", "import os;os.write(1,b'x'*64)"), 5)
+        assert completed.returncode == 0 and completed.stdout == b"x" * 64 and not completed.stderr
+        try: provider.subprocess_runner(
+            (sys.executable, "-I", "-c", "import os;os.write(1,b'x'*65)"), 5)
+        except provider.ProviderBoundaryError: pass
+        else: raise AssertionError("oversized child output was retained")
+        marker = Path(temporary) / "survivor"
+        program = ("import os,time\npid=os.fork()\n"
+                   f"if pid==0:\n time.sleep(1);open({str(marker)!r},'w').close();os._exit(0)\n"
+                   "time.sleep(10)\n")
+        try: provider.subprocess_runner((sys.executable, "-I", "-c", program), 0.2)
+        except provider.subprocess.TimeoutExpired: pass
+        else: raise AssertionError("timed-out process group returned")
+        time.sleep(1.1)
+        assert not marker.exists()
+        cancelled_marker = Path(temporary) / "cancelled-survivor"
+        cancelled_program = ("import time\n"
+            f"time.sleep(1);open({str(cancelled_marker)!r},'w').close();time.sleep(10)\n")
+        timer = threading.Timer(0.1, lambda: os.kill(os.getpid(), provider.signal.SIGTERM))
+        timer.start()
+        try:
+            try: provider.subprocess_runner((sys.executable, "-I", "-c", cancelled_program), 5)
+            except provider.ProviderBoundaryError: pass
+            else: raise AssertionError("external cancellation returned success")
+        finally: timer.cancel(); timer.join()
+        time.sleep(1.1)
+        assert not cancelled_marker.exists()
+        original_popen = provider.subprocess.Popen
+        spawned = []
+        def settled(process):
+            assert process.poll() is not None
+            try: os.killpg(process.pid, 0)
+            except ProcessLookupError: return
+            raise AssertionError("provider child group survived settlement")
+        def pending_spawn(*args, **kwargs):
+            process = original_popen(*args, **kwargs); spawned.append(process)
+            os.kill(os.getpid(), provider.signal.SIGTERM)
+            return process
+        provider.subprocess.Popen = pending_spawn
+        try:
+            try: provider.subprocess_runner((sys.executable, "-I", "-c", "import time;time.sleep(10)"), 5)
+            except provider.ProviderBoundaryError: pass
+            else: raise AssertionError("pending cancellation crossed provider adoption")
+        finally: provider.subprocess.Popen = original_popen
+        settled(spawned.pop())
+        original_selector = provider.selectors.DefaultSelector
+        provider.subprocess.Popen = lambda *args, **kwargs: spawned.append(
+            original_popen(*args, **kwargs)) or spawned[-1]
+        provider.selectors.DefaultSelector = lambda: (_ for _ in ()).throw(OSError("selector cut"))
+        try:
+            try: provider.subprocess_runner((sys.executable, "-I", "-c", "import time;time.sleep(10)"), 5)
+            except OSError: pass
+            else: raise AssertionError("selector failure abandoned provider child")
+        finally:
+            provider.selectors.DefaultSelector = original_selector
+            provider.subprocess.Popen = original_popen
+        settled(spawned.pop())
+    finally:
+        provider.SOURCE, provider.ENV, provider.MAX_OUTPUT = original
 
 print("stage2 provider-free concrete AWS boundary checks passed")

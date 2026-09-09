@@ -125,7 +125,7 @@ def owner_fixture(raw=b"retired-owner-journal-A\n", token="a" * 64):
         elif phase in ("RETIRE_INTENT", "RETIRED"):
             body.update(journal_key=genesis["journal_key"], final_baselines_sha256="8" * 64)
         rows.append(record(len(rows), phase, body))
-    qemu_identity = hashlib.sha256(b"cogs.stage2-qemu-runtime-identity/v1\0" + local._canonical({
+    qemu_identity = hashlib.sha256(b"cogs.stage2-qemu-runtime-identity/v1\0" + operation._canonical({
         "qemu_argv_sha256": "a" * 64, "qemu_pid": 101, "qemu_starttime": 102,
         "qemu_executable_device": 8, "qemu_executable_inode": 9,
         "observer_qmp_device": 10, "observer_qmp_inode": 11,

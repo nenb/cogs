@@ -21,7 +21,7 @@ MAX_FDS_PER_PROCESS = 4_096
 MAX_TOTAL_FDS = 131_072
 MAX_PROC_TEXT = 64 * 1024
 WORKFLOW_PATH = ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml"
-REVIEWED_WORKFLOW_SHA256 = "839d0b4ba420f80d0025b30528f00b6e4f5f1872471ae27ffb8a50122d72b10c"
+REVIEWED_WORKFLOW_SHA256 = "95b65c998b70f028b091de60c868de5e94b68703327cf5f66760a9e5b0fae438"
 POLICY = {
     "scripts/prepare-stage2-fixed-source.py": {
         "sha256": "e61029714b86575f0988663512f871718572d153bcbb41a3772ee1eddb31f22f",
@@ -32,7 +32,7 @@ POLICY = {
         "effect": "immutable HTTPS acquisition and archive extraction only; runtime launch surfaces forbidden",
     },
     "deploy/aws-feasibility/remote/completion_kata_preparation.py": {
-        "sha256": "24da6184ba6df7c139442b87576170eb8ea679a326fd162e80ba0911600f3f77",
+        "sha256": "7c6d5a7b5b333c1d79fe2e371259664c3680e8b50c4f30bde5bdd0b924471488",
         "effect": "deterministic static description only; reviewed child executable is zstd decompression only",
     },
 }

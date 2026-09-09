@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cogs.dev/schemas/stage2-formal-local-cycle-receipt-v2.json",
+  "title": "Formal non-AWS cycle receipt with independent static and live commitments",
+  "description": "Self-contained schema: result_schema_sha256 binds these exact bytes. Semantic validation additionally authenticates control, grants, parser source, timing, runtime identity, and cross-field equality. No AWS or production authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "authority",
+    "route",
+    "cycle_capability_sha256",
+    "cycle_grant",
+    "production_publication_authorized",
+    "provider_execution_observed",
+    "aws_authority",
+    "formal_qualification_authority",
+    "source_bindings",
+    "operation_token",
+    "rootfs_token",
+    "lifecycle_objects",
+    "journal_sha256",
+    "program_sha256",
+    "parser_source_sha256",
+    "marker_sha256",
+    "launch_attempts",
+    "ssh_attempts",
+    "timing",
+    "key_freshness",
+    "runtime_network_sha256",
+    "qmp_lineage",
+    "teardown_projection",
+    "private_teardown_records",
+    "final_baselines_sha256",
+    "independent_residue_absent"
+  ],
+  "properties": {
+    "version": { "const": "cogs.stage2-formal-local-cycle-receipt/v2" },
+    "authority": { "const": "non-aws-formal-qualification-owner-evidence-only" },
+    "route": { "enum": ["full", "readiness"] },
+    "cycle_capability_sha256": { "$ref": "#/$defs/sha256" },
+    "cycle_grant": { "$ref": "#/$defs/grant" },
+    "production_publication_authorized": { "const": false },
+    "provider_execution_observed": { "const": false },
+    "aws_authority": { "const": null },
+    "formal_qualification_authority": { "$ref": "#/$defs/sha256" },
+    "source_bindings": { "$ref": "#/$defs/sourceBindings" },
+    "operation_token": { "$ref": "#/$defs/sha256" },
+    "rootfs_token": { "$ref": "#/$defs/sha256" },
+    "lifecycle_objects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rootfs_leases", "runtime_stages", "task_launches"],
+      "properties": {
+        "rootfs_leases": { "const": 1 },
+        "runtime_stages": { "const": 1 },
+        "task_launches": { "const": 1 }
+      }
+    },
+    "journal_sha256": { "$ref": "#/$defs/sha256" },
+    "program_sha256": { "$ref": "#/$defs/sha256" },
+    "parser_source_sha256": { "$ref": "#/$defs/sha256" },
+    "marker_sha256": { "$ref": "#/$defs/sha256" },
+    "launch_attempts": { "const": 1 },
+    "ssh_attempts": { "const": 1 },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_boot_id",
+        "launch_record_sha256",
+        "marker_record_sha256",
+        "settlement_record_sha256",
+        "kata_launch_started_boottime_ns",
+        "ssh_marker_observed_boottime_ns",
+        "ssh_command_settled_boottime_ns",
+        "ssh_ready_ns"
+      ],
+      "properties": {
+        "host_boot_id": { "$ref": "#/$defs/bootId" },
+        "launch_record_sha256": { "$ref": "#/$defs/sha256" },
+        "marker_record_sha256": { "$ref": "#/$defs/sha256" },
+        "settlement_record_sha256": { "$ref": "#/$defs/sha256" },
+        "kata_launch_started_boottime_ns": { "type": "integer", "minimum": 1 },
+        "ssh_marker_observed_boottime_ns": { "type": "integer", "minimum": 1 },
+        "ssh_command_settled_boottime_ns": { "type": "integer", "minimum": 1 },
+        "ssh_ready_ns": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "key_freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_key_commitment", "host_key_commitment"],
+      "properties": {
+        "client_key_commitment": { "$ref": "#/$defs/sha256" },
+        "host_key_commitment": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtime_network_sha256": { "$ref": "#/$defs/sha256" },
+    "qmp_lineage": { "$ref": "#/$defs/qmp" },
+    "teardown_projection": {
+      "const": [
+        "READINESS_REVOKED",
+        "TASK_STOPPED",
+        "TASK_ABSENT",
+        "RUNTIME_PROCESSES_ABSENT",
+        "NETWORK_ABSENT",
+        "CONTAINER_ABSENT",
+        "SHARE_AND_MOUNTS_ABSENT",
+        "FIREWALL_ABSENT",
+        "CONTAINERD_ABSENT",
+        "INPUTS_ABSENT",
+        "ROOTFS_ABSENT",
+        "FINAL_BASELINES",
+        "RETIRED"
+      ]
+    },
+    "private_teardown_records": {
+      "const": [
+        "READINESS_REVOKED",
+        "RUNTIME_ROLE_IDENTITIES_V1",
+        "RUNTIME_SHARE_IDENTITY_V1",
+        "TASK_STOPPED",
+        "TASK_ABSENT",
+        "RUNTIME_ROLE_ABSENCE_V1",
+        "RUNTIME_ABSENT",
+        "RUNTIME_NETWORK_RELEASED_V1",
+        "NETWORK_ABSENT",
+        "CONTAINER_ABSENT",
+        "SHARE_ABSENT",
+        "FIREWALL_ABSENT",
+        "CONTAINERD_ABSENT",
+        "INPUT_REMOVED",
+        "ROOTFS_RELEASE_READY",
+        "ROOTFS_RELEASE_AUTHORIZED",
+        "ROOTFS_ABSENT",
+        "FINAL_BASELINES",
+        "RETIRE_INTENT",
+        "RETIRED"
+      ]
+    },
+    "final_baselines_sha256": { "$ref": "#/$defs/sha256" },
+    "independent_residue_absent": {
+      "const": [
+        "tasks",
+        "containers",
+        "shim_processes",
+        "qemu_processes",
+        "virtiofsd_processes",
+        "containerd_processes",
+        "child_processes",
+        "cgroups",
+        "namespaces",
+        "veth_devices",
+        "tap_devices",
+        "traffic_control",
+        "firewall",
+        "shares",
+        "mounts",
+        "inputs",
+        "operation_state",
+        "runtime_state",
+        "runtime_cache",
+        "rootfs_lease",
+        "rootfs_build",
+        "rootfs_publication",
+        "unexpected_descriptors",
+        "network_state",
+        "network_routes",
+        "network_addresses",
+        "firewall_baseline",
+        "mount_baseline",
+        "source_identity",
+        "input_control",
+        "share_paths",
+        "runtime_staging",
+        "report_staging",
+        "descriptor_baseline",
+        "process_baseline",
+        "cgroup_baseline",
+        "namespace_baseline"
+      ]
+    },
+    "network_markers": {
+      "const": [
+        "route-baseline-no-default",
+        "direct-tcp-denied",
+        "direct-udp-denied",
+        "default-route-added",
+        "route-tcp-denied",
+        "route-udp-denied",
+        "default-route-removed",
+        "route-restored-no-default"
+      ]
+    },
+    "route_before_sha256": { "$ref": "#/$defs/sha256" },
+    "route_after_sha256": { "$ref": "#/$defs/sha256" },
+    "network_causal_proof_sha256": { "$ref": "#/$defs/sha256" },
+    "workloads": {
+      "type": "array",
+      "minItems": 21,
+      "maxItems": 21,
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/workload" },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "category": { "type": "string", "pattern": "^GIT_0[1-7]$" },
+                  "result_sha256": { "const": "73ccf2bce069d96d1dbd7e927e0fbd9205dcedfdb4a8ff104eb29e3f3e9e0b7c" }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "category": { "type": "string", "pattern": "^BUILD_0[1-7]$" },
+                  "result_sha256": { "const": "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf" }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "category": { "type": "string", "pattern": "^INSTALL_0[1-7]$" },
+                  "result_sha256": { "const": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2" }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "runtime_readiness_lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_token",
+        "runtime_mount_record_sha256",
+        "runtime_network_sha256",
+        "live_mapping_sha256",
+        "runtime_identity_sha256",
+        "qemu_process_sha256",
+        "qmp_identity"
+      ],
+      "properties": {
+        "operation_token": { "$ref": "#/$defs/sha256" },
+        "runtime_mount_record_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_network_sha256": { "$ref": "#/$defs/sha256" },
+        "live_mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "qemu_process_sha256": { "$ref": "#/$defs/sha256" },
+        "qmp_identity": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "route": { "const": "full" },
+        "program_sha256": { "const": "0e62df128ab166344e4a8e20aa9c92b376fbf96ba8454f73cec66ca1b5678406" },
+        "marker_sha256": { "const": "35f125d7914d134854e532a08398153ffcd699426fbeeabcb7c35d7f4ec474f5" },
+        "cycle_grant": {
+          "type": "object",
+          "properties": { "mode": { "const": "full" }, "cycle_ordinal": { "const": 1 } }
+        }
+      },
+      "required": [
+        "network_markers",
+        "route_before_sha256",
+        "route_after_sha256",
+        "network_causal_proof_sha256",
+        "workloads"
+      ],
+      "not": { "anyOf": [{ "required": ["runtime_readiness_lineage"] }] }
+    },
+    {
+      "properties": {
+        "route": { "const": "readiness" },
+        "program_sha256": { "const": "386f9398688cad05dfc0921ad0e5aa442cf146fd7ff16ddd82a7683244da6bab" },
+        "marker_sha256": { "const": "b5b71497621037e6b7eada7c581962775625d532cdc06729dfd095e6a6f7c010" },
+        "cycle_grant": {
+          "type": "object",
+          "properties": {
+            "mode": { "const": "readiness" },
+            "cycle_ordinal": { "type": "integer", "minimum": 2, "maximum": 7 }
+          }
+        }
+      },
+      "required": ["runtime_readiness_lineage"],
+      "not": {
+        "anyOf": [
+          { "required": ["network_markers"] },
+          { "required": ["route_before_sha256"] },
+          { "required": ["route_after_sha256"] },
+          { "required": ["network_causal_proof_sha256"] },
+          { "required": ["workloads"] }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "bootId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "sourceBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_head",
+        "source_manifest_sha256",
+        "host_attestation_sha256",
+        "runtime_manifest_sha256",
+        "rootfs_sha256",
+        "rootfs_descriptor_sha256",
+        "rootfs_package_manifest_sha256",
+        "rootfs_provenance_sha256",
+        "rootfs_publication_receipt_sha256",
+        "artifact_sha256",
+        "candidate_sha256",
+        "final_pin_sha256",
+        "guest_program_sha256",
+        "owner_implementation_sha256"
+      ],
+      "properties": {
+        "source_head": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "host_attestation_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_package_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_provenance_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_publication_receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" },
+        "final_pin_sha256": { "$ref": "#/$defs/sha256" },
+        "guest_program_sha256": { "$ref": "#/$defs/sha256" },
+        "owner_implementation_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "description": "Authenticated immutable control projection. Runtime manifest hashes exact held static bytes, never a live runtime attestation."
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority",
+        "batch_commitment",
+        "cycle_ordinal",
+        "mode",
+        "implementation_revision",
+        "control_revision",
+        "source_manifest_sha256",
+        "static_control_sha256",
+        "workflow_sha256",
+        "result_schema_sha256",
+        "rootfs_descriptor_sha256",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "grant_commitment"
+      ],
+      "properties": {
+        "authority": { "const": "non-cloud-formal-qualification-cycle-only" },
+        "batch_commitment": { "$ref": "#/$defs/sha256" },
+        "cycle_ordinal": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "mode": { "enum": ["full", "readiness"] },
+        "implementation_revision": { "$ref": "#/$defs/gitSha" },
+        "control_revision": { "$ref": "#/$defs/gitSha" },
+        "source_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "static_control_sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_sha256": { "$ref": "#/$defs/sha256" },
+        "result_schema_sha256": { "$ref": "#/$defs/sha256" },
+        "rootfs_descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "workflow_run_id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "workflow_run_attempt": { "const": 1 },
+        "grant_commitment": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "qmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "live_mapping_sha256",
+        "runtime_identity_sha256",
+        "qemu_process_sha256",
+        "qemu_argv_sha256",
+        "qemu_pid",
+        "qemu_starttime",
+        "qemu_executable_device",
+        "qemu_executable_inode",
+        "observer_qmp_device",
+        "observer_qmp_inode",
+        "kvm_device",
+        "kvm_inode",
+        "kvm_rdev",
+        "kvm_api",
+        "qmp_present",
+        "qmp_enabled"
+      ],
+      "properties": {
+        "live_mapping_sha256": { "$ref": "#/$defs/sha256" },
+        "runtime_identity_sha256": { "$ref": "#/$defs/sha256" },
+        "qemu_process_sha256": { "$ref": "#/$defs/sha256" },
+        "qemu_argv_sha256": { "$ref": "#/$defs/sha256" },
+        "qemu_pid": { "type": "integer", "minimum": 2, "maximum": 9007199254740991 },
+        "qemu_starttime": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "qemu_executable_device": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "qemu_executable_inode": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "observer_qmp_device": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "observer_qmp_inode": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "kvm_device": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "kvm_inode": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "kvm_rdev": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "kvm_api": { "const": 12 },
+        "qmp_present": { "const": true },
+        "qmp_enabled": { "const": true }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ordinal", "category", "duration_ns", "result_sha256", "deleted"],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 21 },
+        "category": { "type": "string" },
+        "duration_ns": { "type": "integer", "minimum": 1, "maximum": 1200000000000 },
+        "result_sha256": { "$ref": "#/$defs/sha256" },
+        "deleted": { "const": true }
+      }
+    }
+  }
+}

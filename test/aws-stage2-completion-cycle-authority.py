@@ -139,9 +139,14 @@ def terminal(route,raw_bytes,production=False):
           rec(6,"COMMAND_INTENT_V2",{"command_id":"SSH_READY" if name=="full" else "SSH_READINESS"}),
           rec(7,"INPUT_GRANT",{"action":"settled","path":"@key-stage/client"}),
           rec(8,"INPUT_GRANT",{"action":"settled","path":"@key-stage/server"}),
-          rec(9,"NETWORK_SNAPSHOT_V2",{"snapshot_kind":"runtime","proof_sha256":d("9")})]
+          rec(9,"NETWORK_SNAPSHOT_V2",{"snapshot_kind":"runtime","proof_sha256":d("9")}),
+          rec(10,"RUNTIME_MOUNT_V2",{"operation_token":token,"issuance_sha256":d("5")})]
     for kind in evidence.PRIVATE_TEARDOWN_RECORDS:
-        rows.append(rec(len(rows),kind,{"operation_token":token}))
+        body={"operation_token":token}
+        if kind=="RUNTIME_ROLE_IDENTITIES_V1":
+            body["roles"]=[{"role":"qemu","pid":101,"starttime":102,
+                            "executable_device":8,"executable_inode":9}]
+        rows.append(rec(len(rows),kind,body))
     parsed=evidence.full_guest.GuestWorkloadResult(
         d("a"),tuple(evidence.full_guest.GuestSampleResult(
             ordinal,label,ordinal,d("b"),True)

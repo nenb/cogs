@@ -10,15 +10,31 @@ import json
 import os
 import re
 import runpy
+import selectors
+import signal
+import stat
 import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
-import completion_campaign_production as production
+_DIAGNOSTIC = b"stage2-production-planner: owner.failed\n"
 
-retirement = runpy.run_path(str(ROOT / "scripts/stage2-revision-retirement.py"))
+
+def _fail():
+    try: os.write(2, _DIAGNOSTIC)
+    except BaseException: pass
+    raise SystemExit(2) from None
+
+
+try:
+    ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
+    import completion_campaign_production as production
+    retirement = runpy.run_path(str(ROOT / "scripts/stage2-revision-retirement.py"))
+except BaseException:
+    if __name__ == "__main__": _fail()
+    raise
+
 AWS = Path("/usr/local/bin/aws")
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
 MAX = 32 * 1024 * 1024
@@ -39,24 +55,11 @@ def eligible(revisions, runs=(), artifacts=()):
 
 
 def package_eligible(package, expected=()):
-    observation = package.get("static_control_observation")
-    custody = package.get("cycle_artifact_custody")
-    require(type(observation) is dict and type(custody) is dict
-            and type(custody.get("workflow_run")) is dict
-            and type(custody.get("artifacts")) is list
-            and len(custody["artifacts"]) == 7
-            and all(type(row) is dict for row in custody["artifacts"]))
-    qualification = package.get("qualification_revision")
-    custody_head = custody["workflow_run"].get("head_sha")
-    require(custody_head == qualification)
-    revisions = (package.get("implementation_revision"), package.get("control_revision"),
-                 qualification, custody_head)
-    runs = (package.get("mixed_preflight_run_id"), observation.get("run_id"),
-            custody["workflow_run"].get("id"))
-    artifacts = (observation.get("artifact_id"),
-                 *(row.get("artifact_id") for row in custody["artifacts"]))
-    eligible(revisions, runs, artifacts)
-    require(not expected or tuple(expected) == revisions[:3])
+    try: production.qualification_source_bindings(package)
+    except production.ProductionCampaignError as error: raise PlanningError() from error
+    revisions = tuple(package[name] for name in (
+        "implementation_revision", "control_revision", "qualification_revision"))
+    require(not expected or tuple(expected) == revisions)
 
 
 def pairs(rows):
@@ -71,8 +74,29 @@ def canonical(value):
                       ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n"
 
 
+def _read_regular(path, maximum):
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(descriptor)
+        require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                and 0 < before.st_size <= maximum)
+        chunks, total = [], 0
+        while total <= maximum:
+            part = os.read(descriptor, min(65536, maximum + 1 - total))
+            if not part: break
+            chunks.append(part); total += len(part)
+        after = os.fstat(descriptor)
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                                 item.st_gid, item.st_nlink, item.st_size,
+                                 item.st_mtime_ns, item.st_ctime_ns)
+        raw = b"".join(chunks)
+        require(len(raw) == before.st_size and identity(before) == identity(after))
+        return raw
+    finally: os.close(descriptor)
+
+
 def read(path, maximum=MAX):
-    raw = Path(path).read_bytes(); require(0 < len(raw) <= maximum)
+    raw = _read_regular(path, maximum)
     try: value = json.loads(raw, object_pairs_hook=pairs)
     except (UnicodeError, ValueError, TypeError, RecursionError) as error:
         raise PlanningError() from error
@@ -85,13 +109,71 @@ def eligibility(path, expected=()):
     package_eligible(package, expected)
 
 
+def _bounded_process(arguments, timeout, environment):
+    handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+    previous_handlers = {}
+    process, selector, unblocked = None, None, False
+    interrupted_state = [False]
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    def interrupted(_number, _frame):
+        interrupted_state[0] = True
+        if process is not None:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+    try:
+        for number in handled: previous_handlers[number] = signal.signal(number, interrupted)
+        process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd=ROOT / "deploy/aws-feasibility", env=environment,
+            close_fds=True, start_new_session=True)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask); unblocked = True
+        selector = selectors.DefaultSelector()
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            require(stream is not None); selector.register(stream, selectors.EVENT_READ, name)
+        deadline = time.monotonic() + timeout
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0: raise subprocess.TimeoutExpired(arguments, timeout)
+            events = selector.select(remaining)
+            if not events: raise subprocess.TimeoutExpired(arguments, timeout)
+            for key, _mask in events:
+                part = os.read(key.fd, 65536)
+                if not part: selector.unregister(key.fileobj); continue
+                buffers[key.data].extend(part)
+                require(len(buffers["stdout"]) <= MAX and len(buffers["stderr"]) <= 65536)
+        returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        if interrupted_state[0]: raise PlanningError()
+        try: os.killpg(process.pid, 0)
+        except ProcessLookupError: pass
+        else: raise PlanningError()
+        return bytes(buffers["stdout"]), bytes(buffers["stderr"]), returncode
+    except BaseException:
+        signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+        for number in previous_handlers: signal.signal(number, signal.SIG_IGN)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask); unblocked = True
+        if process is not None:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.wait(timeout=10)
+            settlement_deadline = time.monotonic() + 5
+            while True:
+                try: os.killpg(process.pid, 0)
+                except ProcessLookupError: break
+                if time.monotonic() >= settlement_deadline: raise PlanningError()
+                time.sleep(0.01)
+        raise
+    finally:
+        if selector is not None: selector.close()
+        if not unblocked: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        for number, handler in previous_handlers.items(): signal.signal(number, handler)
+        if interrupted_state[0]: raise PlanningError()
+
+
 def run(arguments, timeout, environment, parse=False):
-    result = subprocess.run(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, cwd=ROOT / "deploy/aws-feasibility", env=environment,
-        close_fds=True, start_new_session=True, timeout=timeout, check=False)
-    require(result.returncode == 0 and not result.stderr and len(result.stdout) <= MAX)
-    if not parse: return result.stdout
-    raw = result.stdout if result.stdout.endswith(b"\n") else result.stdout + b"\n"
+    raw_output, stderr, returncode = _bounded_process(arguments, timeout, environment)
+    require(returncode == 0 and not stderr)
+    if not parse: return raw_output
+    raw = raw_output if raw_output.endswith(b"\n") else raw_output + b"\n"
     try: value = json.loads(raw, object_pairs_hook=pairs)
     except (UnicodeError, ValueError, TypeError, RecursionError) as error:
         raise PlanningError() from error
@@ -104,7 +186,7 @@ def main(arguments):
     package_raw, package = read(arguments[0]); control_raw, control = read(arguments[1])
     descriptor_raw, descriptor = read(arguments[2], 8192)
     tofu = Path(arguments[3]); output = Path(arguments[4])
-    require(package.get("version") == "cogs.stage2-pre-aws-qualification-package/v4"
+    require(package.get("version") == "cogs.stage2-pre-aws-qualification-package/v5"
             and package.get("authority") == "non-aws-prerequisite-evidence-only"
             and package.get("cycle_count") == 7 and package.get("workload_measurements") == 21
             and package.get("claims", {}).get("formal_non_aws_qualification_passed") is True
@@ -114,7 +196,15 @@ def main(arguments):
             and package.get("claims", {}).get("promotion_authorized") is False
             and control.get("version") == "cogs.stage2-local-static-control-package/v2"
             and descriptor.get("version") == "cogs.stage2-prebuilt-rootfs-descriptor/v1")
+    package_eligible(package)
     bindings = package["source_bindings"]; producer = descriptor["producer"]
+    # The immutable runtime member is authenticated by the exact control bytes,
+    # never by a local execution mapping or qualification QEMU identity.
+    runtime_members = [row for row in control.get("members", ())
+                       if type(row) is dict and row.get("kind") == "runtime-manifest"]
+    require(len(runtime_members) == 1
+            and runtime_members[0].get("name") == "stage2-local-runtime-manifest-v3.json"
+            and runtime_members[0].get("sha256") == bindings["runtime_manifest_sha256"])
     require(re.fullmatch(r"[0-9a-f]{40}", package["qualification_revision"]) is not None
             and bindings["rootfs_descriptor_sha256"] == hashlib.sha256(descriptor_raw).hexdigest()
             and producer["revision"] == package["implementation_revision"] == bindings["source_head"]
@@ -135,7 +225,6 @@ def main(arguments):
             and package["static_control_observation"]["artifact_id"] > 0
             and re.fullmatch(r"sha256:[0-9a-f]{64}", package["static_control_observation"]
                              ["artifact_archive_digest"]) is not None)
-    package_eligible(package)
     require(hashlib.sha256(tofu.read_bytes()).hexdigest() == TOFU_SHA256)
     environment = {key: os.environ[key] for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN")}
@@ -179,7 +268,7 @@ def main(arguments):
             and image.get("RootDeviceType") == "ebs" and image.get("State") == "available")
     now = time.time_ns()
     draft = {
-        "version": "cogs.stage2-production-approval-draft/v2",
+        "version": "cogs.stage2-production-approval-draft/v3",
         "implementation_revision": bindings["source_head"],
         "control_revision": package["control_revision"],
         "qualification_revision": package["qualification_revision"],
@@ -193,7 +282,7 @@ def main(arguments):
         "rootfs_provenance_sha256": producer["provenance_sha256"],
         "rootfs_qualification_receipt_sha256": producer["qualification_receipt_sha256"],
         "rootfs_publication_receipt_sha256": producer["publication_receipt_sha256"],
-        "runtime_commitment": bindings["runtime_attestation_sha256"],
+        "runtime_manifest_sha256": bindings["runtime_manifest_sha256"],
         "fixture_commitment": bindings["final_pin_sha256"],
         "account_commitment": hashlib.sha256(account.encode()).hexdigest(),
         "partition": "aws", "region": "us-east-1", "ami_id": image["ImageId"],
@@ -212,6 +301,9 @@ def main(arguments):
     email = os.environ.get("COGS_STAGE2_BUDGET_ALERT_EMAIL", "")
     require(3 <= len(email) <= 254 and "@" in email and "\n" not in email)
     output.mkdir(mode=0o700); plans = output / "plans"; plans.mkdir(mode=0o700)
+    package_output = output / production.QUALIFICATION_PACKAGE_NAME
+    fd = os.open(package_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream: stream.write(package_raw)
     credentials = output / ".aws-credentials"
     credentials.write_text("[nebula]\naws_access_key_id = " + environment["AWS_ACCESS_KEY_ID"] +
         "\naws_secret_access_key = " + environment["AWS_SECRET_ACCESS_KEY"] +
@@ -264,5 +356,4 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) == 6 and sys.argv[1] == "eligibility": eligibility(sys.argv[2], sys.argv[3:])
         else: main(sys.argv[1:])
-    except (OSError, PlanningError, production.ProductionCampaignError, subprocess.SubprocessError):
-        raise SystemExit(2)
+    except BaseException: _fail()

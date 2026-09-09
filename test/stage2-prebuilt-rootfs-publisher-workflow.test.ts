@@ -37,6 +37,11 @@ test("trusted publisher is directional, numeric-artifact-bound, signed, and byte
   assert.doesNotMatch(workflow, /\.head_sha == \$g and \.display_title/u);
   assert.doesNotMatch(workflow, /stage2-prebuilt-rootfs-publisher\.yml\/runs\?event=workflow_dispatch&branch=/u);
   assert.match(workflow, /\.path == "\.github\/workflows\/stage2-prebuilt-rootfs-producer\.yml"/u);
+  assert.equal(workflow.match(/EXPECTED_PRODUCER_WORKFLOW_SHA256="\$expected_workflow"/gu)?.length, 2);
+  assert.equal(
+    workflow.match(/git show "\$EXACT_H:\.github\/workflows\/stage2-prebuilt-rootfs-producer\.yml"/gu)?.length,
+    2,
+  );
   assert.doesNotMatch(workflow, /latest|continue-on-error:\s*true/u);
 });
 
@@ -71,7 +76,7 @@ with tempfile.TemporaryDirectory() as directory:
   for name,raw in [('rootfs.provenance.json',provenance_raw),('rootfs.package.json',package_raw),('producer-receipt.json',m.canonical(receipt))]:
    (m.CANDIDATE/name).write_bytes(raw)
   out=io.BytesIO()
-  with patch.dict(os.environ,dict(EXACT_H='a'*40,GITHUB_SHA='b'*40,PRODUCER_RUN_ID='123',PRODUCER_ARTIFACT_ID='124'),clear=True), redirect_stdout(SimpleNamespace(buffer=out)):
+  with patch.dict(os.environ,dict(EXACT_H='a'*40,GITHUB_SHA='b'*40,PRODUCER_RUN_ID='123',PRODUCER_ARTIFACT_ID='124',EXPECTED_PRODUCER_WORKFLOW_SHA256=provenance['builder']['workflow_sha256']),clear=True), redirect_stdout(SimpleNamespace(buffer=out)):
    try:m.validate_candidate()
    except ValueError as error:
     assert type(error).__name__=='RetirementError' and revision in m.retirement['REVISIONS']

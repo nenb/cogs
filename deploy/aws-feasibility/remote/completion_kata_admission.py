@@ -340,6 +340,20 @@ def _host_bound_binding(base, executables):
     return value
 
 
+def _static_manifest_binding(base, runtime):
+    """Current formal/production static projection; never relabel live attestation.
+
+    ``runtime`` is the admitted description of held exact manifest bytes, whose
+    digest already agrees with the authenticated control member and envelope.
+    """
+    _require(type(runtime) is preparation.StaticDescription)
+    _require(runtime.sha256 == _sha(runtime.raw)
+             and runtime.raw == preparation.canonical_bytes(runtime.value))
+    value = _host_bound_binding(base, runtime.value["executables"])
+    value["runtime_manifest_sha256"] = runtime.sha256
+    return value
+
+
 def _source_digest(source, path):
     rows = [row for row in source["files"] if row["path"] == path]
     _require(len(rows) == 1)
@@ -1340,6 +1354,14 @@ def _static_routes():
             state["envelope"].value["result_binding_base"],
             state["runtime"].value["executables"])
 
+    def formal_binding(custody):
+        state = custody_states.get(custody)
+        _require(live_custody(custody, state)
+                 and not state["diagnostic"], "live exact formal static custody required")
+        _verify_held_observer_configuration(state["configuration_identity"])
+        return _static_manifest_binding(
+            state["envelope"].value["result_binding_base"], state["runtime"])
+
     def diagnostic_lineage(custody):
         """Project only the exact split current-source/prior-publication lineage."""
         state = custody_states.get(custody)
@@ -1384,7 +1406,7 @@ def _static_routes():
             source_approval, rootfs_authority,
             claim_role, consume_role, retire_consumed_roles, retire_recovery_claims,
             claim_live_mapping, consume_mapping, claim_prepared, prepared_facts,
-            binding, diagnostic_lineage, cycle_grant_binding, abort)
+            binding, formal_binding, diagnostic_lineage, cycle_grant_binding, abort)
 
 
 (_claim_static_preparation, _claim_recovery_static_preparation,
@@ -1396,7 +1418,8 @@ def _static_routes():
  _retire_recovery_executable_role_custody,
  _claim_live_rootfs_mapping, _consume_live_rootfs_mapping,
  _claim_prepared_runtime_custody, _prepared_runtime_facts,
- _static_custody_binding, _diagnostic_custody_lineage, _cycle_grant_binding,
+ _static_custody_binding, _static_manifest_custody_binding,
+ _diagnostic_custody_lineage, _cycle_grant_binding,
  _abort_static_preparation) = _static_routes()
 del _static_routes
 

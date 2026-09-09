@@ -302,7 +302,7 @@ def _validate_runtime_identity(records, platform, runtime):
         "qmp_present", "qmp_enabled")
     identity_value = {name: getattr(platform, name) for name in fields}
     identity = hashlib.sha256(
-        b"cogs.stage2-qemu-runtime-identity/v1\0" + local._canonical(identity_value)).hexdigest()
+        b"cogs.stage2-qemu-runtime-identity/v1\0" + operation._canonical(identity_value)).hexdigest()
     _require(all(getattr(platform, name) == getattr(runtime, name) for name in fields)
              and platform.runtime_identity_sha256 == runtime.runtime_identity_sha256 == identity)
     roles = _one(records, "RUNTIME_ROLE_IDENTITIES_V1").body["roles"]

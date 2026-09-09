@@ -19,11 +19,11 @@ from typing import Any
 
 import completion_campaign_production as production
 
-VERSION = "cogs.aws-stage2-completion-evidence/v2"
+VERSION = "cogs.aws-stage2-completion-evidence/v3"
 AUTHORITY = "aws-stage2-completion"
 PUBLICATION_VERSION = "cogs.aws-stage2-completion-publication/v1"
-EVIDENCE_NAME = "aws-stage2-completion-evidence-v2.json"
-REPORT_NAME = "aws-stage2-completion-report-v2.md"
+EVIDENCE_NAME = "aws-stage2-completion-evidence-v3.json"
+REPORT_NAME = "aws-stage2-completion-report-v3.md"
 RECEIPT_NAME = "aws-stage2-completion-publication-v1.json"
 BILLING_HOUR_NS = 3_600_000_000_000
 RATE_COMPONENTS = {
@@ -129,7 +129,7 @@ def _remote_bindings(item: production.RemoteReceipt,
              approval.source_bindings_sha256
              and source["source_head"] == grant.implementation_revision
              and source["source_manifest_sha256"] == approval.source_manifest_sha256
-             and source["runtime_attestation_sha256"] == approval.runtime_commitment
+             and source["runtime_manifest_sha256"] == approval.runtime_manifest_sha256
              and source["rootfs_descriptor_sha256"] == grant.rootfs_descriptor_sha256
              and source["final_pin_sha256"] == approval.fixture_commitment
              and projection.program_sha256 == program
@@ -251,6 +251,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  and remote.ordinal == index and remote.mode == grant.mode
                  and remote.state_commitment == apply.state_commitment
                  and remote.state_lineage_commitment == apply.state_lineage_commitment
+                 and remote.instance_commitment == running.identity_commitment
                  and remote.rootfs_descriptor_sha256 == approval.rootfs_descriptor_sha256
                  and remote.ami_commitment == approval.ami_commitment
                  and remote.provider_launch_started_unix_ns == apply.observed_started_unix_ns
@@ -278,8 +279,8 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
             **running_resources,
             "host_boot": remote.host_boot_commitment,
             "operation": remote.operation_commitment,
-            "client_key": remote.client_key_commitment,
-            "host_key": remote.host_key_commitment,
+            "client_ssh_identity": remote.client_key_commitment,
+            "host_ssh_identity": remote.host_key_commitment,
             **destroy_resources,
         }
         _require(len(freshness) == len(set(freshness.values())) == 8,
@@ -333,6 +334,12 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(item.host_key_commitment for item in candidate.remotes),
                  tuple(item.bindings.qemu.runtime_identity_sha256
                        for item in candidate.remotes),
+                 tuple(item.bindings.qemu.live_mapping_sha256
+                       for item in candidate.remotes),
+                 tuple(item.bindings.qemu.pre_ssh_runtime_fact_sha256
+                       for item in candidate.remotes),
+                 tuple(dict(row[2].resource_commitments)["instance"]
+                       for row in candidate.effects),
                  tuple(dict(row[2].resource_commitments)["root_volume"]
                        for row in candidate.effects),
                  tuple(dict(row[2].resource_commitments)["launch_template_generation"]
@@ -340,6 +347,17 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(dict(row[3].resource_commitments)["pre_destroy_receipt"]
                        for row in candidate.effects),
              )), "cycle freshness replay")
+    post_facts = tuple(item.bindings.qemu.post_ssh_runtime_fact_sha256
+                       for item in candidate.remotes if
+                       item.bindings.qemu.post_ssh_runtime_fact_sha256 is not None)
+    pre_facts = {item.bindings.qemu.pre_ssh_runtime_fact_sha256 for item in candidate.remotes}
+    client_keys = {item.client_key_commitment for item in candidate.remotes}
+    host_keys = {item.host_key_commitment for item in candidate.remotes}
+    _require(len(post_facts) == len(set(post_facts)) == 6
+             and len(pre_facts | set(post_facts)) == 13
+             and len(client_keys) == len(host_keys) == 7
+             and len(client_keys | host_keys) == 14,
+             "cross-role or runtime observation replay")
     _require(len({item.settlement_commitment for row in candidate.effects for item in row}) == 28,
              "effect settlement replay")
     inventories = [_inventory(item) for item in candidate.inventories]
@@ -365,7 +383,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         "rootfs_provenance_commitment": approval.rootfs_provenance_sha256,
         "rootfs_qualification_receipt_commitment": approval.rootfs_qualification_receipt_sha256,
         "rootfs_publication_receipt_commitment": approval.rootfs_publication_receipt_sha256,
-        "runtime_commitment": approval.runtime_commitment,
+        "runtime_manifest_sha256": approval.runtime_manifest_sha256,
         "fixture_commitment": approval.fixture_commitment,
         "account_commitment": approval.account_commitment,
         "ami_commitment": approval.ami_commitment,

@@ -20,7 +20,8 @@ import completion_local_evidence as evidence
 import completion_local_full as local
 
 PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v1"
-FORMAL_PRIVATE_VERSION = "cogs.stage2-formal-local-cycle-receipt/v1"
+PRODUCTION_PRIVATE_VERSION = "cogs.stage2-cycle-private-owner-receipt/v2"
+FORMAL_PRIVATE_VERSION = "cogs.stage2-formal-local-cycle-receipt/v2"
 TEARDOWN_PROJECTION = local.TEARDOWN_PHASES
 PRIVATE_TEARDOWN_RECORDS = evidence.JOURNAL_TEARDOWN_ORDER
 RESIDUE_FACTS = local.RESIDUE_FACTS
@@ -196,6 +197,10 @@ def _route_realm():
 del _route_realm
 
 
+def _is_production_route(route):
+    return _classify_route(route) == "production"
+
+
 def _runtime_readiness_realm():
     seal, issued = object(), {}
 
@@ -335,13 +340,16 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
         teardown_kinds = tuple(row.record_type for row in records
                                if row.record_type in PRIVATE_TEARDOWN_RECORDS)
         _require(teardown_kinds == PRIVATE_TEARDOWN_RECORDS)
+        # Formal and production v2 receipts use reusable static runtime bytes;
+        # ordinary synthetic/local history retains its live-attestation projection.
+        binding = (admission._static_manifest_custody_binding
+                   if formal_grant or production_grant else admission._static_custody_binding)
         custody_projection = (
             (admission._diagnostic_custody_lineage
              if diagnostic_custody_lineage is None else diagnostic_custody_lineage)(
                  lifecycle.static_custody)
             if classification == "diagnostic" else
-            (admission._static_custody_binding
-             if formal_custody_binding is None else formal_custody_binding)(
+            (binding if formal_custody_binding is None else formal_custody_binding)(
                  lifecycle.static_custody))
         settled_key_grants = [row.body for row in records
                               if row.record_type == "INPUT_GRANT"
@@ -423,6 +431,8 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
             value["diagnostic_custody_lineage"] = custody_projection
         else:
             value["source_bindings"] = custody_projection
+        if production_grant:
+            value["version"] = PRODUCTION_PRIVATE_VERSION
         if formal_grant:
             lifecycle_objects = {
                 "rootfs_leases": len(by_kind.get("ROOTFS_LEASED", ())),
@@ -440,13 +450,19 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                 "rootfs_token": records[0].body["rootfs_token"],
                 "lifecycle_objects": lifecycle_objects,
             })
-        return value
+        return value, records
 
     def prepare(route, lifecycle):
-        value = common(route, lifecycle)
+        value, records = common(route, lifecycle)
         if type(route) is _FullRoute:
             _require(type(lifecycle.session) is ssh.AuthenticatedSession
                      and type(lifecycle.runtime_proof) is evidence._RuntimeOwnerResult)
+            proof = lifecycle.runtime_proof
+            _require(proof.operation_token == records[0].body["operation_token"]
+                     and proof.live_mapping_sha256 == lifecycle.runtime_observation.live_mapping_sha256
+                     and proof.runtime_identity_sha256 == lifecycle.runtime_observation.runtime_identity_sha256,
+                     "full runtime proof belongs to another lifecycle")
+            evidence._validate_runtime_identity(records, lifecycle.runtime_observation, proof)
             parsed = lifecycle.session.parsed_result
             _require(type(parsed) is full_guest.GuestWorkloadResult
                      and len(parsed.samples) == 21
@@ -459,22 +475,40 @@ def _receipt_realm(parse_journal=None, formal_custody_binding=None,
                 "ordinal": row.ordinal, "category": row.category,
                 "duration_ns": row.duration_ns, "result_sha256": row.result_sha256,
                 "deleted": row.deleted} for row in parsed.samples]
-            value["network_causal_proof_sha256"] = (
-                lifecycle.runtime_proof.network_causal_proof_sha256)
+            value["network_causal_proof_sha256"] = proof.network_causal_proof_sha256
             cls = _FullCycleReceipt
         else:
             _require(type(lifecycle.session) is ssh.ReadinessAuthenticatedSession)
             runtime = _validate_runtime_readiness_owner_result(lifecycle.runtime_proof)
             observed = lifecycle.runtime_observation
-            _require(runtime.runtime_identity_sha256 == observed.runtime_identity_sha256
-                     and runtime.qemu_process_sha256 != observed.qemu_process_sha256,
-                     "ordered post-SSH runtime observation or immutable identity differs")
+            mount = evidence._one(records, "RUNTIME_MOUNT_V2")
+            identity_names = ("qemu_pid", "qemu_starttime", "qemu_executable_device",
+                              "qemu_executable_inode", "observer_qmp_device",
+                              "observer_qmp_inode", "kvm_device", "kvm_inode",
+                              "kvm_rdev", "kvm_api")
+            roles = evidence._one(records, "RUNTIME_ROLE_IDENTITIES_V1").body["roles"]
+            qemu_roles = [row for row in roles if row.get("role") == "qemu"]
+            _require(runtime.operation_token == value["operation_token"]
+                     and runtime.runtime_mount_record_sha256 == mount.body["issuance_sha256"]
+                     and runtime.runtime_network_sha256 == value["runtime_network_sha256"]
+                     and runtime.live_mapping_sha256 == observed.live_mapping_sha256
+                     and runtime.runtime_identity_sha256 == observed.runtime_identity_sha256
+                     and runtime.qemu_process_sha256 != observed.qemu_process_sha256
+                     and runtime.qmp_identity == tuple(
+                         getattr(observed, name) for name in identity_names)
+                     and len(qemu_roles) == 1
+                     and (qemu_roles[0].get("pid"), qemu_roles[0].get("starttime"),
+                          qemu_roles[0].get("executable_device"),
+                          qemu_roles[0].get("executable_inode")) == runtime.qmp_identity[:4],
+                     "ordered readiness runtime, durable role, or lineage differs")
             value["runtime_readiness_lineage"] = runtime.canonical_value()
             cls = _ReadinessCycleReceipt
         raw = _canonical(value)
-        domain = (b"cogs.stage2-formal-local-cycle-receipt/v1\0"
-                  if _is_formal_route(route)
-                  else b"cogs.stage2-cycle-private-owner-receipt/v1\0")
+        domain = (FORMAL_PRIVATE_VERSION.encode("ascii") + b"\0"
+                  if _is_formal_route(route) else
+                  PRODUCTION_PRIVATE_VERSION.encode("ascii") + b"\0"
+                  if _is_production_route(route) else
+                  b"cogs.stage2-cycle-private-owner-receipt/v1\0")
         commitment = hashlib.sha256(domain + raw).hexdigest()
         return cls, value, raw, commitment, domain
 

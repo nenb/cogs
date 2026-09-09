@@ -5,14 +5,34 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
-import runpy
-retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
+RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
+# The guard alone is Q's reviewed binding adapter. All H-owned consumers,
+# including the qualifier and control stager, must remain byte-identical at Q.
+Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
+REQUIRED_CONSUMERS = frozenset({
+    ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
+    "scripts/stage2-formal-local-qualification.py",
+    "scripts/stage2-stage-prebuilt-control.py",
+    "scripts/stage2-local-settlement.py",
+    "scripts/stage2-native-settlement.py",
+    "scripts/stage2-revision-retirement.py",
+    "scripts/prepare-stage2-fixed-source.py",
+    "deploy/aws-feasibility/remote/completion_kata_preparation.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_full.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py",
+    "schemas/stage2-formal-local-cycle-receipt-v2.json",
+    "schemas/stage2-formal-local-cycle-status-v2.json",
+    "schemas/stage2-formal-local-artifact-custody-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v5.json",
+})
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
@@ -22,7 +42,8 @@ REVIEWED_CONTROL_HEAD = "eb59cae18e0f041a243f35f253d46713f7e87142"
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c"
 REVIEWED_CONTROL_SHA256 = "cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783"
 REVIEWED_WORKFLOW_SHA256 = "57dd3c09ea16bee5599c6f3e8517b9d4449f9dd1004143e221c1c4e3955b2ba5"
-REVIEWED_RESULT_SCHEMA_SHA256 = "57ff30b4adb601a7775dbefc9002c983152974ba3244aa449656c7e8a5f7dc27"
+# Self-contained formal receipt v2 contract, not the ordinary local report schema.
+REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
 REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5"
 REVIEWED_STATIC_CONTROL_RUN_ID = 34293986674
@@ -43,6 +64,9 @@ DENIED_ENVIRONMENT = frozenset((
 ))
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
+# Bootstrap veto code must be authenticated before it executes, even when v6
+# does not exist yet. This is a source seal, not successor H/G/Q authority.
+RETIREMENT_SOURCE_SHA256 = "f9edbdafd3c05548347707db24b33126a0eee8f52a705b623bdccb3ea51be872"
 
 
 class GuardError(Exception):
@@ -60,38 +84,125 @@ def _required(environ, name):
     return value
 
 
-def _read_json(path, maximum):
-    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+def _identity(value):
+    return tuple(getattr(value, key) for key in ("st_dev", "st_ino", "st_mode", "st_uid",
+        "st_gid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
+
+
+def _read_bytes(path, maximum, directory=None):
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
     try:
         before = os.fstat(descriptor)
-        _require(0 < before.st_size <= maximum, "JSON byte bound failed")
+        _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                 and 0 < before.st_size <= maximum, "file byte bound failed")
         raw = os.read(descriptor, maximum + 1)
-        after = os.fstat(descriptor)
-        _require(len(raw) == before.st_size and (before.st_dev, before.st_ino, before.st_mtime_ns,
-                 before.st_size) == (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size),
-                 "JSON changed while reading")
+        _require(len(raw) == before.st_size and _identity(before) == _identity(os.fstat(descriptor)),
+                 "file changed while reading")
+        return raw
     finally:
         os.close(descriptor)
-    try:
-        return json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise GuardError("invalid JSON") from error
 
 
-def _digest(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+def _pairs(rows):
+    value = {}
+    for key, item in rows:
+        _require(key not in value, "duplicate JSON member"); value[key] = item
+    return value
+
+
+def _json(raw):
+    return json.loads(raw, object_pairs_hook=_pairs,
+                      parse_constant=lambda _x: (_ for _ in ()).throw(GuardError("invalid JSON")))
+
+
+def _read_json(path, maximum):
+    return _json(_read_bytes(path, maximum))
+
+
+def _sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      allow_nan=False).encode("ascii") + b"\n"
+
+
+def _selected_bytes(relative):
+    _require(type(relative) is str and len(relative) <= 4096 and "\\" not in relative
+             and all(part not in {"", ".", ".."} for part in relative.split("/")), "unsafe source path")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent = os.open(ROOT, flags)
     try:
-        before = os.fstat(descriptor)
-        _require(0 < before.st_size <= MAX_API_BYTES, "reviewed file byte bound failed")
-        raw = os.read(descriptor, MAX_API_BYTES + 1)
-        after = os.fstat(descriptor)
-        _require(len(raw) == before.st_size and (before.st_dev, before.st_ino,
-                 before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                 == (after.st_dev, after.st_ino, after.st_mode, after.st_size,
-                     after.st_mtime_ns, after.st_ctime_ns), "reviewed file changed")
-        return hashlib.sha256(raw).hexdigest()
-    finally:
-        os.close(descriptor)
+        for part in relative.split("/")[:-1]:
+            child = os.open(part, flags, dir_fd=parent); os.close(parent); parent = child
+        return _read_bytes(relative.split("/")[-1], 2 * 1024 * 1024, parent)
+    finally: os.close(parent)
+
+
+def _authenticate_control():
+    # Decode exactly the held bytes whose digest was checked; never hash then reopen.
+    raw = _read_bytes(CONTROL, MAX_API_BYTES)
+    _require(_sha(raw) == REVIEWED_CONTROL_SHA256, "reviewed control bytes differ")
+    control = _json(raw)
+    _require(_canonical(control) == raw and control["version"] == "cogs.stage2-local-static-control-package/v2")
+    implementation = control["implementation"]
+    _require(control["producer"]["control_revision"] == REVIEWED_CONTROL_HEAD
+             and control["producer"]["implementation_revision"] == implementation["revision"] == REVIEWED_IMPLEMENTATION_HEAD
+             and control["producer"]["source_manifest_sha256"] == implementation["source_manifest_sha256"]
+             == REVIEWED_IMPLEMENTATION_MANIFEST_SHA256, "reviewed implementation differs")
+    held = {}
+    for kind, name in (("envelope", "stage2-local-execution-envelope-v3.json"),
+                       ("runtime-manifest", "stage2-local-runtime-manifest-v3.json")):
+        rows = [row for row in control["members"] if row["kind"] == kind]
+        _require(len(rows) == 1 and rows[0]["name"] == name, "control member differs")
+        member_raw = _read_bytes(CONTROL.parent / name, MAX_API_BYTES)
+        _require(type(rows[0]["size"]) is int and len(member_raw) == rows[0]["size"]
+                 and _sha(member_raw) == rows[0]["sha256"], "control member bytes differ")
+        value = _json(member_raw); _require(_canonical(value) == member_raw)
+        held[kind] = (value, _sha(member_raw))
+    envelope, _ = held["envelope"]; runtime, runtime_sha = held["runtime-manifest"]
+    _require(envelope["version"] == "cogs.stage2-local-execution-envelope/v3"
+             and runtime["version"] == "cogs.stage2-local-runtime-manifest/v3"
+             and envelope["control_revision"] == REVIEWED_CONTROL_HEAD
+             and envelope["implementation"] == implementation
+             and envelope["runtime"]["manifest_member"] == "stage2-local-runtime-manifest-v3.json"
+             and envelope["runtime"]["manifest_sha256"] == runtime_sha
+             and envelope["runtime"]["executable_set_sha256"] == _sha(_canonical(runtime["executables"]))
+             and envelope["rootfs"]["prebuilt_descriptor_sha256"] == REVIEWED_ROOTFS_DESCRIPTOR_SHA256,
+             "control envelope/runtime binding differs")
+    rows = implementation["selected_sources"]
+    _require(type(rows) is list and 1 <= len(rows) <= 128
+             and implementation["selected_sources_sha256"] == _sha(_canonical(rows)))
+    paths = []
+    for row in rows:
+        _require(type(row) is dict and set(row) == {"path", "size", "sha256"})
+        relative = row["path"]; paths.append(relative)
+        _require(type(relative) is str and type(row["size"]) is int and 0 < row["size"] <= 2 * 1024 * 1024
+                 and type(row["sha256"]) is str and SHA256.fullmatch(row["sha256"]) is not None)
+        if relative == Q_BINDING_ADAPTER: continue  # H snapshot, not an H-owned consumer.
+        source_raw = _selected_bytes(relative)
+        _require(len(source_raw) == row["size"] and _sha(source_raw) == row["sha256"], "selected H source differs at Q")
+    _require(paths == sorted(set(paths)) and REQUIRED_CONSUMERS <= set(paths), "required consumer coverage differs")
+    _require(_sha(_read_bytes(WORKFLOW, MAX_API_BYTES)) == REVIEWED_WORKFLOW_SHA256, "reviewed workflow bytes differ")
+    _require(_sha(_read_bytes(RESULT_SCHEMA, MAX_API_BYTES)) == REVIEWED_RESULT_SCHEMA_SHA256, "receipt.schema")
+
+
+def _load_retirement():
+    path = Path(__file__).with_name("stage2-revision-retirement.py")
+    raw = _read_bytes(path, MAX_API_BYTES)
+    _require(_sha(raw) == RETIREMENT_SOURCE_SHA256, "retirement source differs")
+    namespace = {"__file__": str(path), "__name__": "stage2_authenticated_retirement"}
+    exec(compile(raw, str(path), "exec"), namespace)  # Only the exact held, sealed bytes.
+    return namespace
+
+
+try:
+    retirement = _load_retirement()
+except Exception:
+    print("stage2-prebuilt-local-qualification-guard: guard.rejected", file=sys.stderr)
+    raise SystemExit(2) from None
 
 
 def _reviewed_constants():
@@ -154,14 +265,7 @@ def guard(environ=os.environ, event=None, first_created=None):
              and inputs.get("reviewed_control_head") == control
              and inputs.get("reviewed_qualification_head") == qualification,
              "event H/G/Q inputs differ")
-    _require(CONTROL.is_file() and _digest(CONTROL) == REVIEWED_CONTROL_SHA256,
-             "reviewed control bytes differ")
-    control_value = _read_json(CONTROL, MAX_API_BYTES)
-    _require(type(control_value) is dict
-             and type(control_value.get("producer")) is dict
-             and control_value["producer"].get("control_revision") == control,
-             "reviewed control revision differs")
-    _require(_digest(WORKFLOW) == REVIEWED_WORKFLOW_SHA256, "reviewed workflow bytes differ")
+    _authenticate_control()
     observed_first = (_required(environ, "PRE_EFFECT_ADMITTED_RUN_ID")
                       if first_created is None else str(first_created))
     _require(observed_first == run_id, "pre-effect admission identity differs")
@@ -187,8 +291,17 @@ def main():
     _require(sys.stdout.buffer.write(raw) == len(raw), "guard output failed")
 
 
-if __name__ == "__main__":
+def cli():
     try:
         main()
-    except (GuardError, OSError, retirement["RetirementError"]):
-        raise SystemExit(2)
+    except Exception as error:
+        # Fixed categories only: never print caller values, paths, or exception data.
+        code = ("authority.retired" if isinstance(error, retirement["RetirementError"]) else
+                "io.failed" if isinstance(error, OSError) else
+                "receipt.schema" if isinstance(error, GuardError) and str(error) == "receipt.schema" else
+                "guard.rejected")
+        print(f"stage2-prebuilt-local-qualification-guard: {code}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+if __name__ == "__main__":
+    cli()

@@ -110,9 +110,14 @@ ARCHIVES = (
 )
 
 MANDATORY_SECURITY_SOURCES = frozenset({
+    ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
+    "deploy/aws-feasibility/completion_campaign_evidence_issuer.py",
     "deploy/aws-feasibility/completion_campaign_production.py",
     "deploy/aws-feasibility/completion_campaign_remote_adapter.py",
     "deploy/aws-feasibility/remote/completion_cycle_authority.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_full.py",
+    "deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py",
     "deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py",
     "deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py",
     "deploy/aws-feasibility/remote/completion_guest_workloads_v2.py",
@@ -165,7 +170,25 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "schemas/stage2-local-execution-envelope-v3.json",
     "schemas/stage2-local-runtime-manifest-v3.json",
     "schemas/stage2-local-static-control-package-v2.json",
+    "schemas/aws-stage2-completion-evidence-v3.json",
+    "schemas/aws-stage2-completion-production-approval-v5.json",
+    "schemas/aws-stage2-production-evidence-upload-receipt-v2.json",
+    "schemas/stage2-formal-local-cycle-receipt-v2.json",
+    "schemas/stage2-formal-local-cycle-status-v2.json",
+    "schemas/stage2-formal-local-artifact-custody-v2.json",
+    "schemas/stage2-pre-aws-qualification-package-v5.json",
     "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
+    "scripts/stage2-formal-local-qualification.py",
+    "scripts/stage2-stage-prebuilt-control.py",
+    "scripts/stage2-local-settlement.py",
+    "scripts/stage2-native-settlement.py",
+    "scripts/stage2-revision-retirement.py",
+    "scripts/prepare-stage2-fixed-source.py",
+    "scripts/stage2-prebuilt-local-qualification-guard.py",
+    "scripts/stage2-production-approval.py",
+    "scripts/stage2-production-planner.py",
+    "scripts/stage2-stage-production-approval.py",
+    "scripts/validate-aws-stage2-completion-evidence-v3.ts",
 })
 
 

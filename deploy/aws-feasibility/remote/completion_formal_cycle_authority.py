@@ -88,7 +88,9 @@ class FormalCycleGrant:
             _digest(value)
         _require(type(self.ordinal) is int and 1 <= self.ordinal <= 7
                  and self.mode == CYCLE_MODES[self.ordinal - 1]
-                 and type(self.workflow_run_id) is int and self.workflow_run_id > 0
+                 and type(self.workflow_run_id) is int
+                 and 0 < self.workflow_run_id <= 9_007_199_254_740_991
+                 and type(self.workflow_run_attempt) is int
                  and self.workflow_run_attempt == 1)
         fields = asdict(self); fields.pop("grant_commitment")
         _require(self.batch_commitment == batch_commitment(fields)

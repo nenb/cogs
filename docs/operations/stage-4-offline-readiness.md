@@ -7,7 +7,7 @@ Issue #357 is **local/static only**. Its canonical instance is [`stage4-offline-
 
 ## Current governance boundary (ADR 0313)
 
-The contemplated replacement H is Stage2-only: complete repository source identity for the independently reviewed rootfs/Kata/custody graph, not qualification of every source file. OpenBao admission, real Stage3 launcher/Envoy/S3/KVM observations, universal all-inner-attempt traffic coverage and production credentials remain blocked. No H/G/Q is assigned here; Stage2 control v5 remains absent until Q. The present Stage4 readiness v5 package is a different contract. Source changes require final deterministic regeneration; the retained package does not establish current-worktree preparation merely because its historical internal bindings validate. All operational, production, cloud, Stage3/Stage4 exit and release authority remains absent.
+The contemplated replacement H is Stage2-only: complete repository source identity for the independently reviewed rootfs/Kata/custody graph, not qualification of every source file. OpenBao admission, real Stage3 launcher/Envoy/S3/KVM observations, universal all-inner-attempt traffic coverage and production credentials remain blocked. No successor H/G/Q is assigned here; historical Stage2 control v5 is retained but retired, while replacement control v6 remains absent until Q. The present Stage4 readiness v5 package is a different contract. Source changes require final deterministic regeneration; the retained package does not establish current-worktree preparation merely because its historical internal bindings validate. All operational, production, cloud, Stage3/Stage4 exit and release authority remains absent.
 
 ### Reconciled Stage2 retirement registry
 

@@ -11,9 +11,9 @@ import runpy
 retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
+SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
 QUALIFICATION_SOURCE = Path(
-    "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v5")
+    "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v6")
 PROVISIONAL_SOURCE = Path(
     "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
