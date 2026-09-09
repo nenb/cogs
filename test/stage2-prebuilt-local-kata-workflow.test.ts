@@ -61,33 +61,33 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "c10fc103532f3e3a8b746727bd0f48c6d8498148"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "eb59cae18e0f041a243f35f253d46713f7e87142"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "c30e0d69ec374cd812ff361e670e974d51b661c4"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "15d99b55f4910df94decdd7edcc80bf95aee492d"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "57dd3c09ea16bee5599c6f3e8517b9d4449f9dd1004143e221c1c4e3955b2ba5"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e"/u);
+  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "2ba561203f87f4bb2caa7c3924d463cb7368702bb5514cb4a277c360908fdaa8"/u);
   assert.equal(
     /REVIEWED_RESULT_SCHEMA_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(readFileSync("schemas/stage2-formal-local-cycle-receipt-v2.json")).digest("hex"),
   );
   assert.match(
     guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5"/u,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1"/u,
   );
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34293986674/u);
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10082440691/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34403562378/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10124443866/u);
   assert.match(
     guard,
-    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:5b294cb46261e4b36b4a7893a507ec353e585109c899f5344e643b61839f4a4f"/u,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:06c3067a3c0a48672c5832404c66e61773a947abdae30e038d113cfc6e08d6c2"/u,
   );
-  assert.match(preflight, /H=c10fc103532f3e3a8b746727bd0f48c6d8498148/u);
-  assert.match(preflight, /G=eb59cae18e0f041a243f35f253d46713f7e87142/u);
-  assert.match(preflight, /MANIFEST=ee96c1cfae2ffb1a2d8e8fc69c94d6bd792576c8885a20a78379ecfb52d2661c/u);
-  assert.match(preflight, /CONTROL=cfbd0e786fb530846235d85178965527250b6d8ad97def3053287c31af3f9783/u);
-  assert.match(preflight, /DESCRIPTOR=47dc9e90914a29f2e9aa83319faa16257727716650851a10017f9fc0671098e5/u);
+  assert.match(preflight, /H=c30e0d69ec374cd812ff361e670e974d51b661c4/u);
+  assert.match(preflight, /G=15d99b55f4910df94decdd7edcc80bf95aee492d/u);
+  assert.match(preflight, /MANIFEST=a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f/u);
+  assert.match(preflight, /CONTROL=83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e/u);
+  assert.match(preflight, /DESCRIPTOR=3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(

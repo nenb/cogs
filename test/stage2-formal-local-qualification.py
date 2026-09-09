@@ -687,6 +687,7 @@ with tempfile.TemporaryDirectory() as source_root:
             REVIEWED_CONTROL_HEAD=expected["EXPECTED_CONTROL_HEAD"],
             REVIEWED_IMPLEMENTATION_MANIFEST_SHA256=expected["EXPECTED_SOURCE_MANIFEST_SHA256"],
             REVIEWED_CONTROL_SHA256=expected["EXPECTED_CONTROL_SHA256"],
+            REVIEWED_ROOTFS_DESCRIPTOR_SHA256=expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
             REVIEWED_WORKFLOW_SHA256=hashlib.sha256(guard.WORKFLOW.read_bytes()).hexdigest(),
             REVIEWED_STATIC_CONTROL_RUN_ID=61, REVIEWED_STATIC_CONTROL_ARTIFACT_ID=62):
         assert guard.guard(guard_environment, guard_event)["result_schema_sha256"] == expected["EXPECTED_RESULT_SCHEMA_SHA256"]
