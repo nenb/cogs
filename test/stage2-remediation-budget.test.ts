@@ -20,6 +20,14 @@ assert.equal(policy.artifacts["10042564354"], "ADR0324");
 assert.equal(policy.revisions["6276eae08e29ee577f3d9b2c739ceadfe467a769"], "ADR0326");
 assert.equal(policy.runs["34257525184"], "ADR0326");
 assert.equal(policy.artifacts["10069446931"], "ADR0326");
+const prematureRolloutGeneration = {
+  revisions: [
+    "11c03441468d4c3130667321018e1cb6f626a303", // H
+    "a9b54c1a823601c3e938e2a616abd0222c0a2846", // G
+  ],
+  runs: ["34452651886", "34467314193", "34486733842"],
+  artifacts: ["10143009714", "10148066929", "10155984475"],
+};
 const runnerRolloverGeneration = {
   revisions: [
     "c30e0d69ec374cd812ff361e670e974d51b661c4", // H
@@ -40,8 +48,17 @@ const failedGeneration = {
 };
 assert.deepEqual(
   [Object.keys(policy.revisions).length, Object.keys(policy.runs).length, Object.keys(policy.artifacts).length],
-  [27, 33, 23],
+  [29, 36, 26],
 );
+for (const [kind, values] of Object.entries(prematureRolloutGeneration)) {
+  const group = policy[kind as keyof typeof policy];
+  assert.deepEqual(
+    Object.keys(group)
+      .filter((value) => group[value] === "ADR0332")
+      .sort(),
+    [...values].sort(),
+  );
+}
 for (const [kind, values] of Object.entries(runnerRolloverGeneration)) {
   const group = policy[kind as keyof typeof policy];
   assert.deepEqual(
@@ -239,12 +256,12 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=12500)
-assert b['global_gross_line_high']==30000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=13000)
+assert b['global_gross_line_high']==30500 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(100500,24500,16000,6000,47000,2000)
-assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=81)
-assert sum(new.values())==89 and sum(x['total'] for x in forecasts.values())==2570000
+assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=83)
+assert sum(new.values())==91 and sum(x['total'] for x in forecasts.values())==2570000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -256,8 +273,8 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==89
-for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md','docs/adr/0324-retire-failed-static-generation-and-correct-authority.md','docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md','docs/adr/0326-reconcile-historical-stage2-retirement-policy.md','docs/adr/0327-retire-failed-formal-generation-and-separate-runtime-contracts.md','docs/adr/0328-freeze-runtime-corrected-H-and-authorize-control.md','docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md','docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md','docs/adr/0331-freeze-image-bound-H-and-authorize-control.md'):
+assert len(set(paths)-baseline)==91
+for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md','docs/adr/0324-retire-failed-static-generation-and-correct-authority.md','docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md','docs/adr/0326-reconcile-historical-stage2-retirement-policy.md','docs/adr/0327-retire-failed-formal-generation-and-separate-runtime-contracts.md','docs/adr/0328-freeze-runtime-corrected-H-and-authorize-control.md','docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md','docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md','docs/adr/0331-freeze-image-bound-H-and-authorize-control.md','docs/adr/0332-retire-premature-rollout-static-generation.md'):
  assert paths[current]=='integration' and Path(current).is_file()
 image_control=Path('docs/adr/0331-freeze-image-bound-H-and-authorize-control.md').read_text()
 assert '11c03441468d4c3130667321018e1cb6f626a303' in image_control
@@ -274,8 +291,8 @@ control=Path('docs/adr/0320-freeze-corrected-H-and-authorize-control.md').read_t
 assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
 assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
-assert b['source_limits']==dict(tracked_files=1509,source_inventory_bytes=22020096,serialized_source_inventory_bytes=262144)
-assert 'MAXIMUM_TRACKED_FILES = 1509;' in Path('scripts/stage4-offline-source-inventory.ts').read_text()
+assert b['source_limits']==dict(tracked_files=1511,source_inventory_bytes=22020096,serialized_source_inventory_bytes=262144)
+assert 'MAXIMUM_TRACKED_FILES = 1511;' in Path('scripts/stage4-offline-source-inventory.ts').read_text()
 assert m['FINAL_CONTROL_DATA_ROOT'].endswith('-v7') and len(m['FINAL_CONTROL_DATA_MEMBERS'])==13
 assert m['_final_control_data_state']()[0] in ('absent','member-set-complete')
 assert 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/**/*.json' in Path('biome.json').read_text()
@@ -287,7 +304,9 @@ for p in (*m['FINAL_CONTROL_DATA_MEMBERS'],*m['ADR0327_RETAINED_FILES'],
  'docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md',
  'docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md',
  'docs/adr/0331-freeze-image-bound-H-and-authorize-control.md',
- 'docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md',
+ 'docs/adr/0332-retire-premature-rollout-static-generation.md',
+ 'docs/adr/0333-freeze-rollout-final-H-and-authorize-control.md',
+ 'docs/adr/0334-establish-rollout-final-Q-and-authorize-qualification.md',
  'scripts/stage2-hosted-opt-mode.py',
  'test/aws-stage2-completion-evidence-v3.test.ts',
  'test/fixtures/stage2-completion/approval-v5-test-only.json',
@@ -366,7 +385,7 @@ test("ADR0326 independently enumerates and rejects every reconciled generation i
   };
   assert.deepEqual(
     [Object.keys(policy.revisions).length, Object.keys(policy.runs).length, Object.keys(policy.artifacts).length],
-    [27, 33, 23],
+    [29, 36, 26],
   );
   for (const [kind, values] of Object.entries(reconciled)) {
     for (const value of values) assert.equal(policy[kind as keyof typeof policy][value], "ADR0326", `${kind}:${value}`);
@@ -480,6 +499,46 @@ r['select'](('f'*40,),runs=('123',),artifacts=('124',))
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("ADR0332 independently rejects every premature-rollout identity and policy drift", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import copy,json,runpy,tempfile
+from pathlib import Path
+r=runpy.run_path('scripts/stage2-revision-retirement.py'); p=r['load_policy']()
+assert p==dict(version='cogs.stage2-retired-revisions/v1',revisions=r['REVISIONS'],runs=r['RUNS'],artifacts=r['ARTIFACTS'])
+values=${JSON.stringify(prematureRolloutGeneration)}
+def veto(call):
+ try: call()
+ except r['RetirementError']: return
+ raise AssertionError('ADR0332 veto missing')
+with tempfile.TemporaryDirectory() as directory:
+ path=Path(directory)/'policy.json'
+ for kind,identities in values.items():
+  for value in identities:
+   if kind=='revisions':
+    for position in range(3):
+     selected=['f'*40]*3; selected[position]=value
+     veto(lambda selected=selected: r['select'](selected))
+   else:
+    veto(lambda kind=kind,value=value: r['select'](('f'*40,),**{kind:(value,)}))
+   for decision in (None,'ADR0330'):
+    changed=copy.deepcopy(p)
+    if decision is None: del changed[kind][value]
+    else: changed[kind][value]=decision
+    path.write_text(json.dumps(changed)); veto(lambda: r['select'](('f'*40,),policy=path))
+r['select'](('f'*40,),runs=('123',),artifacts=('124',))
+`,
+    ],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("ADR0330 post-H gross reserves reject overruns even below the correction highs", () => {
   const result = spawnSync(
     "python3",
@@ -562,11 +621,11 @@ assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836)
 assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(100500,24500,16000,6000,47000)
-assert 'MAXIMUM_TRACKED_FILES = 1509;' in Path('scripts/stage4-offline-source-inventory.ts').read_text()
+assert 'MAXIMUM_TRACKED_FILES = 1511;' in Path('scripts/stage4-offline-source-inventory.ts').read_text()
 data=json.loads(m['REMEDIATION_BUDGET_PATH'].read_text())
-# Synthetic plan uses all 64 integration slots, independently of the real plan.
+# Synthetic plan uses all 83 integration slots, independently of the real plan.
 for owner in data['owners']: owner['paths']=[]
-data['owners'][-1]['paths']=['config/external-review-remediation-budget-v1.json']+[f'test/planned-{n:02d}.ts' for n in range(80)]
+data['owners'][-1]['paths']=['config/external-review-remediation-budget-v1.json']+[f'test/planned-{n:02d}.ts' for n in range(82)]
 ns['_git']=lambda args:'baseline.ts\\0'
 with tempfile.TemporaryDirectory() as directory:
  ns['ROOT']=Path(directory)
@@ -574,13 +633,13 @@ with tempfile.TemporaryDirectory() as directory:
  path.parent.mkdir(); ns['REMEDIATION_BUDGET_PATH']=path
  path.write_text(json.dumps(data))
  b,highs,paths,new,forecasts=f()
- assert b['global_gross_line_high']==30000
- assert b['source_limits']==dict(tracked_files=1509,source_inventory_bytes=22020096,serialized_source_inventory_bytes=262144)
- assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=12500)
- assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=81) and sum(new.values())==89
+ assert b['global_gross_line_high']==30500
+ assert b['source_limits']==dict(tracked_files=1511,source_inventory_bytes=22020096,serialized_source_inventory_bytes=262144)
+ assert highs==dict(route=2200,revocation=3000,relay=1975,lifecycle=7500,completion=3100,integration=13000)
+ assert new==dict(route=1,revocation=0,relay=0,lifecycle=4,completion=3,integration=83) and sum(new.values())==91
  for mutation in ('planned-overrun','owner-transfer','global-high','source-high','owner-high'):
   bad=copy.deepcopy(data)
-  if mutation=='planned-overrun': bad['owners'][-1]['paths'].append('test/planned-80.ts')
+  if mutation=='planned-overrun': bad['owners'][-1]['paths'].append('test/planned-82.ts')
   elif mutation=='owner-transfer': bad['owners'][-1]['new_file_high']+=1; bad['owners'][0]['new_file_high']-=1
   elif mutation=='global-high': bad['global_gross_line_high']+=1
   elif mutation=='source-high': bad['source_limits']['tracked_files']+=1

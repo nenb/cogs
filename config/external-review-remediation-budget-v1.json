@@ -1,14 +1,14 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 30000,
+  "global_gross_line_high": 30500,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1509,
+    "tracked_files": 1511,
     "source_inventory_bytes": 22020096,
     "serialized_source_inventory_bytes": 262144
   },
@@ -224,14 +224,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 12500,
+      "gross_line_high": 13000,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 81,
+      "new_file_high": 83,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -339,7 +339,9 @@
         "docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md",
         "docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md",
         "docs/adr/0331-freeze-image-bound-H-and-authorize-control.md",
-        "docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md",
+        "docs/adr/0332-retire-premature-rollout-static-generation.md",
+        "docs/adr/0333-freeze-rollout-final-H-and-authorize-control.md",
+        "docs/adr/0334-establish-rollout-final-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",

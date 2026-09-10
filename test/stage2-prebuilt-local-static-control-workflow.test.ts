@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const path = ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml";
@@ -33,7 +36,13 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
   const retirement = workflow.indexOf("# ADR0326 complete retirement mirror; selection only, never ancestors.");
   const image = workflow.indexOf('if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1');
-  assert.ok(retirement >= 0 && retirement < image && image < workflow.indexOf("gh api --paginate"));
+  const release = workflow.indexOf("repos/actions/runner-images/releases/tags/ubuntu24%2F20260907.300");
+  const singleton = workflow.indexOf("gh api --paginate");
+  assert.ok(retirement >= 0 && retirement < image && image < release && release < singleton);
+  assert.match(workflow, /"id": 384601141[\s\S]*"prerelease": False/u);
+  assert.match(workflow, /"target_commitish": "fc63e1b4dbfacf7e2449bf0706226f9f6eea583e"/u);
+  assert.match(workflow, /object_pairs_hook=pairs/u);
+  assert.match(workflow, /\/usr\/bin\/head -c 1048577[\s\S]*-le 1048576/u);
   assert.equal(workflow.match(/stage2\.runner-image\.rejected/gu)?.length, 1);
   assert.match(workflow, /if: always\(\) && steps\.boundary\.outcome != 'skipped'/u);
   assert.match(workflow, /if test "\$IMMUTABLE_INTENT" = true; then[\s\S]*cogs-stage2-immutable-preparation\.json/u);
@@ -53,6 +62,74 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   assert.equal(stepMinutes, 53);
   assert.match(workflow, /^ {4}timeout-minutes: 60$/mu);
   assert.doesNotMatch(workflow, /\/dev\/kvm|containerd|\bctr\b|qmp|run-stage2-completion-(?:full|readiness)/u);
+});
+
+test("prebuilt static release completion gate rejects malformed or non-final evidence before effects", () => {
+  const opening = `          /usr/bin/python3 -I -B - "$RUNNER_TEMP/runner-image-release.json" <<'PY'\n`;
+  const start = workflow.indexOf(opening);
+  const end = workflow.indexOf("\n          PY\n", start);
+  assert.ok(start > 0 && end > start);
+  const program = workflow
+    .slice(start + opening.length, end)
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/u, ""))
+    .join("\n");
+  const directory = mkdtempSync(join(tmpdir(), "cogs-release-gate-"));
+  const evidence = join(directory, "release.json");
+  const execute = (raw: string) => {
+    writeFileSync(evidence, raw, { mode: 0o600 });
+    return spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail\n/usr/bin/python3 -I -B - "$1" <<'PY'\n${program}\nPY\nprintf EFFECT`,
+        "release-gate",
+        evidence,
+      ],
+      { encoding: "utf8", timeout: 5000 },
+    );
+  };
+  const final = {
+    id: 384601141,
+    node_id: "RE_kwDOC1mGT84W7Iw1",
+    tag_name: "ubuntu24/20260907.300",
+    target_commitish: "fc63e1b4dbfacf7e2449bf0706226f9f6eea583e",
+    name: "Ubuntu 24.04 (20260907) Image Update",
+    draft: false,
+    prerelease: false,
+    created_at: "2026-09-08T08:41:19Z",
+    published_at: "2026-09-08T09:34:53Z",
+  };
+  try {
+    const accepted = execute(JSON.stringify(final));
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.match(accepted.stdout, /"prerelease":false/u);
+    assert.match(accepted.stdout, /\nEFFECT$/u);
+    for (const rejected of [
+      { ...final, prerelease: true },
+      { ...final, draft: true },
+      { ...final, id: 384601142 },
+      { ...final, target_commitish: "f".repeat(40) },
+      { ...final, published_at: "not-a-time" },
+    ]) {
+      const result = execute(JSON.stringify(rejected));
+      assert.notEqual(result.status, 0);
+      assert.doesNotMatch(result.stdout, /EFFECT/u);
+    }
+    for (const malformed of [
+      "",
+      "{}{}",
+      "{",
+      JSON.stringify(final).replace('"prerelease":false', '"prerelease":true,"prerelease":false'),
+      `${JSON.stringify(final)}${JSON.stringify({ ...final, prerelease: true })}`,
+    ]) {
+      const result = execute(malformed);
+      assert.notEqual(result.status, 0);
+      assert.doesNotMatch(result.stdout, /EFFECT/u);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("prebuilt static artifact actions are immutable and no AWS permission exists", () => {

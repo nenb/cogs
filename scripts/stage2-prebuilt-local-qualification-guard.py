@@ -42,7 +42,7 @@ REVIEWED_IMPLEMENTATION_HEAD = None
 REVIEWED_CONTROL_HEAD = None
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = None
 REVIEWED_CONTROL_SHA256 = None
-REVIEWED_WORKFLOW_SHA256 = "9c4575c9b0f63863d50b45e6461855704a053e04fefe420881936ac74227bf7f"
+REVIEWED_WORKFLOW_SHA256 = "9e87b0b4e5a489ed41a78272a6a6474785e55ec38c02473bfa7b6f99cc184265"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
@@ -67,7 +67,7 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 # Bootstrap veto code must be authenticated before it executes, even when v6
 # does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "51c8b12ed68648d736834b13a28601660a43c7a689dbc0f8853ed444441c33b5"
+RETIREMENT_SOURCE_SHA256 = "f538b56a267fb40002cd839e8b430a76aadbc335ab77184e51e745e82fa4199f"
 
 
 class GuardError(Exception):

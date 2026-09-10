@@ -21,7 +21,7 @@ MAX_FDS_PER_PROCESS = 4_096
 MAX_TOTAL_FDS = 131_072
 MAX_PROC_TEXT = 64 * 1024
 WORKFLOW_PATH = ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml"
-REVIEWED_WORKFLOW_SHA256 = "3b3d9f95ad41b84bf2480b61a360d52c46d2624298ca8df9e76a3171af814fdb"
+REVIEWED_WORKFLOW_SHA256 = "57aee5208eb2f8cc7b0f40fd6edcaabc7b226c5c83b6bbba56672cffd3f76b3b"
 POLICY = {
     "scripts/prepare-stage2-fixed-source.py": {
         "sha256": "e61029714b86575f0988663512f871718572d153bcbb41a3772ee1eddb31f22f",
