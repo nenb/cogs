@@ -137,17 +137,13 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  for (const name of [
-    "REVIEWED_IMPLEMENTATION_HEAD",
-    "REVIEWED_CONTROL_HEAD",
-    "REVIEWED_IMPLEMENTATION_MANIFEST_SHA256",
-    "REVIEWED_CONTROL_SHA256",
-    "REVIEWED_ROOTFS_DESCRIPTOR_SHA256",
-    "REVIEWED_STATIC_CONTROL_RUN_ID",
-    "REVIEWED_STATIC_CONTROL_ARTIFACT_ID",
-    "REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST",
-  ])
-    assert.match(guard, new RegExp(`${name} = None`, "u"));
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "11c03441468d4c3130667321018e1cb6f626a303"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "a9b54c1a823601c3e938e2a616abd0222c0a2846"/u);
+  assert.match(
+    guard,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "e2e092bd14161425aacaead2abbe1eb41de50c2f78fdea3d6fffdcaf6711115f"/u,
+  );
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "b568b71d04002303edd77f5925e81ffb6c29f2259274ef544de1a4a478a8132d"/u);
   assert.equal(
     /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(workflow).digest("hex"),
@@ -156,8 +152,21 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
     /REVIEWED_RESULT_SCHEMA_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(readFileSync("schemas/stage2-formal-local-cycle-receipt-v2.json")).digest("hex"),
   );
-  for (const name of ["H", "G", "MANIFEST", "CONTROL", "DESCRIPTOR"])
-    assert.match(preflight, new RegExp(`^${name}=0+$`, "mu"));
+  assert.match(
+    guard,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "7e060278933ff79d0b9b40138afbf8bb9e799e6a2951b9c0c021f63069ebf71b"/u,
+  );
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34486733842/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10155984475/u);
+  assert.match(
+    guard,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:4229c9a8acd3f54992edb39a7ccdcda0c5c23a53691e93e16cbe956fc253a068"/u,
+  );
+  assert.match(preflight, /H=11c03441468d4c3130667321018e1cb6f626a303/u);
+  assert.match(preflight, /G=a9b54c1a823601c3e938e2a616abd0222c0a2846/u);
+  assert.match(preflight, /MANIFEST=e2e092bd14161425aacaead2abbe1eb41de50c2f78fdea3d6fffdcaf6711115f/u);
+  assert.match(preflight, /CONTROL=b568b71d04002303edd77f5925e81ffb6c29f2259274ef544de1a4a478a8132d/u);
+  assert.match(preflight, /DESCRIPTOR=7e060278933ff79d0b9b40138afbf8bb9e799e6a2951b9c0c021f63069ebf71b/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(
@@ -165,6 +174,38 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
       workflow.indexOf("Acquire exact reviewed implementation revision H separately"),
   );
   assert.match(guard, /"qualification_head": qualification/u);
+});
+
+test("checked-in v7 authenticates with the unmocked Q guard and H control codec", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import runpy,sys
+from pathlib import Path
+root=Path.cwd()
+package=root/'deploy/aws-feasibility/remote/stage2-completion-local-control-v7'
+sys.path.insert(0,str(root/'deploy/aws-feasibility/remote'))
+import completion_kata_preparation as codec
+guard=runpy.run_path('scripts/stage2-prebuilt-local-qualification-guard.py')
+guard['_reviewed_constants']()
+guard['_authenticate_control']()
+control_raw=(package/'stage2-local-static-control-v2.json').read_bytes()
+control=codec.load_control(control_raw)
+members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
+envelope,runtime,contracts=codec.validate_control_members(control,members)
+assert envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD']
+assert envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD']
+assert envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256']
+assert len(contracts)==10 and len(runtime.value['executables'])==10
+`,
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("each job prepares one rootfs, executes one mode-bound lifecycle, and closes custody", () => {
