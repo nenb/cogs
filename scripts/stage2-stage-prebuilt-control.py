@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate prebuilt G control bytes with H's V3 codec and freeze staging."""
 import hashlib
+import importlib
 import importlib.util
 import os
 from pathlib import Path
@@ -11,9 +12,11 @@ import runpy
 retirement = runpy.run_path(str(Path(__file__).with_name("stage2-revision-retirement.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+SOURCE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 QUALIFICATION_SOURCE = Path(
-    "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v6")
+    "/root/cogs-stage2-bootstrap/Q/deploy/aws-feasibility/remote/stage2-completion-local-control-v7")
+CHECKOUT_PREPARATION = ROOT / "deploy/aws-feasibility/remote/completion_kata_preparation.py"
+CHECKOUT_ADMISSION = ROOT / "deploy/aws-feasibility/remote/completion_kata_admission.py"
 PROVISIONAL_SOURCE = Path(
     "/var/lib/cogs/stage2-completion-v1/control-observation-v1/candidate")
 H_PREPARATION = Path("/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/completion_kata_preparation.py")
@@ -42,6 +45,12 @@ def _load_module(path, name):
     return module
 
 
+def _load_admission():
+    module = importlib.import_module("completion_kata_admission")
+    _require(Path(module.__file__).resolve() == CHECKOUT_ADMISSION.resolve())
+    return module
+
+
 def _read_complete(descriptor, size):
     chunks, remaining = [], size
     while remaining:
@@ -56,7 +65,7 @@ def _read_regular(directory, relative, maximum, private=False):
     _require(type(relative) is str and relative
              and all(part not in {"", ".", ".."} for part in relative.split("/")))
     parent = os.dup(directory)
-    descriptor = None
+    descriptor = child = None
     try:
         components = relative.split("/")
         for component in components[:-1]:
@@ -65,10 +74,9 @@ def _read_regular(directory, relative, maximum, private=False):
             seen = os.fstat(child)
             valid = not private or (seen.st_uid == seen.st_gid == 0
                      and stat.S_IMODE(seen.st_mode) == 0o700)
-            if not valid: os.close(child)
             _require(valid)
-            os.close(parent)
-            parent = child
+            previous = parent; parent = child; child = None
+            os.close(previous)
         descriptor = os.open(components[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                              dir_fd=parent)
         before = os.fstat(descriptor)
@@ -84,6 +92,8 @@ def _read_regular(directory, relative, maximum, private=False):
                      after.st_mtime_ns, after.st_ctime_ns), "control source changed")
         return raw
     finally:
+        if child is not None:
+            os.close(child)
         if descriptor is not None:
             os.close(descriptor)
         os.close(parent)
@@ -147,6 +157,7 @@ def _open_source(source_path):
     if source_path != QUALIFICATION_SOURCE:
         return os.open(source_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    child = None
     try:
         seen = os.fstat(parent)
         _require(seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == 0o755)
@@ -155,12 +166,29 @@ def _open_source(source_path):
                             | os.O_CLOEXEC, dir_fd=parent)
             seen = os.fstat(child); expected = 0o700
             valid = seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == expected
-            if not valid: os.close(child)
             _require(valid)
-            os.close(parent); parent = child
+            previous = parent; parent = child; child = None
+            os.close(previous)
         return parent
     except BaseException:
+        if child is not None: os.close(child)
         os.close(parent); raise
+
+
+def _select_prebuilt_custody(control, envelope):
+    rootfs = envelope.value["rootfs"]
+    custody = rootfs["custody"]
+    publication = custody["publication_receipt"]
+    implementation = control.value["implementation"]["revision"]
+    control_revision = control.value["producer"]["control_revision"]
+    retirement["select"]((implementation, control_revision, publication["control_revision"],
+        rootfs["prebuilt_descriptor"]["producer"]["revision"],
+        custody["provenance"]["builder"]["implementation_revision"],
+        custody["qualification_receipt"]["implementation_revision"], publication["implementation_revision"]),
+        runs=(str(publication["producer_run_id"]), str(publication["publisher_run_id"]),
+              str(custody["provenance"]["builder"]["run_id"]), str(custody["qualification_receipt"]["run_id"])),
+        artifacts=(str(publication["producer_artifact_id"]),))
+    return implementation, control_revision, rootfs
 
 
 def _stage(source_path, diagnostic_version=None):
@@ -189,22 +217,20 @@ def _stage(source_path, diagnostic_version=None):
                 source, name, _member_maximum(codec, row, diagnostic_version is not None), private)
         validated = codec.validate_control_members(control, members)
         if diagnostic_version is None:
-            implementation = control.value["implementation"]["revision"]
-            control_revision = control.value["producer"]["control_revision"]
-            rootfs = validated[0].value["rootfs"]
+            implementation, control_revision, rootfs = _select_prebuilt_custody(control, validated[0])
         else:
             implementation = control.value["runtime_implementation"]["revision"]
             control_revision = control.value["publication_producer"]["control_revision"]
             rootfs = control.value["rootfs"]
-        custody = rootfs["custody"]
-        publication = custody["publication_receipt"]
-        retirement["select"]((implementation, control_revision, publication["control_revision"],
-            rootfs["prebuilt_descriptor"]["producer"]["revision"],
-            custody["provenance"]["builder"]["implementation_revision"],
-            custody["qualification_receipt"]["implementation_revision"], publication["implementation_revision"]),
-            runs=(str(publication["producer_run_id"]), str(publication["publisher_run_id"]),
-                  str(custody["provenance"]["builder"]["run_id"]), str(custody["qualification_receipt"]["run_id"])),
-            artifacts=(str(publication["producer_artifact_id"]),))
+            custody = rootfs["custody"]
+            publication = custody["publication_receipt"]
+            retirement["select"]((implementation, control_revision, publication["control_revision"],
+                rootfs["prebuilt_descriptor"]["producer"]["revision"],
+                custody["provenance"]["builder"]["implementation_revision"],
+                custody["qualification_receipt"]["implementation_revision"], publication["implementation_revision"]),
+                runs=(str(publication["producer_run_id"]), str(publication["publisher_run_id"]),
+                      str(custody["provenance"]["builder"]["run_id"]), str(custody["qualification_receipt"]["run_id"])),
+                artifacts=(str(publication["producer_artifact_id"]),))
         _require(os.fstat(source) == source_identity, "control package directory changed")
     finally:
         os.close(source)
@@ -273,9 +299,10 @@ def verify_staged(expected_descriptor, diagnostic=False):
     control_member = DIAGNOSTIC_MEMBER if diagnostic else CONTROL_MEMBER
     maximum = codec.MAX_BYTES if diagnostic else codec.MAX_CONTROL_BYTES
     directory = os.open(DESTINATION, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    held = [(directory, _identity(os.fstat(directory)))]
+    held = [(directory, None)]
     try:
         before = os.fstat(directory)
+        held[0] = (directory, _identity(before))
         _require(stat.S_ISDIR(before.st_mode) and before.st_uid == before.st_gid == 0
                  and stat.S_IMODE(before.st_mode) == 0o500)
         control = codec.load_control(_read_frozen(directory, control_member, maximum, held))
@@ -292,7 +319,8 @@ def verify_staged(expected_descriptor, diagnostic=False):
         _require(set(os.listdir(directory)) == top)
         contract_fd = os.open("contracts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
                               | os.O_CLOEXEC, dir_fd=directory)
-        seen = os.fstat(contract_fd); held.append((contract_fd, _identity(seen)))
+        held.append((contract_fd, None))
+        seen = os.fstat(contract_fd); held[-1] = (contract_fd, _identity(seen))
         _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
                  and stat.S_IMODE(seen.st_mode) == 0o500
                  and set(os.listdir(contract_fd)) == contracts)
@@ -308,9 +336,54 @@ def stage_provisional(diagnostic_version=None):
     return _stage(PROVISIONAL_SOURCE, diagnostic_version)
 
 
+def verify_host_closures(expected_h, expected_g, expected_control):
+    """Compare held trusted host closures before any preparation mutation."""
+    _require(os.geteuid() != 0 and SOURCE.is_dir()
+             and re.fullmatch(r"[0-9a-f]{40}", expected_h) is not None
+             and re.fullmatch(r"[0-9a-f]{40}", expected_g) is not None
+             and re.fullmatch(r"[0-9a-f]{64}", expected_control) is not None)
+    codec = _load_module(CHECKOUT_PREPARATION, "completion_kata_preparation_host_check")
+    admission = _load_admission()
+    source = _open_source(SOURCE)
+    descriptors, retained = [], []
+    try:
+        source_identity = os.fstat(source)
+        control_raw = _read_regular(source, CONTROL_MEMBER, codec.MAX_CONTROL_BYTES)
+        control = codec.load_control(control_raw)
+        members = {row["name"]: _read_regular(
+            source, row["name"], _member_maximum(codec, row, False))
+                   for row in control.value["members"]}
+        envelope, runtime, contracts = codec.validate_control_members(control, members)
+        implementation, control_revision, _ = _select_prebuilt_custody(control, envelope)
+        _require(hashlib.sha256(control_raw).hexdigest() == expected_control
+                 and implementation == expected_h and control_revision == expected_g,
+                 "reviewed host closure binding differs")
+        rows = [row for row in runtime.value["executables"] if row["source_class"] == "host-path"]
+        _require([row["role"] for row in rows] == ["ip", "tc", "nft", "ssh", "ssh-keygen"])
+        for row in rows:
+            retained.extend(admission._retain_contract_objects(
+                contracts[row["role"]].value, descriptors, row["role"]))
+        for item in retained:
+            seen = os.fstat(item.descriptor)
+            _require((seen.st_dev, seen.st_ino, stat.S_IMODE(seen.st_mode), seen.st_uid,
+                      seen.st_gid, seen.st_nlink, seen.st_size) ==
+                     (item.device, item.inode, item.mode, item.uid, item.gid, item.nlink, item.size)
+                     and admission._read_held(item.descriptor, seen, item.size) == item.sha256,
+                     "ambient executable generation differs")
+        _require(os.fstat(source) == source_identity, "control package directory changed")
+    finally:
+        for descriptor in reversed(descriptors):
+            try: os.close(descriptor)
+            except OSError: pass
+        os.close(source)
+
+
 def main():
-    _require(len(sys.argv) in {1, 2, 3})
-    if len(sys.argv) == 3 and sys.argv[1] in {"verify", "verify-diagnostic"}:
+    _require(len(sys.argv) in {1, 2, 3, 5})
+    if len(sys.argv) == 5 and sys.argv[1] == "verify-host":
+        verify_host_closures(*sys.argv[2:])
+        raw = b"host_closure_verified=true\n"
+    elif len(sys.argv) == 3 and sys.argv[1] in {"verify", "verify-diagnostic"}:
         observed = verify_staged(sys.argv[2], sys.argv[1].endswith("-diagnostic"))
         raw = f"rootfs_descriptor_sha256={observed}\n".encode("ascii")
     else:

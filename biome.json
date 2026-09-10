@@ -69,6 +69,7 @@
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v4/**/*.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v5/**/*.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v6/**/*.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/**/*.json",
         "scripts/validate-schemas.ts",
         "test/native-qualification-b.test.ts",
         "test/native-qualification-common.test.ts",

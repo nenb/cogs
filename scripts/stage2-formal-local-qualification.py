@@ -18,7 +18,7 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_MODULE = ROOT / "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py"
 RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 CONTROL_MEMBER = "stage2-local-static-control-v2.json"
 ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
 RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"

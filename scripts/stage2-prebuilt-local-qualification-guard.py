@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml"
 RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
-CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 # The guard alone is Q's reviewed binding adapter. All H-owned consumers,
 # including the qualifier and control stager, must remain byte-identical at Q.
@@ -19,6 +19,7 @@ Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
 REQUIRED_CONSUMERS = frozenset({
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
     "scripts/stage2-formal-local-qualification.py",
+    "scripts/stage2-hosted-opt-mode.py",
     "scripts/stage2-stage-prebuilt-control.py",
     "scripts/stage2-local-settlement.py",
     "scripts/stage2-native-settlement.py",
@@ -37,18 +38,18 @@ REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
 # environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = "c30e0d69ec374cd812ff361e670e974d51b661c4"
-REVIEWED_CONTROL_HEAD = "15d99b55f4910df94decdd7edcc80bf95aee492d"
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f"
-REVIEWED_CONTROL_SHA256 = "83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e"
-REVIEWED_WORKFLOW_SHA256 = "2ba561203f87f4bb2caa7c3924d463cb7368702bb5514cb4a277c360908fdaa8"
+REVIEWED_IMPLEMENTATION_HEAD = None
+REVIEWED_CONTROL_HEAD = None
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = None
+REVIEWED_CONTROL_SHA256 = None
+REVIEWED_WORKFLOW_SHA256 = "9c4575c9b0f63863d50b45e6461855704a053e04fefe420881936ac74227bf7f"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
-REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1"
-REVIEWED_STATIC_CONTROL_RUN_ID = 34403562378
-REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10124443866
-REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:06c3067a3c0a48672c5832404c66e61773a947abdae30e038d113cfc6e08d6c2"
+REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = None
+REVIEWED_STATIC_CONTROL_RUN_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_ID = None
+REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = None
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -66,7 +67,7 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 # Bootstrap veto code must be authenticated before it executes, even when v6
 # does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "f9edbdafd3c05548347707db24b33126a0eee8f52a705b623bdccb3ea51be872"
+RETIREMENT_SOURCE_SHA256 = "51c8b12ed68648d736834b13a28601660a43c7a689dbc0f8853ed444441c33b5"
 
 
 class GuardError(Exception):

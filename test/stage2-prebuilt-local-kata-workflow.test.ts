@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const workflow = readFileSync(".github/workflows/stage2-prebuilt-local-kata-qualification.yml", "utf8");
@@ -10,6 +12,80 @@ const qualifier = readFileSync("scripts/stage2-formal-local-qualification.py", "
 const preflightWorkflow = readFileSync(".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml", "utf8");
 const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
 const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
+const imageGate = `if test "\${ImageOS-}" != ubuntu24 || test "\${ImageVersion-}" != 20260907.300.1; then
+            /usr/bin/printf '%s\\n' 'stage2.runner-image.rejected' >&2
+            exit 2
+          fi`;
+
+test("runner image admission is exact on preflight and all nine formal runners", () => {
+  assert.equal(preflightWorkflow.split(imageGate).length - 1, 1);
+  assert.equal(workflow.split(imageGate).length - 1, 3);
+  const admission = workflow.slice(workflow.indexOf("  admission:"), workflow.indexOf("  local-kata:"));
+  const local = workflow.slice(workflow.indexOf("  local-kata:"), workflow.indexOf("  aggregate:"));
+  const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
+  for (const block of [admission, local, aggregate]) assert.ok(block.includes(imageGate));
+  assert.ok(preflightWorkflow.indexOf(imageGate) < preflightWorkflow.indexOf("gh api --paginate"));
+  assert.ok(local.indexOf(imageGate) < local.indexOf("git init --quiet"));
+  assert.ok(aggregate.indexOf(imageGate) < aggregate.indexOf("git init --quiet"));
+  for (const [os, version, status] of [
+    ["ubuntu24", "20260907.300.1", 0],
+    ["ubuntu24", "20260831.293.1", 2],
+    ["ubuntu-24.04", "20260907.300.1", 2],
+    ["ubuntu24", "20260907.300", 2],
+    ["", "20260907.300.1", 2],
+    ["ubuntu24", "$(printf injected)", 2],
+  ] as const) {
+    const result = spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-c", `set -euo pipefail\n${imageGate}\nprintf ADMITTED`],
+      {
+        encoding: "utf8",
+        env: { ImageOS: os, ImageVersion: version },
+      },
+    );
+    assert.equal(result.status, status);
+    assert.equal(result.stdout, status === 0 ? "ADMITTED" : "");
+    assert.equal(result.stderr, status === 0 ? "" : "stage2.runner-image.rejected\n");
+  }
+  for (const env of [{ ImageOS: "ubuntu24" }, { ImageVersion: "20260907.300.1" }, {}]) {
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", `${imageGate}\nprintf ADMITTED`], {
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+  }
+  assert.match(local, /stage2-stage-prebuilt-control\.py[\s\S]{0,120}verify-host/u);
+  assert.match(preflightWorkflow, /Compare every ambient host closure before mutation/u);
+  assert.match(preflightWorkflow, /steps\.opt_scaffold\.outcome == 'success'/u);
+});
+
+test("mixed host-check wrapper preserves exact status and output in its sanitized environment", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-host-check-"));
+  const scripts = join(temporary, "qualification", "scripts");
+  mkdirSync(scripts, { recursive: true });
+  const helper = join(scripts, "stage2-stage-prebuilt-control.py");
+  const run = (body: string) => {
+    writeFileSync(helper, body, { mode: 0o600 });
+    return spawnSync("/bin/bash", ["scripts/stage2-prebuilt-mixed-hg-preflight.sh", "host-check"], {
+      encoding: "utf8",
+      env: { GITHUB_WORKSPACE: temporary, GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" },
+    });
+  };
+  try {
+    const pass = run('print("host_closure_verified=true")\n');
+    assert.equal(pass.status, 0);
+    assert.equal(pass.stdout, "host_closure_verified=true\n");
+    assert.equal(pass.stderr, "");
+    for (const body of ["raise SystemExit(2)\n", 'print("host_closure_verified=true")\nraise SystemExit(2)\n']) {
+      const rejected = run(body);
+      assert.equal(rejected.status, 2);
+      assert.equal(rejected.stdout, "");
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test("formal qualification is additive, exact H/G/Q, first-created, and seven fresh jobs", () => {
   assert.match(workflow, /\n {2}local-kata:\n {4}needs: admission\n {4}strategy:/u);
@@ -24,7 +100,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
     (total, match) => total + Number(match[1]),
     0,
   );
-  assert.ok(localStepMinutes <= 198, `local step bounds ${localStepMinutes}`);
+  assert.ok(localStepMinutes <= 201, `local step bounds ${localStepMinutes}`);
   assert.ok(75 + 5 + 75 + 5 + 1770 + 10 <= 35 * 60);
   assert.ok(7800 + 10 <= 132 * 60);
   assert.match(workflow, /^name: Stage 2 prebuilt local Kata qualification$/mu);
@@ -55,39 +131,33 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(workflow, /stage2-prebuilt-local-qualification-guard\.py/u);
   assert.match(workflow, /stage2-stage-prebuilt-control\.py/u);
   for (const source of [staging, guard, qualifier]) {
-    assert.match(source, /stage2-completion-local-control-v6/u);
-    assert.doesNotMatch(source, /stage2-completion-local-control-v5/u);
+    assert.match(source, /stage2-completion-local-control-v7/u);
+    assert.doesNotMatch(source, /stage2-completion-local-control-v6/u);
   }
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "c30e0d69ec374cd812ff361e670e974d51b661c4"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "15d99b55f4910df94decdd7edcc80bf95aee492d"/u);
-  assert.match(
-    guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f"/u,
+  for (const name of [
+    "REVIEWED_IMPLEMENTATION_HEAD",
+    "REVIEWED_CONTROL_HEAD",
+    "REVIEWED_IMPLEMENTATION_MANIFEST_SHA256",
+    "REVIEWED_CONTROL_SHA256",
+    "REVIEWED_ROOTFS_DESCRIPTOR_SHA256",
+    "REVIEWED_STATIC_CONTROL_RUN_ID",
+    "REVIEWED_STATIC_CONTROL_ARTIFACT_ID",
+    "REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST",
+  ])
+    assert.match(guard, new RegExp(`${name} = None`, "u"));
+  assert.equal(
+    /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
+    createHash("sha256").update(workflow).digest("hex"),
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e"/u);
-  assert.match(guard, /REVIEWED_WORKFLOW_SHA256 = "2ba561203f87f4bb2caa7c3924d463cb7368702bb5514cb4a277c360908fdaa8"/u);
   assert.equal(
     /REVIEWED_RESULT_SCHEMA_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(readFileSync("schemas/stage2-formal-local-cycle-receipt-v2.json")).digest("hex"),
   );
-  assert.match(
-    guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1"/u,
-  );
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34403562378/u);
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10124443866/u);
-  assert.match(
-    guard,
-    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:06c3067a3c0a48672c5832404c66e61773a947abdae30e038d113cfc6e08d6c2"/u,
-  );
-  assert.match(preflight, /H=c30e0d69ec374cd812ff361e670e974d51b661c4/u);
-  assert.match(preflight, /G=15d99b55f4910df94decdd7edcc80bf95aee492d/u);
-  assert.match(preflight, /MANIFEST=a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f/u);
-  assert.match(preflight, /CONTROL=83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e/u);
-  assert.match(preflight, /DESCRIPTOR=3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1/u);
+  for (const name of ["H", "G", "MANIFEST", "CONTROL", "DESCRIPTOR"])
+    assert.match(preflight, new RegExp(`^${name}=0+$`, "mu"));
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(
@@ -109,17 +179,23 @@ test("each job prepares one rootfs, executes one mode-bound lifecycle, and close
     beforeEntry,
     /sudo -n env -i PATH=\/usr\/bin:\/bin \/usr\/bin\/python3 -I -B[\s\S]*stage2-stage-prebuilt-control\.py verify/u,
   );
-  assert.equal(beforeEntry.split("scripts/stage2-stage-prebuilt-control.py verify").length - 1, 1);
+  assert.equal(beforeEntry.split('scripts/stage2-stage-prebuilt-control.py verify "').length - 1, 1);
   assert.doesNotMatch(beforeEntry, /descriptor=\$\(\/usr\/bin\/python3/u);
   assert.match(beforeEntry, /non-cloud formal grant/u);
   assert.match(workflow, /1\) entry=completion_formal_cycle_full\.py/u);
   assert.match(workflow, /2\|3\|4\|5\|6\|7\) entry=completion_formal_cycle_readiness\.py/u);
   assert.match(workflow, /Invoke cleanup-only recovery after every cycle outcome/u);
+  assert.match(workflow, /id: recovery\n {8}if: always\(\) && steps\.preparation\.outputs\.source_acquired == 'true'/u);
   assert.match(workflow, /Independently prove zero lifecycle residue after cleanup/u);
   assert.match(workflow, /supervise-final/u);
   for (const id of ["fixed_cleanup", "independent_residue", "final_observation"]) {
-    assert.ok(workflow.includes(`id: ${id}\n        if: always() && steps.gate.outcome == 'success'`));
+    assert.ok(workflow.includes(`id: ${id}\n        if: always() && steps.recovery.outcome != 'skipped'`));
   }
+  assert.match(
+    workflow,
+    /id: output_cleanup\n {8}if: always\(\) && steps\.local_entry\.outputs\.output_intent == 'true'/u,
+  );
+  assert.match(workflow, /id: host_scaffold_restore\n {8}if: always\(\) && steps\.opt_scaffold\.outcome != 'skipped'/u);
   assert.doesNotMatch(workflow, /aws-actions|opentofu|terraform|\bsts\b|\bssm\b/u);
 });
 
@@ -128,7 +204,11 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
     workflow,
     /needs: \[admission, local-kata\]\n {4}if: always\(\) && needs\.admission\.result == 'success'/u,
   );
-  assert.match(workflow, /Materialize authenticated exact custody for all seven cycle uploads/u);
+  assert.ok(
+    workflow.indexOf("Admit absent aggregate paths before custody work") <
+      workflow.indexOf("Materialize authenticated exact custody for all seven cycle uploads"),
+  );
+  assert.match(workflow, /id: cycle_custody\n {8}if: always\(\)[^\n]*steps\.aggregate_baseline\.outcome == 'success'/u);
   assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID\/artifacts\?per_page=100/u);
   assert.match(workflow, /Download all seven cycle artifacts by exact numeric IDs/u);
   assert.match(workflow, /artifact-ids: \$\{\{ steps\.cycle_custody\.outputs\.artifact_ids \}\}/u);
@@ -159,7 +239,7 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.equal(workflow.match(/retention-days: 90/gu)?.length, 2);
   assert.match(workflow, /printf 'netns_intent=true\\n' >>"\$GITHUB_OUTPUT"[\s\S]*mkdir -m 0755 \/run\/netns/u);
   assert.match(workflow, /printf 'netns_acquired=true\\n' >>"\$GITHUB_OUTPUT"/u);
-  assert.match(workflow, /printf 'opt_original_mode=777\\n' >>"\$GITHUB_OUTPUT"/u);
+  assert.match(workflow, /stage2-hosted-opt-mode\.py normalize "\$GITHUB_RUN_ID" "\$GITHUB_RUN_ATTEMPT"/u);
   const scaffoldRestore = workflow.slice(
     workflow.indexOf("Restore only hosted scaffolding acquired by this run"),
     workflow.indexOf("Run one final supervised cycle residue observation"),
@@ -168,8 +248,11 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(scaffoldRestore, /NETNS_ACQUIRED: \$\{\{ steps\.preparation\.outputs\.netns_acquired \}\}/u);
   assert.match(scaffoldRestore, /if test "\$NETNS_ACQUIRED" = true; then[\s\S]*rmdir \/run\/netns/u);
   assert.doesNotMatch(workflow, /\.cogs-stage2-owner-/u);
-  assert.match(scaffoldRestore, /test ! -e \/run\/netns && sudo -n \/usr\/bin\/test ! -L \/run\/netns/u);
-  assert.match(scaffoldRestore, /if test "\$OPT_ORIGINAL_MODE" = 777; then[\s\S]*chmod 0777 \/opt/u);
+  assert.match(
+    scaffoldRestore,
+    /if sudo -n \/usr\/bin\/test -e \/run\/netns \|\| sudo -n \/usr\/bin\/test -L \/run\/netns; then status=1; fi/u,
+  );
+  assert.match(scaffoldRestore, /stage2-hosted-opt-mode\.py restore "\$GITHUB_RUN_ID" "\$GITHUB_RUN_ATTEMPT"/u);
   assert.match(workflow, /Byte-compare package and fail closed/u);
   assert.match(qualifier, /cycle-artifact-custody-v2\.json/u);
   assert.match(workflow, /PACKAGE_ARTIFACT_DIGEST.*artifact-digest/u);
@@ -178,14 +261,17 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
     workflow,
     /id: package_readback[\s\S]*?id: aggregate_cleanup[\s\S]*?Enforce complete aggregate custody and cleanup/u,
   );
-  assert.match(workflow, /id: aggregate_cleanup\n {8}if: always\(\)/u);
+  assert.match(
+    workflow,
+    /id: aggregate_cleanup\n {8}if: always\(\) && steps\.aggregate_baseline\.outcome == 'success'/u,
+  );
   assert.match(workflow, /timeout-minutes: 25/u);
   const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
   const aggregateStepMinutes = [...aggregate.matchAll(/^ {8}timeout-minutes: (\d+)$/gmu)].reduce(
     (total, match) => total + Number(match[1]),
     0,
   );
-  assert.ok(aggregateStepMinutes <= 20, `aggregate step bounds ${aggregateStepMinutes}`);
+  assert.ok(aggregateStepMinutes <= 21, `aggregate step bounds ${aggregateStepMinutes}`);
   assert.match(workflow, /FINAL_OBSERVATION: \$\{\{ steps\.final_observation\.outcome \}\}/u);
   assert.match(workflow, /"\$FINAL_OBSERVATION"/u);
   assert.match(workflow, /"\$PACKAGE_DOWNLOAD" "\$READBACK" "\$CLEANUP"/u);
@@ -222,6 +308,16 @@ test("retired preflight admission preserves the independent cleanup-only dispatc
   );
   assert.equal(settle.status, 0);
   assert.equal(settle.stdout, "cleanup");
+  const partial = spawnSync(
+    "bash",
+    [
+      "-c",
+      `${cleanup}\nOWNER=owner\nSOURCE=source\nOWNER_VALUE=o\nSOURCE_VALUE=s\nphase() { :; }\nmarker_matches() { test "$2" = "$OWNER"; }\nabsent() { test "$1" != /var/lib/cogs; }\nsudo() { printf EFFECT; }\nsettle`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(partial.status, 1);
+  assert.equal(partial.stdout, "");
 });
 
 test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () => {
@@ -232,6 +328,7 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
     preflightWorkflow,
     /rev-list --parents -n1 "\$EXACT_CONTROL_HEAD"\)" = "\$EXACT_CONTROL_HEAD \$EXACT_IMPLEMENTATION_HEAD"/u,
   );
+  const hostCheck = preflightWorkflow.indexOf("Compare every ambient host closure before mutation");
   const normalization = preflightWorkflow.indexOf(
     "Normalize the exact hosted opt scaffold before immutable preparation",
   );
@@ -240,21 +337,24 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   );
   const settlement = preflightWorkflow.indexOf("Independently repeat mandatory settlement after every outcome");
   const restoration = preflightWorkflow.indexOf("Restore the exact acquired hosted opt scaffold only after settlement");
-  assert.ok(normalization > 0 && execution > normalization && settlement > execution && restoration > settlement);
+  assert.ok(
+    hostCheck > 0 &&
+      normalization > hostCheck &&
+      execution > normalization &&
+      settlement > execution &&
+      restoration > settlement,
+  );
   const normalized = preflightWorkflow.slice(normalization, execution);
-  assert.match(normalized, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
-  assert.match(normalized, /stat -c '%U:%G:%a' \/opt\)" = root:root:777/u);
-  assert.match(normalized, /sudo -n \/bin\/chmod 0755 \/opt/u);
-  assert.match(normalized, /stat -c '%U:%G:%a' \/opt\)" = root:root:755/u);
-  assert.match(preflightWorkflow.slice(settlement, restoration), /if: always\(\)/u);
+  assert.match(normalized, /stage2-hosted-opt-mode\.py"[\s\S]*normalize "\$GITHUB_RUN_ID" "\$GITHUB_RUN_ATTEMPT"/u);
+  assert.match(
+    preflightWorkflow.slice(settlement, restoration),
+    /if: always\(\) && steps\.opt_scaffold\.outcome == 'success'/u,
+  );
   const restored = preflightWorkflow.slice(restoration);
-  assert.match(restored, /if: always\(\)/u);
-  assert.match(restored, /OPT_ORIGINAL_MODE: \$\{\{ steps\.opt_scaffold\.outputs\.opt_original_mode \}\}/u);
-  assert.match(restored, /if test "\$OPT_ORIGINAL_MODE" = 777; then/u);
-  assert.match(restored, /test ! -e \/opt\/kata && test ! -L \/opt\/kata/u);
-  assert.match(restored, /root:root:755\) sudo -n \/bin\/chmod 0777 \/opt/u);
-  assert.match(restored, /\*\) exit 1/u);
-  assert.match(restored, /stat -c '%U:%G:%a' \/opt\)" = root:root:777/u);
+  assert.match(restored, /if: always\(\) && steps\.opt_scaffold\.outcome != 'skipped'/u);
+  assert.doesNotMatch(restored, /OPT_ORIGINAL_MODE/u);
+  assert.match(restored, /stage2-hosted-opt-mode\.py"[\s\S]*restore "\$GITHUB_RUN_ID" "\$GITHUB_RUN_ATTEMPT"/u);
+  assert.doesNotMatch(restored, /chmod 0777 \/opt|test ! -e \/opt\/kata &&/u);
   assert.match(
     preflightWorkflow,
     /rev-list --parents -n1 "\$EXACT_QUALIFICATION_HEAD"\)" = "\$EXACT_QUALIFICATION_HEAD \$EXACT_CONTROL_HEAD"/u,

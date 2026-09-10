@@ -179,6 +179,7 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "schemas/stage2-pre-aws-qualification-package-v5.json",
     "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
     "scripts/stage2-formal-local-qualification.py",
+    "scripts/stage2-hosted-opt-mode.py",
     "scripts/stage2-stage-prebuilt-control.py",
     "scripts/stage2-local-settlement.py",
     "scripts/stage2-native-settlement.py",

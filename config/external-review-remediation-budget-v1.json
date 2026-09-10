@@ -1,14 +1,14 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 29000,
+  "global_gross_line_high": 30000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1492,
+    "tracked_files": 1509,
     "source_inventory_bytes": 22020096,
     "serialized_source_inventory_bytes": 262144
   },
@@ -224,14 +224,14 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 11000,
+      "gross_line_high": 12500,
       "gross_byte_forecast": {
         "source": 100000,
         "tests_fixtures": 100000,
         "docs_contracts": 150000,
         "total": 350000
       },
-      "new_file_high": 64,
+      "new_file_high": 81,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -302,6 +302,19 @@
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v6/stage2-local-execution-envelope-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v6/stage2-local-runtime-manifest-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v6/stage2-local-static-control-v2.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/02-nft.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/03-ssh.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/04-ssh-keygen.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/05-containerd.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/06-ctr.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/07-shim.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/08-qemu.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/09-virtiofsd.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-execution-envelope-v3.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-runtime-manifest-v3.json",
+        "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json",
         "docs/adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md",
         "docs/adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md",
         "docs/adr/0310-authorize-openbao-recognition-correction.md",
@@ -324,6 +337,9 @@
         "docs/adr/0327-retire-failed-formal-generation-and-separate-runtime-contracts.md",
         "docs/adr/0328-freeze-runtime-corrected-H-and-authorize-control.md",
         "docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md",
+        "docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md",
+        "docs/adr/0331-freeze-image-bound-H-and-authorize-control.md",
+        "docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
@@ -356,6 +372,7 @@
         "scripts/render-aws-stage2-completion-report-v3.ts",
         "scripts/run-launcher-smoke-evidence.ts",
         "scripts/stage2-formal-local-qualification.py",
+        "scripts/stage2-hosted-opt-mode.py",
         "scripts/stage2-prebuilt-kvm-diagnostic-lock.py",
         "scripts/stage2-prebuilt-local-qualification-guard.py",
         "scripts/stage2-prebuilt-mixed-hg-preflight.sh",

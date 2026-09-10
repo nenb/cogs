@@ -354,8 +354,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.equal(budget.remediation_global_high, 29_000);
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 29_000);
+  assert.equal(budget.remediation_global_high, 30_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 30_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -421,12 +421,12 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 29_000);
-  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.gross_line_high, 11_000);
-  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.new_file_high, 64);
+  assert.equal(manifest.global_gross_line_high, 30_000);
+  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.gross_line_high, 12_500);
+  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.new_file_high, 81);
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    72,
+    89,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),

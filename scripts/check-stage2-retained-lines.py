@@ -46,14 +46,14 @@ CONTROL_DATA_MEMBERS = (
     f"{CONTROL_DATA_ROOT}/stage2-local-runtime-manifest-v2.json",
     f"{CONTROL_DATA_ROOT}/stage2-local-static-control-v1.json",
 )
-CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, *(f"deploy/aws-feasibility/remote/stage2-completion-local-control-v{n}" for n in (3, 4, 5)))
+CONTROL_DATA_ROOTS = (CONTROL_DATA_ROOT, *(f"deploy/aws-feasibility/remote/stage2-completion-local-control-v{n}" for n in (3, 4, 5, 6)))
 CONTROL_DATA_MEMBERS += tuple(member for root in CONTROL_DATA_ROOTS[1:] for member in (
     *(f"{root}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
         "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
     *(f"{root}/stage2-local-{name}-v3.json" for name in ("execution-envelope", "runtime-manifest")),
     f"{root}/stage2-local-static-control-v2.json",
 ))
-FINAL_CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+FINAL_CONTROL_DATA_ROOT = "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 FINAL_CONTROL_DATA_MEMBERS = (
     *(f"{FINAL_CONTROL_DATA_ROOT}/contracts/{index:02d}-{role}.json" for index, role in enumerate((
         "ip", "tc", "nft", "ssh", "ssh-keygen", "containerd", "ctr", "shim", "qemu", "virtiofsd"))),
@@ -83,8 +83,10 @@ ADR0327_RETAINED_FILES = (
     "scripts/render-aws-stage2-completion-report-v3.ts",
     "scripts/validate-aws-stage2-completion-evidence-v3.ts",
 )
+ADR0330_RETAINED_FILES = ("scripts/stage2-hosted-opt-mode.py",)
 RETAINED_FILES = (
     *ADR0327_RETAINED_FILES,
+    *ADR0330_RETAINED_FILES,
     "config/stage2-retired-revisions-v1.json",
     "scripts/stage2-revision-retirement.py",
     "deploy/aws-feasibility/remote/stage2-completion-rootfs-v1.json",
@@ -267,14 +269,14 @@ def _remediation_budget():
                            "source_limits", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 29_000)
+             and data["global_gross_line_high"] == 30_000)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1492,
+    _require(data["source_limits"] == {"tracked_files": 1509,
                                         "source_inventory_bytes": 22_020_096,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 1_975,
-                "lifecycle": 7_500, "completion": 3_100, "integration": 11_000}
+                "lifecycle": 7_500, "completion": 3_100, "integration": 12_500}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -302,8 +304,8 @@ def _remediation_budget():
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 0,
-                                "lifecycle": 4, "completion": 3, "integration": 64})
-    _require(sum(new_file_highs.values()) == 72
+                                "lifecycle": 4, "completion": 3, "integration": 81})
+    _require(sum(new_file_highs.values()) == 89
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
@@ -401,7 +403,7 @@ def measure():
     final_control_data_state, final_control_data_names = _final_control_data_state()
     tracked_control_data_names = set(_git(["ls-files", "--", *CONTROL_DATA_ROOTS]).splitlines())
     _require(tracked_names | ordinary_names == retained_names
-             and ordinary_names <= set(ADR0327_RETAINED_FILES))
+             and ordinary_names <= set((*ADR0327_RETAINED_FILES, *ADR0330_RETAINED_FILES)))
     _require(tracked_deploy_names == retained_deploy_names)
     _require(len(CONTROL_DATA_MEMBERS) == len(control_data_names)
              and tracked_control_data_names == control_data_names)
