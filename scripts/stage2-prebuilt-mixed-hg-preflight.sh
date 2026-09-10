@@ -2,11 +2,11 @@
 # Non-authoritative exact mixed-H/G/Q immutable preflight. Never enter KVM/Kata.
 set -uo pipefail
 
-H=c30e0d69ec374cd812ff361e670e974d51b661c4
-G=15d99b55f4910df94decdd7edcc80bf95aee492d
-MANIFEST=a5ebebaf515805f65bb2ff7c4ffa79ff1506ee8859e5257763c98dd00114503f
-CONTROL=83a9c5d15705406961b357963312fdea132757dd19d51c15c0ae6a082173bb7e
-DESCRIPTOR=3ab1238a7424a400f6ad306611218f4434190d7ae040c6bd5acb31b91b1d81a1
+H=0000000000000000000000000000000000000000
+G=0000000000000000000000000000000000000000
+MANIFEST=0000000000000000000000000000000000000000000000000000000000000000
+CONTROL=0000000000000000000000000000000000000000000000000000000000000000
+DESCRIPTOR=0000000000000000000000000000000000000000000000000000000000000000
 ROOT=/var/lib/cogs/stage2-completion-v1/source
 H_CHECKOUT=$GITHUB_WORKSPACE/preflight-H
 CONTROL_CHECKOUT=$GITHUB_WORKSPACE/qualification
@@ -80,6 +80,13 @@ acquire_h() {
   test -z "$(/usr/bin/git -C "$H_CHECKOUT" status --porcelain)" || return
 }
 
+host_check() {
+  observed=$(/usr/bin/python3 -I -B \
+    "$CONTROL_CHECKOUT/scripts/stage2-stage-prebuilt-control.py" verify-host "$H" "$G" "$CONTROL") || return
+  test "$observed" = host_closure_verified=true || return
+  /usr/bin/printf '%s\n' "$observed"
+}
+
 prepare() {
   phase baseline
   absent /var/lib/cogs && absent /opt/kata && absent "$OWNER" && absent "$SOURCE" || return
@@ -126,7 +133,10 @@ settle() {
       sudo -n /usr/bin/timeout --signal=TERM --kill-after=10s 300s \
         env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
         "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" && recovery=success
-    else recovery=success; fi
+    else
+      absent /var/lib/cogs && absent /opt/kata || return
+      recovery=success
+    fi
   elif absent /var/lib/cogs && absent /opt/kata && absent "$OWNER" && absent "$SOURCE"; then
     recovery=success
   fi
@@ -141,8 +151,9 @@ settle() {
 }
 
 test "$#" -eq 1 || exit 2
-case "$1" in run|settle) ;; *) exit 2 ;; esac
+case "$1" in run|settle|host-check) ;; *) exit 2 ;; esac
 if test "$1" = settle; then settle; exit $?; fi
+if test "$1" = host-check; then host_check; exit $?; fi
 status=0
 admit && acquire_h && prepare || status=$?
 settle || status=1

@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Focused hostile tests for Stage 2 local workflow custody scripts."""
 from dataclasses import replace
+import copy
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+import types
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +32,7 @@ publication = load("stage2_local_publication_test", "scripts/stage2-local-public
 receipt = load("stage2_local_receipt_test", "scripts/stage2-local-upload-receipt.py")
 control_staging = load("stage2_control_staging_test", "scripts/stage2-stage-reviewed-control.py")
 prebuilt_staging = load("stage2_prebuilt_staging_test", "scripts/stage2-stage-prebuilt-control.py")
+opt_mode = load("stage2_hosted_opt_mode_test", "scripts/stage2-hosted-opt-mode.py")
 
 
 def rejected(call, exception):
@@ -451,6 +455,434 @@ def prebuilt_staging_linux_tests():
              prebuilt_staging._load_module) = original
 
 
+def prebuilt_host_check_tests():
+    class Description:
+        def __init__(self, value):
+            self.value = value
+            self.raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    host = Path("/bin/sh")
+    raw, seen = host.read_bytes(), host.stat()
+    item = {"path": str(host), "size": seen.st_size}
+    roles = ("ip", "tc", "nft", "ssh", "ssh-keygen")
+    rows = [{"role": role, "source_class": "host-path", "path": str(host)} for role in roles]
+    contracts = {role: Description({"objects": [item]}) for role in roles}
+    publication = {"control_revision": "e" * 40, "implementation_revision": "f" * 40,
+        "producer_run_id": 1, "publisher_run_id": 2, "producer_artifact_id": 3}
+    custody = {"publication_receipt": publication,
+        "provenance": {"builder": {"implementation_revision": "f" * 40, "run_id": 1}},
+        "qualification_receipt": {"implementation_revision": "f" * 40, "run_id": 1}}
+    rootfs = {"custody": custody, "prebuilt_descriptor": {"producer": {"revision": "f" * 40}}}
+    control = Description({"implementation": {"revision": "f" * 40},
+        "producer": {"control_revision": "e" * 40}, "members": []})
+    envelope = Description({"rootfs": rootfs})
+    runtime = Description({"executables": rows})
+    codec = type("Codec", (), {"MAX_CONTROL_BYTES": 4096,
+        "load_control": lambda _self, _raw: control,
+        "validate_control_members": lambda _self, _control, _members: (envelope, runtime, contracts)})()
+    def retain(contract, descriptors, role):
+        descriptor = os.open(contract["objects"][0]["path"], os.O_RDONLY)
+        descriptors.append(descriptor); value = os.fstat(descriptor)
+        retained = type("Retained", (), dict(descriptor=descriptor, device=value.st_dev,
+            inode=value.st_ino, mode=stat.S_IMODE(value.st_mode), uid=value.st_uid,
+            gid=value.st_gid, nlink=value.st_nlink, size=value.st_size,
+            sha256=hashlib.sha256(raw).hexdigest()))()
+        return (retained,)
+    admission = type("Admission", (), {"_retain_contract_objects": staticmethod(retain),
+        "_read_held": staticmethod(lambda _fd, _seen, _size: hashlib.sha256(raw).hexdigest())})()
+    with tempfile.TemporaryDirectory() as temporary:
+        source = Path(temporary); control_raw = b"{}\n"
+        (source / prebuilt_staging.CONTROL_MEMBER).write_bytes(control_raw)
+        original = (prebuilt_staging.SOURCE, prebuilt_staging._load_module,
+                    prebuilt_staging._load_admission, prebuilt_staging.os.geteuid)
+        prebuilt_staging.SOURCE = source
+        prebuilt_staging._load_module = lambda *_: codec
+        prebuilt_staging._load_admission = lambda: admission
+        prebuilt_staging.os.geteuid = lambda: 1000
+        arguments = ("f" * 40, "e" * 40, hashlib.sha256(control_raw).hexdigest())
+        try:
+            prebuilt_staging.verify_host_closures(*arguments)
+            admission._read_held = lambda *_: "0" * 64
+            rejected(lambda: prebuilt_staging.verify_host_closures(*arguments),
+                     prebuilt_staging.ControlStagingError)
+            admission._read_held = lambda *_: hashlib.sha256(raw).hexdigest()
+            custody["provenance"]["builder"]["run_id"] = 34375934829
+            rejected(lambda: prebuilt_staging.verify_host_closures(*arguments),
+                     prebuilt_staging.retirement["RetirementError"])
+        finally:
+            (prebuilt_staging.SOURCE, prebuilt_staging._load_module,
+             prebuilt_staging._load_admission, prebuilt_staging.os.geteuid) = original
+    remote_source = str(prebuilt_staging.CHECKOUT_ADMISSION.parent)
+    sys.path.insert(0, remote_source)
+    try:
+        reader = load("completion_kata_admission", prebuilt_staging.CHECKOUT_ADMISSION.relative_to(ROOT))
+    finally:
+        sys.path.remove(remote_source)
+    fd_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+    with tempfile.TemporaryDirectory() as temporary:
+        untrusted = Path(temporary) / "file"; untrusted.write_bytes(b"x")
+        descriptor_count = len(os.listdir(fd_root))
+        rejected(lambda: reader._open_trusted_absolute_regular(str(untrusted), 1),
+                 reader.AdmissionError)
+        assert len(os.listdir(fd_root)) == descriptor_count
+    real_reader_os = reader.os
+    reader.os = types.SimpleNamespace(**vars(real_reader_os))
+    calls = 0
+    def failing_fstat(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2: raise OSError("synthetic directory fstat refusal")
+        return real_reader_os.fstat(descriptor)
+    reader.os.fstat = failing_fstat
+    descriptor_count = len(os.listdir(fd_root))
+    try:
+        rejected(lambda: reader._open_trusted_absolute_regular("/usr/bin/env", 1024 * 1024), OSError)
+        assert len(os.listdir(fd_root)) == descriptor_count
+    finally:
+        reader.os = real_reader_os
+    reader.os = types.SimpleNamespace(**vars(real_reader_os))
+    reader.os.dup = lambda _descriptor: (_ for _ in ()).throw(
+        OSError("synthetic initial duplication refusal"))
+    descriptor_count = len(os.listdir(fd_root))
+    try:
+        rejected(lambda: reader._open_trusted_absolute_regular("/usr/bin/env", 1024 * 1024), OSError)
+        assert len(os.listdir(fd_root)) == descriptor_count
+    finally:
+        reader.os = real_reader_os
+    real_stager_os = prebuilt_staging.os
+    with tempfile.TemporaryDirectory() as temporary:
+        base = Path(temporary); (base / "nested").mkdir(); (base / "nested/file").write_bytes(b"x")
+        directory = real_stager_os.open(base, real_stager_os.O_RDONLY | real_stager_os.O_DIRECTORY)
+        prebuilt_staging.os = types.SimpleNamespace(**vars(real_stager_os))
+        prebuilt_staging.os.fstat = lambda _descriptor: (_ for _ in ()).throw(
+            OSError("synthetic member-directory fstat refusal"))
+        descriptor_count = len(real_stager_os.listdir(fd_root))
+        try:
+            rejected(lambda: prebuilt_staging._read_regular(directory, "nested/file", 1), OSError)
+            assert len(real_stager_os.listdir(fd_root)) == descriptor_count
+        finally:
+            prebuilt_staging.os = real_stager_os; real_stager_os.close(directory)
+    original_qualification_source = prebuilt_staging.QUALIFICATION_SOURCE
+    prebuilt_staging.os = types.SimpleNamespace(**vars(real_stager_os))
+    source_fstats = 0
+    def source_fstat(descriptor):
+        nonlocal source_fstats
+        source_fstats += 1
+        if source_fstats == 2: raise OSError("synthetic source-child fstat refusal")
+        return real_stager_os.fstat(descriptor)
+    prebuilt_staging.os.fstat = source_fstat
+    prebuilt_staging.QUALIFICATION_SOURCE = Path("/usr/bin/cogs-stage2-unreached")
+    descriptor_count = len(real_stager_os.listdir(fd_root))
+    try:
+        rejected(lambda: prebuilt_staging._open_source(prebuilt_staging.QUALIFICATION_SOURCE), OSError)
+        assert len(real_stager_os.listdir(fd_root)) == descriptor_count
+    finally:
+        prebuilt_staging.os = real_stager_os
+        prebuilt_staging.QUALIFICATION_SOURCE = original_qualification_source
+    class EmptyControl:
+        value = {"members": []}
+    class EmptyEnvelope:
+        value = {"rootfs": {"prebuilt_descriptor_sha256": "7" * 64}}
+    empty_codec = type("EmptyCodec", (), {"MAX_CONTROL_BYTES": 16,
+        "load_control": staticmethod(lambda _raw: EmptyControl()),
+        "validate_control_members": staticmethod(lambda _control, _members: (EmptyEnvelope(), None, None))})()
+    with tempfile.TemporaryDirectory() as temporary:
+        destination = Path(temporary); (destination / prebuilt_staging.CONTROL_MEMBER).write_bytes(b"{}\n")
+        (destination / "contracts").mkdir()
+        original_verify = (prebuilt_staging.DESTINATION, prebuilt_staging._load_module,
+                           prebuilt_staging._read_frozen, prebuilt_staging.os)
+        for fail_at in (1, 2):
+            prebuilt_staging.DESTINATION = destination
+            prebuilt_staging._load_module = lambda *_: empty_codec
+            prebuilt_staging._read_frozen = lambda *_: b"{}\n"
+            prebuilt_staging.os = types.SimpleNamespace(**vars(real_stager_os))
+            prebuilt_staging.os.geteuid = lambda: 0
+            verify_fstats = 0
+            def verify_fstat(descriptor):
+                nonlocal verify_fstats
+                verify_fstats += 1
+                if verify_fstats == fail_at: raise OSError("synthetic staged-directory fstat refusal")
+                seen = real_stager_os.fstat(descriptor)
+                values = {name: getattr(seen, name) for name in dir(seen) if name.startswith("st_")}
+                values.update(st_uid=0, st_gid=0,
+                    st_mode=stat.S_IFDIR | 0o500)
+                return types.SimpleNamespace(**values)
+            prebuilt_staging.os.fstat = verify_fstat
+            descriptor_count = len(real_stager_os.listdir(fd_root))
+            rejected(lambda: prebuilt_staging.verify_staged("7" * 64), OSError)
+            assert len(real_stager_os.listdir(fd_root)) == descriptor_count
+        (prebuilt_staging.DESTINATION, prebuilt_staging._load_module,
+         prebuilt_staging._read_frozen, prebuilt_staging.os) = original_verify
+    historical = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v6"
+    control_raw = (historical / prebuilt_staging.CONTROL_MEMBER).read_bytes()
+    control_value = json.loads(control_raw)
+    envelope_value = json.loads((historical / "stage2-local-execution-envelope-v3.json").read_bytes())
+    rootfs = envelope_value["rootfs"]; custody = rootfs["custody"]
+    publication = custody["publication_receipt"]
+    selected = (control_value["implementation"]["revision"], control_value["producer"]["control_revision"],
+        publication["control_revision"], rootfs["prebuilt_descriptor"]["producer"]["revision"],
+        custody["provenance"]["builder"]["implementation_revision"],
+        custody["qualification_receipt"]["implementation_revision"], publication["implementation_revision"])
+    expected_runs = (str(publication["producer_run_id"]), str(publication["publisher_run_id"]),
+        str(custody["provenance"]["builder"]["run_id"]), str(custody["qualification_receipt"]["run_id"]))
+    expected_artifacts = (str(publication["producer_artifact_id"]),)
+    original = (prebuilt_staging.SOURCE, prebuilt_staging.os.geteuid,
+                prebuilt_staging.retirement["select"], prebuilt_staging._load_module)
+    real_load = prebuilt_staging._load_module
+    def historical_load(*arguments):
+        module = real_load(*arguments)
+        module.MANDATORY_SECURITY_SOURCES = frozenset(
+            path for path in module.MANDATORY_SECURITY_SOURCES
+            if path != "scripts/stage2-hosted-opt-mode.py")
+        return module
+    prebuilt_staging.SOURCE = historical; prebuilt_staging.os.geteuid = lambda: 1000
+    try:
+        rejected(lambda: prebuilt_staging.retirement["select"](
+            selected, runs=expected_runs, artifacts=expected_artifacts),
+            prebuilt_staging.retirement["RetirementError"])
+        def historical_only(revisions, runs=(), artifacts=(), **kwargs):
+            assert tuple(revisions) == selected and tuple(runs) == expected_runs
+            assert tuple(artifacts) == expected_artifacts and not kwargs
+        prebuilt_staging.retirement["select"] = historical_only
+        prebuilt_staging._load_module = historical_load
+        try:
+            prebuilt_staging.verify_host_closures(
+                selected[0], selected[1], hashlib.sha256(control_raw).hexdigest())
+        except Exception as error:
+            if platform.system() == "Linux" and platform.machine() == "x86_64":
+                assert type(error).__name__ == "AdmissionError"
+                assert str(error) == "executable closure source differs"
+            else:
+                assert type(error).__name__ in {"AdmissionError", "PreparationError", "FileNotFoundError"}
+        else:
+            assert os.environ.get("RUNNER_IMAGE_VERSION", os.environ.get("ImageVersion")) == "20260831.293.1"
+        if platform.system() == "Linux" and platform.machine() == "x86_64":
+            codec = historical_load(prebuilt_staging.CHECKOUT_PREPARATION, "composed_host_codec")
+            control_value = json.loads(control_raw)
+            member_raws = {row["name"]: (historical / row["name"]).read_bytes()
+                           for row in control_value["members"]}
+            envelope_value = json.loads(member_raws["stage2-local-execution-envelope-v3.json"])
+            runtime_value = json.loads(member_raws["stage2-local-runtime-manifest-v3.json"])
+            host_rows = [row for row in runtime_value["executables"]
+                         if row["source_class"] == "host-path"]
+            assert [row["role"] for row in host_rows] == list(roles)
+            for row in host_rows:
+                value = codec.collect_executable_contract(
+                    row["role"], row["path"], row["path"], lambda path: Path(path))
+                raw_value = codec.canonical_bytes(value)
+                member_raws[row["contract_member"]] = raw_value
+                row.update(contract_sha256=hashlib.sha256(raw_value).hexdigest(),
+                    executable_sha256=value["objects"][0]["sha256"],
+                    tool_closure_sha256=value["closure_sha256"])
+            def publish_package(destination):
+                runtime_raw = codec.canonical_bytes(runtime_value)
+                member_raws["stage2-local-runtime-manifest-v3.json"] = runtime_raw
+                envelope_value["runtime"]["manifest_sha256"] = hashlib.sha256(runtime_raw).hexdigest()
+                envelope_value["runtime"]["executable_set_sha256"] = hashlib.sha256(
+                    codec.canonical_bytes(runtime_value["executables"])).hexdigest()
+                envelope_raw = codec.canonical_bytes(envelope_value)
+                member_raws["stage2-local-execution-envelope-v3.json"] = envelope_raw
+                for row in control_value["members"]:
+                    raw_value = member_raws[row["name"]]
+                    row.update(size=len(raw_value), sha256=hashlib.sha256(raw_value).hexdigest())
+                current_control = codec.canonical_bytes(control_value)
+                for name, raw_value in member_raws.items():
+                    path = destination / name; path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(raw_value)
+                (destination / prebuilt_staging.CONTROL_MEMBER).write_bytes(current_control)
+                codec.validate_control_members(codec.load_control(current_control), member_raws)
+                return current_control
+            with tempfile.TemporaryDirectory() as temporary:
+                package = Path(temporary)
+                current_control = publish_package(package)
+                prebuilt_staging.SOURCE = package
+                descriptors = len(os.listdir("/proc/self/fd"))
+                expected_control = hashlib.sha256(current_control).hexdigest()
+                prebuilt_staging.verify_host_closures(selected[0], selected[1], expected_control)
+                assert len(os.listdir("/proc/self/fd")) == descriptors
+                real_admission_loader = prebuilt_staging._load_admission
+                live_admission = real_admission_loader()
+                real_admission_os = live_admission.os
+                live_admission.os = types.SimpleNamespace(**vars(real_admission_os))
+                observations = {}; injected = False
+                def unstable_fstat(descriptor):
+                    nonlocal injected
+                    seen = real_admission_os.fstat(descriptor)
+                    identity = (seen.st_dev, seen.st_ino)
+                    observations[identity] = observations.get(identity, 0) + 1
+                    if stat.S_ISREG(seen.st_mode) and observations[identity] == 2 and not injected:
+                        injected = True
+                        values = {name: getattr(seen, name) for name in dir(seen)
+                                  if name.startswith("st_")}
+                        values["st_mtime_ns"] += 1
+                        return types.SimpleNamespace(**values)
+                    return seen
+                live_admission.os.fstat = unstable_fstat
+                prebuilt_staging._load_admission = lambda: live_admission
+                try:
+                    try:
+                        prebuilt_staging.verify_host_closures(
+                            selected[0], selected[1], expected_control)
+                    except Exception as error:
+                        assert type(error).__name__ == "AdmissionError"
+                        assert str(error) == "admitted file changed while reading"
+                    else:
+                        raise AssertionError("during-read generation change was accepted")
+                    assert injected and len(os.listdir("/proc/self/fd")) == descriptors
+                finally:
+                    prebuilt_staging._load_admission = real_admission_loader
+                    live_admission.os = real_admission_os
+                target = host_rows[-1]
+                changed = json.loads(member_raws[target["contract_member"]])
+                changed["objects"][-1]["sha256"] = "0" * 64
+                body = {name: value for name, value in changed.items() if name != "closure_sha256"}
+                changed["closure_sha256"] = hashlib.sha256(codec.canonical_bytes(body)).hexdigest()
+                changed_raw = codec.canonical_bytes(changed)
+                member_raws[target["contract_member"]] = changed_raw
+                target.update(contract_sha256=hashlib.sha256(changed_raw).hexdigest(),
+                    tool_closure_sha256=changed["closure_sha256"])
+                current_control = publish_package(package)
+                try:
+                    prebuilt_staging.verify_host_closures(
+                        selected[0], selected[1], hashlib.sha256(current_control).hexdigest())
+                except Exception as error:
+                    assert type(error).__name__ == "AdmissionError"
+                    assert str(error) == "executable closure source differs"
+                else:
+                    raise AssertionError("coherently rebound library mutation was accepted")
+                assert len(os.listdir("/proc/self/fd")) == descriptors
+            prebuilt_staging.SOURCE = historical
+            prebuilt_staging.os.geteuid = lambda: 0
+            rejected(lambda: prebuilt_staging.verify_host_closures(
+                selected[0], selected[1], hashlib.sha256(control_raw).hexdigest()),
+                prebuilt_staging.ControlStagingError)
+            prebuilt_staging.os.geteuid = lambda: 1000
+    finally:
+        (prebuilt_staging.SOURCE, prebuilt_staging.os.geteuid,
+         prebuilt_staging.retirement["select"], prebuilt_staging._load_module) = original
+
+
+def opt_mode_tests():
+    helper_source = (ROOT / "scripts/stage2-hosted-opt-mode.py").read_text()
+    for fixed in settlement.FIXED_ROOTS:
+        if fixed != "/opt/kata": assert f'"{fixed}"' in helper_source
+    with tempfile.TemporaryDirectory() as temporary:
+        base = Path(temporary)
+        root, state = base / "opt", base / "custody.json"
+        root.mkdir(mode=0o755)
+        uid, gid = os.geteuid(), os.getegid()
+        normalize = lambda: opt_mode.normalize("7", "1", root, state, uid, gid)
+        restore = lambda run="7", attempt="1": opt_mode.restore(
+            run, attempt, root, state, uid, gid)
+        normalize(); assert state.is_file() and stat.S_IMODE(state.stat().st_mode) == 0o400
+        assert stat.S_IMODE(root.stat().st_mode) == 0o755
+        restore(); assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        os.chmod(root, 0o777)
+        normalize(); assert state.is_file() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        rejected(lambda: restore("8"), opt_mode.OptModeError)
+        assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        restore(); assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        for symlink in (False, True):
+            child = root / "kata"
+            child.symlink_to("missing") if symlink else child.write_text("foreign")
+            rejected(normalize, opt_mode.OptModeError)
+            assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+            child.unlink()
+        os.chmod(root, 0o775)
+        rejected(normalize, opt_mode.OptModeError)
+        os.chmod(root, 0o777)
+        link = base / "opt-link"; link.symlink_to(root)
+        rejected(lambda: opt_mode.normalize("7", "1", link, state, uid, gid),
+                 opt_mode.OptModeError)
+        original_absent = opt_mode._absent
+        calls = 0
+        def concurrent_child(directory, name="kata"):
+            nonlocal calls
+            calls += 1
+            if calls == 2: (root / "kata").write_text("late")
+            original_absent(directory, name)
+        opt_mode._absent = concurrent_child
+        try:
+            rejected(normalize, opt_mode.OptModeError)
+            assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        finally:
+            opt_mode._absent = original_absent
+            (root / "kata").unlink()
+        restore(); assert not state.exists()
+        original_stable = opt_mode._stable_absent
+        calls = 0
+        def after_absence(directory, name="kata"):
+            nonlocal calls
+            calls += 1
+            original_stable(directory, name)
+            if calls == 2: (root / "kata").write_text("post-observation")
+        opt_mode._stable_absent = after_absence
+        try:
+            rejected(normalize, opt_mode.OptModeError)
+            assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        finally:
+            opt_mode._stable_absent = original_stable
+            (root / "kata").unlink()
+        restore(); assert not state.exists()
+        normalize()
+        calls = 0
+        opt_mode._absent = concurrent_child
+        try:
+            rejected(restore, opt_mode.OptModeError)
+            assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        finally:
+            opt_mode._absent = original_absent
+            (root / "kata").unlink()
+        restore(); assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        normalize()
+        original_fsync = opt_mode.os.fsync
+        failed = False
+        root_identity = (root.stat().st_dev, root.stat().st_ino)
+        def fail_opt_fsync(descriptor):
+            nonlocal failed
+            seen = os.fstat(descriptor)
+            if not failed and (seen.st_dev, seen.st_ino) == root_identity:
+                failed = True
+                raise OSError("fsync fault")
+            return original_fsync(descriptor)
+        opt_mode.os.fsync = fail_opt_fsync
+        try:
+            rejected(restore, OSError)
+            assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        finally:
+            opt_mode.os.fsync = original_fsync
+        restore(); assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        normalize()
+        saved = state.read_bytes(); malformed = json.loads(saved); malformed["uid"] = False
+        state.chmod(0o600); state.write_bytes(opt_mode._canonical(malformed)); state.chmod(0o400)
+        rejected(restore, opt_mode.OptModeError)
+        assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        state.chmod(0o600); state.write_bytes(saved); state.chmod(0o400); restore()
+        rejected(lambda: opt_mode.normalize("9" * 33, "1", root, state, uid, gid),
+                 opt_mode.OptModeError)
+        assert not state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o777
+        normalize()
+        held = base / "held"; root.rename(held); root.mkdir(mode=0o755)
+        rejected(restore, opt_mode.OptModeError)
+        assert state.exists() and stat.S_IMODE(root.stat().st_mode) == 0o755
+        root.rmdir(); held.rename(root); restore()
+        rejected(lambda: opt_mode.restore("7", "1", root, state, uid + 1, gid),
+                 opt_mode.OptModeError)
+    original = (opt_mode.os.open, opt_mode.os.fstat, opt_mode.os.close)
+    opened, closed = [], []
+    def fake_open(*_args, **_kwargs):
+        descriptor = 100 + len(opened); opened.append(descriptor); return descriptor
+    opt_mode.os.open = fake_open
+    opt_mode.os.fstat = lambda _descriptor: (_ for _ in ()).throw(OSError("fstat fault"))
+    opt_mode.os.close = closed.append
+    try:
+        rejected(lambda: opt_mode._fixed_absent(Path("/var/lib/cogs"), 0, 0), OSError)
+        assert closed == list(reversed(opened))
+    finally:
+        opt_mode.os.open, opt_mode.os.fstat, opt_mode.os.close = original
+
+
+prebuilt_host_check_tests()
+opt_mode_tests()
 guard_tests()
 publication_tests()
 receipt_tests()

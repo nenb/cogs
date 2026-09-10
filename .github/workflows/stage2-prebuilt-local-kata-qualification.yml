@@ -55,9 +55,13 @@ jobs:
           # ADR0326 complete retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID" "$MIXED_PREFLIGHT_RUN_ID"; do
             case "$selected" in
-              c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
+              c30e0d69ec374cd812ff361e670e974d51b661c4|15d99b55f4910df94decdd7edcc80bf95aee492d|d0e29eb359f0c1678c18f676e312276eff3aa3f8|34375934829|34402409489|34403562378|34411847798|10114901253|10123988189|10124443866|c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
+          if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1; then
+            /usr/bin/printf '%s\n' 'stage2.runner-image.rejected' >&2
+            exit 2
+          fi
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -130,9 +134,13 @@ jobs:
           # ADR0326 complete retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
             case "$selected" in
-              c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
+              c30e0d69ec374cd812ff361e670e974d51b661c4|15d99b55f4910df94decdd7edcc80bf95aee492d|d0e29eb359f0c1678c18f676e312276eff3aa3f8|34375934829|34402409489|34403562378|34411847798|10114901253|10123988189|10124443866|c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
+          if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1; then
+            /usr/bin/printf '%s\n' 'stage2.runner-image.rejected' >&2
+            exit 2
+          fi
           test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
@@ -161,6 +169,35 @@ jobs:
           /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 45s \
             /usr/bin/python3 -I -B scripts/stage2-prebuilt-local-qualification-guard.py >>"$GITHUB_OUTPUT"
 
+      - name: Compare every ambient host closure before mutation
+        timeout-minutes: 1
+        env:
+          EXPECTED_H: ${{ steps.gate.outputs.implementation_head }}
+          EXPECTED_G: ${{ steps.gate.outputs.control_head }}
+          EXPECTED_CONTROL: ${{ steps.gate.outputs.control_sha256 }}
+        run: |
+          set -euo pipefail
+          host_check=$(/usr/bin/python3 -I -B scripts/stage2-stage-prebuilt-control.py \
+            verify-host "$EXPECTED_H" "$EXPECTED_G" "$EXPECTED_CONTROL")
+          test "$host_check" = host_closure_verified=true
+
+      - name: Admit absent fixed roots before hosted mode acquisition
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          baseline=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            scripts/stage2-hosted-opt-mode.py baseline)
+          test "$baseline" = hosted_scaffold_absent=true
+
+      - name: Normalize the exact hosted opt scaffold before preparation
+        id: opt_scaffold
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          normalized=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            scripts/stage2-hosted-opt-mode.py normalize "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")
+          test "$normalized" = hosted_opt_normalized=true
+
       - name: Acquire exact reviewed implementation revision H separately without credentials
         timeout-minutes: 1
         run: |
@@ -184,25 +221,22 @@ jobs:
           EXPECTED_CONTROL_SHA256: ${{ steps.gate.outputs.control_sha256 }}
         run: |
           set -euo pipefail
-          sudo -n /usr/bin/test ! -e /var/lib/cogs && sudo -n /usr/bin/test ! -L /var/lib/cogs
-          sudo -n /usr/bin/test ! -e /opt/kata && sudo -n /usr/bin/test ! -L /opt/kata
-          sudo -n /usr/bin/test ! -e /run/netns && sudo -n /usr/bin/test ! -L /run/netns
           printf 'netns_intent=true\n' >>"$GITHUB_OUTPUT"
           sudo -n /bin/mkdir -m 0755 /run/netns
           test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
           printf 'netns_acquired=true\n' >>"$GITHUB_OUTPUT"
-          test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
-          printf 'opt_original_mode=777\n' >>"$GITHUB_OUTPUT"
-          sudo -n /bin/chmod 0755 /opt
+          printf 'source_intent=true\n' >>"$GITHUB_OUTPUT"
           prepared=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/stage2-implementation-H/scripts/prepare-stage2-fixed-source.py")
           /usr/bin/python3 -I -c 'import json,sys
           value=json.loads(sys.stdin.buffer.read()); assert value["revision"] == sys.argv[1] and value["manifest_sha256"] == sys.argv[2]
           ' "${{ steps.gate.outputs.implementation_head }}" "$EXPECTED_MANIFEST" <<<"$prepared"
+          printf 'source_acquired=true\n' >>"$GITHUB_OUTPUT"
           staged=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=5s 75s \
             env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B scripts/stage2-stage-prebuilt-control.py)
           test "$staged" = "control_sha256=$EXPECTED_CONTROL_SHA256"
+          printf 'immutable_intent=true\n' >>"$GITHUB_OUTPUT"
           immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1770s \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             /usr/bin/python3 -I -B \
@@ -210,6 +244,7 @@ jobs:
           /usr/bin/python3 -I -c 'import json,sys
           value=json.loads(sys.stdin.buffer.read()); assert value == {"version":"cogs.stage2-local-immutable-preparation/v2","rootfs_artifact_count":1,"runtime_archive_count":2,"receipt_sha256":value["receipt_sha256"],"control_verified":True,"authority":"immutable-public-input-preparation-only"}; assert len(value["receipt_sha256"]) == 64
           ' <<<"$immutable"
+          printf 'immutable_acquired=true\n' >>"$GITHUB_OUTPUT"
           verified=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
             scripts/stage2-stage-prebuilt-control.py verify "${{ steps.gate.outputs.rootfs_descriptor_sha256 }}")
           test "$verified" = "rootfs_descriptor_sha256=${{ steps.gate.outputs.rootfs_descriptor_sha256 }}"
@@ -265,7 +300,10 @@ jobs:
         timeout-minutes: 132
         run: |
           set -euo pipefail
-          test ! -e "$REPORT_STAGING"
+          for path in "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"; do
+            if test -e "$path" || test -L "$path"; then exit 2; fi
+          done
+          printf 'output_intent=true\n' >>"$GITHUB_OUTPUT"
           /bin/mkdir -m 0700 -- "$REPORT_STAGING"
           /bin/mkdir -m 0700 -- "$CYCLE_STAGING"
           case "$FORMAL_CYCLE_ORDINAL" in
@@ -278,9 +316,10 @@ jobs:
             /usr/bin/python3 -I -B "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote/$entry" \
             | /usr/bin/tee "$CYCLE_STAGING/receipt.partial" >/dev/null
 
+      # A partial or unauthenticated source remains preserved/red; never execute it for cleanup.
       - name: Invoke cleanup-only recovery after every cycle outcome
         id: recovery
-        if: always()
+        if: always() && steps.preparation.outputs.source_acquired == 'true'
         continue-on-error: true
         timeout-minutes: 13
         run: |
@@ -291,7 +330,7 @@ jobs:
 
       - name: Settle fixed roots only after recovery
         id: fixed_cleanup
-        if: always() && steps.gate.outcome == 'success'
+        if: always() && steps.recovery.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 3
         run: |
@@ -307,7 +346,7 @@ jobs:
 
       - name: Independently prove zero lifecycle residue after cleanup
         id: independent_residue
-        if: always() && steps.gate.outcome == 'success'
+        if: always() && steps.recovery.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 2
         run: |
@@ -391,46 +430,42 @@ jobs:
 
       - name: Remove cycle output and readback staging
         id: output_cleanup
-        if: always()
+        if: always() && steps.local_entry.outputs.output_intent == 'true'
         continue-on-error: true
         timeout-minutes: 1
         run: |
           sudo -n /bin/rm -rf -- "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"
-          test ! -e "$REPORT_STAGING" && test ! -L "$REPORT_STAGING"
-          test ! -e "$REPORT_READBACK_STAGING" && test ! -L "$REPORT_READBACK_STAGING"
-          test ! -e "$RECEIPT_READBACK_STAGING" && test ! -L "$RECEIPT_READBACK_STAGING"
+          for path in "$REPORT_STAGING" "$REPORT_READBACK_STAGING" "$RECEIPT_READBACK_STAGING"; do
+            if test -e "$path" || test -L "$path"; then exit 1; fi
+          done
 
       - name: Restore only hosted scaffolding acquired by this run
         id: host_scaffold_restore
-        if: always()
+        if: always() && steps.opt_scaffold.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 1
         env:
           NETNS_INTENT: ${{ steps.preparation.outputs.netns_intent }}
           NETNS_ACQUIRED: ${{ steps.preparation.outputs.netns_acquired }}
-          OPT_ORIGINAL_MODE: ${{ steps.preparation.outputs.opt_original_mode }}
         run: |
           set -euo pipefail
+          status=0
           if test "$NETNS_ACQUIRED" = true; then
-            sudo -n /usr/bin/test ! -e /opt/kata && sudo -n /usr/bin/test ! -L /opt/kata
-            test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755
-            sudo -n /bin/rmdir /run/netns
+            test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /run/netns)" = root:root:755 \
+              && sudo -n /bin/rmdir /run/netns || status=1
           else
-            test -z "$NETNS_ACQUIRED"
-            test "$NETNS_INTENT" = true || test -z "$NETNS_INTENT"
-            sudo -n /usr/bin/test ! -e /run/netns && sudo -n /usr/bin/test ! -L /run/netns
+            test -z "$NETNS_ACQUIRED" || status=1
+            test "$NETNS_INTENT" = true || test -z "$NETNS_INTENT" || status=1
+            if sudo -n /usr/bin/test -e /run/netns || sudo -n /usr/bin/test -L /run/netns; then status=1; fi
           fi
-          if test "$OPT_ORIGINAL_MODE" = 777; then
-            seen=$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)
-            case "$seen" in root:root:755) sudo -n /bin/chmod 0777 /opt ;; root:root:777) ;; *) exit 1 ;; esac
-            test "$(sudo -n /usr/bin/stat -c '%U:%G:%a' /opt)" = root:root:777
-          else
-            test -z "$OPT_ORIGINAL_MODE"
-          fi
+          restored=$(sudo -n env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B \
+            scripts/stage2-hosted-opt-mode.py restore "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT") || status=1
+          test "$restored" = hosted_opt_restored=true || status=1
+          exit "$status"
 
       - name: Run one final supervised cycle residue observation
         id: final_observation
-        if: always() && steps.gate.outcome == 'success'
+        if: always() && steps.recovery.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 1
         run: |
@@ -487,9 +522,13 @@ jobs:
           # ADR0326 complete retirement mirror; selection only, never ancestors.
           for selected in "$GITHUB_SHA" "$EXACT_IMPLEMENTATION_HEAD" "$EXACT_CONTROL_HEAD" "$EXACT_QUALIFICATION_HEAD" "$GITHUB_RUN_ID"; do
             case "$selected" in
-              c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
+              c30e0d69ec374cd812ff361e670e974d51b661c4|15d99b55f4910df94decdd7edcc80bf95aee492d|d0e29eb359f0c1678c18f676e312276eff3aa3f8|34375934829|34402409489|34403562378|34411847798|10114901253|10123988189|10124443866|c10fc103532f3e3a8b746727bd0f48c6d8498148|eb59cae18e0f041a243f35f253d46713f7e87142|b11adc47c454bde0dc0e2930012e418b90917555|34282898803|34292774279|34293986674|34301325559|34302034014|10079099187|10081986019|10082440691|6276eae08e29ee577f3d9b2c739ceadfe467a769|5601edf196a1bd4127afed6adf12ad8525fdb5b3|9f6e79140e4df284588182c96b5044bb52f50ef9|0e5b7012fabae3412ce8e3110bb181af1ffe608b|f93748b253c1429cce9149defde623f40c9cc0ab|d2fe08553d25d73fa276794c96b0f311e5406186|a108f981dacad6978e2a37d16a143da5c3b51cf4|728a77a87328e9cccd57547a930e84764964061f|8e2af4398519ab8d64b7f9e7194f9c116c6f51d9|229ea62bce964086726181974a6fec1c6dfd1f86|821149ba4c3dbccef48694efcdb1eb29fa9fd2b9|06188f67a9a699924d645ce8aa0e91950b6341c7|8a1b56cfdaf013b27d8ef7a7e2753d3bb2582271|69987e08cf9454fecf540a4de097f0877155b043|97bc8eb8520a2116914c65a9ec5929e82c34ebf3|942e84cd8f977ee23a97dc47ce4a5d2d7510b346|0296252721fad0502dd4f41dacb1674e71b42bd6|9b9966afffe0ea8de4d0c99147886a95094470a9|6bd12dcd25d877ffac03752fa0f71beeeb86a99e|8907eba3191d07573cd84573cb0b2adddff17bd6|242bbefeae5444118d9e97b46597130b509ca253|34257525184|33626103650|33630868892|33837299968|33850962596|33851159217|33908498241|33931002300|33931091412|33965298642|33972129993|33980034976|33987181596|33987659305|33995592875|33995910136|34007531193|34013328638|34013774850|34183885618|34192071842|34192787285|34023790672|34028384783|10069446931|9845676644|9924034454|9928325265|9951239210|9958532006|9958574502|9971564905|9973726406|9975524471|9975667979|9981717931|9983143614|9983282050|10040293103|10042564354|9988125363) exit 2 ;;
             esac
           done
+          if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1; then
+            /usr/bin/printf '%s\n' 'stage2.runner-image.rejected' >&2
+            exit 2
+          fi
           clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
           "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
           "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
@@ -512,9 +551,25 @@ jobs:
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-prebuilt-local-qualification-guard.py >>"$GITHUB_OUTPUT"
 
+      - name: Admit absent aggregate paths before custody work
+        id: aggregate_baseline
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -I -B - <<'PY'
+          import os
+          names = (os.environ["CYCLE_AGGREGATE_ROOT"], os.environ["PACKAGE_STAGING"],
+                   os.environ["PACKAGE_READBACK"], os.environ["CYCLE_CUSTODY_API_RESPONSE"],
+                   os.environ["CYCLE_CUSTODY_MAP"])
+          for name in names:
+              try: os.lstat(name)
+              except FileNotFoundError: continue
+              raise SystemExit(2)
+          PY
+
       - name: Materialize authenticated exact custody for all seven cycle uploads
         id: cycle_custody
-        if: always() && needs.local-kata.result == 'success' && steps.gate.outcome == 'success'
+        if: always() && needs.local-kata.result == 'success' && steps.gate.outcome == 'success' && steps.aggregate_baseline.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         env:
@@ -635,7 +690,7 @@ jobs:
 
       - name: Remove every aggregate staging path
         id: aggregate_cleanup
-        if: always()
+        if: always() && steps.aggregate_baseline.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 2
         run: |

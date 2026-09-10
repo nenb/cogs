@@ -71,7 +71,7 @@ control_fixture = tempfile.TemporaryDirectory()
 # Historical bytes are fixture inputs only. No successor package is populated.
 historical = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
 assert formal.CONTROL_PACKAGE == guard.CONTROL_PACKAGE
-assert formal.CONTROL_PACKAGE.name == "stage2-completion-local-control-v6"
+assert formal.CONTROL_PACKAGE.name == "stage2-completion-local-control-v7"
 control = json.loads((historical / formal.CONTROL_MEMBER).read_bytes())
 envelope = json.loads((historical / formal.ENVELOPE_MEMBER).read_bytes())
 runtime_raw = (historical / formal.RUNTIME_MEMBER).read_bytes()
@@ -689,7 +689,8 @@ with tempfile.TemporaryDirectory() as source_root:
             REVIEWED_CONTROL_SHA256=expected["EXPECTED_CONTROL_SHA256"],
             REVIEWED_ROOTFS_DESCRIPTOR_SHA256=expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
             REVIEWED_WORKFLOW_SHA256=hashlib.sha256(guard.WORKFLOW.read_bytes()).hexdigest(),
-            REVIEWED_STATIC_CONTROL_RUN_ID=61, REVIEWED_STATIC_CONTROL_ARTIFACT_ID=62):
+            REVIEWED_STATIC_CONTROL_RUN_ID=61, REVIEWED_STATIC_CONTROL_ARTIFACT_ID=62,
+            REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST=expected["EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST"]):
         assert guard.guard(guard_environment, guard_event)["result_schema_sha256"] == expected["EXPECTED_RESULT_SCHEMA_SHA256"]
         # Every selected H-owned consumer rejects a Q-only substitution before
         # the effect sentinel, including the qualifier, schema and cleanup owner.

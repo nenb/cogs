@@ -544,12 +544,12 @@ def _open_trusted_absolute_regular(path, maximum, expected_uid=0, expected_gid=0
     _require(pending and all(part not in {"", ".", ".."} for part in pending))
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
     _require(type(root) is str)
-    anchor = os.open(root, flags)
-    parent = os.dup(anchor); os.set_inheritable(parent, False)
-    descriptor = -1
+    anchor = parent = descriptor = -1
     resolved = []
     links = 0
     try:
+        anchor = os.open(root, flags)
+        parent = os.dup(anchor); os.set_inheritable(parent, False)
         root_seen = os.fstat(anchor)
         _require(stat.S_ISDIR(root_seen.st_mode) and root_seen.st_uid == expected_uid
                  and root_seen.st_gid == expected_gid
@@ -582,17 +582,24 @@ def _open_trusted_absolute_regular(path, maximum, expected_uid=0, expected_gid=0
                 parent = os.dup(anchor); os.set_inheritable(parent, False)
                 continue
             if pending:
-                child = os.open(component, flags, dir_fd=parent)
-                after = os.fstat(child)
-                _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
-                          after.st_gid, after.st_nlink) ==
-                         (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
-                          before.st_gid, before.st_nlink)
-                         and stat.S_ISDIR(after.st_mode)
-                         and after.st_uid == expected_uid and after.st_gid == expected_gid
-                         and not stat.S_IMODE(after.st_mode) & 0o022,
-                         "untrusted executable directory")
-                os.close(parent); parent = child; resolved.append(component)
+                child = -1
+                try:
+                    child = os.open(component, flags, dir_fd=parent)
+                    after = os.fstat(child)
+                    _require((after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                              after.st_gid, after.st_nlink) ==
+                             (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                              before.st_gid, before.st_nlink)
+                             and stat.S_ISDIR(after.st_mode)
+                             and after.st_uid == expected_uid and after.st_gid == expected_gid
+                             and not stat.S_IMODE(after.st_mode) & 0o022,
+                             "untrusted executable directory")
+                    previous = parent; parent = child; child = -1
+                    os.close(previous); resolved.append(component)
+                except BaseException:
+                    if child >= 0:
+                        os.close(child)
+                    raise
                 continue
             descriptor = os.open(component, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
                                  dir_fd=parent)
@@ -607,10 +614,12 @@ def _open_trusted_absolute_regular(path, maximum, expected_uid=0, expected_gid=0
     except BaseException:
         if descriptor >= 0:
             os.close(descriptor)
-        os.close(parent)
+        if parent >= 0:
+            os.close(parent)
         raise
     finally:
-        os.close(anchor)
+        if anchor >= 0:
+            os.close(anchor)
 
 
 def _read_held(descriptor, before, maximum):

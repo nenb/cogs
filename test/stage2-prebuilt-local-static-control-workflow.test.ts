@@ -32,7 +32,16 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   const control = workflow.indexOf("Produce deterministic non-authoritative control candidate");
   assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
   const retirement = workflow.indexOf("# ADR0326 complete retirement mirror; selection only, never ancestors.");
-  assert.ok(retirement >= 0 && retirement < workflow.indexOf("/usr/bin/git init"));
+  const image = workflow.indexOf('if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1');
+  assert.ok(retirement >= 0 && retirement < image && image < workflow.indexOf("gh api --paginate"));
+  assert.equal(workflow.match(/stage2\.runner-image\.rejected/gu)?.length, 1);
+  assert.match(workflow, /if: always\(\) && steps\.boundary\.outcome != 'skipped'/u);
+  assert.match(workflow, /if test "\$IMMUTABLE_INTENT" = true; then[\s\S]*cogs-stage2-immutable-preparation\.json/u);
+  assert.match(
+    workflow,
+    /id: candidate_production[\s\S]*printf 'intent=true\\n' >>"\$GITHUB_OUTPUT"[\s\S]*cogs-stage2-static-candidate\.json[\s\S]*printf 'acquired=true\\n'/u,
+  );
+  assert.match(workflow, /if test "\$CANDIDATE_INTENT" = true; then[\s\S]*cogs-stage2-static-candidate\.json/u);
   assert.ok(workflow.indexOf("stage2-revision-retirement.py custody") < workflow.indexOf("sudo -n install -d"));
   assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 1/u);
   assert.match(workflow, /descriptor-v1 -type f \| wc -l\)" = 6/u);

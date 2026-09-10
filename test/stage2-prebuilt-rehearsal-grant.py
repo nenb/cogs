@@ -129,7 +129,13 @@ with tempfile.TemporaryDirectory() as directory:
     # the fresh generation. Patch only this fixture's selected identities.
     with patch.multiple(guard,
             REVIEWED_IMPLEMENTATION_HEAD="c10fc103532f3e3a8b746727bd0f48c6d8498148",
-            REVIEWED_CONTROL_HEAD="eb59cae18e0f041a243f35f253d46713f7e87142"):
+            REVIEWED_CONTROL_HEAD="eb59cae18e0f041a243f35f253d46713f7e87142",
+            REVIEWED_IMPLEMENTATION_MANIFEST_SHA256="1" * 64,
+            REVIEWED_CONTROL_SHA256="2" * 64,
+            REVIEWED_ROOTFS_DESCRIPTOR_SHA256="3" * 64,
+            REVIEWED_STATIC_CONTROL_RUN_ID=123,
+            REVIEWED_STATIC_CONTROL_ARTIFACT_ID=124,
+            REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST="sha256:" + "4" * 64):
         assert policy["revisions"][guard.REVIEWED_IMPLEMENTATION_HEAD] == "ADR0327"
         assert policy["revisions"][guard.REVIEWED_CONTROL_HEAD] == "ADR0327"
         veto(lambda: guard.guard(env))
