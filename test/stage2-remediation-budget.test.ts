@@ -239,7 +239,7 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6200,integration=17912)
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6080,integration=18032)
 assert b['global_gross_line_high']==45200 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
@@ -570,15 +570,15 @@ assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a
 assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
 assert b['global_gross_line_high']==45200; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6200,integration=17912); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6080,integration=18032); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
 expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=4600000)
 assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==7870000 and b['global_gross_byte_high']==m['REMEDIATION_GLOBAL_BYTE_HIGH']==6550000 and 18763891+b['global_gross_byte_high']==25313891<26000000
 plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==3900000; assert plan['integration_regeneration_gross_line_forecast']==300
-expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=2700,integration=5587)
+assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==3900000; assert plan['integration_regeneration_gross_line_forecast']==348
+expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=2580,integration=5707)
 assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15537
-q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=3200000)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==4350000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
+q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=3220000)
+assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==4370000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
@@ -702,12 +702,12 @@ previous=json.loads(git(['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:config
 expected['product_test_correction']['integration_synchronization_gross_byte_forecast']=60000
 next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=1200000
 expected['global_gross_byte_high']=6550000; expected['product_test_correction']['global_gross_byte_forecast']=3900000
-next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=3200000
+next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=3220000
 next(e for e in expected['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=4600000
-expected['product_test_correction']['integration_regeneration_gross_line_forecast']=300
-for name,delta in (('completion',-300),('integration',300)):
+expected['product_test_correction']['integration_regeneration_gross_line_forecast']=348
+for name,delta in (('completion',-420),('integration',420)):
  next(e for e in expected['product_test_correction']['owners'] if e['name']==name)['gross_line_forecast']+=delta; next(e for e in expected['owners'] if e['name']==name)['gross_line_high']+=delta
-assert b==expected  # historical 100 + prospective P2 200; no anchor/path/accounting changes
+assert b==expected  # historical 100 + P2 200 + prospective 120; no anchor/path/accounting changes
 for parent,head,charged in (('086b2c2cda3fa09f4455baa8c5c4dedcb212bb44','fdf7726b768e45e808e16bdfaf048d03d50102ac',11740),('fdf7726b768e45e808e16bdfaf048d03d50102ac','9ef95d2946c88dfcf594e4d026877badbc4e914e',290399),('9ef95d2946c88dfcf594e4d026877badbc4e914e','3e9969282fef305aca3c526e4bd36a9c46ee40e0',281692),('3e9969282fef305aca3c526e4bd36a9c46ee40e0','5fad3419d794b9cae9c5e6f20d7b4fe75640a7a7',12478),('5fad3419d794b9cae9c5e6f20d7b4fe75640a7a7','e4b7835c6f35eac2f97a7bcc3cb9880ce640c39a',280750)):
  raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',parent,head,'--',*sorted(p for p,o in paths.items() if o=='integration')]); assert sum(len(line)-1 for line in raw.splitlines(keepends=True) if line.startswith(b'+') and not line.startswith(b'+++'))==charged
 assert 728683+11740+290399+281692==1312514 and 2095805+11740+290399+281692==2679636
@@ -723,15 +723,18 @@ assert 19091+909==20000 and 3164+280680==283844 and 3164+2*280680==564524  # ide
 assert 1613264+300000+20000+564524==2497788 and 2980386+300000+20000+564524==3864910
 assert (8000-3164)+(600000-2*280680)+20000+4517==67993 and 2497788+67993==2565781 and 3864910+67993==3932903
 assert 2*300000+24000+10000==634000 and 2565781+634000==3199781 and 3932903+634000==4566903
-assert 200+90+10==plan['integration_regeneration_gross_line_forecast'] and 5233+90+100+10+150+4==expected_forecasts['integration']==5587
-assert 2552+148==expected_forecasts['completion']==2700 and 12325+5587==highs['integration']==17912
+assert 200+90+10+48==plan['integration_regeneration_gross_line_forecast'] and 5233+90+12+48+160+10+150+4==expected_forecasts['integration']==5707
+assert 2552+28==expected_forecasts['completion']==2580 and 12325+5707==highs['integration']==18032 and 148-120==28
 assert planned['test/production-compose.test.ts']==paths['test/production-compose.test.ts']=='lifecycle'
 assert 4195+100+155==expected_forecasts['lifecycle'] and 11503+100+197==highs['lifecycle']
 assert 194972+6000<=267175<=q_bytes['lifecycle'] and 478274+6000<=558274<=expected_bytes['lifecycle']
-assert 12+88==100 and 5000+5000==10000  # plan closure inside helper task, no withheld-governance reuse
+assert 12+88==100 and 5000+5000==10000 and (160-88)+48==120  # retain full prior closure charge; fresh helper 160/12000
 for text in ('P2 fixture plan closure at \x6011c95edeab1b330a33c22a35feecddc11339521d\x60','real temporary generation/control directory','si_pid','si_code=CLD_STOPPED','si_status=SIGSTOP','100 gross lines/6,000 raw added-line bytes','155/197 lines','inside existing lifecycle 80,000-byte task funding','withheld 24 lines/771 bytes','No owner/global cap raise, transfer','process-group SIGKILL then helper cgroup.kill before reap'): assert text in replan,text
 for text in ('Before subprocess fork','helper-pending','<=1,024 bytes','integer 1','parent_pid','fsync file and control directory before fork','Record no command secrets','PR_SET_PDEATHSIG=SIGKILL','getppid()','captured BEFORE fork','CLD_STOPPED','SIGSTOP','read back exact','only then unlink the exact pending inode and fsync control durably','then SIGCONT','lost removal','pending on recovery vetoes retirement','sticky crash-safe refusal, no adoption','no recovery clearing/retrying pending','before the cgroup-retire-intent shortcut','after durable pending removal cgroup custody governs','fork->prctl->stop->placement->pending removal','post-unlink/pre-fsync','parent kill before/after arming','spawn failure before/after child creation','stale/malformed/foreign/oversize/extra-field','Keep existing cgroup settlement exact','exact saved cgroup device/inode','helpers rmdir then generation rmdir','recovery after either rmdir without further commands','bounded reap/population wait and descriptor settlement','WNOWAIT leader','No source implementation','no independent review success claimed'): assert text in replan,text
-for usage,limits,global_high,endpoint,full_integration in ((dict(route=0,revocation=0,completion=159893,lifecycle=267175,relay=204508,integration=3199781),q_bytes,3900000,3831357,3831576),(dict(route=96627,revocation=114977,completion=228357+60000,lifecycle=478274+80000,relay=177404+120000,integration=4566903),expected_bytes,6550000,5922542,5955639)):
+governance_bytes=10000; extra=12000-5000+governance_bytes
+assert q_bytes['integration']==max(3220000,3199781+extra) and 3199781+extra==3216781 and 4566903+extra==4583903
+for text in ('Completion closure allocation is closed/reduced','148->28','helper 160 lines/12,000 bytes','governance 48 lines/10,000 bytes','5,335+48+160+10+150+4=5,707','No deletion credit','3,216,781','4,583,903'): assert text in replan,text
+for usage,limits,global_high,endpoint,full_integration in ((dict(route=0,revocation=0,completion=159893,lifecycle=267175,relay=204508,integration=3199781+extra),q_bytes,3900000,3848357,3851576),(dict(route=96627,revocation=114977,completion=228357+60000,lifecycle=478274+80000,relay=177404+120000,integration=4566903+extra),expected_bytes,6550000,5939542,5955639)):
  assert all(usage[o]<=limits[o] for o in usage) and sum(usage.values())==endpoint<global_high and f'{endpoint:,}' in replan
  assert sum(usage.values())+limits['integration']-usage['integration']==full_integration<global_high
 assert plan['integration_synchronization_gross_byte_forecast']==60000 and 25249+18687==43936 and 43936-12000==31936
@@ -853,7 +856,7 @@ with tempfile.TemporaryDirectory() as directory:
   bad=copy.deepcopy(b); bad['product_test_correction']['wrapper_report_minimum'][field]-=1; veto(lambda:check(bad),field)
  for field in ('global_gross_line_forecast','global_gross_byte_forecast'):
   bad=copy.deepcopy(b); bad['product_test_correction'][field]+=1; veto(lambda:check(bad),field)
- for value in (200,299,301,300.0,True,None):
+ for value in (200,300,347,349,348.0,True,None):
   bad=copy.deepcopy(b); bad['product_test_correction']['integration_regeneration_gross_line_forecast']=value; veto(lambda:check(bad),'synchronization lines')
  for value in (12000,59999,60001,60000.0,True,None):
   bad=copy.deepcopy(b); bad['product_test_correction']['integration_synchronization_gross_byte_forecast']=value; veto(lambda:check(bad),'synchronization bytes')
@@ -1033,9 +1036,9 @@ def veto(label):
  try: f()
  except m['LineBudgetError']: return
  raise AssertionError(label+' bypassed by central measure')
-values=dict(zero); values['completion']=2700
-assert f()['product_test_gross_added_lines_no_deletion_credit']==2700
-values['completion']=2701
+values=dict(zero); values['completion']=2580
+assert f()['product_test_gross_added_lines_no_deletion_credit']==2580
+values['completion']=2581
 assert sum(values.values())<15450
 veto('Q owner overrun')
 values=dict(zero)

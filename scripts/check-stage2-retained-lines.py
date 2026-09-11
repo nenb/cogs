@@ -40,9 +40,9 @@ POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global"
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
-                          "lifecycle": 4_450, "completion": 2_700, "integration": 5_587}
+                          "lifecycle": 4_450, "completion": 2_580, "integration": 5_707}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 3_200_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 3_220_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 4_600_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 3_900_000
@@ -418,7 +418,7 @@ def _remediation_budget():
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 4_800,
-                "lifecycle": 11_800, "completion": 6_200, "integration": 17_912}
+                "lifecycle": 11_800, "completion": 6_080, "integration": 18_032}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -472,7 +472,7 @@ def _product_test_budget(data, allocations):
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
              and plan["global_gross_line_forecast"] == 15_537
              and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST
-             and type(plan["integration_regeneration_gross_line_forecast"]) is int and plan["integration_regeneration_gross_line_forecast"] == 300 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
+             and type(plan["integration_regeneration_gross_line_forecast"]) is int and plan["integration_regeneration_gross_line_forecast"] == 348 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
     q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))

@@ -18,7 +18,7 @@
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
     "global_gross_line_forecast": 15537,
     "global_gross_byte_forecast": 3900000,
-    "integration_regeneration_gross_line_forecast": 300,
+    "integration_regeneration_gross_line_forecast": 348,
     "integration_synchronization_gross_byte_forecast": 60000,
     "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
     "owners": [
@@ -92,7 +92,7 @@
       },
       {
         "name": "completion",
-        "gross_line_forecast": 2700,
+        "gross_line_forecast": 2580,
         "gross_byte_forecast": 300000,
         "existing_paths": [
           "dev/launcher/api-client.ts",
@@ -109,8 +109,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 5587,
-        "gross_byte_forecast": 3200000,
+        "gross_line_forecast": 5707,
+        "gross_byte_forecast": 3220000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
@@ -330,7 +330,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 6200,
+      "gross_line_high": 6080,
       "gross_byte_forecast": {
         "total": 800000
       },
@@ -366,7 +366,7 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 17912,
+      "gross_line_high": 18032,
       "gross_byte_forecast": {
         "total": 4600000
       },
