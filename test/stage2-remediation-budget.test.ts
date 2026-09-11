@@ -671,7 +671,7 @@ for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc0
  '24,733,891','44,705','45,200','6,496 remaining gross lines','No historical gross transfers: zero lines and zero files transferred',
  'Do not commit pending two independent reviews','No reserve release before that owner\'s named tasks complete',
  'task consumption, reserve use and the exact changed-since-review diff','not task purpose inferred from line diffs',
- 'Finding12 remains open','source-complete but unexecuted','source-only','convert every admitted driver/smoke/conformance guest invocation',
+ 'Finding12 remains open','final implementation review remains pending','source-only','convert every admitted driver/smoke/conformance guest invocation',
  'bound QMP, reject truncation','portable subprocess/fault tests','no finding-closure or host-containment claim',
  'Docker-only and mechanically rejects a KVM profile','Actual KVM execution remains prohibited until focused/full source reviews pass',
  'existing-file, independently reviewed local-execution gate','complete fresh protected-runner envelope',

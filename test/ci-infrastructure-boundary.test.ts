@@ -326,6 +326,7 @@ import importlib.util,os,tempfile,types,time,signal,selectors,json
 from unittest.mock import patch
 s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+m.Custody.probe=False  # __new__ syscall fixtures model the default authorizing run
 with tempfile.TemporaryDirectory() as root:
  fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY)
  original=m.os.fchown;m.os.fchown=lambda *args: None
@@ -372,7 +373,7 @@ def docker(*args):
  if args[0]=='create': return ('b'*64+'\n').encode()
  if args[0]=='start': raise RuntimeError('lost start response')
 owner.docker=docker
-spec={'image':'sha256:'+'c'*64,'mounts':[]}
+spec={'image':'sha256:'+'c'*64,'mounts':[],'caps':[],'mask':0}
 try: owner.dispatch({'op':'create','generation':'d'*32,'role':'worker','spec':spec,'argv':[]})
 except RuntimeError: pass
 else: raise AssertionError('foreign generation')
@@ -416,7 +417,7 @@ for env in [['NODE_OPTIONS=--import=/evil'],['NODE_TLS_REJECT_UNAUTHORIZED=0']]:
  except RuntimeError: pass
  else: raise AssertionError('started inherited code')
  assert not any(row[0]=='start' for row in log)
-# Acquisition ownership precedes pidfd; stop handshake never uses blocking waitpid.
+# Acquisition ownership precedes pidfd; stop handshake never reaps or blocks.
 class Stream:
  def close(self): pass
 class Process:
@@ -425,12 +426,12 @@ class Process:
  def wait(self,**kw): return 0
 for failure in ('pidfd','handshake'):
  owner.cg='/no-such-cgroup';owner.deadline=time.monotonic()+.02;signals=[]
- with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,side_effect=OSError() if failure=='pidfd' else lambda pid:77),patch.object(m.os,'waitpid',return_value=(0,0)) as waiting,patch.object(m.os,'killpg',side_effect=lambda *a:signals.append(a)),patch.object(m.os,'close'),patch.object(m.os.path,'exists',return_value=False):
+ with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,side_effect=OSError() if failure=='pidfd' else lambda pid:77),patch.object(m.os,'waitid',create=True,return_value=None) as waiting,patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'killpg',side_effect=lambda *a:signals.append(a)),patch.object(m.os,'close'),patch.object(m.os.path,'exists',return_value=False):
   try: owner.command(['never-executed'])
   except (OSError,RuntimeError): pass
   else: raise AssertionError('unbounded handshake')
   assert signals==[(12345,signal.SIGKILL)]
-  assert all(call.args[1]&os.WNOHANG for call in waiting.call_args_list)
+  assert all(call.args[2]&os.WNOHANG and call.args[2]&os.WNOWAIT for call in waiting.call_args_list)
 # Lost mount observation is reconciled from durable intent; unmount/detach must precede retired.
 with tempfile.TemporaryDirectory() as root:
  owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.cg=root+'/absent'
@@ -465,7 +466,14 @@ v={'State':{'Pid':42,'Running':True},'Image':spec['image'],'Config':{'Labels':{'
 proc={'/proc/42/mountinfo':'17 16 7:0 / /skills ro - ext4 /dev/loop9 ro\n','/proc/42/cgroup':'0::'+owner.cg[14:]+'/'+held['id']+'\n','/proc/42/status':'CapEff: 0\nCapPrm: 0\nCapBnd: 0\nNoNewPrivs: 1\nSeccomp: 2\n'}
 for k,value in m.LIMITS.items():proc[owner.cg+'/'+held['id']+'/'+k]=value
 with patch('builtins.open',side_effect=lambda p,**kw:m.io.StringIO(proc[p])),patch.object(m.os,'stat',return_value=types.SimpleNamespace(st_dev=7,st_ino=8)),patch.object(m.os,'readlink',return_value='mnt:[2]'),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.select,'select',return_value=([],[],[])):
- owner.authenticate('sandbox')
+ for swappiness in (None,0):
+  h['MemorySwappiness']=swappiness;owner.authenticate('sandbox')
+ for swappiness,swap in [(1,'0'),(-1,'0'),('0','0'),(False,'0'),(0.0,'0'),(None,'max'),(0,'1')]:
+  h['MemorySwappiness']=swappiness;proc[owner.cg+'/'+held['id']+'/memory.swap.max']=swap
+  try: owner.authenticate('sandbox')
+  except RuntimeError: pass
+  else: raise AssertionError(('swap admission',swappiness,swap))
+ h['MemorySwappiness']=0;proc[owner.cg+'/'+held['id']+'/memory.swap.max']='0'
  held['sources']['/skills']=(7,9)
  try: owner.authenticate('sandbox')
  except RuntimeError: pass

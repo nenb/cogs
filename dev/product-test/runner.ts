@@ -46,6 +46,7 @@ import {
   put,
   SANDBOX_CAPABILITIES,
   SANDBOX_CAPABILITY_MASK,
+  sandboxCapabilities,
 } from "./snapshot-owner.ts";
 
 export const BASELINE = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38";
@@ -87,22 +88,8 @@ export function admitRestrictions(bytes: Buffer, candidate: string, now: number)
   check(canonical(value) === text);
   check(
     Object.keys(value).sort().join() ===
-      [
-        "version",
-        "baseline",
-        "candidate",
-        "owner",
-        "expires",
-        "profile",
-        "breach",
-        "findings",
-        "seconds",
-        "skills",
-        "sandbox_image",
-        "worker_image",
-        "stock_worker_image",
-        "fresh_protected_runner",
-      ]
+      "version baseline candidate owner expires profile breach findings seconds skills sandbox_image worker_image stock_worker_image fresh_protected_runner"
+        .split(" ")
         .sort()
         .join(),
   );
@@ -324,60 +311,23 @@ class SyntheticAuthorityOwner {
     const root = `${this.host.root}/authority`;
     for (const name of ["host", "client"])
       await run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "synthetic-product", "-f", `${root}/${name}`]);
+    // Fixed generated paths/subjects only; split argv, never a shell or caller-supplied command.
+    const openssl = (args: string) => run("openssl", args.split(" "));
     for (const name of ["envoy", "telemetry"]) {
-      await run("openssl", [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-days",
-        "1",
-        "-subj",
-        `/CN=synthetic-${name}-CA`,
-        "-addext",
-        "basicConstraints=critical,CA:TRUE",
-        "-keyout",
-        `${root}/${name}-ca.key`,
-        "-out",
-        `${root}/${name}-ca.crt`,
-      ]);
-      await run("openssl", [
-        "req",
-        "-new",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-subj",
-        `/CN=${name === "envoy" ? "fixture.cogs.test" : "127.0.0.1"}`,
-        "-keyout",
-        `${root}/${name}.key`,
-        "-out",
-        `${root}/${name}.csr`,
-      ]);
+      await openssl(
+        `req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=synthetic-${name}-CA -addext basicConstraints=critical,CA:TRUE -keyout ${root}/${name}-ca.key -out ${root}/${name}-ca.crt`,
+      );
+      await openssl(
+        `req -new -newkey rsa:2048 -nodes -subj /CN=${name === "envoy" ? "fixture.cogs.test" : "127.0.0.1"} -keyout ${root}/${name}.key -out ${root}/${name}.csr`,
+      );
       await put(
         this.host,
         `authority/${name}.ext`,
         `subjectAltName=${name === "envoy" ? "DNS:fixture.cogs.test" : "IP:127.0.0.1"}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
       );
-      await run("openssl", [
-        "x509",
-        "-req",
-        "-in",
-        `${root}/${name}.csr`,
-        "-CA",
-        `${root}/${name}-ca.crt`,
-        "-CAkey",
-        `${root}/${name}-ca.key`,
-        "-set_serial",
-        "1",
-        "-days",
-        "1",
-        "-extfile",
-        `${root}/${name}.ext`,
-        "-out",
-        `${root}/${name}.crt`,
-      ]);
+      await openssl(
+        `x509 -req -in ${root}/${name}.csr -CA ${root}/${name}-ca.crt -CAkey ${root}/${name}-ca.key -set_serial 1 -days 1 -extfile ${root}/${name}.ext -out ${root}/${name}.crt`,
+      );
     }
     await dir(this.host, "sandbox-input", 0o500);
     for (const [source, target] of [
@@ -400,7 +350,10 @@ class SyntheticAuthorityOwner {
     await put(this.host, "inputs/ssh/client", await readFile(`${root}/client`), 0o400, 65532);
     for (const name of ["envoy-ca.crt", "envoy.crt", "envoy.key", "telemetry-ca.crt", "telemetry.crt", "telemetry.key"])
       await put(this.host, `inputs/pki/${name}`, await readFile(`${root}/${name}`), 0o400, 65532);
-    const key = (await readFile(`${root}/host.pub`, "utf8")).split(" ")[1];
+    const publicKey = (await readFile(`${root}/host.pub`, "utf8")).split(" ");
+    await put(this.host, "authority/known_hosts", `127.0.0.1 ${publicKey.slice(0, 2).join(" ")}\n`);
+    await put(this.host, "authority/sftp-batch", "ls /shared/skills\nls /user/skills\n");
+    const key = publicKey[1];
     check(key);
     return `SHA256:${Buffer.from(hash(Buffer.from(key, "base64")).slice(7), "hex")
       .toString("base64")
@@ -408,7 +361,37 @@ class SyntheticAuthorityOwner {
   }
 }
 
-export async function productMain(restrictions: Restrictions): Promise<void> {
+export async function withProductCustody(host: CustodyPort, operation: () => Promise<boolean>): Promise<void> {
+  let passed = false;
+  try {
+    passed = await operation();
+  } finally {
+    const result = await host.request<{ retired: boolean; failed: boolean }>("settle", { passed });
+    await host.closed;
+    check(
+      result.retired && (host.purpose === "capability-probe" ? result.failed && !passed : !result.failed && passed),
+    );
+  }
+}
+export async function capabilityRemovalScenario(host: CustodyPort, full: ContainerSpec, removed: string) {
+  check(
+    host.purpose === "capability-probe" &&
+      canonical(full.caps) === canonical(SANDBOX_CAPABILITIES) &&
+      full.mask === SANDBOX_CAPABILITY_MASK,
+  );
+  const spec = { ...full, ...sandboxCapabilities(removed) };
+  await createSandbox(host, spec);
+  return host.request("capability-probe");
+}
+async function createSandbox(host: CustodyPort, spec: ContainerSpec) {
+  return host.request<string>("create", {
+    role: "sandbox",
+    spec,
+    argv: containerArguments(host, spec, ["--env", "COGS_PROXY_ENDPOINT=http://127.0.0.1:18080"], "0:0"),
+  });
+}
+export async function productMain(restrictions: Restrictions, removed?: string): Promise<void> {
+  if (removed !== undefined) sandboxCapabilities(removed);
   check(admittedRestrictions.has(restrictions) && restrictions.expires > Date.now() + restrictions.seconds * 1000);
   const generation = randomBytes(16).toString("hex");
   // Pure construction and admission before the first root, secret, snapshot, daemon or process acquisition.
@@ -430,9 +413,9 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
         key,
       ),
     );
-  const host = new HostCustody(generation, restrictions.seconds);
-  let passed = false;
-  try {
+  const host = new HostCustody(generation, restrictions.seconds, removed === undefined ? "run" : "capability-probe");
+  let measurement: unknown;
+  await withProductCustody(host, async () => {
     for (const id of [restrictions.sandbox_image, restrictions.worker_image, restrictions.stock_worker_image])
       await host.request("image", { id });
     const provenance = await host.request("provenance", { ...restrictions, recipe: hash(WORKER_DOCKERFILE) });
@@ -493,11 +476,11 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
       },
     };
     await host.request("seal");
-    const sandboxId = await host.request<string>("create", {
-      role: "sandbox",
-      spec: sandboxSpec,
-      argv: containerArguments(host, sandboxSpec, ["--env", "COGS_PROXY_ENDPOINT=http://127.0.0.1:18080"], "0:0"),
-    });
+    if (removed !== undefined) {
+      measurement = await capabilityRemovalScenario(host, sandboxSpec, removed);
+      return false; // no worker, lease, evidence admission or pass authority
+    }
+    const sandboxId = await createSandbox(host, sandboxSpec);
     const workerSpec: ContainerSpec = {
       image: restrictions.worker_image,
       network: `container:${sandboxId}`,
@@ -545,12 +528,9 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
     check(evidence.outcome === "pass" && evidence.generation === generation && evidence.upstream === 1);
     check(canonical(evidence.provenance) === canonical(provenance));
     check(evidence.traces > 0 && evidence.metrics > 0 && evidence.audit > 0 && evidence.omitted === true);
-    passed = true;
-  } finally {
-    const result = await host.request<{ retired: boolean; failed: boolean }>("settle", { passed });
-    await host.closed;
-    check(result.retired && !result.failed && passed);
-  }
+    return true;
+  });
+  if (measurement) process.stdout.write(canonical(measurement)); // only after receipt-bound settlement
 }
 
 async function material(name: string): Promise<string> {
@@ -1045,13 +1025,15 @@ export async function workerMain(): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length === 3 && process.argv[2] === "--dockerfile") process.stdout.write(WORKER_DOCKERFILE);
   else {
-    check(process.argv.length === 5 && process.argv[2] === "--protected-linux");
+    check(process.argv.length === 5 && ["--protected-linux", "--capability-probes"].includes(process.argv[2] ?? ""));
     const [path, candidate] = process.argv.slice(3);
     check(path && candidate);
     const restrictions = await withTrustedFileBytes(
       { path, minimumBytes: 2, maximumBytes: 8192, allowedUids: [0], allowedGids: [0], allowedModes: [0o400] },
       async (b) => admitRestrictions(b, candidate, Date.now()),
     );
-    await productMain(restrictions);
+    if (process.argv[2] === "--capability-probes") {
+      for (const removed of SANDBOX_CAPABILITIES) await productMain(restrictions, removed);
+    } else await productMain(restrictions);
   }
 }

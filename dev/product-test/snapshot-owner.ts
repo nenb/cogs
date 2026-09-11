@@ -38,6 +38,8 @@ export type ContainerReceipt = { id: string; pid: number; namespace: string; spe
 export type CustodyPort = Readonly<{
   root: string;
   generation: string;
+  purpose?: "run" | "capability-probe";
+  closed?: Promise<void>;
   request<T = unknown>(op: string, fields?: Record<string, unknown>): Promise<T>;
 }>;
 
@@ -51,7 +53,11 @@ export class HostCustody implements CustodyPort {
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
   #lost = false;
-  constructor(generation: string, seconds: number) {
+  constructor(
+    generation: string,
+    seconds: number,
+    readonly purpose: "run" | "capability-probe" = "run",
+  ) {
     check(/^[a-f0-9]{32}$/.test(generation) && seconds >= 60 && seconds <= 600);
     this.generation = generation;
     this.root = `/var/lib/cogs-product-test/${generation}`;
@@ -88,7 +94,7 @@ export class HostCustody implements CustodyPort {
       }
     });
     this.#child.stdin.on("error", () => this.#lose());
-    this.#child.stdin.write(canonical({ generation, seconds }));
+    this.#child.stdin.write(canonical({ generation, seconds, purpose }));
   }
   request<T = unknown>(op: string, fields: Record<string, unknown> = {}): Promise<T> {
     const result = this.#tail.then(
@@ -278,22 +284,32 @@ export class LocalSkillSnapshotOwner {
   }
 }
 
-export const SANDBOX_CAPABILITIES = Object.freeze([
-  "CHOWN",
-  "DAC_OVERRIDE",
-  "FOWNER",
-  "SETGID",
-  "SETUID",
-  "KILL",
-  "NET_BIND_SERVICE",
-  "SYS_CHROOT",
-]);
-export const SANDBOX_CAPABILITY_MASK = [0, 1, 3, 6, 7, 5, 10, 18].reduce((mask, bit) => mask + 2 ** bit, 0);
+export const SANDBOX_CAPABILITIES = Object.freeze(
+  "CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(" "),
+);
+const CAPABILITY_BITS = [0, 1, 3, 6, 7, 5, 10, 18];
+export const SANDBOX_CAPABILITY_MASK = CAPABILITY_BITS.reduce((mask, bit) => mask + 2 ** bit, 0);
+export function sandboxCapabilities(removed: string) {
+  check(SANDBOX_CAPABILITIES.includes(removed));
+  return {
+    caps: SANDBOX_CAPABILITIES.filter((c) => c !== removed),
+    mask: SANDBOX_CAPABILITY_MASK - 2 ** (CAPABILITY_BITS[SANDBOX_CAPABILITIES.indexOf(removed)] as number),
+  };
+}
 export function containerArguments(host: CustodyPort, spec: ContainerSpec, command: readonly string[], user: string) {
   check(/^sha256:[a-f0-9]{64}$/.test(spec.image));
   check(spec.network === "none" || /^container:[a-f0-9]{64}$/.test(spec.network));
   check(["0:0", "65532:65532"].includes(user));
-  check(spec.caps.length === 0 || canonical(spec.caps) === canonical(SANDBOX_CAPABILITIES));
+  const removed = SANDBOX_CAPABILITIES.filter((c) => !spec.caps.includes(c));
+  const probe = host.purpose === "capability-probe" && user === "0:0";
+  check(!probe || removed.length === 1);
+  const expected =
+    user === "65532:65532"
+      ? { caps: [], mask: 0 }
+      : probe
+        ? sandboxCapabilities(removed[0] as string)
+        : { caps: SANDBOX_CAPABILITIES, mask: SANDBOX_CAPABILITY_MASK };
+  check(canonical(spec.caps) === canonical(expected.caps) && spec.mask === expected.mask);
   const targets = new Set<string>();
   for (const m of spec.mounts) {
     check(m.source.startsWith(`${host.root}/`) && !m.source.includes("..") && !/[,:\n]/.test(m.source));
@@ -307,26 +323,12 @@ export function containerArguments(host: CustodyPort, spec: ContainerSpec, comma
         check(!a.target.startsWith(`${b.target}/`));
       }
   return [
-    "--pull",
-    "never",
-    "--platform",
-    "linux/amd64",
-    "--read-only",
-    "--log-driver",
-    "none",
-    "--memory=4g",
-    "--memory-swap=4g",
-    "--memory-swappiness=0",
-    "--cpus=2",
-    "--pids-limit=128",
-    "--shm-size=16m",
+    ..."--pull never --platform linux/amd64 --read-only --log-driver none --memory=4g --memory-swap=4g --memory-swappiness=0 --cpus=2 --pids-limit=128 --shm-size=16m --cap-drop ALL --security-opt no-new-privileges".split(
+      " ",
+    ),
     "--cgroup-parent",
     `/cogs-product-${host.generation}`,
-    "--cap-drop",
-    "ALL",
     ...spec.caps.flatMap((cap) => ["--cap-add", cap]),
-    "--security-opt",
-    "no-new-privileges",
     "--network",
     spec.network,
     "--user",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -8,6 +9,15 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { capabilityRemovalScenario, withProductCustody } from "../dev/product-test/runner.ts";
+import {
+  type ContainerSpec,
+  type CustodyPort,
+  containerArguments,
+  SANDBOX_CAPABILITIES,
+  SANDBOX_CAPABILITY_MASK,
+  sandboxCapabilities,
+} from "../dev/product-test/snapshot-owner.ts";
 import { type ApiServer, type ApiServerOptions, createApiServer, type JsonValue } from "../src/api/server.ts";
 import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../src/auth/model-auth.ts";
 import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
@@ -46,6 +56,225 @@ import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
 import type { CogsExecPort, SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+
+test("product helper identity is unreaped through final signals and directory modes defeat ambient umask", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import importlib.util,os,signal,tempfile,time,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as root:
+ parent=os.open(root,os.O_RDONLY|os.O_DIRECTORY);previous=os.umask(0o077)
+ try:
+  for mode in (0o555,0o755,0o750):
+   fd=m.directory(parent,str(mode),mode)
+   assert os.fstat(fd).st_mode&0o777==mode
+   os.close(fd)
+   with patch.object(m.os,'fchmod',side_effect=AssertionError('reopen mutated mode')):
+    os.close(m.directory(parent,str(mode)))
+  closed=[];close=os.close
+  with patch.object(m.os,'fchmod'),patch.object(m.os,'close',side_effect=lambda fd:(closed.append(fd),close(fd))):
+   try: m.directory(parent,'chmod-ineffective',0o755)
+   except RuntimeError: pass
+   else: raise AssertionError('mode verification missing')
+  assert len(closed)==1
+ finally: os.umask(previous);os.close(parent)
+class Stream:
+ def fileno(self): return 20
+ def close(self): pass
+class Poll:
+ def __enter__(self): self.entries={};return self
+ def __exit__(self,*a): pass
+ def register(self,stream,event,target): self.entries[stream]=types.SimpleNamespace(fd=20,data=target,fileobj=stream)
+ def unregister(self,stream): del self.entries[stream]
+ def get_map(self): return self.entries
+ def select(self,*a): return [(key,1) for key in self.entries.values()]
+for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow'):
+ events=[];reaped=False
+ class Process:
+  pid=12345;stdout=Stream();stderr=Stream()
+  def wait(self,**kw):
+   global reaped
+   assert events[-2:]==['killpg','cgroup.kill'],events
+   reaped=True;events.append('reap-and-reuse');return 0
+ def waitid(kind,fd,flags):
+  assert kind==3 and fd==77 and flags&os.WNOWAIT and flags&os.WNOHANG and not reaped
+  events.append('observe')
+  if mode=='timeout': return None
+  stopped=flags&os.WSTOPPED and mode!='early-exit'
+  return types.SimpleNamespace(si_code=os.CLD_STOPPED if stopped else os.CLD_EXITED,si_status=7 if mode.startswith('nonzero') else 0)
+ def killpg(pid,sig):
+  assert pid==12345 and sig==signal.SIGKILL and not reaped,'numeric PGID was reused by an unrelated group'
+  events.append('killpg')
+ owner=m.Custody.__new__(m.Custody);owner.cg='/fake-cgroup';owner.deadline=time.monotonic()+.03
+ owner.cwrite=lambda path,name,value:events.append(name)
+ with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'waitid',create=True,side_effect=waitid),patch.object(m.os,'kill',side_effect=lambda *a:events.append('continue')),patch.object(m.os,'killpg',side_effect=killpg),patch.object(m.os,'close'),patch.object(m.os,'set_blocking'),patch.object(m.os,'read',return_value=b'x'*2 if mode=='overflow' else b''),patch.object(m.selectors,'DefaultSelector',Poll),patch.object(m.os.path,'exists',side_effect=lambda p:p.endswith('cgroup.kill')):
+  try:
+   measured=mode=='nonzero-measurement'
+   assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
+  except RuntimeError: assert mode not in ('success','nonzero-measurement')
+  else: assert mode in ('success','nonzero-measurement')
+ assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
+ if mode=='success': assert events.index('cgroup.procs')<events.index('continue')<events.index('killpg')
+`,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("every capability-removal scenario executes create/start/pinned SSH/SFTP/probe/receipt cleanup without worker authority", async () => {
+  const generation = "a".repeat(32);
+  const full: ContainerSpec = {
+    image: `sha256:${"c".repeat(64)}`,
+    network: "none",
+    caps: SANDBOX_CAPABILITIES,
+    mask: SANDBOX_CAPABILITY_MASK,
+    mounts: [],
+    tmpfs: {},
+  };
+  const scenarios: Array<Array<Record<string, unknown>>> = [];
+  for (const removed of SANDBOX_CAPABILITIES) {
+    for (const failure of [undefined, "create", "capability-probe", "settle"] as const) {
+      const calls: Array<Record<string, unknown>> = [];
+      const host: CustodyPort = {
+        root: `/var/lib/cogs-product-test/${generation}`,
+        generation,
+        purpose: "capability-probe",
+        closed: Promise.resolve(),
+        request: async <T>(op: string, fields: Record<string, unknown> = {}) => {
+          calls.push({ generation, op, ...fields });
+          if (op === failure) throw new Error("injected uncertainty");
+          return (
+            op === "create"
+              ? "b".repeat(64)
+              : op === "settle"
+                ? { retired: true, failed: true }
+                : { purpose: "capability-probe", removed }
+          ) as T;
+        },
+      };
+      const execute = () =>
+        withProductCustody(host, async () => {
+          assert.deepEqual(await capabilityRemovalScenario(host, full, removed), {
+            purpose: "capability-probe",
+            removed,
+          });
+          return false;
+        });
+      if (failure) await assert.rejects(execute);
+      else await execute();
+      assert.deepEqual(
+        calls.map((q) => q.op),
+        failure === "create" ? ["create", "settle"] : ["create", "capability-probe", "settle"],
+      );
+      assert.equal(calls.at(-1)?.passed, false);
+      assert.ok(calls[0]);
+      const spec = calls[0].spec as ContainerSpec;
+      assert.deepEqual(spec, { ...full, ...sandboxCapabilities(removed) });
+      assert.deepEqual(
+        (calls[0].argv as string[]).filter((_, i, a) => a[i - 1] === "--cap-add"),
+        spec.caps,
+      );
+      assert.throws(() => containerArguments({ ...host, purpose: "run" }, spec, [], "0:0"));
+      assert.throws(() => containerArguments(host, full, [], "0:0"));
+      if (!failure) scenarios.push(calls);
+    }
+  }
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import copy,importlib.util,json,os,selectors,sys,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+scenarios=json.load(sys.stdin)
+for plan in scenarios:
+ for mode in ('success','start-failure','ssh-denied','sftp-denied','lost-start','lost-probe','foreign-cleanup'):
+  owner=m.Custody.__new__(m.Custody);owner.generation=plan[0]['generation'];owner.root='/var/lib/cogs-product-test/'+owner.generation
+  owner.probe=True;owner.recovery=False;owner.failed=False;owner.cg='/fake-cgroup';owner.disk=None
+  owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
+  journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
+  owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}
+  owner.record=lambda n,v:journal.setdefault(n,copy.deepcopy(v))
+  def inspect(identity):
+   assert identity==cid
+   return {'Image':spec['image'],'State':{'Running':alive},'Config':{'Env':['COGS_PROXY_ENDPOINT=http://127.0.0.1:18080'],'Labels':{'cogs.product.generation':'foreign' if mode=='foreign-cleanup' else owner.generation}}}
+  owner.inspect=inspect
+  def docker(op,*args,**kw):
+   global alive
+   calls.append(op)
+   if op=='create': return (cid+'\n').encode()
+   if op=='start':
+    assert 'sandbox-receipt' in journal and owner.ids['sandbox']['id']==cid
+    assert kw=={'status':True};alive=mode!='start-failure'
+    if mode=='lost-start': raise RuntimeError('lost start')
+    return (1 if mode=='start-failure' else 0),b''
+   if op=='ps': return (cid+'\n').encode() if 'rm' not in calls else b''
+   assert op=='rm' and args==('-f',cid);alive=False;return b''
+  owner.docker=docker
+  def authenticate(role):
+   global auth
+   calls.append('authenticate');auth+=1
+   assert role=='sandbox' and alive
+   if mode=='lost-probe': raise RuntimeError('dead authenticated identity')
+   owner.ids[role]['pid']=42;return owner.ids[role]
+  owner.authenticate=authenticate
+  def command(argv,**kw):
+   program=argv[3];calls.append(program)
+   assert argv[:3]==['nsenter','--net=/proc/self/fd/77','--'] and program in ('ssh','sftp')
+   assert kw=={'status':True,'pass_fds':(77,)} and auth>=2
+   for value in ('-F','/dev/null','BatchMode=yes','IdentitiesOnly=yes','IdentityAgent=none','StrictHostKeyChecking=yes','GlobalKnownHostsFile=/dev/null','UserKnownHostsFile='+owner.root+'/authority/known_hosts',owner.root+'/authority/client','root@127.0.0.1'): assert value in argv,value
+   if program=='sftp': assert argv[-3:]==['-b',owner.root+'/authority/sftp-batch','root@127.0.0.1']
+   return (1,b'') if mode==program+'-denied' else (0,b'cogs-capability-probe' if program=='ssh' else b'listing')
+  owner.command=command
+  with patch.object(m.os,'listdir',side_effect=lambda fd:list(journal)),patch.object(m.os.path,'exists',return_value=False),patch.object(m.os,'open',return_value=77) as opened,patch.object(m.os,'close') as closed:
+   try:
+    owner.dispatch(copy.deepcopy(plan[0]));measurement=owner.dispatch(copy.deepcopy(plan[1]))
+    assert measurement['purpose']=='capability-probe' and measurement['container_id']==cid
+    assert measurement['removed']==next(c for c in m.CAPABILITIES if c not in spec['caps'])
+    assert measurement['running']==(mode!='start-failure') and measurement['start_code']==int(mode=='start-failure')
+    assert measurement['ssh']==(None if mode=='start-failure' else mode!='ssh-denied')
+    assert measurement['sftp']==(None if mode in ('start-failure','ssh-denied') else mode!='sftp-denied')
+   except RuntimeError: assert mode in ('lost-start','lost-probe')
+   finally:
+    try: assert owner.dispatch(copy.deepcopy(plan[2]))=={'retired':True,'failed':True}
+    except RuntimeError: assert mode=='foreign-cleanup' and 'rm' not in calls and 'retired' not in journal
+   assert calls[:2]==['create','start']
+   assert ('rm' in calls)==(mode!='foreign-cleanup')
+   assert not any('worker' in n or 'lease' in n or 'evidence' in n for n in journal)
+   if mode=='success': assert calls.index('start')<calls.index('ssh')<calls.index('sftp')<calls.index('rm')
+   if opened.called: closed.assert_called_once_with(77)
+  owner.selector.close()
+ # Python custody independently rejects reduced run sets, full probe sets and other capability mutations before create.
+ for probe,caps,mask in [(False,spec['caps'],spec['mask']),(True,list(m.CAPABILITIES),sum(2**b for b in m.CAPABILITIES.values())),(True,spec['caps'][:-1],spec['mask']),(True,spec['caps']+['SYS_ADMIN'],spec['mask']),(True,spec['caps'],0)]:
+  owner.ids={};owner.probe=probe;calls.clear();q=copy.deepcopy(plan[0]);q['spec'].update(caps=caps,mask=mask)
+  try: owner.dispatch(q)
+  except RuntimeError: pass
+  else: raise AssertionError('capability authority drift')
+  assert not calls
+ owner.probe=True
+ for op in ('lease','evidence','status','authenticate','create','settle'):
+  q={'op':op,'generation':owner.generation,'role':'worker','spec':spec,'passed':True}
+  try: owner.dispatch(q)
+  except RuntimeError: pass
+  else: raise AssertionError('probe gained '+op+' authority')
+`,
+    ],
+    { input: JSON.stringify(scenarios), encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("worker OTLP fetch and first cancellation keep production actual cleanup pending", async () => {
   for (const mode of ["fetch", "cancel"] as const) {

@@ -23,6 +23,7 @@ import time
 
 NONCE = re.compile(r"[0-9a-f]{32}\Z")
 ID = re.compile(r"[0-9a-f]{64}\Z")
+CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent",
        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0"}
@@ -63,8 +64,16 @@ def directory(parent, name, mode=None):
         os.mkdir(name, mode, dir_fd=parent)
         os.fsync(parent)
     fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-    require(stat.S_ISDIR(os.fstat(fd).st_mode))
-    return fd
+    try:
+        require(stat.S_ISDIR(os.fstat(fd).st_mode))
+        if mode is not None:
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+            require(stat.S_IMODE(os.fstat(fd).st_mode) == mode)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def capture(parent, name, maximum=1048576):
@@ -237,7 +246,9 @@ class Custody:
     def __init__(self, config):
         require(sys.platform == "linux" and os.geteuid() == 0 and os.uname().machine == "x86_64")
         self.generation = config["generation"]
-        require(set(config) in ({"generation", "seconds"}, {"generation", "seconds", "cleanup_only"}))
+        require({"generation", "seconds"} <= set(config) <= {"generation", "seconds", "cleanup_only", "purpose"})
+        require(config.get("purpose", "run") in ("run", "capability-probe"))
+        self.probe = config.get("purpose") == "capability-probe"
         require(type(config["seconds"]) is int and 60 <= config["seconds"] <= 600)
         require("cleanup_only" not in config or config["cleanup_only"] is True)
         require(NONCE.fullmatch(self.generation))
@@ -354,10 +365,10 @@ class Custody:
         with open(path + "/" + name, "w", encoding="ascii") as file:
             file.write(value)
 
-    def command(self, argv, cap=1048576):
+    def command(self, argv, cap=1048576, status=False, pass_fds=()):
         bootstrap = "import os,signal,sys;os.kill(os.getpid(),signal.SIGSTOP);os.execvpe(sys.argv[1],sys.argv[1:],dict(os.environ))"
         p = subprocess.Popen([sys.executable, "-I", "-c", bootstrap, *argv], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV, start_new_session=True)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV, start_new_session=True, pass_fds=pass_fds)
         pidfd = None  # ownership is armed at Popen return, including pidfd/stop-handshake failure
         out, err = bytearray(), bytearray()
         end = min(self.deadline, time.monotonic() + 15)
@@ -365,9 +376,9 @@ class Custody:
             pidfd = os.pidfd_open(p.pid)
             while True:
                 require(time.monotonic() < end)
-                child, status = os.waitpid(p.pid, os.WUNTRACED | os.WNOHANG)
+                child = os.waitid(os.P_PIDFD, pidfd, os.WSTOPPED | os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 if child:
-                    require(os.WIFSTOPPED(status))
+                    require(child.si_code == os.CLD_STOPPED)
                     break
                 time.sleep(0.01)
             self.cwrite(self.cg + "/helpers", "cgroup.procs", str(p.pid))
@@ -384,11 +395,17 @@ class Custody:
                         require(len(out) <= cap and len(err) <= 4096)
                         if not chunk:
                             poll.unregister(key.fileobj)
-                require(p.wait(timeout=max(0.01, end - time.monotonic())) == 0)
-            return bytes(out)
+                while True:
+                    require(time.monotonic() < end)
+                    child = os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    if child:
+                        break
+                    time.sleep(0.01)
+                require(child.si_code == os.CLD_EXITED and (status or child.si_status == 0))
+            return (child.si_status, bytes(out)) if status else bytes(out)
         finally:
             try:
-                # Never skip descendants because the leader exited; also cover a setsid descendant after placement.
+                # WNOWAIT retains the leader's numeric PID/PGID until BOTH final signals, even on early exit.
                 try:
                     os.killpg(p.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -408,8 +425,8 @@ class Custody:
                 p.stdout.close()
                 p.stderr.close()
 
-    def docker(self, *args):
-        return self.command(["docker", "--host=unix:///var/run/docker.sock", *args], 8 * 1048576)
+    def docker(self, *args, **options):
+        return self.command(["docker", "--host=unix:///var/run/docker.sock", *args], 8 * 1048576, **options)
 
     def inspect(self, cid):
         require(ID.fullmatch(cid))
@@ -429,7 +446,7 @@ class Custody:
         require(h["LogConfig"]["Type"] == "none" and h["CapDrop"] == ["ALL"])
         require(sorted(h["CapAdd"] or []) == sorted(spec["caps"]))
         require(h["SecurityOpt"] == ["no-new-privileges"] and h["CgroupParent"] == self.cg[14:])
-        require(h["Memory"] == 4294967296 and h["MemorySwap"] == 4294967296 and h["MemorySwappiness"] == 0)
+        require(h["Memory"] == 4294967296 and h["MemorySwap"] == 4294967296 and (h["MemorySwappiness"] is None or type(h["MemorySwappiness"]) is int and h["MemorySwappiness"] == 0))
         require(h["PidsLimit"] == 128 and h["NanoCpus"] == 2000000000 and not h["PortBindings"])
         require(h["ShmSize"] == 16777216)
         require(h["NetworkMode"] == spec["network"] and not h["Devices"] and not h["Binds"])
@@ -471,6 +488,7 @@ class Custody:
         return held
 
     def bind_receipt(self):
+        require(not self.probe)
         worker, sandbox = self.authenticate("worker"), self.authenticate("sandbox")
         r = self.receipt
         require(set(r) == set("version generation consumer_id session_id launch_digest worker_id sandbox_id sandbox_mount_namespace shared user".split()))
@@ -728,9 +746,42 @@ class Custody:
                                          "inventory": {p: digest(b) if b is not None else None for p, b in retained.items()}})
         return canonical(e).decode()
 
+    def capability_probe(self):
+        held = self.ids["sandbox"]
+        v = self.inspect(held["id"])
+        result = dict(purpose="capability-probe", generation=self.generation, container_id=held["id"],
+                      removed=next(c for c in CAPABILITIES if c not in held["spec"]["caps"]),
+                      start_code=held["start_code"], running=v["State"]["Running"], ssh=None, sftp=None)
+        if result["running"]:
+            self.authenticate("sandbox")
+            net = os.open(f"/proc/{held['pid']}/ns/net", os.O_RDONLY)
+            try:
+                self.authenticate("sandbox")  # reject death/reuse across namespace acquisition
+                prefix = ["nsenter", "--net=/proc/self/fd/" + str(net), "--"]
+                options = ["-F", "/dev/null", "-i", self.root + "/authority/client"]
+                for option in ("BatchMode=yes", "IdentitiesOnly=yes", "IdentityAgent=none", "StrictHostKeyChecking=yes",
+                               "GlobalKnownHostsFile=/dev/null", "UserKnownHostsFile=" + self.root + "/authority/known_hosts",
+                               "ConnectTimeout=2", "ConnectionAttempts=3"):
+                    options += ["-o", option]
+                code, out = self.command(prefix + ["ssh", *options, "root@127.0.0.1", "printf cogs-capability-probe"], status=True, pass_fds=(net,))
+                result["ssh"] = code == 0 and out == b"cogs-capability-probe"
+                if result["ssh"]:
+                    self.authenticate("sandbox")
+                    code, _ = self.command(prefix + ["sftp", *options, "-b", self.root + "/authority/sftp-batch", "root@127.0.0.1"], status=True, pass_fds=(net,))
+                    result["sftp"] = code == 0
+                self.authenticate("sandbox")
+            finally:
+                os.close(net)
+        self.record("capability-measurement", result)
+        return result  # measurements are never evidence/pass admission
+
     def dispatch(self, q):
         require(not self.recovery and q.pop("generation") == self.generation)
         op = q.pop("op")
+        require(not self.probe or op not in ("lease", "evidence", "status", "authenticate"))
+        if op == "capability-probe":
+            require(self.probe)
+            return self.capability_probe()
         if op == "provenance":
             return self.provenance(q)
         if op == "mkdir":
@@ -813,7 +864,14 @@ class Custody:
             return {"running": v["State"]["Running"], "code": v["State"]["ExitCode"]}
         elif op == "create":
             role, spec = q["role"], q["spec"]
-            require(role not in self.ids)
+            require(role in ("trust", "sandbox", "worker") and role not in self.ids)
+            require(not self.probe or role != "worker")
+            expected = list(CAPABILITIES) if role == "sandbox" else []
+            if self.probe and role == "sandbox":
+                removed = [c for c in expected if c not in spec["caps"]]
+                require(len(removed) == 1)
+                expected.remove(removed[0])
+            require(spec["caps"] == expected and spec["mask"] == sum(2 ** CAPABILITIES[c] for c in expected))
             self.record(role + "-intent", spec)
             cid = self.docker("create", *q["argv"]).decode().strip()
             require(ID.fullmatch(cid))
@@ -837,7 +895,10 @@ class Custody:
                 del self.ids[role]
                 self.record(role + "-retired", {"id": cid})
                 return base64.b64encode(data).decode()
-            self.docker("start", cid)
+            if self.probe:
+                self.ids[role]["start_code"], _ = self.docker("start", cid, status=True)
+            else:
+                self.docker("start", cid)
             return cid
         elif op == "authenticate":
             return self.authenticate(q["role"])
@@ -868,6 +929,7 @@ class Custody:
             self.record("snapshot-receipt-inode", identity(os.stat("snapshot-receipt.json", dir_fd=fd))[:2])
             os.close(fd)
         elif op == "settle":
+            require(not self.probe or q.get("passed") is not True)
             self.failed = self.failed or q.get("passed") is not True
             require(self.failed or "evidence-validated" in os.listdir(self.control))
             self.settle()
