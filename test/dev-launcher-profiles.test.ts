@@ -295,7 +295,37 @@ test("launcher smoke scripts quote driver paths and document aggregate failures"
   assert.match(insecureSmoke, /Keep -e disabled: this smoke accumulates guarded step failures/u);
 });
 
-test("insecure driver isolates docker tool state outside launcher controls", async () => {
+test("insecure driver rejects non-root before acquisition or Docker effects", async () => {
+  const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
+  const temp = await mkdtemp(join(tmpdir(), "insecure-nonroot-"));
+  try {
+    for (const operation of ["create", "verify", "reset", "destroy"]) {
+      const result = spawnSync("/bin/bash", ["-c", source, "driver", operation], {
+        input: "",
+        encoding: "utf8",
+        timeout: 3000,
+        ...(process.geteuid?.() === 0 ? { uid: 65534, gid: 65534 } : {}),
+        env: {
+          PATH: "",
+          COGS_INSECURE_STATE_DIR: join(temp, "state"),
+          COGS_INSECURE_GENERATION: generation,
+          COGS_INSECURE_ORIGINAL_REVISION: sourceRevision,
+        },
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "insecure-container requires root-held private custody\n");
+      assert.deepEqual(await readdir(temp), []);
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("insecure driver isolates docker tool state outside launcher controls", {
+  skip: process.geteuid?.() !== 0,
+}, async () => {
   const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-docker-"));
   const stateName = `fake-docker-${Math.random().toString(16).slice(2)}`;
   const stateDir = join(process.cwd(), ".cogs-dev", stateName);
@@ -581,6 +611,96 @@ for race in ('none','unprivileged','rename-file','rename-dir','unlink','rmdir','
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("insecure authority retirement quarantines final-boundary replacements without adoption", async () => {
+  const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
+  const program = shellFunction(source, "file_custody").split("<<'PY'\n")[1]?.split("\nPY")[0];
+  assert(program);
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      String.raw`
+import json,sys,tempfile,pathlib,stat
+${rootCustodyModel}
+spec=json.load(sys.stdin); program=spec['program']; preflight=spec['preflight']
+real_stat,real_rename,real_unlink,real_rmdir=os.stat,os.rename,os.unlink,os.rmdir
+files=['.cogs-insecure-owner','authority','intents','inventory','container','volume','port','known_hosts',
+ 'input/ssh_host_ed25519_key','input/ssh_host_ed25519_key.pub','input/client_ed25519_key.pub','input/egress-ca.crt',
+ 'control/client_ed25519_key','control/client_ed25519_key.pub']
+for boundary,target in [('none',''),('unprivileged','')]+[(b,n) for b in ('rename','delete') for n in files+['files.owner','input','control','state']]:
+ with tempfile.TemporaryDirectory() as tmp:
+  parent=pathlib.Path(tmp); root=parent/'state'; root.mkdir(mode=0o700)
+  for name in ('input','control'): (root/name).mkdir(mode=0o700)
+  for name in files: (root/name).write_text('owned\n'); (root/name).chmod(0o600)
+  s=root.stat(); identity=f'{s.st_dev}:{s.st_ino}'
+  moves={}; fired=[]; retained=[]
+  def run(action):
+   # Production runs each helper in its own process. Reclaim its descriptors on
+   # modeled SystemExit too, rather than depending on the host's fd limit.
+   opened=set(); real_open,real_dup=os.open,os.dup
+   def track(fn,*a,**kw):
+    fd=fn(*a,**kw); opened.add(fd); return fd
+   try:
+    with patch.object(sys,'argv',['custody',str(root),action,identity]),patch.object(os,'open',side_effect=lambda *a,**kw:track(real_open,*a,**kw)),patch.object(os,'dup',side_effect=lambda fd:track(real_dup,fd)): exec(program,{})
+   finally:
+    for fd in opened:
+     try: os.close(fd)
+     except OSError: pass
+  def replace(fd,name,directory,save):
+   if save: real_rename(name,str(parent/'saved'),src_dir_fd=fd)
+   if directory: os.mkdir(name,0o700,dir_fd=fd)
+   else:
+    h=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600,dir_fd=fd);os.write(h,b'FOREIGN');os.close(h)
+   retained.append(real_stat(name,dir_fd=fd,follow_symlinks=False).st_ino);fired.append(True)
+  def move(name,destination,*,src_dir_fd,dst_dir_fd):
+   s=real_stat(name,dir_fd=src_dir_fd,follow_symlinks=False); directory=stat.S_ISDIR(s.st_mode)
+   # Match nested keys by the retained directory inode, not ambiguous basenames.
+   expected=root/target if target!='state' else root
+   matches=name==expected.name and real_stat(expected.parent).st_ino==os.fstat(src_dir_fd).st_ino
+   if boundary=='rename' and matches and not fired: replace(src_dir_fd,name,directory,True)
+   moves[destination]=(os.dup(src_dir_fd),name,directory,matches)
+   return real_rename(name,destination,src_dir_fd=src_dir_fd,dst_dir_fd=dst_dir_fd)
+  def final(name,*,dir_fd,directory):
+   old=moves.get(name)
+   if boundary=='delete' and old and old[3] and not fired: replace(old[0],old[1],directory,False)
+   return (real_rmdir if directory else real_unlink)(name,dir_fd=dir_fd)
+  with patch.object(os,'getuid',return_value=0),patch.object(os,'geteuid',return_value=1 if boundary=='unprivileged' else 0),patch.object(os,'fstat',side_effect=root_stat(os.fstat)),patch.object(os,'stat',side_effect=root_stat(os.stat)):
+   run('capture')
+   try:
+    with patch.object(os,'rename',side_effect=move),patch.object(os,'unlink',side_effect=lambda n,*,dir_fd:final(n,dir_fd=dir_fd,directory=False)),patch.object(os,'rmdir',side_effect=lambda n,*,dir_fd:final(n,dir_fd=dir_fd,directory=True)): run('remove')
+   except SystemExit: assert boundary!='none',(boundary,target)
+   else: assert boundary=='none',(boundary,target)
+   if boundary not in ('none','unprivileged'):
+    try: run('check')
+    except (SystemExit,OSError): pass
+    else: raise AssertionError('uncertain retirement became usable')
+  if boundary=='none': assert list(parent.iterdir())==[]
+  elif boundary=='unprivileged': assert (root/'authority').read_text()=='owned\n' and len(list(parent.iterdir()))==1
+  else:
+   assert fired and retained,(boundary,target)
+   paths=list(parent.rglob('*'))
+   for ino in retained:
+    p=next(p for p in paths if real_stat(p).st_ino==ino)
+    if p.is_file(): assert p.read_bytes()==b'FOREIGN'
+   assert any(p.name.startswith('.cogs-retire-state-') for p in parent.iterdir())
+   denied=__import__('subprocess').run(['/bin/bash','-c','state_root=$1; state_name=state;'+preflight+'\necho FORBIDDEN','preflight',tmp],capture_output=True)
+   assert denied.returncode==1 and not denied.stdout and b'custody is uncertain' in denied.stderr
+`,
+    ],
+    {
+      input: JSON.stringify({
+        program,
+        preflight: `set -e;\n${shellFunction(source, "fail")}\n${source.slice(source.indexOf("# A failed retirement"), source.indexOf("trap on_error ERR"))}`,
+      }),
+      encoding: "utf8",
+      timeout: 10000,
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("insecure expected lifecycle files reject FIFOs without blocking", async () => {
   const temp = await mkdtemp(join(tmpdir(), "insecure-fifo-custody-"));
   const owned = join(temp, "owned");
@@ -652,7 +772,9 @@ if release_lock; then exit 44; fi
   }
 });
 
-test("insecure driver never adopts or removes pre-existing docker competitors", async () => {
+test("insecure driver never adopts or removes pre-existing docker competitors", {
+  skip: process.geteuid?.() !== 0,
+}, async () => {
   const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-preflight-"));
   const stateName = `fake-stale-${Math.random().toString(16).slice(2)}`;
   const stateDir = join(process.cwd(), ".cogs-dev", stateName);

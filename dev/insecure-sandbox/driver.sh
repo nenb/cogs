@@ -2,6 +2,13 @@
 set -Eeuo pipefail
 umask 077
 
+# Retirement requires root-held private custody. Reject before even resolving
+# acquisition inputs or invoking tools; keep the independent final guard below.
+if (( EUID != 0 )); then
+  printf 'insecure-container requires root-held private custody\n' >&2
+  exit 1
+fi
+
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 state=${COGS_INSECURE_STATE_DIR:-"$repo/.cogs-dev/insecure-sandbox"}
 image=${COGS_INSECURE_IMAGE:-cogs-insecure-sandbox:dev}
@@ -121,6 +128,15 @@ if [[ "$state" != "$state_root/"* || -z "$state_name" || "$state_name" == */* \
   printf 'insecure-container state directory must be one non-symlink child of %s\n' "$state_root" >&2
   exit 1
 fi
+
+# A failed retirement may have moved the locator itself. Its quarantine is a
+# durable veto even when the old state/lock name is absent; never recreate/adopt.
+assert_retirement_absent() {
+  if compgen -G "$state_root/.cogs-retire-$state_name-*" >/dev/null; then
+    fail 'insecure-container retirement custody is uncertain; recovery required'
+  fi
+}
+assert_retirement_absent
 
 trap on_error ERR
 trap on_signal INT TERM HUP
@@ -296,7 +312,7 @@ elif action in ('check','remove'):
     named=os.stat(name,dir_fd=pfd,follow_symlinks=False)
     if (named.st_dev,named.st_ino)!=(ls.st_dev,ls.st_ino): raise SystemExit('lock replaced')
     records={n:regular(lfd,n) for n in (manifest,'owner')}
-    quarantine='.cogs-retire-'+os.urandom(16).hex(); os.mkdir(quarantine,0o700,dir_fd=pfd)
+    quarantine='.cogs-retire-'+os.path.basename(lock)[:-5]+'-'+os.urandom(16).hex(); os.mkdir(quarantine,0o700,dir_fd=pfd)
     qfd=os.open(quarantine,flags|os.O_DIRECTORY,dir_fd=pfd); qs=os.fstat(qfd)
     if qs.st_uid!=0 or not valid_dir(qs): raise SystemExit('unsafe quarantine; preserve')
     os.fsync(pfd)
@@ -803,14 +819,18 @@ children={'input':{'ssh_host_ed25519_key','ssh_host_ed25519_key.pub','client_ed2
 rfd=os.open(root,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(rfd)
 if f'{info.st_dev}:{info.st_ino}'!=identity: raise SystemExit('directory changed')
 if set(os.listdir(rfd)) != top | (set() if action=='capture' else {record}): raise SystemExit('foreign state inventory')
-def file(fd,name):
+pins=[]
+def stamp(s): return (s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+def file(fd,name,logical=None):
     handle=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=fd); s=os.fstat(handle)
+    pins.append(os.dup(handle))
     if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
         raise SystemExit('unsafe state member')
-    with os.fdopen(handle,'rb') as stream: data=stream.read(1048577)
-    if len(data)>1048576: raise SystemExit('oversized state member')
+    with os.fdopen(handle,'rb') as stream:
+        data=stream.read(1048577); after=os.fstat(stream.fileno())
+    if len(data)>1048576 or stamp(s)!=stamp(after) or stamp(s)!=stamp(os.stat(name,dir_fd=fd,follow_symlinks=False)): raise SystemExit('state member changed')
     marker=[s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode)]
-    return marker if name in ('intents','inventory') else marker+[hashlib.sha256(data).hexdigest()]
+    return marker if (logical or name) in ('intents','inventory') else marker+[hashlib.sha256(data).hexdigest()]
 values={}; held={}
 for directory,names in children.items():
     fd=os.open(directory,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=rfd); held[directory]=fd
@@ -828,32 +848,49 @@ if action=='capture':
         json.dump(values,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno())
     os.fsync(rfd)
 else:
-    file(rfd,record)
+    record_value=file(rfd,record)
     fd=os.open(record,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=rfd); s=os.fstat(fd)
     if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
         os.close(fd); raise SystemExit('unsafe file owner record')
     with os.fdopen(fd,'r') as stream: text=stream.read(65537)
-    if len(text)>65536 or text!=json.dumps(values,sort_keys=True,separators=(',',':'))+'\n':
+    if [s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),hashlib.sha256(text.encode()).hexdigest()]!=record_value or len(text)>65536 or text!=json.dumps(values,sort_keys=True,separators=(',',':'))+'\n':
         raise SystemExit('retained file acquisition changed')
     if action=='remove':
-        # Validate the complete inventory before the first unlink. No recursive
-        # deletion, no discovery/adoption and no unlink of unknown helper residue.
+        flags=os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_DIRECTORY
+        parent,name=os.path.split(root); pfd=os.open(parent,flags); ps=os.fstat(pfd)
+        if os.geteuid()!=0 or info.st_uid!=0 or ps.st_uid!=0 or stat.S_IMODE(ps.st_mode)!=0o700:
+            raise SystemExit('root-held private retirement parent required; custody preserved')
+        quarantine='.cogs-retire-'+name+'-'+os.urandom(16).hex(); os.mkdir(quarantine,0o700,dir_fd=pfd)
+        qfd=os.open(quarantine,flags,dir_fd=pfd); qs=os.fstat(qfd)
+        if qs.st_uid!=0 or stat.S_IMODE(qs.st_mode)!=0o700: raise SystemExit('unsafe quarantine; preserve')
+        os.fsync(pfd)
+        def retire(fd,name,expected,directory=False):
+            slot=os.urandom(16).hex()
+            os.rename(name,slot,src_dir_fd=fd,dst_dir_fd=qfd); os.fsync(fd); os.fsync(qfd)
+            if directory:
+                moved=os.open(slot,flags,dir_fd=qfd); s=os.fstat(moved)
+                if [s.st_dev,s.st_ino]!=expected or os.listdir(moved): raise SystemExit('directory replaced; quarantine retained')
+                os.close(moved); os.rmdir(slot,dir_fd=qfd)
+            else:
+                if file(qfd,slot,name)!=expected: raise SystemExit('file replaced; quarantine retained')
+                os.unlink(slot,dir_fd=qfd)
+            os.fsync(qfd)
+            if name in os.listdir(fd): raise SystemExit('replacement preserved; quarantine requires recovery')
         for directory,names in children.items():
-            fd=held[directory]
-            for name in sorted(names):
-                if file(fd,name)!=values[directory+'/'+name]: raise SystemExit('key replaced')
-                os.unlink(name,dir_fd=fd)
-            os.fsync(fd); os.rmdir(directory,dir_fd=rfd)
-        for name in sorted(top-children.keys()):
-            if file(rfd,name)!=values[name]: raise SystemExit('file replaced')
-            os.unlink(name,dir_fd=rfd)
-        os.unlink(record,dir_fd=rfd); os.fsync(rfd)
-        s=os.lstat(root)
-        if f'{s.st_dev}:{s.st_ino}'!=identity: raise SystemExit('directory replaced during retirement')
-        os.rmdir(root)
-        parent=os.open(os.path.dirname(root),os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
+            for member in sorted(names): retire(held[directory],member,values[directory+'/'+member])
+            retire(rfd,directory,values[directory],True)
+        for member in sorted(top-children.keys()): retire(rfd,member,values[member])
+        retire(rfd,record,record_value)
+        retire(pfd,name,[info.st_dev,info.st_ino],True)
+        os.close(qfd)
+        try: os.rmdir(quarantine,dir_fd=pfd); os.fsync(pfd)
+        except OSError:
+            try: os.mkdir(quarantine,0o700,dir_fd=pfd)
+            except FileExistsError: pass
+            raise
+        os.close(pfd)
     elif action!='check': raise SystemExit('invalid file owner operation')
-for fd in held.values(): os.close(fd)
+for fd in [*held.values(),*pins]: os.close(fd)
 os.close(rfd)
 PY
 }
@@ -883,6 +920,7 @@ require openssl
 require docker
 select_timeout
 acquire_lock
+assert_retirement_absent
 init_docker_tool_state
 "$operation"
 if ! release_lock; then
