@@ -20,11 +20,12 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-HARD_LIMIT = 100_500
+# ADR0333 budgets only; historical anchors and deploy/workflow stops do not move.
+HARD_LIMIT = 107_000
 DEPLOY_CORRECTION_HIGH = 24_500
-RETAINED_CORRECTION_HIGH = 16_000
+RETAINED_CORRECTION_HIGH = 22_000
 WORKFLOW_CORRECTION_HIGH = 6_000
-GLOBAL_CORRECTION_HIGH = 47_000
+GLOBAL_CORRECTION_HIGH = 50_000
 REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
@@ -32,7 +33,19 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # ADR0309 reserves are an independent gross diff, not subtraction of two gross
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
-POST_H_HIGHS = {"deploy": 1_500, "retained": 4_000, "workflow": 1_200, "global": 6_000}
+POST_H_HIGHS = {"deploy": 1_500, "retained": 9_000, "workflow": 1_200, "global": 12_000}
+PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
+PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
+PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 900,
+                          "lifecycle": 2_200, "completion": 1_200, "integration": 1_700}
+PRODUCT_TEST_NEW_FILES = {
+    "dev/linux-kvm/bounded-command.py": "relay",
+    "src/skills/snapshot-session-preparer.ts": "lifecycle",
+    "dev/product-test/host-custody.py": "integration",
+    "dev/product-test/runner.ts": "integration",
+    "dev/product-test/snapshot-owner.ts": "integration",
+    "docs/adr/0333-authorize-controlled-product-test-corrections.md": "integration",
+}
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -266,17 +279,17 @@ def _remediation_budget():
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "baseline",
-                           "source_limits", "owners"})
+                           "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 30_000)
+             and data["global_gross_line_high"] == 36_000)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1509,
-                                        "source_inventory_bytes": 22_020_096,
+    _require(data["source_limits"] == {"tracked_files": 1515,
+                                        "source_inventory_bytes": 23_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = {"route": 2_200, "revocation": 3_000, "relay": 1_975,
-                "lifecycle": 7_500, "completion": 3_100, "integration": 12_500}
+    expected = {"route": 2_200, "revocation": 3_000, "relay": 2_900,
+                "lifecycle": 9_600, "completion": 4_300, "integration": 14_100}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -303,9 +316,9 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 0,
-                                "lifecycle": 4, "completion": 3, "integration": 81})
-    _require(sum(new_file_highs.values()) == 89
+    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
+                                "lifecycle": 5, "completion": 3, "integration": 85})
+    _require(sum(new_file_highs.values()) == 95
              and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
@@ -319,7 +332,75 @@ def _remediation_budget():
                           if allocated == owner and path not in baseline_names)
         _require(planned_new <= new_file_highs[owner])
     _require(paths.get(str(REMEDIATION_BUDGET_PATH.relative_to(ROOT))) == "integration")
+    _product_test_budget(data, paths)
     return data, owners, paths, new_file_highs, forecasts
+
+
+def _product_test_budget(data, allocations):
+    plan = data["product_test_correction"]
+    _require(isinstance(plan, dict) and set(plan) == {
+        "base_revision", "base_tree", "global_gross_line_forecast",
+        "integration_regeneration_gross_line_forecast", "owners"})
+    _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
+             and plan["global_gross_line_forecast"] == 6_000
+             and plan["integration_regeneration_gross_line_forecast"] == 100)
+    _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
+    q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
+    q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))
+    q_allocations = {path: owner["name"] for owner in q_budget["owners"] for path in owner["paths"]}
+    # No transfers: every historical gross addition stays charged to its Q owner.
+    _require(all(allocations.get(path) == owner for path, owner in q_allocations.items()))
+    planned, new, forecasts = {}, {}, {}
+    _require(isinstance(plan["owners"], list) and len(plan["owners"]) == len(PRODUCT_TEST_FORECASTS))
+    for entry in plan["owners"]:
+        _require(isinstance(entry, dict) and set(entry) == {
+            "name", "gross_line_forecast", "existing_paths", "new_files"})
+        owner = entry["name"]
+        _require(owner in PRODUCT_TEST_FORECASTS and owner not in forecasts
+                 and type(entry["gross_line_forecast"]) is int
+                 and entry["gross_line_forecast"] == PRODUCT_TEST_FORECASTS[owner])
+        forecasts[owner] = entry["gross_line_forecast"]
+        for kind in ("existing_paths", "new_files"):
+            names = entry[kind]
+            _require(isinstance(names, list) and all(isinstance(path, str) for path in names)
+                     and names == sorted(set(names)))
+            for path in names:
+                _require(path not in planned and allocations.get(path) == owner
+                         and (path in q_names) == (kind == "existing_paths"))
+                planned[path] = owner
+                if kind == "new_files":
+                    new[path] = owner
+    _require(new == PRODUCT_TEST_NEW_FILES and sum(forecasts.values()) == 6_000)
+    _require(set(allocations) == set(q_allocations) | set(planned))
+    _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
+    # Preserve cumulative planning and charge the entire forecast, not remaining
+    # endpoint headroom after deletions. Readiness is INCLUDED in integration.
+    q_gross = {"route": 2_023, "revocation": 2_984, "relay": 1_953,
+               "lifecycle": 7_348, "completion": 2_972, "integration": 12_325}
+    _require(sum(q_gross.values()) + 6_000 <= data["global_gross_line_high"])
+    _require(all(q_gross[entry["name"]] + forecasts[entry["name"]] <= entry["gross_line_high"]
+                 for entry in data["owners"]))
+    return planned
+
+
+def _product_test_gross(budget):
+    plan = budget["product_test_correction"]
+    planned = {path: entry["name"] for entry in plan["owners"]
+               for path in (*entry["existing_paths"], *entry["new_files"])}
+    changed = set(_nul_records(_git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv",
+                                    "--name-only", "-z", PRODUCT_TEST_Q, "--", "."])))
+    changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+    _require(changed <= set(planned))
+    # Zero-forecast regeneration touchpoints must remain byte/mode-identical,
+    # including deletion-only changes which would otherwise add zero lines.
+    _require(all(PRODUCT_TEST_FORECASTS[planned[path]] > 0 for path in changed))
+    gross = {}
+    for entry in plan["owners"]:
+        names = (*entry["existing_paths"], *entry["new_files"])
+        gross[entry["name"]] = _gross_slice(names, lambda path: path in names, PRODUCT_TEST_Q) if names else 0
+    _require(all(gross[owner] <= high for owner, high in PRODUCT_TEST_FORECASTS.items())
+             and sum(gross.values()) <= plan["global_gross_line_forecast"])
+    return gross
 
 
 def _nul_records(raw):
@@ -443,6 +524,7 @@ def measure():
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
+    product_test_gross = _product_test_gross(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
     remediation_new_file_highs = {entry["name"]: entry["new_file_high"] for entry in remediation_budget["owners"]}
@@ -491,6 +573,11 @@ def measure():
         "post_h_gross_added_lines": post_h,
         "post_h_reserve_highs": POST_H_HIGHS,
         "post_h_reserve_limits_satisfied": post_h_satisfied,
+        "product_test_base_revision": PRODUCT_TEST_Q,
+        "product_test_workstream_gross_added_lines": product_test_gross,
+        "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
+        "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
+        "product_test_global_gross_line_forecast": 6_000,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
