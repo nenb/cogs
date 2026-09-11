@@ -42,7 +42,7 @@ PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
                           "lifecycle": 4_450, "completion": 3_000, "integration": 5_100}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 700_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_000_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 2_700_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_850_000

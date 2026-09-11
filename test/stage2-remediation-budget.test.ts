@@ -577,8 +577,8 @@ plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST
 assert plan['global_gross_line_forecast']==15350 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
 expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=3000,integration=5100)
 assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15350
-q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=700000)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==1850000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
+q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=1000000)
+assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==2150000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
@@ -721,7 +721,15 @@ assert expected_forecasts['integration']-4648==102+50+20+20+150+100+10==452
 assert 448+1029+466+452==2395 and sum(q_lines.values())+sum(expected_forecasts.values())==44955<=b['global_gross_line_high']
 assert all(q_lines[o]+expected_forecasts[o]<=highs[o] for o in highs)
 assert 99461+15350==114811<m['HARD_LIMIT'] and 95358+15350==110708<m['HARD_LIMIT']
-assert 700000-681198-12000==6802 and 1850000-989430==860570
+assert 700000-681198-12000==6802 and 1850000-989430==860570  # historical, not current headroom
+assert 236550-6802==229748 and 693198+236550+10000+60000==999748<=q_bytes['integration']
+assert q_bytes['integration']-693198==236550+10000+60252==306802
+assert 99893+187175+84508+693198+306802==1371576<plan['global_gross_byte_forecast']
+assert 2080477+306802==2387279<=expected_bytes['integration'] and 3168319+306802==3475121<5970000
+assert 4707+30==4737 and expected_forecasts['integration']-4737==13+350==363
+for text in ('canonical artifact indivisibly', '229,748 shortfall before implementation', '999,748, rounded to 1,000,000',
+ 'remaining implementation/contingency 60,252', '2,150,000', '300,000 excess is not spendable global capacity', '<=10,000 raw added-line bytes'):
+ assert text in replan,text
 for text in ('132/120 gross lines', 'complete-driver denial conversion/entry sentinels 190', 'inherited contingency 46 + withheld fit buffer 80',
  'this governance 102', '2,395 total remain before this amendment', '44,955', '114,811', '12,000 gross added-line bytes',
  'complete future implementation byte fit is not proven', 'No accounting algorithm changes'):
@@ -1000,7 +1008,10 @@ for is_q in (False,True):
   veto(str((is_q,owner,'isolated byte high+1')))
  cumulative=dict(zero); correction=dict(zero)
  values=correction if is_q else cumulative; values.update(limits)
- f()  # every owner at its high; global exactly at its independent high
+ if is_q:
+  veto('owner highs are not simultaneous global spending authority')
+  values['integration']-=sum(values.values())-m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']
+ f()  # all owners within highs; global exactly at its independent high
  key='PRODUCT_TEST_GLOBAL_BYTE_FORECAST' if is_q else 'REMEDIATION_GLOBAL_BYTE_HIGH'
  ns[key]-=1; veto('independent byte global with all owners within ceilings'); ns[key]+=1
 `);

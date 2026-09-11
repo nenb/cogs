@@ -107,7 +107,7 @@
       {
         "name": "integration",
         "gross_line_forecast": 5100,
-        "gross_byte_forecast": 700000,
+        "gross_byte_forecast": 1000000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
