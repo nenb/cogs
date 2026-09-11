@@ -415,6 +415,148 @@ exit 38
   }
 });
 
+test("insecure Docker tool metadata is inventoried and only exact custody is retired", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "insecure-tool-custody-"));
+  const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
+  const functions = ["docker_tool_custody", "bounded_docker", "release_lock"]
+    .map((name) => shellFunction(source, name))
+    .join("\n");
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `set -euo pipefail; umask 077
+${functions}
+prepare() {
+  lock="$1"; lock_owner=owner; lock_held=true
+  mkdir -m 700 "$lock" "$lock/docker-tool" "$lock/docker-tool/home" "$lock/docker-tool/config" "$lock/docker-tool/buildx"
+  printf 'owner\\n' > "$lock/owner"; chmod 600 "$lock/owner"
+  lock_identity=$(python3 -I -c 'import os,sys; s=os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$lock")
+  docker_tool_custody capture
+}
+prepare ${JSON.stringify(join(temp, "success.lock"))}
+bounded() { shift; "$@"; }
+fake_docker() {
+  mkdir -m 700 "$lock/docker-tool/buildx/instances"
+  printf '{"Name":"owned"}\\n' > "$lock/docker-tool/buildx/instances/owned"; chmod 644 "$lock/docker-tool/buildx/instances/owned"
+  printf config > "$lock/docker-tool/config/config.json"; chmod 600 "$lock/docker-tool/config/config.json"
+  printf home > "$lock/docker-tool/home/metadata"; chmod 600 "$lock/docker-tool/home/metadata"
+}
+docker_command=(fake_docker)
+bounded_docker 1s build
+release_lock
+[[ ! -e "$lock" ]]
+prepare ${JSON.stringify(join(temp, "failed.lock"))}
+failed_docker() { printf partial > "$lock/docker-tool/buildx/partial"; return 7; }
+docker_command=(failed_docker)
+if bounded_docker 1s build; then exit 33; fi
+failed_docker() { echo executed > "$lock/forbidden"; }
+if bounded_docker 1s inspect; then exit 34; fi
+if release_lock; then exit 35; fi
+[[ -f "$lock/owner" && -f "$lock/docker-tool/buildx/partial" && ! -e "$lock/forbidden" ]]
+prepare ${JSON.stringify(join(temp, "replaced.lock"))}
+mv "$lock/docker-tool/buildx" ${JSON.stringify(join(temp, "original-buildx"))}
+mkdir -m 700 "$lock/docker-tool/buildx"
+if docker_tool_custody capture; then exit 36; fi
+if release_lock; then exit 37; fi
+[[ -d "$lock/docker-tool/buildx" && -d ${JSON.stringify(join(temp, "original-buildx"))} ]]
+prepare ${JSON.stringify(join(temp, "unknown.lock"))}
+printf owned > "$lock/docker-tool/buildx/owned"; chmod 600 "$lock/docker-tool/buildx/owned"
+docker_tool_custody capture
+printf hostile > "$lock/docker-tool/buildx/unknown"; chmod 600 "$lock/docker-tool/buildx/unknown"
+if release_lock; then exit 31; fi
+[[ -f "$lock/docker-tool/buildx/owned" && -f "$lock/docker-tool/buildx/unknown" ]]
+prepare ${JSON.stringify(join(temp, "symlink.lock"))}
+printf owned > "$lock/docker-tool/buildx/owned"; chmod 600 "$lock/docker-tool/buildx/owned"
+docker_tool_custody capture
+rm "$lock/docker-tool/buildx/owned"
+printf retained > ${JSON.stringify(join(temp, "retained"))}
+ln -s ${JSON.stringify(join(temp, "retained"))} "$lock/docker-tool/buildx/owned"
+if release_lock; then exit 32; fi
+[[ -L "$lock/docker-tool/buildx/owned" ]]
+[[ "$(cat ${JSON.stringify(join(temp, "retained"))})" = retained ]]`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("insecure expected lifecycle files reject FIFOs without blocking", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "insecure-fifo-custody-"));
+  const owned = join(temp, "owned");
+  const lock = join(temp, "owned.lock");
+  const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
+  const functions = [
+    "durable_file",
+    "initialize_authority",
+    "validate_custody",
+    "read_owned_member",
+    "file_custody",
+    "docker_tool_custody",
+    "release_lock",
+  ]
+    .map((name) => shellFunction(source, name))
+    .join("\n");
+  const started = Date.now();
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `set -euo pipefail; umask 077
+state=${JSON.stringify(owned)}; generation=${generation}; profile=insecure-container
+original_revision=${sourceRevision}; locator=$state; authority=$state/authority
+sentinel=$state/.cogs-insecure-owner; intents=$state/intents; inventory=$state/inventory
+custody_identity=''; custody_bound=false
+persist_new() { durable_file new "$1" "$2"; }
+${functions}
+initialize_authority
+for journal in intents inventory; do
+  saved=$(<"$state/$journal"); rm "$state/$journal"; mkfifo -m 600 "$state/$journal"
+  custody_identity=''; if validate_custody; then exit 41; fi
+  rm "$state/$journal"; printf '%s\\n' "$saved" > "$state/$journal"; chmod 600 "$state/$journal"
+done
+validate_custody
+printf locator > "$state/container"; chmod 600 "$state/container"; rm "$state/container"; mkfifo -m 600 "$state/container"
+if read_owned_member container; then exit 45; fi
+rm "$state/container"
+mkdir "$state/input" "$state/control"
+for name in container volume port known_hosts input/ssh_host_ed25519_key input/ssh_host_ed25519_key.pub input/client_ed25519_key.pub input/egress-ca.crt control/client_ed25519_key control/client_ed25519_key.pub; do
+  printf fixture > "$state/$name"
+done
+validate_custody; file_custody capture
+for name in port known_hosts container volume input/ssh_host_ed25519_key control/client_ed25519_key files.owner; do
+  mv "$state/$name" ${JSON.stringify(join(temp, "held"))}; mkfifo -m 600 "$state/$name"
+  if file_custody check || file_custody remove; then exit 42; fi
+  [[ -f "$state/authority" ]]
+  rm "$state/$name"; mv ${JSON.stringify(join(temp, "held"))} "$state/$name"
+done
+fifo=${JSON.stringify(join(temp, "append-fifo"))}; mkfifo -m 600 "$fifo"
+if durable_file append "$fifo" x; then exit 43; fi
+lock=${JSON.stringify(lock)}; lock_owner=owner; lock_held=true
+mkdir -m 700 "$lock" "$lock/docker-tool" "$lock/docker-tool/home" "$lock/docker-tool/config" "$lock/docker-tool/buildx"
+printf 'owner\\n' > "$lock/owner"; chmod 600 "$lock/owner"
+lock_identity=$(python3 -I -c 'import os,sys; s=os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$lock")
+docker_tool_custody capture
+rm "$lock/owner"; mkfifo -m 600 "$lock/owner"
+if release_lock; then exit 44; fi
+[[ -d "$lock/docker-tool" ]]`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert(Date.now() - started < 10_000);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("insecure driver never adopts or removes pre-existing docker competitors", async () => {
   const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-preflight-"));
   const stateName = `fake-stale-${Math.random().toString(16).slice(2)}`;
@@ -548,7 +690,7 @@ rollback_partial`,
       `set -euo pipefail
 custody_bound=true; container_id=${"1".repeat(64)}; container_name=owned
 profile=insecure-container; state_id=locator; generation=${generation}; original_revision=${sourceRevision}; docker_command=(docker)
-validate_custody() { :; }; bounded() { echo foreign; }; record_inventory() { echo MUTATED; }; record_intent() { echo MUTATED; }
+validate_custody() { :; }; bounded_docker() { echo foreign; }; record_inventory() { echo MUTATED; }; record_intent() { echo MUTATED; }
 ${retire}
 retire_exact container "$container_id"`,
     ],

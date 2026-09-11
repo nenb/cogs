@@ -9,6 +9,7 @@ import test, { mock } from "node:test";
 import ssh2 from "ssh2";
 import type { LaunchConfig } from "../src/launch/config.ts";
 import { createAuthenticatedCogsPiSession } from "../src/pi/session.ts";
+import { withTrustedFileBytes } from "../src/runtime/trusted-files.ts";
 import { buildCogsSkillBundle } from "../src/skills/bundle.ts";
 import { createCogsSkillSessionPreparer } from "../src/skills/session-preparer.ts";
 import {
@@ -790,131 +791,186 @@ async function observedRetired(predicate: () => boolean) {
   assert.equal(predicate(), true, "peer retirement observed before fixture teardown");
 }
 
-// Allocate a suite-private writable ancestor before tests, away from shared tmp churn.
-// Per-case creation/teardown must not churn other runners' key ancestors either.
-const snapshotKeyAncestor = await fs.realpath(
-  await mkdtemp(path.join(import.meta.dirname, "../node_modules/cogs-snapshot-ssh-")),
-);
-test.after(() => rm(snapshotKeyAncestor, { recursive: true, force: true }));
-async function snapshotKeyRoot() {
-  return mkdtemp(path.join(snapshotKeyAncestor, "case-"));
+// Every mutation of the common key ancestor shares this portable cross-process lock.
+const snapshotKeyAncestor = await fs.realpath(path.join(import.meta.dirname, "../node_modules"));
+const snapshotKeyLock = path.join(snapshotKeyAncestor, ".cogs-snapshot-ssh.lock");
+async function withSnapshotKeyRoot<T>(run: (root: string) => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    try {
+      await mkdir(snapshotKeyLock, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  let root: string | undefined;
+  try {
+    root = await fs.realpath(await mkdtemp(path.join(snapshotKeyAncestor, ".cogs-snapshot-ssh-case-")));
+    return await run(root);
+  } finally {
+    try {
+      if (root) await rm(root, { recursive: true, force: true });
+    } finally {
+      await rmdir(snapshotKeyLock);
+    }
+  }
 }
 
-test("snapshot SFTP synchronous private-key rejection settles without close or network", async (t) => {
-  const root = await snapshotKeyRoot(),
-    base = launch(`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`),
-    document = { ...base, sandbox: { ...base.sandbox, client_key_path: path.join(root, "invalid-key") } };
-  await writeFile(document.sandbox.client_key_path, "invalid-private-key".repeat(16), { mode: 0o600 });
-  const network = t.mock.method(Socket.prototype, "connect", () => assert.fail("network forbidden"));
-  const connect = t.mock.method(ssh2.Client.prototype, "connect"),
-    destroy = t.mock.method(ssh2.Client.prototype, "destroy");
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      assert.rejects(
-        withSnapshotSftp(document, new AbortController().signal, async () => assert.fail("SFTP forbidden")),
-        { code: "COGS_TRUSTED_FILE_INVALID" },
-      ),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("synchronous rejection hung")), 2000);
+test("parallel key fixtures serialize hostile ancestor churn around trusted captures and cleanup", async () => {
+  let active = 0,
+    previousRoot: string | undefined,
+    captures = 0;
+  await Promise.all(
+    Array.from({ length: 3 }, () =>
+      withSnapshotKeyRoot(async (root) => {
+        assert.equal(active++, 0);
+        try {
+          if (previousRoot) await assert.rejects(lstat(previousRoot), { code: "ENOENT" });
+          previousRoot = root;
+          const churn = await mkdtemp(path.join(snapshotKeyAncestor, ".cogs-snapshot-ssh-churn-"));
+          await rm(churn, { recursive: true, force: true });
+          const keyPath = path.join(root, "key");
+          await writeFile(keyPath, "x".repeat(128), { mode: 0o600 });
+          await withTrustedFileBytes(
+            {
+              path: keyPath,
+              minimumBytes: 128,
+              maximumBytes: 128,
+              allowedUids: [process.geteuid?.() ?? assert.fail("effective uid unavailable")],
+              allowedGids: [process.getegid?.() ?? assert.fail("effective gid unavailable")],
+              allowedModes: [0o600],
+            },
+            async () => {
+              captures++;
+            },
+          );
+        } finally {
+          active--;
+        }
       }),
-    ]);
-    assert.equal(connect.mock.callCount(), 1);
-    assert.match(String(connect.mock.calls[0]?.error), /Cannot parse privateKey/);
-    assert.equal(network.mock.callCount(), 0);
-    assert.equal(destroy.mock.callCount(), 1); // Real ssh2 destroy emits no close without a socket.
-    const key = connect.mock.calls[0]?.arguments[0].privateKey;
-    assert.ok(Buffer.isBuffer(key) && key.every((byte) => byte === 0));
-  } finally {
-    clearTimeout(timer);
-    await rm(root, { recursive: true, force: true });
-  }
+    ),
+  );
+  assert.equal(captures, 3);
+  await assert.rejects(lstat(previousRoot ?? assert.fail("missing fixture root")), { code: "ENOENT" });
+});
+
+test("snapshot SFTP synchronous private-key rejection settles without close or network", async (t) => {
+  await withSnapshotKeyRoot(async (root) => {
+    const base = launch(`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`),
+      document = { ...base, sandbox: { ...base.sandbox, client_key_path: path.join(root, "invalid-key") } };
+    await writeFile(document.sandbox.client_key_path, "invalid-private-key".repeat(16), { mode: 0o600 });
+    const network = t.mock.method(Socket.prototype, "connect", () => assert.fail("network forbidden"));
+    const connect = t.mock.method(ssh2.Client.prototype, "connect"),
+      destroy = t.mock.method(ssh2.Client.prototype, "destroy");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        assert.rejects(
+          withSnapshotSftp(document, new AbortController().signal, async () => assert.fail("SFTP forbidden")),
+          { code: "COGS_TRUSTED_FILE_INVALID" },
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("synchronous rejection hung")), 2000);
+        }),
+      ]);
+      assert.equal(connect.mock.callCount(), 1);
+      assert.match(String(connect.mock.calls[0]?.error), /Cannot parse privateKey/);
+      assert.equal(network.mock.callCount(), 0);
+      assert.equal(destroy.mock.callCount(), 1); // Real ssh2 destroy emits no close without a socket.
+      const key = connect.mock.calls[0]?.arguments[0].privateKey;
+      assert.ok(Buffer.isBuffer(key) && key.every((byte) => byte === 0));
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 });
 
 test("snapshot SFTP issued connection retains close uncertainty after error, abort and deadline without network", async (t) => {
-  const root = await snapshotKeyRoot(),
-    base = launch(`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`),
-    document = { ...base, sandbox: { ...base.sandbox, client_key_path: path.join(root, "client-key") } };
-  await writeFile(document.sandbox.client_key_path, snapshotKeyPair().private, { mode: 0o600 });
-  const network = t.mock.method(Socket.prototype, "connect", () => assert.fail("network forbidden"));
-  let issued = Promise.withResolvers<ssh2.Client>(),
-    opening = Promise.withResolvers<Parameters<ssh2.Client["sftp"]>[0]>(),
-    destroyed = Promise.withResolvers<void>();
-  t.mock.method(ssh2.Client.prototype, "connect", function (this: ssh2.Client) {
-    issued.resolve(this);
-    queueMicrotask(() => this.emit("ready"));
-    return this;
-  });
-  t.mock.method(ssh2.Client.prototype, "sftp", (callback: Parameters<ssh2.Client["sftp"]>[0]) =>
-    opening.resolve(callback),
-  );
-  t.mock.method(ssh2.Client.prototype, "destroy", function (this: ssh2.Client) {
-    destroyed.resolve();
-    return this;
-  });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    for (const mode of ["error", "abort", "deadline"]) {
-      issued = Promise.withResolvers<ssh2.Client>();
-      opening = Promise.withResolvers<Parameters<ssh2.Client["sftp"]>[0]>();
+  await withSnapshotKeyRoot(async (root) => {
+    const base = launch(`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`),
+      document = { ...base, sandbox: { ...base.sandbox, client_key_path: path.join(root, "client-key") } };
+    await writeFile(document.sandbox.client_key_path, snapshotKeyPair().private, { mode: 0o600 });
+    const network = t.mock.method(Socket.prototype, "connect", () => assert.fail("network forbidden"));
+    let issued = Promise.withResolvers<ssh2.Client>(),
+      opening = Promise.withResolvers<Parameters<ssh2.Client["sftp"]>[0]>(),
       destroyed = Promise.withResolvers<void>();
-      const parent = new AbortController();
-      let settled = false;
-      const pending = withSnapshotSftp(document, parent.signal, async () => assert.fail("SFTP forbidden"));
-      void pending.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
-      );
-      const client = await Promise.race([issued.promise, pending]),
-        callback = await Promise.race([opening.promise, pending]);
-      if (mode === "error") callback(new Error("asynchronous failure"), undefined as never);
-      if (mode === "abort") parent.abort();
-      if (mode === "deadline") t.mock.timers.tick(30_000);
-      await destroyed.promise; // Already in finally, not merely waiting for ready.
-      t.mock.timers.tick(60_000); // Extra deadlines cannot prove retirement either.
-      await new Promise(setImmediate);
-      assert.equal(settled, false, mode);
-      client.emit("close");
-      await assert.rejects(pending, { code: "COGS_TRUSTED_FILE_INVALID" });
-      assert.equal(settled, true, mode);
+    t.mock.method(ssh2.Client.prototype, "connect", function (this: ssh2.Client) {
+      issued.resolve(this);
+      queueMicrotask(() => this.emit("ready"));
+      return this;
+    });
+    t.mock.method(ssh2.Client.prototype, "sftp", (callback: Parameters<ssh2.Client["sftp"]>[0]) =>
+      opening.resolve(callback),
+    );
+    t.mock.method(ssh2.Client.prototype, "destroy", function (this: ssh2.Client) {
+      destroyed.resolve();
+      return this;
+    });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      for (const mode of ["error", "abort", "deadline"]) {
+        issued = Promise.withResolvers<ssh2.Client>();
+        opening = Promise.withResolvers<Parameters<ssh2.Client["sftp"]>[0]>();
+        destroyed = Promise.withResolvers<void>();
+        const parent = new AbortController();
+        let settled = false;
+        const pending = withSnapshotSftp(document, parent.signal, async () => assert.fail("SFTP forbidden"));
+        void pending.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        const client = await Promise.race([issued.promise, pending]),
+          callback = await Promise.race([opening.promise, pending]);
+        if (mode === "error") callback(new Error("asynchronous failure"), undefined as never);
+        if (mode === "abort") parent.abort();
+        if (mode === "deadline") t.mock.timers.tick(30_000);
+        await destroyed.promise; // Already in finally, not merely waiting for ready.
+        t.mock.timers.tick(60_000); // Extra deadlines cannot prove retirement either.
+        await new Promise(setImmediate);
+        assert.equal(settled, false, mode);
+        client.emit("close");
+        await assert.rejects(pending, { code: "COGS_TRUSTED_FILE_INVALID" });
+        assert.equal(settled, true, mode);
+      }
+      assert.equal(network.mock.callCount(), 0);
+    } finally {
+      t.mock.timers.reset();
     }
-    assert.equal(network.mock.callCount(), 0);
-  } finally {
-    t.mock.timers.reset();
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("actual pinned SFTP performs bounded READDIR and EOF verification and retires its dedicated connection", async () => {
-  const root = await snapshotKeyRoot();
-  const f = mountedFixture(true);
-  const server = await snapshotSshServer(f.nodes, root);
-  try {
-    const document = { ...launch(`sha256:${"a".repeat(64)}`, f.bundle.digest), sandbox: server.sandbox };
-    await withSnapshotSftp(document, new AbortController().signal, (port, signal) =>
-      verifyCogsMountedSkillBundle(port, f.bundle, "/shared/skills", signal),
-    );
-    await observedRetired(() => server.state().live === 0);
-    assert.equal(server.state().mutationCalls, 0);
-    assert.equal(server.state().live, 0);
-    assert.ok(server.state().reads > 0);
-    const reads = server.state().reads;
-    await assert.rejects(
-      withSnapshotSftp(
-        { ...document, sandbox: { ...server.sandbox, ssh_host_key: `SHA256:${"A".repeat(43)}` } },
-        new AbortController().signal,
-        async () => assert.fail("untrusted SSH"),
-      ),
-    );
-    assert.equal(server.state().reads, reads);
-  } finally {
-    await server.close();
-    await rm(root, { recursive: true, force: true });
-  }
+  await withSnapshotKeyRoot(async (root) => {
+    const f = mountedFixture(true);
+    const server = await snapshotSshServer(f.nodes, root);
+    try {
+      const document = { ...launch(`sha256:${"a".repeat(64)}`, f.bundle.digest), sandbox: server.sandbox };
+      await withSnapshotSftp(document, new AbortController().signal, (port, signal) =>
+        verifyCogsMountedSkillBundle(port, f.bundle, "/shared/skills", signal),
+      );
+      await observedRetired(() => server.state().live === 0);
+      assert.equal(server.state().mutationCalls, 0);
+      assert.equal(server.state().live, 0);
+      assert.ok(server.state().reads > 0);
+      const reads = server.state().reads;
+      await assert.rejects(
+        withSnapshotSftp(
+          { ...document, sandbox: { ...server.sandbox, ssh_host_key: `SHA256:${"A".repeat(43)}` } },
+          new AbortController().signal,
+          async () => assert.fail("untrusted SSH"),
+        ),
+      );
+      assert.equal(server.state().reads, reads);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 async function withSupervisor(

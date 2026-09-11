@@ -619,6 +619,29 @@ export async function syntheticPorts(launch: LaunchConfig) {
   return Object.freeze({ identity, model, pki, revocation, certificate, privateKey });
 }
 
+/** A settled turn is not proof that its tool succeeded. Failure remains latched after effects. */
+export class ProductToolResults {
+  readonly results: string[] = [];
+  failed = false;
+  admit(entry: unknown): void {
+    try {
+      check(!this.failed);
+      admitScenarioValue(entry);
+      const message = (entry as { message?: Record<string, unknown> }).message;
+      if (message?.role !== "toolResult") return;
+      check(message.isError === false && message.toolCallId === "product-proxy" && message.toolName === "bash");
+      check(this.results.length === 0);
+      this.results.push(hash(canonical(message)));
+    } catch {
+      this.failed = true;
+      throw new Error("product tool failed; settle exact custody");
+    }
+  }
+  evidence(): readonly string[] {
+    check(!this.failed && this.results.length === 1);
+    return Object.freeze([...this.results]);
+  }
+}
 export function deterministicStream(): StreamFn {
   let index = 0;
   return Object.freeze((model, _context, options) => {
@@ -822,6 +845,7 @@ export async function workerMain(): Promise<void> {
     shutdown = false,
     streamFailed = false;
   const counters = new RestrictionCounters();
+  const toolResults = new ProductToolResults();
   const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
   let exported: unknown;
   let auditTimer: ReturnType<typeof setInterval> | undefined;
@@ -855,7 +879,7 @@ export async function workerMain(): Promise<void> {
           ...options,
           streamFn: deterministicStream(),
           historyAdmission: (entry) => {
-            admitScenarioValue(entry);
+            toolResults.admit(entry);
             gate("persist", { entry: JSON.parse(JSON.stringify(entry)) });
           },
         });
@@ -951,10 +975,11 @@ export async function workerMain(): Promise<void> {
       await client.request("run", { content: "synthetic" });
       const deadline = performance.now() + 10000;
       while (settled <= turn) {
-        check(!streamFailed && performance.now() < deadline);
+        check(!streamFailed && !toolResults.failed && performance.now() < deadline);
         await new Promise((r) => setTimeout(r, 20));
       }
     }
+    const successfulTools = toolResults.evidence();
     gate("history"); // host reads durable JSONL and reconciles its own pre-write admissions
     await client.request("entries", { limit: 25 });
     check(pi && upstream === 1 && omitted && !streamFailed);
@@ -986,6 +1011,7 @@ export async function workerMain(): Promise<void> {
     await evidence.writeFile(
       canonical({
         outcome: "pass",
+        toolResults: successfulTools,
         provenance: JSON.parse(await readFile("/etc/cogs/provenance.json", "utf8")),
         egress: egressHandle && observeCogsEgressRuntime(egressHandle),
         telemetry: telemetry?.snapshot(),

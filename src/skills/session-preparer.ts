@@ -159,6 +159,8 @@ export async function loadCogsRetainedSkillPair(
   options: { sharedResolver: CogsSharedSkillOciResolver; privateStore: CogsPrivateSkillStore },
   launch: LaunchConfig,
   signal: AbortSignal,
+  /** Explicit caller-owned publication; production preparers never forward this from their options. */
+  discoveryRoots?: Readonly<Record<"shared" | "user", string>>,
 ) {
   const temps: string[] = [];
   try {
@@ -191,7 +193,7 @@ export async function loadCogsRetainedSkillPair(
       ["user", userBundle, userRevision, launch.skills.user_path],
     ] as const) {
       throwIfAborted(signal);
-      const temp = await materializeHostTemp(scope, bundle, temps);
+      const temp = discoveryRoots?.[scope] ?? (await materializeHostTemp(scope, bundle, temps));
       loaded.push(await loadOneBundle(scope, bundle, temp, derivedGuestSubtree(root, bundle.digest), revision, budget));
     }
     const piSkills = loaded.flatMap((one) => one.skills);

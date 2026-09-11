@@ -209,21 +209,6 @@ export class LocalSkillSnapshotOwner {
       }
       await put(this.host, `${userRoot}/${file.path}`, this.user.copyFile(file.path), file.executable ? 0o555 : 0o444);
     }
-    // Discovery and resolution use the very bytes later retained by host Pi; no guest markdown authority.
-    const retained = await loadCogsRetainedSkillPair(
-      {
-        sharedResolver: await createCogsSharedSkillOciLayoutResolver({
-          layoutRoot: `${this.host.root}/inputs/shared-oci`,
-        }),
-        privateStore: await createCogsPrivateSkillStore({
-          sourceRoot: `${this.host.root}/inputs/private-source`,
-          storeRoot: `${this.host.root}/state/host-private`,
-        }),
-      },
-      launch,
-      AbortSignal.timeout(5000),
-    );
-    check(retained.shared.bundle.digest === this.shared.digest && retained.user.bundle.digest === this.user.digest);
     const pair = Object.fromEntries(
       (["shared", "user"] as const).map((scope) => {
         const bundle = this[scope];
@@ -242,7 +227,32 @@ export class LocalSkillSnapshotOwner {
         ];
       }),
     );
-    this.#sources = await this.host.request("pair", { pair });
+    const sources = await this.host.request<Record<"shared" | "user", { source_device: string; source_inode: string }>>(
+      "pair",
+      { pair },
+    );
+    // Discovery reads the journaled publication: even SIGKILL leaves no external host temp.
+    const retained = await loadCogsRetainedSkillPair(
+      {
+        sharedResolver: await createCogsSharedSkillOciLayoutResolver({
+          layoutRoot: `${this.host.root}/inputs/shared-oci`,
+        }),
+        privateStore: await createCogsPrivateSkillStore({
+          sourceRoot: `${this.host.root}/inputs/private-source`,
+          storeRoot: `${this.host.root}/state/host-private`,
+        }),
+      },
+      launch,
+      AbortSignal.timeout(5000),
+      Object.fromEntries(
+        (["shared", "user"] as const).map((scope) => [
+          scope,
+          `${this.host.root}/publication/${this.host.generation}/${scope}/${this[scope].digest.slice(7)}`,
+        ]),
+      ) as Record<"shared" | "user", string>,
+    );
+    check(retained.shared.bundle.digest === this.shared.digest && retained.user.bundle.digest === this.user.digest);
+    this.#sources = sources;
   }
   mounts(): readonly Mount[] {
     check(this.#sources);

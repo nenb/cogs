@@ -559,45 +559,26 @@ function assertBudgetProgram(program: string) {
   const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
 }
-
 test("ADR0335 exact ownership matrix, eight files, forecasts and ceilings are closed without transfers", () => {
   assertBudgetProgram(String.raw`
 import copy,json,runpy,tempfile
 from pathlib import Path
-m=runpy.run_path('scripts/check-stage2-retained-lines.py')
-f=m['_remediation_budget']; ns=f.__globals__; original_git=ns['_git']; cache={}
-def git(args):
- cache[tuple(args)]=original_git(args)
- return cache[tuple(args)]
-ns['_git']=git
-b,highs,paths,new,forecasts=f()
-assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a79ad639d96cb227597f3b7',)*2
-assert m['CORRECTION_BASE_REVISION']=='6f7d5c4dfdbf9f5ee4b4be0dc7d54839eac07f57'
-assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836)
-assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000)
-assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
-assert b['global_gross_line_high']==45000
-assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17000)
-assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
+m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_budget']; ns=f.__globals__; original_git=ns['_git']; cache={}
+def git(args): cache[tuple(args)]=original_git(args); return cache[tuple(args)]
+ns['_git']=git; b,highs,paths,new,forecasts=f()
+assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a79ad639d96cb227597f3b7',)*2; assert m['CORRECTION_BASE_REVISION']=='6f7d5c4dfdbf9f5ee4b4be0dc7d54839eac07f57'; assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
+assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
+assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
+assert b['global_gross_line_high']==45000; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17000); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
 expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=2700000)
-assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes
-assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}
-assert sum(expected_bytes.values())==5970000 and 18763891+sum(expected_bytes.values())==24733891
-plan=b['product_test_correction']
-assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
-assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15100 and plan['global_gross_byte_forecast']==1850000
-assert plan['integration_regeneration_gross_line_forecast']==100
+assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==5970000 and 18763891+sum(expected_bytes.values())==24733891
+plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
+assert plan['global_gross_line_forecast']==15100 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
 expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4300,completion=3500,integration=4500)
-assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts
-assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts
-assert sum(expected_forecasts.values())==15100
+assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15100
 q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=700000)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==1850000
-assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
+assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==1850000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
@@ -637,37 +618,22 @@ expected_new={
  'docs/adr/0333-authorize-controlled-product-test-corrections.md':'integration',
  'docs/adr/0334-reallocate-measured-product-test-correction.md':'integration',
  'docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md':'integration'}
-assert m['PRODUCT_TEST_NEW_FILES']==expected_new
-assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
-assert {e['name']:e['new_files'] for e in plan['owners']}=={
- o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}
-assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
-planned={p:o for o,s in existing.items() for p in s.split()} | expected_new
-assert len(planned)==72 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==72
+assert m['PRODUCT_TEST_NEW_FILES']==expected_new; assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
+assert {e['name']:e['new_files'] for e in plan['owners']}=={o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}; assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
+planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==72 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==72
 for p,owner in planned.items(): assert paths[p]==owner,p
-q=plan['base_revision']
-q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1])
-q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json']))
-old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
+q=plan['base_revision']; q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1]); q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json'])); old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
 historical_tests={'test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-local-result.test.ts'}
 assert {p for p in planned if p.startswith('test/aws-')}==historical_tests|{'test/aws-stage2-completion-kata-s5.py'}
 for p in historical_tests: assert p in q_names and old[p]==paths[p]==planned[p]=='integration'
-assert set(paths)==set(old)|set(planned)
-assert set(paths)-q_names==set(expected_new) and len(expected_new)==8
+assert set(paths)==set(old)|set(planned); assert set(paths)-q_names==set(expected_new) and len(expected_new)==8
 # Newly allocated EXISTING paths carry no historical gross; otherwise a transfer ledger would be required.
-added_existing=(set(paths)-set(old))-set(expected_new)
-assert git(['diff','--no-renames','--numstat',b['base_revision'],q,'--',*sorted(added_existing)])==''
-assert paths['test/production-compose.test.ts']=='lifecycle'
-assert paths['test/skills-session-preparer.test.ts']=='completion'
-assert paths['docs/operations/runbooks/limitations.md']=='route'
-assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned
-assert 'schemas/launch-v1alpha1.json' not in planned
-assert not any(p.startswith(('.github/','deploy/','images/')) for p in planned)
-adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text()
-replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
-replan=Path(replan_path).read_text()
-prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
+added_existing=(set(paths)-set(old))-set(expected_new); assert git(['diff','--no-renames','--numstat',b['base_revision'],q,'--',*sorted(added_existing)])==''
+assert paths['test/production-compose.test.ts']=='lifecycle'; assert paths['test/skills-session-preparer.test.ts']=='completion'; assert paths['docs/operations/runbooks/limitations.md']=='route'
+assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned; assert 'schemas/launch-v1alpha1.json' not in planned; assert not any(p.startswith(('.github/','deploy/','images/')) for p in planned)
+adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
+replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
 for p in planned: assert p in adr or p in replan,p
 for p in expected_new: assert p in replan,p
 for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc096ae4ba05','044e127a',
@@ -683,6 +649,7 @@ for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc0
  'all writable paths and logs, fixed storage/quota, and exact lifetime/settlement deadlines',
  'existing non-initial network namespace and root-owned \x60/run/cogs-kvm-network-domain/<device>-<inode>\x60 lease',
  'preloaded image/cache identity and receipt-bound retirement','no ninth file is implied','Missing prerequisites fail before effects',
+ 'tool errors bind evidence','snapshot discovery uses journaled publication with no external temp','Buildx inventoried retirement','FIFO nonblocking validation','cross-invocation fixtures',
  'No AWS/provider/model/credential operation or authoritative H/G/Q workflow is authorized',
  'Existing commits gain no retrospective authority if this gate fails','Stop immediately before every AWS-facing command'):
  assert text in replan,text
@@ -763,7 +730,6 @@ with tempfile.TemporaryDirectory() as directory:
   veto(lambda:check(bad),mutation)
 `);
 });
-
 test("ADR0335 actual current integrated worktree passes the unmocked central budget gate", () => {
   const result = spawnSync("python3", ["-I", "-B", "scripts/check-stage2-retained-lines.py"], {
     encoding: "utf8",
@@ -792,7 +758,6 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
     assert.ok(total <= limit, `${kind}: ${total}/${limit}`);
   }
 });
-
 test("ADR0335 independent correction, hard and Q-relative limits reject isolated overruns", () => {
   assertBudgetProgram(String.raw`
 import copy,runpy
@@ -888,7 +853,6 @@ tight['product_test_correction']['global_gross_line_forecast']=15099
 veto(lambda:g(tight),'Q global')
 `);
 });
-
 test("ADR0335 central measure invokes the Q-relative gate and reports its nonzero totals", () => {
   assertBudgetProgram(String.raw`
 import runpy
@@ -936,7 +900,6 @@ for changed in ('dev/launcher/openbao.ts\0','docs/operations/runbooks/index.json
  veto('out-of-scope or zero-forecast change')
 `);
 });
-
 test("ADR0335 central measure enforces every independent byte ceiling with zero line additions", () => {
   assertBudgetProgram(`
 import runpy
@@ -982,7 +945,6 @@ for is_q in (False,True):
  ns[key]-=1; veto('independent byte global with all owners within ceilings'); ns[key]+=1
 `);
 });
-
 test("ADR0335 actual gross added-line bytes charge UTF-8, CRLF, full generated lines and ordinary files", () => {
   assertBudgetProgram(String.raw`
 import runpy,subprocess,tempfile
@@ -1033,7 +995,6 @@ with tempfile.TemporaryDirectory() as directory:
  put('.gitignore',b'ignored.ts\n'); put('ignored.ts',b'not free\n'); veto(('ignored.ts',))
 `);
 });
-
 test("ADR0335 patch accounting cross-checks historical numstat selection, including src/api/server", () => {
   assertBudgetProgram(String.raw`
 import runpy,subprocess,tempfile
@@ -1068,7 +1029,6 @@ with tempfile.TemporaryDirectory() as directory:
  else: raise AssertionError('numstat/patch mismatch accepted')
 `);
 });
-
 test("ADR0335 hostile repo, info and global transformations cannot hide raw worktree accounting", () => {
   assertBudgetProgram(String.raw`
 import os,runpy,subprocess,tempfile
@@ -1134,7 +1094,6 @@ with tempfile.TemporaryDirectory() as directory:
  assert measured()==(5,len(extra))
 `);
 });
-
 test("final control accounting requires an absent or safe canonical complete member set", () => {
   const program = String.raw`
 import importlib.util

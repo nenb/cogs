@@ -52,23 +52,21 @@ import os, stat, sys
 mode, path = sys.argv[1:]
 data = os.environ["COGS_DURABLE_CONTENT"].encode()
 parent, name = os.path.split(path)
-dfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-flags = os.O_WRONLY | os.O_NOFOLLOW
-if mode == "new":
-    flags |= os.O_CREAT | os.O_EXCL
-else:
-    flags |= os.O_APPEND
-    s = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-    if not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
-        raise SystemExit("unsafe durable journal")
+dfd = os.open(parent, os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW)
+flags = os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+if mode == "new": flags |= os.O_CREAT | os.O_EXCL
+else: flags |= os.O_APPEND
 fd = os.open(name, flags, 0o600, dir_fd=dfd)
+s = os.fstat(fd)
+if not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+    os.close(fd); raise SystemExit("unsafe durable journal")
 with os.fdopen(fd, "wb") as f:
     f.write(data)
     f.flush()
     os.fsync(f.fileno())
 os.fsync(dfd)
 os.close(dfd)
-pfd = os.open(os.path.dirname(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+pfd = os.open(os.path.dirname(parent), os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW)
 os.fsync(pfd); os.close(pfd)
 PY
 }
@@ -80,28 +78,19 @@ mode_octal() {
 
 release_lock() {
   [[ "$lock_held" == true ]] || return 0
+  docker_tool_custody remove || return 1
   python3 -I - "$lock" "$lock_identity" "$lock_owner" <<'PY'
 import os,stat,sys
 path,identity,owner=sys.argv[1:]
-fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(fd)
+fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(fd)
 if f'{info.st_dev}:{info.st_ino}'!=identity or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700:
     raise SystemExit('lock identity changed')
-member=os.open('owner',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd); info=os.fstat(member)
+if set(os.listdir(fd))!={'owner'}: raise SystemExit('foreign lock inventory')
+member=os.open('owner',os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=fd); info=os.fstat(member)
 if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600 or os.read(member,256)!=(owner+'\n').encode():
     raise SystemExit('lock owner changed')
-os.close(member)
-if set(os.listdir(fd)) not in ({'owner'},{'owner','docker-tool'}): raise SystemExit('foreign lock inventory')
-if 'docker-tool' in os.listdir(fd):
-    tool=os.open('docker-tool',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
-    if set(os.listdir(tool))!={'home','config','buildx'}: raise SystemExit('foreign tool inventory')
-    for name in ('home','config','buildx'):
-        child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=tool)
-        if os.listdir(child): raise SystemExit('tool retirement uncertain')
-        os.close(child)
-    for name in ('home','config','buildx'): os.rmdir(name,dir_fd=tool)
-    os.close(tool); os.rmdir('docker-tool',dir_fd=fd)
-os.unlink('owner',dir_fd=fd); os.fsync(fd); os.close(fd); os.rmdir(path)
-parent=os.open(os.path.dirname(path),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
+os.close(member); os.unlink('owner',dir_fd=fd); os.fsync(fd); os.close(fd); os.rmdir(path)
+parent=os.open(os.path.dirname(path),os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
 PY
   [[ $? == 0 ]] || return 1
   lock_held=false
@@ -200,6 +189,130 @@ init_docker_tool_state() {
   verify_private_dir "$docker_config"
   verify_private_dir "$buildx_config"
   docker_command=(env "HOME=$docker_home" "DOCKER_CONFIG=$docker_config" "BUILDX_CONFIG=$buildx_config" docker)
+  docker_tool_custody capture
+}
+
+docker_tool_custody() {
+  python3 -I - "$lock" "$lock_identity" "$lock_owner" "$1" <<'PY'
+import hashlib,json,os,stat,sys
+lock,identity,owner,action=sys.argv[1:]; manifest='docker-tool.inventory'; flags=os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW
+def valid_dir(s): return stat.S_ISDIR(s.st_mode) and s.st_uid==os.getuid() and stat.S_IMODE(s.st_mode)==0o700
+def stamp(s): return (s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+def regular(fd,name):
+    h=os.open(name,flags,dir_fd=fd); s=os.fstat(h)
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or s.st_mode&0o7022 or s.st_size>67108864:
+        os.close(h); raise SystemExit('unsafe docker tool member')
+    digest=hashlib.sha256(); size=0
+    while True:
+        part=os.read(h,65536)
+        if not part: break
+        size+=len(part)
+        if size>67108864: os.close(h); raise SystemExit('oversized docker tool metadata')
+        digest.update(part)
+    if size!=s.st_size or stamp(s)!=stamp(os.fstat(h)) or stamp(s)!=stamp(os.stat(name,dir_fd=fd,follow_symlinks=False)):
+        os.close(h); raise SystemExit('docker tool file changed during capture')
+    os.close(h); return ['f',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns,size,digest.hexdigest()]
+def walk(fd,path,out):
+    s=os.fstat(fd); before=stamp(s)
+    if s.st_uid!=os.getuid() or s.st_mode&0o7022 or path.count('/')>16 or len(out)>=512:
+        raise SystemExit('foreign or excessive docker tool directory')
+    out[path]=['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]
+    for name in sorted(os.listdir(fd)):
+        s=os.stat(name,dir_fd=fd,follow_symlinks=False); key=path+'/'+name
+        if stat.S_ISDIR(s.st_mode):
+            child=os.open(name,flags|os.O_DIRECTORY,dir_fd=fd); opened=os.fstat(child)
+            if (opened.st_dev,opened.st_ino)!=(s.st_dev,s.st_ino): os.close(child); raise SystemExit('docker tool directory changed')
+            walk(child,key,out); os.close(child)
+        elif stat.S_ISREG(s.st_mode):
+            value=regular(fd,name)
+            if value[1:3]!=[s.st_dev,s.st_ino]: raise SystemExit('docker tool file changed')
+            out[key]=value
+        else: raise SystemExit('unsafe docker tool member')
+        if len(out)>512 or sum(v[5] for v in out.values() if v[0]=='f')>67108864: raise SystemExit('excessive docker tool inventory')
+    if before!=stamp(os.fstat(fd)): raise SystemExit('docker tool directory changed during capture')
+def snapshot(tool):
+    if set(os.listdir(tool))!={'home','config','buildx'}: raise SystemExit('foreign tool inventory')
+    s=os.fstat(tool); out={'.':['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]}
+    for name in ('home','config','buildx'):
+        child=os.open(name,flags|os.O_DIRECTORY,dir_fd=tool); s=os.fstat(child)
+        if not valid_dir(s): os.close(child); raise SystemExit('foreign docker tool root')
+        walk(child,name,out); os.close(child)
+    return out
+def manifest_file(lfd,write=False):
+    mode=(os.O_RDWR if write else os.O_RDONLY)|os.O_NONBLOCK|os.O_NOFOLLOW
+    h=os.open(manifest,mode,dir_fd=lfd); s=os.fstat(h)
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+        os.close(h); raise SystemExit('unsafe docker tool inventory')
+    return h
+def retire(fd,path,expected):
+    names=sorted(os.listdir(fd))
+    for name in names:
+        key=path+'/'+name; value=expected.get(key)
+        if not value: raise SystemExit('unknown docker tool member')
+        if value[0]=='d':
+            child=os.open(name,flags|os.O_DIRECTORY,dir_fd=fd)
+            s=os.fstat(child)
+            if ['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]!=value:
+                os.close(child); raise SystemExit('docker tool directory replaced')
+            retire(child,key,expected); os.close(child); os.rmdir(name,dir_fd=fd)
+        else:
+            if regular(fd,name)!=value: raise SystemExit('docker tool file replaced')
+            os.unlink(name,dir_fd=fd)
+    os.fsync(fd)
+lfd=os.open(lock,flags|os.O_DIRECTORY); ls=os.fstat(lfd)
+if f'{ls.st_dev}:{ls.st_ino}'!=identity or not valid_dir(ls): raise SystemExit('lock identity changed')
+allowed={'owner','docker-tool'}|({manifest} if manifest in os.listdir(lfd) else set())
+if set(os.listdir(lfd))!=allowed: raise SystemExit('foreign lock inventory')
+held=os.open('owner',flags,dir_fd=lfd); hs=os.fstat(held)
+if not stat.S_ISREG(hs.st_mode) or hs.st_nlink!=1 or hs.st_uid!=os.getuid() or stat.S_IMODE(hs.st_mode)!=0o600 or os.read(held,256)!=(owner+'\n').encode():
+    os.close(held); raise SystemExit('lock owner changed')
+os.close(held)
+tool=os.open('docker-tool',flags|os.O_DIRECTORY,dir_fd=lfd)
+if not valid_dir(os.fstat(tool)): raise SystemExit('foreign docker tool root')
+current=snapshot(tool); expected=None
+if manifest in allowed:
+    h=manifest_file(lfd); data=b''
+    while len(data)<=16777216:
+        part=os.read(h,65536)
+        if not part: break
+        data+=part
+    os.close(h)
+    try: expected=json.loads(data)
+    except Exception: raise SystemExit('malformed docker tool inventory')
+    if data!=(json.dumps(expected,sort_keys=True,separators=(',',':'))+'\n').encode(): raise SystemExit('malformed docker tool inventory')
+    if any(current[n][:4]!=expected.get(n,[])[:4] for n in ('.','home','config','buildx')): raise SystemExit('docker tool roots replaced')
+if action=='capture':
+    encoded=(json.dumps(current,sort_keys=True,separators=(',',':'))+'\n').encode()
+    if manifest in allowed:
+        h=manifest_file(lfd,True); os.lseek(h,0,os.SEEK_SET); os.ftruncate(h,0)
+    else: h=os.open(manifest,os.O_WRONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CREAT|os.O_EXCL,0o600,dir_fd=lfd)
+    s=os.fstat(h)
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+        os.close(h); raise SystemExit('unsafe docker tool inventory')
+    view=memoryview(encoded)
+    while view: view=view[os.write(h,view):]
+    os.fsync(h); os.close(h); os.fsync(lfd)
+elif action in ('check','remove'):
+    if current!=expected: raise SystemExit('docker tool custody changed')
+    if action=='check': os.close(tool); os.close(lfd); raise SystemExit(0)
+    for name in ('home','config','buildx'):
+        child=os.open(name,flags|os.O_DIRECTORY,dir_fd=tool); s=os.fstat(child)
+        if ['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]!=expected.get(name):
+            os.close(child); raise SystemExit('docker tool root replaced')
+        retire(child,name,expected); os.close(child); os.rmdir(name,dir_fd=tool)
+    os.close(tool); os.rmdir('docker-tool',dir_fd=lfd); os.unlink(manifest,dir_fd=lfd); os.fsync(lfd)
+else: raise SystemExit('invalid docker tool custody action')
+os.close(lfd)
+PY
+}
+
+bounded_docker() {
+  local duration=$1 status=0
+  shift
+  docker_tool_custody check || return 1
+  bounded "$duration" "${docker_command[@]}" "$@" || status=$?
+  (( status == 0 )) || return "$status"
+  docker_tool_custody capture
 }
 
 initialize_authority() {
@@ -231,9 +344,10 @@ def read(name, limit=65536):
     s = os.lstat(p)
     if not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o600:
         raise SystemExit("invalid authority file")
-    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     opened = os.fstat(fd)
-    if (opened.st_dev,opened.st_ino) != (s.st_dev,s.st_ino): raise SystemExit('custody file changed')
+    if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_uid != os.getuid() or stat.S_IMODE(opened.st_mode) != 0o600 or (opened.st_dev,opened.st_ino) != (s.st_dev,s.st_ino):
+        os.close(fd); raise SystemExit('custody file changed')
     with os.fdopen(fd, 'rb') as stream: data = stream.read(limit + 1)
     if len(data) > limit or not data.endswith(b"\n") or b"\0" in data or b"\r" in data:
         raise SystemExit("invalid authority bytes")
@@ -279,9 +393,26 @@ PY
 record_intent() { append_durable "$intents" "$1"$'\t'"$2"$'\t'"$3"$'\n'; }
 record_inventory() { append_durable "$inventory" "$1"$'\n'; }
 
+read_owned_member() {
+  python3 -I - "$state" "$custody_identity" "$1" "${2:-65536}" <<'PY'
+import os,stat,sys
+root,identity,name,limit=sys.argv[1:]; limit=int(limit)
+rfd=os.open(root,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); r=os.fstat(rfd)
+if f'{r.st_dev}:{r.st_ino}'!=identity: raise SystemExit('authority directory changed')
+fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=rfd); s=os.fstat(fd)
+if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+    raise SystemExit('unsafe state member')
+data=os.read(fd,limit+1)
+if len(data)>limit or os.read(fd,1): raise SystemExit('oversized state member')
+os.write(1,data); os.close(fd); os.close(rfd)
+PY
+}
+
 validate_complete_inventory() {
+  local inventory_text container_locator volume_locator
+  inventory_text=$(read_owned_member inventory) || return 1
   inventory_lines=()
-  while IFS= read -r line; do inventory_lines+=("$line"); done < "$inventory"
+  while IFS= read -r line; do inventory_lines+=("$line"); done <<<"$inventory_text"
   [[ ${#inventory_lines[@]} -eq 3 && "${inventory_lines[0]}" == 'cogs.insecure-inventory/v1' ]] \
     || fail 'insecure-container exact inventory is incomplete or has extra entries'
   local -a volume_fields container_fields
@@ -294,10 +425,10 @@ validate_complete_inventory() {
       && "${container_fields[2]}" =~ ^[a-f0-9]{64}$ && "${container_fields[3]}" == "$container_name" ]] \
     || fail 'insecure-container container inventory is invalid'
   container_id=${container_fields[2]}
-  [[ -f "$state/container" && ! -L "$state/container" && "$(<"$state/container")" == "$container_id" ]] \
-    || fail 'insecure-container container locator does not match inventory'
-  [[ -f "$state/volume" && ! -L "$state/volume" && "$(<"$state/volume")" == "$volume_name" ]] \
-    || fail 'insecure-container volume locator does not match inventory'
+  container_locator=$(read_owned_member container 256) || return 1
+  volume_locator=$(read_owned_member volume 256) || return 1
+  [[ "$container_locator" == "$container_id" ]] || fail 'insecure-container container locator does not match inventory'
+  [[ "$volume_locator" == "$volume_name" ]] || fail 'insecure-container volume locator does not match inventory'
 }
 
 verify_tsx() {
@@ -327,7 +458,7 @@ verify_control_key_inventory() {
 
 assert_container_name_available() {
   local listing
-  listing=$(bounded 30s "${docker_command[@]}" container ls --all --quiet --no-trunc --filter "name=^/${container_name}$") \
+  listing=$(bounded_docker 30s container ls --all --quiet --no-trunc --filter "name=^/${container_name}$") \
     || fail 'could not query container-name competitors'
   [[ -z "$listing" ]] || fail 'refusing to adopt or delete a pre-existing container competitor'
 }
@@ -347,7 +478,7 @@ if sys.stdin.buffer.read(1): raise SystemExit("resource absence not proven")'
 
 validate_container_ownership() {
   local observed
-  observed=$(bounded 30s "${docker_command[@]}" container inspect --format \
+  observed=$(bounded_docker 30s container inspect --format \
     '{{.Id}} {{.Name}} {{index .Config.Labels "dev.cogs.profile"}} {{index .Config.Labels "dev.cogs.state"}} {{index .Config.Labels "dev.cogs.generation"}} {{index .Config.Labels "dev.cogs.revision"}}' "$container_id" | exact_line)
   [[ "$observed" == "$container_id /$container_name $profile $state_id $generation $original_revision" ]] \
     || fail 'refusing to operate on a container without exact ID, name, and authority labels'
@@ -355,7 +486,7 @@ validate_container_ownership() {
 
 validate_volume_ownership() {
   local observed
-  observed=$(bounded 30s "${docker_command[@]}" volume inspect --format \
+  observed=$(bounded_docker 30s volume inspect --format \
     '{{.Name}} {{index .Labels "dev.cogs.profile"}} {{index .Labels "dev.cogs.state"}} {{index .Labels "dev.cogs.generation"}} {{index .Labels "dev.cogs.revision"}}' "$volume_name" | exact_line)
   [[ "$observed" == "$volume_name $profile $state_id $generation $original_revision" ]] \
     || fail 'refusing to operate on a volume without exact authority labels'
@@ -372,13 +503,13 @@ retire_exact() {
   record_inventory "$kind"$'\tretiring\t'"$target" || return 1
   record_intent pending "$kind-remove" "$target" || return 1
   if [[ "$kind" == container ]]; then
-    output=$(bounded 45s "${docker_command[@]}" container rm --force "$target" | exact_line) || return 1
+    output=$(bounded_docker 45s container rm --force "$target" | exact_line) || return 1
     [[ "$output" == "$target" ]] || return 1
-    listing=$(bounded 30s "${docker_command[@]}" container ls --all --quiet --no-trunc --filter "id=$target" | exact_empty) || return 1
+    listing=$(bounded_docker 30s container ls --all --quiet --no-trunc --filter "id=$target" | exact_empty) || return 1
   else
-    output=$(bounded 45s "${docker_command[@]}" volume rm --force "$target" | exact_line) || return 1
+    output=$(bounded_docker 45s volume rm --force "$target" | exact_line) || return 1
     [[ "$output" == "$target" ]] || return 1
-    listing=$(bounded 30s "${docker_command[@]}" volume ls --quiet --filter "name=^${target}$" | exact_empty) || return 1
+    listing=$(bounded_docker 30s volume ls --quiet --filter "name=^${target}$" | exact_empty) || return 1
   fi
   [[ -z "$listing" ]] || return 1
   record_intent complete "$kind-remove" "$target" || return 1
@@ -439,7 +570,7 @@ create() {
   chmod 0700 "$control" "$input"
 
   record_intent pending image-build "$image"
-  bounded 10m "${docker_command[@]}" build --pull=false --tag "$image" \
+  bounded_docker 10m build --pull=false --tag "$image" \
     --file "$repo/dev/insecure-sandbox/Dockerfile" "$repo" >&2
   record_intent complete image-build "$image"
   assert_container_name_available
@@ -475,7 +606,7 @@ create() {
   fi
 
   record_intent pending volume-create "$generation"
-  output=$(bounded 30s "${docker_command[@]}" volume create \
+  output=$(bounded_docker 30s volume create \
     --label dev.cogs.profile="$profile" --label dev.cogs.state="$state_id" \
     --label dev.cogs.generation="$generation" --label dev.cogs.revision="$original_revision" | exact_line)
   [[ "$output" =~ ^[A-Za-z0-9_.-]{1,255}$ ]] || fail 'volume create returned a malformed or lost acquisition response'
@@ -488,7 +619,7 @@ create() {
 
   container_pending=true
   record_intent pending container-run "$container_name"
-  output=$(bounded 45s "${docker_command[@]}" run --detach \
+  output=$(bounded_docker 45s run --detach \
     --name "$container_name" --hostname sandbox \
     --label dev.cogs.profile="$profile" --label dev.cogs.authority=functional-only \
     --label dev.cogs.state="$state_id" --label dev.cogs.generation="$generation" \
@@ -513,12 +644,12 @@ create() {
 
   local running deadline
   sleep 1
-  running=$(bounded 30s "${docker_command[@]}" inspect --format '{{.State.Running}}' "$container_id")
+  running=$(bounded_docker 30s inspect --format '{{.State.Running}}' "$container_id")
   if [[ "$running" != true ]]; then
-    bounded 15s "${docker_command[@]}" logs "$container_id" >&2 || true
+    bounded_docker 15s logs "$container_id" >&2 || true
     fail 'insecure-container stopped during startup'
   fi
-  port=$(bounded 30s "${docker_command[@]}" port "$container_id" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
+  port=$(bounded_docker 30s port "$container_id" 2222/tcp | awk -F: 'NR == 1 {print $NF}')
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'failed to discover SSH port'
   printf '[127.0.0.1]:%s %s\n' "$port" "$(awk 'NF >= 2 {print $1 " " $2; exit}' "$input/ssh_host_ed25519_key.pub")" > "$state/known_hosts"
   printf '%s\n' "$port" > "$state/port"
@@ -527,10 +658,10 @@ create() {
   deadline=$((SECONDS + 30))
   until bounded 12s ssh "${SSH_OPTIONS[@]}" root@127.0.0.1 true >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
-      bounded 15s "${docker_command[@]}" logs "$container_id" >&2 || true
+      bounded_docker 15s logs "$container_id" >&2 || true
       fail 'insecure-container SSH readiness timed out'
     fi
-    running=$(bounded 30s "${docker_command[@]}" inspect --format '{{.State.Running}}' "$container_id")
+    running=$(bounded_docker 30s inspect --format '{{.State.Running}}' "$container_id")
     [[ "$running" == true ]] || fail 'insecure-container stopped before SSH became ready'
     sleep 1
   done
@@ -542,11 +673,11 @@ verify_runtime_identity() {
   local running mount published
   validate_container_ownership
   validate_volume_ownership
-  running=$(bounded 30s "${docker_command[@]}" inspect --format '{{.State.Running}}' "$container_id")
+  running=$(bounded_docker 30s inspect --format '{{.State.Running}}' "$container_id")
   [[ "$running" == true ]] || fail 'recorded insecure-container is not running'
-  mount=$(bounded 30s "${docker_command[@]}" inspect --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Name}}{{end}}{{end}}' "$container_id")
+  mount=$(bounded_docker 30s inspect --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Name}}{{end}}{{end}}' "$container_id")
   [[ "$mount" == "$volume_name" ]] || fail 'recorded workspace volume is not mounted in the container'
-  published=$(bounded 30s "${docker_command[@]}" port "$container_id" 2222/tcp)
+  published=$(bounded_docker 30s port "$container_id" 2222/tcp)
   [[ "$published" == "127.0.0.1:$port" ]] || fail 'recorded SSH endpoint is not the loopback-published container port'
 }
 
@@ -577,8 +708,7 @@ verify() {
   validate_complete_inventory
   file_custody check
   verify_control_key_inventory
-  [[ -s "$state/port" ]] || fail 'insecure-container state is absent or incomplete'
-  port=$(<"$state/port")
+  port=$(read_owned_member port 32) || fail 'insecure-container state is absent or incomplete'
   [[ "$port" =~ ^[0-9]+$ ]] || fail 'insecure-container SSH port is invalid'
   verify_runtime_identity
   ssh_options
@@ -649,7 +779,7 @@ reset() {
   validate_volume_ownership
   local output
   record_intent pending container-restart "$container_id"
-  output=$(bounded 45s "${docker_command[@]}" container restart "$container_id" | exact_line)
+  output=$(bounded_docker 45s container restart "$container_id" | exact_line)
   [[ "$output" == "$container_id" ]] || fail 'container restart returned a malformed or lost response'
   validate_container_ownership
   record_intent complete container-restart "$container_id"
@@ -664,11 +794,11 @@ root,action,identity=sys.argv[1:]; record='files.owner'
 top={'.cogs-insecure-owner','authority','intents','inventory','container','volume','port','known_hosts','input','control'}
 children={'input':{'ssh_host_ed25519_key','ssh_host_ed25519_key.pub','client_ed25519_key.pub','egress-ca.crt'},
           'control':{'client_ed25519_key','client_ed25519_key.pub'}}
-rfd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(rfd)
+rfd=os.open(root,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(rfd)
 if f'{info.st_dev}:{info.st_ino}'!=identity: raise SystemExit('directory changed')
 if set(os.listdir(rfd)) != top | (set() if action=='capture' else {record}): raise SystemExit('foreign state inventory')
 def file(fd,name):
-    handle=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd); s=os.fstat(handle)
+    handle=os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=fd); s=os.fstat(handle)
     if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
         raise SystemExit('unsafe state member')
     with os.fdopen(handle,'rb') as stream: data=stream.read(1048577)
@@ -677,7 +807,7 @@ def file(fd,name):
     return marker if name in ('intents','inventory') else marker+[hashlib.sha256(data).hexdigest()]
 values={}; held={}
 for directory,names in children.items():
-    fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=rfd); held[directory]=fd
+    fd=os.open(directory,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=rfd); held[directory]=fd
     s=os.fstat(fd)
     if s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o700 or set(os.listdir(fd))!=names:
         raise SystemExit('foreign key inventory')
@@ -685,13 +815,17 @@ for directory,names in children.items():
     for name in sorted(names): values[directory+'/'+name]=file(fd,name)
 for name in sorted(top-children.keys()): values[name]=file(rfd,name)
 if action=='capture':
-    fd=os.open(record,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=rfd)
+    fd=os.open(record,os.O_WRONLY|os.O_NONBLOCK|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=rfd); s=os.fstat(fd)
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+        os.close(fd); raise SystemExit('unsafe file owner record')
     with os.fdopen(fd,'w') as out:
         json.dump(values,out,sort_keys=True,separators=(',',':')); out.write('\n'); out.flush(); os.fsync(out.fileno())
     os.fsync(rfd)
 else:
     file(rfd,record)
-    fd=os.open(record,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=rfd)
+    fd=os.open(record,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=rfd); s=os.fstat(fd)
+    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
+        os.close(fd); raise SystemExit('unsafe file owner record')
     with os.fdopen(fd,'r') as stream: text=stream.read(65537)
     if len(text)>65536 or text!=json.dumps(values,sort_keys=True,separators=(',',':'))+'\n':
         raise SystemExit('retained file acquisition changed')
@@ -711,7 +845,7 @@ else:
         s=os.lstat(root)
         if f'{s.st_dev}:{s.st_ino}'!=identity: raise SystemExit('directory replaced during retirement')
         os.rmdir(root)
-        parent=os.open(os.path.dirname(root),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
+        parent=os.open(os.path.dirname(root),os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
     elif action!='check': raise SystemExit('invalid file owner operation')
 for fd in held.values(): os.close(fd)
 os.close(rfd)
@@ -725,8 +859,10 @@ destroy() {
   file_custody check
   retire_exact container "$container_id"
   retire_exact volume "$volume_name"
+  local inventory_text
+  inventory_text=$(read_owned_member inventory) || return 1
   inventory_lines=()
-  while IFS= read -r line; do inventory_lines+=("$line"); done < "$inventory"
+  while IFS= read -r line; do inventory_lines+=("$line"); done <<<"$inventory_text"
   [[ ${#inventory_lines[@]} -eq 7 \
       && "${inventory_lines[3]}" == "container"$'\t'"retiring"$'\t'"$container_id" \
       && "${inventory_lines[4]}" == "container"$'\t'"retired"$'\t'"$container_id" \

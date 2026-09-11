@@ -3,6 +3,7 @@
 Importing this file has no effects; portable tests exercise the descriptor primitives.
 """
 import base64
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import fcntl
@@ -76,9 +77,16 @@ def directory(parent, name, mode=None):
         raise
 
 
-def capture(parent, name, maximum=1048576):
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+@contextmanager
+def closing_fd(fd):
     try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def capture(parent, name, maximum=1048576):
+    with closing_fd(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)) as fd:
         s = os.fstat(fd)
         require(stat.S_ISREG(s.st_mode) and s.st_nlink == 1 and s.st_size <= maximum)
         data = bytearray()
@@ -90,22 +98,17 @@ def capture(parent, name, maximum=1048576):
         require(len(data) == s.st_size and identity(s) == identity(os.fstat(fd)))
         require(identity(s) == identity(os.stat(name, dir_fd=parent, follow_symlinks=False)))
         return bytes(data)
-    finally:
-        os.close(fd)
 
 
 def exclusive(parent, name, data, mode=0o400, uid=0):
     require("/" not in name and name not in ("", ".", ".."))
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)
-    try:
+    with closing_fd(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)) as fd:
         os.fchown(fd, uid, uid)
         os.fchmod(fd, mode)
         remaining = memoryview(data)
         while remaining:
             remaining = remaining[os.write(fd, remaining):]
         os.fsync(fd)
-    finally:
-        os.close(fd)
     os.fsync(parent)
     require(capture(parent, name, max(len(data), 1)) == data)
 
@@ -142,15 +145,12 @@ def tree(parent, entries, verify=False):
             require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == entry["mode"])
             require(capture(parent, name) == data)
         else:
-            fd = directory(parent, name, None if verify else 0o700)
-            try:
+            with closing_fd(directory(parent, name, None if verify else 0o700)) as fd:
                 tree(fd, descendants, verify)
                 if not verify:
                     os.fchmod(fd, 0o555)
                     os.fsync(fd)
                 require(stat.S_IMODE(os.fstat(fd).st_mode) == 0o555)
-            finally:
-                os.close(fd)
     os.fsync(parent)
 
 
@@ -159,30 +159,23 @@ def publish_pair(parent, generation, pair):
     stage = directory(parent, ".stage-" + generation, 0o700)
     try:
         for scope in ("shared", "user"):
-            fd = directory(stage, scope, 0o700)
-            try:
+            with closing_fd(directory(stage, scope, 0o700)) as fd:
                 tree(fd, pair[scope])
                 os.fchmod(fd, 0o555)
                 tree(fd, pair[scope], True)
-            finally:
-                os.close(fd)
         os.fchmod(stage, 0o555)
         os.fsync(stage)
         no_replace(parent, ".stage-" + generation, generation)
         require(os.fstat(stage).st_ino == os.stat(generation, dir_fd=parent).st_ino)
         result = {}
         for scope in ("shared", "user"):
-            fd = directory(stage, scope)
-            try:
+            with closing_fd(directory(stage, scope)) as fd:
                 tree(fd, pair[scope], True)
                 names = os.listdir(fd)
                 require(len(names) == 1 and ID.fullmatch(names[0]))
-                child = directory(fd, names[0])
-                s = os.fstat(child)
-                os.close(child)
+                with closing_fd(directory(fd, names[0])) as child:
+                    s = os.fstat(child)
                 result[scope] = {"source_device": str(s.st_dev), "source_inode": str(s.st_ino)}
-            finally:
-                os.close(fd)
         return result
     finally:
         os.close(stage)
@@ -216,12 +209,9 @@ def inventory(fd, prefix="", result=None, markers=None):
         if markers is not None:
             markers[path] = list(identity(s))
         if stat.S_ISDIR(s.st_mode):
-            child = directory(fd, name)
-            try:
+            with closing_fd(directory(fd, name)) as child:
                 result[path + "/"] = None
                 inventory(child, path + "/", result, markers)
-            finally:
-                os.close(child)
         else:
             result[path] = capture(fd, name, 2 * 1048576)
             require(sum(len(b) for b in result.values() if b is not None) <= 16 * 1048576)
@@ -240,6 +230,14 @@ def source_nodes(value, depth=0):
     if isinstance(value, dict):
         require("__proto__" not in value)
     return 1 + sum(source_nodes(v, depth + 1) for v in (value.values() if isinstance(value, dict) else value if isinstance(value, list) else []))
+
+
+def tool_result(entry):
+    message = entry.get("message", {})
+    if message.get("role") != "toolResult":
+        return None
+    require(message.get("isError") is False and message.get("toolCallId") == "product-proxy" and message.get("toolName") == "bash")
+    return digest(canonical(message))
 
 
 class Custody:
@@ -497,13 +495,10 @@ class Custody:
         require(set(r) == set("version generation consumer_id session_id launch_digest worker_id sandbox_id sandbox_mount_namespace shared user".split()))
         require(r["version"] == "cogs.skill-snapshot-receipt/v1" and r["generation"] == self.generation and NONCE.fullmatch(r["consumer_id"]))
         require((r["worker_id"], r["sandbox_id"], r["sandbox_mount_namespace"]) == (worker["id"], sandbox["id"], sandbox["namespace"]))
-        fd = directory(self.fd, "documents")
-        try:
+        with closing_fd(directory(self.fd, "documents")) as fd:
             launch = json.loads(capture(fd, "launch.json"))
             require(r["launch_digest"] == digest(canonical(launch)) and r["session_id"] == launch["session_id"])
             self.launch = launch
-        finally:
-            os.close(fd)
         require(self.publication == self.saved("publication-receipt"))
         for scope in ("shared", "user"):
             entries = self.publication["pair"][scope]
@@ -515,12 +510,9 @@ class Custody:
             s = os.stat(source, follow_symlinks=False)
             require((str(s.st_dev), str(s.st_ino)) == (expected["source_device"], expected["source_inode"]))
             require({"source": source, "target": expected["destination"], "ro": True} in sandbox["spec"]["mounts"])
-            fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
+            with closing_fd(os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
                 tree(fd, {p.split("/", 1)[1]: v for p, v in entries.items()}, True)
                 require(digest(capture(fd, ".cogs-skills-bundle.json")) == expected["bundle_digest"])
-            finally:
-                os.close(fd)
 
     def storage_observation(self, name):
         path = self.root + "/control/" + name + ".img"
@@ -555,20 +547,14 @@ class Custody:
             mode, kind, oid = meta.split()
             require(kind == "blob" and mode in ("100644", "100755"))
             data = git("cat-file", "blob", oid)
-            fd = os.open(os.path.dirname(root + "/" + path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
+            with closing_fd(os.open(os.path.dirname(root + "/" + path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
                 require(capture(fd, os.path.basename(path)) == data)
                 require(stat.S_IMODE(os.stat(os.path.basename(path), dir_fd=fd, follow_symlinks=False).st_mode) == int(mode, 8) & 0o777)
-            finally:
-                os.close(fd)
             source[path] = {"digest": digest(data), "mode": int(mode, 8) & 0o777}
-        fd = os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
+        with closing_fd(os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             s = os.stat("build-receipt.json", dir_fd=fd, follow_symlinks=False)
             require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o400)
             receipt = json.loads(capture(fd, "build-receipt.json"))
-        finally:
-            os.close(fd)
         expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe")}
         expected.update(tree=git("rev-parse", "HEAD^{tree}").decode().strip(), source=digest(canonical(source)))
         require(receipt == expected)  # independently retained protected-build output, not a CLI identity assertion
@@ -596,11 +582,8 @@ class Custody:
             require(observed == {p: h for p, h in self.source.items() if p == path or p.startswith(path + "/")})
 
     def retained_history(self):
-        fd = os.open(self.root + "/state/session/sessions", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
+        with closing_fd(os.open(self.root + "/state/session/sessions", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             files = inventory(fd)
-        finally:
-            os.close(fd)
         native = [p for p in files if p.count("/") == 1 and p.endswith(".jsonl") and not p.endswith("git-map.jsonl")]
         require(len(native) == 1 and native[0].startswith("product-session/"))
         data = files[native[0]]
@@ -615,23 +598,17 @@ class Custody:
     def evidence(self):
         files, native, entries = self.retained_history()
         require(set(os.listdir(self.fd)) == {"control", "publication", "workspace", "state", "inputs", "authority", "sandbox-input", "documents", "lease"})
-        fd = directory(self.fd, "publication")
-        try:
+        with closing_fd(directory(self.fd, "publication")) as fd:
             tree(fd, {self.generation + "/" + scope + "/" + p: v for scope, entries in self.publication["pair"].items() for p, v in entries.items()}, True)
-        finally:
-            os.close(fd)
         require(self.shutdown and self.released and not self.peers and self.turns == 3 and self.headers)
-        state = directory(self.fd, "state")
-        workspace = directory(self.fd, "workspace")
         state_marks, work_marks = {}, {}
-        try:
+        with closing_fd(directory(self.fd, "state")) as state, closing_fd(directory(self.fd, "workspace")) as workspace:
             retained, work = inventory(state, markers=state_marks), inventory(workspace, markers=work_marks)
-        finally:
-            os.close(state)
-            os.close(workspace)
         e = json.loads(retained["session/product-evidence.json"])
         require(canonical(e) == retained["session/product-evidence.json"])
-        require(set(e) == set("outcome provenance egress telemetry exports upstreamRequests exported observedEvents generation upstream traces metrics audit omitted events turns consumer".split()))
+        require(set(e) == set("outcome toolResults provenance egress telemetry exports upstreamRequests exported observedEvents generation upstream traces metrics audit omitted events turns consumer".split()))
+        tools = [result for entry in entries if (result := tool_result(entry)) is not None]
+        require(len(tools) == 1 and e["toolResults"] == tools)
         require(e["outcome"] == "pass" and e["generation"] == self.generation and e["consumer"] == self.receipt["consumer_id"])
         require(e["events"] == self.events and e["turns"] == self.turns and e["omitted"] is True)
         require(e["observedEvents"] == self.publications)
@@ -820,11 +797,8 @@ class Custody:
             self.record(name + "-backing", identity(os.stat(name + ".img", dir_fd=self.control))[:2])
             os.truncate(self.root + "/control/" + name + ".img", size * 1048576)
             self.command(["mkfs.ext4", "-q", "-F", self.root + "/control/" + name + ".img"])
-            fd = os.open(name + ".img", os.O_RDWR | os.O_NOFOLLOW, dir_fd=self.control)
-            try:
+            with closing_fd(os.open(name + ".img", os.O_RDWR | os.O_NOFOLLOW, dir_fd=self.control)) as fd:
                 os.fsync(fd)
-            finally:
-                os.close(fd)
             os.mkdir(self.root + "/" + name, 0o700)
             self.record(name + "-loop-intent", True)
             loop = self.command(["losetup", "--find", "--show", self.root + "/control/" + name + ".img"]).decode().strip()
@@ -836,15 +810,13 @@ class Custody:
             os.chmod(self.root + "/" + name, 0o700)
             os.rmdir(self.root + "/" + name + "/lost+found")
         elif op == "pair":
-            fd = directory(self.fd, "publication")
-            try:
-                require(self.publication is None)
+            with closing_fd(directory(self.fd, "publication")) as fd:
+                require(self.publication is None and "publication" in self.mounts)
+                self.record("publication-intent", {"generation": self.generation, "parent": identity(os.fstat(fd))[:2], "pair": q["pair"]})
                 sources = publish_pair(fd, self.generation, q["pair"])
                 self.publication = {"pair": q["pair"], "sources": sources}
                 self.record("publication-receipt", self.publication)
                 return sources
-            finally:
-                os.close(fd)
         elif op == "seal":
             require(not self.ids and not self.sealed)
             for path in ("authority", "sandbox-input", "inputs/api", "inputs/proxy", "inputs/ssh", "inputs/pki"):
@@ -927,10 +899,9 @@ class Custody:
                 listener.listen(2)
                 self.record(name + "-socket", identity(os.stat(self.root + "/lease/" + name, follow_symlinks=False))[:2])
                 self.selector.register(listener, selectors.EVENT_READ, name)
-            fd = directory(self.fd, "lease")
-            exclusive(fd, "snapshot-receipt.json", canonical(self.receipt), 0o444)
-            self.record("snapshot-receipt-inode", identity(os.stat("snapshot-receipt.json", dir_fd=fd))[:2])
-            os.close(fd)
+            with closing_fd(directory(self.fd, "lease")) as fd:
+                exclusive(fd, "snapshot-receipt.json", canonical(self.receipt), 0o444)
+                self.record("snapshot-receipt-inode", identity(os.stat("snapshot-receipt.json", dir_fd=fd))[:2])
         elif op == "settle":
             require(not self.probe or q.get("passed") is not True)
             self.failed = self.failed or q.get("passed") is not True
@@ -977,6 +948,7 @@ class Custody:
                 require(all(v is None or isinstance(v, str) and 0 < len(v) <= 128 for v in event.values()))
                 self.publications.append(event)
             if q["op"] == "persist":
+                tool_result(q["entry"])  # reject failed effects independently of the candidate observer
                 nodes = source_nodes(q["entry"])
                 require(len(self.admissions) < 25 and self.nodes + nodes <= 2048 and self.history is None)
                 self.admissions.append(digest(canonical(q["entry"])))
@@ -1042,8 +1014,7 @@ class Custody:
             if key.data in ("gate.sock", "control.sock"):
                 key.fileobj.close()
         if "lease" in os.listdir(self.fd):
-            fd = directory(self.fd, "lease")
-            try:
+            with closing_fd(directory(self.fd, "lease")) as fd:
                 require(set(os.listdir(fd)) <= {"gate.sock", "control.sock", "snapshot-receipt.json"})
                 for name in os.listdir(fd):
                     key = "snapshot-receipt-inode" if name.endswith(".json") else name + "-socket"
@@ -1052,8 +1023,6 @@ class Custody:
                         require(capture(fd, name) == canonical(self.saved("lease-receipt")))
                     os.unlink(name, dir_fd=fd)
                     os.fsync(fd)
-            finally:
-                os.close(fd)
         for name in reversed(self.mounts):
             names = os.listdir(self.control)
             if name + "-detached" in names:
