@@ -278,8 +278,12 @@ assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
 assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
 assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-# Source-inventory implementation synchronization belongs to the later source tranche, not this gate.
-assert 'MAXIMUM_TRACKED_FILES = 1509;' in Path('scripts/stage4-offline-source-inventory.ts').read_text()
+# The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
+source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
+assert 'MAXIMUM_TRACKED_FILES = 1517;' in source_inventory
+assert 'MAXIMUM_AGGREGATE_BYTES = 26_000_000;' in source_inventory
+assert 'MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;' in source_inventory
+assert 'MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;' in source_inventory
 assert m['FINAL_CONTROL_DATA_ROOT'].endswith('-v7') and len(m['FINAL_CONTROL_DATA_MEMBERS'])==13
 assert m['_final_control_data_state']()[0] in ('absent','member-set-complete')
 assert 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/**/*.json' in Path('biome.json').read_text()
@@ -616,6 +620,7 @@ existing={
  scripts/check-stage2-retained-lines.py scripts/stage4-offline-readiness-regenerate.ts
  scripts/stage4-offline-readiness.ts scripts/stage4-offline-source-inventory.ts
  scripts/stage4-runtime-artifact-closure-regenerate.ts scripts/stage4-runtime-artifact-closure.ts
+ test/aws-stage2-completion-kata-runtime.py test/aws-stage2-completion-local-result.test.ts
  test/ci-infrastructure-boundary.test.ts test/stage2-remediation-budget.test.ts
  test/stage4-offline-readiness.test.ts test/stage4-runtime-artifact-closure.test.ts test/stage4-schema-registry.test.ts'''}
 expected_new={
@@ -633,13 +638,16 @@ assert {e['name']:e['new_files'] for e in plan['owners']}=={
  o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}
 assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
 planned={p:o for o,s in existing.items() for p in s.split()} | expected_new
-assert len(planned)==63 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==63
+assert len(planned)==65 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==65
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']
 q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1])
 q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json']))
 old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
+historical_tests={'test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-local-result.test.ts'}
+assert {p for p in planned if p.startswith('test/aws-')}==historical_tests
+for p in historical_tests: assert p in q_names and old[p]==paths[p]==planned[p]=='integration'
 assert set(paths)==set(old)|set(planned)
 assert set(paths)-q_names==set(expected_new) and len(expected_new)==8
 # Newly allocated EXISTING paths carry no historical gross; otherwise a transfer ledger would be required.

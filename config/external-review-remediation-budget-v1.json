@@ -111,6 +111,8 @@
           "scripts/stage4-offline-source-inventory.ts",
           "scripts/stage4-runtime-artifact-closure-regenerate.ts",
           "scripts/stage4-runtime-artifact-closure.ts",
+          "test/aws-stage2-completion-kata-runtime.py",
+          "test/aws-stage2-completion-local-result.test.ts",
           "test/ci-infrastructure-boundary.test.ts",
           "test/stage2-remediation-budget.test.ts",
           "test/stage4-offline-readiness.test.ts",

@@ -76,6 +76,8 @@ Integration new-file high becomes 87; total owner new-file highs become 97. Othe
 
 Only ADR0335 is created now. No new fixture, report, restriction, schema, image or execution-gate file is implied. Existing ownership remains exact and unique, including all historical Q allocations. Tests extend existing files.
 
+The separately authorized full-check integration correction admits only `test/aws-stage2-completion-kata-runtime.py` and `test/aws-stage2-completion-local-result.test.ts` to the product matrix as existing integration paths. Both retain their historical Q integration owner; only stale budget assertions change, with no runtime or workflow authority. Budget/test corrections use the existing integration ADR0335/budget-test allocation; source-inventory synchronization and deterministic regeneration use the existing 100-line allocation. No ceiling, new-file allocation, reserve release or historical gross transfer changes.
+
 ## Finding12: source-only tranche, no execution authority
 
 Finding12 implementation in the later source tranche is source-only: add the bounded-command helper, convert every admitted driver/smoke/conformance guest invocation, bound QMP, reject truncation and prove behavior with portable subprocess/fault tests. It performs no Docker/KVM execution and makes no finding-closure or host-containment claim. The initial functional product-test topology is Docker-only and mechanically rejects a KVM profile, so finding12 cannot be triggered by that product scenario. Portable command bounds do not establish an external generation envelope.
