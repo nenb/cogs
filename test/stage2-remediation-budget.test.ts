@@ -657,8 +657,13 @@ for text in ('Supported-entrypoint denial revision from \x60c2439e42\x60', 'pers
  'existing generation-bound root host custodian', 'exact full product execution closure/root helper',
  'same sealed verified context', 'Never consume a later checkout reopen/copy',
  'Required pre-target-effect tests, future source tranche', 'exactly zero application target-effect calls',
- 'Preserve non-authorizing models without migration', 'retain existing direct-export fake/model success tests',
- 'no test-local extraction, capability bypass or conversion of internal successes to denial assertions is required',
+ 'Preserve non-authorizing models; convert complete-driver assertions', 'retain existing direct-export fake/model success tests',
+ 'no new internal denial or migration of direct-export successes is required',
+ 'insecure driver isolates docker tool state outside launcher controls', 'insecure driver never adopts or removes pre-existing docker competitors',
+ 'including their create/destroy assertions', 'fixed denial, zero-tool calls and byte/mode/device/inode-exact state preservation with no new target paths',
+ 'Docker HOME/DOCKER_CONFIG/BUILDX_CONFIG isolation', 'no keys before build', 'cleanup-required intent and uncertain lock retention',
+ 'hostile-state/key preservation and competitor non-adoption/non-removal', 'retain the static Docker context exclusion assertion',
+ 'never extract or execute a complete-driver body past denial', 'add a root/EUID/env/flag bypass',
  'No runtime guard tests are implemented in this plan-only commit', '83 paths', '12,804/15,100', '988,774/1,850,000'):
  assert text in replan,text
 for superseded in ('HOLD 1','durably writes BEGIN before any main/state mkdir','Direct exported boundaries','production-private unforgeable capability','Audit every exported/CLI legacy entry'): assert superseded not in replan,superseded
@@ -701,7 +706,14 @@ assert sum(checkpoint.values())==12782 and sum(expected_forecasts[o]-n for o,n i
 pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(expected_forecasts[o]-n for o,n in pivot.items())==2296
 assert 90+180+46==expected_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==expected_forecasts['integration']-pivot['integration']  # historical pivot ledger
 assert 30+240+46==316 and 80+50+50+150+100+10==expected_forecasts['integration']-(pivot['integration']+63)==440
-assert 448+1029+316+440==2233 and '2,233 total lines remain before this revision' in replan
+assert 448+1029+316+440==2233 and '2,233 total lines remain before this revision' in replan  # historical, not spendable
+assert 26+50+20+20+150+100+10==expected_forecasts['integration']-(4497+63+64)==376
+assert 30+120+120+46==expected_forecasts['lifecycle']-3984==316 and 448+1029+316+376==2169
+for text in ('Reconciled remaining-task ledger from \x60eb9a3ec0\x60', 'ci-smoke wrapper sentinel/tool-spy guards 20',
+ 'report CLI denial/guards 20', 'complete-driver denial conversion/entry sentinels 120',
+ 'equivalent internal driver behavior preservation in existing isolated model tests 120',
+ 'wrapper guard tests are not charged to lifecycle', 'No lifecycle charge transfer', '2,169 total lines remain before this amendment'):
+ assert text in replan,text
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
