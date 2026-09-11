@@ -596,14 +596,14 @@ existing={
  'completion':'''dev/launcher/api-client.ts src/api/server.ts src/pi/session.ts src/telemetry/worker-telemetry.ts
  test/api-server.test.ts test/dev-launcher-cli-api.test.ts test/pi-session.test.ts
  test/skills-session-preparer.test.ts test/worker-telemetry.test.ts''',
- 'integration':'''config/external-review-remediation-budget-v1.json docs/adr/README.md
+ 'integration':'''.github/workflows/insecure-container.yml config/external-review-remediation-budget-v1.json docs/adr/README.md
  docs/operations/production-runtime-foundation.md
  docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json
  docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json
  docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json
  docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json
  docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json
- docs/security-evidence/stage4-offline-readiness-package.json
+ docs/security-evidence/stage4-offline-readiness-package.json package.json
  scripts/check-stage2-retained-lines.py scripts/run-launcher-smoke-evidence.ts scripts/stage4-offline-readiness-regenerate.ts
  scripts/stage4-offline-readiness.ts scripts/stage4-offline-source-inventory.ts
  scripts/stage4-runtime-artifact-closure-regenerate.ts scripts/stage4-runtime-artifact-closure.ts
@@ -621,7 +621,7 @@ expected_new={
  'docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md':'integration'}
 assert m['PRODUCT_TEST_NEW_FILES']==expected_new; assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
 assert {e['name']:e['new_files'] for e in plan['owners']}=={o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}; assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
-planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==81 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==81
+planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==83 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==83
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']; q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1]); q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json'])); old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
@@ -632,22 +632,36 @@ assert set(paths)==set(old)|set(planned); assert set(paths)-q_names==set(expecte
 # Newly allocated EXISTING paths carry no historical gross; otherwise a transfer ledger would be required.
 added_existing=(set(paths)-set(old))-set(expected_new); assert git(['diff','--no-renames','--numstat',b['base_revision'],q,'--',*sorted(added_existing)])==''
 assert paths['test/production-compose.test.ts']=='lifecycle'; assert paths['test/skills-session-preparer.test.ts']=='completion'; assert paths['docs/operations/runbooks/limitations.md']=='route'
-assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned; assert 'schemas/launch-v1alpha1.json' not in planned; assert not any(p.startswith(('.github/','deploy/','images/')) for p in planned)
+assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned; assert 'schemas/launch-v1alpha1.json' not in planned
+assert {p for p in planned if p.startswith(('.github/','deploy/','images/'))}=={'.github/workflows/insecure-container.yml'}
+for p in ('package.json','.github/workflows/insecure-container.yml'): assert old[p]==paths[p]==planned[p]=='integration'
+for p in ('test/ci-infrastructure-boundary.test.ts','test/launcher-smoke-evidence.test.ts'): assert paths[p]==planned[p]=='integration'
+assert planned['test/dev-launcher-profiles.test.ts']=='lifecycle' and 'scripts/prepare-launcher-images.ts' not in planned
 adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
 replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
 assert len(replan.splitlines())<=121
-for text in ('Minimal secure denial pivot from \x606bd60d3e\x60', 'persist-credentials: false', '/usr/bin/python3 -I -B',
+for text in ('Supported-entrypoint denial revision from \x60c2439e42\x60', 'persist-credentials: false', '/usr/bin/python3 -I -B',
  'controlled Docker orchestration is exclusively', 'It does NOT use', 'no root ledger claim',
- 'before first mkdir/report unlink or write/temp/trap/subprocess/driver callback', 'including root callers',
- 'Imports and module initialization', 'core.ts\x60 create/reset/status/destroy', 'supervisor.ts\x60 start/stop',
- 'production-private unforgeable capability', 'no capability issuer, bypass or adapter is implemented',
- 'both embedded Python cleanup paths', 'exported \x60cleanupSensitiveExport\x60', 'mechanically effect-free',
+ 'Closed supported external ingress inventory', 'Current exact key is \x60launcher\x60', 'no insecure execution alias exists',
+ 'fixed denial command', 'appended npm arguments are unused shell positional arguments', 'Package denial does not launch Node or tsx',
+ 'no pre/post execution hooks', 'unconditional job-level \x60if: \x24{{ false }}\x60', 'skip the whole effectful job',
+ 'step-only guards', 'extra effectful jobs', 'future exact \x60.github/workflows/insecure-container.yml\x60 execution gate',
+ 'Direct and sourced entry denies before report unlink/write', '\x60create\x60, \x60verify\x60, \x60reset\x60, \x60destroy\x60',
+ 'including root callers', 'Both embedded Python cleanup paths', 'before application argument resolution',
+ 'loader cache/IPC is not target resource authority', 'Imports and module initialization on that CLI path',
+ 'direct TypeScript exports are trusted internal implementation/model surfaces, not package exports or supported ingress',
+ 'exported \x60cleanupSensitiveExport\x60 need no independent denial', 'Manual imports', 'operational guardrail',
+ 'No resistance to arbitrary code imports or same-UID trusted-code compromise is claimed',
+ 'explicitly image preparation, not product/launcher execution, and unchanged', 'Finding11 closure boundary',
+ 'closure is limited to supported entrypoints plus controlled product host custody', 'This plan does not close finding11',
  'existing generation-bound root host custodian', 'exact full product execution closure/root helper',
  'same sealed verified context', 'Never consume a later checkout reopen/copy',
- 'Required zero-effect tests, future source tranche', 'exactly zero calls', 'Preserve non-authorizing models',
- 'No tests are implemented in this plan-only commit', '81 paths', '12,804/15,100', '988,774/1,850,000'):
+ 'Required pre-target-effect tests, future source tranche', 'exactly zero application target-effect calls',
+ 'Preserve non-authorizing models without migration', 'retain existing direct-export fake/model success tests',
+ 'no test-local extraction, capability bypass or conversion of internal successes to denial assertions is required',
+ 'No runtime guard tests are implemented in this plan-only commit', '83 paths', '12,804/15,100', '988,774/1,850,000'):
  assert text in replan,text
-assert 'HOLD 1' not in replan and 'durably writes BEGIN before any main/state mkdir' not in replan
+for superseded in ('HOLD 1','durably writes BEGIN before any main/state mkdir','Direct exported boundaries','production-private unforgeable capability','Audit every exported/CLI legacy entry'): assert superseded not in replan,superseded
 for p in planned: assert p in adr or p in replan,p
 for p in expected_new: assert p in replan,p
 for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc096ae4ba05','044e127a',
@@ -685,7 +699,9 @@ for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integr
 checkpoint=dict(route=0,revocation=0,relay=1771,lifecycle=3984,completion=2552,integration=4475)
 assert sum(checkpoint.values())==12782 and sum(expected_forecasts[o]-n for o,n in checkpoint.items())==2318
 pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(expected_forecasts[o]-n for o,n in pivot.items())==2296
-assert 90+180+46==expected_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==expected_forecasts['integration']-pivot['integration']
+assert 90+180+46==expected_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==expected_forecasts['integration']-pivot['integration']  # historical pivot ledger
+assert 30+240+46==316 and 80+50+50+150+100+10==expected_forecasts['integration']-(pivot['integration']+63)==440
+assert 448+1029+316+440==2233 and '2,233 total lines remain before this revision' in replan
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):

@@ -109,6 +109,7 @@
         "gross_line_forecast": 5000,
         "gross_byte_forecast": 700000,
         "existing_paths": [
+          ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
           "docs/adr/README.md",
           "docs/operations/production-runtime-foundation.md",
@@ -118,6 +119,7 @@
           "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
           "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
           "docs/security-evidence/stage4-offline-readiness-package.json",
+          "package.json",
           "scripts/check-stage2-retained-lines.py",
           "scripts/run-launcher-smoke-evidence.ts",
           "scripts/stage4-offline-readiness-regenerate.ts",
