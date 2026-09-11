@@ -40,9 +40,9 @@ POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global"
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
-                          "lifecycle": 4_450, "completion": 3_000, "integration": 5_200}
+                          "lifecycle": 4_450, "completion": 3_000, "integration": 5_287}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_000_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_011_233}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 2_700_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_850_000
@@ -418,7 +418,7 @@ def _remediation_budget():
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 4_800,
-                "lifecycle": 11_800, "completion": 6_500, "integration": 17_525}
+                "lifecycle": 11_800, "completion": 6_500, "integration": 17_612}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -467,9 +467,10 @@ def _product_test_budget(data, allocations):
     plan = data["product_test_correction"]
     _require(isinstance(plan, dict) and set(plan) == {
         "base_revision", "base_tree", "global_gross_line_forecast", "global_gross_byte_forecast",
-        "integration_regeneration_gross_line_forecast", "owners"})
+        "integration_regeneration_gross_line_forecast", "wrapper_report_minimum", "owners"})
+    _require(plan["wrapper_report_minimum"] == {"gross_lines": 130, "gross_bytes": 8000} and all(type(v) is int for v in plan["wrapper_report_minimum"].values()))
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
-             and plan["global_gross_line_forecast"] == 15_450
+             and plan["global_gross_line_forecast"] == 15_537
              and plan["global_gross_byte_forecast"] == 1_850_000
              and plan["integration_regeneration_gross_line_forecast"] == 100)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
@@ -500,14 +501,14 @@ def _product_test_budget(data, allocations):
                 planned[path] = owner
                 if kind == "new_files":
                     new[path] = owner
-    _require(new == PRODUCT_TEST_NEW_FILES and sum(forecasts.values()) == 15_450)
+    _require(new == PRODUCT_TEST_NEW_FILES and sum(forecasts.values()) == 15_537)
     _require(set(allocations) == set(q_allocations) | set(planned))
     _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
     # Preserve cumulative planning and charge the entire forecast, not remaining
     # endpoint headroom after deletions. Readiness is INCLUDED in integration.
     q_gross = {"route": 2_023, "revocation": 2_984, "relay": 1_953,
                "lifecycle": 7_348, "completion": 2_972, "integration": 12_325}
-    _require(sum(q_gross.values()) + 15_450 <= data["global_gross_line_high"])
+    _require(sum(q_gross.values()) + 15_537 <= data["global_gross_line_high"])
     _require(all(q_gross[entry["name"]] + forecasts[entry["name"]] <= entry["gross_line_high"]
                  for entry in data["owners"]))
     return planned
@@ -709,7 +710,7 @@ def measure():
         "product_test_workstream_gross_added_lines": product_test_gross,
         "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
-        "product_test_global_gross_line_forecast": 15_450,
+        "product_test_global_gross_line_forecast": 15_537,
         "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),
