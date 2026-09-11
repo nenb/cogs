@@ -21,6 +21,11 @@ import { assertValidSecurityReport, writeReports } from "../controller/report.ts
 import type { SecurityReport } from "../controller/runner.ts";
 import { createKvmStage3RuntimeRelay, type Stage3RelaySnapshot, type Stage3RuntimeRelay } from "./relay.ts";
 
+// This legacy entrypoint has no independently retained driver acquisition
+// capability. Ambient nonce/sentinel discovery cannot authorize its KVM path.
+if (process.env.COGS_STAGE3_REAL_RUNTIME_PROFILE === "linux-kvm")
+  throw new Error("ADR0333: unmigrated KVM conformance acquisition is not admitted");
+
 const execFileAsync = promisify(execFile);
 const outputDirectory = resolve(process.argv[2] ?? "docs/security-evidence/generated/stage3-real-runtime");
 const sourceRevision = requiredEnv("COGS_SOURCE_REVISION", /^[a-f0-9]{40}$/);

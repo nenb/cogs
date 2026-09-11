@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type DriverResult, deepFreeze, type LauncherProfile } from "../dev/launcher/contract.ts";
 import { beginWorkerStartup, createApiToken } from "../dev/launcher/control.ts";
-import { createSandbox, destroySandbox, resetSandbox, statusSandbox } from "../dev/launcher/core.ts";
+import { acquiredSandbox, createSandbox, destroySandbox, resetSandbox, statusSandbox } from "../dev/launcher/core.ts";
 import type { ProfileAdapter } from "../dev/launcher/profiles.ts";
 import type { LauncherState } from "../dev/launcher/state.ts";
-import { readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
+import { readAcquisition, readManifest, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 
 const sourceRevision = "2".repeat(40);
 
-function result(profile: LauncherProfile, operation: DriverResult["operation"]): DriverResult {
+function result(profile: LauncherProfile, operation: DriverResult["operation"], generation: string): DriverResult {
   return deepFreeze({
+    generation,
     profile,
     operation,
     result: profile === "linux-kvm" ? (operation === "destroy" ? "destroyed" : "ready") : "pass",
@@ -22,16 +23,16 @@ function result(profile: LauncherProfile, operation: DriverResult["operation"]):
 }
 
 function adapter(profile: LauncherProfile, log: string[], fail?: string): ProfileAdapter {
-  const op = async (name: DriverResult["operation"], state: LauncherState) => {
+  const op = async (name: DriverResult["operation"], state: LauncherState, generation: string) => {
     log.push(name);
     if (fail === name) throw new Error("profile failed");
     if (name === "destroy") await rm(state.driverStateDir, { recursive: true, force: true });
-    return result(profile, name);
+    return result(profile, name, generation);
   };
-  const create = Object.freeze((state: LauncherState) => op("create", state));
-  const verify = Object.freeze((state: LauncherState) => op("verify", state));
-  const reset = Object.freeze((state: LauncherState) => op("reset", state));
-  const destroy = Object.freeze((state: LauncherState) => op("destroy", state));
+  const create = Object.freeze((state: LauncherState, generation: string) => op("create", state, generation));
+  const verify = Object.freeze((state: LauncherState, generation: string) => op("verify", state, generation));
+  const reset = Object.freeze((state: LauncherState, generation: string) => op("reset", state, generation));
+  const destroy = Object.freeze((state: LauncherState, generation: string) => op("destroy", state, generation));
   return Object.freeze({ profile, create, verify, reset, destroy });
 }
 
@@ -288,10 +289,11 @@ test("core rejects non-exact profile result for linux authority", async () => {
   try {
     const bad = Object.freeze({
       ...adapter("linux-kvm", log),
-      create: Object.freeze(async (state: LauncherState) => {
+      create: Object.freeze(async (state: LauncherState, generation: string) => {
         log.push("create");
         await rm(state.driverStateDir, { recursive: true, force: true });
         return deepFreeze({
+          generation,
           profile: "linux-kvm" as const,
           operation: "create" as const,
           result: "pass" as const,
@@ -307,7 +309,7 @@ test("core rejects non-exact profile result for linux authority", async () => {
   }
 });
 
-test("core destroy removes orphan profile state when launcher state is absent", async () => {
+test("core destroy preserves orphan profile state when launcher state is absent", async () => {
   const root = await temp();
   const log: string[] = [];
   try {
@@ -315,17 +317,19 @@ test("core destroy removes orphan profile state when launcher state is absent", 
     const { resolveLauncherState } = await import("../dev/launcher/state.ts");
     const state = await resolveLauncherState({ root, name: stateName, sourceRevision });
     await import("node:fs/promises").then((fs) => fs.mkdir(state.driverStateDir, { recursive: true }));
-    assert.deepEqual(
-      await destroySandbox({
+    await writeFile(join(state.driverStateDir, "competitor"), "exact bytes\n");
+    await assert.rejects(() =>
+      destroySandbox({
         root,
         name: stateName,
         sourceRevision,
         profile: "insecure-container",
         adapter: adapter("insecure-container", log),
       }),
-      { removed: true },
     );
-    assert.deepEqual(log, ["destroy"]);
+    assert.equal(await readFile(join(state.driverStateDir, "competitor"), "utf8"), "exact bytes\n");
+    assert.deepEqual(log, []);
+    await rm(state.driverStateDir, { recursive: true });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -341,37 +345,37 @@ test("core rejects false destroy success when custom .cogs-dev parent is unsafe"
     await mkdir(root, { mode: 0o700 });
     const destructive = Object.freeze({
       ...adapter("insecure-container", log),
-      destroy: Object.freeze(async (state: LauncherState) => {
+      destroy: Object.freeze(async (state: LauncherState, generation: string) => {
         log.push("destroy");
         await rm(state.driverStateDir, { recursive: true, force: true });
         await chmod(parent, 0o755);
-        return result("insecure-container", "destroy");
+        return result("insecure-container", "destroy", generation);
       }),
     });
+    await createSandbox({ root, name: "unsafe", sourceRevision, profile: "insecure-container", adapter: destructive });
     await assert.rejects(() =>
       destroySandbox({ root, name: "unsafe", sourceRevision, profile: "insecure-container", adapter: destructive }),
     );
-    assert.deepEqual(log, ["destroy"]);
+    assert.deepEqual(log, ["create", "verify", "destroy"]);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
 
-test("core destroy invokes adapter even when launcher and driver dirs are absent", async () => {
+test("core destroy grants no authority when launcher and driver dirs are absent", async () => {
   const root = await temp();
   const log: string[] = [];
   try {
-    assert.deepEqual(
-      await destroySandbox({
+    await assert.rejects(() =>
+      destroySandbox({
         root,
         name: "absent",
         sourceRevision,
         profile: "insecure-container",
         adapter: adapter("insecure-container", log),
       }),
-      { removed: true },
     );
-    assert.deepEqual(log, ["destroy"]);
+    assert.deepEqual(log, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -447,7 +451,7 @@ test("core snapshots options without getters and ignores post-call mutation", as
   }
 });
 
-test("core destroy is idempotent after exact profile absence", async () => {
+test("core destroy consumes authority rather than adopting after exact profile absence", async () => {
   const root = await temp();
   const log: string[] = [];
   try {
@@ -469,17 +473,218 @@ test("core destroy is idempotent after exact profile absence", async () => {
       }),
       { removed: true },
     );
-    assert.deepEqual(
-      await destroySandbox({
-        root,
-        name: "destroy",
-        sourceRevision,
-        profile: "insecure-container",
-        adapter: profileAdapter,
-      }),
-      { removed: true },
+    await assert.rejects(() =>
+      destroySandbox({ root, name: "destroy", sourceRevision, profile: "insecure-container", adapter: profileAdapter }),
     );
-    assert.deepEqual(log, ["create", "verify", "destroy", "destroy"]);
+    assert.deepEqual(log, ["create", "verify", "destroy"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const failure of ["failed", "partial", "malformed", "stale", "lost"] as const) {
+  test(`create ${failure} response never arms parent rollback or adopts competitor`, async () => {
+    const root = await temp(),
+      log: string[] = [];
+    const options = { root, name: "receipt", sourceRevision, profile: "linux-kvm" as const };
+    const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+    const competitor = Buffer.from([0, 1, 255, 42]);
+    try {
+      await mkdir(state.driverStateDir, { mode: 0o700 });
+      await writeFile(join(state.driverStateDir, "competitor"), competitor);
+      const before = await lstat(state.driverStateDir);
+      const bad = Object.freeze({
+        ...adapter("linux-kvm", log),
+        create: Object.freeze(async (_state: LauncherState, generation: string) => {
+          log.push("create");
+          if (failure === "failed" || failure === "partial" || failure === "lost") throw new Error(failure);
+          const receipt = result("linux-kvm", "create", failure === "stale" ? "0".repeat(32) : generation);
+          return failure === "malformed" ? Object.freeze({ ...receipt, extra: true }) : receipt;
+        }),
+      });
+      await assert.rejects(createSandbox({ ...options, adapter: bad }));
+      assert.deepEqual(log, ["create"]);
+      assert.deepEqual(await readFile(join(state.driverStateDir, "competitor")), competitor);
+      assert.equal((await lstat(state.driverStateDir)).ino, before.ino);
+      assert.equal((await readManifest(state)).phase, "cleanup-required");
+      await assert.rejects(destroySandbox({ ...options, adapter: bad }));
+      assert.deepEqual(log, ["create"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(state.driverStateDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("acquisition is issuer registered, fresh, phase-independent, and original-revision bound", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  const options = {
+    root,
+    name: "nonce",
+    sourceRevision,
+    profile: "linux-kvm" as const,
+    adapter: adapter("linux-kvm", log),
+  };
+  try {
+    const created = await createSandbox(options);
+    const acquisition = acquiredSandbox(created, options);
+    assert(Object.isFrozen(acquisition));
+    assert.match(acquisition.generation, /^[a-f0-9]{32}$/);
+    assert.throws(() => acquiredSandbox(Object.freeze({ ...created }), options));
+    const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+    await writePhase(state, created.manifest, "cleanup-required");
+    assert.deepEqual(await readAcquisition(state), acquisition);
+    await assert.rejects(destroySandbox(options, undefined, Object.freeze({ ...acquisition })));
+    await destroySandbox({ ...options, sourceRevision: "3".repeat(40) }, undefined, acquisition);
+    const next = await createSandbox(options);
+    assert.notEqual(acquiredSandbox(next, options).generation, acquisition.generation);
+    await assert.rejects(destroySandbox(options, undefined, acquisition));
+    assert.equal((await readManifest(state)).phase, "sandbox-ready");
+    await destroySandbox(options, undefined, acquiredSandbox(next, options));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent and pre-existing create preserve exact launcher custody", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  let release!: () => void, entered!: () => void;
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
+  const entry = new Promise<void>((r) => {
+    entered = r;
+  });
+  const base = adapter("linux-kvm", log);
+  const options = {
+    root,
+    name: "concurrent",
+    sourceRevision,
+    profile: "linux-kvm" as const,
+    adapter: Object.freeze({
+      ...base,
+      create: Object.freeze(async (state: LauncherState, nonce: string) => {
+        entered();
+        await barrier;
+        return base.create(state, nonce);
+      }),
+    }),
+  };
+  const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+  try {
+    const pending = createSandbox(options);
+    await entry;
+    const bytes = await readFile(join(state.dir, ".cogs-launcher-acquisition"));
+    await assert.rejects(createSandbox(options), /locked/);
+    assert.deepEqual(await readFile(join(state.dir, ".cogs-launcher-acquisition")), bytes);
+    release();
+    await pending;
+    const inventory = await readdir(state.dir);
+    await assert.rejects(createSandbox(options));
+    assert.deepEqual(await readdir(state.dir), inventory);
+    assert.deepEqual(await readFile(join(state.dir, ".cogs-launcher-acquisition")), bytes);
+    assert.deepEqual(log, ["create", "verify"]);
+  } finally {
+    release();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaced launcher state during verify grants no mutation or deletion authority", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  const options = { root, name: "replace", sourceRevision, profile: "linux-kvm" as const };
+  const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+  try {
+    const profileAdapter = Object.freeze({
+      ...adapter("linux-kvm", log),
+      verify: Object.freeze(async (_state: LauncherState, nonce: string) => {
+        await rename(state.dir, `${state.dir}-old`);
+        await mkdir(state.dir, { mode: 0o700 });
+        await writeFile(join(state.dir, "foreign"), "untouched");
+        return result("linux-kvm", "verify", nonce);
+      }),
+    });
+    await assert.rejects(createSandbox({ ...options, adapter: profileAdapter }));
+    assert.deepEqual(await readdir(state.dir), ["foreign"]);
+    assert.equal(await readFile(join(state.dir, "foreign"), "utf8"), "untouched");
+    assert.deepEqual(log, ["create"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("lost destroy response remains consumed despite mutable phase and replacement", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  const options = { root, name: "retirement", sourceRevision, profile: "linux-kvm" as const };
+  const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+  try {
+    const profileAdapter = Object.freeze({
+      ...adapter("linux-kvm", log),
+      destroy: Object.freeze(async () => {
+        log.push("destroy");
+        throw new Error("lost response after effect");
+      }),
+    });
+    await createSandbox({ ...options, adapter: profileAdapter });
+    await assert.rejects(destroySandbox({ ...options, adapter: profileAdapter }));
+    await writePhase(state, await readManifest(state), "sandbox-ready");
+    await mkdir(state.driverStateDir, { mode: 0o700 });
+    await writeFile(join(state.driverStateDir, "foreign"), "retained");
+    await assert.rejects(destroySandbox({ ...options, adapter: profileAdapter }));
+    assert.deepEqual(log, ["create", "verify", "destroy"]);
+    assert.equal(await readFile(join(state.driverStateDir, "foreign"), "utf8"), "retained");
+    await lstat(state.recoveryPath);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(state.driverStateDir, { recursive: true, force: true });
+  }
+});
+
+test("mutable worker recovery and phase cannot clear acquisition uncertainty", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  const options = {
+    root,
+    name: "sticky",
+    sourceRevision,
+    profile: "linux-kvm" as const,
+    adapter: adapter("linux-kvm", log),
+  };
+  try {
+    await createSandbox(options);
+    await assert.rejects(statusSandbox({ ...options, adapter: adapter("linux-kvm", log, "verify") }));
+    const state = await resolveLauncherState({ root, name: options.name, sourceRevision });
+    await rm(state.recoveryPath);
+    await writePhase(state, await readManifest(state), "sandbox-ready");
+    await assert.rejects(statusSandbox(options), /sticky/);
+    await assert.rejects(resetSandbox(options), /sticky/);
+    assert.deepEqual(log, ["create", "verify", "verify"]);
+    await destroySandbox(options); // independently retained published acquisition may still settle
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("create lock-release failure has no successful acquisition response", async () => {
+  const root = await temp(),
+    log: string[] = [];
+  try {
+    const profileAdapter = Object.freeze({
+      ...adapter("linux-kvm", log),
+      verify: Object.freeze(async (state: LauncherState, nonce: string) => {
+        await writeFile(join(state.lockDir, "extra"), "uncertain");
+        return result("linux-kvm", "verify", nonce);
+      }),
+    });
+    await assert.rejects(
+      createSandbox({ root, name: "lock", sourceRevision, profile: "linux-kvm", adapter: profileAdapter }),
+      /lock cleanup failed/,
+    );
+    assert.deepEqual(log, ["create"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

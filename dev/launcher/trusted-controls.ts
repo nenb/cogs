@@ -7,7 +7,7 @@ import type { LauncherAuthority, LauncherProfile } from "./contract.ts";
 import type { EnvoyEgressHandle } from "./envoy-egress.ts";
 import { observeLauncherClose } from "./envoy-egress.ts";
 import type { LauncherState } from "./state.ts";
-import { readManifest } from "./state.ts";
+import { assertAcquisitionUsable, readAcquisition, readManifest } from "./state.ts";
 
 export const GUEST_PROXY_ROOT = "/run/cogs-launcher-egress";
 export const GUEST_PROXY_CA = `${GUEST_PROXY_ROOT}/proxy-ca.pem`;
@@ -258,6 +258,9 @@ export async function materializeTrustedSshControls(
     throwIfAborted(signal);
 
     const manifest = await readManifest(state);
+    const acquisition = await readAcquisition(state);
+    await assertAcquisitionUsable(state, acquisition);
+    if (acquisition.profile !== profile || acquisition.sourceRevision !== manifest.sourceRevision) fail();
     throwIfAborted(signal);
     if (
       manifest.phase !== "sandbox-ready" ||
@@ -269,7 +272,7 @@ export async function materializeTrustedSshControls(
       fail();
 
     await validateSourceDirectories(state, profile, trusted, signal);
-    await validateDriverSentinel(state, profile, trusted, signal);
+    await validateDriverSentinel(state, profile, acquisition.generation, trusted, signal);
     const sourceValues = await readProfileControls(state, profile, trusted, signal);
     const sourcePath = join(state.driverStateDir, "control", "client_ed25519_key");
     const sourceBefore = await strictFileStat(sourcePath, 0o600, trusted);
@@ -331,6 +334,8 @@ export async function materializeTrustedSshControls(
     const identity = destinationIdentity;
     if (identity === undefined) fail();
     await requireOnlyRuntimeKey(destinationPath, identity, trusted);
+    await assertAcquisitionUsable(state, acquisition);
+    await validateDriverSentinel(state, profile, acquisition.generation, trusted, signal);
     const close = Object.freeze(() => {
       closePromise ??= cleanupRuntimeKey(destinationPath, identity, trusted);
       return closePromise;
@@ -400,6 +405,7 @@ async function readProfileControls(
 async function validateDriverSentinel(
   state: LauncherState,
   profile: Exclude<LauncherProfile, "macos-vm">,
+  generation: string,
   seams: TrustedControlSeams,
   signal: AbortSignal | undefined,
 ): Promise<void> {
@@ -407,8 +413,8 @@ async function validateDriverSentinel(
     profile === "insecure-container"
       ? join(state.driverStateDir, ".cogs-insecure-owner")
       : join(state.driverStateDir, ".cogs-linux-kvm-v1");
-  const expected = profile === "insecure-container" ? `${driverStateId(state.driverStateDir)}\n` : "";
-  const bytes = await readStrictBytes(sentinel, 0o600, 128, seams, signal, false);
+  const expected = `${generation}\n`;
+  const bytes = await readStrictBytes(sentinel, 0o600, 33, seams, signal, false);
   try {
     if (bytes.toString("utf8") !== expected) fail();
   } finally {
@@ -672,10 +678,6 @@ function captureSeams(value: TrustedControlSeams | undefined): TrustedControlSea
 function data(descriptor: PropertyDescriptor | undefined): unknown {
   if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
   return descriptor.value;
-}
-
-function driverStateId(path: string): string {
-  return createHash("sha256").update(path).digest("hex").slice(0, 12);
 }
 
 function defineHidden(input: TrustedSshControls): TrustedSshControls {

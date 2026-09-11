@@ -2,14 +2,16 @@
 set -euo pipefail
 umask 077
 report=${1:-docs/security-evidence/generated/kvm-driver-smoke.json}
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 driver="$repo/dev/linux-kvm/driver.sh"
 started=$(python3 -c 'import time; print(time.time_ns()//1000000)')
 passed=false
 acquired=false
 helper_safe=true
-export COGS_KVM_GENERATION
-COGS_KVM_GENERATION=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+export COGS_KVM_GENERATION COGS_SOURCE_REVISION
+COGS_KVM_GENERATION=$(python3 -I -c 'import secrets; print(secrets.token_hex(16))')
+COGS_SOURCE_REVISION=${COGS_SOURCE_REVISION:-$(git -C "$repo" rev-parse HEAD)}
+[[ "$COGS_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]] || exit 1
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
 [[ "$proxy_port" =~ ^[1-9][0-9]{0,4}$ && "$proxy_port" -ge 1 && "$proxy_port" -le 65535 ]] || exit 1
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
@@ -21,8 +23,18 @@ cleanup() {
   if [[ "$passed" != true ]]; then
     if [[ "$helper_safe" != true ]]; then
       echo 'FAIL: proxy helper retirement uncertain; retaining driver dependencies' >&2
-    elif [[ "$acquired" == true ]] && ! "$driver" destroy >/dev/null; then
-      echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
+    elif [[ "$acquired" == true ]]; then
+      local cleanup_receipt cleanup_status=0
+      cleanup_receipt=$(mktemp)
+      "$driver" destroy >"$cleanup_receipt" || cleanup_status=$?
+      # Exit zero means the capability was consumed before receipt reporting.
+      # Never retry a consumed destroy, even if its receipt/report is malformed.
+      if [[ $cleanup_status -eq 0 ]]; then
+        acquired=false
+        exact_receipt "$cleanup_receipt" destroy || cleanup_status=$?
+      fi
+      rm -f "$cleanup_receipt"
+      [[ $cleanup_status -eq 0 ]] || echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
     fi
     write_report fail 'Linux/KVM isolated driver setup or teardown failed.'
     status=1
@@ -56,20 +68,56 @@ report={
 with open(path,'w') as f: json.dump(report,f,indent=2,sort_keys=True);f.write('\n')
 PY
 }
+exact_receipt() {
+  python3 -I - "$1" "$COGS_KVM_GENERATION" "$2" "$proxy_port" <<'PY'
+import json,pathlib,re,sys
+path,generation,command,port=sys.argv[1:]
+raw=pathlib.Path(path).read_bytes()
+if len(raw)>8192 or not raw.endswith(b'\n') or raw.count(b'\n')!=1:
+    raise SystemExit('FAIL: driver receipt framing mismatch')
+def pairs(items):
+    value={}
+    for key,item in items:
+        if key in value: raise ValueError('duplicate receipt key')
+        value[key]=item
+    return value
+try: value=json.loads(raw,object_pairs_hook=pairs)
+except (UnicodeError,ValueError) as error: raise SystemExit(f'FAIL: malformed driver receipt: {error}')
+if raw!=(json.dumps(value,separators=(',',':'))+'\n').encode():
+    raise SystemExit('FAIL: noncanonical driver receipt')
+if command=='destroy':
+    expected={'profile':'linux-kvm','status':'destroyed','generation':generation,'command':'destroy'}
+else:
+    keys={'status','profile','guest_root','kvm_enabled','distinct_boot_ids','guest_kernel',
+          'guest_image_sha512','host_ip','guest_ip','proxy_port','generation','command'}
+    if set(value)!=keys or any(value.get(name) is not True for name in ('guest_root','kvm_enabled','distinct_boot_ids')) \
+       or value.get('status')!='ready' or value.get('profile')!='linux-kvm' \
+       or value.get('generation')!=generation or value.get('command')!=command \
+       or type(value.get('guest_kernel')) is not str or not re.fullmatch(r'[0-9A-Za-z._+-]{1,64}',value['guest_kernel']) \
+       or value.get('guest_image_sha512')!='78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667' \
+       or value.get('host_ip')!='192.0.2.1' or value.get('guest_ip')!='192.0.2.2' \
+       or type(value.get('proxy_port')) is not int or value['proxy_port']!=int(port):
+        raise SystemExit(f'FAIL: {command} generation receipt mismatch')
+    expected=value
+if value!=expected: raise SystemExit(f'FAIL: {command} generation receipt mismatch')
+PY
+}
+run_ready() {
+  local command=$1 file status=0
+  file=$(mktemp)
+  "$driver" "$command" >"$file" || status=$?
+  if [[ $status -eq 0 ]]; then exact_receipt "$file" "$command" || status=$?; fi
+  rm -f "$file"
+  return "$status"
+}
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 # Only a successful exact ready receipt confers cleanup authority. Lost receipt
 # or failed create retains driver custody; pathname existence grants nothing.
-receipt=$("$driver" create)
-python3 - "$receipt" "$COGS_KVM_GENERATION" <<'PY'
-import json,sys
-value=json.loads(sys.argv[1])
-if value.get('status')!='ready' or value.get('profile')!='linux-kvm' or value.get('generation')!=sys.argv[2]:
-    raise SystemExit('FAIL: create generation receipt mismatch')
-PY
+run_ready create
 acquired=true
-"$driver" verify >/dev/null
+run_ready verify
 host_boot=$(cat /proc/sys/kernel/random/boot_id)
 guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 [[ -n "$guest_boot" && "$guest_boot" != "$host_boot" ]]
@@ -133,12 +181,16 @@ helper_safe=true
 [[ "$probe_status" == 0 ]] || exit 1
 
 first_boot=$guest_boot
-"$driver" reset >/dev/null
+run_ready reset
 second_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
 [[ -n "$second_boot" && "$second_boot" != "$first_boot" && "$second_boot" != "$host_boot" ]]
 "$driver" ssh grep -qx reset-persistent /workspace/reset-marker
-"$driver" destroy >/dev/null
-acquired=false
+destroy_receipt=$(mktemp)
+destroy_status=0
+"$driver" destroy >"$destroy_receipt" || destroy_status=$?
+if [[ $destroy_status -eq 0 ]]; then acquired=false; fi
+[[ $destroy_status -eq 0 ]] && exact_receipt "$destroy_receipt" destroy
+rm -f "$destroy_receipt"
 write_report pass 'Active KVM booted a distinct root guest, used the generation-bound proxy probe, and reset preserved the workspace on a fresh boot. Non-proxy connection failures are diagnostic only and grant no firewall-enforcement evidence.'
 passed=true
 printf 'PASS: authoritative Linux/KVM driver smoke wrote %s\n' "$report"

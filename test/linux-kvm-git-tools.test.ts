@@ -7,6 +7,8 @@ import { test } from "node:test";
 const root = process.cwd();
 const gitTools = join(root, "dev/linux-kvm/git-tools.sh");
 const driver = join(root, "dev/linux-kvm/driver.sh");
+const kvmImageSha =
+  "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667";
 
 async function sourceGitTools(command: string, env: Record<string, string> = {}) {
   const { spawnSync } = await import("node:child_process");
@@ -202,7 +204,7 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
   const text = await readFile(driver, "utf8");
   assert.match(text, /source "\$repo\/dev\/linux-kvm\/git-tools\.sh"/u);
   assert.match(text, /prepare_git_tools_disk "\$state" "\$cache"/u);
-  assert.match(text, /prepare-cache\)\n {4}prepare_image\n {4}cogs_git_tools_prepare_cache "\$cache"/u);
+  assert.match(text, /prepare-cache\)\n {4}prepare_image >&2\n {4}cogs_git_tools_prepare_cache "\$cache" >&2/u);
   assert.match(text, /-drive if=virtio,format=raw,readonly=on,file="\$state\/git-tools\.img"/u);
   assert.match(text, /\[LABEL=COGS_GITTOOLS, \/opt\/cogs-git, auto, 'ro,nosuid,nodev'/u);
   assert.match(
@@ -405,14 +407,15 @@ function serialContract(text: string) {
   );
   assert.equal(text.match(/nohup qemu-system-x86_64/gu)?.length, 1);
   assert.equal(text.match(/-serial\b/gu)?.length, 1);
-  assert.equal(text.match(/serial\.log/gu)?.length, 1);
-  assert.ok(start.indexOf('rm -f "$state/qmp.sock" "$state/serial.log"') < start.indexOf("  nohup "));
+  assert.equal(text.match(/serial\.log/gu)?.length ?? 0, 0);
+  assert.ok(start.indexOf('rm -f "$state/qmp.sock"') < start.indexOf("  nohup "));
   assert.match(start, /qemu_owner capture[\s\S]*run_ssh true/u);
   const routes = text.slice(text.indexOf('case "$operation" in'));
-  assert.match(routes, /create\)[\s\S]*prepare_seed; start_vm; verify/u);
-  assert.match(routes, /reset\)[\s\S]*stop_vm; remove_network[\s\S]*prepare_seed; start_vm/u);
-  assert.match(routes, /cleanup_partial && rm -rf "\$state"/u);
-  assert.match(routes, /stop_vm; remove_network; rm -rf "\$state"/u);
+  assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
+  assert.doesNotMatch(routes, /if ! owner_stage|owner_stage [^;\n]+ [a-z_]+/u);
+  assert.match(routes, /reset\)[\s\S]*stop_vm >&2[\s\S]*remove_network >&2[\s\S]*prepare_seed\n {4}start_vm/u);
+  assert.doesNotMatch(routes, /trap .*rm -rf|rm -rf "\$state"/u);
+  assert.match(routes, /generation_owner intent removal[\s\S]*generation_owner remove/u);
 }
 
 test("driver UART is null on the shared create/reset launch; stage-zero marker capture stays separate", async () => {
@@ -609,7 +612,7 @@ else: raise AssertionError('empty observation accepted')
   );
 });
 
-test("fake launch unlinks legacy serial files without following symlink or hardlink targets", async () => {
+test("fake launch leaves unowned legacy serial entries untouched", async () => {
   const { spawnSync } = await import("node:child_process");
   const start = shellFunction(await readFile(driver, "utf8"), "start_vm");
   const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-serial-"));
@@ -642,11 +645,58 @@ start_vm
         { encoding: "utf8", timeout: 5_000 },
       );
       assert.equal(result.status, 0, result.stderr);
-      await assert.rejects(lstat(log), { code: "ENOENT" });
+      const retained = await lstat(log);
+      if (kind === "regular") assert.equal(await readFile(log, "utf8"), "legacy");
+      if (kind === "hardlink") assert.equal(retained.ino, original.ino);
       const argv = (await readFile(join(state, "argv"), "utf8")).split("\0");
       assert.equal(argv[argv.indexOf("-serial") + 1], "null");
       assert.equal(await readFile(target, "utf8"), "preserve");
       assert.equal((await lstat(target)).ino, original.ino);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("owner stages propagate nested key and network failures through exact ERR rollback", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const text = await readFile(driver, "utf8");
+  const stages = ["owner_stage", "owner_stage_commit", "owner_stage_error", "arm_owner_errors", "disarm_owner_errors"]
+    .map((name) => shellFunction(text, name))
+    .join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-stage-errors-"));
+  try {
+    for (const [mode, effect] of [
+      [
+        "keys",
+        'prepare_keys() { ssh-keygen; printf continued >> "$CALLS"; }; ssh-keygen() { return 7; }; prepare_keys',
+      ],
+      [
+        "network",
+        'prepare_network() { network_policy > "$STATE/network.policy"; network_owner prepare; printf continued >> "$CALLS"; }; network_policy() { :; }; network_owner() { return 8; }; prepare_network',
+      ],
+    ] as const) {
+      const calls = join(dir, `${mode}.calls`);
+      await writeFile(calls, "");
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+operation=create; owner_stage_key=; CALLS=${JSON.stringify(calls)}; STATE=${JSON.stringify(dir)}
+generation_owner() { printf '%s %s\\n' "$1" "\${2:-}" >> "$CALLS"; }
+rollback_create() { printf 'rollback\\n' >> "$CALLS"; }
+${stages}
+arm_owner_errors
+owner_stage ${mode}
+${effect}
+owner_stage_commit
+printf ready >> "$CALLS"`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.notEqual(result.status, 0, mode);
+      assert.equal(await readFile(calls, "utf8"), `intent ${mode}\nfail ${mode}\nrollback\n`);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -664,7 +714,7 @@ test("cleanup wiring retains uncertainty, has no PID-number signaling or suppres
   assert.doesNotMatch(network, /\|\| true|2>\/dev\/null/u);
   assert.ok(network.indexOf("value['pending']=True; save(value)") < network.indexOf("command(do,before)"));
   assert.match(text, /cleanup_partial\(\) \{\n {2}stop_vm && remove_network/u);
-  assert.match(text, /no retained driver custody; absence is not teardown proof/u);
+  assert.match(text, /no matching retained driver custody/u);
   const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
   assert.doesNotMatch(smoke, /"\$driver" destroy[^\n]*\|\| true/u);
   assert.match(smoke, /smoke requires absent state/u);
@@ -793,104 +843,275 @@ with patch.object(os,'stat',stat_ns), patch.object(pathlib.Path,'lstat',lambda p
   );
 });
 
-test("smoke competitor and mismatched receipt never confer cleanup; successful nonce does", async () => {
-  const { spawnSync } = await import("node:child_process");
-  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
-  const acquisition = smoke.slice(smoke.indexOf('receipt=$("$driver" create)'), smoke.indexOf('"$driver" verify'));
-  const dir = await mkdtemp(join(tmpdir(), "cogs-smoke-race-"));
+test("KVM generation owner binds exact private state and never adopts replacements", async () => {
+  const { spawn, spawnSync } = await import("node:child_process");
+  const source = shellFunction(await readFile(driver, "utf8"), "generation_owner");
+  const program = source.split("<<'PY'\n")[1]?.split("\nPY\n")[0];
+  assert.ok(program);
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-generation-"));
+  const nonce = "a".repeat(32);
+  const revision = "c".repeat(40);
+  const invoke = (state: string, action: string, key = "", source = revision, locator = state) =>
+    spawnSync("python3", ["-I", "-c", program, dir, state, action, nonce, key, source, "linux-kvm", locator], {
+      encoding: "utf8",
+    });
   try {
-    for (const mode of ["competitor", "wrong-receipt", "owned", "retired", "helper-uncertain"]) {
-      const fake = join(dir, "driver");
-      await writeFile(
-        fake,
-        `#!/bin/bash
-if [[ "$1" == create ]]; then
-  printf foreign > "$COGS_KVM_STATE_DIR"
-  [[ "$MODE" != competitor ]] || exit 1
-  nonce=$COGS_KVM_GENERATION
-  [[ "$MODE" != wrong-receipt ]] || nonce=foreign
-  printf '{"status":"ready","profile":"linux-kvm","generation":"%s"}\\n' "$nonce"
-else
-  printf '%s' "$COGS_KVM_GENERATION" > "$COGS_KVM_STATE_DIR.destroyed"
-fi
-`,
-        { mode: 0o700 },
-      );
-      const state = join(dir, mode);
-      const result = spawnSync(
-        "bash",
-        [
+    const racing = join(dir, "racing");
+    const race = (generation: string) =>
+      new Promise<{ status: number | null }>((resolve) => {
+        const child = spawn("python3", [
+          "-I",
           "-c",
-          `set -euo pipefail
-state=$COGS_KVM_STATE_DIR; driver=${JSON.stringify(fake)}
-passed=false; acquired=false; helper_safe=true
-write_report() { :; }
-${shellFunction(smoke, "cleanup")}
-trap cleanup EXIT
-${acquisition}
-[[ "$MODE" != retired ]] || acquired=false
-[[ "$MODE" != helper-uncertain ]] || helper_safe=false
-exit 1
-`,
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, MODE: mode, COGS_KVM_STATE_DIR: state, COGS_KVM_GENERATION: "a".repeat(32) },
+          program,
+          dir,
+          racing,
+          "init",
+          generation,
+          "",
+          revision,
+          "linux-kvm",
+          racing,
+        ]);
+        child.on("close", (status) => resolve({ status }));
+      });
+    const raceResults = await Promise.all([race(nonce), race("b".repeat(32))]);
+    assert.deepEqual(raceResults.map(({ status }) => status).sort(), [0, 1]);
+    assert.match(await readFile(join(racing, ".cogs-linux-kvm-v1"), "utf8"), /^(a{32}|b{32})\n$/u);
+
+    const ambient = join(dir, "ambient");
+    await writeFile(ambient, "competitor", { mode: 0o600 });
+    assert.notEqual(invoke(ambient, "init").status, 0);
+    assert.equal(await readFile(ambient, "utf8"), "competitor");
+
+    const state = join(dir, "state");
+    assert.equal(invoke(state, "init").status, 0);
+    const sentinel = join(state, ".cogs-linux-kvm-v1");
+    const sentinelInfo = await lstat(sentinel);
+    assert.equal(await readFile(sentinel, "utf8"), `${nonce}\n`);
+    assert.equal(sentinelInfo.mode & 0o777, 0o600);
+    assert.equal(sentinelInfo.nlink, 1);
+    if (process.getuid) assert.equal(sentinelInfo.uid, process.getuid());
+    const owner = JSON.parse(await readFile(join(state, ".generation.owner"), "utf8"));
+    const stateInfo = await lstat(state);
+    assert.deepEqual(owner.directory, [stateInfo.dev, stateInfo.ino]);
+    assert.equal(owner.profile, "linux-kvm");
+    assert.equal(owner.sourceRevision, revision);
+    assert.equal(owner.locator, state);
+    assert.deepEqual(owner.keys, ["bootstrap"]);
+    assert.notEqual(invoke(state, "check", "verify", "d".repeat(40)).status, 0);
+    assert.notEqual(invoke(state, "check", "verify", revision, `${state}-other`).status, 0);
+
+    assert.equal(invoke(state, "intent", "keys").status, 0);
+    const owned = join(state, "control");
+    await mkdir(owned, { mode: 0o700 });
+    for (const name of ["client_ed25519_key", "client_ed25519_key.pub", "host_ed25519_key", "host_ed25519_key.pub"])
+      await writeFile(join(owned, name), "secret", { mode: 0o600 });
+    await writeFile(join(state, "known_hosts"), "host", { mode: 0o600 });
+    assert.equal(invoke(state, "commit", "keys").status, 0);
+    const replacement = join(state, "control/client_ed25519_key");
+    await rm(replacement);
+    await writeFile(replacement, "foreign", { mode: 0o600 });
+    assert.notEqual(invoke(state, "intent", "retirement").status, 0);
+    assert.notEqual(invoke(state, "remove").status, 0);
+    assert.equal(await readFile(replacement, "utf8"), "foreign");
+    assert.equal(JSON.parse(await readFile(join(state, ".generation.owner"), "utf8")).uncertain, true);
+
+    for (const [name, mutate] of [
+      ["wrong-nonce", async (path: string) => writeFile(join(path, ".cogs-linux-kvm-v1"), `${"b".repeat(32)}\n`)],
+      ["extra-line", async (path: string) => writeFile(join(path, ".cogs-linux-kvm-v1"), `${nonce}\n\n`)],
+      ["wrong-mode", async (path: string) => chmod(join(path, ".cogs-linux-kvm-v1"), 0o644)],
+      [
+        "hard-link",
+        async (path: string) => {
+          await link(join(path, ".cogs-linux-kvm-v1"), join(path, "sentinel-alias"));
         },
-      );
-      assert.equal(result.status, 1, result.stderr);
-      assert.equal(await readFile(state, "utf8"), "foreign");
-      if (mode === "owned") assert.equal(await readFile(`${state}.destroyed`, "utf8"), "a".repeat(32));
-      else await assert.rejects(lstat(`${state}.destroyed`), { code: "ENOENT" });
+      ],
+    ] as const) {
+      const candidate = join(dir, name);
+      assert.equal(invoke(candidate, "init").status, 0);
+      await mutate(candidate);
+      assert.notEqual(invoke(candidate, "check", "verify").status, 0, name);
     }
-    const text = await readFile(driver, "utf8");
-    const gate = text.slice(text.indexOf("generation=${COGS_KVM_GENERATION"), text.indexOf("ssh_args()"));
-    const sentinel = join(dir, "sentinel");
-    await writeFile(sentinel, "b".repeat(32));
-    for (const operation of ["destroy", "reset", "verify", "ssh"]) {
-      const result = spawnSync(
-        "bash",
-        ["-c", `set -eu; operation=${operation}; sentinel=${JSON.stringify(sentinel)}; ${gate}`],
-        {
-          encoding: "utf8",
-          env: { ...process.env, COGS_KVM_GENERATION: "a".repeat(32) },
+
+    for (const [name, mutation, finish] of [
+      ["pending-extra", async (path: string) => writeFile(join(path, "foreign"), "x", { mode: 0o600 }), "fail"],
+      ["commit-extra", async (path: string) => writeFile(join(path, "foreign"), "x", { mode: 0o600 }), "commit"],
+      [
+        "pending-replacement",
+        async (path: string) => {
+          await rm(join(path, "qemu.owner"));
+          await writeFile(join(path, "qemu.owner"), '{"phase":"never"}\n', { mode: 0o600 });
         },
-      );
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /generation mismatch/u);
+        "fail",
+      ],
+      ["disk-staging", async (path: string) => mkdir(join(path, "git-tools.staging"), { mode: 0o700 }), "fail"],
+    ] as const) {
+      const candidate = join(dir, name);
+      assert.equal(invoke(candidate, "init").status, 0);
+      assert.equal(invoke(candidate, "intent", name === "disk-staging" ? "disks" : "keys").status, 0);
+      await mutation(candidate);
+      assert.notEqual(invoke(candidate, finish, name === "disk-staging" ? "disks" : "keys").status, 0, name);
+      const retained = JSON.parse(await readFile(join(candidate, ".generation.owner"), "utf8"));
+      assert.equal(retained.uncertain, true);
+      assert.deepEqual(retained.keys, ["bootstrap"]);
     }
+
+    const partial = join(dir, "partial");
+    assert.equal(invoke(partial, "init").status, 0);
+    assert.equal(invoke(partial, "intent", "disks").status, 0);
+    await writeFile(join(partial, "workspace.img"), "owned", { mode: 0o600 });
+    assert.equal(invoke(partial, "fail", "disks").status, 0);
+    assert.equal(invoke(partial, "intent", "retirement").status, 0);
+    assert.equal(invoke(partial, "commit", "retirement").status, 0);
+    assert.equal(invoke(partial, "intent", "removal").status, 0);
+    assert.equal(invoke(partial, "remove").status, 0);
+    await assert.rejects(lstat(partial), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("KVM nonce receipts preserve the exact launcher schema when custody was not requested", async () => {
+test("KVM receipts are generation-bound canonical closed schemas and smoke rejects extras or duplicates", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { normalizeDriverResult } = await import("../dev/launcher/contract.ts");
   const source = await readFile(driver, "utf8");
-  const receipt = source.slice(
-    source.indexOf("  # Preserve the launcher's exact legacy result schema"),
-    source.indexOf('\ncase "$operation" in'),
-  );
-  for (const nonce of ["", "a".repeat(32)]) {
+  const emitter = shellFunction(source, "emit_ready");
+  for (const command of ["create", "verify", "reset"]) {
     const result = spawnSync(
       "bash",
       [
         "-c",
         `set -euo pipefail
-COGS_KVM_GENERATION=${JSON.stringify(nonce)}; generation=${JSON.stringify(nonce)}
-guest_kernel=6.12.95+deb13-amd64; image_sha512=${"a".repeat(128)}
-host_ip=192.0.2.1; guest_ip=192.0.2.2; proxy_port=18080
-receipt() {
-${receipt}
-receipt
-`,
+guest_kernel=6.12.95-amd64; image_sha512=${"a".repeat(128)}; host_ip=192.0.2.1; guest_ip=192.0.2.2
+proxy_port=18080; generation=${"b".repeat(32)}
+${emitter}
+emit_ready ${command}`,
       ],
       { encoding: "utf8" },
     );
     assert.equal(result.status, 0, result.stderr);
-    if (nonce) assert.equal(JSON.parse(result.stdout).generation, nonce);
-    else assert.equal(normalizeDriverResult(result.stdout, "linux-kvm", "create").result, "ready");
+    assert.equal(result.stdout.split("\n").length, 2);
+    assert.deepEqual(Object.keys(JSON.parse(result.stdout)), [
+      "status",
+      "profile",
+      "guest_root",
+      "kvm_enabled",
+      "distinct_boot_ids",
+      "guest_kernel",
+      "guest_image_sha512",
+      "host_ip",
+      "guest_ip",
+      "proxy_port",
+      "generation",
+      "command",
+    ]);
+    assert.equal(JSON.parse(result.stdout).command, command);
+  }
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const parser = shellFunction(smoke, "exact_receipt");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-receipt-"));
+  try {
+    const base = {
+      status: "ready",
+      profile: "linux-kvm",
+      guest_root: true,
+      kvm_enabled: true,
+      distinct_boot_ids: true,
+      guest_kernel: "6.12",
+      guest_image_sha512: kvmImageSha,
+      host_ip: "192.0.2.1",
+      guest_ip: "192.0.2.2",
+      proxy_port: 18080,
+      generation: "b".repeat(32),
+      command: "create",
+    };
+    for (const [name, raw, accepted] of [
+      ["exact", `${JSON.stringify(base)}\n`, true],
+      ["extra", `${JSON.stringify({ ...base, extra: true })}\n`, false],
+      ["duplicate", `${JSON.stringify(base).replace("{", '{"status":"ready",')}\n`, false],
+      ["two-lines", `${JSON.stringify(base)}\n\n`, false],
+    ] as const) {
+      const path = join(dir, name);
+      await writeFile(path, raw);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail; COGS_KVM_GENERATION=${"b".repeat(32)}; proxy_port=18080; ${parser}; exact_receipt ${JSON.stringify(path)} create`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status === 0, accepted, `${name}: ${result.stderr}`);
+    }
+    assert.match(smoke, /if \[\[ \$cleanup_status -eq 0 \]\]; then\n {8}acquired=false/u);
+    assert.match(smoke, /if \[\[ \$destroy_status -eq 0 \]\]; then acquired=false; fi/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("smoke arms cleanup only from an exact create receipt and does not retry consumed destroy", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const exact = shellFunction(smoke, "exact_receipt");
+  const ready = shellFunction(smoke, "run_ready");
+  const cleanup = shellFunction(smoke, "cleanup");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-smoke-authority-"));
+  const fake = join(dir, "driver");
+  await writeFile(
+    fake,
+    `#!/bin/bash
+printf '%s\n' "$1" >> "$CALLS"
+if [[ "$1" == create ]]; then
+  printf competitor > "$AMBIENT"
+  [[ "$MODE" != failed ]] || exit 1
+  generation=$COGS_KVM_GENERATION
+  [[ "$MODE" != stale ]] || generation=${"c".repeat(32)}
+  printf '{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"6.12","guest_image_sha512":"${kvmImageSha}","host_ip":"192.0.2.1","guest_ip":"192.0.2.2","proxy_port":18080,"generation":"%s","command":"create"' "$generation"
+  [[ "$MODE" != extra ]] || printf ',"extra":true'
+  printf '}\\n'
+else
+  printf '{"profile":"linux-kvm","status":"destroyed","generation":"%s","command":"destroy"}\\n' "$COGS_KVM_GENERATION"
+fi
+`,
+    { mode: 0o700 },
+  );
+  try {
+    for (const mode of ["failed", "stale", "extra", "exact"]) {
+      const calls = join(dir, `${mode}.calls`);
+      const ambient = join(dir, `${mode}.ambient`);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -uo pipefail
+driver=${JSON.stringify(fake)}; proxy_port=18080; passed=false; acquired=false; helper_safe=true
+write_report() { :; }
+${exact}
+${ready}
+${cleanup}
+trap cleanup EXIT
+if run_ready create; then acquired=true; fi
+exit 1`,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MODE: mode,
+            CALLS: calls,
+            AMBIENT: ambient,
+            COGS_KVM_GENERATION: "b".repeat(32),
+          },
+        },
+      );
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(await readFile(ambient, "utf8"), "competitor");
+      const operations = (await readFile(calls, "utf8")).trim().split("\n");
+      assert.deepEqual(operations, mode === "exact" ? ["create", "destroy"] : ["create"]);
+    }
+    assert.match(smoke, /if \[\[ \$destroy_status -eq 0 \]\]; then acquired=false; fi/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

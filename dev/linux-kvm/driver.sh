@@ -26,7 +26,7 @@ if [[ "$operation" == print-network-policy ]]; then
   network_policy cgfixture CGFIXI CGFIXF 18080
   exit 0
 fi
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=dev/linux-kvm/git-tools.sh
 source "$repo/dev/linux-kvm/git-tools.sh"
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
@@ -37,11 +37,29 @@ image_sha512=78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678
 host_ip=192.0.2.1
 guest_ip=192.0.2.2
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
-sentinel="$state/.cogs-linux-kvm-v1"
 lock="$repo/.cogs-dev/linux-kvm.lock"
 mkdir -p "$repo/.cogs-dev"
-exec 9>"$lock"
+python3 -I - "$repo/.cogs-dev" "$lock" <<'PY'
+import os,stat,sys
+root,lock=sys.argv[1:]; uid=os.getuid(); parent=os.lstat(root)
+if not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=uid or parent.st_mode & 0o077:
+    raise SystemExit('FAIL: unsafe driver lock root')
+fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+try:
+    info=os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1:
+        raise SystemExit('FAIL: unsafe driver lock')
+    os.fsync(fd)
+finally: os.close(fd)
+PY
+exec 9<>"$lock"
 flock -w 30 9 || { echo 'FAIL: linux-kvm driver lock timed out' >&2; exit 1; }
+python3 -I - "$lock" <<'PY'
+import os,stat,sys
+held=os.fstat(9); named=os.lstat(sys.argv[1])
+if (held.st_dev,held.st_ino)!=(named.st_dev,named.st_ino) or not stat.S_ISREG(named.st_mode) or named.st_nlink!=1 or named.st_uid!=os.getuid() or stat.S_IMODE(named.st_mode)!=0o600:
+    raise SystemExit('FAIL: replaced driver lock')
+PY
 
 validate_paths() {
   python3 - "$repo/.cogs-dev" "$state" "$cache" <<'PY'
@@ -57,16 +75,225 @@ PY
 }
 validate_paths
 
-# A caller nonce is checked under the driver lock, before any existing-state work.
+# This owner is the sole authority for driver-local files. Its durable intent
+# precedes each state effect; exact inode inventory is refreshed only while the
+# repository lock is held. Mismatch is sticky and never authorizes adoption.
+generation_owner() {
+  python3 -I - "$repo/.cogs-dev" "$state" "$1" "$generation" "${2:-}" "$source_revision" linux-kvm "$state" <<'PY'
+import json,os,pathlib,re,stat,sys
+parent=pathlib.Path(sys.argv[1]); state=pathlib.Path(sys.argv[2])
+action,generation,key,revision,profile,locator=sys.argv[3:9]
+uid=os.getuid(); authority='.generation.owner'; sentinel='.cogs-linux-kvm-v1'
+root_info=parent.lstat()
+if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid!=uid or root_info.st_mode & 0o077:
+    raise SystemExit('FAIL: unsafe driver lock root')
+class Rejected(RuntimeError): pass
+def canonical(value): return (json.dumps(value,separators=(',',':'))+'\n').encode()
+def write_fd(fd,data):
+    view=memoryview(data)
+    while view:
+        count=os.write(fd,view)
+        if count<=0: raise RuntimeError('short custody write')
+        view=view[count:]
+    os.fsync(fd)
+def fsync_dir(path):
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+def strict_file(path,mode=0o600):
+    info=path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=mode or info.st_nlink!=1:
+        raise RuntimeError(f'unsafe custody file: {path.name}')
+    return info
+def read_file(path,limit):
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1:
+            raise RuntimeError(f'unsafe custody file: {path.name}')
+        parts=[]; remaining=limit+1
+        while remaining:
+            chunk=os.read(fd,remaining)
+            if not chunk: break
+            parts.append(chunk); remaining-=len(chunk)
+        value=b''.join(parts)
+        if len(value)>limit: raise RuntimeError('oversized custody file')
+        return value
+    finally: os.close(fd)
+def read_json(path):
+    def pairs(items):
+        value={}
+        for name,item in items:
+            if name in value: raise RuntimeError('duplicate custody key')
+            value[name]=item
+        return value
+    raw=read_file(path,262144)
+    if not raw.endswith(b'\n') or raw.count(b'\n')!=1: raise RuntimeError('invalid custody encoding')
+    return json.loads(raw,object_pairs_hook=pairs)
+def open_state():
+    fd=os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    info=os.fstat(fd)
+    if info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o700: os.close(fd); raise RuntimeError('unsafe state directory')
+    return fd,info
+def scan():
+    values=[]
+    for base,dirs,files in os.walk(state,topdown=True,followlinks=False):
+        dirs.sort(); files.sort()
+        for name in dirs+files:
+            path=pathlib.Path(base)/name; rel=str(path.relative_to(state))
+            if rel in (authority,sentinel): continue
+            info=path.lstat()
+            kind='d' if stat.S_ISDIR(info.st_mode) else 'f' if stat.S_ISREG(info.st_mode) else 's' if stat.S_ISSOCK(info.st_mode) else None
+            if kind is None or (kind!='d' and info.st_nlink!=1) or info.st_uid!=uid:
+                raise RuntimeError('unsafe state inventory')
+            values.append({'path':rel,'kind':kind,'dev':info.st_dev,'ino':info.st_ino,
+                           'mode':stat.S_IMODE(info.st_mode),'nlink':info.st_nlink})
+    return values
+def save(value):
+    temporary=state/(authority+'.pending')
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try: write_fd(fd,canonical(value))
+    finally: os.close(fd)
+    os.replace(temporary,state/authority); fsync_dir(state)
+def validate():
+    fd,info=open_state()
+    try:
+        token=read_file(state/sentinel,33)
+        if token!=generation.encode()+b'\n' or not re.fullmatch('[a-f0-9]{32}',generation):
+            raise RuntimeError('driver generation mismatch')
+        value=read_json(state/authority)
+        if set(value)!={'version','generation','profile','sourceRevision','locator','directory','pending','failed','uncertain','keys','inventory'} \
+           or value['version']!='cogs.linux-kvm-owner/v1' or value['generation']!=generation \
+           or value['profile']!=profile or value['sourceRevision']!=revision or value['locator']!=locator \
+           or value['directory']!=[info.st_dev,info.st_ino] or type(value['keys']) is not list \
+           or type(value['inventory']) is not list or type(value['failed']) is not bool \
+           or type(value['uncertain']) is not bool or (value['pending'] is not None and type(value['pending']) is not str):
+            raise RuntimeError('invalid generation authority')
+        return value
+    finally: os.close(fd)
+def same_inventory(expected): return scan()==expected
+def finish(value,key,success):
+    # Only these names can be acquired or replaced by each published intent.
+    final={
+      'cache':{},
+      'keys':{'control':('d',0o700),'control/client_ed25519_key':('f',0o600),
+              'control/client_ed25519_key.pub':('f',0o600),'control/host_ed25519_key':('f',0o600),
+              'control/host_ed25519_key.pub':('f',0o600),'known_hosts':('f',0o600)},
+      'disks':{'root-overlay.qcow2':('f',0o600),'workspace.img':('f',0o600),'git-tools.img':('f',0o400)},
+      'seed':{'user-data':('f',0o400),'meta-data':('f',0o400),'network-config':('f',0o400),'seed.img':('f',0o400)},
+      'runtime':{'qemu.owner':('f',0o600),'network.owner':('f',0o600),'network.policy':('f',0o600),
+                 'qmp.sock':('s',0o700),'qemu.stdout':('f',0o600),'qemu.stderr':('f',0o600),'qemu.pid':('f',0o600)},
+      'reset':{'qemu.owner':('f',0o600),'network.owner':('f',0o600),'root-overlay.qcow2':('f',0o600),
+               'seed.img':('f',0o400),'user-data':('f',0o400),'meta-data':('f',0o400),
+               'network-config':('f',0o400),'qmp.sock':('s',0o700)},
+      'retirement':{'qemu.owner':('f',0o600),'network.owner':('f',0o600),'qmp.sock':None},
+    }
+    if key not in final: raise RuntimeError('unknown acquisition inventory')
+    before={item['path']:item for item in value['inventory']}; observed=scan(); after={item['path']:item for item in observed}
+    allowed=set(final[key])
+    for path in set(before)|set(after):
+        if path not in allowed and before.get(path)!=after.get(path):
+            raise RuntimeError('unapproved state inventory change')
+    for path,required in final[key].items():
+        item=after.get(path)
+        if required is None:
+            if item is not None and item!=before.get(path): raise RuntimeError('invalid stage output')
+        elif item is not None and item['kind']!=required[0]:
+            raise RuntimeError('invalid stage output')
+    if success:
+        for path,required in final[key].items():
+            item=after.get(path)
+            if required is None:
+                if item is not None: raise RuntimeError('retired output remained')
+            elif item is None or (item['kind'],item['mode'])!=required:
+                raise RuntimeError('required stage output missing')
+    value['inventory']=observed
+    value['pending']=None
+    if key not in value['keys']: value['keys'].append(key)
+def remove_exact(value):
+    if value['pending']!='removal' or value['uncertain'] or not same_inventory(value['inventory']):
+        raise RuntimeError('state inventory changed')
+    entries=sorted(value['inventory'],key=lambda item:(item['path'].count('/'),item['kind']=='d'),reverse=True)
+    for expected in entries:
+        path=state/expected['path']; info=path.lstat()
+        observed={'path':expected['path'],'kind':'d' if stat.S_ISDIR(info.st_mode) else 'f' if stat.S_ISREG(info.st_mode) else 's' if stat.S_ISSOCK(info.st_mode) else None,
+                  'dev':info.st_dev,'ino':info.st_ino,'mode':stat.S_IMODE(info.st_mode),'nlink':info.st_nlink}
+        if observed!=expected: raise RuntimeError('state identity changed during removal')
+        path.rmdir() if expected['kind']=='d' else path.unlink()
+    strict_file(state/authority)
+    if read_file(state/sentinel,33)!=generation.encode()+b'\n': raise RuntimeError('sentinel changed during removal')
+    (state/sentinel).unlink(); (state/authority).unlink(); fsync_dir(state)
+    fd,info=open_state(); os.close(fd)
+    if [info.st_dev,info.st_ino]!=value['directory']: raise RuntimeError('state directory changed during removal')
+    state.rmdir(); fsync_dir(parent)
+if not re.fullmatch('[a-f0-9]{32}',generation): raise SystemExit('FAIL: invalid generation')
+if not re.fullmatch('[a-f0-9]{40}',revision) or profile!='linux-kvm' or locator!=str(state.absolute()):
+    raise SystemExit('FAIL: invalid generation binding')
+if action=='init':
+    if state.exists() or state.is_symlink(): raise SystemExit('FAIL: linux-kvm state already exists')
+    os.mkdir(state,0o700); fd,info=open_state(); os.close(fd)
+    try:
+        fd=os.open(state/sentinel,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        try: write_fd(fd,generation.encode()+b'\n')
+        finally: os.close(fd)
+        value={'version':'cogs.linux-kvm-owner/v1','generation':generation,'profile':profile,
+               'sourceRevision':revision,'locator':locator,'directory':[info.st_dev,info.st_ino],
+               'pending':None,'failed':False,'uncertain':False,'keys':[],'inventory':[]}
+        save(value); fsync_dir(parent) # immutable generation authority precedes subordinate effects
+        value['pending']='bootstrap'; save(value)
+        for name,item in (('qemu.owner',{'phase':'never'}),('network.owner',{'phase':'never','steps':[]})):
+            fd=os.open(state/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            try: write_fd(fd,canonical(item))
+            finally: os.close(fd)
+        observed=scan()
+        if {(item['path'],item['kind'],item['mode']) for item in observed} != \
+           {('qemu.owner','f',0o600),('network.owner','f',0o600)}:
+            raise RuntimeError('unexpected bootstrap inventory')
+        value['inventory']=observed; value['pending']=None; value['keys'].append('bootstrap'); save(value)
+    except BaseException:
+        # Creation without a complete authority is not cleanup authority.
+        raise
+    raise SystemExit(0)
+value=None
+try:
+    value=validate()
+    if value['uncertain']: raise RuntimeError('sticky driver custody uncertainty')
+    if action=='check':
+        if value['failed'] and key!='destroy': raise Rejected('failed generation is cleanup-only')
+        if value['pending'] is not None or not same_inventory(value['inventory']): raise RuntimeError('state inventory changed')
+    elif action=='intent':
+        if value['pending'] is not None or not same_inventory(value['inventory']): raise RuntimeError('state inventory changed')
+        if value['failed'] and key not in ('retirement','removal'): raise Rejected('failed generation is cleanup-only')
+        if not key or (key in value['keys'] and key not in ('reset','retirement')): raise Rejected('duplicate acquisition key')
+        value['pending']=key; save(value)
+    elif action in ('commit','fail'):
+        if value['pending']!=key: raise RuntimeError('acquisition intent mismatch')
+        finish(value,key,action=='commit')
+        if action=='fail': value['failed']=True
+        save(value)
+    elif action=='remove': remove_exact(value)
+    else: raise Rejected('invalid generation-owner action')
+except Rejected:
+    raise
+except BaseException:
+    # If the authority itself is still trusted, uncertainty survives retries.
+    if value is not None:
+        value['uncertain']=True
+        try: save(value)
+        except BaseException: pass
+    raise
+PY
+}
+
+# A caller nonce is mandatory and checked under the driver lock before effects.
 generation=${COGS_KVM_GENERATION:-}
-[[ -z "$generation" || "$generation" =~ ^[a-f0-9]{32}$ ]] || { echo 'FAIL: invalid generation' >&2; exit 1; }
-if [[ "$operation" != create && "$operation" != prepare-cache ]]; then
-  [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: no retained driver custody; absence is not teardown proof' >&2; exit 1; }
-  retained=$(<"$sentinel")
-  [[ "$retained" =~ ^[a-f0-9]{32}$ && ( -z "$generation" || "$generation" == "$retained" ) ]] || {
-    echo 'FAIL: driver generation mismatch' >&2; exit 1;
-  }
-  generation=$retained
+source_revision=${COGS_SOURCE_REVISION:-}
+if [[ "$operation" != prepare-cache && "$operation" != print-network-policy ]]; then
+  [[ "$generation" =~ ^[a-f0-9]{32}$ && "$source_revision" =~ ^[a-f0-9]{40}$ ]] \
+    || { echo 'FAIL: invalid generation binding' >&2; exit 1; }
+  if [[ "$operation" != create ]]; then
+    generation_owner check "$operation" || { echo 'FAIL: no matching retained driver custody' >&2; exit 1; }
+  fi
 fi
 select_network_names() {
   tap="cgk${generation:0:12}"
@@ -314,13 +541,54 @@ stop_vm() { qemu_owner stop; }
 cleanup_partial() {
   stop_vm && remove_network
 }
+owner_stage_key=
+owner_stage() {
+  generation_owner intent "$1"
+  owner_stage_key=$1
+}
+owner_stage_commit() {
+  generation_owner commit "$owner_stage_key"
+  owner_stage_key=
+}
+owner_stage_error() {
+  local status=$?
+  trap - ERR
+  # Command substitutions propagate failure; only the locked top-level owner
+  # may settle acquisitions, never an inherited subshell copy of its ledger.
+  if (( BASH_SUBSHELL > 0 )); then exit "$status"; fi
+  if [[ -n "$owner_stage_key" ]]; then generation_owner fail "$owner_stage_key" || true; fi
+  if [[ "$operation" == create ]]; then
+    rollback_create || echo 'FAIL: partial KVM custody retained for recovery' >&2
+  fi
+  exit "$status"
+}
+arm_owner_errors() {
+  set -E
+  trap owner_stage_error ERR
+}
+disarm_owner_errors() {
+  trap - ERR
+  owner_stage_key=
+}
+rollback_create() {
+  generation_owner intent retirement || return 1
+  if cleanup_partial; then
+    generation_owner commit retirement || return 1
+    generation_owner intent removal || return 1
+    generation_owner remove
+  else
+    generation_owner fail retirement || true
+    return 1
+  fi
+}
 
 prepare_image() {
   mkdir -p "$cache"
   chmod 0700 "$cache"
   if [[ ! -f "$cache/$image_name" ]]; then
     tmp="$cache/$image_name.partial"
-    rm -f "$tmp"
+    [[ ! -e "$tmp" && ! -L "$tmp" ]] || { echo 'FAIL: foreign image partial retained' >&2; return 1; }
+    (set -o noclobber; : > "$tmp")
     curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "$tmp" "$image_url"
     printf '%s  %s\n' "$image_sha512" "$tmp" | sha512sum --check --status
     mv "$tmp" "$cache/$image_name"
@@ -432,8 +700,7 @@ prepare_network() {
 start_vm() {
   qemu_owner preflight
   prepare_network
-  # Legacy stopped-state log retirement only; no UART capture on new launches.
-  rm -f "$state/qmp.sock" "$state/serial.log"
+  rm -f "$state/qmp.sock"
   printf '{"phase":"launching"}\n' > "$state/qemu.owner"
   nohup qemu-system-x86_64 \
     -name cogs-stage1-linux-kvm -machine q35 -accel kvm -cpu host -smp 2 -m 2048M \
@@ -480,7 +747,7 @@ verify_git_tools() {
   local pid
   pid=$(<"$state/qemu.pid")
   tr '\0' ' ' < "/proc/$pid/cmdline" | grep -F -- "readonly=on,file=$state/git-tools.img" >/dev/null || {
-    echo 'FAIL: Git tools disk is not attached read-only' >&2; exit 1;
+    echo 'FAIL: Git tools disk is not attached read-only' >&2; return 1;
   }
   run_ssh 'set -euo pipefail
     test "$(findmnt -rn -o TARGET /opt/cogs-git)" = /opt/cogs-git
@@ -516,8 +783,8 @@ verify_git_tools() {
     git fsck --no-progress >/dev/null'
 }
 
-verify() {
-  [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
+verify_checks() {
+  generation_owner check
   qemu_owner check
   query_kvm >/dev/null
   run_ssh 'test "$(id -u)" = 0'
@@ -528,63 +795,96 @@ verify() {
   run_ssh 'for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"; done'
   fingerprint=$(ssh-keygen -lf "$state/control/host_ed25519_key.pub" -E sha256 | awk '{print $2}')
   scanned=$(ssh-keyscan -T 5 -t ed25519 "$guest_ip" 2>/dev/null | ssh-keygen -lf - -E sha256 | awk '{print $2}')
-  [[ "$fingerprint" == "$scanned" ]] || { echo 'FAIL: guest host-key fingerprint mismatch' >&2; exit 1; }
+  [[ "$fingerprint" == "$scanned" ]] || { echo 'FAIL: guest host-key fingerprint mismatch' >&2; return 1; }
   host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
   guest_boot_id=$(run_ssh 'cat /proc/sys/kernel/random/boot_id')
   guest_kernel=$(run_ssh 'uname -r')
   [[ -n "$guest_boot_id" && "$guest_boot_id" != "$host_boot_id" && -n "$guest_kernel" ]] || {
-    echo 'FAIL: guest boot or kernel identity is invalid' >&2; exit 1;
+    echo 'FAIL: guest boot or kernel identity is invalid' >&2; return 1;
   }
-  # Preserve the launcher's exact legacy result schema unless nonce custody was requested.
-  local generation_field=''
-  if [[ -n "${COGS_KVM_GENERATION:-}" ]]; then generation_field=",\"generation\":\"$generation\""; fi
-  printf '{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"%s","guest_image_sha512":"%s","host_ip":"%s","guest_ip":"%s","proxy_port":%s%s}\n' \
-    "$guest_kernel" "$image_sha512" "$host_ip" "$guest_ip" "$proxy_port" "$generation_field"
+}
+emit_ready() {
+  local command=$1
+  python3 -I - "$guest_kernel" "$image_sha512" "$host_ip" "$guest_ip" "$proxy_port" "$generation" "$command" <<'PY'
+import json,sys
+kernel,digest,host,guest,port,generation,command=sys.argv[1:]
+value={'status':'ready','profile':'linux-kvm','guest_root':True,'kvm_enabled':True,'distinct_boot_ids':True,
+       'guest_kernel':kernel,'guest_image_sha512':digest,'host_ip':host,'guest_ip':guest,
+       'proxy_port':int(port),'generation':generation,'command':command}
+print(json.dumps(value,separators=(',',':')))
+PY
+}
+release_lock() {
+  flock -u 9 || { echo 'FAIL: linux-kvm driver lock release failed' >&2; return 1; }
 }
 
 case "$operation" in
   prepare-cache)
-    prepare_image
-    cogs_git_tools_prepare_cache "$cache"
+    prepare_image >&2
+    cogs_git_tools_prepare_cache "$cache" >&2
+    release_lock
     printf '{"status":"prepared","profile":"linux-kvm"}\n'
     ;;
   create)
-    [[ ! -e "$state" ]] || { echo 'FAIL: linux-kvm state already exists' >&2; exit 1; }
-    generation=${generation:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}
+    generation_owner init
     select_network_names
-    mkdir "$state"; chmod 0700 "$state"; printf '%s\n' "$generation" > "$sentinel"; chmod 0600 "$sentinel"
-    printf '{"phase":"never"}\n' > "$state/qemu.owner"
-    printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
-    trap 'status=$?; if [[ $status -ne 0 ]]; then cleanup_partial && rm -rf "$state"; fi; exit $status' EXIT
-    prepare_image; prepare_keys; prepare_disks; prepare_seed; start_vm; verify
-    trap - EXIT
+    arm_owner_errors
+    owner_stage cache
+    prepare_image >&2
+    owner_stage_commit
+    owner_stage keys
+    prepare_keys >&2
+    owner_stage_commit
+    owner_stage disks
+    prepare_disks >&2
+    owner_stage_commit
+    owner_stage seed
+    prepare_seed >&2
+    owner_stage_commit
+    owner_stage runtime
+    start_vm >&2
+    owner_stage_commit
+    verify_checks >&2
+    disarm_owner_errors
+    release_lock
+    emit_ready create
     ;;
-  verify) verify ;;
+  verify)
+    verify_checks >&2
+    release_lock
+    emit_ready verify
+    ;;
   reset)
-    [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: state sentinel missing' >&2; exit 1; }
-    qemu_owner check
-    run_ssh 'printf reset-persistent > /workspace/reset-marker; sync'
-    stop_vm; remove_network
+    arm_owner_errors
+    owner_stage reset
+    qemu_owner check >&2
+    run_ssh 'printf reset-persistent > /workspace/reset-marker; sync' >&2
+    stop_vm >&2
+    remove_network >&2
     printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
     rm -f "$state/root-overlay.qcow2" "$state/seed.img" "$state/user-data" "$state/meta-data" "$state/network-config"
     qemu-img create -q -f qcow2 -F qcow2 -b "$cache/$image_name" "$state/root-overlay.qcow2" 12G
     cogs_git_tools_verify_image_file "$state/git-tools.img" 2>/dev/null || prepare_git_tools_disk "$state" "$cache"
     cogs_git_tools_verify_image_file "$state/git-tools.img"
-    prepare_seed; start_vm
+    prepare_seed
+    start_vm
     run_ssh grep -qx reset-persistent /workspace/reset-marker
-    verify
+    owner_stage_commit
+    verify_checks >&2
+    disarm_owner_errors
+    release_lock
+    emit_ready reset
     ;;
   destroy)
-    if [[ -e "$state" ]]; then
-      [[ -f "$sentinel" && ! -L "$sentinel" ]] || { echo 'FAIL: refusing unowned state' >&2; exit 1; }
-      stop_vm; remove_network; rm -rf "$state"
-    else
-      # No custody: do not touch colliding names or claim observed retirement.
-      echo 'FAIL: no retained driver custody; absence is not teardown proof' >&2
-      exit 1
-    fi
-    [[ ! -e "$state" ]] || { echo 'FAIL: state remained after destroy' >&2; exit 1; }
-    printf '{"status":"destroyed","profile":"linux-kvm"}\n'
+    generation_owner intent retirement
+    if cleanup_partial >&2; then generation_owner commit retirement; else generation_owner fail retirement || true; exit 1; fi
+    generation_owner intent removal
+    generation_owner remove
+    release_lock
+    python3 -I - "$generation" <<'PY'
+import json,sys
+print(json.dumps({'profile':'linux-kvm','status':'destroyed','generation':sys.argv[1],'command':'destroy'},separators=(',',':')))
+PY
     ;;
   ssh)
     shift

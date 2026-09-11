@@ -31,6 +31,7 @@ export type LauncherManifest = Readonly<{
 }>;
 
 export type DriverResult = Readonly<{
+  generation: string;
   profile: LauncherProfile;
   operation: "create" | "verify" | "reset" | "destroy";
   result: "pass" | "destroyed" | "ready";
@@ -158,8 +159,11 @@ export function normalizeDriverResult(
   text: string,
   expectedProfile: LauncherProfile,
   expectedOperation: "create" | "verify" | "reset" | "destroy",
+  expectedGeneration: string,
 ): DriverResult {
-  const trimmed = lastJsonLine(text, 8192);
+  if (!/^[a-f0-9]{32}$/.test(expectedGeneration) || Buffer.byteLength(text) > 8192 || !/^\{[^\r\n]*\}\n$/.test(text))
+    throw new Error("invalid launcher driver result");
+  const trimmed = text.slice(0, -1);
   if (hasDuplicateJsonKeys(trimmed)) throw new Error("invalid launcher driver result");
   let parsed: unknown;
   try {
@@ -167,27 +171,31 @@ export function normalizeDriverResult(
   } catch {
     throw new Error("invalid launcher driver result");
   }
+  if (JSON.stringify(parsed) !== trimmed) throw new Error("invalid launcher driver result");
   const record = snapshotOpenRecord(parsed, 12);
+  if (record.generation !== expectedGeneration || record.command !== expectedOperation)
+    throw new Error("invalid launcher driver result");
+  const generation = expectedGeneration;
   const profile = normalizeProfile(record.profile);
   if (profile !== expectedProfile) throw new Error("invalid launcher driver result");
   const authority = profileAuthority(profile);
   if ("authority" in record && record.authority !== authority) throw new Error("invalid launcher driver result");
   if (record.version === "cogs.dev-driver/v1alpha1") {
     if (profile === "linux-kvm") throw new Error("invalid launcher driver result");
-    if (Object.keys(record).sort().join(",") !== "authority,command,profile,result,version")
+    if (Object.keys(record).sort().join(",") !== "authority,command,generation,profile,result,version")
       throw new Error("invalid launcher driver result");
     if (record.result !== "pass") throw new Error("invalid launcher driver result");
     const op = record.command === "verify" ? "verify" : record.command;
     if (op !== "create" && op !== "verify" && op !== "reset" && op !== "destroy")
       throw new Error("invalid launcher driver result");
     if (op !== expectedOperation) throw new Error("invalid launcher driver result");
-    return deepFreeze({ profile, operation: op, result: "pass", authority });
+    return deepFreeze({ generation, profile, operation: op, result: "pass", authority });
   }
   if (record.status === "ready" && expectedOperation !== "destroy") {
     if (profile !== "linux-kvm") throw new Error("invalid launcher driver result");
     if (
       Object.keys(record).sort().join(",") !==
-      "distinct_boot_ids,guest_image_sha512,guest_ip,guest_kernel,guest_root,host_ip,kvm_enabled,profile,proxy_port,status"
+      "command,distinct_boot_ids,generation,guest_image_sha512,guest_ip,guest_kernel,guest_root,host_ip,kvm_enabled,profile,proxy_port,status"
     )
       throw new Error("invalid launcher driver result");
     if (
@@ -203,12 +211,13 @@ export function normalizeDriverResult(
       record.proxy_port !== 18080
     )
       throw new Error("invalid launcher driver result");
-    return deepFreeze({ profile, operation: expectedOperation, result: "ready", authority });
+    return deepFreeze({ generation, profile, operation: expectedOperation, result: "ready", authority });
   }
   if (record.status === "destroyed" && expectedOperation === "destroy") {
     if (profile !== "linux-kvm") throw new Error("invalid launcher driver result");
-    if (Object.keys(record).sort().join(",") !== "profile,status") throw new Error("invalid launcher driver result");
-    return deepFreeze({ profile, operation: "destroy", result: "destroyed", authority });
+    if (Object.keys(record).sort().join(",") !== "command,generation,profile,status")
+      throw new Error("invalid launcher driver result");
+    return deepFreeze({ generation, profile, operation: "destroy", result: "destroyed", authority });
   }
   throw new Error("invalid launcher driver result");
 }
@@ -290,17 +299,6 @@ function canonical(value: unknown, seen: WeakSet<object>): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonical(record[key], seen)}`)
     .join(",")}}`;
-}
-
-function lastJsonLine(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text) > maxBytes) throw new Error("invalid launcher driver result");
-  const lines = text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const line = lines.at(-1);
-  if (!line?.startsWith("{") || !line.endsWith("}")) throw new Error("invalid launcher driver result");
-  return line;
 }
 
 export function hasDuplicateJsonKeys(text: string): boolean {

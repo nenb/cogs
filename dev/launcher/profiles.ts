@@ -9,10 +9,10 @@ import type { LauncherState } from "./state.ts";
 export type ProfileAction = "create" | "verify" | "reset" | "destroy";
 export type ProfileAdapter = Readonly<{
   profile: LauncherProfile;
-  create(state: LauncherState, signal?: AbortSignal): Promise<DriverResult>;
-  verify(state: LauncherState, signal?: AbortSignal): Promise<DriverResult>;
-  reset(state: LauncherState, signal?: AbortSignal): Promise<DriverResult>;
-  destroy(state: LauncherState, signal?: AbortSignal): Promise<DriverResult>;
+  create(state: LauncherState, generation: string, signal?: AbortSignal): Promise<DriverResult>;
+  verify(state: LauncherState, generation: string, signal?: AbortSignal): Promise<DriverResult>;
+  reset(state: LauncherState, generation: string, signal?: AbortSignal): Promise<DriverResult>;
+  destroy(state: LauncherState, generation: string, signal?: AbortSignal): Promise<DriverResult>;
 }>;
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -21,17 +21,17 @@ const fixedPath = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bi
 export function createProfileAdapter(profile: LauncherProfile, seams?: RunnerSeams): ProfileAdapter {
   profile = normalizeProfile(profile);
   const driver = driverPath(profile);
-  const create = Object.freeze((state: LauncherState, signal?: AbortSignal) =>
-    invoke(profile, driver, state, "create", signal, seams),
+  const create = Object.freeze((state: LauncherState, generation: string, signal?: AbortSignal) =>
+    invoke(profile, driver, state, "create", generation, signal, seams),
   );
-  const verify = Object.freeze((state: LauncherState, signal?: AbortSignal) =>
-    invoke(profile, driver, state, "verify", signal, seams),
+  const verify = Object.freeze((state: LauncherState, generation: string, signal?: AbortSignal) =>
+    invoke(profile, driver, state, "verify", generation, signal, seams),
   );
-  const reset = Object.freeze((state: LauncherState, signal?: AbortSignal) =>
-    invoke(profile, driver, state, "reset", signal, seams),
+  const reset = Object.freeze((state: LauncherState, generation: string, signal?: AbortSignal) =>
+    invoke(profile, driver, state, "reset", generation, signal, seams),
   );
-  const destroy = Object.freeze((state: LauncherState, signal?: AbortSignal) =>
-    invoke(profile, driver, state, "destroy", signal, seams),
+  const destroy = Object.freeze((state: LauncherState, generation: string, signal?: AbortSignal) =>
+    invoke(profile, driver, state, "destroy", generation, signal, seams),
   );
   return Object.freeze({ profile, create, verify, reset, destroy });
 }
@@ -52,6 +52,7 @@ async function invoke(
   driver: string,
   state: LauncherState,
   action: ProfileAction,
+  generation: string,
   signal: AbortSignal | undefined,
   seams: RunnerSeams | undefined,
 ): Promise<DriverResult> {
@@ -59,9 +60,9 @@ async function invoke(
   const runOptions: { signal?: AbortSignal; seams?: RunnerSeams } = {};
   if (signal) runOptions.signal = signal;
   if (seams) runOptions.seams = seams;
-  const result = await runCommand(descriptor(profile, driver, state, action), runOptions);
+  const result = await runCommand(descriptor(profile, driver, state, action, generation), runOptions);
   if (result.status !== "ok" || result.cleanupUncertain) throw new Error("launcher profile operation failed");
-  const parsed = normalizeDriverResult(result.stdout, profile, action);
+  const parsed = normalizeDriverResult(result.stdout, profile, action, generation);
   if (action === "destroy") await verifyProfileAbsent(state);
   return parsed;
 }
@@ -71,15 +72,28 @@ export function descriptor(
   driver: string,
   state: LauncherState,
   action: ProfileAction,
+  generation: string,
 ): CommandDescriptor {
-  const env: Record<string, string> = { PATH: fixedPath, HOME: state.controlDir, LANG: "C", LC_ALL: "C" };
+  if (typeof generation !== "string" || !/^[a-f0-9]{32}$/.test(generation) || profile === "macos-vm")
+    throw new Error("launcher profile prerequisite failed");
+  const env: Record<string, string> = {
+    PATH: fixedPath,
+    HOME: state.controlDir,
+    LANG: "C",
+    LC_ALL: "C",
+    COGS_SOURCE_REVISION: state.sourceRevision,
+  };
   if (state.root !== join(repoRoot, ".cogs-dev", "launcher")) throw new Error("launcher profile prerequisite failed");
-  if (profile === "insecure-container") env.COGS_INSECURE_STATE_DIR = state.driverStateDir;
+  if (profile === "insecure-container") {
+    env.COGS_INSECURE_STATE_DIR = state.driverStateDir;
+    env.COGS_INSECURE_GENERATION = generation;
+    env.COGS_INSECURE_ORIGINAL_REVISION = state.sourceRevision;
+  }
   if (profile === "linux-kvm") {
     env.COGS_KVM_STATE_DIR = state.driverStateDir;
     env.COGS_KVM_CACHE_DIR = state.driverCacheDir;
+    env.COGS_KVM_GENERATION = generation;
   }
-  if (profile === "macos-vm") env.COGS_MACOS_VM_STATE_DIR = state.driverStateDir;
   return {
     executable: driver,
     args: [action],
