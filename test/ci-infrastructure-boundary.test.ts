@@ -322,7 +322,8 @@ test("product empty/nonempty paired snapshots resolve and discover the same reta
 
 test("product host descriptor, nonce, acquisition and live lease contracts use portable syscall/Docker fakes", () => {
   const python = String.raw`
-import importlib.util,os,tempfile,types
+import importlib.util,os,tempfile,types,time,signal,selectors,json
+from unittest.mock import patch
 s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 with tempfile.TemporaryDirectory() as root:
@@ -359,15 +360,19 @@ with tempfile.TemporaryDirectory() as root:
   assert sorted(os.listdir(root))==['competitor','source']
  finally: m.ctypes.CDLL=original;os.close(fd)
 owner=m.Custody.__new__(m.Custody)
-owner.generation='a'*32;owner.ids={};owner.control=0
+owner.generation='a'*32;owner.ids={};owner.control=0;owner.recovery=False;owner.deadline=time.monotonic()+60
+owner.images={'sha256:'+'c'*64:{'Config':{'Env':[]}}}
+owner.inspect=lambda cid:{'Image':'sha256:'+'c'*64,'State':{'Running':False},'Config':{'Env':['NODE_EXTRA_CA_CERTS=/run/cogs/pki/telemetry-ca.crt']}}
+owner.verify_candidate=lambda cid:None
 log=[];journal={}
 m.exclusive=lambda fd,name,data,*args: journal.setdefault(name,data)
+owner.record=lambda name,value:journal.setdefault(name,m.canonical(value))
 def docker(*args):
  log.append(args)
  if args[0]=='create': return ('b'*64+'\n').encode()
  if args[0]=='start': raise RuntimeError('lost start response')
 owner.docker=docker
-spec={'image':'sha256:'+'c'*64}
+spec={'image':'sha256:'+'c'*64,'mounts':[]}
 try: owner.dispatch({'op':'create','generation':'d'*32,'role':'worker','spec':spec,'argv':[]})
 except RuntimeError: pass
 else: raise AssertionError('foreign generation')
@@ -377,8 +382,8 @@ except RuntimeError: pass
 else: raise AssertionError('lost start accepted')
 assert owner.ids['worker']['id']=='b'*64 and 'worker-receipt' in journal
 assert all(row[0] not in ('rm','prune') for row in log)
-owner.receipt={'consumer_id':'e'*32};owner.peers={};owner.events=0;owner.turns=0;owner.headers=False;owner.released=False
-owner.authenticate=lambda role: None
+owner.receipt={'consumer_id':'e'*32};owner.peers={};owner.events=0;owner.turns=0;owner.headers=False;owner.released=False;owner.shutdown=False;owner.publications=[]
+owner.bind_receipt=lambda: None
 class Conn:
  def __init__(self): self.sent=[];self.fd=None
  def fileno(self): return self.fd
@@ -386,6 +391,7 @@ class Conn:
 c=Conn();owner.peers[c]={'kind':'gate.sock','nonce':None,'sequence':0,'last':0}
 def message(op,sequence):
  q={'version':'cogs.skill-snapshot-control/v1','op':op,'nonce':'f'*32,'sequence':sequence,'receipt_digest':m.digest(m.canonical(owner.receipt)),'consumer_id':'e'*32,'pid':1}
+ if op=='event': q['event']={'kind':'status','correlation_id':'test','request_id':None}
  r,w=os.pipe();os.write(w,m.canonical(q));os.close(w);c.fd=r
  try: owner.message(c)
  finally: os.close(r)
@@ -398,6 +404,208 @@ try: message('event',50)
 except RuntimeError: pass
 else: raise AssertionError('event overflow')
 assert len(c.sent)==49
+# Each image hook/credential/TLS override and duplicate is rejected, including created containers.
+for env in [['NODE_OPTIONS=--import=/evil'],['AWS_SECRET_ACCESS_KEY=x'],['NODE_TLS_REJECT_UNAUTHORIZED=0'],['LD_PRELOAD=/evil'],['PATH=x'],['HOME=/root'],['NODE_ENV=production']*2]:
+ try: m.environment({'Env':env})
+ except RuntimeError: pass
+ else: raise AssertionError(env)
+assert m.environment({'Env':['HOME=/tmp','NODE_ENV=production']})==['HOME=/tmp','NODE_ENV=production']
+for env in [['NODE_OPTIONS=--import=/evil'],['NODE_TLS_REJECT_UNAUTHORIZED=0']]:
+ owner.ids={};log.clear();owner.inspect=lambda cid:{'Image':spec['image'],'State':{'Running':False},'Config':{'Env':env}}
+ try: owner.dispatch({'op':'create','generation':owner.generation,'role':'worker','spec':spec,'argv':[]})
+ except RuntimeError: pass
+ else: raise AssertionError('started inherited code')
+ assert not any(row[0]=='start' for row in log)
+# Acquisition ownership precedes pidfd; stop handshake never uses blocking waitpid.
+class Stream:
+ def close(self): pass
+class Process:
+ pid=12345;stdout=Stream();stderr=Stream()
+ def poll(self): return 0  # exited leader must NOT suppress descendant settlement
+ def wait(self,**kw): return 0
+for failure in ('pidfd','handshake'):
+ owner.cg='/no-such-cgroup';owner.deadline=time.monotonic()+.02;signals=[]
+ with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,side_effect=OSError() if failure=='pidfd' else lambda pid:77),patch.object(m.os,'waitpid',return_value=(0,0)) as waiting,patch.object(m.os,'killpg',side_effect=lambda *a:signals.append(a)),patch.object(m.os,'close'),patch.object(m.os.path,'exists',return_value=False):
+  try: owner.command(['never-executed'])
+  except (OSError,RuntimeError): pass
+  else: raise AssertionError('unbounded handshake')
+  assert signals==[(12345,signal.SIGKILL)]
+  assert all(call.args[1]&os.WNOHANG for call in waiting.call_args_list)
+# Lost mount observation is reconciled from durable intent; unmount/detach must precede retired.
+with tempfile.TemporaryDirectory() as root:
+ owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.cg=root+'/absent'
+ owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);os.mkdir(root+'/control');owner.control=os.open(root+'/control',os.O_RDONLY|os.O_DIRECTORY)
+ owner.ids={};owner.peers={};owner.sealed=[];owner.selector=selectors.DefaultSelector();owner.disk=None;owner.failed=True;owner.mounts=['state']
+ journal={};owner.record=lambda n,v:journal.setdefault(n,v);owner.saved=lambda n:journal[n]
+ for n,v in [('state-storage',{}),('state-backing',[1,2]),('state-loop',{'name':'/dev/loop9'}),('state-mount-intent',True)]:
+  journal[n]=v;open(root+'/control/'+n,'w').close()
+ live=[{'name':'/dev/loop9'},['exact-mount']];calls=[]
+ owner.storage_observation=lambda n:tuple(live)
+ def command(argv):
+  calls.append(argv)
+  if argv[0]=='umount': live[1]=None
+  if argv[0]=='losetup': live[0]=None
+  return b''
+ owner.command=command
+ owner.settle()
+ assert [a[0] for a in calls]==['umount','losetup'] and live==[None,None] and 'retired' in journal
+ # A foreign mount/loop observation never permits retirement.
+ owner.mounts=['state'];live[:]=[{'name':'/dev/loop8'},['foreign']];journal.pop('retired')
+ try: owner.settle()
+ except RuntimeError: pass
+ else: raise AssertionError('foreign mount adopted')
+ assert 'retired' not in journal
+ os.close(owner.control);os.close(owner.fd);owner.selector.close()
+# Full authenticate() consumes live proc/mount/cgroup observations, not an authentication stub.
+owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.cg='/sys/fs/cgroup/cogs-product-'+owner.generation
+spec={'image':'sha256:'+'c'*64,'caps':[],'mask':0,'network':'none','tmpfs':{},'mounts':[{'source':'/source','target':'/skills','ro':True}]}
+held={'id':'b'*64,'spec':spec,'environment':[],'sources':{'/skills':(7,8)}};owner.ids={'sandbox':held};owner.images={spec['image']:{'Config':{'Labels':{}}}}
+h={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':[], 'SecurityOpt':['no-new-privileges'],'CgroupParent':owner.cg[14:],'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{}}
+v={'State':{'Pid':42,'Running':True},'Image':spec['image'],'Config':{'Labels':{'cogs.product.generation':owner.generation},'Env':[]},'HostConfig':h,'Mounts':[{'Destination':'/skills','Type':'bind','Source':'/source','RW':False,'Propagation':'rprivate'}]};owner.inspect=lambda cid:v
+proc={'/proc/42/mountinfo':'17 16 7:0 / /skills ro - ext4 /dev/loop9 ro\n','/proc/42/cgroup':'0::'+owner.cg[14:]+'/'+held['id']+'\n','/proc/42/status':'CapEff: 0\nCapPrm: 0\nCapBnd: 0\nNoNewPrivs: 1\nSeccomp: 2\n'}
+for k,value in m.LIMITS.items():proc[owner.cg+'/'+held['id']+'/'+k]=value
+with patch('builtins.open',side_effect=lambda p,**kw:m.io.StringIO(proc[p])),patch.object(m.os,'stat',return_value=types.SimpleNamespace(st_dev=7,st_ino=8)),patch.object(m.os,'readlink',return_value='mnt:[2]'),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.select,'select',return_value=([],[],[])):
+ owner.authenticate('sandbox')
+ held['sources']['/skills']=(7,9)
+ try: owner.authenticate('sandbox')
+ except RuntimeError: pass
+ else: raise AssertionError('live source was not bound to acquisition')
+ held['sources']['/skills']=(7,8);v['Config']['Env']=['NODE_OPTIONS=--import=/evil']
+ try: owner.authenticate('sandbox')
+ except RuntimeError: pass
+ else: raise AssertionError('live environment changed')
+# Live receipt identity uses retained publication, not a newly substituted source inode.
+with tempfile.TemporaryDirectory() as root:
+ owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY)
+ os.mkdir(root+'/documents');launch={'session_id':'product-session'};open(root+'/documents/launch.json','wb').write(m.canonical(launch))
+ bundle=m.digest(b'{}');pair={};sources={};mounts=[]
+ for scope in ('shared','user'):
+  path=f'{root}/publication/{owner.generation}/{scope}/{bundle[7:]}';os.makedirs(path)
+  s=os.stat(path);sources[scope]={'source_device':str(s.st_dev),'source_inode':str(s.st_ino)}
+  pair[scope]={bundle[7:]+'/.cogs-skills-bundle.json':{'data':'e30=','mode':292}}
+  mounts.append({'source':path,'target':f'/{scope}/skills/{bundle[7:]}','ro':True})
+ owner.publication={'pair':pair,'sources':sources};owner.saved=lambda n:owner.publication
+ owner.authenticate=lambda role:{'id':('b' if role=='worker' else 'c')*64,'namespace':'mnt:[2]','spec':{'mounts':mounts}}
+ owner.receipt={'version':'cogs.skill-snapshot-receipt/v1','generation':owner.generation,'consumer_id':'d'*32,'session_id':'product-session','launch_digest':m.digest(m.canonical(launch)),'worker_id':'b'*64,'sandbox_id':'c'*64,'sandbox_mount_namespace':'mnt:[2]'}
+ for scope in ('shared','user'): owner.receipt[scope]={**sources[scope],'destination':f'/{scope}/skills/{bundle[7:]}','read_only':True,'bundle_digest':bundle}
+ with patch.object(m,'tree'),patch.object(m,'capture',side_effect=lambda fd,n,*a:b'{}' if n=='.cogs-skills-bundle.json' else m.canonical(launch)):
+  owner.bind_receipt()
+  for scope in ('shared','user'):
+   for key in owner.receipt[scope]:
+    before=owner.receipt[scope][key];owner.receipt[scope][key]='wrong'
+    try: owner.bind_receipt()
+    except RuntimeError: pass
+    else: raise AssertionError(key)
+    owner.receipt[scope][key]=before
+  os.rename(mounts[0]['source'],mounts[0]['source']+'.old');os.mkdir(mounts[0]['source'])
+  try: owner.bind_receipt()
+  except RuntimeError: pass
+  else: raise AssertionError('replaced publication')
+ os.close(owner.fd)
+try: m.source_nodes({'nested':{'__proto__':1}})
+except RuntimeError: pass
+else: raise AssertionError('persisted proto')
+# Full retained-evidence admission with syscall/Git doubles: each correlated artifact is required.
+owner=m.Custody.__new__(m.Custody);owner.root='/fixture';owner.fd=9;owner.generation='a'*32
+owner.shutdown=owner.released=owner.headers=True;owner.peers={};owner.turns=3;owner.events=4;owner.publication={'pair':{}}
+owner.publications=[{'kind':k} for k in ['run_settled']*3+['shutdown_ready']]
+bundle=m.digest(b'{}');owner.receipt={'consumer_id':'d'*32,'user':{'bundle_digest':bundle}}
+owner.launch={'skills':{'shared_revision':bundle,'user_revision':bundle}};provenance={'candidate':'e'*40}
+entries=[{'id':'entry1','type':'session'}];native='product-session/native.jsonl';native_bytes=b''.join(m.canonical(v) for v in entries)
+commit='f'*40;mapping={'version':'cogs.git-mapping/v1alpha1','repo':'product-workspace','commit':commit,'session':'product-session','entry':'entry1','turn':'turn1','observed_at':'2026-01-01T00:00:00.000Z','confidence':'exact'}
+files={native:native_bytes,'product-session/git-map.jsonl':m.canonical(mapping)}
+r={'version':'cogs.egress-intent/v1alpha1','sequence':0,'intent_id':'intent1','timestamp_ms':10,'session_id':'product-session','integration_id':'synthetic-local','route_id':'route1','method':'GET','credential_required':True}
+c={'intentId':'intent1','sequence':0,'routeId':'route1','responseCode':200,'durationMs':1,'completedAtMs':11}
+def export(kind,items):
+ scope={'scope':{'name':'cogs.worker.telemetry','version':'v1alpha1'},'spans' if kind=='Spans' else 'metrics':items}
+ return {'path':'/v1/traces' if kind=='Spans' else '/v1/metrics','body':{'resource'+kind:[{'resource':{'attributes':[{'key':'service.name','value':{'stringValue':'cogs-worker'}}]},'scope'+kind:[scope]}]}}
+exports=[export('Spans',[{'name':'lifecycle.start','traceId':'a'*32,'spanId':'b'*16,'kind':1,'startTimeUnixNano':'0','endTimeUnixNano':'1','attributes':[]}]),export('Metrics',[{'name':'lifecycle.starts','sum':{'dataPoints':[{'asInt':'1'}]}}])]
+attrs={'cogs.'+k:r[k] for k in ['intent_id','session_id','integration_id','route_id','method','credential_required']}
+attrs.update({'cogs.event':'egress.complete','cogs.intent_sequence':'0','cogs.status_class':'2','cogs.duration_ms':'1','cogs.completed_lag_ms':'1'})
+exports.append({'path':'/v1/logs','body':{'resourceLogs':[{'resource':{'attributes':[{'key':'service.name','value':{'stringValue':'cogs-egress'}}]},'scopeLogs':[{'scope':{'name':'cogs.egress.telemetry','version':'v1alpha1'},'logRecords':[{'body':{'stringValue':'cogs.egress.complete'},'severityText':'INFO','timeUnixNano':'11000000','attributes':[{'key':k,'value':{'boolValue' if isinstance(v,bool) else 'intValue' if k in ['cogs.intent_sequence','cogs.status_class','cogs.duration_ms','cogs.completed_lag_ms'] else 'stringValue':v}} for k,v in attrs.items()]}]}]}]}})
+e={'outcome':'pass','generation':owner.generation,'consumer':'d'*32,'events':4,'turns':3,'omitted':True,'observedEvents':owner.publications,'provenance':provenance,'audit':1,'upstream':1,'upstreamRequests':[{'method':'GET','path':'/credential','credential':True}],'egress':{'records':[r],'completions':[c],'retired':True,'uncorrelated':0,'accounting':{'accepted':1,'drained':1,'retained':0,'dropped':0,'failed':False}},'exports':exports,'traces':1,'metrics':1,'telemetry':{'ready':False,'exported':2,'queued':0,'failed':0,'dropped':0,'lag_ms':0}}
+retained={'session/egress-audit.wal':m.canonical(r),**{'session/sessions/'+p:b for p,b in files.items()}}
+for scope in ['host-private','private-store']: retained[scope+'/'+m.hashlib.sha256(b'synthetic').hexdigest()+'/blobs/sha256/'+bundle[7:]]=b'{}'
+export_root='session/sessions/product-session/exports/cogs-session-product-session/'
+for name,value in {'session.jsonl':native_bytes,'git-map.json':m.canonical({'records':[mapping]}),'skills.json':m.canonical(owner.launch['skills']),'warnings.json':m.canonical({'warnings':[]}),'transform-report.json':m.canonical({'transform':'identity','transformations':0,'sanitized':False})}.items():retained[export_root+name]=value
+manifest={'version':'cogs.export/v1alpha2','session_id':'product-session','skills':owner.launch['skills'],'files':[{'path':p.removeprefix(export_root),'bytes':len(b),'sha256':m.digest(b)[7:]} for p,b in retained.items() if p.startswith(export_root)]}
+retained[export_root+'manifest.json']=m.canonical(manifest)
+e['exported']={'sensitive':True,'bundle':{'mode':'raw','file_count':6,'bundle':'cogs-session-product-session','manifest_sha256':m.digest(m.canonical(manifest))[7:],'total_bytes':sum(len(b) for p,b in retained.items() if p.startswith(export_root))}}
+retained['session/product-evidence.json']=m.canonical(e)
+for p in list(retained):
+ for i,ch in enumerate(p):
+  if ch=='/': retained[p[:i+1]]=None
+retained['session/agent/']=None
+work={'proof.txt':b'alpha\n','.git/':None,'.git/config':b'[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[user]\n\temail = synthetic@example.invalid\n\tname = Synthetic\n'}
+owner.retained_history=lambda:(files,native,entries);owner.history={};owner.saved=lambda n:provenance;owner.record=lambda *a:None
+note=f"cogs git mapping: trusted record of untrusted Git observation; session=product-session; entry=entry1; turn=turn1; commit={commit}; observed_at={mapping['observed_at']}; confidence=exact\n".encode()
+owner.command=lambda a:note if 'notes' in a else (commit+'\n').encode() if 'rev-parse' in a else b'alpha\n' if 'show' in a else b''
+with patch.object(m,'directory',side_effect=lambda fd,n:n),patch.object(m,'inventory',side_effect=lambda fd,**kw:dict(retained if fd=='state' else work)),patch.object(m.os,'close'),patch.object(m,'tree'),patch.object(m.os,'listdir',return_value=['control','publication','workspace','state','inputs','authority','sandbox-input','documents','lease']):
+ owner.evidence()
+ for key,value in [('events',3),('upstream',2),('provenance',{}),('observedEvents',[])]:
+  bad={**e,key:value};retained['session/product-evidence.json']=m.canonical(bad)
+  try: owner.evidence()
+  except RuntimeError: pass
+  else: raise AssertionError('false pass '+key)
+ retained['session/product-evidence.json']=m.canonical(e)
+ for path in ['session/extra','session/egress-audit.wal',export_root+'session.jsonl']:
+  previous=retained.get(path);retained[path]=b'corrupt\n'
+  try: owner.evidence()
+  except (RuntimeError,ValueError): pass
+  else: raise AssertionError('corrupt retained '+path)
+  if previous is None: del retained[path]
+  else: retained[path]=previous
+# Candidate source verification reads stopped-container tar bytes, checks ownership/modes and exact inventory.
+owner=m.Custody.__new__(m.Custody);owner.source={};archives={}
+for path in ['src','schemas','dev/product-test','dev/launcher/api-client.ts','third_party']:
+ name=path if path.endswith('.ts') else path+'/fixture.ts';owner.source[name]={'digest':m.digest(b'candidate'),'mode':0o644}
+ stream=m.io.BytesIO()
+ with m.tarfile.open(fileobj=stream,mode='w') as archive:
+  entry=m.tarfile.TarInfo(name if '/' not in path else name[len(path.rsplit('/',1)[0])+1:]);entry.size=9;entry.mode=0o644;archive.addfile(entry,m.io.BytesIO(b'candidate'))
+ archives[path]=stream.getvalue()
+owner.docker=lambda op,source,dest:archives[source.split(':/opt/cogs/')[1]]
+owner.verify_candidate('b'*64)
+for key in ['digest','mode']:
+ prior=owner.source['src/fixture.ts'][key];owner.source['src/fixture.ts'][key]='foreign'
+ try: owner.verify_candidate('b'*64)
+ except RuntimeError: pass
+ else: raise AssertionError('candidate '+key)
+ owner.source['src/fixture.ts'][key]=prior
+# Constructor failures enter rollback even after allocation; recovery is cleanup-only.
+with tempfile.TemporaryDirectory() as root:
+ fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);made=[];settled=[];locks=set()
+ def opened(path,*a,**kw):
+  new=os.dup(fd)
+  if path.endswith('.lock'): locks.add(new)
+  return new
+ def stats(fd): return types.SimpleNamespace(st_uid=0,st_mode=0o100600 if fd in locks else 0o40700,st_nlink=1,st_dev=1,st_ino=2)
+ def alloc(parent,name,mode=None):
+  if len(made)>=2: assert mode is None
+  made.append(name);return os.dup(fd)
+ def fail(*a): raise RuntimeError('unsupported driver')
+ with patch.object(m.sys,'platform','linux'),patch.object(m.os,'geteuid',return_value=0),patch.object(m.os,'uname',return_value=types.SimpleNamespace(machine='x86_64')),patch.object(m.os,'open',side_effect=opened),patch.object(m.os,'fstat',side_effect=stats),patch.object(m.os,'write',side_effect=lambda fd,b:len(b)),patch.object(m.os,'pread',return_value=m.canonical({'generation':'a'*32,'seconds':60})),patch.object(m,'identity',return_value=(1,2)),patch.object(m,'directory',side_effect=alloc),patch.object(m.os,'mkdir'),patch.object(m.os,'stat',return_value=types.SimpleNamespace()),patch.object(m.Custody,'cwrite'),patch.object(m.Custody,'record',side_effect=lambda *a:None),patch.object(m.Custody,'docker',side_effect=fail),patch.object(m.Custody,'settle',side_effect=lambda:settled.append(True)):
+  try: m.Custody({'generation':'a'*32,'seconds':60})
+  except RuntimeError: pass
+  else: raise AssertionError('constructor passed')
+  records={'intent':{'generation':'a'*32},'root':[1,2],'cgroup':[1,2]}
+  with patch.object(m.Custody,'saved',side_effect=lambda n:records[n]),patch.object(m.os.path,'exists',return_value=True):
+   recovered=m.Custody({'generation':'a'*32,'seconds':60,'cleanup_only':True})
+   assert recovered.recovery and recovered.failed
+ assert made==['a'*32,'control']*2 and settled==[True,True]
+ os.close(fd)
+owner=m.Custody.__new__(m.Custody);owner.recovery=True
+try: owner.dispatch({'generation':'a'*32,'op':'storage','name':'state'})
+except RuntimeError: pass
+else: raise AssertionError('recovery acquired storage')
+# Stable descriptor inventories reject unknown sockets/symlinks/hardlinks, not merely nonempty history.
+with tempfile.TemporaryDirectory() as root:
+ fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);sock=m.socket.socket(m.socket.AF_UNIX);sock.bind(root+'/unexpected.sock')
+ try: m.inventory(fd)
+ except (OSError,RuntimeError): pass
+ else: raise AssertionError('socket retained')
+ sock.close();os.unlink(root+'/unexpected.sock');os.mkdir(root+'/extra')
+ assert m.inventory(fd)=={'extra/':None}
+ os.close(fd)
 print('portable custody contracts passed')
 `;
   const result = spawnSync("python3", ["-I", "-B", "-c", python], { cwd: root, encoding: "utf8", timeout: 10000 });

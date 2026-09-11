@@ -27,6 +27,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
 import { createApiClient } from "../dev/launcher/api-client.ts";
+import { admitScenarioValue } from "../dev/product-test/runner.ts";
 import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
 import type { ModelApiKeySource } from "../src/auth/model-auth.ts";
@@ -447,6 +448,71 @@ function oneTextStream(text: string): StreamFn {
     return stream;
   };
 }
+
+test("closed product scenario rejects proto/getters before serialization and vetoes native writes", async () => {
+  for (const value of [JSON.parse('{"nested":{"__proto__":1}}'), Array.from({ length: 2049 }, () => 1)])
+    assert.throws(() => admitScenarioValue(value));
+  let getter = false;
+  assert.throws(() =>
+    admitScenarioValue(
+      Object.defineProperty({}, "data", {
+        enumerable: true,
+        get: () => {
+          getter = true;
+          return 1;
+        },
+      }),
+    ),
+  );
+  assert.equal(getter, false);
+  for (const veto of ["session", "message"]) {
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-prewrite-"));
+    let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+    let denied = 0;
+    try {
+      const cwd = resolve(root, "workspace"),
+        agentDir = resolve(root, "agent"),
+        sessionRoot = resolve(root, "sessions");
+      await mkdir(cwd);
+      await mkdir(agentDir);
+      const create = createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "product-session",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "synthetic",
+          toolPorts: fakePorts([]),
+          streamFn: createFakeModelStream({ calls: 0, observedApiKeys: [] }),
+          historyAdmission: (entry) => {
+            admitScenarioValue(entry);
+            if ((entry as { type: string }).type === veto) {
+              denied++;
+              throw new Error("supervisor veto");
+            }
+          },
+        }),
+      );
+      if (veto === "session") {
+        await assert.rejects(create);
+        assert.deepEqual(await readdir(resolve(sessionRoot, "product-session")), []);
+      } else {
+        adapter = await create;
+        const file = adapter.sessionFile();
+        assert.ok(file);
+        const before = await readFile(file);
+        await adapter.input({ requestId: "veto", correlationId: "veto", kind: "prompt", content: "synthetic" });
+        await eventually(() => assert.equal(denied, 1));
+        assert.deepEqual(await readFile(file), before);
+      }
+      assert.equal(denied, 1);
+    } finally {
+      await adapter?.dispose().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
 
 test("Pi session adapter constructs locked runtime-only SDK components, only Cogs tools, and native JSONL", async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-session-"));

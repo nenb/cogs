@@ -134,6 +134,8 @@ export interface CogsPiSessionOptions {
   readonly resumeFile?: string;
   readonly toolPorts: CogsToolPorts;
   readonly streamFn?: StreamFn;
+  /** Optional closed-scenario authority. Synchronous veto precedes every native JSONL write. */
+  readonly historyAdmission?: (entry: unknown) => void;
   /** Return true only for bounded stream acceptance, never merely for optional delivery. */
   readonly emit: (event: ApiEvent) => boolean;
   readonly onFatal: (reason: string) => void | Promise<void>;
@@ -520,6 +522,9 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
   const sessionRoot = options.sessionRoot;
   const resumeFile = options.resumeFile;
   const streamFn = options.streamFn;
+  const historyAdmission = options.historyAdmission;
+  if (historyAdmission !== undefined && typeof historyAdmission !== "function")
+    throw new Error("invalid history admission");
   const emit = options.emit;
   const onFatal = options.onFatal;
   const toolPorts = options.toolPorts;
@@ -591,7 +596,24 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
 
     const adapterRef: { current?: PiSessionAdapter } = {};
     let persistencePoisoned = false;
-    const sessionManager = await createContainedSessionManager(cwd, sessionRoot, sessionId, resumeFile);
+    if (historyAdmission && resumeFile !== undefined) throw new Error("scenario cannot resume");
+    const sessionManager = await createContainedSessionManager(
+      cwd,
+      sessionRoot,
+      sessionId,
+      resumeFile,
+      historyAdmission,
+    );
+    if (historyAdmission) {
+      const persist = sessionManager._persist;
+      Object.defineProperty(sessionManager, "_persist", {
+        configurable: true,
+        value: (entry: Parameters<SessionManager["_persist"]>[0]) => {
+          historyAdmission(entry);
+          return persist.call(sessionManager, entry);
+        },
+      });
+    }
     const sessionDir = sessionManager.getSessionDir();
     await ownedRuntime?.adoptSessionDir(sessionDir);
     const historyStore = createCogsJsonlHistoryStore({
@@ -608,6 +630,7 @@ export async function createCogsPiSession(options: CogsPiSessionOptions): Promis
       isAtRest: () => adapterRef.current?.persistenceAtRest() ?? true,
       acknowledge: async () => historyStore.flushSettled(),
     });
+    if (historyAdmission) Object.defineProperty(sessionManager, "_persist", { configurable: false, writable: false });
     const gitMapStore =
       gitOptions === undefined
         ? undefined
@@ -2774,11 +2797,12 @@ async function createContainedSessionManager(
   sessionRoot: string,
   sessionId: string,
   resumeFile: string | undefined,
+  historyAdmission?: (entry: unknown) => void,
 ): Promise<SessionManager> {
   const realSessionRoot = await ensureRealDirectory(sessionRoot);
   const realSessionDir = await ensureRealDirectory(resolve(realSessionRoot, sessionId));
   if (!contained(realSessionRoot, realSessionDir)) throw new Error("session directory escapes root");
-  if (resumeFile === undefined) return createNewSecureNativeSessionManager(cwd, realSessionDir);
+  if (resumeFile === undefined) return createNewSecureNativeSessionManager(cwd, realSessionDir, historyAdmission);
   if (resumeFile !== basenameOnly(resumeFile)) throw new Error("invalid resume file");
   const candidate = resolve(realSessionDir, resumeFile);
   const realCandidate = await secureNativeSessionFile(candidate, realSessionDir);
@@ -2786,7 +2810,11 @@ async function createContainedSessionManager(
   return openStrictNativeSession(realCandidate, realSessionDir, cwd);
 }
 
-async function createNewSecureNativeSessionManager(cwd: string, sessionDir: string): Promise<SessionManager> {
+async function createNewSecureNativeSessionManager(
+  cwd: string,
+  sessionDir: string,
+  historyAdmission?: (entry: unknown) => void,
+): Promise<SessionManager> {
   const pending = SessionManager.create(cwd, sessionDir);
   const sessionFile = pending.getSessionFile();
   const header = pending.getHeader();
@@ -2797,6 +2825,7 @@ async function createNewSecureNativeSessionManager(cwd: string, sessionDir: stri
     header.id !== pending.getSessionId()
   )
     throw new Error("invalid session file");
+  historyAdmission?.(header);
   await createSecureNativeSessionHeader(sessionFile, sessionDir, header);
   const opened = SessionManager.open(sessionFile, sessionDir, cwd);
   if (opened.getSessionId() !== pending.getSessionId() || opened.getHeader()?.id !== pending.getSessionId())

@@ -1,6 +1,6 @@
 import { randomBytes, X509Certificate } from "node:crypto";
 import { constants, readSync, writeSync } from "node:fs";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createServer as httpsServer } from "node:https";
 import { pathToFileURL } from "node:url";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -13,6 +13,8 @@ import { canonicalPresetPolicyRevision } from "../../src/egress/preset-revision.
 import { lowerLaunchEgressRoutePlan } from "../../src/egress/route-policy.ts";
 import {
   aggregateCogsEgressRoutePlanRevision,
+  type CogsEgressRuntimeManager,
+  observeCogsEgressRuntime,
   startCogsEgressRuntimeManager,
 } from "../../src/egress/runtime-manager.ts";
 import { beginRegisteredClose, registerCloseOwner } from "../../src/launch/close.ts";
@@ -26,6 +28,7 @@ import {
   validateRuntimeConfig,
 } from "../../src/runtime/config.ts";
 import { withTrustedFileBytes } from "../../src/runtime/trusted-files.ts";
+import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../../src/telemetry/worker-telemetry.ts";
 import { createApiClient } from "../launcher/api-client.ts";
 import {
   type ContainerReceipt,
@@ -289,19 +292,19 @@ await (await import('/opt/cogs/dev/product-test/runner.ts')).workerMain();
 socket.destroy();
 `;
 type GateState = { fd: number; q: Record<string, unknown> & { sequence: number } };
-function gate(op: string, counts: Record<string, number> = {}): void {
+function gate(op: string, counts: Record<string, unknown> = {}): void {
   const state = (globalThis as typeof globalThis & { __cogsGate?: GateState }).__cogsGate;
   check(state);
   const q = { ...state.q, ...counts, sequence: ++state.q.sequence, op };
   const request = Buffer.from(canonical(q));
   check(writeSync(state.fd, request) === request.length);
-  const bytes = Buffer.alloc(1025);
+  const bytes = Buffer.alloc(131073);
   let length = 0;
   const deadline = performance.now() + 2000;
   while (!bytes.subarray(0, length).includes(10)) {
-    check(performance.now() < deadline && length < 1024);
+    check(performance.now() < deadline && length < 131072);
     try {
-      const n = readSync(state.fd, bytes, length, 1025 - length, null);
+      const n = readSync(state.fd, bytes, length, bytes.length - length, null);
       check(n > 0);
       length += n;
     } catch (e) {
@@ -423,7 +426,7 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
   check(process.platform === "linux" && process.arch === "x64" && process.geteuid?.() === 0);
   for (const key of Object.keys(process.env))
     check(
-      !/^(AWS_|AZURE_|GOOGLE_|ANTHROPIC_|OPENAI_|VAULT_|BAO_|OPENBAO_|SSH_|GIT_|DOCKER_|KUBECONFIG|NODE_OPTIONS|NODE_EXTRA_CA_CERTS)/.test(
+      !/^(AWS_|AZURE_|GOOGLE_|ANTHROPIC_|OPENAI_|VAULT_|BAO_|OPENBAO_|SSH_|GIT_|DOCKER_|KUBECONFIG|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_|CURL_|LD_|PYTHON)/.test(
         key,
       ),
     );
@@ -432,6 +435,7 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
   try {
     for (const id of [restrictions.sandbox_image, restrictions.worker_image, restrictions.stock_worker_image])
       await host.request("image", { id });
+    const provenance = await host.request("provenance", { ...restrictions, recipe: hash(WORKER_DOCKERFILE) });
     const stockTrust = await pinnedTrust(host, restrictions.stock_worker_image);
     await host.request("storage", { name: "state" });
     await host.request("storage", { name: "workspace" });
@@ -460,6 +464,7 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
     await put(host, "documents/hosts", "127.0.0.1 localhost fixture.cogs.test\n::1 localhost\n", 0o444);
     await put(host, "documents/resolv.conf", "nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", 0o444);
     await put(host, "documents/hostname", "cogs-product\n", 0o444);
+    await put(host, "documents/provenance.json", canonical(provenance), 0o444);
     const mount = (source: string, target: string, ro = true): Mount => ({
       source: `${host.root}/${source}`,
       target,
@@ -502,6 +507,7 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
         ...networkFiles,
         mount("documents/runtime.json", "/etc/cogs/runtime.json"),
         mount("documents/launch.json", "/etc/cogs/launch.json"),
+        mount("documents/provenance.json", "/etc/cogs/provenance.json"),
         ...["api", "proxy", "ssh", "pki"].map((n) => mount(`inputs/${n}`, `/run/cogs/${n}`)),
         mount("lease", "/run/cogs/skills"),
         mount("inputs/shared-oci", runtime.paths.shared_skill_oci),
@@ -537,6 +543,7 @@ export async function productMain(restrictions: Restrictions): Promise<void> {
     }
     const evidence = JSON.parse(await host.request<string>("evidence"));
     check(evidence.outcome === "pass" && evidence.generation === generation && evidence.upstream === 1);
+    check(canonical(evidence.provenance) === canonical(provenance));
     check(evidence.traces > 0 && evidence.metrics > 0 && evidence.audit > 0 && evidence.omitted === true);
     passed = true;
   } finally {
@@ -639,7 +646,7 @@ export function deterministicStream(): StreamFn {
     check(model.provider === "anthropic" && model.id === "claude-sonnet-4-5" && index < 4);
     const stage = index++;
     const stream = createAssistantMessageEventStream();
-    const command = `set -eu\ncd /workspace\nprintf 'alpha\\n' > proof.txt\ngit init -q\ngit config user.email synthetic@example.invalid\ngit config user.name Synthetic\ngit add proof.txt\ngit commit -q -m synthetic-baseline\npython3 -I - <<'COGS_FIXED_PROGRAM'\n${PROXY_CLIENT}COGS_FIXED_PROGRAM\n`;
+    const command = `set -eu\ncd /workspace\nprintf 'alpha\\n' > proof.txt\ngit init -q --template= --initial-branch=master\ngit config user.email synthetic@example.invalid\ngit config user.name Synthetic\ngit add proof.txt\ngit commit -q -m synthetic-baseline\npython3 -I - <<'COGS_FIXED_PROGRAM'\n${PROXY_CLIENT}COGS_FIXED_PROGRAM\n`;
     const result: AssistantMessage = {
       role: "assistant",
       api: "anthropic-messages",
@@ -660,6 +667,7 @@ export function deterministicStream(): StreamFn {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     };
+    admitScenarioValue(result);
     stream.push({ type: "start", partial: result });
     stream.push({ type: "done", reason: result.stopReason as "stop" | "toolUse", message: result });
     stream.end();
@@ -667,35 +675,21 @@ export function deterministicStream(): StreamFn {
   });
 }
 
-async function countHistory(root: string): Promise<{ entries: number; nodes: number }> {
-  let entries = 0,
-    nodes = 0,
-    bytes = 0;
-  const walk = async (path: string): Promise<void> => {
-    const s = await lstat(path);
-    check(!s.isSymbolicLink());
-    if (s.isDirectory()) {
-      for (const name of await readdir(path)) await walk(`${path}/${name}`);
-      return;
-    }
-    bytes += s.size;
-    check(s.isFile() && s.size <= 1024 * 1024 && bytes <= 2 * 1024 * 1024);
-    if (!path.endsWith(".jsonl")) return;
-    const visit = (v: unknown, depth: number): void => {
-      check(++nodes <= 2048 && depth <= 16);
-      if (v && typeof v === "object")
-        for (const [k, x] of Object.entries(v)) {
-          check(k !== "__proto__");
-          visit(x, depth + 1);
-        }
-    };
-    for (const line of (await readFile(path, "utf8")).trim().split("\n")) {
-      check(++entries <= 25);
-      visit(JSON.parse(line), 0);
+export function admitScenarioValue(value: unknown): void {
+  let nodes = 0;
+  const visit = (v: unknown, depth: number): void => {
+    check(++nodes <= 2048 && depth <= 16);
+    if (v && typeof v === "object") {
+      check([Object.prototype, Array.prototype, null].includes(Object.getPrototypeOf(v)));
+      for (const key of Reflect.ownKeys(v)) {
+        check(typeof key === "string" && key !== "__proto__");
+        const d = Object.getOwnPropertyDescriptor(v, key);
+        check(d && "value" in d);
+        visit(d.value, depth + 1);
+      }
     }
   };
-  await walk(root);
-  return { entries, nodes };
+  visit(value, 0);
 }
 
 async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<void> {
@@ -782,8 +776,15 @@ export async function workerMain(): Promise<void> {
     traces = 0,
     metrics = 0,
     audit = 0;
+  const exports: Array<{ path: string; body: unknown }> = [];
+  const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
   const upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
     upstream++;
+    upstreamRequests.push({
+      method: req.method ?? "",
+      path: req.url ?? "",
+      credential: req.headers.authorization === "Bearer synthetic-upstream-credential",
+    });
     if (
       req.method !== "GET" ||
       req.url !== "/credential" ||
@@ -803,11 +804,20 @@ export async function workerMain(): Promise<void> {
         return;
       }
       let bytes = 0;
+      const chunks: Buffer[] = [];
       req.on("data", (b: Buffer) => {
         bytes += b.length;
+        if (bytes <= 1024 * 1024) chunks.push(b);
         if (bytes > 1024 * 1024) req.destroy();
       });
       req.on("end", () => {
+        try {
+          check(bytes > 0 && bytes <= 1024 * 1024 && exports.length < 128);
+          exports.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+        } catch {
+          res.writeHead(400).end();
+          return;
+        }
         if (req.url === "/v1/traces") traces++;
         if (req.url === "/v1/metrics") metrics++;
         res.writeHead(200, { "content-type": "application/json" }).end("{}");
@@ -832,10 +842,20 @@ export async function workerMain(): Promise<void> {
     shutdown = false,
     streamFailed = false;
   const counters = new RestrictionCounters();
+  const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
+  let exported: unknown;
   let auditTimer: ReturnType<typeof setInterval> | undefined;
+  let egressHandle: CogsEgressRuntimeManager | undefined;
+  let telemetry: CogsWorkerTelemetrySink | undefined;
   const worker = await startProductionWorker({
     seams: {
       createIdentity: () => synthetic.identity,
+      createTelemetry: (config) =>
+        (telemetry = createCogsWorkerTelemetrySink({
+          mode: "otlp",
+          tracesEndpoint: config.otlp.traces_endpoint,
+          metricsEndpoint: config.otlp.metrics_endpoint,
+        })),
       createModelStore: () => synthetic.model,
       createEgress: async (options) => {
         const egress = await startCogsEgressRuntimeManager({
@@ -844,13 +864,21 @@ export async function workerMain(): Promise<void> {
           revocation: synthetic.revocation,
         });
         const handle = egress;
+        egressHandle = handle;
         auditTimer = setInterval(() => {
           audit = Math.max(audit, handle.auditRecords?.(128).length ?? 0);
         }, 50);
         return egress;
       },
       createPi: async (options) => {
-        pi = await createAuthenticatedCogsPiSession({ ...options, streamFn: deterministicStream() });
+        pi = await createAuthenticatedCogsPiSession({
+          ...options,
+          streamFn: deterministicStream(),
+          historyAdmission: (entry) => {
+            admitScenarioValue(entry);
+            gate("persist", { entry: JSON.parse(JSON.stringify(entry)) });
+          },
+        });
         return pi;
       },
       createApi: (options) => {
@@ -861,7 +889,13 @@ export async function workerMain(): Promise<void> {
             publish: (event: Parameters<ApiServer["publish"]>[0]) => {
               try {
                 counters.admit("event");
-                gate("event");
+                gate("event", {
+                  event: {
+                    kind: event.kind,
+                    correlation_id: event.correlation_id,
+                    request_id: event.request_id ?? null,
+                  },
+                });
                 return created.publish(event);
               } catch {
                 streamFailed = true;
@@ -901,8 +935,22 @@ export async function workerMain(): Promise<void> {
   const stream = (async () => {
     try {
       for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
+        observedEvents.push({
+          kind: event.kind,
+          correlation_id: event.correlation_id,
+          request_id: event.request_id ?? null,
+        });
         if (event.kind === "run_settled") settled++;
-        if (event.kind === "shutdown_ready") shutdown = true;
+        if (event.kind === "shutdown_ready") {
+          shutdown = true;
+          const payload = event.payload as Record<string, unknown>;
+          exported = {
+            sensitive: true,
+            bundle: Object.fromEntries(
+              ["bundle", "manifest_sha256", "mode", "file_count", "total_bytes"].map((key) => [key, payload[key]]),
+            ),
+          };
+        }
         const payload = event.payload as { cogs_transport?: { status?: string } };
         if (payload?.cogs_transport?.status === "omitted") omitted = true;
       }
@@ -927,9 +975,7 @@ export async function workerMain(): Promise<void> {
         await new Promise((r) => setTimeout(r, 20));
       }
     }
-    const counts = await countHistory(runtime.paths.session_root);
-    counters.admit("history", counts.entries, counts.nodes);
-    gate("history", counts);
+    gate("history"); // host reads durable JSONL and reconciles its own pre-write admissions
     await client.request("entries", { limit: 25 });
     check(pi && upstream === 1 && omitted && !streamFailed);
     await verifyFragments(pi, bearer);
@@ -960,6 +1006,13 @@ export async function workerMain(): Promise<void> {
     await evidence.writeFile(
       canonical({
         outcome: "pass",
+        provenance: JSON.parse(await readFile("/etc/cogs/provenance.json", "utf8")),
+        egress: egressHandle && observeCogsEgressRuntime(egressHandle),
+        telemetry: telemetry?.snapshot(),
+        exports,
+        upstreamRequests,
+        exported,
+        observedEvents,
         generation: receipt.generation,
         upstream,
         traces,
