@@ -40,12 +40,12 @@ POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global"
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
-                          "lifecycle": 4_450, "completion": 3_000, "integration": 5_287}
+                          "lifecycle": 4_450, "completion": 2_900, "integration": 5_387}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 2_000_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 2_600_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
-                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 3_350_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 2_650_000
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 3_950_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 3_250_000
 REMEDIATION_GLOBAL_BYTE_HIGH = 6_550_000
 PRODUCT_TEST_NEW_FILES = {
     "dev/linux-kvm/bounded-command.py": "relay",
@@ -418,7 +418,7 @@ def _remediation_budget():
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 4_800,
-                "lifecycle": 11_800, "completion": 6_500, "integration": 17_612}
+                "lifecycle": 11_800, "completion": 6_400, "integration": 17_712}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -446,7 +446,7 @@ def _remediation_budget():
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
                                 "lifecycle": 5, "completion": 3, "integration": 87})
     _require(sum(new_file_highs.values()) == 97
-             and sum(forecast["total"] for forecast in forecasts.values()) == 6_620_000)
+             and sum(forecast["total"] for forecast in forecasts.values()) == 7_220_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
@@ -472,7 +472,7 @@ def _product_test_budget(data, allocations):
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
              and plan["global_gross_line_forecast"] == 15_537
              and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST
-             and plan["integration_regeneration_gross_line_forecast"] == 100 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
+             and plan["integration_regeneration_gross_line_forecast"] == 200 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
     q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))

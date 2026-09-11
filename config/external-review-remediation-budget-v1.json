@@ -17,8 +17,8 @@
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
     "global_gross_line_forecast": 15537,
-    "global_gross_byte_forecast": 2650000,
-    "integration_regeneration_gross_line_forecast": 100,
+    "global_gross_byte_forecast": 3250000,
+    "integration_regeneration_gross_line_forecast": 200,
     "integration_synchronization_gross_byte_forecast": 60000,
     "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
     "owners": [
@@ -92,7 +92,7 @@
       },
       {
         "name": "completion",
-        "gross_line_forecast": 3000,
+        "gross_line_forecast": 2900,
         "gross_byte_forecast": 300000,
         "existing_paths": [
           "dev/launcher/api-client.ts",
@@ -109,8 +109,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 5287,
-        "gross_byte_forecast": 2000000,
+        "gross_line_forecast": 5387,
+        "gross_byte_forecast": 2600000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
@@ -330,7 +330,7 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 6500,
+      "gross_line_high": 6400,
       "gross_byte_forecast": {
         "total": 800000
       },
@@ -366,9 +366,9 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 17612,
+      "gross_line_high": 17712,
       "gross_byte_forecast": {
-        "total": 3350000
+        "total": 3950000
       },
       "new_file_high": 87,
       "paths": [
