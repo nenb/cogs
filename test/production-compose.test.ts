@@ -129,6 +129,110 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("product custody retirement crash cuts recover without reacquiring commands or adopting cgroups", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import copy,importlib.util,json,os,selectors,tempfile,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+class Crash(BaseException): pass
+for failed in (False,True):
+ for cut in ('intent','helpers','parent'):
+  for drift in ('none','identity','population','foreign-child','invalid-intent'):
+   with tempfile.TemporaryDirectory() as root:
+    cg=root+'/cgroup';os.mkdir(cg);os.mkdir(cg+'/helpers');os.mkdir(root+'/control')
+    cgfd=os.open(cg,os.O_RDONLY|os.O_DIRECTORY)  # keep the original inode unavailable for reuse
+    cid='b'*64;image='sha256:'+'c'*64;generation='a'*32;calls=[];removed=[];owners=[];armed=True
+    journal={'intent':{'generation':generation},'root':list(m.identity(os.stat(root))[:2]),
+     'cgroup':list(m.identity(os.stat(cg))[:2]),'disk':100,'worker-intent':{},
+     'worker-receipt':{'id':cid,'spec':{'image':image}},'image-'+image[7:]:{'Config':{'Labels':{}}},
+     'state-storage':{},'state-backing':[1,2],'state-loop':{'name':'/dev/loop9'},'state-mount':['exact-mount']}
+    live=[{'name':'/dev/loop9'},['exact-mount']];present=True
+    real_open=open;real_rmdir=os.rmdir
+    def persist(n,v):
+     assert n not in journal or journal[n]==v
+     journal[n]=copy.deepcopy(v)
+     with real_open(root+'/control/'+n,'wb') as f: f.write(m.canonical(v))
+    for n,v in list(journal.items()): persist(n,v)
+    def command(argv,*a,**kw):
+     global present
+     assert os.path.isdir(cg+'/helpers') and 'cgroup-retire-intent' not in journal,'command custody retired too soon'
+     calls.append(argv[0])
+     if argv[0]=='ps': return (cid+'\n').encode() if present else b''
+     if argv[0]=='inspect': return m.canonical([{'Id':cid,'Image':image,'Config':{'Labels':{'cogs.product.generation':generation}}}])
+     if argv[0]=='rm': assert argv==['rm','-f',cid];present=False
+     if argv[0]=='umount': live[1]=None
+     if argv[0]=='losetup': assert argv==['losetup','--detach','/dev/loop9'];live[0]=None
+     return b''
+    def observation(name): command(['inventory']);return tuple(live)
+    def record(n,v):
+     global armed
+     if n=='cgroup-retire-intent':
+      assert not present and live==[None,None] and 'state-detached' in journal
+      assert ('evidence' in calls)==(not failed)
+     persist(n,v)
+     if n=='cgroup-retire-intent' and cut=='intent' and armed: armed=False;raise Crash()
+    def owner():
+     o=m.Custody.__new__(m.Custody);owners.append(o)
+     o.root=root;o.cg=cg;o.generation=generation;o.recovery=True;o.failed=failed;o.disk=None
+     o.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.control=os.open(root+'/control',os.O_RDONLY|os.O_DIRECTORY)
+     o.ids={};o.images={};o.peers={};o.sealed=[];o.mounts=[];o.records=set(journal);o.selector=selectors.DefaultSelector()
+     o.saved=lambda n:json.loads(m.capture(o.control,n));o.record=lambda n,v:(record(n,v),o.records.add(n))[0];o.command=command
+     o.docker=lambda *args,**kw:command(list(args),**kw);o.storage_observation=observation
+     o.evidence=lambda:command(['evidence'])
+     return o
+    def remove(path,*a,**kw):
+     global armed
+     assert path in (cg+'/helpers',cg) and journal['cgroup-retire-intent'] is True
+     real_rmdir(path,*a,**kw);removed.append(path)
+     if cut==('parent' if path==cg else 'helpers') and armed: armed=False;raise Crash()
+    def opened(path,*a,**kw):
+     return m.io.StringIO('populated '+('1' if drift=='population' and not armed else '0')+'\n') if path==cg+'/cgroup.events' else real_open(path,*a,**kw)
+    try:
+     with patch('builtins.open',side_effect=opened),patch.object(m.os,'rmdir',side_effect=remove),patch.object(m.os,'statvfs',return_value=types.SimpleNamespace(f_bfree=100,f_frsize=1)):
+      first=owner();first.disk=100;first.ids={'worker':copy.deepcopy(journal['worker-receipt'])}
+      first.images={image:journal['image-'+image[7:]]};first.mounts=['state']
+      try: first.settle()
+      except Crash: pass
+      else: raise AssertionError('crash cut not reached')
+      assert 'retired' not in journal and not present and live==[None,None]
+      prior_calls=list(calls);prior_removed=list(removed)
+      if drift=='identity':
+       if os.path.exists(cg): os.rename(cg,cg+'.held')
+       os.mkdir(cg)  # never adopt a replacement, including after parent absence
+      if drift=='foreign-child' and os.path.exists(cg): os.mkdir(cg+'/foreign')
+      if drift=='invalid-intent':
+       journal.pop('cgroup-retire-intent');persist('cgroup-retire-intent',False)
+      fresh=owner()
+      rejected=drift in ('identity','invalid-intent') or drift in ('population','foreign-child') and cut!='parent'
+      try: fresh.reopen()
+      except (RuntimeError,OSError): assert rejected
+      else:
+       assert not rejected and journal['retired']=={'generation':generation,'failed':True}
+       assert not os.path.exists(cg) and removed==[cg+'/helpers',cg]
+       fresh.settle()  # repeating terminal settlement has no child effects or removals
+       assert removed==[cg+'/helpers',cg]
+      assert calls==prior_calls,'recovery reran Docker/inventory/helper commands'
+      if rejected:
+       assert 'retired' not in journal
+       assert all(p!=cg for p in removed[len(prior_removed):])
+       if drift=='foreign-child': assert os.path.isdir(cg+'/foreign')
+    finally:
+     os.close(cgfd)
+     for o in owners: os.close(o.control);os.close(o.fd);o.selector.close()
+`,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("every capability-removal scenario executes create/start/pinned SSH/SFTP/probe/receipt cleanup without worker authority", async () => {
   const generation = "a".repeat(32);
   const full: ContainerSpec = {
@@ -206,7 +310,7 @@ for plan in scenarios:
   owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
   journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
   owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}
-  owner.record=lambda n,v:journal.setdefault(n,copy.deepcopy(v))
+  owner.record=lambda n,v:journal.setdefault(n,copy.deepcopy(v));owner.saved=lambda n:journal[n]
   def inspect(identity):
    assert identity==cid
    return {'Image':spec['image'],'State':{'Running':alive},'Config':{'Env':['COGS_PROXY_ENDPOINT=http://127.0.0.1:18080'],'Labels':{'cogs.product.generation':'foreign' if mode=='foreign-cleanup' else owner.generation}}}

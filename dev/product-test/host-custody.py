@@ -343,6 +343,9 @@ class Custody:
             require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
         else:
             require("cgroup-retire-intent" in os.listdir(self.control))
+        if "cgroup-retire-intent" in os.listdir(self.control):
+            self.rollback()
+            return
         self.disk = self.saved("disk") if "disk" in os.listdir(self.control) and os.path.exists(self.cg) else None
         for name in ("publication", "workspace", "state"):
             if name + "-storage" in os.listdir(self.control):
@@ -996,7 +999,8 @@ class Custody:
             del self.peers[conn]
             conn.close()
 
-    def settle(self):
+    def settle_children(self):
+        """Complete all command-dependent work before retiring helper command custody."""
         for conn in list(self.peers):
             conn.close()
         self.peers.clear()
@@ -1081,15 +1085,21 @@ class Custody:
         if self.disk is not None:
             delta = self.disk - os.statvfs("/var/lib/docker").f_bfree * os.statvfs("/var/lib/docker").f_frsize
             require(delta <= 256 * 1048576)
+        if not self.failed:
+            require(set(os.listdir(self.control)) == self.records)
+
+    def settle(self):
+        # Durable boundary: recovery must not need commands after either rmdir.
+        if "cgroup-retire-intent" not in os.listdir(self.control):
+            self.settle_children()
+            self.record("cgroup-retire-intent", True)
+        require(self.saved("cgroup-retire-intent") is True)
         if os.path.exists(self.cg):
             require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
             require("populated 0" in open(self.cg + "/cgroup.events", encoding="ascii").read())
             if os.path.exists(self.cg + "/helpers"):
                 os.rmdir(self.cg + "/helpers")
-            self.record("cgroup-retire-intent", True)
             os.rmdir(self.cg)
-        if not self.failed:
-            require(set(os.listdir(self.control)) == self.records)
         self.record("retired", {"generation": self.generation, "failed": self.failed})
 
     def run(self):
