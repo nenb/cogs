@@ -239,7 +239,7 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17325)
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17425)
 assert b['global_gross_line_high']==45000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
@@ -570,13 +570,13 @@ assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a
 assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
 assert b['global_gross_line_high']==45000; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17325); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17425); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
 expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=2700000)
 assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==5970000 and 18763891+sum(expected_bytes.values())==24733891
 plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15100 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
-expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4300,completion=3000,integration=5000)
-assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15100
+assert plan['global_gross_line_forecast']==15350 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
+expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=3000,integration=5100)
+assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15350
 q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=700000)
 assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==1850000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
@@ -702,18 +702,31 @@ historical_forecasts=dict(relay=2800,lifecycle=4300,integration=4500,completion=
 for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integration',3379,1121),('completion',2047,1453)):
  assert historical_forecasts[owner]-used==remaining  # original gate ledger remains historical
 checkpoint=dict(route=0,revocation=0,relay=1771,lifecycle=3984,completion=2552,integration=4475)
-assert sum(checkpoint.values())==12782 and sum(expected_forecasts[o]-n for o,n in checkpoint.items())==2318
-pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(expected_forecasts[o]-n for o,n in pivot.items())==2296
-assert 90+180+46==expected_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==expected_forecasts['integration']-pivot['integration']  # historical pivot ledger
-assert 30+240+46==316 and 80+50+50+150+100+10==expected_forecasts['integration']-(pivot['integration']+63)==440
+pivot_forecasts={**expected_forecasts,'lifecycle':4300,'integration':5000}  # historical caps, not current capacity
+assert sum(checkpoint.values())==12782 and sum(pivot_forecasts[o]-n for o,n in checkpoint.items())==2318
+pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(pivot_forecasts[o]-n for o,n in pivot.items())==2296
+assert 90+180+46==pivot_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==pivot_forecasts['integration']-pivot['integration']
+assert 30+240+46==316 and 80+50+50+150+100+10==pivot_forecasts['integration']-(pivot['integration']+63)==440
 assert 448+1029+316+440==2233 and '2,233 total lines remain before this revision' in replan  # historical, not spendable
-assert 26+50+20+20+150+100+10==expected_forecasts['integration']-(4497+63+64)==376
-assert 30+120+120+46==expected_forecasts['lifecycle']-3984==316 and 448+1029+316+376==2169
+assert 26+50+20+20+150+100+10==pivot_forecasts['integration']-(4497+63+64)==376
+assert 30+120+120+46==pivot_forecasts['lifecycle']-3984==316 and 448+1029+316+376==2169
 for text in ('Reconciled remaining-task ledger from \x60eb9a3ec0\x60', 'ci-smoke wrapper sentinel/tool-spy guards 20',
  'report CLI denial/guards 20', 'complete-driver denial conversion/entry sentinels 120',
  'equivalent internal driver behavior preservation in existing isolated model tests 120',
  'wrapper guard tests are not charged to lifecycle', 'No lifecycle charge transfer', '2,169 total lines remain before this amendment'):
  assert text in replan,text
+assert 132>120 and 30+190+120+46==386>316
+assert expected_forecasts['lifecycle']-3984==30+190+120+46+80==466
+assert expected_forecasts['integration']-4648==102+50+20+20+150+100+10==452
+assert 448+1029+466+452==2395 and sum(q_lines.values())+sum(expected_forecasts.values())==44955<=b['global_gross_line_high']
+assert all(q_lines[o]+expected_forecasts[o]<=highs[o] for o in highs)
+assert 99461+15350==114811<m['HARD_LIMIT'] and 95358+15350==110708<m['HARD_LIMIT']
+assert 700000-681198-12000==6802 and 1850000-989430==860570
+for text in ('132/120 gross lines', 'complete-driver denial conversion/entry sentinels 190', 'inherited contingency 46 + withheld fit buffer 80',
+ 'this governance 102', '2,395 total remain before this amendment', '44,955', '114,811', '12,000 gross added-line bytes',
+ 'complete future implementation byte fit is not proven', 'No accounting algorithm changes'):
+ assert text in replan,text
+index=Path('docs/adr/README.md').read_text(); assert all(t in index for t in ('132/120','15,350','44,955','114,811'))
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
@@ -793,7 +806,7 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   ])
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
-    ["lines", 15100],
+    ["lines", 15350],
     ["line_bytes", 1850000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
@@ -834,8 +847,8 @@ for owner,high in highs.items():
  remediation[owner]+=1
  assert sum(remediation.values())<b['global_gross_line_high']
  veto(f,owner+' cumulative owner high+1 with other owners zero')
-remediation=dict(highs); remediation['integration']-=525
-assert sum(highs.values())==45525
+remediation=dict(highs); remediation['integration']-=725
+assert sum(highs.values())==45725
 assert f()['remediation_gross_added_lines_no_deletion_credit']==45000
 remediation['integration']+=1
 assert all(remediation[o]<=highs[o] for o in highs)
@@ -878,7 +891,7 @@ def q_gross(names,allowed,revision):
  assert revision==m['PRODUCT_TEST_Q'] and all(allowed(p) for p in names)
  return values[next(e['name'] for e in b['product_test_correction']['owners'] if tuple(e['existing_paths']+e['new_files'])==names)]
 gs['_gross_slice']=q_gross
-assert sum(g(b).values())==15100
+assert sum(g(b).values())==15350
 for owner,high in m['PRODUCT_TEST_FORECASTS'].items():
  values=dict(zero); values[owner]=high
  assert g(b)==values
@@ -896,7 +909,7 @@ ordinary='docs/adr/0333-authorize-controlled-product-test-corrections.md\0'
 assert sum(g(b).values())==0
 # A tighter synthetic global proves the combined Q cap is also checked independently.
 values=dict(m['PRODUCT_TEST_FORECASTS']); tight=copy.deepcopy(b)
-tight['product_test_correction']['global_gross_line_forecast']=15099
+tight['product_test_correction']['global_gross_line_forecast']=15349
 veto(lambda:g(tight),'Q global')
 `);
 });
@@ -932,7 +945,7 @@ report=f()
 assert report['product_test_base_revision']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
 assert report['product_test_workstream_gross_added_lines']==expected
 assert report['product_test_gross_added_lines_no_deletion_credit']==110
-assert report['product_test_global_gross_line_forecast']==15100
+assert report['product_test_global_gross_line_forecast']==15350
 def veto(label):
  try: f()
  except m['LineBudgetError']: return
@@ -940,7 +953,7 @@ def veto(label):
 values=dict(zero); values['completion']=3000
 assert f()['product_test_gross_added_lines_no_deletion_credit']==3000
 values['completion']=3001
-assert sum(values.values())<15100
+assert sum(values.values())<15350
 veto('Q owner overrun')
 values=dict(zero)
 for changed in ('dev/launcher/openbao.ts\0','docs/operations/runbooks/index.json\0'):

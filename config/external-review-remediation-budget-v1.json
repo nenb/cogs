@@ -15,7 +15,7 @@
   "product_test_correction": {
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
-    "global_gross_line_forecast": 15100,
+    "global_gross_line_forecast": 15350,
     "global_gross_byte_forecast": 1850000,
     "integration_regeneration_gross_line_forecast": 100,
     "owners": [
@@ -49,7 +49,7 @@
       },
       {
         "name": "lifecycle",
-        "gross_line_forecast": 4300,
+        "gross_line_forecast": 4450,
         "gross_byte_forecast": 450000,
         "existing_paths": [
           "dev/insecure-sandbox/ci-smoke.sh",
@@ -106,7 +106,7 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 5000,
+        "gross_line_forecast": 5100,
         "gross_byte_forecast": 700000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
@@ -255,7 +255,7 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 11700,
+      "gross_line_high": 11800,
       "gross_byte_forecast": {
         "total": 1200000
       },
@@ -363,7 +363,7 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 17325,
+      "gross_line_high": 17425,
       "gross_byte_forecast": {
         "total": 2700000
       },

@@ -428,9 +428,9 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       route: [2_200, 1, { total: 350_000 }],
       revocation: [3_000, 0, { total: 220_000 }],
       relay: [4_800, 1, { total: 700_000 }],
-      lifecycle: [11_700, 5, { total: 1_200_000 }],
+      lifecycle: [11_800, 5, { total: 1_200_000 }],
       completion: [6_500, 3, { total: 800_000 }],
-      integration: [17_325, 87, { total: 2_700_000 }],
+      integration: [17_425, 87, { total: 2_700_000 }],
     },
   );
   assert.equal(
