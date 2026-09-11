@@ -130,8 +130,8 @@ test("API server object is frozen plain own-method authority and remains functio
   });
   assert.equal(Object.getPrototypeOf(api), Object.prototype);
   assert.equal(Object.isFrozen(api), true);
-  assert.deepEqual(Object.keys(api).sort(), ["close", "listen", "publish"]);
-  for (const name of ["listen", "close", "publish"] as const) {
+  assert.deepEqual(Object.keys(api).sort(), ["close", "closeAdmission", "listen", "publish"]);
+  for (const name of ["listen", "close", "closeAdmission", "publish"] as const) {
     const descriptor = Object.getOwnPropertyDescriptor(api, name);
     assert.equal(descriptor?.enumerable, true);
     assert.equal(descriptor?.writable, false);
@@ -1084,6 +1084,7 @@ test("port timeout poisons readiness, shuts down once, and ignores late noncoope
     });
     assert.equal(timedOut.status, 504);
     assert.equal(life.shutdowns, 1);
+    api.closeAdmission();
     assert.equal(api.publish(event("pi_event", { name: "after-poison" })), false);
     const ready = await json(base, "/health/ready", { method: "GET" });
     assert.equal(ready.status, 503);
@@ -1681,6 +1682,47 @@ test("bounded event admission rejects proxies/accessors without traps and omits 
     });
   }
   for (const text of ["\ud800", "\udc00"]) assert.throws(() => admitPiCallback({ type: "agent_start", text }, ""));
+});
+
+test("lossyUtf8 is a bounded optional boolean, never coerced or read through accessors", () => {
+  const callback = (details: unknown) => ({
+    type: "tool_execution_update",
+    toolCallId: "call-1",
+    toolName: "bash",
+    partialResult: { content: [{ type: "text", text: "�" }], details },
+  });
+  for (const lossyUtf8 of [false, true]) {
+    const admitted = admitPiCallback(callback({ lossyUtf8 }), "");
+    const payload = admitted.payload as { detail: { partialResult: { details: { lossyUtf8: boolean } } } };
+    assert.equal(payload.detail.partialResult.details.lossyUtf8, lossyUtf8);
+    assert.ok(Object.isFrozen(payload.detail.partialResult.details));
+  }
+  for (const lossyUtf8 of [null, 0, 1, "false", "true", {}, [], "x".repeat(1024 * 1024)])
+    assert.throws(() => admitPiCallback(callback({ lossyUtf8 }), ""));
+  let reads = 0;
+  const hostile = Object.defineProperty({}, "lossyUtf8", {
+    get: () => {
+      reads++;
+      return true;
+    },
+  });
+  assert.throws(() => admitPiCallback(callback(hostile), ""));
+  assert.equal(reads, 0);
+});
+
+test("admission shutdown preserves publication until event retirement but never heals poison", async () => {
+  await withServer(async ({ base, api }) => {
+    api.closeAdmission();
+    api.closeAdmission();
+    assert.equal((await json(base, "/health/ready")).status, 503);
+    for (const path of ["/v1/state", "/v1/entries", "/v1/entry-fragments", "/v1/events"])
+      assert.equal((await json(base, path)).status, 503, path);
+    assert.equal(api.publish(event("pi_event")), true);
+    assert.equal((await json(base, "/v1/shutdown", { method: "POST", body: "{}" })).status, 202);
+    assert.equal(api.publish(event("pi_event")), true);
+    await api.close();
+    assert.equal(api.publish(event("pi_event")), false);
+  });
 });
 
 test("every mandatory event core survives minimum final SSE budget, including complete S3 proof", async () => {

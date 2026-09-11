@@ -26,6 +26,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
+import { createApiClient } from "../dev/launcher/api-client.ts";
 import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
 import type { ModelApiKeySource } from "../src/auth/model-auth.ts";
@@ -43,6 +44,8 @@ import type { CogsGitCheckpointer } from "../src/session/git-checkpoint.ts";
 import type { CogsGitMapRecord } from "../src/session/git-map.ts";
 import type { CogsGitObservation, CogsGitObserver } from "../src/session/git-observer.ts";
 import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
+import { createSshBashToolPort } from "../src/ssh/bash-tool.ts";
+import type { CogsExecPort, SshConnectionManager } from "../src/ssh/connection.ts";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -5746,6 +5749,105 @@ test("Pi callback admission precedes model, Git and telemetry; rejected publicat
     }
     assert.equal(traps, 0);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SSH decoding integrity survives real bash updates, Pi admission, SSE and launcher validation", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-lossy-event-"));
+  let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+  const api = createApiServer({
+    bearerToken: "t".repeat(32),
+    sessionId: "lossy-event",
+    maxEventBytes: 4096,
+    lifecycle: { ready: true, state: "ready", requestShutdown: async () => undefined },
+    session: {
+      state: async () => ({ runState: "idle" }),
+      input: async () => "running",
+      abort: async () => ({ aborted: true, runState: "aborting" }),
+    },
+    history: { entries: async () => ({ entries: [] }) },
+    exporter: { createExport: async () => null },
+  });
+  // Only the SSH transport is doubled: the production decoder and Pi tool path run unchanged.
+  const manager = {
+    withBashExec: async (_input: unknown, operation: (port: CogsExecPort) => Promise<unknown>) => {
+      const listeners: Array<(bytes: Buffer) => void> = [];
+      return operation({
+        onStdout: (listener) => {
+          listeners.push(listener);
+        },
+        onStderr: (listener) => {
+          listeners.push(listener);
+        },
+        signal: async () => undefined,
+        terminal: async () => {
+          // Same decoded text; only stderr contains invalid source bytes.
+          for (const [index, listener] of listeners.entries())
+            for (const bytes of [
+              index === 0 ? Buffer.from("�") : Buffer.from([0xff]),
+              Buffer.from([0xc3]),
+              Buffer.from([0xa9]),
+            ])
+              listener(bytes);
+          return { code: 0, signal: null };
+        },
+      });
+    },
+  } as unknown as SshConnectionManager;
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    let fatal = "";
+    adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "lossy-event",
+        preparedResources: hostilePrepared(),
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-event-secret",
+        toolPorts: { ...fakePorts([]), ...createSshBashToolPort({ manager }) },
+        streamFn: oneToolStream("bash", { command: "printf fixed" }),
+        emit: api.publish,
+        onFatal: (reason) => {
+          fatal = reason;
+        },
+      }),
+    );
+    const { port } = await api.listen();
+    await adapter.input({ requestId: "utf8", correlationId: "utf8", kind: "prompt", content: "run" });
+    await eventually(async () => assert.equal((await adapter?.state())?.runState, "settled"));
+    const updates: Array<{ stream: string; chunk: string; lossyUtf8: boolean }> = [];
+    // This consumes the bounded retained frames, not a replay-reliability guarantee.
+    for await (const event of createApiClient({ port, token: "t".repeat(32) }).events(0, 100)) {
+      if (event.data.kind === "run_settled") break;
+      if (event.data.kind !== "tool_update") continue;
+      const payload = asRecord(event.data.payload);
+      assert.equal(asRecord(payload.cogs_transport).status, "complete");
+      const partial = asRecord(asRecord(payload.detail).partialResult);
+      const details = asRecord(partial.details);
+      if (details.terminal === true) {
+        assert.equal(details.lossyUtf8, undefined);
+        continue;
+      }
+      const text = asRecord((partial.content as unknown[])[0]).text;
+      const chunk = JSON.parse(text as string).chunk as string;
+      assert.equal(typeof details.lossyUtf8, "boolean");
+      updates.push({ stream: details.stream as string, chunk, lossyUtf8: details.lossyUtf8 as boolean });
+    }
+    // Pi's streaming secret-redaction tail coalesces these small chunks per stream.
+    assert.deepEqual(updates, [
+      { stream: "stdout", chunk: "�é", lossyUtf8: false },
+      { stream: "stderr", chunk: "�é", lossyUtf8: true },
+    ]);
+    assert.equal(fatal, "");
+  } finally {
+    await adapter?.dispose();
+    await api.close();
     await rm(root, { recursive: true, force: true });
   }
 });

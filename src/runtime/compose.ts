@@ -174,13 +174,16 @@ export async function startProductionWorker(
 
   const beginCompositeClose = createCloseOwner(
     async () => {
-      // API admission and Pi work stop before dependency release. Neither a
-      // timeout nor one rejection authorizes lifecycle/SSH/material destruction.
-      const independent = await Promise.allSettled([
-        api ? Promise.resolve().then(() => joinCloseWork(beginRegisteredClose(api as ApiServer))) : Promise.resolve(),
-        closePiStartupOwner(),
-      ]);
-      if (independent.some((result) => result.status === "rejected")) {
+      // Keep publication alive through Pi preparation/disposal (including
+      // shutdown_ready). Retire events only after that owner actually settles,
+      // even on failure; no timeout authorizes overlapping API retirement.
+      try {
+        try {
+          await closePiStartupOwner();
+        } finally {
+          if (api) await joinCloseWork(beginRegisteredClose(api));
+        }
+      } catch {
         cleanupUncertain = true;
         throw new ProductionWorkerError();
       }
@@ -194,6 +197,7 @@ export async function startProductionWorker(
     },
     () => {
       closeStarted = true;
+      api?.closeAdmission();
       startup.abort();
     },
   );

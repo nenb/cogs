@@ -116,6 +116,8 @@ export interface ApiCloseOptions {
 export interface ApiServer {
   readonly listen: (port?: number, host?: string, options?: ApiListenOptions) => Promise<{ port: number }>;
   readonly close: (options?: ApiCloseOptions) => Promise<void>;
+  /** Seal request admission without retiring publication or existing event streams. */
+  readonly closeAdmission: () => void;
   /** True means bounded replay acceptance, including omitted detail; never subscriber delivery. */
   readonly publish: (event: ApiEvent) => boolean;
 }
@@ -175,6 +177,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   let listenStarted = false;
   let bindState: "idle" | "binding" | "listening" | "failed" | "closed" = "idle";
   let closed = false;
+  let admissionClosed = false;
   let poisoned = false;
   let duplicateClock = 0;
   const tokenDigest = digest(options.bearerToken);
@@ -239,13 +242,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     switch (url.pathname) {
       case "/health/ready":
         return method(request, response, url, maxResponseBytes, "GET", [], false, () =>
-          safeWriteJson(
-            response,
-            !closed && !poisoned && options.lifecycle.ready ? 200 : 503,
-            { ready: !closed && !poisoned && options.lifecycle.ready, closed },
-            maxResponseBytes,
-            correlationId,
-          ),
+          safeWriteJson(response, ready() ? 200 : 503, { ready: ready(), closed }, maxResponseBytes, correlationId),
         );
       case "/v1/state":
         return method(request, response, url, maxResponseBytes, "GET", [], false, async () =>
@@ -292,8 +289,16 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
+  function ready(): boolean {
+    return !closed && !admissionClosed && !poisoned && options.lifecycle.ready;
+  }
+
+  function closeAdmission(): void {
+    admissionClosed = true;
+  }
+
   function requireReady(): void {
-    if (closed || poisoned || !options.lifecycle.ready) throw new HttpError(503, "not_ready");
+    if (!ready()) throw new HttpError(503, "not_ready");
   }
 
   function poisonFromPortTimeout(): void {
@@ -482,7 +487,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       shutdownAccepted = true;
       // Seal all further admission before acknowledging the request. Start the
       // owner after response handoff; API close must not destroy its own 202.
-      poisoned = true;
+      closeAdmission();
       response.once("finish", trigger);
       response.once("close", trigger);
       setImmediate(trigger);
@@ -702,7 +707,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     return {
       version: "cogs.state/v1alpha1",
       lifecycle: options.lifecycle.state,
-      ready: !closed && !poisoned && options.lifecycle.ready,
+      ready: ready(),
       closed,
       run_state: state.runState,
       usage: state.usage ?? null,
@@ -884,6 +889,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           throw new Error("api server close uncertain");
         });
       },
+      closeAdmission,
       publish,
     }),
     beginClose,
@@ -1719,6 +1725,7 @@ const detailKeys = [
   "exitCode",
   "signal",
   "truncated",
+  "lossyUtf8",
   "timedOut",
   "cancelled",
   "bytes",
@@ -1819,6 +1826,7 @@ function captureDetail(value: unknown): JsonValue {
       for (const name of detailKeys) {
         const item = eventData(object, name);
         if (item !== undefined) {
+          if (name === "lossyUtf8" && typeof item !== "boolean") throw new Error("invalid event boolean");
           charge(name.length + 4);
           out[name] = visit(item, depth + 1);
         }

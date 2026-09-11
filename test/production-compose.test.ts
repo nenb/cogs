@@ -540,6 +540,7 @@ function harness() {
       await apiCloseWait;
       if (cleanupFailure === "api") throw new Error("api close secret");
     },
+    closeAdmission: () => maybe("api.admission.close"),
     publish: () => true,
   });
   registerCloseOwner(
@@ -852,7 +853,6 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
   let stdout: ((chunk: Buffer) => void) | undefined;
   let stderr: ((chunk: Buffer) => void) | undefined;
   const terminal = Promise.withResolvers<{ code: number; signal: null }>();
-  const shutdownReady = Promise.withResolvers<void>();
   const longPort: CogsExecPort = Object.freeze({
     onStdout: (listener: (chunk: Buffer) => void) => {
       stdout = listener;
@@ -925,7 +925,6 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
             skillPreparer: Object.freeze({ prepare: async () => emptyPreparedSkills() }),
             emit: (event) => {
               events.push(event.kind);
-              if (event.kind === "shutdown_ready") shutdownReady.resolve();
               return options.emit(event);
             },
           });
@@ -933,28 +932,7 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
           piSession = pi;
           return pi;
         },
-        createApi: (options) => {
-          const actual = createApiServer(options);
-          const facade: ApiServer = Object.freeze({
-            listen: actual.listen.bind(actual),
-            publish: actual.publish.bind(actual),
-            close: async () => {
-              await new Promise<void>((resolveWait) => {
-                const timer = setTimeout(resolveWait, 5000);
-                void shutdownReady.promise.then(() => {
-                  clearTimeout(timer);
-                  resolveWait();
-                });
-              });
-              await actual.close();
-            },
-          });
-          registerCloseOwner(
-            facade,
-            createCloseOwner(() => facade.close()),
-          );
-          return facade;
-        },
+        createApi: createApiServer,
       },
     });
     const response = await fetch(`http://127.0.0.1:${worker.apiPort}/v1/input`, {
@@ -1052,18 +1030,19 @@ test("production composition starts in one exact fail-closed order and closes re
   await assert.rejects(worker.close("requested", { ...closeContext(1000), signal: AbortSignal.abort() }));
   await worker.close();
   await worker.closed;
-  assert.deepEqual(h.log.slice(-7), [
-    "api.close",
+  assert.deepEqual(h.log.slice(-8), [
+    "api.admission.close",
     "pi.state",
     "pi.prepare",
     "pi.dispose",
+    "api.close",
     "egress.close",
     "ssh.close",
     "telemetry.close",
   ]);
 });
 
-test("production cleanup starts API and Pi retirement together and gates dependencies on both", async () => {
+test("production seals admission then retires Pi, API events, and dependencies in order", async () => {
   const h = harness();
   let releaseApi!: () => void;
   const apiRetired = new Promise<void>((resolve) => {
@@ -1078,15 +1057,176 @@ test("production cleanup starts API and Pi retirement together and gates depende
   const worker = await startProductionWorker({ seams: h.seams });
   const closing = worker.close();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.log.includes("api.close"), true);
+  assert.equal(h.log.includes("api.admission.close"), true);
+  assert.equal(h.log.includes("api.close"), false);
   assert.equal(h.log.includes("pi.dispose"), true);
   assert.equal(h.log.includes("egress.close"), false);
-  releaseApi();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.log.includes("egress.close"), false);
   releasePi();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.log.includes("api.close"), true);
+  assert.equal(h.log.includes("egress.close"), false);
+  releaseApi();
   await closing;
   assert.equal(h.log.includes("egress.close"), true);
+});
+
+test("real production API keeps shutdown_ready publishable during admission shutdown, then retires events", async () => {
+  for (const mode of ["http", "signal", "requested", "publication-failure"] as const) {
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-production-shutdown-"));
+    const h = harness(),
+      held = Promise.withResolvers<void>(),
+      entered = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let api!: ApiServer, pi!: CogsPiSessionPorts, worker: ProductionWorkerRuntime | undefined;
+    let prepares = 0,
+      fatals = 0;
+    const accepted: boolean[] = [];
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const cwd = resolve(root, "cwd"),
+        agentDir = resolve(root, "agent");
+      await mkdir(cwd);
+      await mkdir(agentDir);
+      worker = await startProductionWorker({
+        signal: controller.signal,
+        seams: {
+          ...h.seams,
+          readRuntime: async () => ({ ...runtime(), api: { listen_host: "127.0.0.1", port: 0 } }),
+          readLaunch: async () => launch({ model: { ...launch().model, id: "claude-sonnet-4-5" } }),
+          createApi: (options) => (api = createApiServer(options)),
+          createPi: async (options) => {
+            pi = await createAuthenticatedCogsPiSession({
+              ...options,
+              cwd,
+              agentDir,
+              sessionRoot: resolve(root, "sessions"),
+              skillPreparer: Object.freeze({ prepare: async () => emptyPreparedSkills() }),
+              streamFn: longTurnModelStream(),
+              toolPorts: { ...options.toolPorts, bash: async () => ({ stdout: "fixed", exitCode: 0 }) },
+              git: {
+                repositoryId: "workspace-1",
+                observer: Object.freeze({
+                  observeHead: async () => ({
+                    kind: "observed" as const,
+                    repo: "workspace-1",
+                    commit: "a".repeat(40),
+                    observed_at: "2026-01-01T00:00:00.000Z",
+                  }),
+                  nearestAncestor: async () => null,
+                  appendNote: async () => true,
+                  dispose: async () => undefined,
+                }),
+              },
+              emit: (event) => {
+                if (mode === "publication-failure" && event.kind === "shutdown_ready")
+                  void api.close().catch(() => undefined);
+                const result = options.emit(event);
+                if (event.kind === "shutdown_ready") accepted.push(result);
+                return result;
+              },
+              onFatal: (reason) => {
+                fatals++;
+                return options.onFatal(reason);
+              },
+            });
+            const prepare = pi.prepareShutdown.bind(pi);
+            Object.defineProperty(pi, "prepareShutdown", {
+              value: async (input: Parameters<typeof prepare>[0]) => {
+                prepares++;
+                entered.resolve();
+                await held.promise;
+                return prepare(input);
+              },
+            });
+            return pi;
+          },
+        },
+      });
+      await pi.input({ requestId: "settle", correlationId: "settle", kind: "prompt", content: "run" });
+      for (let i = 0; i < 200 && (await pi.state()).runState !== "settled"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal((await pi.state()).runState, "settled");
+      const base = `http://127.0.0.1:${worker.apiPort}`;
+      const headers = { authorization: `Bearer ${secretBearer}`, "content-type": "application/json" };
+      const response = await fetch(`${base}/v1/events`, { headers });
+      reader = response.body?.getReader();
+      assert.ok(reader);
+      let closing: Promise<void>;
+      if (mode === "signal") {
+        controller.abort();
+        closing = worker.closed;
+      } else if (mode === "requested") closing = worker.close();
+      else {
+        const shutdown = await fetch(`${base}/v1/shutdown`, { method: "POST", headers, body: "{}" });
+        assert.equal(shutdown.status, 202);
+        assert.deepEqual(await shutdown.json(), { version: "cogs.shutdown/v1alpha1", accepted: true });
+        closing = worker.closed;
+      }
+      closing.catch(() => undefined);
+      await entered.promise;
+      assert.equal(worker.ready, false);
+      assert.equal(h.log.includes("egress.close"), false);
+      assert.deepEqual(accepted, []);
+      assert.equal((await fetch(`${base}/health/ready`, { headers })).status, 503);
+      assert.equal(
+        (
+          await fetch(`${base}/v1/input`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ request_id: "late", type: "prompt", content: "no" }),
+          })
+        ).status,
+        503,
+      );
+      // Repeated shutdown is only an acknowledgement; it must not restart preparation.
+      const repeated = await fetch(`${base}/v1/shutdown`, { method: "POST", headers, body: "{}" });
+      assert.equal(repeated.status, 202);
+      await repeated.arrayBuffer();
+      held.resolve();
+      if (mode === "publication-failure") {
+        await assert.rejects(closing, ProductionWorkerError);
+        assert.deepEqual(accepted, [false]);
+        assert.ok(fatals > 0);
+        assert.equal(h.log.includes("egress.close"), false);
+        await assert.rejects(worker.close(), ProductionWorkerError);
+      } else {
+        let text = "";
+        while (!text.includes('"kind":"shutdown_ready"')) {
+          const frame = await reader.read();
+          assert.equal(frame.done, false, "existing SSE stream must survive preparation");
+          text += Buffer.from(frame.value ?? []).toString();
+        }
+        assert.equal(text.split('"kind":"shutdown_ready"').length - 1, 1);
+        await closing;
+        assert.deepEqual(accepted, [true]);
+        assert.equal(fatals, 0);
+        assert.equal(h.log.includes("egress.close"), true);
+        await worker.close();
+      }
+      assert.equal(prepares, 1);
+      assert.equal(
+        api.publish({ kind: "pi_event", correlation_id: "late", payload: { event: { type: "agent_start" } } }),
+        false,
+      );
+    } finally {
+      held.resolve();
+      await reader?.cancel().catch(() => undefined);
+      await worker?.close().catch(() => undefined);
+      await api?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("production preparation rejection still disposes Pi and retires API without releasing dependencies", async () => {
+  const h = harness();
+  h.setFail("pi.prepare");
+  const worker = await startProductionWorker({ seams: h.seams });
+  await assert.rejects(worker.close(), ProductionWorkerError);
+  assert.ok(h.log.indexOf("pi.prepare") < h.log.indexOf("pi.dispose"));
+  assert.ok(h.log.indexOf("pi.dispose") < h.log.indexOf("api.close"));
+  assert.equal(h.log.includes("egress.close"), false);
+  await assert.rejects(worker.closed, ProductionWorkerError);
 });
 
 test("production late actual success cannot heal failed status or certify clean shutdown", async () => {
