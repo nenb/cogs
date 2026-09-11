@@ -585,9 +585,9 @@ existing={
  'relay':'''dev/linux-kvm/ci-smoke.sh dev/linux-kvm/driver.sh dev/linux-kvm/qualify.sh
  test/egress-conformance/guest-probes/run-kvm-black-box-case.sh
  test/egress-conformance/stage3-real-runtime/harness.ts test/linux-kvm-git-tools.test.ts''',
- 'lifecycle':'''dev/insecure-sandbox/ci-smoke.sh dev/insecure-sandbox/driver.sh
- dev/launcher/contract.ts dev/launcher/control.ts dev/launcher/core.ts dev/launcher/main.ts dev/launcher/operations.ts dev/launcher/profiles.ts
- dev/launcher/state.ts dev/launcher/supervisor.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
+ 'lifecycle':'''dev/insecure-sandbox/ci-smoke.sh dev/insecure-sandbox/driver.sh dev/insecure-sandbox/ssh-adapter-smoke.ts
+ dev/launcher/cli.ts dev/launcher/contract.ts dev/launcher/control.ts dev/launcher/core.ts dev/launcher/main.ts dev/launcher/operations.ts dev/launcher/profiles.ts
+ dev/launcher/runner.ts dev/launcher/state.ts dev/launcher/supervisor.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
  dev/launcher/worker-entry.ts dev/launcher/worker-process.ts
  schemas/runtime-v1alpha1.json src/runtime/compose.ts src/runtime/config.ts src/skills/session-preparer.ts
  test/dev-launcher-control-otlp.test.ts test/dev-launcher-core.test.ts test/dev-launcher-operations.test.ts test/dev-launcher-profiles.test.ts
@@ -621,7 +621,7 @@ expected_new={
  'docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md':'integration'}
 assert m['PRODUCT_TEST_NEW_FILES']==expected_new; assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
 assert {e['name']:e['new_files'] for e in plan['owners']}=={o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}; assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
-planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==78 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==78
+planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==81 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==81
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']; q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1]); q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json'])); old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
@@ -636,13 +636,18 @@ assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launche
 adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
 replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
 assert len(replan.splitlines())<=121
-for text in ('HOLD 1', 'HOLD 2', 'HOLD 3', 'HOLD 4', 'persist-credentials: false', '/usr/bin/python3 -I -B',
- '/usr/bin/bash --noprofile --norc', '/proc/self/ns/user', '/proc/1/ns/user', '(0, 0, 4294967295)',
- 'read-only coordinate resolution', 'durably writes BEGIN before any main/state mkdir', 'same root custodian',
- 'their own distinct transaction', 'custodian lease socket', 'Parent independently validates',
- 'No process-local scope bypass', 'Pending means crash-safe refusal', 'literal prefix matching',
- 'legacy launcher without an admitted custodian denies before its first effect', 'separate non-production state'):
+for text in ('Minimal secure denial pivot from \x606bd60d3e\x60', 'persist-credentials: false', '/usr/bin/python3 -I -B',
+ 'controlled Docker orchestration is exclusively', 'It does NOT use', 'no root ledger claim',
+ 'before first mkdir/report unlink or write/temp/trap/subprocess/driver callback', 'including root callers',
+ 'Imports and module initialization', 'core.ts\x60 create/reset/status/destroy', 'supervisor.ts\x60 start/stop',
+ 'production-private unforgeable capability', 'no capability issuer, bypass or adapter is implemented',
+ 'both embedded Python cleanup paths', 'exported \x60cleanupSensitiveExport\x60', 'mechanically effect-free',
+ 'existing generation-bound root host custodian', 'exact full product execution closure/root helper',
+ 'same sealed verified context', 'Never consume a later checkout reopen/copy',
+ 'Required zero-effect tests, future source tranche', 'exactly zero calls', 'Preserve non-authorizing models',
+ 'No tests are implemented in this plan-only commit', '81 paths', '12,804/15,100', '988,774/1,850,000'):
  assert text in replan,text
+assert 'HOLD 1' not in replan and 'durably writes BEGIN before any main/state mkdir' not in replan
 for p in planned: assert p in adr or p in replan,p
 for p in expected_new: assert p in replan,p
 for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc096ae4ba05','044e127a',
@@ -679,6 +684,8 @@ for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integr
  assert historical_forecasts[owner]-used==remaining  # original gate ledger remains historical
 checkpoint=dict(route=0,revocation=0,relay=1771,lifecycle=3984,completion=2552,integration=4475)
 assert sum(checkpoint.values())==12782 and sum(expected_forecasts[o]-n for o,n in checkpoint.items())==2318
+pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(expected_forecasts[o]-n for o,n in pivot.items())==2296
+assert 90+180+46==expected_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==expected_forecasts['integration']-pivot['integration']
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
