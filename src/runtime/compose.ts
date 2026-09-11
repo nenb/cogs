@@ -44,7 +44,7 @@ import {
 import { authorizeCogsPolicyAction } from "../policy/static-policy.ts";
 import { type CogsPrivateSkillStore, createCogsPrivateSkillStore } from "../skills/local-private-store.ts";
 import { type CogsSharedSkillOciResolver, createCogsSharedSkillOciLayoutResolver } from "../skills/oci-layout.ts";
-import { createCogsSkillSessionPreparer } from "../skills/session-preparer.ts";
+import { createCogsMountedSkillSessionPreparer } from "../skills/snapshot-session-preparer.ts";
 import { createSshBashToolPort } from "../ssh/bash-tool.ts";
 import { SshConnectionManager, type SshConnectionManagerOptions } from "../ssh/connection.ts";
 import { createSftpFileToolPorts } from "../ssh/file-tools.ts";
@@ -239,7 +239,8 @@ export async function startProductionWorker(
     runtime = await seams.readRuntime();
     throwIfAborted(startup.signal);
     const launch = await seams.readLaunch(runtime);
-    requireUserScopedHandles(launch);
+    admitProductionLaunch(launch);
+    throwIfAborted(startup.signal);
     const bearer = await seams.readSecret("api-bearer", runtime.paths.api_bearer);
     const proxyCapability = await seams.readSecret("proxy-capability", runtime.paths.proxy_capability);
     throwIfAborted(startup.signal);
@@ -437,8 +438,11 @@ export async function startProductionWorker(
         sessionRoot: runtime.paths.session_root,
         launchDocument: launch,
         modelApiKeys: modelStore,
-        skillPreparer: createCogsSkillSessionPreparer({
+        skillPreparer: createCogsMountedSkillSessionPreparer({
           ssh: activeSsh,
+          receiptPath: runtime.paths.skill_snapshot_receipt,
+          controlSocketPath: runtime.paths.skill_snapshot_control_socket,
+          onLost: () => void close("dependency-lost").catch(() => undefined),
           sharedResolver: activeStorage.shared,
           privateStore: activeStorage.private,
         }),
@@ -528,7 +532,10 @@ async function probeModelAuthentication(
   if (!called) throw new Error("missing key");
 }
 
-function requireUserScopedHandles(launch: LaunchConfig): void {
+/** Shared schema validity is intentionally weaker than production admission. */
+export function admitProductionLaunch(launch: LaunchConfig): void {
+  if (!Array.isArray(launch.integrations) || launch.integrations.length < 1 || launch.integrations.length > 16)
+    throw new ProductionWorkerError();
   const prefix = `users/${launch.user_id}/`;
   if (!launch.model.credential_handle.startsWith(prefix)) throw new Error("model handle must be user scoped");
   if (launch.sandbox.proxy_auth_handle !== `sessions/${launch.session_id}/proxy`) throw new Error("bad proxy handle");

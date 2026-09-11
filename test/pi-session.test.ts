@@ -3379,6 +3379,15 @@ test("authenticated Pi session rejects hostile prepared paths and metadata befor
         }),
       },
       {
+        name: "forged-read-only-authority",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            shared: Object.freeze({ ...hostilePrepared().metadata.shared, readOnlyEnforced: true }),
+          }),
+        }),
+      },
+      {
         name: "guest-subtree-digest-mismatch",
         prepared: hostilePrepared({
           metadata: Object.freeze({

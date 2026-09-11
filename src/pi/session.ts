@@ -70,6 +70,7 @@ import type {
   CogsPreparedSkills,
   CogsSkillPreparerPort,
 } from "../skills/session-preparer.ts";
+import { isRuntimeReadOnlySkillSet } from "../skills/snapshot-session-preparer.ts";
 import type { SshConnectionManager } from "../ssh/connection.ts";
 import {
   byteBucket,
@@ -928,6 +929,11 @@ function canonicalPreparedSet(value: unknown, scope: "shared" | "user") {
     (data.byteCount as number) > 768 * 1024
   )
     throw new Error("bad resources");
+  if (data.readOnlyEnforced === true) {
+    if (!isRuntimeReadOnlySkillSet(value)) throw new Error("bad resources");
+    // Preserve the issuer identity through both authenticated and native admission.
+    return value as CogsPreparedSkills["metadata"]["shared"];
+  }
   if (data.readOnlyEnforced !== false) throw new Error("bad resources");
   return Object.freeze({
     scope,

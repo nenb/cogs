@@ -27,7 +27,7 @@ import {
   joinCloseWork,
   registerCloseOwner,
 } from "../src/launch/close.ts";
-import type { LaunchConfig } from "../src/launch/config.ts";
+import { type LaunchConfig, validateLaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
 import { type ProductionMainPort, runProductionMain } from "../src/main.ts";
 import {
@@ -365,6 +365,8 @@ function runtime(): RuntimeConfig {
       shared_skill_oci: "/var/lib/cogs/skills/shared-oci",
       private_skill_source: "/var/lib/cogs/skills/private-source",
       private_skill_store: "/var/lib/cogs/skills/private-store",
+      skill_snapshot_receipt: "/run/cogs/skills/snapshot-receipt.json",
+      skill_snapshot_control_socket: "/run/cogs/skills/control.sock",
     },
     api: { listen_host: "127.0.0.1", port: 18081 },
     openbao: {
@@ -733,6 +735,57 @@ function emptyPreparedSkills(): never {
     dispose: async () => undefined,
   }) as never;
 }
+
+test("schema-valid empty integrations reject in production immediately after both config reads", async () => {
+  const h = harness();
+  const empty = validateLaunchConfig(launch({ integrations: [] }));
+  assert.equal(empty.integrations.length, 0, "shared launch schema remains deliberately unchanged");
+  await assert.rejects(
+    startProductionWorker({
+      seams: {
+        ...h.seams,
+        readLaunch: async () => {
+          await h.seams.readLaunch(runtime());
+          return empty;
+        },
+      },
+    }),
+    ProductionWorkerError,
+  );
+  assert.deepEqual(h.log, ["runtime", "launch"], "no secrets, snapshots, telemetry, storage, auth, SSH, Pi or API");
+});
+
+test("production defaults to mounted authority and cannot fall back to guest materialization", async () => {
+  const h = harness();
+  let guestCalls = 0;
+  await assert.rejects(
+    startProductionWorker({
+      seams: {
+        ...h.seams,
+        createSsh: (options) =>
+          Object.assign(h.seams.createSsh(options), {
+            withSftp: async () => {
+              guestCalls++;
+              throw new Error("guest must not be used without snapshot authority");
+            },
+          }),
+        createPi: async (options) => {
+          await options.skillPreparer.prepare({ launch: launch() });
+          return h.seams.createPi(options);
+        },
+      },
+    }),
+    ProductionWorkerError,
+  );
+  assert.equal(guestCalls, 0);
+  assert.equal(h.log.includes("api"), false);
+  assert.equal(h.log.includes("ssh.close"), true);
+  const source = await readFile(new URL("../src/runtime/compose.ts", import.meta.url), "utf8");
+  assert.match(source, /skillPreparer: createCogsMountedSkillSessionPreparer/);
+  assert.doesNotMatch(source, /createCogsSkillSessionPreparer/);
+  assert.match(source, /await createCogsSharedSkillOciLayoutResolver/);
+  assert.match(source, /await createCogsPrivateSkillStore/);
+});
 
 test("production SSH uses the sandbox image's single guest-root identity", async () => {
   const sshdConfig = await readFile(new URL("../images/sandbox/sshd_config", import.meta.url), "utf8");
