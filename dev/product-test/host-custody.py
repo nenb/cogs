@@ -260,6 +260,7 @@ class Custody:
             for key, value in LIMITS.items():
                 self.cwrite(self.cg, key, value)
             self.cwrite(self.cg, "cgroup.subtree_control", "+memory +pids +cpu"); os.mkdir(self.cg + "/helpers")
+            self.record("helpers-cgroup", identity(os.stat(self.cg + "/helpers"))[:2])
             require(self.docker("ps", "-aq", "--no-trunc") == b""); info = json.loads(self.docker("info", "--format", "{{json .}}"))
             require(info["CgroupVersion"] == "2" and info["CgroupDriver"] == "cgroupfs"); require(info["Driver"] == "overlay2" and info["OSType"] == "linux")
             self.disk = os.statvfs("/var/lib/docker").f_bfree * os.statvfs("/var/lib/docker").f_frsize; self.record("disk", self.disk)
@@ -295,6 +296,7 @@ class Custody:
             os.fsync(self.lock)  # no inode authority yet: preserve uncertainty, never adopt a root by name
 
     def reopen(self):
+        self.require_no_pending()
         require(self.saved("intent")["generation"] == self.generation and "retired" not in os.listdir(self.control))
         require(self.saved("root") == list(identity(os.fstat(self.fd))[:2]))
         if os.path.exists(self.cg):
@@ -323,10 +325,43 @@ class Custody:
         with open(path + "/" + name, "w", encoding="ascii") as file:
             file.write(value)
 
+    def require_no_pending(self):
+        require(not {"helper-pending", "helper-uncertain"} & (self.records | set(os.listdir(self.control))))
+
+    def refuse_helper(self):
+        self.failed = True; self.records.add("helper-uncertain")
+        try:
+            self.record("helper-uncertain", True)
+        except BaseException:
+            pass  # Failed persistence never clears the live veto.
+
     def command(self, argv, cap=1048576, status=False, pass_fds=()):
+        parent_pid = os.getpid(); held = None; continued = False
+        def arm_parent_death():
+            if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent_pid:
+                os._exit(127)
+        def stopped(child):
+            require(child and child.si_pid == p.pid and child.si_code == os.CLD_STOPPED and child.si_status == signal.SIGSTOP)
         bootstrap = "import os,signal,sys;os.kill(os.getpid(),signal.SIGSTOP);os.execvpe(sys.argv[1],sys.argv[1:],dict(os.environ))"
-        p = subprocess.Popen([sys.executable, "-I", "-c", bootstrap, *argv], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV, start_new_session=True, pass_fds=pass_fds)
+        try:
+            self.require_no_pending()  # The held lock serializes helpers.
+            require(type(parent_pid) is int and parent_pid > 0 and NONCE.fullmatch(self.generation))
+            data = canonical({"version": 1, "generation": self.generation, "parent_pid": parent_pid}); require(len(data) <= 1024)
+            self.records.add("helper-pending")
+            exclusive(self.control, "helper-pending", data)
+            held = os.open("helper-pending", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.control)
+            pending = os.fstat(held)
+            require(pending.st_uid == 0 and stat.S_IMODE(pending.st_mode) == 0o400)
+            require(capture(self.control, "helper-pending", 1024) == data)
+            require(identity(pending) == identity(os.stat("helper-pending", dir_fd=self.control, follow_symlinks=False)))
+            p = subprocess.Popen([sys.executable, "-I", "-c", bootstrap, *argv], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV, start_new_session=True,
+                                 pass_fds=pass_fds, preexec_fn=arm_parent_death)
+        except BaseException:
+            self.refuse_helper()
+            if held is not None:
+                os.close(held)
+            raise
         pidfd = None  # ownership is armed at Popen return, including pidfd/stop-handshake failure
         out, err = bytearray(), bytearray(); end = min(self.deadline, time.monotonic() + 15)
         try:
@@ -334,10 +369,26 @@ class Custody:
             while True:
                 require(time.monotonic() < end); child = os.waitid(os.P_PIDFD, pidfd, os.WSTOPPED | os.WEXITED | os.WNOHANG | os.WNOWAIT)
                 if child:
-                    require(child.si_code == os.CLD_STOPPED)
+                    stopped(child)
                     break
                 time.sleep(0.01)
-            self.cwrite(self.cg + "/helpers", "cgroup.procs", str(p.pid)); os.kill(p.pid, signal.SIGCONT)
+            with closing_fd(os.open(self.cg, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as cgfd:
+                with closing_fd(directory(cgfd, "helpers")) as helpers:
+                    def verify():
+                        require(self.saved("cgroup") == list(identity(os.fstat(cgfd))[:2]) == list(identity(os.stat(self.cg, follow_symlinks=False))[:2]))
+                        require(self.saved("helpers-cgroup") == list(identity(os.fstat(helpers))[:2]) == list(identity(os.stat("helpers", dir_fd=cgfd, follow_symlinks=False))[:2]))
+                    verify()
+                    with closing_fd(os.open("cgroup.procs", os.O_WRONLY | os.O_NOFOLLOW, dir_fd=helpers)) as procs:
+                        value = str(p.pid).encode(); require(os.write(procs, value) == len(value))
+                    with open(f"/proc/{p.pid}/cgroup", encoding="ascii") as membership:
+                        require(membership.read(1025) == "0::" + self.cg[14:] + "/helpers\n")
+                    verify()
+                    stopped(os.waitid(os.P_PIDFD, pidfd, os.WSTOPPED | os.WEXITED | os.WNOHANG | os.WNOWAIT))
+                    require(identity(pending) == identity(os.fstat(held)) == identity(os.stat("helper-pending", dir_fd=self.control, follow_symlinks=False)))
+                    os.unlink("helper-pending", dir_fd=self.control); os.fsync(self.control)
+                    require("helper-pending" not in os.listdir(self.control))
+                    self.records.remove("helper-pending")
+            os.kill(p.pid, signal.SIGCONT); continued = True
             with selectors.DefaultSelector() as poll:
                 for stream, target in ((p.stdout, out), (p.stderr, err)):
                     os.set_blocking(stream.fileno(), False); poll.register(stream, selectors.EVENT_READ, target)
@@ -355,6 +406,10 @@ class Custody:
                     time.sleep(0.01)
                 require(child.si_code == os.CLD_EXITED and (status or child.si_status == 0))
             return (child.si_status, bytes(out)) if status else bytes(out)
+        except BaseException:
+            if not continued:
+                self.refuse_helper()
+            raise
         finally:
             try:
                 # WNOWAIT retains the leader's numeric PID/PGID until BOTH final signals, even on early exit.
@@ -373,6 +428,7 @@ class Custody:
                 if pidfd is not None:
                     os.close(pidfd)
                 p.stdout.close(); p.stderr.close()
+                os.close(held)
 
     def docker(self, *args, **options):
         return self.command(["docker", "--host=unix:///var/run/docker.sock", *args], 8 * 1048576, **options)
@@ -888,10 +944,12 @@ class Custody:
             require(set(os.listdir(self.control)) == self.records)
 
     def settle(self):
+        self.require_no_pending()
         # Durable boundary: recovery must not need commands after either rmdir.
         if "cgroup-retire-intent" not in os.listdir(self.control):
             self.settle_children()
             self.record("cgroup-retire-intent", True)
+        self.require_no_pending()
         require(self.saved("cgroup-retire-intent") is True)
         if os.path.exists(self.cg):
             require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
@@ -899,6 +957,7 @@ class Custody:
             if os.path.exists(self.cg + "/helpers"):
                 os.rmdir(self.cg + "/helpers")
             os.rmdir(self.cg)
+        self.require_no_pending()
         self.record("retired", {"generation": self.generation, "failed": self.failed})
 
     def run(self):

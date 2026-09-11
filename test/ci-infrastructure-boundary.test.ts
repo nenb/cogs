@@ -560,6 +560,7 @@ import importlib.util,os,tempfile,types,time,signal,selectors,json
 from unittest.mock import patch
 s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+exclusive=m.exclusive
 def veto(call,label,errors=RuntimeError):
  try: call()
  except errors: return
@@ -683,24 +684,108 @@ for env in [['NODE_OPTIONS=--import=/evil'],['NODE_TLS_REJECT_UNAUTHORIZED=0']]:
  owner.ids={};log.clear();owner.inspect=lambda cid:{'Image':spec['image'],'State':{'Running':False},'Config':{'Env':env}}
  veto(lambda:owner.dispatch({'op':'create','generation':owner.generation,'role':'worker','spec':spec,'argv':[]}),'started inherited code')
  assert not any(row[0]=='start' for row in log)
-# Acquisition ownership precedes pidfd; stop handshake never reaps or blocks.
+# Portable kernel models only: real custodian SIGKILL cuts, no native child/PDEATHSIG claim.
+from contextlib import ExitStack,nullcontext
+from types import SimpleNamespace as NS
+PENDING="helper-pending"
 class Stream:
  def close(self): pass
+ def fileno(self): return 20
 class Process:
  pid=12345;stdout=Stream();stderr=Stream()
  def poll(self): return 0  # exited leader must NOT suppress descendant settlement
- def wait(self,**kw): return 0
-for failure in ('pidfd','handshake'):
- owner.cg='/no-such-cgroup';owner.deadline=time.monotonic()+.02;signals=[]
- with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,side_effect=OSError() if failure=='pidfd' else lambda pid:77),patch.object(m.os,'waitid',create=True,return_value=None) as waiting,patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'killpg',side_effect=lambda *a:signals.append(a)),patch.object(m.os,'close'),patch.object(m.os.path,'exists',return_value=False):
-  veto(lambda:owner.command(['never-executed']),'unbounded handshake',(OSError,RuntimeError))
-  assert signals==[(12345,signal.SIGKILL)]
-  assert all(call.args[2]&os.WNOHANG and call.args[2]&os.WNOWAIT for call in waiting.call_args_list)
+ def wait(self,**kw): assert log()[-1]=='killpg';return 0
+class Stopped(BaseException): pass
+points='file-before file-after dir-before dir-after fork-before fork-after prctl parent stop pidfd wait cg-before cg-after member restop unlink-before unlink-after remove-sync-before remove-sync-after continue'.split()
+for case in ['success','prctl-error','parent-error','pid','code','signal','handshake','member-error','cg-drift','helpers-drift','pending-drift','lost-removal','refusal-fsync',*points,*['crash:'+p for p in points],*['stale:'+p for p in ('valid','malformed','foreign','oversize','extra','symlink','hardlink')]]:
+ with tempfile.TemporaryDirectory() as root:
+  o=m.Custody.__new__(m.Custody);o.generation=g='a'*32;o.records=set();o.failed=False;o.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.control=c=m.directory(o.fd,'control',0o700)
+  o.cg=cg=root+'/cgroup';os.mkdir(o.cg);os.mkdir(o.cg+'/helpers');open(o.cg+'/helpers/cgroup.procs','w').close();o.deadline=time.monotonic()+.1
+  ropen=open;close=os.close;rstat=os.stat;fstat=os.fstat;fsync=os.fsync;runlink=os.unlink;rwrite=os.write;rkill=os.kill;hit=False;waits=0
+  def log(): return ropen(root+'/trace').read().splitlines() if os.path.exists(root+'/trace') else []
+  def step(at):
+   global hit
+   with ropen(root+'/trace','a') as f: f.write(at+'\n')
+   if case=='crash:'+at: rkill(os.getpid(),signal.SIGKILL)
+   if not hit and (case==at or case=='refusal-fsync' and at=='unlink-after'): hit=True;raise OSError('fixed fault')
+  def rootstat(s): return NS(**{n:0 if n=='st_uid' else getattr(s,n) for n in dir(s) if n.startswith('st_')})
+  def sync(fd):
+   phase='remove-sync' if 'unlink-after' in log() else 'dir' if fd==c else 'file'
+   if hit and case=='refusal-fsync': raise OSError('refusal not durable')
+   step(phase+'-before');fsync(fd);step(phase+'-after')
+  def unlink(n,**kw):
+   step('unlink-before')
+   if case!='lost-removal': runlink(n,**kw)
+   step('unlink-after')
+  def spawn(argv,**kw):
+   assert log()[-1]=='dir-after';raw=m.capture(c,PENDING,1024)
+   assert raw==m.canonical({'version':1,'generation':g,'parent_pid':os.getpid()}) and rstat(PENDING,dir_fd=c).st_mode&0o777==0o400
+   step('fork-before');step('fork-after');kw['preexec_fn']()
+   with patch.object(m.sys,'argv',argv[3:]):
+    try: exec(argv[3])
+    except Stopped: pass
+    else: raise AssertionError('bootstrap did not stop')
+   return Process()
+  def kill(pid,sig):
+   assert pid in (os.getpid(),12345)
+   if sig==signal.SIGSTOP: assert 'prctl' in log() and 'parent' in log();step('stop');raise Stopped()
+   assert sig==signal.SIGCONT and PENDING not in os.listdir(c) and PENDING not in o.records
+   assert log().index('cg-after')<log().index('member')<log().index('restop')<log().index('unlink-before')<log().index('remove-sync-after');step('continue');step('exec')
+  def waitid(kind,fd,flags):
+   global waits
+   assert kind==3 and fd==77 and flags&os.WNOHANG and flags&os.WNOWAIT;waits+=1;step('wait' if waits==1 else 'restop' if waits==2 else 'exit')
+   return None if case=='handshake' else NS(si_pid=1 if case=='pid' else 12345,si_code=os.CLD_EXITED if case=='code' or not flags&os.WSTOPPED else os.CLD_STOPPED,si_status=signal.SIGTERM if case=='signal' else signal.SIGSTOP if flags&os.WSTOPPED else 0)
+  def write(fd,data):
+   if data!=b'12345': return rwrite(fd,data)
+   step('cg-before');n=rwrite(fd,data);step('cg-after');return n
+  def opened(p,*a,**kw):
+   if p!='/proc/12345/cgroup': return m.io.StringIO('populated 0\n') if p==cg+'/cgroup.events' else ropen(p,*a,**kw)
+   step('member')
+   if case in ('cg-drift','helpers-drift','pending-drift'):
+    path=cg if case=='cg-drift' else cg+'/helpers' if case=='helpers-drift' else root+'/control/helper-pending';os.rename(path,path+'.held');os.mkdir(path)
+   return m.io.StringIO('wrong' if case=='member-error' else '0::'+cg[14:]+'/helpers\n')
+  try:
+   with ExitStack() as stack:
+    enter=stack.enter_context;bindings=[(m,'exclusive',exclusive),(os,'fchown',lambda *a:None),(os,'stat',lambda *a,**kw:rootstat(rstat(*a,**kw))),(os,'fstat',lambda fd:rootstat(fstat(fd))),(os,'pidfd_open',lambda pid:(step('pidfd'),77)[1]),(os,'waitid',waitid),(os,'kill',kill),(os,'killpg',lambda pid,sig:(m.require((pid,sig)==(12345,signal.SIGKILL)),step('killpg'))),(os,'close',lambda fd:None if fd==77 else close(fd)),(os,'set_blocking',lambda *a:None),(m.subprocess,'Popen',spawn),(m.ctypes,'CDLL',lambda *a,**kw:NS(prctl=lambda *a:(m.require(a==(1,signal.SIGKILL,0,0,0)),step('prctl'),-1 if case=='prctl-error' else 0)[2])),(os,'getppid',lambda:(step('parent'),os.getpid()+(case=='parent-error'))[1]),(os,'_exit',lambda code:(_ for _ in ()).throw(OSError('child exit'))),(os,'execvpe',lambda *a:(_ for _ in ()).throw(AssertionError('premature exec'))),(m.selectors,'DefaultSelector',lambda:nullcontext(NS(register=lambda *a:None,get_map=lambda:{})))]
+    for obj,name,fn in bindings: enter(patch.object(obj,name,create=True,side_effect=fn))
+    enter(patch.object(os,'P_PIDFD',create=True,new=3))
+    for name,value in [('intent',{'generation':g}),('root',list(m.identity(os.fstat(o.fd))[:2])),('cgroup',list(m.identity(os.stat(cg))[:2])),('helpers-cgroup',list(m.identity(os.stat(cg+'/helpers'))[:2]))]: o.record(name,value)
+    pending=root+'/control/helper-pending'
+    if case.startswith('stale:'):
+     data=b'{' if case=='stale:malformed' else b'x'*1025 if case=='stale:oversize' else m.canonical({'version':1,'generation':'b'*32 if case=='stale:foreign' else g,'parent_pid':os.getpid(),**({'extra':1} if case=='stale:extra' else {})});ropen(root+'/foreign','wb').write(data)
+     if case=='stale:symlink': os.symlink(root+'/foreign',pending)
+     elif case=='stale:hardlink': os.link(root+'/foreign',pending)
+     else: ropen(pending,'wb').write(data);os.chmod(pending,0o600 if case=='stale:foreign' else 0o400)
+     before=m.identity(os.lstat(pending))
+    o.cwrite=lambda path,name,value:step(name)
+    for obj,name,fn in [(os,'fsync',sync),(os,'unlink',unlink),(os,'write',write)]: enter(patch.object(obj,name,side_effect=fn))
+    enter(patch('builtins.open',side_effect=opened));enter(patch.dict(m.ENV,{'SECRET_TEST':'env-secret'}))
+    crash=case.startswith('crash:');pid=os.fork() if crash else 0
+    if not pid:
+     try: assert o.command(['argv-secret'])==b''
+     except (OSError,RuntimeError) as e: assert case!='success' and 'secret' not in str(e);assert o.failed;veto(o.settle,'live uncertain retirement')
+     else: assert case=='success'
+     assert not crash,'missed crash cut'
+    else: assert os.waitpid(pid,0)[1]==signal.SIGKILL
+    enter(patch.object(os,'fsync',side_effect=fsync))
+    assert 'exec' not in log() or case=='success';names=os.listdir(c)
+    assert all(b'secret' not in m.capture(c,n) for n in names if n!=PENDING and n!='helper-pending.held')
+    if case.startswith('stale:'): assert before==m.identity(os.lstat(pending)) and ropen(root+'/foreign','rb').read()==data
+    fresh=m.Custody.__new__(m.Custody);fresh.control=c;fresh.records=set();fresh.failed=True;fresh.generation=g
+    with patch.object(fresh,'settle_children',side_effect=AssertionError('cleanup reached')),patch.object(os,'rmdir',side_effect=AssertionError('rmdir reached')):
+     if {PENDING,'helper-uncertain'}&set(names):
+      for intent in (False,True):
+       if intent: o.record('cgroup-retire-intent',True)
+       veto(fresh.reopen,'pending recovery');veto(fresh.settle,'pending retirement')
+     else: assert case in ('success','refusal-fsync') or case.startswith('crash:') and 'unlink-after' in log();assert 'cg-after' in log() and 'restop' in log()
+    assert 'retired' not in os.listdir(c)
+  finally: os.close(c);os.close(o.fd)
 # Lost mount observation is reconciled from durable intent; unmount/detach must precede retired.
 with tempfile.TemporaryDirectory() as root:
  owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.cg=root+'/absent'
  owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);os.mkdir(root+'/control');owner.control=os.open(root+'/control',os.O_RDONLY|os.O_DIRECTORY)
  owner.ids={};owner.peers={};owner.sealed=[];owner.selector=selectors.DefaultSelector();owner.disk=None;owner.failed=True;owner.mounts=['state']
+ owner.records=set()
  journal={};owner.record=lambda n,v:journal.setdefault(n,v);owner.saved=lambda n:journal[n]
  for n,v in [('state-storage',{}),('state-backing',[1,2]),('state-loop',{'name':'/dev/loop9'}),('state-mount-intent',True)]:
   journal[n]=v;open(root+'/control/'+n,'w').close()

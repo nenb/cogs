@@ -64,8 +64,9 @@ test("product helper identity is unreaped through final signals and directory mo
       "-I",
       "-B",
       "-c",
-      `
+      String.raw`
 import importlib.util,os,signal,tempfile,time,types
+from contextlib import ExitStack
 from unittest.mock import patch
 s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
@@ -95,7 +96,7 @@ class Poll:
  def unregister(self,stream): del self.entries[stream]
  def get_map(self): return self.entries
  def select(self,*a): return [(key,1) for key in self.entries.values()]
-for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow'):
+for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal'):
  events=[];reaped=False
  class Process:
   pid=12345;stdout=Stream();stderr=Stream()
@@ -108,20 +109,60 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
   events.append('observe')
   if mode=='timeout': return None
   stopped=flags&os.WSTOPPED and mode!='early-exit'
-  return types.SimpleNamespace(si_code=os.CLD_STOPPED if stopped else os.CLD_EXITED,si_status=7 if mode.startswith('nonzero') else 0)
+  bad=mode.removeprefix('restop-') if events.count('observe')==2 else ''
+  return types.SimpleNamespace(si_pid=1 if bad=='pid' else 12345,si_code=os.CLD_STOPPED if stopped and bad!='code' else os.CLD_EXITED,si_status=signal.SIGTERM if bad=='signal' else signal.SIGSTOP if stopped else 7 if mode.startswith('nonzero') else 0)
  def killpg(pid,sig):
   assert pid==12345 and sig==signal.SIGKILL and not reaped,'numeric PGID was reused by an unrelated group'
   events.append('killpg')
- owner=m.Custody.__new__(m.Custody);owner.cg='/fake-cgroup';owner.deadline=time.monotonic()+.03
- owner.cwrite=lambda path,name,value:events.append(name)
- with patch.object(m.subprocess,'Popen',return_value=Process()),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'waitid',create=True,side_effect=waitid),patch.object(m.os,'kill',side_effect=lambda *a:events.append('continue')),patch.object(m.os,'killpg',side_effect=killpg),patch.object(m.os,'close'),patch.object(m.os,'set_blocking'),patch.object(m.os,'read',return_value=b'x'*2 if mode=='overflow' else b''),patch.object(m.selectors,'DefaultSelector',Poll),patch.object(m.os.path,'exists',side_effect=lambda p:p.endswith('cgroup.kill')):
+ with tempfile.TemporaryDirectory() as root:
+  owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.records=set();owner.failed=False
+  owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);owner.control=m.directory(owner.fd,'control',0o700)
+  owner.cg=root+'/cgroup';os.mkdir(owner.cg);os.mkdir(owner.cg+'/helpers');open(owner.cg+'/helpers/cgroup.procs','w').close()
+  owner.deadline=time.monotonic()+.03;owner.cwrite=lambda path,name,value:events.append(name)
+  real_stat=os.stat;real_fstat=os.fstat;real_close=os.close;real_open=open;real_read=os.read;real_sync=os.fsync;real_unlink=os.unlink;real_write=os.write
+  def root_stat(value):
+   return types.SimpleNamespace(**{n:0 if n=='st_uid' else getattr(value,n) for n in dir(value) if n.startswith('st_')})
+  def sync(fd):
+   real_sync(fd);events.append('control-sync' if fd==owner.control else 'file-sync')
+  def unlink(name,**kw):
+   assert name=='helper-pending' and kw=={'dir_fd':owner.control};events.append('unlink');real_unlink(name,**kw)
+  def spawn(argv,**kw):
+   assert events[-1]=='control-sync' and 'preexec_fn' in kw and kw['start_new_session']
+   assert m.capture(owner.control,'helper-pending',1024)==m.canonical({'version':1,'generation':owner.generation,'parent_pid':os.getpid()})
+   assert real_stat('helper-pending',dir_fd=owner.control).st_mode&0o777==0o400
+   return Process()
+  def write(fd,data):
+   if data==b'12345': events.append('cgroup.procs')
+   return real_write(fd,data)
+  def opened(path,*a,**kw):
+   if path=='/proc/12345/cgroup': events.append('membership');return m.io.StringIO('0::'+owner.cg[14:]+'/helpers\n')
+   return real_open(path,*a,**kw)
+  def resume(pid,sig):
+   assert (pid,sig)==(12345,signal.SIGCONT) and 'helper-pending' not in os.listdir(owner.control) and 'helper-pending' not in owner.records
+   assert events.index('cgroup.procs')<events.index('membership')<events.index('unlink') and events[-1]=='control-sync'
+   events.append('continue')
   try:
-   measured=mode=='nonzero-measurement'
-   assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
-  except RuntimeError: assert mode not in ('success','nonzero-measurement')
-  else: assert mode in ('success','nonzero-measurement')
- assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
- if mode=='success': assert events.index('cgroup.procs')<events.index('continue')<events.index('killpg')
+   with ExitStack() as stack:
+    patches=[patch.object(m.os,'fchown'),patch.object(m.os,'stat',side_effect=lambda *a,**kw:root_stat(real_stat(*a,**kw))),patch.object(m.os,'fstat',side_effect=lambda fd:root_stat(real_fstat(fd))),patch.object(m.os,'fsync',side_effect=sync),patch.object(m.os,'unlink',side_effect=unlink),patch.object(m.os,'write',side_effect=write),patch('builtins.open',side_effect=opened),patch.object(m.subprocess,'Popen',side_effect=spawn),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'waitid',create=True,side_effect=waitid),patch.object(m.os,'kill',side_effect=resume),patch.object(m.os,'killpg',side_effect=killpg),patch.object(m.os,'close',side_effect=lambda fd:None if fd==77 else real_close(fd)),patch.object(m.os,'set_blocking'),patch.object(m.os,'read',side_effect=lambda fd,n:(b'xx' if mode=='overflow' else b'') if fd==20 else real_read(fd,n)),patch.object(m.selectors,'DefaultSelector',Poll),patch.object(m.os.path,'exists',side_effect=lambda p:p.endswith('cgroup.kill'))]
+    for p in patches: stack.enter_context(p)
+    for name,path in [('cgroup',owner.cg),('helpers-cgroup',owner.cg+'/helpers')]: owner.record(name,list(m.identity(os.stat(path))[:2]))
+    try:
+     measured=mode=='nonzero-measurement'
+     assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
+    except RuntimeError: assert mode not in ('success','nonzero-measurement')
+    else: assert mode in ('success','nonzero-measurement')
+   assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
+   assert ('helper-pending' in os.listdir(owner.control))==(mode in ('early-exit','timeout') or mode.startswith('restop-'))
+   if mode=='success':
+    assert events.index('cgroup.procs')<events.index('continue')<events.index('killpg')
+    with patch.object(m.os,'fchown'),patch.object(m.os,'stat',side_effect=lambda *a,**kw:root_stat(real_stat(*a,**kw))),patch.object(m.os,'fstat',side_effect=lambda fd:root_stat(real_fstat(fd))),patch('builtins.open',side_effect=lambda p,*a,**kw:m.io.StringIO('populated 0\n') if p==owner.cg+'/cgroup.events' else real_open(p,*a,**kw)):
+     owner.record('intent',{'generation':owner.generation});owner.record('root',list(m.identity(os.fstat(owner.fd))[:2]))
+     real_unlink(owner.cg+'/helpers/cgroup.procs')  # fixture pseudo-file, not a kernel cgroup member
+     fresh=m.Custody.__new__(m.Custody);fresh.__dict__.update(owner.__dict__);fresh.records=set()
+     fresh.settle_children=lambda:events.append('cleanup');fresh.reopen()
+     assert fresh.saved('retired')=={'generation':owner.generation,'failed':True} and not os.path.exists(owner.cg)
+     assert events[-1]=='cleanup' and 'helper-pending' not in os.listdir(owner.control)
+  finally: os.close(owner.control);os.close(owner.fd)
 `,
     ],
     { encoding: "utf8", timeout: 10000 },
@@ -144,7 +185,7 @@ m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 class Crash(BaseException): pass
 for failed in (False,True):
  for cut in ('intent','helpers','parent'):
-  for drift in ('none','identity','population','foreign-child','invalid-intent'):
+  for drift in ('none','identity','population','foreign-child','invalid-intent','pending','uncertain'):
    with tempfile.TemporaryDirectory() as root:
     cg=root+'/cgroup';os.mkdir(cg);os.mkdir(cg+'/helpers');os.mkdir(root+'/control')
     cgfd=os.open(cg,os.O_RDONLY|os.O_DIRECTORY)  # keep the original inode unavailable for reuse
@@ -209,8 +250,9 @@ for failed in (False,True):
       if drift=='foreign-child' and os.path.exists(cg): os.mkdir(cg+'/foreign')
       if drift=='invalid-intent':
        journal.pop('cgroup-retire-intent');persist('cgroup-retire-intent',False)
+      if drift in ('pending','uncertain'): persist('helper-'+drift,{'version':1,'generation':generation,'parent_pid':os.getpid()})
       fresh=owner()
-      rejected=drift in ('identity','invalid-intent') or drift in ('population','foreign-child') and cut!='parent'
+      rejected=drift in ('identity','invalid-intent','pending','uncertain') or drift in ('population','foreign-child') and cut!='parent'
       try: fresh.reopen()
       except (RuntimeError,OSError): assert rejected
       else:
@@ -309,6 +351,7 @@ for plan in scenarios:
   owner.probe=True;owner.recovery=False;owner.failed=False;owner.cg='/fake-cgroup';owner.disk=None
   owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
   journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
+  owner.records=set()
   owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}
   owner.record=lambda n,v:journal.setdefault(n,copy.deepcopy(v));owner.saved=lambda n:journal[n]
   def inspect(identity):
