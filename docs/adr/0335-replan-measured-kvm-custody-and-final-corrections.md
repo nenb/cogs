@@ -78,9 +78,26 @@ Only ADR0335 is created now. No new fixture, report, restriction, schema, image 
 
 The separately authorized full-check integration correction admits only `test/aws-stage2-completion-kata-runtime.py` and `test/aws-stage2-completion-local-result.test.ts` to the product matrix as existing integration paths. Both retain their historical Q integration owner; only stale budget assertions change, with no runtime or workflow authority. Budget/test corrections use the existing integration ADR0335/budget-test allocation; source-inventory synchronization and deterministic regeneration use the existing 100-line allocation. No ceiling, new-file allocation, reserve release or historical gross transfer changes.
 
+### Authorized custody/KVM review correction path amendment
+
+The owner's source-only review correction adds exactly these existing paths to the product matrix, retaining their historical Q owners:
+
+| Existing path | Owner |
+| --- | --- |
+| `dev/linux-kvm/qualify.sh` | relay |
+| `test/egress-conformance/guest-probes/run-kvm-black-box-case.sh` | relay |
+| `dev/launcher/supervisor.ts` | lifecycle |
+| `test/dev-launcher-supervisor.test.ts` | lifecycle |
+| `scripts/run-launcher-smoke-evidence.ts` | integration |
+| `test/launcher-smoke-evidence.test.ts` | integration |
+
+The product matrix now contains 71 paths, still exactly eight new files. No ceiling, forecast, reserve release or historical gross transfer changes. Relay changes/tests consume the bounded-helper/call-site allocation; lifecycle inventory changes/tests consume launcher acquisition corrections; matrix synchronization consumes integration budget tests, and exact inventory-consumer validation consumes product execution docs/tests. Smoke consumes destroy authority before invocation, fails on nonzero/malformed retirement and never retries after report failure. Public inventory exposes acquisition uncertainty and retirement intent independently of mutable phase and worker recovery, without conferring cleanup authority.
+
 ## Finding12: source-only tranche, no execution authority
 
 Finding12 implementation in the later source tranche is source-only: add the bounded-command helper, convert every admitted driver/smoke/conformance guest invocation, bound QMP, reject truncation and prove behavior with portable subprocess/fault tests. It performs no Docker/KVM execution and makes no finding-closure or host-containment claim. The initial functional product-test topology is Docker-only and mechanically rejects a KVM profile, so finding12 cannot be triggered by that product scenario. Portable command bounds do not establish an external generation envelope.
+
+**Source admission is closed now.** No exact local KVM execution authorization is issued. `dev/linux-kvm/ci-smoke.sh`, every effectful `dev/linux-kvm/driver.sh` action (including cache preparation and destroy), `dev/linux-kvm/qualify.sh`, and the direct `dev/linux-kvm/bounded-command.py` CLI deny before effects. Only the driver's pure policy renderer and imported primitives used by portable fault tests remain available. No nonce, network lease, workflow label/schedule, caller environment value or Q evidence satisfies this missing authorization. Existing workflows are unchanged and cannot execute these KVM paths. The legacy black-box entrypoint is a denial-only stub with no transport, discovery or cleanup path; lifting other gates must not re-enable it. The later amendment must replace these source stops with exact authenticated local-envelope admission at every ingress, not a boolean opt-in. This correction is not that execution gate.
 
 Actual KVM execution remains prohibited until focused/full source reviews pass and ADR0335 is amended in an existing-file, independently reviewed local-execution gate. That later in-file amendment must specify the complete fresh protected-runner envelope then used, including:
 

@@ -1013,8 +1013,8 @@ test("KVM receipts are generation-bound canonical closed schemas and smoke rejec
       );
       assert.equal(result.status === 0, accepted, `${name}: ${result.stderr}`);
     }
-    assert.match(smoke, /if \[\[ \$cleanup_status -eq 0 \]\]; then\n {8}acquired=false/u);
-    assert.match(smoke, /if \[\[ \$destroy_status -eq 0 \]\]; then acquired=false; fi/u);
+    assert.match(smoke, /acquired=false[^\n]*\n {6}"\$driver" destroy/u);
+    assert.match(smoke, /acquired=false[^\n]*\n"\$driver" destroy/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1080,7 +1080,135 @@ exit 1`,
       const operations = (await readFile(calls, "utf8")).trim().split("\n");
       assert.deepEqual(operations, mode === "exact" ? ["create", "destroy"] : ["create"]);
     }
-    assert.match(smoke, /if \[\[ \$destroy_status -eq 0 \]\]; then acquired=false; fi/u);
+    assert.match(smoke, /if \[\[ \$destroy_status -ne 0 \]\]; then[\s\S]*exit 1/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("smoke destroy failure cannot publish pass or retry after receipt/report failure", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  // Execute the actual final path and EXIT owner; all external effects are fakes.
+  const tail = smoke.slice(smoke.indexOf("destroy_receipt=$(mktemp)"));
+  const cleanup = shellFunction(smoke, "cleanup");
+  const exact = shellFunction(smoke, "exact_receipt");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-smoke-destroy-"));
+  try {
+    for (const entry of ["final", "exit"]) {
+      for (const mode of ["success", "nonzero", "malformed"]) {
+        for (const reportFailure of [false, true]) {
+          const calls = join(dir, "calls");
+          await writeFile(calls, "");
+          const result = spawnSync(
+            "bash",
+            [
+              "-c",
+              `set -euo pipefail
+passed=false; acquired=true; helper_safe=true; report=fake; proxy_port=18080
+boot_records=$(mktemp -d); driver=fake_driver; COGS_KVM_GENERATION=${"b".repeat(32)}
+fake_driver() {
+  [[ "$1" == destroy && "$acquired" == false ]] || exit 99
+  printf 'destroy\\n' >> "$CALLS"
+  ${mode === "nonzero" ? "return 7" : mode === "malformed" ? "printf malformed" : `printf '{"profile":"linux-kvm","status":"destroyed","generation":"%s","command":"destroy"}\\n' "$COGS_KVM_GENERATION"`}
+}
+write_report() {
+  printf '%s\\n' "$1" >> "$CALLS"
+  ${reportFailure ? "return 8" : ":"}
+}
+${exact}
+${cleanup}
+trap cleanup EXIT
+${entry === "final" ? tail : "exit 1"}`,
+            ],
+            {
+              encoding: "utf8",
+              timeout: 10_000,
+              env: { ...process.env, CALLS: calls },
+            },
+          );
+          const recorded = (await readFile(calls, "utf8")).trim().split("\n");
+          assert.equal(recorded.filter((v) => v === "destroy").length, 1, result.stderr);
+          assert.equal(result.status === 0, entry === "final" && mode === "success" && !reportFailure);
+          if (mode !== "success" || entry === "exit") assert(!recorded.includes("pass"));
+        }
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every KVM shell ingress denies before effects regardless of ambient workflow or nonce", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-denied-"));
+  try {
+    const calls = join(dir, "calls");
+    const bin = join(dir, "bin");
+    await mkdir(bin);
+    // Even prerequisites, temp files and reporting are forbidden on denied paths.
+    for (const tool of [
+      "python3",
+      "git",
+      "dirname",
+      "mkdir",
+      "mktemp",
+      "flock",
+      "curl",
+      "sudo",
+      "ssh",
+      "scp",
+      "docker",
+      "socat",
+      "qemu-system-x86_64",
+    ])
+      await writeFile(join(bin, tool), '#!/bin/bash\nprintf effect >> "$CALLS"\nexit 99\n', { mode: 0o700 });
+    const state = join(dir, "state");
+    await mkdir(join(state, "control"), { recursive: true });
+    for (const name of [".cogs-linux-kvm-v1", "known_hosts", "control/client_ed25519_key"])
+      await writeFile(join(state, name), "invalid competitor", { mode: 0o600 });
+    const paths: [string, string[]][] = [
+      ["dev/linux-kvm/ci-smoke.sh", [join(dir, "report")]],
+      ["dev/linux-kvm/qualify.sh", [join(dir, "report")]],
+      ["test/egress-conformance/guest-probes/run-kvm-black-box-case.sh", []],
+      ...["prepare-cache", "create", "verify", "reset", "destroy", "probe", "ssh"].map((op): [string, string[]] => [
+        "dev/linux-kvm/driver.sh",
+        [op, "boot-id"],
+      ]),
+    ];
+    for (const event of ["schedule", "pull_request", "workflow_dispatch"]) {
+      for (const [path, args] of paths) {
+        const result = spawnSync("/bin/bash", [join(root, path), ...args], {
+          encoding: "utf8",
+          timeout: 5_000,
+          env: {
+            PATH: bin,
+            CALLS: calls,
+            GITHUB_EVENT_NAME: event,
+            COGS_KVM_GENERATION: "a".repeat(32),
+            COGS_SOURCE_REVISION: "b".repeat(40),
+            COGS_KVM_STATE_DIR: state,
+            COGS_KVM_EXECUTION_AUTHORIZATION: "true",
+            COGS_SUITE_GUEST_PROXY: "http://192.0.2.1:18080",
+            COGS_SUITE_TARGET_PORT: "443",
+            COGS_SUITE_PUBLIC_CA: join(state, "known_hosts"),
+            COGS_SUITE_CAPABILITY: "fake",
+            COGS_SUITE_SCENARIO: "fake",
+            COGS_SUITE_KIND: "https",
+            COGS_SUITE_EXPECT: "deny",
+          },
+        });
+        assert.equal(result.status, 1, `${path}: ${result.stderr}`);
+        assert.match(result.stderr, /ADR0335/u);
+        assert.equal(result.stdout, "");
+      }
+    }
+    await assert.rejects(lstat(calls), { code: "ENOENT" });
+    await assert.rejects(lstat(join(dir, "report")), { code: "ENOENT" });
+    assert.equal(await readFile(join(state, ".cogs-linux-kvm-v1"), "utf8"), "invalid competitor");
+    const policy = spawnSync("bash", [driver, "print-network-policy"], { encoding: "utf8" });
+    assert.equal(policy.status, 0, policy.stderr);
+    assert.match(policy.stdout, /^\*filter\n/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1334,11 +1462,16 @@ for incomplete in (False,True):
 
 test("helper CLI cannot discover custody from a sentinel, and uncertain local retirement is distinct", async () => {
   await boundedTest(String.raw`
+# Direct CLI denial precedes even lock/custody observation, for every fixed ID.
+with patch.object(h,'require_driver',side_effect=AssertionError('custody reached')), \
+     patch.object(h,'execute',side_effect=AssertionError('effect reached')):
+    for name in h.IDS:
+        with patch.object(sys,'argv',['bounded',name,'/safe','a'*32,'18080']): assert h.main()==1
 with patch.object(h.os,'fstat',side_effect=OSError), patch.object(h.subprocess,'Popen',side_effect=AssertionError), \
      patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
     assert h.main()==1
 # Primitive local retirement failures become exit 2, not settled guest failure.
-with patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
+with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
      patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
     assert h.main()==2
 native_retire=h.retire

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+# ADR0335 has issued no exact local execution authorization. A caller nonce,
+# workflow event, environment opt-in or network lease cannot replace that gate.
+printf 'FAIL: ADR0335 local KVM execution authorization is not issued\n' >&2
+exit 1
+
 report=${1:-docs/security-evidence/generated/kvm-driver-smoke.json}
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 driver="$repo/dev/linux-kvm/driver.sh"
@@ -27,17 +32,15 @@ cleanup() {
     elif [[ "$acquired" == true ]]; then
       local cleanup_receipt cleanup_status=0
       cleanup_receipt=$(mktemp)
+      acquired=false # consume before invocation, including failure/lost response
       "$driver" destroy >"$cleanup_receipt" || cleanup_status=$?
-      # Exit zero means the capability was consumed before receipt reporting.
-      # Never retry a consumed destroy, even if its receipt/report is malformed.
       if [[ $cleanup_status -eq 0 ]]; then
-        acquired=false
         exact_receipt "$cleanup_receipt" destroy || cleanup_status=$?
       fi
       rm -f "$cleanup_receipt"
       [[ $cleanup_status -eq 0 ]] || echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
     fi
-    write_report fail 'Linux/KVM isolated driver setup or teardown failed.'
+    write_report fail 'Linux/KVM isolated driver setup or teardown failed.' || status=1
     status=1
   fi
   if [[ -n "$boot_records" ]]; then
@@ -203,10 +206,16 @@ PY
 "$driver" probe reset-read
 destroy_receipt=$(mktemp)
 destroy_status=0
+acquired=false # consume before invocation; EXIT must never retry this destroy
 "$driver" destroy >"$destroy_receipt" || destroy_status=$?
-if [[ $destroy_status -eq 0 ]]; then acquired=false; fi
-[[ $destroy_status -eq 0 ]] && exact_receipt "$destroy_receipt" destroy
+if [[ $destroy_status -eq 0 ]]; then
+  exact_receipt "$destroy_receipt" destroy || destroy_status=$?
+fi
 rm -f "$destroy_receipt"
+if [[ $destroy_status -ne 0 ]]; then
+  echo 'FAIL: driver destroy uncertain; retained recovery state' >&2
+  exit 1
+fi
 rm -f -- "$boot_records/first" "$boot_records/second"
 rmdir -- "$boot_records"
 boot_records=

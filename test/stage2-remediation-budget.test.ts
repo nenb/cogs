@@ -597,14 +597,15 @@ assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
- 'relay':'''dev/linux-kvm/ci-smoke.sh dev/linux-kvm/driver.sh
+ 'relay':'''dev/linux-kvm/ci-smoke.sh dev/linux-kvm/driver.sh dev/linux-kvm/qualify.sh
+ test/egress-conformance/guest-probes/run-kvm-black-box-case.sh
  test/egress-conformance/stage3-real-runtime/harness.ts test/linux-kvm-git-tools.test.ts''',
  'lifecycle':'''dev/insecure-sandbox/ci-smoke.sh dev/insecure-sandbox/driver.sh
  dev/launcher/contract.ts dev/launcher/core.ts dev/launcher/operations.ts dev/launcher/profiles.ts
- dev/launcher/state.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
+ dev/launcher/state.ts dev/launcher/supervisor.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
  schemas/runtime-v1alpha1.json src/runtime/compose.ts src/runtime/config.ts src/skills/session-preparer.ts
  test/dev-launcher-core.test.ts test/dev-launcher-operations.test.ts test/dev-launcher-profiles.test.ts
- test/dev-launcher-state.test.ts test/dev-launcher-trusted-compose.test.ts test/dev-launcher-trusted-controls.test.ts
+ test/dev-launcher-state.test.ts test/dev-launcher-supervisor.test.ts test/dev-launcher-trusted-compose.test.ts test/dev-launcher-trusted-controls.test.ts
  test/production-compose.test.ts test/runtime-config.test.ts''',
  'completion':'''dev/launcher/api-client.ts src/api/server.ts src/pi/session.ts src/telemetry/worker-telemetry.ts
  test/api-server.test.ts test/dev-launcher-cli-api.test.ts test/pi-session.test.ts
@@ -617,11 +618,11 @@ existing={
  docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json
  docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json
  docs/security-evidence/stage4-offline-readiness-package.json
- scripts/check-stage2-retained-lines.py scripts/stage4-offline-readiness-regenerate.ts
+ scripts/check-stage2-retained-lines.py scripts/run-launcher-smoke-evidence.ts scripts/stage4-offline-readiness-regenerate.ts
  scripts/stage4-offline-readiness.ts scripts/stage4-offline-source-inventory.ts
  scripts/stage4-runtime-artifact-closure-regenerate.ts scripts/stage4-runtime-artifact-closure.ts
  test/aws-stage2-completion-kata-runtime.py test/aws-stage2-completion-local-result.test.ts
- test/ci-infrastructure-boundary.test.ts test/stage2-remediation-budget.test.ts
+ test/ci-infrastructure-boundary.test.ts test/launcher-smoke-evidence.test.ts test/stage2-remediation-budget.test.ts
  test/stage4-offline-readiness.test.ts test/stage4-runtime-artifact-closure.test.ts test/stage4-schema-registry.test.ts'''}
 expected_new={
  'dev/linux-kvm/bounded-command.py':'relay',
@@ -638,7 +639,7 @@ assert {e['name']:e['new_files'] for e in plan['owners']}=={
  o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}
 assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
 planned={p:o for o,s in existing.items() for p in s.split()} | expected_new
-assert len(planned)==65 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==65
+assert len(planned)==71 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==71
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']
 q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1])

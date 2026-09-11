@@ -449,6 +449,12 @@ def require_driver(name, state, generation):
         raise Rejected("driver guest intent missing")
 
 
+def require_local_execution():
+    # No exact authorization has been issued by ADR0335's later envelope gate.
+    # Independent of driver custody: direct CLI use must stop before all effects.
+    raise Rejected("ADR0335 local KVM execution authorization is not issued")
+
+
 def main():
     def cancel(signum, frame):
         # Latch, do not throw inside Popen/pidfd capture: that would lose custody.
@@ -457,6 +463,7 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, cancel)
     try:
+        require_local_execution()
         if len(sys.argv) != 5:
             raise Rejected("fixed command arguments required")
         name, path, generation, port = sys.argv[1:]

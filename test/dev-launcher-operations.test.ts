@@ -9,7 +9,7 @@ import { parseLauncherArgs } from "../dev/launcher/cli.ts";
 import type { LauncherProfile } from "../dev/launcher/contract.ts";
 import { canonicalJson } from "../dev/launcher/contract.ts";
 import { beginWorkerStartup, bindWorkerChild, createApiToken, promoteWorkerReady } from "../dev/launcher/control.ts";
-import { createSandbox } from "../dev/launcher/core.ts";
+import { createSandbox, resetSandbox } from "../dev/launcher/core.ts";
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
@@ -27,6 +27,8 @@ import {
 } from "../dev/launcher/operations.ts";
 import type { ProfileAction, ProfileAdapter } from "../dev/launcher/profiles.ts";
 import {
+  clearRecovery,
+  consumeDriverAcquisition,
   createState,
   type LauncherState,
   publishDriverAcquisition,
@@ -35,6 +37,8 @@ import {
   resolveLauncherState,
   writePhase,
 } from "../dev/launcher/state.ts";
+import { launcherInventory } from "../dev/launcher/supervisor.ts";
+import { validateS309Json, validateSmokeJson } from "../scripts/run-launcher-smoke-evidence.ts";
 
 const revision = "d".repeat(40);
 const parentDigest = `sha256:${"1".repeat(64)}`;
@@ -314,6 +318,8 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
         descriptor: "none",
         workerLive: false,
         recovery: "absent",
+        acquisitionUncertainty: "absent",
+        retirement: "absent",
         cleanupRequired: false,
         driverState: "absent",
       });
@@ -458,6 +464,7 @@ test("fixed smoke uses dispatcher sequence and leaves metadata-only output", asy
       opSeams(calls),
     );
     assert.equal(result.complete, true);
+    validateSmokeJson(result, "linux-kvm");
     assert.deepEqual(
       calls.filter((x) => ["create", "start", "stop", "destroy"].includes(x)),
       ["create", "start", "stop", "destroy"],
@@ -625,6 +632,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
       seams,
     );
     assert.equal(result.complete, true);
+    validateS309Json(result);
     assert.equal(result.egressProof, true);
     assert.equal(result.liveEventCount, 259);
     assert.equal(result.liveEventCount > 32, true);
@@ -1257,6 +1265,55 @@ test("dispatcher rejects hostile core result getters without invocation", async 
     assert.equal(invoked, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("public status retains acquisition uncertainty after smoke worker-start failure and phase recovery", async () => {
+  for (const op of ["smoke", "s3-09"] as const) {
+    const { dir, ctx } = await roots();
+    const calls: string[] = [];
+    try {
+      const seams = Object.freeze({
+        ...opSeams(calls),
+        startWorkerForState: Object.freeze(async () => {
+          throw new Error("lost worker-start response");
+        }),
+        launcherInventory,
+      });
+      await assert.rejects(
+        runLauncherOperation(Object.freeze({ op, profile: "linux-kvm", state: "sticky" }), ctx, seams),
+      );
+      assert.deepEqual(calls, ["create"]); // no parent destroy on uncertain worker
+      const state = await resolveLauncherState({ root: ctx.launcherRoot, name: "sticky", sourceRevision: revision });
+      await writePhase(state, await readManifest(state), "sandbox-ready");
+      await clearRecovery(state);
+      const observed = await runLauncherOperation(
+        Object.freeze({ op: "status", profile: "linux-kvm", state: "sticky" }),
+        ctx,
+      );
+      const inventory = observed.inventory as Record<string, unknown>;
+      assert.equal(inventory.phase, "sandbox-ready");
+      assert.equal(inventory.recovery, "absent");
+      assert.equal(inventory.acquisitionUncertainty, "present");
+      assert.equal(inventory.retirement, "absent");
+      assert.equal(inventory.cleanupRequired, true);
+      assert(!JSON.stringify(observed).includes(state.dir));
+      const authority = await readAcquisition(state);
+      assert(!JSON.stringify(observed).includes(authority.generation));
+      await assert.rejects(
+        resetSandbox({ root: ctx.launcherRoot, name: "sticky", sourceRevision: revision, profile: "linux-kvm" }),
+        /sticky acquisition uncertainty/,
+      );
+      await consumeDriverAcquisition(state, authority);
+      const retired = await runLauncherOperation(
+        Object.freeze({ op: "status", profile: "linux-kvm", state: "sticky" }),
+        ctx,
+      );
+      assert.equal((retired.inventory as Record<string, unknown>).retirement, "present");
+      assert.equal((retired.inventory as Record<string, unknown>).cleanupRequired, true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

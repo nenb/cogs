@@ -743,6 +743,8 @@ function stripInventory(value: unknown) {
     descriptor: enumValue(v.descriptor, new Set(["none", "starting", "ready", "malformed"])),
     workerLive: v.workerLive === "unknown" ? "unknown" : bool(v.workerLive),
     recovery: enumValue(v.recovery, new Set(["present", "absent", "unknown"])),
+    acquisitionUncertainty: enumValue(v.acquisitionUncertainty, new Set(["present", "absent", "unknown"])),
+    retirement: enumValue(v.retirement, new Set(["present", "absent", "unknown"])),
     cleanupRequired: bool(v.cleanupRequired),
     driverState: enumValue(v.driverState, new Set(["present", "absent", "unknown"])),
   });

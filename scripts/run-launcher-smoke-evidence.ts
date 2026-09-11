@@ -143,6 +143,7 @@ export function validateSmokeJson(value: unknown, profile: Profile): void {
   const item = exactRecord(value, ["aborted", "complete", "inventory", "op"]);
   const aborted = exactRecord(item.aborted, ["eventCount", "lastEventId", "terminal"]);
   const inv = exactRecord(item.inventory, [
+    "acquisitionUncertainty",
     "authority",
     "cleanupRequired",
     "descriptor",
@@ -150,6 +151,7 @@ export function validateSmokeJson(value: unknown, profile: Profile): void {
     "phase",
     "profile",
     "recovery",
+    "retirement",
     "workerLive",
   ]);
   if (
@@ -163,6 +165,8 @@ export function validateSmokeJson(value: unknown, profile: Profile): void {
     throw new Error("invalid launcher smoke metadata");
   }
   if (
+    inv.acquisitionUncertainty !== "absent" ||
+    inv.retirement !== "absent" ||
     inv.profile !== profile ||
     inv.authority !== (profile === "linux-kvm" ? "authoritative-local" : "functional-only") ||
     inv.descriptor !== "none" ||
@@ -189,6 +193,7 @@ export function validateS309Json(value: unknown): void {
   const history = exactRecord(item.history, ["entries", "pages"]);
   const raw = exactRecord(item.rawExport, ["descriptorValidated", "mode", "rawExportOpened", "sensitive"]);
   const inv = exactRecord(item.inventory, [
+    "acquisitionUncertainty",
     "authority",
     "cleanupRequired",
     "descriptor",
@@ -196,6 +201,7 @@ export function validateS309Json(value: unknown): void {
     "phase",
     "profile",
     "recovery",
+    "retirement",
     "workerLive",
   ]);
   if (
@@ -215,6 +221,8 @@ export function validateS309Json(value: unknown): void {
   )
     throw new Error("invalid launcher smoke metadata");
   if (
+    inv.acquisitionUncertainty !== "absent" ||
+    inv.retirement !== "absent" ||
     inv.profile !== "linux-kvm" ||
     inv.authority !== "authoritative-local" ||
     inv.descriptor !== "none" ||

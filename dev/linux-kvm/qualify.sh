@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Direct qualification is also execution ingress, not an ADR0335 exemption.
+# Stop before temporary files, reporting traps, host probes or subprocesses.
+printf 'FAIL: ADR0335 local KVM execution authorization is not issued\n' >&2
+exit 1
 
 report_path=${1:-kvm-qualification-report.json}
 started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')

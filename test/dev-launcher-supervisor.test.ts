@@ -101,6 +101,7 @@ function assertReadyInventoryMetadataOnly(
 ): void {
   const descriptors = Object.getOwnPropertyDescriptors(inventory);
   assert.deepEqual(Object.keys(descriptors).sort(), [
+    "acquisitionUncertainty",
     "authority",
     "cleanupRequired",
     "descriptor",
@@ -108,6 +109,7 @@ function assertReadyInventoryMetadataOnly(
     "phase",
     "profile",
     "recovery",
+    "retirement",
     "stateId",
     "version",
     "workerLive",
@@ -127,6 +129,8 @@ function assertReadyInventoryMetadataOnly(
       descriptor: "ready",
       workerLive: true,
       recovery: "absent",
+      acquisitionUncertainty: "absent",
+      retirement: "absent",
       cleanupRequired: true,
       driverState: "present",
     },
@@ -569,6 +573,31 @@ test("supervisor start demotes false ready after post-promotion proof failure", 
     const inventory = await launcherInventory(state, seams({ identity: Object.freeze(() => null) }));
     assert.equal(inventory.descriptor, "none");
     assert.equal(inventory.cleanupRequired, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("inventory exposes sticky acquisition and retirement markers independently of worker recovery", async () => {
+  const { dir, state } = await readyState("sticky-inventory");
+  try {
+    for (const [file, field] of [
+      [".cogs-launcher-uncertainty", "acquisitionUncertainty"],
+      [".cogs-launcher-retirement", "retirement"],
+    ] as const) {
+      const path = join(state.dir, file);
+      for (const kind of ["regular", "symlink", "directory"] as const) {
+        if (kind === "regular") await writeFile(path, `${"a".repeat(32)}\n`, { mode: 0o600 });
+        else if (kind === "symlink") await symlink("missing", path);
+        else await mkdir(path);
+        const inventory = await launcherInventory(state, seams());
+        assert.equal(inventory.phase, "sandbox-ready");
+        assert.equal(inventory.recovery, "absent");
+        assert.equal(inventory[field], kind === "regular" ? "present" : "unknown");
+        assert.equal(inventory.cleanupRequired, true);
+        await rm(path, { recursive: true });
+      }
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

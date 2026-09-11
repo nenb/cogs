@@ -162,11 +162,19 @@ test("launcher smoke metadata validator requires exact cleanup and abort termina
       descriptor: "none",
       workerLive: false,
       recovery: "absent",
+      acquisitionUncertainty: "absent",
+      retirement: "absent",
       cleanupRequired: false,
       driverState: "absent",
     },
   };
   validateSmokeJson(valid, "linux-kvm");
+  for (const key of ["acquisitionUncertainty", "retirement"]) {
+    for (const value of ["present", "unknown", undefined])
+      assert.throws(() =>
+        validateSmokeJson({ ...valid, inventory: { ...valid.inventory, [key]: value } }, "linux-kvm"),
+      );
+  }
 
   let invoked = false;
   assert.throws(() =>
@@ -231,11 +239,17 @@ test("s3-09 metadata validator requires raw export opening proof", () => {
       descriptor: "none",
       workerLive: false,
       recovery: "absent",
+      acquisitionUncertainty: "absent",
+      retirement: "absent",
       cleanupRequired: false,
       driverState: "absent",
     },
   };
   validateS309Json(valid);
+  for (const key of ["acquisitionUncertainty", "retirement"]) {
+    for (const value of ["present", "unknown", undefined])
+      assert.throws(() => validateS309Json({ ...valid, inventory: { ...valid.inventory, [key]: value } }));
+  }
   assert.throws(() => validateS309Json({ ...valid, liveEventCount: 32 }));
   assert.throws(() =>
     validateS309Json({ ...valid, rawExport: { descriptorValidated: true, mode: "raw", sensitive: true } }),
