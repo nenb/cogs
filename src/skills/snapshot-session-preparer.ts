@@ -601,31 +601,30 @@ export async function withSnapshotSftp<T>(
         check();
         const endpoint = new URL(`ssh://${launch.sandbox.ssh_endpoint}`);
         const pin = decodeOpenSshSha256Pin(launch.sandbox.ssh_host_key).toString("hex");
-        const ready = new Promise<void>((accept, reject) => {
+        await new Promise<void>((accept, reject) => {
           client.once("ready", accept);
           void closed.then(() => reject(new CogsSkillPreparationError()));
+          client.connect({
+            host: endpoint.hostname.replace(/^\[|\]$/g, ""),
+            port: Number(endpoint.port || 22),
+            username: "root",
+            privateKey: key,
+            agentForward: false,
+            tryKeyboard: false,
+            hostHash: "sha256",
+            hostVerifier: (hash: string) => safeEqualHex(hash, pin),
+            readyTimeout: 5000,
+            authHandler: [{ type: "publickey", username: "root", key } as never],
+            algorithms: {
+              cipher: {
+                remove: ["aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-cbc", "3des-cbc", "arcfour"],
+              } as never,
+              hmac: { remove: ["hmac-sha1", "hmac-md5"] } as never,
+              serverHostKey: { remove: ["ssh-dss", "ssh-rsa"] } as never,
+            },
+          });
+          issued = true; // Synchronous key/config rejection creates no connection to retire.
         });
-        issued = true;
-        client.connect({
-          host: endpoint.hostname.replace(/^\[|\]$/g, ""),
-          port: Number(endpoint.port || 22),
-          username: "root",
-          privateKey: key,
-          agentForward: false,
-          tryKeyboard: false,
-          hostHash: "sha256",
-          hostVerifier: (hash: string) => safeEqualHex(hash, pin),
-          readyTimeout: 5000,
-          authHandler: [{ type: "publickey", username: "root", key } as never],
-          algorithms: {
-            cipher: {
-              remove: ["aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-cbc", "3des-cbc", "arcfour"],
-            } as never,
-            hmac: { remove: ["hmac-sha1", "hmac-md5"] } as never,
-            serverHostKey: { remove: ["ssh-dss", "ssh-rsa"] } as never,
-          },
-        });
-        await ready;
         const sftp = await rpc<SFTPWrapper>((cb) => client.sftp(cb));
         const stats = (s: Stats): CogsSftpStats => ({
           size: s.size,

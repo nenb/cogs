@@ -943,8 +943,12 @@ test("KVM generation owner binds exact private state and never adopts replacemen
       [
         "pending-replacement",
         async (path: string) => {
-          await rm(join(path, "qemu.owner"));
-          await writeFile(join(path, "qemu.owner"), '{"phase":"never"}\n', { mode: 0o600 });
+          const target = join(path, "qemu.owner"),
+            staged = join(dir, "replacement-qemu-owner");
+          await writeFile(staged, '{"phase":"never"}\n', { mode: 0o600, flag: "wx" });
+          assert.notEqual((await lstat(staged)).ino, (await lstat(target)).ino);
+          // Distinct live inode outside candidate; unlink/recreate inode ABA is not covered.
+          await rename(staged, target);
         },
         "fail",
       ],

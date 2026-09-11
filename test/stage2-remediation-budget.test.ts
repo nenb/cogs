@@ -280,10 +280,9 @@ assert 'grants no AWS operation' in control
 assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
-assert 'MAXIMUM_TRACKED_FILES = 1517;' in source_inventory
-assert 'MAXIMUM_AGGREGATE_BYTES = 26_000_000;' in source_inventory
-assert 'MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;' in source_inventory
-assert 'MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;' in source_inventory
+for constant in ('MAXIMUM_TRACKED_FILES = 1517;', 'MAXIMUM_AGGREGATE_BYTES = 26_000_000;',
+                 'MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;', 'MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;'):
+ assert constant in source_inventory,constant
 assert m['FINAL_CONTROL_DATA_ROOT'].endswith('-v7') and len(m['FINAL_CONTROL_DATA_MEMBERS'])==13
 assert m['_final_control_data_state']()[0] in ('absent','member-set-complete')
 assert 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/**/*.json' in Path('biome.json').read_text()
