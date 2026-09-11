@@ -614,6 +614,7 @@ function harness() {
     },
     createPi: async (options: AuthenticatedCogsPiSessionOptions) => {
       maybe("pi");
+      assert.equal(options.emit({ kind: "warning", correlation_id: "startup", payload: { code: "startup" } }), false);
       assert.equal(options.streamFn, undefined);
       assert.equal(options.ownedRuntime, undefined);
       assert.equal("turnTimeoutMs" in options, false, "authenticated launch remains the sole turn authority");

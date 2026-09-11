@@ -17,7 +17,17 @@ import {
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { ApiEvent, ExportPort, HistoryPort, InputKind, JsonValue, RunState, SessionPort } from "../api/server.ts";
+import {
+  type ApiEvent,
+  admitApiEvent,
+  admitPiCallback,
+  type ExportPort,
+  type HistoryPort,
+  type InputKind,
+  type JsonValue,
+  type RunState,
+  type SessionPort,
+} from "../api/server.ts";
 import { type CogsCommandAuditHook, captureCogsCommandAuditHook } from "../audit/command-audit.ts";
 import {
   type ModelApiKeySource,
@@ -123,7 +133,8 @@ export interface CogsPiSessionOptions {
   readonly resumeFile?: string;
   readonly toolPorts: CogsToolPorts;
   readonly streamFn?: StreamFn;
-  readonly emit: (event: ApiEvent) => boolean | undefined;
+  /** Return true only for bounded stream acceptance, never merely for optional delivery. */
+  readonly emit: (event: ApiEvent) => boolean;
   readonly onFatal: (reason: string) => void | Promise<void>;
   /** Bounded model-runtime credential operation deadline; not a prompt deadline. */
   readonly operationTimeoutMs?: number;
@@ -1859,7 +1870,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     public readonly model: Model<Api>,
     private readonly sessionManager: SessionManager,
     private readonly runtime: {
-      readonly emit: (event: ApiEvent) => boolean | undefined;
+      readonly emit: CogsPiSessionOptions["emit"];
       readonly onFatal: (reason: string) => void | Promise<void>;
       readonly provider: string;
       readonly userId: string;
@@ -2263,22 +2274,19 @@ class PiSessionAdapter implements CogsPiSessionPorts {
         await this.runtime.localExporter.createExport(input.signal === undefined ? {} : { signal: input.signal }),
         this.runtime.sessionId,
       );
-      const payload = sanitizeJson(
-        {
-          version: "cogs.shutdown-ready/v1alpha1",
-          bundle: descriptor.bundle,
-          manifest_sha256: descriptor.manifest_sha256,
-          created_at: descriptor.created_at,
-          mode: descriptor.mode,
-          attachments_included: descriptor.attachments_included,
-          file_count: descriptor.file_count,
-          total_bytes: descriptor.total_bytes,
-          sensitive: true,
-          sanitized: false,
-          anonymized: false,
-        },
-        { secrets: [this.runtime.secret.value] },
-      ) as Record<string, JsonValue>;
+      const payload = {
+        version: "cogs.shutdown-ready/v1alpha1",
+        bundle: descriptor.bundle,
+        manifest_sha256: descriptor.manifest_sha256,
+        created_at: descriptor.created_at,
+        mode: descriptor.mode,
+        attachments_included: descriptor.attachments_included,
+        file_count: descriptor.file_count,
+        total_bytes: descriptor.total_bytes,
+        sensitive: true,
+        sanitized: false,
+        anonymized: false,
+      } as Record<string, JsonValue>;
       emitSpan(this.runtime.telemetry, "shutdown.ready", {
         operation: "prepare",
         outcome: "ok",
@@ -2536,7 +2544,7 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     );
   }
 
-  private forwardEvent(event: { type: string; [key: string]: unknown }): void {
+  private forwardEvent(raw: unknown): void {
     const active = this.active;
     if (
       this.phase === "disposed" ||
@@ -2547,22 +2555,21 @@ class PiSessionAdapter implements CogsPiSessionPorts {
       return;
     const correlation = active?.correlationId ?? "system";
     const request = active?.requestId;
-    if (event.type === "agent_settled") return;
-    this.observeModelEvent(event);
-    emitSpan(this.runtime.telemetry, "pi.event", { outcome: "ok" });
-    if (event.type === "message_end")
-      this.runtime.gitBinding?.messageEnd(event, this.sessionManager, correlation, request);
-    if (event.type === "tool_execution_start") {
-      this.publishOrClose("tool_start", correlation, request, { event: this.redactEvent(event) });
-    } else if (event.type === "tool_execution_update") {
-      this.publishOrClose("tool_update", correlation, request, { event: this.redactEvent(event) });
-    } else if (event.type === "tool_execution_end") {
-      this.publishOrClose("tool_end", correlation, request, { event: this.redactEvent(event) });
-    } else if (event.type === "turn_end") {
-      this.publishOrClose("usage", correlation, request, this.usageObject());
-    } else {
-      this.publishOrClose("pi_event", correlation, request, { event: this.redactEvent(event) });
+    let admitted: ReturnType<typeof admitPiCallback>;
+    try {
+      admitted = admitPiCallback(raw, this.runtime.secret.value);
+    } catch {
+      void this.failClosed("invalid-pi-event", active).catch(() => undefined);
+      return;
     }
+    const model = admitted.model as { type: string; [key: string]: unknown };
+    const git = admitted.git as { type: string; [key: string]: unknown };
+    if (model.type === "agent_settled") return;
+    this.observeModelEvent(model);
+    emitSpan(this.runtime.telemetry, "pi.event", { outcome: "ok" });
+    if (git.type === "message_end") this.runtime.gitBinding?.messageEnd(git, this.sessionManager, correlation, request);
+    if (model.type === "turn_end") this.publishOrClose("usage", correlation, request, this.usageObject());
+    else this.publishOrClose(admitted.kind, correlation, request, admitted.payload);
   }
 
   private usageObject(): Record<string, JsonValue> {
@@ -2615,10 +2622,6 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     emitDelta(this.runtime.telemetry, "cost.microunits", after.cost, before.cost);
   }
 
-  private redactEvent(event: { type: string; [key: string]: unknown }): Record<string, JsonValue> {
-    return sanitizeJson(event, { secrets: [this.runtime.secret.value] }) as Record<string, JsonValue>;
-  }
-
   private emitOrFail(
     kind: ApiEvent["kind"],
     correlationId: string,
@@ -2650,14 +2653,17 @@ class PiSessionAdapter implements CogsPiSessionPorts {
     payload: Record<string, JsonValue>,
   ): boolean {
     if (this.phase === "failed" || this.phase === "disposed") return false;
-    const event = {
-      kind,
-      correlation_id: opaqueOrSystem(correlationId),
-      ...(requestId === undefined ? {} : { request_id: requestId }),
-      payload: sanitizeJson(payload, { secrets: [this.runtime.secret.value] }) as Record<string, JsonValue>,
-    } satisfies ApiEvent;
     try {
-      return this.runtime.emit(event) !== false;
+      const event = admitApiEvent(
+        {
+          kind,
+          correlation_id: correlationId,
+          ...(requestId === undefined ? {} : { request_id: requestId }),
+          payload,
+        },
+        this.runtime.secret.value,
+      );
+      return this.runtime.emit(event) === true;
     } catch {
       return false;
     }
@@ -3541,10 +3547,6 @@ function assertInputKind(value: string): asserts value is InputKind {
 
 function assertOpaqueId(value: string, label: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) throw new Error(`invalid ${label}`);
-}
-
-function opaqueOrSystem(value: string): string {
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value) ? value : "system";
 }
 
 async function throwIfAborted(signal: AbortSignal | undefined): Promise<void> {

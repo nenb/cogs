@@ -1499,13 +1499,13 @@ test("Pi session rejects malformed tool args and malformed tool results without 
       }),
     );
     (large as unknown as { forwardEvent: (event: { type: string; [key: string]: unknown }) => void }).forwardEvent({
-      type: "hostile_large_event",
+      type: "agent_start",
       text: `${"x".repeat(4090)}${secret}${"y".repeat(2_000_000)}`,
     });
     const largeText = largeEvents.join("\n");
     assert.equal(largeText.includes(secret), false);
-    assert.equal(largeText.includes("[redacted]"), true);
-    assert.equal(largeText.includes("[truncated]"), true);
+    assert.equal(largeText.includes('"status":"omitted"'), true);
+    assert.equal(largeText.includes('"reason":"input_limit"'), true);
     assert.equal(largeText.includes(innocentPrefix), false);
     assert.ok(largeEvents.every((event) => Buffer.byteLength(event, "utf8") < 24 * 1024));
     await large.dispose();
@@ -4453,41 +4453,13 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "aborted" } });
     session._emit({ type: "message_start", message: { role: "assistant" } });
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "error" } });
-    session._emit({ type: "message_start", message: { role: "assistant" } });
-    session._emit({ type: "message_end", message: { role: "assistant" } });
-    let getterInvoked = false;
-    let contentGetterInvoked = false;
-    const hostileContentMessage = Object.freeze(
-      Object.defineProperty({ role: "assistant", stopReason: "stop" }, "content", {
-        enumerable: true,
-        get: () => {
-          contentGetterInvoked = true;
-          return "SECRET_CONTENT";
-        },
-      }),
-    );
-    session._emit({ type: "message_start", message: hostileContentMessage });
-    session._emit({ type: "message_end", message: hostileContentMessage });
-    session._emit({
-      type: "message_start",
-      message: Object.defineProperty({}, "role", {
-        enumerable: true,
-        get: () => {
-          getterInvoked = true;
-          return "assistant";
-        },
-      }),
-    });
-    session._emit({
-      type: "message_end",
-      message: new Proxy(
-        { role: "assistant" },
-        {
-          getOwnPropertyDescriptor: () => {
-            throw new Error("trap");
-          },
-        },
-      ),
+    // Invalid callback shapes now fail closed; their no-observation contract is tested separately.
+    // Keep synthetic telemetry counters independent from the closed public usage projection.
+    (adapter as unknown as { usageObject: () => unknown }).usageObject = () => ({
+      model: "anthropic/claude-sonnet-4-5",
+      entries: 0,
+      cost: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     });
     turnCalls = 0;
     currentBefore = beforeStats;
@@ -4521,9 +4493,6 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
         .slice(0, 5),
       ["ok", "ok", "ok", "cancelled", "error"],
     );
-    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").map((span) => span.attributes?.outcome)[5], "error");
-    assert.equal(getterInvoked, false);
-    assert.equal(contentGetterInvoked, false);
     assert.deepEqual(metricValues(telemetry.metrics, "token.input"), [10, 3, 86_400_001]);
     assert.deepEqual(metricValues(telemetry.metrics, "token.output"), [4, 5, 1]);
     assert.deepEqual(metricValues(telemetry.metrics, "token.cache"), [2, 3, 1]);
@@ -4533,7 +4502,7 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
     await adapter.dispose();
     session._emit({ type: "message_start", message: { role: "assistant" } });
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
-    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").length, 12);
+    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").length, 10);
 
     const throwing = await createCogsPiSession(
       withDefaults({
@@ -5687,6 +5656,164 @@ test("non-owned Pi session dispose retains host runtime directories", async () =
     assert.ok(await lstat(sessionRoot));
     await assert.rejects(adapter.disposeOwnedRuntime(), /Pi owned runtime cleanup failed/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi callback admission precedes model, Git and telemetry; rejected publication is fatal", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-event-admission-"));
+  let traps = 0;
+  const trap = () => {
+    traps++;
+    throw new Error("SECRET");
+  };
+  const proxy = new Proxy({}, { get: trap, getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap });
+  const bad = [
+    proxy,
+    { type: "message_end", message: proxy },
+    Object.defineProperty({}, "type", { get: trap }),
+    {
+      type: "message_start",
+      message: Object.defineProperty({ role: "assistant" }, "content", { get: trap, enumerable: true }),
+    },
+  ];
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    for (let i = 0; i < bad.length + 2; i++) {
+      const telemetry = recordingTelemetry();
+      let model = 0,
+        git = 0,
+        fatal = "",
+        published = 0;
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(root, `session-${i}`),
+          sessionId: `session-${i}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "sk-test-event-secret",
+          toolPorts: fakePorts([]),
+          streamFn: oneTextStream("unused"),
+          telemetry: telemetry.sink,
+          emit: () => {
+            published++;
+            return i === bad.length ? false : (undefined as unknown as boolean);
+          },
+          onFatal: (reason) => {
+            fatal = reason;
+          },
+        }),
+      );
+      const internal = adapter as unknown as {
+        forwardEvent(raw: unknown): void;
+        observeModelEvent: () => void;
+        runtime: { gitBinding: unknown };
+      };
+      internal.observeModelEvent = () => {
+        model++;
+      };
+      internal.runtime.gitBinding = {
+        messageEnd: () => {
+          git++;
+        },
+        dispose: async () => undefined,
+      };
+      const before = telemetry.spans.length;
+      internal.forwardEvent(i < bad.length ? bad[i] : { type: "agent_start" });
+      await eventually(() => assert.notEqual(fatal, ""));
+      assert.equal(fatal, i < bad.length ? "invalid-pi-event" : "publish-failed");
+      if (i < bad.length) {
+        assert.equal(model, 0);
+        assert.equal(git, 0);
+        assert.equal(published, 0);
+        assert.equal(telemetry.spans.length, before);
+      }
+      assert.equal((await adapter.state()).runState, "shutdown");
+      await adapter.dispose();
+    }
+    assert.equal(traps, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("omitted Pi detail accepts with no subscriber, then next turn and explicit shutdown", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-event-next-turn-"));
+  let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+  const api = createApiServer({
+    bearerToken: "t".repeat(32),
+    sessionId: "event-next",
+    maxEventBytes: 4096,
+    lifecycle: { ready: true, state: "ready", requestShutdown: async () => undefined },
+    session: {
+      state: async () => ({ runState: "idle" }),
+      input: async () => "running",
+      abort: async () => ({ aborted: true, runState: "aborting" }),
+    },
+    history: { entries: async () => ({ entries: [] }) },
+    exporter: { createExport: async () => null },
+  });
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    let fatal = "";
+    adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "event-next",
+        preparedResources: hostilePrepared(),
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-event-secret",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("ok"),
+        emit: api.publish,
+        onFatal: (reason) => {
+          fatal = reason;
+        },
+      }),
+    );
+    const { port } = await api.listen();
+    (adapter as unknown as { forwardEvent(raw: unknown): void }).forwardEvent({
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      isError: false,
+      result: { text: "x".repeat(60000) },
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+      headers: { authorization: `Bearer ${"t".repeat(32)}` },
+    });
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const received = (async () => {
+      let text = "";
+      while (!text.includes('"kind":"shutdown_ready"'))
+        text += Buffer.from((await reader.read()).value ?? []).toString();
+      await reader.cancel();
+      return text;
+    })();
+    received.catch(() => undefined);
+    for (const requestId of ["first", "second"]) {
+      await adapter.input({ requestId, correlationId: requestId, kind: "prompt", content: "ok" });
+      await eventually(async () => assert.equal((await adapter?.state())?.runState, "settled"));
+    }
+    await adapter.prepareShutdown({ requestId: "shutdown", correlationId: "shutdown" });
+    assert.equal(fatal, "");
+    const text = await received;
+    assert.match(text, /"status":"omitted","reason":"frame_limit"/);
+    assert.equal(text.split('"kind":"run_settled"').length - 1, 2);
+    assert.equal((await adapter.state()).runState, "shutdown");
+  } finally {
+    await api.close();
+    await adapter?.dispose();
     await rm(root, { recursive: true, force: true });
   }
 });

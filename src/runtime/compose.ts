@@ -444,7 +444,7 @@ export async function startProductionWorker(
         }),
         signal: startup.signal,
         toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
-        emit: (event) => api?.publish(event) ?? true,
+        emit: (event) => api?.publish(event) ?? false,
         onFatal: () => void close("pi-fatal").catch(() => undefined),
         policyAuthorizer: POLICY,
         telemetry,

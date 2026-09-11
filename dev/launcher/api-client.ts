@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { admitApiEvent } from "../../src/api/server.ts";
 
 export type ApiOperation = "run" | "abort" | "state" | "status" | "entries" | "export" | "shutdown";
 export type ApiEvent = Readonly<{ id: number; data: Readonly<Record<string, unknown>> }>;
@@ -350,7 +352,10 @@ function oneEventChecked(raw: string): ApiEvent {
   )
     fail();
   if (data.request_id !== undefined && (typeof data.request_id !== "string" || !idRe.test(data.request_id))) fail();
-  const clean = { ...data, payload: jsonValue(data.payload) };
+  // Network JSON is already byte-bounded. Reuse closed subtype admission and reject extra wire fields.
+  const admitted = admitApiEvent(data, "", true);
+  if (!isDeepStrictEqual(data.payload, admitted.payload)) fail();
+  const clean = { ...data, payload: admitted.payload };
   return Object.freeze({ id, data: deepFreeze(clean) as Readonly<Record<string, unknown>> });
 }
 function bodyFor(op: ApiOperation, input: Readonly<Record<string, unknown>>, seams: ApiSeams): Record<string, unknown> {

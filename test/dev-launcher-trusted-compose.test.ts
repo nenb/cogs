@@ -1688,6 +1688,7 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
     createPi: async (options) => {
       calls.push("pi");
       captured.launch = options.launchDocument;
+      assert.equal(options.emit({ kind: "warning", correlation_id: "startup", payload: { code: "startup" } }), false);
       await writeFile(join((options as { agentDir: string }).agentDir, "agent-state.json"), "{}", { flag: "wx" });
       await writeFile(join((options as { sessionRoot: string }).sessionRoot, "launcher.jsonl"), "", { flag: "wx" });
       return Object.freeze({

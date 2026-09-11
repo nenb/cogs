@@ -12,7 +12,10 @@ const Ajv = require("ajv/dist/2020") as new (options?: Record<string, unknown>) 
 const addFormats = require("ajv-formats") as (ajv: AjvCore) => AjvCore;
 
 import {
+  type ApiEvent,
   type ApiServer,
+  admitApiEvent,
+  admitPiCallback,
   createApiServer,
   type ExportPort,
   type HistoryPort,
@@ -90,6 +93,7 @@ async function withServer<T>(
     requestTimeoutMs?: number;
     portTimeoutMs?: number;
     maxEventBytes?: number;
+    sessionId?: string;
     duplicateCapacity?: number;
   } = {},
 ): Promise<T> {
@@ -138,7 +142,7 @@ test("API server object is frozen plain own-method authority and remains functio
   assert.throws(() => Object.defineProperty(api, "listen", { value: () => undefined }));
   assert.equal(Reflect.deleteProperty(api, "publish"), false);
   const { port } = await api.listen();
-  assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", payload: { ok: true } }), true);
+  assert.equal(api.publish(event("pi_event")), true);
   const ready = await fetch(`http://127.0.0.1:${port}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -164,7 +168,11 @@ async function body(response: Response): Promise<Record<string, unknown>> {
 }
 
 function event(kind: string, payload: Record<string, unknown> = {}) {
-  return { kind, correlation_id: "corr-event", payload } as never;
+  return {
+    kind,
+    correlation_id: "corr-event",
+    payload: kind === "pi_event" ? { event: { type: "agent_start" }, detail: payload } : payload,
+  } as never;
 }
 
 async function rawHttp(
@@ -399,7 +407,7 @@ test("SSE envelopes exactly validate the authoritative event schema", async () =
       kind: "tool_start",
       correlation_id: "corr-schema",
       request_id: "req-schema",
-      payload: { tool: "read" },
+      payload: { event: { type: "tool_execution_start", toolName: "read", toolCallId: "tool-1" } },
     });
     const response = await fetch(`${base}/v1/events?after=0`, {
       headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
@@ -860,7 +868,7 @@ test("query/body smuggling, malformed cursors, and hanging ports fail closed", a
   }
 });
 
-test("SSE rejects malformed or oversized events and handles disconnect cleanup", async () => {
+test("SSE rejects malformed events, accepts oversized detail and handles disconnect cleanup", async () => {
   await withServer(
     async ({ base, api }) => {
       assert.equal(api.publish(event("pi_event", { seq: 99, version: "evil" })), true);
@@ -872,13 +880,13 @@ test("SSE rejects malformed or oversized events and handles disconnect cleanup",
       await stream.body?.cancel();
       assert.equal(api.publish(event("pi_event", { name: "after-disconnect" })), true);
     },
-    { maxEventBytes: 256 },
+    { maxEventBytes: 4096 },
   );
   await withServer(
     async ({ api }) => {
-      assert.equal(api.publish(event("pi_event", { data: "x".repeat(512) })), false);
+      assert.equal(api.publish(event("pi_event", { data: "x".repeat(8192) })), true);
     },
-    { maxEventBytes: 128 },
+    { maxEventBytes: 4096 },
   );
 });
 
@@ -1297,14 +1305,14 @@ test("already-aborting state does not invoke abort port again", async () => {
 
 test("publish validates payload graph and disconnects actual backpressure consumers", async () => {
   await withServer(async ({ api }) => {
-    assert.equal(api.publish(event("pi_event", { value: Number.NaN })), false);
+    assert.equal(api.publish(event("pi_event", { data: Number.NaN })), false);
     assert.equal(api.publish({ kind: "pi_event", correlation_id: "corr-event", payload: 1n } as never), false);
     const cycle: Record<string, unknown> = {};
-    cycle.self = cycle;
+    cycle.content = cycle;
     assert.equal(api.publish(event("pi_event", cycle as never)), false);
-    const accessor = Object.create(null, { value: { get: () => "secret", enumerable: true } });
+    const accessor = Object.create(null, { data: { get: () => "secret", enumerable: true } });
     assert.equal(api.publish(event("pi_event", accessor)), false);
-    assert.equal(api.publish(event("pi_event", { nested: [1, true, null] })), true);
+    assert.equal(api.publish(event("pi_event", { content: [1, true, null] })), true);
   });
 
   const originalWrite = ServerResponse.prototype.write;
@@ -1315,20 +1323,29 @@ test("publish validates payload graph and disconnects actual backpressure consum
       chunk: unknown,
       ...args: unknown[]
     ): boolean {
-      if (typeof chunk === "string" && chunk.includes("backpressure")) {
+      if (!sawBackpressureWrite && typeof chunk === "string" && chunk.includes("backpressure")) {
         sawBackpressureWrite = true;
         return false;
       }
       return Reflect.apply(originalWrite, this, [chunk, ...args]) as boolean;
     };
     await withServer(async ({ base, api }) => {
-      void fetch(`${base}/v1/events`, {
+      // Flushed headers prove registration without a timing guess.
+      const live = await fetch(`${base}/v1/events`, {
         headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
-      }).catch(() => undefined);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      const healthy = await fetch(`${base}/v1/events`, {
+        headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+      });
+      const reader = healthy.body?.getReader();
+      assert.ok(reader);
       assert.equal(api.publish(event("pi_event", { name: "backpressure" })), true);
       assert.equal(sawBackpressureWrite, true);
+      assert.match(Buffer.from((await reader.read()).value ?? []).toString(), /^id: 1\n/);
       assert.equal(api.publish(event("pi_event", { name: "after-backpressure" })), true);
+      assert.match(Buffer.from((await reader.read()).value ?? []).toString(), /^id: 2\n/);
+      await reader.cancel();
+      await live.body?.cancel().catch(() => undefined);
     });
   } finally {
     ServerResponse.prototype.write = originalWrite;
@@ -1601,6 +1618,255 @@ test("cooperative option bags reject hostile shapes without invoking getters", a
   assert.equal(invoked, false);
   await assert.rejects(api.close(Object.freeze({ [Symbol("x")]: true }) as never));
   await assert.rejects(api.close(Object.create(null)));
+});
+
+test("bounded event admission rejects proxies/accessors without traps and omits whole detail", () => {
+  let traps = 0;
+  const trap = () => {
+    traps++;
+    throw new Error("SECRET");
+  };
+  const proxy = new Proxy({}, { get: trap, ownKeys: trap, getPrototypeOf: trap, getOwnPropertyDescriptor: trap });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const accessor = Object.defineProperty({}, "text", { get: trap, enumerable: true });
+  const array = Object.defineProperty([0], "0", { get: trap, enumerable: true });
+  const cycle: Record<string, unknown> = {};
+  cycle.content = cycle;
+  for (const raw of [
+    proxy,
+    revoked.proxy,
+    { type: "agent_start", content: proxy },
+    { type: "agent_start", content: accessor },
+    { type: "agent_start", content: array },
+    { type: "agent_start", content: cycle },
+    { type: "agent_start", content: Array(1) },
+    Object.defineProperty({}, "type", { get: trap }),
+  ]) {
+    assert.throws(() => admitPiCallback(raw, "SECRET"));
+  }
+  assert.equal(traps, 0);
+  const raw = { type: "agent_start", text: '😀\\"\\nSECRET', token: "HIDDEN", toJSON: trap };
+  const admitted = admitPiCallback(raw, "SECRET");
+  assert.equal(JSON.stringify(admitted).includes("SECRET"), false);
+  assert.equal(JSON.stringify(admitted).includes("HIDDEN"), false);
+  assert.equal(JSON.stringify(admitted).includes("[redacted]"), true);
+  assert.equal(traps, 0);
+  assert.equal(Object.isFrozen(admitted.payload.detail), true);
+  assert.deepEqual(admitted.model, { type: "agent_start" });
+  assert.deepEqual(admitted.git, { type: "agent_start" });
+  const broad = Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`unknown-${i}`, proxy]));
+  assert.equal(admitPiCallback({ ...broad, type: "agent_start" }, "").kind, "pi_event");
+  let deep: unknown = "x";
+  for (let i = 0; i < 17; i++) deep = { content: deep };
+  for (const detail of [
+    "x".repeat(1024 * 1024),
+    "😀".repeat(300_000),
+    "\u0001".repeat(180_000),
+    Array(129).fill(0),
+    Array(128).fill(Array(128).fill(0)),
+    deep,
+  ]) {
+    const result = admitPiCallback(
+      { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", isError: true, result: detail },
+      "",
+    );
+    assert.equal(result.payload.detail, undefined);
+    assert.equal((result.payload.cogs_transport as { status: string }).status, "omitted");
+    assert.deepEqual(result.payload.event, {
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      isError: true,
+    });
+  }
+  for (const text of ["\ud800", "\udc00"]) assert.throws(() => admitPiCallback({ type: "agent_start", text }, ""));
+});
+
+test("every mandatory event core survives minimum final SSE budget, including complete S3 proof", async () => {
+  const id = "a".repeat(128),
+    n = Number.MAX_SAFE_INTEGER;
+  const git = {
+    trust: "trusted Cogs record of untrusted Git observation",
+    repo: id,
+    session: id,
+    entry: "a".repeat(8),
+    commit: "a".repeat(64),
+    turn: n,
+    observed_at: "9999-12-31T23:59:59.999Z",
+  };
+  const proof = {
+    version: "cogs.launcher.s3-09-proof/v2alpha1",
+    scenario: "s3-09",
+    profile: "linux-kvm",
+    outcome: "pass",
+    trusted_positive_egress_observed: true,
+    runtime_observers_consistent: true,
+    completion_observer_consistent: true,
+    fixture_denied_route_absent: true,
+    fixture_observer_consistent: true,
+    fixture_ready: true,
+    fixture_baseline_captured: true,
+  };
+  const fixtures: Array<[ApiEvent["kind"], Record<string, unknown>]> = [
+    [
+      "pi_event",
+      {
+        event: {
+          type: "message_end",
+          message: { role: "toolResult", toolCallId: id, toolName: "write", isError: true },
+        },
+      },
+    ],
+    ...(["start", "update", "end"] as const).map((phase): [ApiEvent["kind"], Record<string, unknown>] => [
+      `tool_${phase}`,
+      {
+        event: {
+          type: `tool_execution_${phase}`,
+          toolCallId: id,
+          toolName: "write",
+          ...(phase === "end" ? { isError: true } : {}),
+        },
+      },
+    ]),
+    [
+      "usage",
+      {
+        model: "a".repeat(384),
+        tokens: { input: n, output: n, cacheRead: n, cacheWrite: n, total: n },
+        cost: Number.MAX_VALUE,
+        entries: n,
+      },
+    ],
+    ["git_mapping", { ...git, confidence: "exact", boundary: "shutdown" }],
+    [
+      "checkpoint",
+      {
+        ...git,
+        confidence: "checkpoint",
+        checkpoint_ref: "a".repeat(192),
+        file_count: n,
+        total_bytes: n,
+        duration_ms: n,
+      },
+    ],
+    ["approval_required", { code: id, approval_id: id }],
+    ["warning", { code: id, boundary: "shutdown", trust: git.trust }],
+    ["error", { message: "a".repeat(512) }],
+    ["run_settled", { state: "settled", s3_09_proof: proof }],
+    ["run_aborted", { reason: "requested", abort_request_id: id, abort_correlation_id: id }],
+    [
+      "shutdown_ready",
+      {
+        version: "cogs.shutdown-ready/v1alpha1",
+        bundle: "a".repeat(160),
+        manifest_sha256: "a".repeat(64),
+        created_at: git.observed_at,
+        mode: "raw",
+        attachments_included: false,
+        file_count: n,
+        total_bytes: n,
+        sensitive: true,
+        sanitized: false,
+        anonymized: false,
+      },
+    ],
+  ];
+  for (const [kind, payload] of fixtures)
+    await withServer(
+      async ({ api, base }) => {
+        const raw = { kind, correlation_id: id, request_id: id, payload };
+        const core = admitApiEvent(raw);
+        assert.ok(Buffer.byteLength(JSON.stringify(core.payload)) <= 3072, kind);
+        assert.equal(
+          api.publish({ ...raw, payload: { ...payload, detail: { text: '😀\\"\\n'.repeat(10000) } } } as ApiEvent),
+          true,
+          kind,
+        );
+        const response = await fetch(`${base}/v1/events`, {
+          headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+        });
+        const reader = response.body?.getReader();
+        assert.ok(reader);
+        const frame = Buffer.from((await reader.read()).value ?? []).toString();
+        await reader.cancel();
+        const maximumSequenceFrame = frame.replace("id: 1\n", `id: ${n}\n`).replace('"seq":1,', `"seq":${n},`);
+        assert.ok(Buffer.byteLength(maximumSequenceFrame) <= 4096, kind);
+        const envelope = JSON.parse(frame.split("data: ")[1]?.trim() ?? "");
+        assert.equal(envelope.seq, 1);
+        assert.equal(envelope.request_id, id);
+        assert.equal(envelope.session_id, id);
+        assert.deepEqual(envelope.payload, {
+          ...core.payload,
+          cogs_transport: { version: "cogs.event-detail/v1", status: "omitted", reason: "frame_limit" },
+        });
+        for (const key of Object.keys(payload)) {
+          const invalid = { ...payload };
+          delete invalid[key];
+          if (key !== "s3_09_proof" && !(kind === "warning" && key !== "code"))
+            assert.equal(api.publish({ ...raw, payload: invalid } as ApiEvent), false, `${kind}:${key}`);
+        }
+      },
+      { maxEventBytes: 4096, sessionId: id },
+    );
+  for (const key of Object.keys(proof)) {
+    const incomplete = { ...proof } as Record<string, unknown>;
+    delete incomplete[key];
+    assert.throws(() =>
+      admitApiEvent({
+        kind: "run_settled",
+        correlation_id: id,
+        payload: { state: "settled", s3_09_proof: incomplete },
+      }),
+    );
+  }
+});
+
+test("invalid publications leave sequence intact; codec metadata cannot be forged", async () => {
+  await withServer(async ({ api, base }) => {
+    for (const raw of [
+      { kind: "run_settled", correlation_id: "a".repeat(129), payload: { state: "settled" } },
+      {
+        kind: "tool_end",
+        correlation_id: "a",
+        payload: {
+          event: { type: "tool_execution_end", toolName: "bash", toolCallId: "a".repeat(129), isError: false },
+        },
+      },
+      {
+        kind: "run_settled",
+        correlation_id: "a",
+        payload: {
+          state: "settled",
+          cogs_transport: { version: "cogs.event-detail/v1", status: "omitted", reason: "frame_limit" },
+        },
+      },
+    ])
+      assert.equal(api.publish(raw as ApiEvent), false);
+    assert.equal(api.publish(event("pi_event")), true); // No subscribers is normal stream acceptance.
+    const response = await fetch(`${base}/v1/events`, {
+      headers: { authorization: "Bearer worker-secret-0123456789abcdefghi" },
+    });
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    assert.match(Buffer.from((await reader.read()).value ?? []).toString(), /^id: 1\n/);
+    await reader.cancel();
+  });
+  const p = ports();
+  for (const maxEventBytes of [128, 4095, 1024 * 1024 + 1])
+    assert.throws(
+      () =>
+        createApiServer({
+          lifecycle: lifecycle() as never,
+          session: p.session,
+          history: p.history,
+          exporter: p.exporter,
+          bearerToken: "a".repeat(32),
+          sessionId: "s",
+          maxEventBytes,
+        }),
+      /maxEventBytes/,
+    );
 });
 
 async function reserveLoopbackPort(): Promise<number> {

@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import { URL } from "node:url";
+import { types } from "node:util";
 import { closeObservationContext, createCloseOwner, observeClose, registerCloseOwner } from "../launch/close.ts";
 import type { LaunchLifecycle } from "../launch/lifecycle.ts";
 
@@ -115,6 +116,7 @@ export interface ApiCloseOptions {
 export interface ApiServer {
   readonly listen: (port?: number, host?: string, options?: ApiListenOptions) => Promise<{ port: number }>;
   readonly close: (options?: ApiCloseOptions) => Promise<void>;
+  /** True means bounded replay acceptance, including omitted detail; never subscriber delivery. */
   readonly publish: (event: ApiEvent) => boolean;
 }
 
@@ -150,7 +152,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   const eventReplayCapacity = optionInteger(options.eventReplayCapacity, 256, "eventReplayCapacity", 1, 4096);
   const requestTimeoutMs = optionInteger(options.requestTimeoutMs, 5_000, "requestTimeoutMs", 1, 60_000);
   const portTimeoutMs = optionInteger(options.portTimeoutMs, requestTimeoutMs, "portTimeoutMs", 1, 60_000);
-  const maxEventBytes = optionInteger(options.maxEventBytes, 32 * 1024, "maxEventBytes", 128, 1024 * 1024);
+  const maxEventBytes = optionInteger(options.maxEventBytes, 32 * 1024, "maxEventBytes", 4096, 1024 * 1024);
   const duplicates: DuplicateEntry[] = [];
   const replay: { seq: number; serialized: string }[] = [];
   const clients = new Set<Client>();
@@ -692,6 +694,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const client = { response, close: () => request.off("close", onClose) };
     clients.add(client);
     request.on("close", onClose);
+    response.flushHeaders(); // Registration causally precedes the first client turn; not replay reliability.
   }
 
   async function stateBody(): Promise<JsonValue> {
@@ -754,8 +757,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     let clean: ApiEvent;
     let serialized: string;
     try {
-      clean = validateEvent(event);
-      serialized = serializeSse(nextSeq, options.sessionId, clean);
+      clean = admitApiEvent(event);
+      const timestamp = new Date().toISOString();
+      serialized = serializeSse(nextSeq, options.sessionId, clean, timestamp);
+      if (Buffer.byteLength(serialized) > maxEventBytes) {
+        clean = omitEventDetail(clean, "frame_limit");
+        serialized = serializeSse(nextSeq, options.sessionId, clean, timestamp);
+      }
     } catch {
       return false;
     }
@@ -1415,69 +1423,560 @@ function endResponse(response: ServerResponse, payload: Buffer, closeAfter: bool
   });
 }
 
-function validateEvent(event: ApiEvent): ApiEvent {
-  if (!strictPlainObject(event)) throw new Error("malformed event");
-  const keys = Object.keys(event);
-  if (keys.some((key) => key !== "kind" && key !== "correlation_id" && key !== "request_id" && key !== "payload"))
-    throw new Error("malformed event");
-  const kind = dataProperty(event, "kind");
-  const correlation = dataProperty(event, "correlation_id");
-  const request = dataProperty(event, "request_id");
-  const payload = dataProperty(event, "payload");
-  if (!eventKind(kind)) throw new Error("malformed event");
-  if (typeof correlation !== "string" || !opaqueId(correlation)) throw new Error("malformed event");
-  if (request !== undefined && (typeof request !== "string" || !opaqueId(request))) throw new Error("malformed event");
-  const cleanPayload = validateJsonValue(payload);
-  if (!strictPlainObject(cleanPayload)) throw new Error("malformed event");
-  const clean: { kind: ApiEventKind; correlation_id: string; request_id?: string; payload: Record<string, JsonValue> } =
-    {
-      kind,
-      correlation_id: correlation,
-      payload: stripUndefined(cleanPayload),
+// Closed permitted projections, not an arbitrary JSON copier. Unknown properties are never read.
+// Only this codec can issue transport metadata. Limits apply before redaction or serialization.
+type EventRecord = Record<string, JsonValue>;
+type CoreSchema = string | boolean | readonly string[] | { readonly [key: string]: CoreSchema };
+type OmissionReason = "input_limit" | "structure_limit" | "frame_limit";
+const issuedTransport = new WeakMap<object, JsonValue | undefined>();
+const eventTrust = ["trusted Cogs record of untrusted Git observation"];
+const boundarySchema = ["user", "tool", "settle", "shutdown"];
+const gitCore = {
+  trust: eventTrust,
+  repo: "id",
+  session: "id",
+  entry: "entry",
+  commit: "commit",
+  turn: "integer",
+  observed_at: "date",
+  confidence: ["exact"],
+};
+const toolCore = { toolCallId: "toolId", toolName: ["read", "write", "edit", "bash"] };
+const messageCore = {
+  role: ["user", "assistant", "toolResult", "bashExecution", "custom", "compactionSummary", "branchSummary"],
+  "toolCallId?": "toolId",
+  "toolName?": toolCore.toolName,
+  "isError?": "boolean",
+  "stopReason?": ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"],
+};
+const piCores: Record<string, Record<string, CoreSchema>> = {
+  agent_start: {},
+  agent_settled: {},
+  agent_end: { willRetry: "boolean" },
+  turn_start: {},
+  turn_end: { message: messageCore },
+  message_start: { message: messageCore },
+  message_update: { message: messageCore, assistantMessageEvent: "update" },
+  message_end: { message: messageCore },
+  tool_execution_start: toolCore,
+  tool_execution_update: toolCore,
+  tool_execution_end: { ...toolCore, isError: "boolean" },
+  queue_update: {},
+  compaction_start: { reason: ["manual", "threshold", "overflow"] },
+  compaction_end: { reason: ["manual", "threshold", "overflow"], aborted: "boolean", willRetry: "boolean" },
+  entry_appended: {},
+  session_info_changed: {},
+  thinking_level_changed: { level: ["off", "minimal", "low", "medium", "high", "xhigh"] },
+  auto_retry_start: { attempt: "integer", maxAttempts: "integer", delayMs: "integer" },
+  auto_retry_end: { success: "boolean", attempt: "integer" },
+  summarization_retry_scheduled: { attempt: "integer", maxAttempts: "integer", delayMs: "integer" },
+  summarization_retry_attempt_start: {
+    source: ["branchSummary", "compaction"],
+    "reason?": ["manual", "threshold", "overflow"],
+  },
+  summarization_retry_finished: {},
+  bash_execution_update: { "id?": "toolId" },
+  queued_input: { kind: ["steer", "follow_up"], request_id: "id" },
+};
+const apiCores: Record<ApiEventKind, Record<string, CoreSchema>> = {
+  pi_event: { event: "pi" },
+  tool_start: { event: "pi" },
+  tool_update: { event: "pi" },
+  tool_end: { event: "pi" },
+  usage: {
+    model: "text384",
+    tokens: { input: "integer", output: "integer", cacheRead: "integer", cacheWrite: "integer", total: "integer" },
+    cost: "number",
+    entries: "integer",
+  },
+  git_mapping: { ...gitCore, boundary: boundarySchema },
+  checkpoint: {
+    ...gitCore,
+    confidence: ["checkpoint"],
+    checkpoint_ref: "text192",
+    file_count: "integer",
+    total_bytes: "integer",
+    duration_ms: "integer",
+  },
+  approval_required: { code: "id", approval_id: "id" },
+  warning: { code: "id", "boundary?": boundarySchema, "trust?": eventTrust },
+  error: { message: "text512" },
+  run_settled: { state: ["settled"], "s3_09_proof?": "proof" },
+  run_aborted: {
+    reason: ["cancelled", "requested", "dispose", "shutdown"],
+    "abort_request_id?": "id",
+    "abort_correlation_id?": "id",
+  },
+  shutdown_ready: {
+    version: ["cogs.shutdown-ready/v1alpha1"],
+    bundle: "text160",
+    manifest_sha256: "sha256",
+    created_at: "date",
+    mode: ["raw"],
+    attachments_included: false,
+    file_count: "integer",
+    total_bytes: "integer",
+    sensitive: true,
+    sanitized: false,
+    anonymized: false,
+  },
+};
+const proofPass = [
+  "trusted_positive_egress_observed",
+  "runtime_observers_consistent",
+  "completion_observer_consistent",
+  "fixture_denied_route_absent",
+  "fixture_observer_consistent",
+  "fixture_ready",
+  "fixture_baseline_captured",
+];
+const proofReasons = [
+  "fixture-not-ready",
+  "generation",
+  "inflight",
+  "relay-zero-wal-zero",
+  "relay-zero-wal-pass",
+  "relay-one-wal-zero",
+  "relay-one-wal-pass",
+  "credential-count",
+  "denied-forwarded",
+  "total-count",
+];
+
+function eventObject(value: unknown): object {
+  if (value === null || typeof value !== "object" || types.isProxy(value)) throw new Error("invalid event");
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
+    throw new Error("invalid event");
+  return value;
+}
+function eventData(value: unknown, key: string): unknown {
+  const object = eventObject(value);
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor) || (key !== "length" && !descriptor.enumerable)) throw new Error("invalid event");
+  return descriptor.value;
+}
+function coreRecord(value: unknown, schema: Record<string, CoreSchema>, secret: string): EventRecord {
+  eventObject(value);
+  if (Array.isArray(value)) throw new Error("invalid event");
+  const result: EventRecord = {};
+  for (const field of Object.keys(schema)) {
+    // schema-owned keys only
+    const optional = field.endsWith("?");
+    const key = optional ? field.slice(0, -1) : field;
+    const raw = eventData(value, key);
+    if (raw === undefined && optional) continue;
+    result[key] = coreValue(raw, schema[field] as CoreSchema, secret);
+  }
+  return Object.freeze(result);
+}
+function coreValue(value: unknown, schema: CoreSchema, secret: string): JsonValue {
+  if (typeof schema === "boolean") {
+    if (value === schema) return value;
+  } else if (Array.isArray(schema)) {
+    if (schema.includes(value as string)) return value as JsonValue;
+  } else if (typeof schema === "object") return coreRecord(value, schema as Record<string, CoreSchema>, secret);
+  else if (schema === "pi") {
+    const type = eventData(value, "type");
+    if (typeof type !== "string" || type.length > 48 || !Object.hasOwn(piCores, type)) throw new Error("invalid event");
+    const result = coreRecord(value, { type: [type], ...piCores[type] }, secret);
+    const message = result.message as EventRecord | undefined;
+    if (
+      message?.role === "toolResult" &&
+      (message.toolCallId === undefined || message.toolName === undefined || message.isError === undefined)
+    )
+      throw new Error("invalid event");
+    if (type === "message_end" && message?.role === "assistant" && message.stopReason === undefined)
+      throw new Error("invalid event");
+    if (type === "summarization_retry_attempt_start" && result.source === "compaction" && result.reason === undefined)
+      throw new Error("invalid event reason");
+    if (type === "compaction_end") {
+      const diagnostic = eventData(value, "errorMessage");
+      if (diagnostic !== undefined && typeof diagnostic !== "string") throw new Error("invalid event error");
+      const error = diagnostic !== undefined ? true : (eventData(value, "error") ?? false);
+      return Object.freeze({ ...result, error: coreValue(error, "boolean", secret) });
+    }
+    return result;
+  } else if (schema === "update") {
+    const type = eventData(value, "type");
+    const deltas = [
+      "text_start",
+      "text_delta",
+      "text_end",
+      "thinking_start",
+      "thinking_delta",
+      "thinking_end",
+      "toolcall_start",
+      "toolcall_delta",
+      "toolcall_end",
+    ];
+    if (typeof type !== "string" || !["start", "done", "error", ...deltas].includes(type))
+      throw new Error("invalid event update");
+    return coreRecord(
+      value,
+      {
+        type: [type],
+        ...(deltas.includes(type)
+          ? { contentIndex: "integer" }
+          : type === "done"
+            ? { reason: ["stop", "length", "toolUse", "deferred"] }
+            : type === "error"
+              ? { reason: ["error", "aborted"] }
+              : {}),
+      },
+      secret,
+    );
+  } else if (schema === "proof") {
+    const outcome = eventData(value, "outcome");
+    const shape: Record<string, CoreSchema> = {
+      version: ["cogs.launcher.s3-09-proof/v2alpha1"],
+      scenario: ["s3-09"],
+      profile: ["linux-kvm"],
+      outcome: ["pass", "fail"],
     };
-  if (request !== undefined) clean.request_id = request;
-  return clean;
+    if (outcome === "pass") for (const key of proofPass) shape[key] = true;
+    else shape.reason = proofReasons;
+    return coreRecord(value, shape, secret);
+  } else if (schema === "boolean" && typeof value === "boolean") return value;
+  else if (
+    (schema === "integer" || schema === "number") &&
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    (schema !== "integer" || Number.isSafeInteger(value))
+  )
+    return value;
+  else if (typeof value === "string") {
+    const pattern =
+      schema === "id"
+        ? /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+        : schema === "toolId"
+          ? /^[A-Za-z0-9._:|-]{1,128}$/
+          : schema === "entry"
+            ? /^[a-f0-9]{8}$/
+            : schema === "commit"
+              ? /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
+              : schema === "sha256"
+                ? /^[a-f0-9]{64}$/
+                : schema === "date"
+                  ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+                  : undefined;
+    const max = typeof schema === "string" && schema.startsWith("text") ? Number(schema.slice(4)) : 128;
+    if (
+      value.length > max ||
+      encodedStringBytes(value) > max + 2 ||
+      (pattern !== undefined && !pattern.test(value)) ||
+      (secret !== "" && value.includes(secret))
+    )
+      throw new Error("invalid event core");
+    if (pattern !== undefined || (typeof schema === "string" && schema.startsWith("text"))) return value;
+  }
+  throw new Error("invalid event core");
 }
 
-function eventKind(value: unknown): value is ApiEventKind {
-  return (
-    value === "pi_event" ||
-    value === "tool_start" ||
-    value === "tool_update" ||
-    value === "tool_end" ||
-    value === "usage" ||
-    value === "git_mapping" ||
-    value === "checkpoint" ||
-    value === "approval_required" ||
-    value === "warning" ||
-    value === "error" ||
-    value === "run_settled" ||
-    value === "run_aborted" ||
-    value === "shutdown_ready"
-  );
+// Fixed detail vocabulary covers Pi messages, tool arguments/results and SSH bash-update metadata.
+// Arbitrary extension fields are not part of the permitted event projection or history contract.
+const detailKeys = [
+  "message",
+  "messages",
+  "toolResults",
+  "assistantMessageEvent",
+  "args",
+  "result",
+  "partialResult",
+  "entry",
+  "steering",
+  "followUp",
+  "name",
+  "errorMessage",
+  "finalError",
+  "content",
+  "type",
+  "role",
+  "text",
+  "thinking",
+  "signature",
+  "data",
+  "mimeType",
+  "id",
+  "toolCallId",
+  "toolName",
+  "arguments",
+  "path",
+  "offset",
+  "limit",
+  "oldText",
+  "newText",
+  "command",
+  "details",
+  "cogsTool",
+  "stream",
+  "chunk",
+  "terminal",
+  "stdout",
+  "stderr",
+  "exitCode",
+  "signal",
+  "truncated",
+  "timedOut",
+  "cancelled",
+  "bytes",
+  "isError",
+  "stopReason",
+  "usage",
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "total",
+  "cost",
+  "timestamp",
+  "delta",
+  "contentIndex",
+  "partial",
+  "reason",
+  "summary",
+  "firstKeptEntryId",
+  "tokensBefore",
+  "apiKey",
+  "api_key",
+  "authorization",
+  "credential",
+  "secret",
+  "token",
+  "refresh_token",
+  "access_token",
+];
+const sensitiveDetail = /^(api[-_]?key|authorization|credential|secret|token|refresh[-_]?token|access[-_]?token)$/i;
+class DetailLimit extends Error {
+  constructor(readonly reason: OmissionReason) {
+    super(reason);
+  }
+}
+function encodedStringBytes(value: string): number {
+  let bytes = 2;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new Error("invalid event unicode");
+      bytes += 4;
+    } else if (code >= 0xdc00 && code <= 0xdfff) throw new Error("invalid event unicode");
+    else
+      bytes +=
+        code < 32
+          ? code === 8 || code === 9 || code === 10 || code === 12 || code === 13
+            ? 2
+            : 6
+          : code === 34 || code === 92
+            ? 2
+            : code < 128
+              ? 1
+              : code < 2048
+                ? 2
+                : 3;
+  }
+  return bytes;
+}
+function captureDetail(value: unknown): JsonValue {
+  let nodes = 64; // Reserve the closed envelope/core within the 2048-node admission.
+  let bytes = 4096; // Reserve the bounded envelope/core within the 1 MiB encoded-input admission.
+  const seen = new Set<object>();
+  const charge = (n: number) => {
+    bytes += n;
+    if (bytes > 1024 * 1024) throw new DetailLimit("input_limit");
+  };
+  const visit = (raw: unknown, depth: number): JsonValue => {
+    if (++nodes > 2048 || depth > 16) throw new DetailLimit("structure_limit");
+    charge(2);
+    if (typeof raw === "string") {
+      if (raw.length > 1024 * 1024 - bytes) throw new DetailLimit("input_limit");
+      charge(encodedStringBytes(raw));
+      return raw;
+    }
+    if (raw === null || typeof raw === "boolean") {
+      charge(5);
+      return raw;
+    }
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      charge(24);
+      return raw;
+    }
+    const object = eventObject(raw);
+    if (seen.has(object)) throw new Error("invalid event cycle");
+    seen.add(object);
+    try {
+      if (Array.isArray(object)) {
+        const length = eventData(object, "length");
+        if (!Number.isSafeInteger(length) || (length as number) < 0) throw new Error("invalid event array");
+        if ((length as number) > 128) throw new DetailLimit("structure_limit");
+        const out: JsonValue[] = [];
+        for (let i = 0; i < (length as number); i++) out.push(visit(eventData(object, String(i)), depth + 1));
+        return Object.freeze(out);
+      }
+      const out: EventRecord = {};
+      for (const name of detailKeys) {
+        const item = eventData(object, name);
+        if (item !== undefined) {
+          charge(name.length + 4);
+          out[name] = visit(item, depth + 1);
+        }
+      }
+      return Object.freeze(out);
+    } finally {
+      seen.delete(object);
+    }
+  };
+  return visit(value, 2); // Include the enclosing envelope and payload in the depth bound.
+}
+function redactDetail(value: JsonValue, secret: string, key = "", work = { bytes: 4096 }): JsonValue {
+  // Only the fully admitted, codec-owned snapshot reaches this pass. No clipping or raw reflection.
+  work.bytes += 64; // bounded keys, punctuation and scalars
+  if (work.bytes > 1024 * 1024) throw new DetailLimit("input_limit");
+  if (sensitiveDetail.test(key)) return "[redacted]";
+  if (typeof value === "string") {
+    const clean = secret === "" ? value : value.replaceAll(secret, "[redacted]");
+    if (clean.length > 1024 * 1024) throw new DetailLimit("input_limit");
+    work.bytes += encodedStringBytes(clean);
+    if (work.bytes > 1024 * 1024) throw new DetailLimit("input_limit");
+    return clean;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return Object.freeze(value.map((item) => redactDetail(item, secret, "", work)));
+  const out: EventRecord = {};
+  for (const [name, item] of Object.entries(value))
+    if (item !== undefined) out[name] = redactDetail(item, secret, name, work);
+  return Object.freeze(out);
+}
+function transportPayload(core: EventRecord, detail: JsonValue | undefined, reason?: OmissionReason): EventRecord {
+  const transport = Object.freeze({
+    version: "cogs.event-detail/v1",
+    status: reason === undefined ? "complete" : "omitted",
+    ...(reason === undefined ? {} : { reason }),
+  });
+  issuedTransport.set(transport, detail);
+  return Object.freeze({ ...core, ...(detail === undefined ? {} : { detail }), cogs_transport: transport });
+}
+function withEventDetail(core: EventRecord, raw: unknown, secret: string): EventRecord {
+  if (raw === undefined) return transportPayload(core, undefined);
+  try {
+    return transportPayload(core, redactDetail(captureDetail(raw), secret));
+  } catch (error) {
+    if (error instanceof DetailLimit) return transportPayload(core, undefined, error.reason);
+    throw error;
+  }
 }
 
-function stripUndefined(value: Record<string, JsonValue | undefined>): Record<string, JsonValue> {
-  const output: Record<string, JsonValue> = {};
-  for (const [key, entry] of Object.entries(value)) if (entry !== undefined) output[key] = entry;
-  return output;
+/** First operation on a raw Pi callback: reject proxies before any reflection or property access. */
+export function admitPiCallback(
+  raw: unknown,
+  secret: string,
+): { kind: ApiEventKind; payload: EventRecord; model: EventRecord; git: EventRecord } {
+  const core = coreValue(raw, "pi", secret) as EventRecord;
+  const kind =
+    core.type === "tool_execution_start"
+      ? "tool_start"
+      : core.type === "tool_execution_update"
+        ? "tool_update"
+        : core.type === "tool_execution_end"
+          ? "tool_end"
+          : "pi_event";
+  const payload = withEventDetail({ event: core }, raw, secret);
+  const message = core.message as EventRecord | undefined;
+  return {
+    kind,
+    payload,
+    model: Object.freeze({
+      type: core.type as string,
+      ...(message === undefined
+        ? {}
+        : {
+            message: Object.freeze({
+              role: message.role,
+              ...(message.stopReason === undefined ? {} : { stopReason: message.stopReason }),
+            }),
+          }),
+    }),
+    git: Object.freeze({
+      type: core.type as string,
+      ...(message === undefined
+        ? {}
+        : {
+            message: Object.freeze({
+              role: message.role,
+              ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+            }),
+          }),
+    }),
+  };
 }
 
-function serializeSse(seq: number, sessionId: string, event: ApiEvent): string {
+export function admitApiEvent(raw: unknown, secret = "", wire = false): ApiEvent {
+  const kind = eventData(raw, "kind");
+  if (typeof kind !== "string" || kind.length > 32 || !Object.hasOwn(apiCores, kind))
+    throw new Error("invalid event kind");
+  const correlation = coreValue(eventData(raw, "correlation_id"), "id", secret) as string;
+  const rawRequest = eventData(raw, "request_id");
+  const request = rawRequest === undefined ? undefined : (coreValue(rawRequest, "id", secret) as string);
+  const payload = eventData(raw, "payload");
+  const core = coreRecord(payload, apiCores[kind as ApiEventKind], secret);
+  if (kind === "pi_event" && String((core.event as EventRecord).type).startsWith("tool_execution_"))
+    throw new Error("invalid tool event kind");
+  if (kind.startsWith("tool_")) {
+    const type = (core.event as EventRecord).type;
+    if (type !== `tool_execution_${kind.slice(5)}`) throw new Error("invalid tool event");
+  }
+  if (kind === "run_aborted" && (core.abort_request_id === undefined) !== (core.abort_correlation_id === undefined))
+    throw new Error("invalid abort identity");
+  const marker = eventData(payload, "cogs_transport");
+  const detail = eventData(payload, "detail");
+  let clean: EventRecord;
+  if (marker === undefined) {
+    if (wire) throw new Error("missing event transport");
+    clean = withEventDetail(core, detail, secret);
+  } else {
+    eventObject(marker);
+    if (!wire && (!issuedTransport.has(marker as object) || issuedTransport.get(marker as object) !== detail))
+      throw new Error("forged event transport");
+    const status = eventData(marker, "status");
+    const reason = eventData(marker, "reason");
+    if (
+      eventData(marker, "version") !== "cogs.event-detail/v1" ||
+      (status !== "complete" && status !== "omitted") ||
+      (status === "complete"
+        ? reason !== undefined
+        : detail !== undefined || !["input_limit", "structure_limit", "frame_limit"].includes(reason as string))
+    )
+      throw new Error("invalid event transport");
+    clean = transportPayload(
+      core,
+      wire && detail !== undefined ? captureDetail(detail) : (detail as JsonValue | undefined),
+      reason as OmissionReason | undefined,
+    );
+  }
+  if (Buffer.byteLength(JSON.stringify(transportPayload(core, undefined, "frame_limit"))) > 3072)
+    throw new Error("event core too large");
+  return Object.freeze({
+    kind: kind as ApiEventKind,
+    correlation_id: correlation,
+    ...(request === undefined ? {} : { request_id: request }),
+    payload: clean,
+  });
+}
+function omitEventDetail(event: ApiEvent, reason: OmissionReason): ApiEvent {
+  const core = coreRecord(event.payload, apiCores[event.kind], "");
+  return Object.freeze({ ...event, payload: transportPayload(core, undefined, reason) });
+}
+
+function serializeSse(seq: number, sessionId: string, event: ApiEvent, timestamp: string): string {
   return `id: ${seq}\nevent: cogs\ndata: ${JSON.stringify({
     version: "cogs.event/v1alpha1",
     seq,
-    timestamp: new Date().toISOString(),
+    timestamp,
     session_id: sessionId,
     ...event,
   })}\n\n`;
-}
-
-function dataProperty(object: object, key: string): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(object, key);
-  if (descriptor === undefined) return undefined;
-  if (!("value" in descriptor)) throw new Error("malformed event");
-  return descriptor.value;
 }
 
 function requiredDataProperty(object: object, key: string): unknown {
@@ -1527,11 +2026,13 @@ function validateJsonValue(value: unknown, seen = new Set<object>(), depth = 0, 
 
 function writeSerializedSse(response: ServerResponse, _seq: number, serialized: string): boolean {
   if (response.destroyed || response.writableEnded) return false;
-  if (!response.write(serialized)) {
-    response.destroy();
-    return false;
+  try {
+    if (response.write(serialized)) return true;
+  } catch {
+    // A failed subscriber cannot reverse stream acceptance or affect other subscribers.
   }
-  return true;
+  response.destroy();
+  return false;
 }
 
 function correlationFrom(request: IncomingMessage): string {

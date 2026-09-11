@@ -512,6 +512,7 @@ export async function createTrustedWorkerRuntime(
       },
     );
     reconcileFixture = () => s309Emit.reconcileFixture();
+    let api: ApiServer | undefined;
     const piStartup = Promise.resolve().then(() =>
       s.createPi({
         cwd: "/workspace",
@@ -523,7 +524,7 @@ export async function createTrustedWorkerRuntime(
         signal: startup.signal,
         toolPorts: Object.freeze({ ...filePorts, ...bashPort }),
         streamFn: createDeterministicLauncherStream(Object.freeze({ s309FixturePort: fixture.snapshot().port })),
-        emit: (event) => api?.publish(s309Emit(event)) ?? true,
+        emit: (event) => api?.publish(s309Emit(event)) ?? false,
         onFatal: () => void cleanup().catch(() => undefined),
         policyAuthorizer: Object.freeze(authorizeCogsPolicyAction),
         telemetry,
@@ -547,7 +548,6 @@ export async function createTrustedWorkerRuntime(
     await checkAdmission();
 
     const admittedProfile = admitted.profile;
-    let api: ApiServer | undefined;
     api = apiToken.withToken((token) =>
       s.createApi({
         lifecycle: lifecycle as LaunchLifecycle,
