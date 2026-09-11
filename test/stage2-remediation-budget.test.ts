@@ -577,8 +577,8 @@ plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST
 assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
 expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=3000,integration=5287)
 assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15537
-q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=1011233)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==2161233; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
+q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=1200000)
+assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==2350000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
@@ -698,6 +698,22 @@ for row in (
  '| integration | 1,121 | ADR0335/budget tests 500; source-inventory constant synchronization/readiness regeneration 100; later in-file ADR0335 execution-contract amendment and existing tests 200; product execution docs/tests 100; reserve 221 |',
  '| completion | 1,453 | event review corrections/tests 700; telemetry/HTTPS integration 300; reserve 453 |'):
  assert row in replan,row
+previous=json.loads(git(['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:config/external-review-remediation-budget-v1.json'])); expected=copy.deepcopy(previous)
+expected['product_test_correction']['integration_synchronization_gross_byte_forecast']=60000
+next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=1200000
+assert b==expected  # every line cap, other byte cap, anchor, ownership and file/path allocation stays unchanged
+assert plan['integration_synchronization_gross_byte_forecast']==60000 and 25249+18687==43936 and 43936-12000==31936
+assert 60000-43936==16064 and 727775+908==728683 and 12000+6000+8000+20000+236550+60000==342550
+assert 728683+342550==1071233>1011233>1000000 and 1200000-1071233==128767
+assert 159893+267175+204508+1071233==1702809 and 1850000-1702809==147191
+assert 159893+267175+204508+1200000==1831576<1850000 and 3183647+342550+260000==3786197<5970000
+assert 2095805+342550==2438355<2700000 and 2095805+(1200000-728683)==2567122<2700000
+assert 4846+61+130+150+100==5287 and 40+60==100  # governance synchronization is inside this task, not additional lines
+import hashlib
+for name,size,digest in (('stage4-offline-readiness-artifacts/local-validation.json',25249,'8ff3d8daad3fecfc7a8c20b5c7dc68ce4df88a8eb2f39db68fae548c3d508b24'),('stage4-offline-readiness-package.json',18687,'42ca1e7c043dda78e5942cf58dd5e14ebac6798aa263db879f76d87ab28419b1')):
+ raw=m['_git_raw'](['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:docs/security-evidence/'+name]); assert len(raw)==size and raw.count(b'\n')==1 and hashlib.sha256(raw).hexdigest()==digest and digest in replan
+for text in ('403baa5740442a6afe608f701f33635c7dc00561d90e1f6022f0e5814f7e07f2','2c402ebbd5cc8d4ea2e0efcf0a4561ff6ba4a72d61dab74db4ab5c85c594708a','43,936','31,936','NOT measured regenerated totals','No splitting/reformatting, compression, deletion/net-byte credit','1,071,233','1,702,809','at most 40 gross lines','SAME 100','No line cap changes'): assert text in replan,text
+assert all(t in Path('docs/adr/README.md').read_text() for t in ('43,936','31,936','60,000','1,200,000','1,702,809','All line caps unchanged'))
 expected_forecasts['integration']=5200; q_bytes['integration']=1000000  # Historical ledgers below, not current capacity.
 historical_forecasts=dict(relay=2800,lifecycle=4300,integration=4500,completion=3500)
 for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integration',3379,1121),('completion',2047,1453)):
@@ -803,6 +819,8 @@ with tempfile.TemporaryDirectory() as directory:
   bad=copy.deepcopy(b); bad['product_test_correction']['wrapper_report_minimum'][field]-=1; veto(lambda:check(bad),field)
  for field in ('global_gross_line_forecast','global_gross_byte_forecast'):
   bad=copy.deepcopy(b); bad['product_test_correction'][field]+=1; veto(lambda:check(bad),field)
+ for value in (12000,59999,60001,60000.0,True,None):
+  bad=copy.deepcopy(b); bad['product_test_correction']['integration_synchronization_gross_byte_forecast']=value; veto(lambda:check(bad),'synchronization bytes')
  for mutation in ('planned-overrun','owner-transfer','duplicate-owner','missing-new','global-high','forecast-high','regeneration-free','q-drift','tree-drift'):
   bad=copy.deepcopy(b); p=bad['product_test_correction']
   if mutation=='planned-overrun': bad['owners'][-1]['paths'].append('test/planned-extra.ts')

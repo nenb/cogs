@@ -42,7 +42,7 @@ PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
                           "lifecycle": 4_450, "completion": 3_000, "integration": 5_287}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_011_233}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_200_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 2_700_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_850_000
@@ -467,12 +467,12 @@ def _product_test_budget(data, allocations):
     plan = data["product_test_correction"]
     _require(isinstance(plan, dict) and set(plan) == {
         "base_revision", "base_tree", "global_gross_line_forecast", "global_gross_byte_forecast",
-        "integration_regeneration_gross_line_forecast", "wrapper_report_minimum", "owners"})
+        "integration_regeneration_gross_line_forecast", "integration_synchronization_gross_byte_forecast", "wrapper_report_minimum", "owners"})
     _require(plan["wrapper_report_minimum"] == {"gross_lines": 130, "gross_bytes": 8000} and all(type(v) is int for v in plan["wrapper_report_minimum"].values()))
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
              and plan["global_gross_line_forecast"] == 15_537
              and plan["global_gross_byte_forecast"] == 1_850_000
-             and plan["integration_regeneration_gross_line_forecast"] == 100)
+             and plan["integration_regeneration_gross_line_forecast"] == 100 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
     q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))

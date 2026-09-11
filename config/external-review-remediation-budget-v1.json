@@ -18,6 +18,7 @@
     "global_gross_line_forecast": 15537,
     "global_gross_byte_forecast": 1850000,
     "integration_regeneration_gross_line_forecast": 100,
+    "integration_synchronization_gross_byte_forecast": 60000,
     "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
     "owners": [
       {
@@ -108,7 +109,7 @@
       {
         "name": "integration",
         "gross_line_forecast": 5287,
-        "gross_byte_forecast": 1011233,
+        "gross_byte_forecast": 1200000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
