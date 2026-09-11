@@ -2,6 +2,7 @@
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
   "global_gross_line_high": 45200,
+  "global_gross_byte_high": 6550000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -16,7 +17,7 @@
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
     "global_gross_line_forecast": 15537,
-    "global_gross_byte_forecast": 1850000,
+    "global_gross_byte_forecast": 2650000,
     "integration_regeneration_gross_line_forecast": 100,
     "integration_synchronization_gross_byte_forecast": 60000,
     "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
@@ -109,7 +110,7 @@
       {
         "name": "integration",
         "gross_line_forecast": 5287,
-        "gross_byte_forecast": 1200000,
+        "gross_byte_forecast": 2000000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
@@ -367,7 +368,7 @@
       "name": "integration",
       "gross_line_high": 17612,
       "gross_byte_forecast": {
-        "total": 2700000
+        "total": 3350000
       },
       "new_file_high": 87,
       "paths": [

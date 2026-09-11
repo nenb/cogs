@@ -42,11 +42,11 @@ PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
                           "lifecycle": 4_450, "completion": 3_000, "integration": 5_287}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 1_200_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 2_000_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
-                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 2_700_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_850_000
-REMEDIATION_GLOBAL_BYTE_HIGH = 5_970_000
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 3_350_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 2_650_000
+REMEDIATION_GLOBAL_BYTE_HIGH = 6_550_000
 PRODUCT_TEST_NEW_FILES = {
     "dev/linux-kvm/bounded-command.py": "relay",
     "src/skills/snapshot-session-preparer.ts": "lifecycle",
@@ -407,11 +407,11 @@ def _remediation_budget():
         data = json.loads(REMEDIATION_BUDGET_PATH.read_text("utf-8"), object_pairs_hook=_strict_object)
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
-    _require(set(data) == {"version", "base_revision", "global_gross_line_high", "baseline",
+    _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
                            "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 45_200)
+             and data["global_gross_line_high"] == 45_200 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
     _require(data["source_limits"] == {"tracked_files": 1517,
@@ -446,11 +446,11 @@ def _remediation_budget():
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
                                 "lifecycle": 5, "completion": 3, "integration": 87})
     _require(sum(new_file_highs.values()) == 97
-             and sum(forecast["total"] for forecast in forecasts.values()) == 5_970_000)
+             and sum(forecast["total"] for forecast in forecasts.values()) == 6_620_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
-             + sum(forecast["total"] for forecast in forecasts.values())
+             + data["global_gross_byte_high"]
              <= data["source_limits"]["source_inventory_bytes"])
     baseline_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z",
                                             REMEDIATION_BASE_REVISION])))
@@ -471,7 +471,7 @@ def _product_test_budget(data, allocations):
     _require(plan["wrapper_report_minimum"] == {"gross_lines": 130, "gross_bytes": 8000} and all(type(v) is int for v in plan["wrapper_report_minimum"].values()))
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
              and plan["global_gross_line_forecast"] == 15_537
-             and plan["global_gross_byte_forecast"] == 1_850_000
+             and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST
              and plan["integration_regeneration_gross_line_forecast"] == 100 and type(plan["integration_synchronization_gross_byte_forecast"]) is int and plan["integration_synchronization_gross_byte_forecast"] == 60_000)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
@@ -714,7 +714,7 @@ def measure():
         "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),
-        "product_test_global_gross_byte_forecast": 1_850_000,
+        "product_test_global_gross_byte_forecast": PRODUCT_TEST_GLOBAL_BYTE_FORECAST,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
