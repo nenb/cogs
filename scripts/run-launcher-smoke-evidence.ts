@@ -2,9 +2,17 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, statfs, unlink, writeFile } from "node:fs/promises";
 import { arch, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type S309FailureStage, s309StageFromExitCode } from "../dev/launcher/operations.ts";
-import { type CommandDescriptor, commandDescriptor, runCommand } from "../dev/launcher/runner.ts";
-import { resolveLauncherState } from "../dev/launcher/state.ts";
+import { pathToFileURL } from "node:url";
+import type { S309FailureStage } from "../dev/launcher/operations.ts";
+import type { CommandDescriptor } from "../dev/launcher/runner.ts";
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.stderr.write("legacy launcher/insecure execution is disabled by ADR0335\n");
+  process.exit(2);
+}
+const { s309StageFromExitCode } = await import("../dev/launcher/operations.ts");
+const { commandDescriptor, runCommand } = await import("../dev/launcher/runner.ts");
+const { resolveLauncherState } = await import("../dev/launcher/state.ts");
 
 type Profile = "insecure-container" | "linux-kvm";
 type Outcome = "pass" | "fail";

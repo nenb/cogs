@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Refusal is not cleanup or evidence; leave all uncertain legacy state untouched.
+printf '%s\n' 'legacy launcher/insecure execution is disabled by ADR0335' >&2
+return 2 2>/dev/null || exit 2
+
 set -uo pipefail
 umask 077
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Supported direct/sourced ingress is closed; retained functions are isolated models only.
+printf '%s\n' 'legacy launcher/insecure execution is disabled by ADR0335' >&2
+return 2 2>/dev/null || exit 2
+
 set -Eeuo pipefail
 umask 077
 

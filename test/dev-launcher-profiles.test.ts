@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -295,154 +306,179 @@ test("launcher smoke scripts quote driver paths and document aggregate failures"
   assert.match(insecureSmoke, /Keep -e disabled: this smoke accumulates guarded step failures/u);
 });
 
-test("insecure driver rejects non-root before acquisition or Docker effects", async () => {
+const denial = "legacy launcher/insecure execution is disabled by ADR0335\n";
+
+async function preservedTree(path: string): Promise<unknown> {
+  const s = await lstat(path);
+  const identity = [s.dev, s.ino, s.mode, s.uid, s.gid, s.nlink];
+  if (s.isSymbolicLink()) return [identity, await readlink(path)];
+  if (!s.isDirectory()) return [identity, await readFile(path)];
+  return [
+    identity,
+    await Promise.all((await readdir(path)).sort().map(async (n) => [n, await preservedTree(join(path, n))])),
+  ];
+}
+
+async function deniedDriver(competitor: boolean) {
   const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
-  const temp = await mkdtemp(join(tmpdir(), "insecure-nonroot-"));
+  const prefix =
+    "#!/usr/bin/env bash\n# Supported direct/sourced ingress is closed; retained functions are isolated models only.\n";
+  const gate =
+    "printf '%s\\n' 'legacy launcher/insecure execution is disabled by ADR0335' >&2\nreturn 2 2>/dev/null || exit 2\n";
+  const check = (text: string) => assert(text.startsWith(prefix + gate));
+  check(source);
+  for (const effect of ['mkdir "$COGS_INSECURE_STATE_DIR"', "trap cleanup EXIT", 'rm "$report"'])
+    assert.throws(() => check(source.replace(gate, `${effect}\n${gate}`)));
+  const temp = await mkdtemp(join(tmpdir(), "insecure-denied-"));
+  const bin = join(temp, "bin"),
+    targets = join(temp, "targets");
+  await mkdir(bin);
+  await mkdir(targets, { mode: 0o700 });
   try {
-    for (const operation of ["create", "verify", "reset", "destroy"]) {
-      const result = spawnSync("/bin/bash", ["-c", source, "driver", operation], {
-        input: "",
-        encoding: "utf8",
-        timeout: 3000,
-        ...(process.geteuid?.() === 0 ? { uid: 65534, gid: 65534 } : {}),
-        env: {
-          PATH: "",
-          COGS_INSECURE_STATE_DIR: join(temp, "state"),
-          COGS_INSECURE_GENERATION: generation,
-          COGS_INSECURE_ORIGINAL_REVISION: sourceRevision,
-        },
-      });
-      assert.equal(result.error, undefined);
-      assert.equal(result.status, 1);
-      assert.equal(result.stdout, "");
-      assert.equal(result.stderr, "insecure-container requires root-held private custody\n");
-      assert.deepEqual(await readdir(temp), []);
+    for (const tool of [
+      "docker",
+      "ssh",
+      "sftp",
+      "ssh-keygen",
+      "openssl",
+      "dirname",
+      "git",
+      "date",
+      "python3",
+      "node",
+      "tsx",
+      "env",
+      "stat",
+      "id",
+      "realpath",
+      "mkdir",
+      "chmod",
+      "rm",
+      "mv",
+      "mktemp",
+      "timeout",
+      "gtimeout",
+      "awk",
+      "find",
+      "sudo",
+    ]) {
+      await writeFile(join(bin, tool), '#!/bin/bash\nprintf EFFECT >> "$EFFECT_LOG"\nexit 97\n', { mode: 0o700 });
+    }
+    for (const name of [
+      "state",
+      "state.lock",
+      ".cogs-retire-state-held",
+      "launcher-control",
+      "report",
+      "export",
+      "tmp",
+      "competitor",
+    ]) {
+      await mkdir(join(targets, name), { mode: 0o700 });
+      for (const file of [
+        "authority",
+        "owner",
+        "intents",
+        "inventory",
+        "container",
+        "volume",
+        "client_ed25519_key",
+        "client_ed25519_key.pub",
+      ])
+        await writeFile(join(targets, name, file), competitor ? "FOREIGN\0\n" : `${generation}\n`, { mode: 0o600 });
+    }
+    await symlink(join(targets, "competitor"), join(targets, "state", "docker-tool"));
+    const before = await preservedTree(targets);
+    // Full source including denial; only EUID reads are modeled, never a body extracted past the veto.
+    for (const euid of [0, 65534]) {
+      const model = join(temp, `driver-${euid}.sh`);
+      await writeFile(model, source.replace(/\bEUID\b/gu, String(euid)));
+      for (const script of [join(process.cwd(), "dev/insecure-sandbox/driver.sh"), model]) {
+        for (const action of [
+          [],
+          ["create"],
+          ["verify"],
+          ["reset"],
+          ["destroy"],
+          ["invalid"],
+          ["--help"],
+          ["create", "--allow", "--generation", generation],
+        ]) {
+          for (const sourced of [false, true]) {
+            for (const nonce of [generation, "", "malformed", "b".repeat(32)]) {
+              for (const state of [join(targets, "state"), join(targets, "absent")]) {
+                const args = sourced
+                  ? ["-c", 'source "$1" "${@:2}"', "source", script, ...action]
+                  : [script, ...action];
+                const result = spawnSync("/bin/bash", args, {
+                  encoding: "utf8",
+                  timeout: 3000,
+                  env: {
+                    PATH: bin,
+                    EFFECT_LOG: join(targets, "effects"),
+                    HOME: join(targets, "launcher-control"),
+                    TMPDIR: join(targets, "tmp"),
+                    COGS_INSECURE_STATE_DIR: state,
+                    COGS_INSECURE_GENERATION: nonce,
+                    COGS_INSECURE_ORIGINAL_REVISION: sourceRevision,
+                    COGS_SOURCE_REVISION: sourceRevision,
+                    COGS_INSECURE_IMAGE: "cogs-insecure-fake:dev",
+                    COGS_PROFILE: "insecure-container",
+                    COGS_ALLOW_INSECURE: "1",
+                  },
+                });
+                assert.equal(result.error, undefined);
+                assert.equal(result.status, 2, result.stderr);
+                assert.equal(result.stdout, "");
+                assert.equal(result.stderr, denial);
+                assert.deepEqual(await preservedTree(targets), before);
+              }
+            }
+          }
+        }
+      }
     }
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
-});
+}
 
-test("insecure driver isolates docker tool state outside launcher controls", {
-  skip: process.geteuid?.() !== 0,
-}, async () => {
-  const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-docker-"));
-  const stateName = `fake-docker-${Math.random().toString(16).slice(2)}`;
-  const stateDir = join(process.cwd(), ".cogs-dev", stateName);
-  const hostileState = join(process.cwd(), ".cogs-dev", `${stateName}-hostile`);
-  const launcherControl = join(temp, "launcher-control");
-  const bin = join(temp, "bin");
-  const log = join(temp, "docker.log");
-  await rm(stateDir, { recursive: true, force: true });
-  await rm(hostileState, { recursive: true, force: true });
-  await mkdir(join(launcherControl, "sandbox"), { recursive: true, mode: 0o700 });
-  await mkdir(bin, { mode: 0o700 });
-  await writeFile(
-    join(bin, "docker"),
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf 'home=%s\\nconfig=%s\\nbuildx=%s\\nargs=%s\\n' "\${HOME:-}" "\${DOCKER_CONFIG:-}" "\${BUILDX_CONFIG:-}" "$*" >> ${JSON.stringify(log)}
-mkdir -p "\${HOME:?}" "\${DOCKER_CONFIG:?}" "\${BUILDX_CONFIG:?}"
-touch "$HOME/home-write" "$DOCKER_CONFIG/config-write" "$BUILDX_CONFIG/buildx-write"
-if [[ "$1 $2" == 'container ls' || "$1 $2" == 'volume ls' ]]; then exit 0; fi
-if [[ "$1" == build ]]; then
-  if compgen -G ${JSON.stringify(`${stateDir}/input/ssh_*`)} >/dev/null; then printf 'keys-present\\n' >> ${JSON.stringify(log)}; fi
-  exit 37
-fi
-exit 38
-`,
-    { mode: 0o700 },
-  );
-  try {
-    await assert.rejects(() =>
-      execFileAsync("bash", ["dev/insecure-sandbox/driver.sh", "create"], {
-        cwd: process.cwd(),
-        timeout: 60_000,
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-          HOME: launcherControl,
-          COGS_INSECURE_STATE_DIR: stateDir,
-          COGS_INSECURE_GENERATION: generation,
-          COGS_SOURCE_REVISION: sourceRevision,
-          COGS_INSECURE_IMAGE: "cogs-insecure-fake:dev",
-        },
-      }),
-    );
-    const text = await readFile(log, "utf8");
-    assert(text.includes(`home=${stateDir}.lock/docker-tool/home\n`));
-    assert(text.includes(`config=${stateDir}.lock/docker-tool/config\n`));
-    assert(text.includes(`buildx=${stateDir}.lock/docker-tool/buildx\n`));
-    assert.doesNotMatch(text, /keys-present|args=container rm|args=volume rm/u);
-    assert.match(await readFile(join(stateDir, "intents"), "utf8"), /cleanup-required/);
-    await access(`${stateDir}.lock`); // tool/lock retirement uncertainty is retained
-    assert.deepEqual((await readFile(join(process.cwd(), ".dockerignore"), "utf8")).split(/\n/u).filter(Boolean), [
-      "**",
-      "!.dockerignore",
-      "!LICENSE",
-      "!package.json",
-      "!package-lock.json",
-      "!tsconfig.json",
-      "!tsconfig.build.json",
-      "!src/",
-      "!src/**",
-      "!schemas/",
-      "!schemas/integration-v1alpha1.json",
-      "!schemas/launch-v1alpha1.json",
-      "!schemas/runtime-v1alpha1.json",
-      "!third_party/",
-      "!third_party/envoy-ext-authz-v1.38.3/",
-      "!third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
-      "!third_party/envoy-ext-authz-v1.38.3/manifest.json",
-      "!third_party/envoy-ext-authz-v1.38.3/LICENSES/",
-      "!third_party/envoy-ext-authz-v1.38.3/LICENSES/**",
-      "!images/",
-      "!images/worker/",
-      "!images/worker/Dockerfile",
-      "!images/sandbox/",
-      "!images/sandbox/Dockerfile",
-      "!images/sandbox/entrypoint.sh",
-      "!images/sandbox/capture-inputs.py",
-      "!images/sandbox/sshd_config",
-      "!dev/",
-      "!dev/insecure-sandbox/",
-      "!dev/insecure-sandbox/Dockerfile",
-      "!dev/insecure-sandbox/entrypoint.sh",
-      "!dev/insecure-sandbox/sshd_config",
-    ]);
-    assert.deepEqual(await readdir(launcherControl), ["sandbox"]);
-    const hostileId = createHash("sha256").update(hostileState).digest("hex").slice(0, 12);
-    await mkdir(join(hostileState, "control"), { recursive: true, mode: 0o700 });
-    await writeFile(join(hostileState, ".cogs-insecure-owner"), `${hostileId}\n`, { mode: 0o600 });
-    await writeFile(join(hostileState, "container"), `cogs-insecure-${hostileId}\n`, { mode: 0o600 });
-    await writeFile(join(hostileState, "volume"), `cogs-insecure-workspace-${hostileId}\n`, { mode: 0o600 });
-    await writeFile(join(hostileState, "control", "client_ed25519_key"), "k\n", { mode: 0o600 });
-    await writeFile(join(hostileState, "control", "client_ed25519_key.pub"), "p\n", { mode: 0o600 });
-    await symlink("/tmp", join(hostileState, "docker-tool"));
-    await assert.rejects(() =>
-      execFileAsync("bash", ["dev/insecure-sandbox/driver.sh", "destroy"], {
-        cwd: process.cwd(),
-        timeout: 60_000,
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-          COGS_INSECURE_STATE_DIR: hostileState,
-          COGS_INSECURE_GENERATION: generation,
-          COGS_SOURCE_REVISION: sourceRevision,
-        },
-      }),
-    );
-    assert.deepEqual((await readdir(join(hostileState, "control"))).sort(), [
-      "client_ed25519_key",
-      "client_ed25519_key.pub",
-    ]);
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
-    await rm(hostileState, { recursive: true, force: true });
-    await rm(`${stateDir}.lock`, { recursive: true, force: true });
-    await rm(`${hostileState}.lock`, { recursive: true, force: true });
-    await rm(temp, { recursive: true, force: true });
-  }
+test("insecure driver denies root/nonroot entry without touching docker tool state or launcher controls", async () => {
+  await deniedDriver(false);
+  assert.deepEqual((await readFile(join(process.cwd(), ".dockerignore"), "utf8")).split(/\n/u).filter(Boolean), [
+    "**",
+    "!.dockerignore",
+    "!LICENSE",
+    "!package.json",
+    "!package-lock.json",
+    "!tsconfig.json",
+    "!tsconfig.build.json",
+    "!src/",
+    "!src/**",
+    "!schemas/",
+    "!schemas/integration-v1alpha1.json",
+    "!schemas/launch-v1alpha1.json",
+    "!schemas/runtime-v1alpha1.json",
+    "!third_party/",
+    "!third_party/envoy-ext-authz-v1.38.3/",
+    "!third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
+    "!third_party/envoy-ext-authz-v1.38.3/manifest.json",
+    "!third_party/envoy-ext-authz-v1.38.3/LICENSES/",
+    "!third_party/envoy-ext-authz-v1.38.3/LICENSES/**",
+    "!images/",
+    "!images/worker/",
+    "!images/worker/Dockerfile",
+    "!images/sandbox/",
+    "!images/sandbox/Dockerfile",
+    "!images/sandbox/entrypoint.sh",
+    "!images/sandbox/capture-inputs.py",
+    "!images/sandbox/sshd_config",
+    "!dev/",
+    "!dev/insecure-sandbox/",
+    "!dev/insecure-sandbox/Dockerfile",
+    "!dev/insecure-sandbox/entrypoint.sh",
+    "!dev/insecure-sandbox/sshd_config",
+  ]);
 });
 
 // Portable syscall model of a root-owned parent; real unprivileged retirement must refuse.
@@ -456,9 +492,27 @@ def root_stat(fn):
 `;
 
 test("insecure Docker tool metadata is inventoried and only exact custody is retired", async () => {
-  const temp = await mkdtemp(join(tmpdir(), "insecure-tool-custody-"));
+  // macOS tmpdir traverses /var -> /private/var; the real custody guard requires a canonical path.
+  const temp = await realpath(await mkdtemp(join(tmpdir(), "insecure-tool-custody-")));
   const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
-  const functions = ["docker_tool_custody", "bounded_docker", "release_lock"]
+  const functions = [
+    "docker_tool_custody",
+    "bounded_docker",
+    "release_lock",
+    "init_docker_tool_state",
+    "verify_private_dir",
+    "mode_octal",
+    "fail",
+    "create",
+    "initialize_authority",
+    "validate_custody",
+    "durable_file",
+    "assert_container_name_available",
+    "mark_cleanup_required",
+    "finish_failure",
+    "rollback_partial",
+    "emit",
+  ]
     .map((name) => shellFunction(source, name))
     .join("\n");
   const result = spawnSync(
@@ -467,21 +521,31 @@ test("insecure Docker tool metadata is inventoried and only exact custody is ret
       "-c",
       `set -euo pipefail; umask 077
 ${functions}
+# Resolve interpreter shims once, including for the isolated create/failure shells.
+# Each helper still gets a fresh process; no descriptors or mock state survive it.
+model_python=$(command python3 -I -c 'import sys; print(sys.executable)')
+export model_python
 python3() {
-  if [[ "$2" != - ]]; then command python3 "$@"; return; fi
-  command python3 -I -c ${JSON.stringify(
+  if [[ "$2" != - ]]; then command "$model_python" "$@"; return; fi
+  command "$model_python" -I -c ${JSON.stringify(
     `exec(${JSON.stringify(`${rootCustodyModel}
-with patch.object(os,'getuid',return_value=0),patch.object(os,'geteuid',return_value=0),patch.object(os,'fstat',side_effect=root_stat(os.fstat)),patch.object(os,'stat',side_effect=root_stat(os.stat)):
+with patch.object(os,'getuid',return_value=0),patch.object(os,'geteuid',return_value=0),patch.object(os,'fstat',side_effect=root_stat(os.fstat)),patch.object(os,'stat',side_effect=root_stat(os.stat)),patch.object(os,'lstat',side_effect=root_stat(os.lstat)):
  exec(__import__('sys').stdin.read())`)})`,
   )} "\${@:3}"
 }
 prepare() {
   lock="$1"; lock_owner=owner; lock_held=true
-  mkdir -m 700 "$lock" "$lock/docker-tool" "$lock/docker-tool/home" "$lock/docker-tool/config" "$lock/docker-tool/buildx"
+  mkdir -m 700 "$lock"
   printf 'owner\\n' > "$lock/owner"; chmod 600 "$lock/owner"
   lock_identity=$(python3 -I -c 'import os,sys; s=os.stat(sys.argv[1]); print(f"{s.st_dev}:{s.st_ino}")' "$lock")
-  docker_tool_custody capture
+  init_docker_tool_state
 }
+# The fixture is canonical, but aliases must still fail the real guard before tool-state creation.
+mkdir -m 700 ${JSON.stringify(join(temp, "alias-target"))}
+ln -s ${JSON.stringify(join(temp, "alias-target"))} ${JSON.stringify(join(temp, "alias"))}
+lock=${JSON.stringify(join(temp, "alias"))}
+if bash -c "$(declare -f)"$'\nset -e; lock=$1; init_docker_tool_state' model "$lock"; then exit 79; fi
+[[ ! -e "$lock/docker-tool" ]] || exit 86
 prepare ${JSON.stringify(join(temp, "success.lock"))}
 bounded() { shift; "$@"; }
 fake_docker() {
@@ -490,10 +554,60 @@ fake_docker() {
   printf config > "$lock/docker-tool/config/config.json"; chmod 600 "$lock/docker-tool/config/config.json"
   printf home > "$lock/docker-tool/home/metadata"; chmod 600 "$lock/docker-tool/home/metadata"
 }
-docker_command=(fake_docker)
+# Inspect the production env argv at the isolated tool seam; never invoke Docker.
+env() {
+  [[ "$1" == "HOME=$lock/docker-tool/home" && "$2" == "DOCKER_CONFIG=$lock/docker-tool/config" &&
+     "$3" == "BUILDX_CONFIG=$lock/docker-tool/buildx" && "$4" == docker ]] || exit 80
+  shift 4
+  fake_docker "$@"
+}
 bounded_docker 1s build
 release_lock
-[[ ! -e "$lock" ]]
+[[ ! -e "$lock" ]] || exit 86
+# Isolated create/failure callbacks, not the complete driver or an admission path.
+persist_new() { durable_file new "$1" "$2"; }
+append_durable() { durable_file append "$1" "$2"; }
+record_intent() { append_durable "$intents" "$1"$'\\t'"$2"$'\\t'"$3"$'\\n'; }
+require() { :; }
+ssh-keygen() { exit 84; }
+openssl() { exit 85; }
+fake_docker() {
+  printf '%s\\n' "$*" >> "$state.calls"
+  if [[ "$1 $2" == 'container ls' ]]; then
+    [[ "$competitor" == absent ]] || printf 'foreign-container\\n'
+    return 0
+  fi
+  [[ "$1" == build ]] || exit 81
+  [[ ! -e "$state/input/ssh_host_ed25519_key" && ! -e "$state/control/client_ed25519_key" ]] || exit 82
+  printf partial > "$lock/docker-tool/buildx/partial"
+  return 37
+}
+for competitor in absent present; do
+  state=${JSON.stringify(temp)}/$competitor
+  if bash -c "$(declare -f)"'
+    set -Eeuo pipefail; umask 077
+    state=$1; competitor=$2; generation=$3; original_revision=$4; repo=$5
+    operation=create; profile=insecure-container; locator=$state; image=fake
+    authority=$state/authority; sentinel=$state/.cogs-insecure-owner
+    intents=$state/intents; inventory=$state/inventory; container_name=fake
+    custody_bound=false; custody_identity=""; create_active=false
+    container_pending=false; container_acquired=false; volume_acquired=false
+    prepare "$state.lock"
+    on_error() { finish_failure "$?"; }
+    trap on_error ERR
+    create
+  ' model "$state" "$competitor" ${generation} ${sourceRevision} ${JSON.stringify(process.cwd())}; then exit 83; fi
+  # Bash 3.2 does not apply errexit to [[ ]]: every model assertion must fail explicitly.
+  [[ "$(<"$state/intents")" == *cleanup-required* ]] || exit 86
+  [[ "$(<"$state/.cogs-insecure-owner")" == ${generation} ]] || exit 86
+  [[ "$(<"$state.calls")" != *'container rm'* && "$(<"$state.calls")" != *'volume rm'* ]] || exit 86
+  if [[ "$competitor" == absent ]]; then
+    [[ "$(<"$state.calls")" == *build* && -f "$state.lock/docker-tool/buildx/partial" ]] || exit 86
+    [[ -f "$state.lock/owner" && ! -e "$state/control/client_ed25519_key" ]] || exit 86
+  else
+    [[ "$(<"$state.calls")" != *build* && ! -e "$state/input" ]] || exit 86
+  fi
+done
 prepare ${JSON.stringify(join(temp, "failed.lock"))}
 failed_docker() { printf partial > "$lock/docker-tool/buildx/partial"; return 7; }
 docker_command=(failed_docker)
@@ -501,19 +615,19 @@ if bounded_docker 1s build; then exit 33; fi
 failed_docker() { echo executed > "$lock/forbidden"; }
 if bounded_docker 1s inspect; then exit 34; fi
 if release_lock; then exit 35; fi
-[[ -f "$lock/owner" && -f "$lock/docker-tool/buildx/partial" && ! -e "$lock/forbidden" ]]
+[[ -f "$lock/owner" && -f "$lock/docker-tool/buildx/partial" && ! -e "$lock/forbidden" ]] || exit 86
 prepare ${JSON.stringify(join(temp, "replaced.lock"))}
 mv "$lock/docker-tool/buildx" ${JSON.stringify(join(temp, "original-buildx"))}
 mkdir -m 700 "$lock/docker-tool/buildx"
 if docker_tool_custody capture; then exit 36; fi
 if release_lock; then exit 37; fi
-[[ -d "$lock/docker-tool/buildx" && -d ${JSON.stringify(join(temp, "original-buildx"))} ]]
+[[ -d "$lock/docker-tool/buildx" && -d ${JSON.stringify(join(temp, "original-buildx"))} ]] || exit 86
 prepare ${JSON.stringify(join(temp, "unknown.lock"))}
 printf owned > "$lock/docker-tool/buildx/owned"; chmod 600 "$lock/docker-tool/buildx/owned"
 docker_tool_custody capture
 printf hostile > "$lock/docker-tool/buildx/unknown"; chmod 600 "$lock/docker-tool/buildx/unknown"
 if release_lock; then exit 31; fi
-[[ -f "$lock/docker-tool/buildx/owned" && -f "$lock/docker-tool/buildx/unknown" ]]
+[[ -f "$lock/docker-tool/buildx/owned" && -f "$lock/docker-tool/buildx/unknown" ]] || exit 86
 prepare ${JSON.stringify(join(temp, "symlink.lock"))}
 printf owned > "$lock/docker-tool/buildx/owned"; chmod 600 "$lock/docker-tool/buildx/owned"
 docker_tool_custody capture
@@ -521,7 +635,7 @@ rm "$lock/docker-tool/buildx/owned"
 printf retained > ${JSON.stringify(join(temp, "retained"))}
 ln -s ${JSON.stringify(join(temp, "retained"))} "$lock/docker-tool/buildx/owned"
 if release_lock; then exit 32; fi
-[[ -L "$lock/docker-tool/buildx/owned" ]]
+[[ -L "$lock/docker-tool/buildx/owned" ]] || exit 86
 [[ "$(cat ${JSON.stringify(join(temp, "retained"))})" = retained ]]`,
     ],
     { encoding: "utf8", timeout: 10_000 },
@@ -772,58 +886,8 @@ if release_lock; then exit 44; fi
   }
 });
 
-test("insecure driver never adopts or removes pre-existing docker competitors", {
-  skip: process.geteuid?.() !== 0,
-}, async () => {
-  const temp = await mkdtemp(join(tmpdir(), "cogs-insecure-preflight-"));
-  const stateName = `fake-stale-${Math.random().toString(16).slice(2)}`;
-  const stateDir = join(process.cwd(), ".cogs-dev", stateName);
-  const launcherControl = join(temp, "launcher-control");
-  const bin = join(temp, "bin");
-  const log = join(temp, "docker.log");
-  await rm(stateDir, { recursive: true, force: true });
-  await rm(`${stateDir}.lock`, { recursive: true, force: true });
-  await mkdir(join(launcherControl, "sandbox"), { recursive: true, mode: 0o700 });
-  await mkdir(bin, { mode: 0o700 });
-  await writeFile(
-    join(bin, "docker"),
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf 'home=%s\\nconfig=%s\\nbuildx=%s\\nargs=%s\\n' "\${HOME:-}" "\${DOCKER_CONFIG:-}" "\${BUILDX_CONFIG:-}" "$*" >> ${JSON.stringify(log)}
-mkdir -p "\${HOME:?}" "\${DOCKER_CONFIG:?}" "\${BUILDX_CONFIG:?}"
-if [[ "$1 $2" == 'container ls' ]]; then printf 'stale-container\\n'; exit 0; fi
-if [[ "$1 $2" == 'volume ls' ]]; then exit 0; fi
-exit 38
-`,
-    { mode: 0o700 },
-  );
-  try {
-    await assert.rejects(() =>
-      execFileAsync("bash", ["dev/insecure-sandbox/driver.sh", "create"], {
-        cwd: process.cwd(),
-        timeout: 60_000,
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ""}`,
-          HOME: launcherControl,
-          COGS_INSECURE_STATE_DIR: stateDir,
-          COGS_INSECURE_GENERATION: generation,
-          COGS_SOURCE_REVISION: sourceRevision,
-          COGS_INSECURE_IMAGE: "cogs-insecure-fake:dev",
-        },
-      }),
-    );
-    const text = await readFile(log, "utf8");
-    assert(text.includes(`home=${stateDir}.lock/docker-tool/home\n`));
-    assert(!text.includes(`home=${stateDir}/docker-tool/home\n`));
-    assert.doesNotMatch(text, /args=container rm|args=volume rm|args=build/);
-    assert.equal(await readFile(join(stateDir, ".cogs-insecure-owner"), "utf8"), `${generation}\n`);
-    assert.deepEqual(await readdir(launcherControl), ["sandbox"]);
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
-    await rm(`${stateDir}.lock`, { recursive: true, force: true });
-    await rm(temp, { recursive: true, force: true });
-  }
+test("insecure driver denies create/destroy without adopting or removing pre-existing competitors", async () => {
+  await deniedDriver(true);
 });
 
 function shellFunction(source: string, name: string): string {
@@ -868,6 +932,11 @@ file_custody capture; file_custody check`);
     assert.equal(await readFile(join(state, "input", "foreign"), "utf8"), "competitor");
     assert.deepEqual(await readFile(join(state, "authority")), before);
     await rm(join(state, "input", "foreign"));
+    await symlink(temp, join(state, "docker-tool"));
+    const hostile = await preservedTree(state);
+    assert.notEqual(invoke("validate_custody; file_custody remove").status, 0);
+    assert.deepEqual(await preservedTree(state), hostile);
+    await rm(join(state, "docker-tool"));
     const key = join(state, "control", "client_ed25519_key");
     await rename(key, join(temp, "retained-key"));
     await writeFile(key, "fixture", { mode: 0o600 });

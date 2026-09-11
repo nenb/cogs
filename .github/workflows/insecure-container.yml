@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   insecure-container:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'security')
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     concurrency:

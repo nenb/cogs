@@ -139,6 +139,65 @@ test("bounded feasibility checker performs static parsing only", () => {
   );
 });
 
+test("ADR0335 closes the complete package execution inventory and whole insecure workflow job", async () => {
+  const fixed = `sh -c 'printf "%s\\n" "legacy launcher/insecure execution is disabled by ADR0335" >&2; exit 2' --`;
+  const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const workflow = parseYaml(await readFile(join(workflowDirectory, "insecure-container.yml"), "utf8"));
+  const checkPackage = (value: typeof pkg) => {
+    assert.equal(value.scripts.launcher, fixed);
+    assert.equal(value.exports, undefined);
+    assert.equal(value.bin, undefined);
+    const { launcher: _, ...other } = value.scripts;
+    assert.equal(
+      require("node:crypto").createHash("sha256").update(JSON.stringify(other)).digest("hex"),
+      "26f0f275aa7a04855c8bd6265b6fe47a051d5c73efa697b152856d7e1547e640",
+    );
+  };
+  const checkWorkflow = (value: unknown) => {
+    const jobs = (value as { jobs: Record<string, { if: string; uses?: string; steps: unknown[] }> }).jobs;
+    assert.deepEqual(Object.keys(jobs), ["insecure-container"]);
+    assert.equal(jobs["insecure-container"]?.if, "${{ false }}");
+    assert.equal(jobs["insecure-container"]?.uses, undefined);
+    assert(Array.isArray(jobs["insecure-container"]?.steps));
+  };
+  checkPackage(pkg);
+  checkWorkflow(workflow);
+  for (const name of ["launcher", "prelauncher", "postlauncher", "insecure", "alias"])
+    assert.throws(() => checkPackage({ ...pkg, scripts: { ...pkg.scripts, [name]: "tsx dev/launcher/main.ts" } }));
+  for (const key of ["exports", "bin"]) assert.throws(() => checkPackage({ ...pkg, [key]: "./dev/launcher/main.ts" }));
+  for (const job of [
+    {},
+    { if: "env.ALLOW" },
+    { steps: [{ if: "${{ false }}" }] },
+    { if: "${{ false }}", uses: "./other.yml" },
+  ])
+    assert.throws(() => checkWorkflow({ jobs: { "insecure-container": job } }));
+  assert.throws(() => checkWorkflow({ jobs: { ...(workflow as { jobs: object }).jobs, escape: {} } }));
+  // Exact builtin-only command + closed hook/alias inventory: no Node/tsx/application can start.
+  for (const profile of ["insecure-container", "linux-kvm", "macos-vm", "invalid", "--help"])
+    for (const op of [
+      "create",
+      "verify",
+      "reset",
+      "destroy",
+      "start",
+      "run",
+      "smoke",
+      "s3-09",
+      "; node --eval throw",
+    ]) {
+      const result = spawnSync("/bin/sh", ["-c", `${pkg.scripts.launcher} "$@"`, "npm", "--profile", profile, op], {
+        env: { PATH: "/bin" },
+        encoding: "utf8",
+        timeout: 2000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "legacy launcher/insecure execution is disabled by ADR0335\n");
+    }
+});
+
 const productGeneration = "a".repeat(32);
 const image = (letter: string) => `sha256:${letter.repeat(64)}`;
 const restrictions = () => ({

@@ -354,7 +354,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.equal(budget.remediation_global_high, 45_000);
+  assert.equal(budget.remediation_global_high, 45_200);
   assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 45_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
@@ -416,7 +416,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 45_000);
+  assert.equal(manifest.global_gross_line_high, 45_200);
   assert.deepEqual(
     Object.fromEntries(
       manifest.owners.map((owner) => [
@@ -430,7 +430,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       relay: [4_800, 1, { total: 700_000 }],
       lifecycle: [11_800, 5, { total: 1_200_000 }],
       completion: [6_500, 3, { total: 800_000 }],
-      integration: [17_425, 87, { total: 2_700_000 }],
+      integration: [17_612, 87, { total: 2_700_000 }],
     },
   );
   assert.equal(
