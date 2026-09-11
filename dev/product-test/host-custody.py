@@ -576,7 +576,7 @@ class Custody:
         require(all(set(m) == set("version repo commit session entry turn observed_at confidence".split()) and m["version"] == "cogs.git-mapping/v1alpha1" for m in maps))
         require(work.pop("proof.txt") == b"alpha\n")
         require(work[".git/config"] == b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[user]\n\temail = synthetic@example.invalid\n\tname = Synthetic\n")
-        require(all(p == ".git/" or re.fullmatch(r"\.git/(HEAD|config|index|COMMIT_EDITMSG|objects/([0-9a-f]{2}/([0-9a-f]{38})?|info/|pack/)?|refs/(heads/|notes/)?(master|cogs)?|logs/(HEAD|refs/(heads/|notes/)?(master|cogs)?)?)/?", p) for p in work))
+        require(all((p == ".git/refs/tags/" and work[p] is None) or p == ".git/" or re.fullmatch(r"\.git/(HEAD|config|index|COMMIT_EDITMSG|objects/([0-9a-f]{2}/([0-9a-f]{38})?|info/|pack/)?|refs/(heads/|notes/)?(master|cogs)?|logs/(HEAD|refs/(heads/|notes/)?(master|cogs)?)?)/?", p) for p in work))
         git = lambda *a: self.command(["git", "-c", "safe.directory=" + self.root + "/workspace", "-C", self.root + "/workspace", *a])
         require(not git("fsck", "--full", "--no-reflogs", "--unreachable")); commit = git("rev-parse", "HEAD").decode().strip()
         require(all(m["commit"] == commit and "checkpoint_ref" not in m for m in maps)); require(git("show", "HEAD:proof.txt") == b"alpha\n")

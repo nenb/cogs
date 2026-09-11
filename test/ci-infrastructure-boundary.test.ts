@@ -763,8 +763,12 @@ with tempfile.TemporaryDirectory() as root:
   veto(lambda:owner.bind_receipt(),'replaced publication')
  os.close(owner.fd)
 veto(lambda:m.source_nodes({'nested':{'__proto__':1}}),'persisted proto')
-# Full retained-evidence admission with syscall/Git doubles: each correlated artifact is required.
-owner=m.Custody.__new__(m.Custody);owner.root='/fixture';owner.fd=9;owner.generation='a'*32
+# Full retained-evidence admission: real runner Git commands/workspace inventory, other artifacts doubled.
+fixture=tempfile.TemporaryDirectory();owner=m.Custody.__new__(m.Custody);owner.root=fixture.name;owner.generation='a'*32
+for name in ['control','publication','workspace','state','inputs','authority','sandbox-input','documents','lease']:os.mkdir(owner.root+'/'+name)
+workspace=owner.root+'/workspace';owner.fd=os.open(owner.root,os.O_RDONLY|os.O_DIRECTORY);owner.command=lambda a:m.subprocess.check_output(a,env=m.ENV,timeout=2);open(workspace+'/proof.txt','wb').write(b'alpha\n')
+for args in [('init','-q','--template=','--initial-branch=master'),('config','user.email','synthetic@example.invalid'),('config','user.name','Synthetic'),('add','proof.txt'),('commit','-q','-m','synthetic-baseline')]:owner.command(['git','-C',workspace,*args])
+for key in ('core.ignorecase','core.precomposeunicode'):assert m.subprocess.run(['git','-C',workspace,'config','--unset',key],env=m.ENV,timeout=2).returncode in (0,5)  # macOS-only init settings, absent on Linux
 owner.shutdown=owner.released=owner.headers=True;owner.peers={};owner.turns=3;owner.events=4;owner.publication={'pair':{}}
 owner.publications=[{'kind':k} for k in ['run_settled']*3+['shutdown_ready']]
 bundle=m.digest(b'{}');owner.receipt={'consumer_id':'d'*32,'user':{'bundle_digest':bundle}}
@@ -774,7 +778,7 @@ result.update(dict.fromkeys('timedOut idleTimedOut cancelled stdoutTruncated std
 result.update(dict.fromkeys('stdoutDroppedBytes stderrDroppedBytes stdoutResultOmittedUtf8Bytes stderrResultOmittedUtf8Bytes updateDropped'.split(),0))
 tool={'role':'toolResult','toolCallId':'product-proxy','toolName':'bash','isError':False,'details':{'cogsTool':'bash'},'content':[{'type':'text','text':json.dumps(result)}]}
 entries=[{'id':'entry1','type':'message','message':tool}];native='product-session/native.jsonl';native_bytes=b''.join(m.canonical(v) for v in entries)
-commit='f'*40;mapping={'version':'cogs.git-mapping/v1alpha1','repo':'product-workspace','commit':commit,'session':'product-session','entry':'entry1','turn':'turn1','observed_at':'2026-01-01T00:00:00.000Z','confidence':'exact'}
+commit=owner.command(['git','-C',workspace,'rev-parse','HEAD']).decode().strip();mapping={'version':'cogs.git-mapping/v1alpha1','repo':'product-workspace','commit':commit,'session':'product-session','entry':'entry1','turn':'turn1','observed_at':'2026-01-01T00:00:00.000Z','confidence':'exact'}
 files={native:native_bytes,'product-session/git-map.jsonl':m.canonical(mapping)}
 r={'version':'cogs.egress-intent/v1alpha1','sequence':0,'intent_id':'intent1','timestamp_ms':10,'session_id':'product-session','integration_id':'synthetic-local','route_id':'route1','method':'GET','credential_required':True}
 c={'intentId':'intent1','sequence':0,'routeId':'route1','responseCode':200,'durationMs':1,'completedAtMs':11}
@@ -799,12 +803,20 @@ for p in list(retained):
  for i,ch in enumerate(p):
   if ch=='/': retained[p[:i+1]]=None
 retained['session/agent/']=None
-work={'proof.txt':b'alpha\n','.git/':None,'.git/config':b'[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[user]\n\temail = synthetic@example.invalid\n\tname = Synthetic\n'}
+state_inode=os.stat(owner.root+'/state').st_ino;real_inventory=m.inventory;override={}
 owner.retained_history=lambda:(files,native,entries);owner.history={};owner.saved=lambda n:provenance;owner.record=lambda *a:None
 note=f"cogs git mapping: trusted record of untrusted Git observation; session=product-session; entry=entry1; turn=turn1; commit={commit}; observed_at={mapping['observed_at']}; confidence=exact\n".encode()
-owner.command=lambda a:note if 'notes' in a else (commit+'\n').encode() if 'rev-parse' in a else b'alpha\n' if 'show' in a else b''
-with patch.object(m,'directory',side_effect=lambda fd,n:n),patch.object(m,'inventory',side_effect=lambda fd,**kw:dict(retained if fd=='state' else work)),patch.object(m.os,'close'),patch.object(m,'tree'),patch.object(m.os,'listdir',return_value=['control','publication','workspace','state','inputs','authority','sandbox-input','documents','lease']):
+owner.command(['git','-C',workspace,'notes','--ref=refs/notes/cogs','append','-m',note.decode().strip(),commit])
+with m.closing_fd(m.directory(owner.fd,'workspace')) as fd:assert m.inventory(fd)['.git/refs/tags/'] is None
+with patch.object(m,'inventory',side_effect=lambda fd,*a,**kw:dict(retained) if os.fstat(fd).st_ino==state_inode else real_inventory(fd,*a,**kw) | (override if not a else {})),patch.object(m,'tree'):
  owner.evidence()
+ for path,kind in [('.git/refs/tags/v1','file'),('.git/refs/tags/nested','dir'),('.git/refs/tags/nested/child','nested'),('.git/refs/tags','file'),('.git/refs/tags','symlink'),('.git/refs/unexpected','dir'),('.git/refs/heads/unexpected','file'),('.git/refs/notes/unexpected','file')]:
+  target=workspace+'/'+path;tags=path=='.git/refs/tags';os.rmdir(target) if tags else None;os.makedirs(os.path.dirname(target),exist_ok=True)
+  os.mkdir(target) if kind=='dir' else os.symlink('heads',target) if kind=='symlink' else open(target,'wb').write((commit+'\n').encode())
+  veto(lambda:owner.evidence(),'unexpected Git inventory '+path,(OSError,RuntimeError))
+  os.rmdir(target) if kind=='dir' else os.unlink(target);os.mkdir(target) if tags else os.rmdir(workspace+'/.git/refs/tags/nested') if kind=='nested' else None
+ for value in (b'',b'not-a-directory'):
+  override['.git/refs/tags/']=value;veto(lambda:owner.evidence(),'wrong tags inventory value');override.clear()
  for key,value in [('events',3),('upstream',2),('provenance',{}),('observedEvents',[]),('toolResults',[]),('toolResults',['sha256:'+'0'*64])]:
   bad={**e,key:value};retained['session/product-evidence.json']=m.canonical(bad)
   veto(lambda:owner.evidence(),'false pass '+key)
@@ -818,6 +830,7 @@ with patch.object(m,'directory',side_effect=lambda fd,n:n),patch.object(m,'inven
   veto(lambda:owner.evidence(),'corrupt retained '+path,(RuntimeError,ValueError))
   if previous is None: del retained[path]
   else: retained[path]=previous
+os.close(owner.fd);fixture.cleanup()
 # Candidate source verification reads stopped-container tar bytes, checks ownership/modes and exact inventory.
 owner=m.Custody.__new__(m.Custody);owner.source={};archives={}
 for path in ['src','schemas','dev/product-test','dev/launcher/api-client.ts','third_party']:
