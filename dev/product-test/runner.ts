@@ -623,15 +623,56 @@ export async function syntheticPorts(launch: LaunchConfig) {
 export class ProductToolResults {
   readonly results: string[] = [];
   failed = false;
-  admit(entry: unknown): void {
+  admit(entry: unknown): unknown {
     try {
       check(!this.failed);
       admitScenarioValue(entry);
-      const message = (entry as { message?: Record<string, unknown> }).message;
-      if (message?.role !== "toolResult") return;
+      // Match the gate and native JSONL projection, including Pi's own usage: undefined.
+      const projected = JSON.parse(JSON.stringify(entry));
+      const message = projected.message;
+      if (message?.role !== "toolResult") return projected;
       check(message.isError === false && message.toolCallId === "product-proxy" && message.toolName === "bash");
+      check(canonical(message.details) === canonical({ cogsTool: "bash" }));
+      check(Array.isArray(message.content) && message.content.length === 1);
+      const block = message.content[0];
+      check(Object.keys(block).sort().join() === "text,type" && block.type === "text");
+      check(typeof block.text === "string" && Buffer.byteLength(block.text) <= 16384);
+      const result = JSON.parse(block.text);
+      check(
+        JSON.stringify(result) === block.text && result.ok === true && result.exitCode === 0 && result.signal === null,
+      );
+      const flags =
+        "timedOut idleTimedOut cancelled stdoutTruncated stderrTruncated stdoutLossyUtf8 stderrLossyUtf8".split(" ");
+      const zeros =
+        "stdoutDroppedBytes stderrDroppedBytes stdoutResultOmittedUtf8Bytes stderrResultOmittedUtf8Bytes updateDropped".split(
+          " ",
+        );
+      check(
+        Object.keys(result).sort().join() ===
+          [
+            ...flags,
+            ...zeros,
+            "ok",
+            "exitCode",
+            "signal",
+            "elapsedMs",
+            "stdout",
+            "stderr",
+            "stdoutBytes",
+            "stderrBytes",
+          ]
+            .sort()
+            .join(),
+      );
+      check(flags.every((key) => result[key] === false) && zeros.every((key) => result[key] === 0));
+      check(Number.isSafeInteger(result.elapsedMs) && result.elapsedMs >= 0 && result.elapsedMs <= 10000);
+      for (const key of ["stdout", "stderr"]) {
+        check(typeof result[key] === "string" && Buffer.byteLength(result[key]) <= 4096);
+        check(result[`${key}Bytes`] === Buffer.byteLength(result[key]));
+      }
       check(this.results.length === 0);
       this.results.push(hash(canonical(message)));
+      return projected;
     } catch {
       this.failed = true;
       throw new Error("product tool failed; settle exact custody");
@@ -879,8 +920,7 @@ export async function workerMain(): Promise<void> {
           ...options,
           streamFn: deterministicStream(),
           historyAdmission: (entry) => {
-            toolResults.admit(entry);
-            gate("persist", { entry: JSON.parse(JSON.stringify(entry)) });
+            gate("persist", { entry: toolResults.admit(entry) });
           },
         });
         return pi;

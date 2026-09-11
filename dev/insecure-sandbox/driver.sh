@@ -79,20 +79,6 @@ mode_octal() {
 release_lock() {
   [[ "$lock_held" == true ]] || return 0
   docker_tool_custody remove || return 1
-  python3 -I - "$lock" "$lock_identity" "$lock_owner" <<'PY'
-import os,stat,sys
-path,identity,owner=sys.argv[1:]
-fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); info=os.fstat(fd)
-if f'{info.st_dev}:{info.st_ino}'!=identity or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700:
-    raise SystemExit('lock identity changed')
-if set(os.listdir(fd))!={'owner'}: raise SystemExit('foreign lock inventory')
-member=os.open('owner',os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW,dir_fd=fd); info=os.fstat(member)
-if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600 or os.read(member,256)!=(owner+'\n').encode():
-    raise SystemExit('lock owner changed')
-os.close(member); os.unlink('owner',dir_fd=fd); os.fsync(fd); os.close(fd); os.rmdir(path)
-parent=os.open(os.path.dirname(path),os.O_RDONLY|os.O_NONBLOCK|os.O_DIRECTORY|os.O_NOFOLLOW); os.fsync(parent); os.close(parent)
-PY
-  [[ $? == 0 ]] || return 1
   lock_held=false
 }
 mark_cleanup_required() {
@@ -244,21 +230,28 @@ def manifest_file(lfd,write=False):
     if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o600:
         os.close(h); raise SystemExit('unsafe docker tool inventory')
     return h
-def retire(fd,path,expected):
-    names=sorted(os.listdir(fd))
-    for name in names:
-        key=path+'/'+name; value=expected.get(key)
-        if not value: raise SystemExit('unknown docker tool member')
-        if value[0]=='d':
-            child=os.open(name,flags|os.O_DIRECTORY,dir_fd=fd)
-            s=os.fstat(child)
-            if ['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]!=value:
-                os.close(child); raise SystemExit('docker tool directory replaced')
-            retire(child,key,expected); os.close(child); os.rmdir(name,dir_fd=fd)
-        else:
-            if regular(fd,name)!=value: raise SystemExit('docker tool file replaced')
-            os.unlink(name,dir_fd=fd)
-    os.fsync(fd)
+def dir_value(fd):
+    s=os.fstat(fd); return ['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]
+def absent(fd,name):
+    if name in os.listdir(fd): raise SystemExit('replacement preserved; quarantine requires recovery')
+def retire(fd,name,key,expected):
+    value=expected.get(key)
+    if not value: raise SystemExit('unknown docker tool member')
+    slot=os.urandom(16).hex(); absent(qfd,slot)
+    # Only the root-held private quarantine is a deletion namespace. No unlink/rmdir
+    # ever resolves an old tool pathname. A raced rename is preserved, never restored
+    # over a competitor, and post-rename identity/content verification precedes deletion.
+    os.rename(name,slot,src_dir_fd=fd,dst_dir_fd=qfd); os.fsync(fd); os.fsync(qfd)
+    if value[0]=='d':
+        child=os.open(slot,flags|os.O_DIRECTORY,dir_fd=qfd)
+        if dir_value(child)!=value: raise SystemExit('docker tool directory replaced; preserved in quarantine')
+        for member in sorted(os.listdir(child)):
+            retire(child,member,member if key=='.' else key+'/'+member,expected)
+        os.close(child); os.rmdir(slot,dir_fd=qfd)
+    else:
+        if regular(qfd,slot)!=value: raise SystemExit('docker tool file replaced; preserved in quarantine')
+        os.unlink(slot,dir_fd=qfd)
+    os.fsync(qfd); absent(fd,name)
 lfd=os.open(lock,flags|os.O_DIRECTORY); ls=os.fstat(lfd)
 if f'{ls.st_dev}:{ls.st_ino}'!=identity or not valid_dir(ls): raise SystemExit('lock identity changed')
 allowed={'owner','docker-tool'}|({manifest} if manifest in os.listdir(lfd) else set())
@@ -295,12 +288,25 @@ if action=='capture':
 elif action in ('check','remove'):
     if current!=expected: raise SystemExit('docker tool custody changed')
     if action=='check': os.close(tool); os.close(lfd); raise SystemExit(0)
-    for name in ('home','config','buildx'):
-        child=os.open(name,flags|os.O_DIRECTORY,dir_fd=tool); s=os.fstat(child)
-        if ['d',s.st_dev,s.st_ino,stat.S_IMODE(s.st_mode),s.st_mtime_ns]!=expected.get(name):
-            os.close(child); raise SystemExit('docker tool root replaced')
-        retire(child,name,expected); os.close(child); os.rmdir(name,dir_fd=tool)
-    os.close(tool); os.rmdir('docker-tool',dir_fd=lfd); os.unlink(manifest,dir_fd=lfd); os.fsync(lfd)
+    # Unprivileged same-UID writers cannot be excluded with chmod. Do not pretend
+    # another validation makes pathname deletion atomic: preserve instead, no sudo.
+    parent,name=os.path.split(lock); pfd=os.open(parent,flags|os.O_DIRECTORY)
+    if os.geteuid()!=0 or ls.st_uid!=0 or os.fstat(pfd).st_uid!=0 or not valid_dir(os.fstat(pfd)):
+        raise SystemExit('root-held private retirement parent required; custody preserved')
+    named=os.stat(name,dir_fd=pfd,follow_symlinks=False)
+    if (named.st_dev,named.st_ino)!=(ls.st_dev,ls.st_ino): raise SystemExit('lock replaced')
+    records={n:regular(lfd,n) for n in (manifest,'owner')}
+    quarantine='.cogs-retire-'+os.urandom(16).hex(); os.mkdir(quarantine,0o700,dir_fd=pfd)
+    qfd=os.open(quarantine,flags|os.O_DIRECTORY,dir_fd=pfd); qs=os.fstat(qfd)
+    if qs.st_uid!=0 or not valid_dir(qs): raise SystemExit('unsafe quarantine; preserve')
+    os.fsync(pfd)
+    retire(lfd,'docker-tool','.',expected); os.close(tool)
+    for member in (manifest,'owner'): retire(lfd,member,member,records)
+    if os.listdir(lfd): raise SystemExit('foreign lock inventory; preserve')
+    retire(pfd,name,name,{name:dir_value(lfd)})
+    # Parent and quarantine are root-only and never exposed to tool writers.
+    if os.listdir(qfd): raise SystemExit('quarantine not empty; preserve')
+    os.close(qfd); os.rmdir(quarantine,dir_fd=pfd); os.fsync(pfd); os.close(pfd)
 else: raise SystemExit('invalid docker tool custody action')
 os.close(lfd)
 PY

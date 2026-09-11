@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs, { chmod, lstat, mkdir, mkdtemp, open, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createServer, Socket } from "node:net";
@@ -791,20 +793,56 @@ async function observedRetired(predicate: () => boolean) {
   assert.equal(predicate(), true, "peer retirement observed before fixture teardown");
 }
 
-// Every mutation of the common key ancestor shares this portable cross-process lock.
+// Never unlink the shared lock inode: every invocation must contend on the same OS lock.
 const snapshotKeyAncestor = await fs.realpath(path.join(import.meta.dirname, "../node_modules"));
 const snapshotKeyLock = path.join(snapshotKeyAncestor, ".cogs-snapshot-ssh.lock");
-async function withSnapshotKeyRoot<T>(run: (root: string) => Promise<T>): Promise<T> {
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    try {
-      await mkdir(snapshotKeyLock, { mode: 0o700 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+async function snapshotProcessLock(milliseconds = 60_000) {
+  const child = spawn(
+    "python3",
+    [
+      "-I",
+      "-c",
+      `
+import fcntl,os,stat,sys,time
+fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK,0o600); s=os.fstat(fd)
+assert stat.S_ISREG(s.st_mode) and s.st_uid==os.getuid() and stat.S_IMODE(s.st_mode)==0o600 and s.st_nlink==1 and s.st_size==0
+end=time.monotonic()+int(sys.argv[2])/1000
+while True:
+ try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); break
+ except BlockingIOError:
+  if time.monotonic()>=end: raise SystemExit('fixture lock acquisition timed out')
+  time.sleep(.01)
+assert (s.st_dev,s.st_ino)==(os.stat(sys.argv[1],follow_symlinks=False).st_dev,os.stat(sys.argv[1],follow_symlinks=False).st_ino)
+print('locked',flush=True)
+sys.stdin.buffer.read(1)  # parent death closes the pipe; SIGKILL of this holder releases flock
+os.close(fd)
+`,
+      snapshotKeyLock,
+      String(milliseconds),
+    ],
+    { stdio: "pipe" },
+  );
+  const closed = once(child, "close");
+  const timer = setTimeout(() => child.kill("SIGKILL"), milliseconds + 2000);
+  try {
+    const ack = await Promise.race([
+      once(child.stdout, "data"),
+      closed.then(() => {
+        throw new Error("fixture lock unavailable");
+      }),
+    ]);
+    assert.equal(String(ack[0]), "locked\n");
+    return { child, closed };
+  } catch (error) {
+    child.kill("SIGKILL");
+    await closed;
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
+}
+async function withSnapshotKeyRoot<T>(run: (root: string) => Promise<T>): Promise<T> {
+  const { child, closed } = await snapshotProcessLock();
   let root: string | undefined;
   try {
     root = await fs.realpath(await mkdtemp(path.join(snapshotKeyAncestor, ".cogs-snapshot-ssh-case-")));
@@ -813,10 +851,28 @@ async function withSnapshotKeyRoot<T>(run: (root: string) => Promise<T>): Promis
     try {
       if (root) await rm(root, { recursive: true, force: true });
     } finally {
-      await rmdir(snapshotKeyLock);
+      child.stdin.end();
+      assert.deepEqual(await closed, [0, null]);
     }
   }
 }
+
+test("OS fixture lock bounds acquisition and releases a killed cross-process holder", async () => {
+  const holder = await snapshotProcessLock();
+  try {
+    const started = Date.now();
+    await assert.rejects(snapshotProcessLock(50), /fixture lock unavailable/);
+    assert(Date.now() - started < 2500);
+  } finally {
+    holder.child.kill("SIGKILL");
+    await holder.closed;
+  }
+  const before = await lstat(snapshotKeyLock);
+  await withSnapshotKeyRoot(async (root) => {
+    await writeFile(path.join(root, "after-kill"), "acquired");
+  });
+  assert.equal((await lstat(snapshotKeyLock)).ino, before.ino);
+});
 
 test("parallel key fixtures serialize hostile ancestor churn around trusted captures and cleanup", async () => {
   let active = 0,

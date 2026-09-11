@@ -415,6 +415,16 @@ exit 38
   }
 });
 
+// Portable syscall model of a root-owned parent; real unprivileged retirement must refuse.
+const rootCustodyModel = `
+import os,types
+from unittest.mock import patch
+def root_stat(fn):
+ def call(*a,**kw):
+  s=fn(*a,**kw); return types.SimpleNamespace(**{k:0 if k=='st_uid' else getattr(s,k) for k in dir(s) if k.startswith('st_')})
+ return call
+`;
+
 test("insecure Docker tool metadata is inventoried and only exact custody is retired", async () => {
   const temp = await mkdtemp(join(tmpdir(), "insecure-tool-custody-"));
   const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
@@ -427,6 +437,14 @@ test("insecure Docker tool metadata is inventoried and only exact custody is ret
       "-c",
       `set -euo pipefail; umask 077
 ${functions}
+python3() {
+  if [[ "$2" != - ]]; then command python3 "$@"; return; fi
+  command python3 -I -c ${JSON.stringify(
+    `exec(${JSON.stringify(`${rootCustodyModel}
+with patch.object(os,'getuid',return_value=0),patch.object(os,'geteuid',return_value=0),patch.object(os,'fstat',side_effect=root_stat(os.fstat)),patch.object(os,'stat',side_effect=root_stat(os.stat)):
+ exec(__import__('sys').stdin.read())`)})`,
+  )} "\${@:3}"
+}
 prepare() {
   lock="$1"; lock_owner=owner; lock_held=true
   mkdir -m 700 "$lock" "$lock/docker-tool" "$lock/docker-tool/home" "$lock/docker-tool/config" "$lock/docker-tool/buildx"
@@ -484,6 +502,83 @@ if release_lock; then exit 32; fi
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
+});
+
+test("Buildx final unlink/rmdir and rename replacements preserve foreign custody", async () => {
+  const source = await readFile("dev/insecure-sandbox/driver.sh", "utf8");
+  const program = shellFunction(source, "docker_tool_custody").split("<<'PY'\n")[1]?.split("\nPY")[0];
+  assert(program);
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      String.raw`
+import json,sys,tempfile,pathlib
+${rootCustodyModel}
+program=json.load(sys.stdin)
+real_stat,real_rename,real_unlink,real_rmdir=os.stat,os.rename,os.unlink,os.rmdir
+for race in ('none','unprivileged','rename-file','rename-dir','unlink','rmdir','unlink-manifest','unlink-owner','rmdir-tool','rmdir-lock','manifest','owner','lock'):
+ with tempfile.TemporaryDirectory() as tmp:
+  root=pathlib.Path(tmp); lock=root/'lock'; lock.mkdir(mode=0o700)
+  for name in ('docker-tool','docker-tool/home','docker-tool/config','docker-tool/buildx','docker-tool/buildx/instances'): (lock/name).mkdir(mode=0o700)
+  (lock/'owner').write_text('owner\n'); (lock/'owner').chmod(0o600)
+  target=lock/'docker-tool/buildx/instances/owned'; target.write_text('owned'); target.chmod(0o600)
+  s=lock.stat(); identity=f'{s.st_dev}:{s.st_ino}'
+  def run(action):
+   with patch.object(sys,'argv',['custody',str(lock),identity,'owner',action]): exec(program,{})
+  fired=[]; retained=[]
+  def replace(fd,name,directory):
+   saved='saved-'+str(len(retained)); real_rename(name,str(root/saved),src_dir_fd=fd)
+   if directory: os.mkdir(name,0o700,dir_fd=fd)
+   else:
+    h=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600,dir_fd=fd);os.write(h,b'FOREIGN');os.close(h)
+   retained.append((os.dup(fd),name,real_stat(name,dir_fd=fd,follow_symlinks=False).st_ino,directory))
+  def rename(name,destination,*,src_dir_fd,dst_dir_fd):
+   match=(race=='rename-file' and name=='owned') or (race=='rename-dir' and name=='instances') or (race==name and name in ('owner','docker-tool.inventory','lock')) or (race=='manifest' and name=='docker-tool.inventory')
+   if match and not fired: fired.append(True);replace(src_dir_fd,name,name in ('instances','lock'))
+   return real_rename(name,destination,src_dir_fd=src_dir_fd,dst_dir_fd=dst_dir_fd)
+  def final(name,*,dir_fd,directory):
+   # Race on the *old* validated parent at the final deletion syscall. The actual
+   # syscall must only touch the moved inode in the private deletion namespace.
+   key='rmdir' if directory else 'unlink'
+   if race.startswith(key) and not fired:
+    moved=real_stat(name,dir_fd=dir_fd,follow_symlinks=False)
+    old=next(((fd,n,d) for fd,n,d,ino in moves if ino==moved.st_ino),None)
+    target={'unlink':'owned','rmdir':'instances','unlink-manifest':'docker-tool.inventory','unlink-owner':'owner','rmdir-tool':'docker-tool','rmdir-lock':'lock'}[race]
+    if old and old[1]==target:
+     fd,n,d=old;fired.append(True)
+     if d: os.mkdir(n,0o700,dir_fd=fd)
+     else:
+      h=os.open(n,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600,dir_fd=fd);os.write(h,b'FOREIGN');os.close(h)
+     retained.append((os.dup(fd),n,real_stat(n,dir_fd=fd,follow_symlinks=False).st_ino,d))
+   return (real_rmdir if directory else real_unlink)(name,dir_fd=dir_fd)
+  moves=[]
+  def move(name,destination,*,src_dir_fd,dst_dir_fd):
+   s=real_stat(name,dir_fd=src_dir_fd,follow_symlinks=False);moves.append((os.dup(src_dir_fd),name,__import__('stat').S_ISDIR(s.st_mode),s.st_ino))
+   return rename(name,destination,src_dir_fd=src_dir_fd,dst_dir_fd=dst_dir_fd)
+  with patch.object(os,'getuid',return_value=0),patch.object(os,'geteuid',return_value=1 if race=='unprivileged' else 0),patch.object(os,'fstat',side_effect=root_stat(os.fstat)),patch.object(os,'stat',side_effect=root_stat(os.stat)):
+   run('capture')
+   try:
+    with patch.object(os,'rename',side_effect=move),patch.object(os,'unlink',side_effect=lambda n,*,dir_fd:final(n,dir_fd=dir_fd,directory=False)),patch.object(os,'rmdir',side_effect=lambda n,*,dir_fd:final(n,dir_fd=dir_fd,directory=True)): run('remove')
+   except SystemExit: assert race!='none'
+   else: assert race=='none',race
+  if race=='none': assert list(root.iterdir())==[]
+  elif race=='unprivileged': assert target.read_text()=='owned' and len(list(root.iterdir()))==1
+  else:
+   assert fired and retained,race
+   # Rename races retain the foreign inode in quarantine, not necessarily its old name.
+   inodes={real_stat(p).st_ino for p in root.rglob('*') if p.is_file() or p.is_dir()}
+   for fd,name,ino,d in retained:
+    assert ino in inodes,(race,ino)
+    if not d: assert any(p.is_file() and real_stat(p).st_ino==ino and p.read_bytes()==b'FOREIGN' for p in root.rglob('*'))
+    os.close(fd)
+  for fd,*_ in moves: os.close(fd)
+`,
+    ],
+    { input: JSON.stringify(program), encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("insecure expected lifecycle files reject FIFOs without blocking", async () => {

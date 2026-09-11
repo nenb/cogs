@@ -27,10 +27,14 @@ import {
   type CustodyPort,
   canonical,
   containerArguments,
+  hash,
   LocalSkillSnapshotOwner,
   SANDBOX_CAPABILITIES,
   SANDBOX_CAPABILITY_MASK,
 } from "../dev/product-test/snapshot-owner.ts";
+import { createCogsPiSession } from "../src/pi/session.ts";
+import { createSshBashToolPort } from "../src/ssh/bash-tool.ts";
+import type { CogsExecPort, SshConnectionManager } from "../src/ssh/connection.ts";
 
 const require = createRequire(import.meta.url);
 const parseYaml = (require("yaml") as { parse(source: string): unknown }).parse;
@@ -338,7 +342,7 @@ test("product empty/nonempty paired snapshots discover journaled publication wit
   }
 });
 
-test("product failed tool after real local effects latches failure and settles exact custody", async () => {
+test("product actual Bash/Pi adapter projection binds success and rejects failures after effects", async () => {
   const root = await mkdtemp(join(tmpdir(), "cogs-tool-failure-"));
   try {
     for (const code of [0, 91]) {
@@ -347,11 +351,45 @@ test("product failed tool after real local effects latches failure and settles e
         "-e",
         `require('node:fs').writeFileSync(${JSON.stringify(effect)},'effect'); process.exit(${code})`,
       ]);
-      const result = {
-        message: { role: "toolResult", toolCallId: "product-proxy", toolName: "bash", isError: child.status !== 0 },
-      };
       const tools = new ProductToolResults(),
-        settlements: unknown[] = [];
+        settlements: unknown[] = [],
+        observed: unknown[] = [];
+      const manager = {
+        withBashExec: async (_: unknown, use: (port: CogsExecPort) => Promise<unknown>) =>
+          use({
+            onStdout: (listener) => listener(Buffer.from("proxy-controls-passed\n")),
+            onStderr: () => {},
+            signal: async () => {},
+            terminal: async () => ({ code: child.status ?? assert.fail("child did not exit"), signal: null }),
+          }),
+      } as unknown as SshConnectionManager;
+      const cwd = join(root, `cwd-${code}`),
+        agentDir = join(root, `agent-${code}`);
+      await mkdir(cwd);
+      await mkdir(agentDir);
+      const adapter = await createCogsPiSession({
+        cwd,
+        agentDir,
+        sessionRoot: join(root, `sessions-${code}`),
+        sessionId: "product-session",
+        userId: "synthetic",
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "synthetic-model-key-not-a-provider-credential",
+        toolPorts: {
+          read: async () => ({}),
+          write: async () => ({}),
+          edit: async () => ({}),
+          ...createSshBashToolPort({ manager }),
+        },
+        streamFn: deterministicStream(),
+        emit: () => true,
+        onFatal: () => {},
+        turnTimeoutMs: 10000,
+        historyAdmission: (entry) => {
+          if ((entry as { message?: { role: string } }).message?.role === "toolResult") observed.push(entry);
+          tools.admit(entry);
+        },
+      });
       const host: CustodyPort = {
         ...noEffects,
         request: async <T>(op: string, fields?: Record<string, unknown>) => {
@@ -360,16 +398,92 @@ test("product failed tool after real local effects latches failure and settles e
           return { retired: true, failed: fields?.passed !== true } as T;
         },
       };
-      const run = withProductCustody(host, async () => {
-        tools.admit(result);
-        tools.evidence();
-        return true;
-      });
-      if (code) {
-        await assert.rejects(run);
-        assert.throws(() => tools.admit({ message: { ...result.message, isError: false } }));
-        assert.throws(() => tools.evidence());
-      } else await run;
+      try {
+        const run = withProductCustody(host, async () => {
+          await adapter.input({ requestId: "tool", correlationId: "tool", kind: "prompt", content: "synthetic" });
+          const deadline = Date.now() + 5000;
+          while (!tools.failed && (await adapter.state()).runState !== "settled") {
+            assert(Date.now() < deadline);
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          tools.evidence();
+          return true;
+        });
+        if (code) {
+          await assert.rejects(run);
+          assert.throws(() => tools.admit(observed[0]));
+        } else await run;
+        assert.equal(observed.length, 1);
+        const raw = observed[0] as { message: Record<string, unknown> };
+        assert.equal(raw.message.isError, false); // Pi marks resolved {ok:false} as non-error.
+        assert(Object.hasOwn(raw.message, "usage") && raw.message.usage === undefined);
+        const projection = JSON.parse(JSON.stringify(raw));
+        const cases = [projection];
+        if (!code) {
+          const text = projection.message.content[0].text,
+            good = JSON.parse(text);
+          for (const [key, value] of [
+            ["ok", false],
+            ["ok", 1],
+            ["exitCode", 91],
+            ["exitCode", false],
+            ["stdout", "x".repeat(4097)],
+            ["stderr", {}],
+            ["stderrBytes", 1],
+            ["error", "failed"],
+            ["timedOut", true],
+            ["signal", "TERM"],
+            ["elapsedMs", -1],
+          ]) {
+            const bad = structuredClone(projection);
+            bad.message.content[0].text = JSON.stringify({ ...good, [key as string]: value });
+            cases.push(bad);
+          }
+          for (const content of [
+            [],
+            [{ type: "text", text: "success" }],
+            [{ type: "text", text: text.replace('"ok":true', '"ok":false,"ok":true') }],
+          ]) {
+            const bad = structuredClone(projection);
+            bad.message.content = content;
+            cases.push(bad);
+          }
+          for (const entry of cases.slice(1)) assert.throws(() => new ProductToolResults().admit(entry));
+          assert.deepEqual(tools.evidence(), [hash(canonical(projection.message))]);
+          const entries = (await readFile(adapter.sessionFile() as string, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.deepEqual(
+            entries.find((e) => e.message?.role === "toolResult"),
+            projection,
+          );
+        }
+        const independent = spawnSync(
+          "python3",
+          [
+            "-I",
+            "-c",
+            `
+import importlib.util,json,sys
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+out=[]
+for entry in json.load(sys.stdin):
+ try: out.append(m.tool_result(entry))
+ except Exception: out.append(None)
+print(json.dumps(out))`,
+          ],
+          { input: JSON.stringify(cases), encoding: "utf8", timeout: 5000 },
+        );
+        assert.equal(independent.status, 0, independent.stderr);
+        assert.deepEqual(
+          JSON.parse(independent.stdout),
+          cases.map((_, i) => (!code && i === 0 ? hash(canonical(projection.message)) : null)),
+        );
+        if (code) assert(!(await readFile(adapter.sessionFile() as string, "utf8")).includes('"role":"toolResult"'));
+      } finally {
+        await adapter.dispose().catch(() => undefined);
+      }
       assert.deepEqual(settlements, [{ passed: code === 0 }]);
       assert.equal(await readFile(effect, "utf8"), "effect");
     }
@@ -596,7 +710,10 @@ owner.shutdown=owner.released=owner.headers=True;owner.peers={};owner.turns=3;ow
 owner.publications=[{'kind':k} for k in ['run_settled']*3+['shutdown_ready']]
 bundle=m.digest(b'{}');owner.receipt={'consumer_id':'d'*32,'user':{'bundle_digest':bundle}}
 owner.launch={'skills':{'shared_revision':bundle,'user_revision':bundle}};provenance={'candidate':'e'*40}
-tool={'role':'toolResult','toolCallId':'product-proxy','toolName':'bash','isError':False,'content':[{'type':'text','text':'proxy-controls-passed'}]}
+result=dict(ok=True,exitCode=0,signal=None,elapsedMs=1,stdout='proxy-controls-passed\n',stderr='',stdoutBytes=22,stderrBytes=0)
+result.update(dict.fromkeys('timedOut idleTimedOut cancelled stdoutTruncated stderrTruncated stdoutLossyUtf8 stderrLossyUtf8'.split(),False))
+result.update(dict.fromkeys('stdoutDroppedBytes stderrDroppedBytes stdoutResultOmittedUtf8Bytes stderrResultOmittedUtf8Bytes updateDropped'.split(),0))
+tool={'role':'toolResult','toolCallId':'product-proxy','toolName':'bash','isError':False,'details':{'cogsTool':'bash'},'content':[{'type':'text','text':json.dumps(result)}]}
 entries=[{'id':'entry1','type':'message','message':tool}];native='product-session/native.jsonl';native_bytes=b''.join(m.canonical(v) for v in entries)
 commit='f'*40;mapping={'version':'cogs.git-mapping/v1alpha1','repo':'product-workspace','commit':commit,'session':'product-session','entry':'entry1','turn':'turn1','observed_at':'2026-01-01T00:00:00.000Z','confidence':'exact'}
 files={native:native_bytes,'product-session/git-map.jsonl':m.canonical(mapping)}
