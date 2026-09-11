@@ -40,7 +40,7 @@ POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global"
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
-                          "lifecycle": 4_300, "completion": 3_500, "integration": 4_500}
+                          "lifecycle": 4_300, "completion": 3_000, "integration": 5_000}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
                                "lifecycle": 450_000, "completion": 300_000, "integration": 700_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
@@ -418,7 +418,7 @@ def _remediation_budget():
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
     expected = {"route": 2_200, "revocation": 3_000, "relay": 4_800,
-                "lifecycle": 11_700, "completion": 6_500, "integration": 17_000}
+                "lifecycle": 11_700, "completion": 6_500, "integration": 17_325}
     owners = {}
     paths = {}
     new_file_highs = {}

@@ -55,17 +55,22 @@
           "dev/insecure-sandbox/ci-smoke.sh",
           "dev/insecure-sandbox/driver.sh",
           "dev/launcher/contract.ts",
+          "dev/launcher/control.ts",
           "dev/launcher/core.ts",
+          "dev/launcher/main.ts",
           "dev/launcher/operations.ts",
           "dev/launcher/profiles.ts",
           "dev/launcher/state.ts",
           "dev/launcher/supervisor.ts",
           "dev/launcher/trusted-compose.ts",
           "dev/launcher/trusted-controls.ts",
+          "dev/launcher/worker-entry.ts",
+          "dev/launcher/worker-process.ts",
           "schemas/runtime-v1alpha1.json",
           "src/runtime/compose.ts",
           "src/runtime/config.ts",
           "src/skills/session-preparer.ts",
+          "test/dev-launcher-control-otlp.test.ts",
           "test/dev-launcher-core.test.ts",
           "test/dev-launcher-operations.test.ts",
           "test/dev-launcher-profiles.test.ts",
@@ -73,6 +78,7 @@
           "test/dev-launcher-supervisor.test.ts",
           "test/dev-launcher-trusted-compose.test.ts",
           "test/dev-launcher-trusted-controls.test.ts",
+          "test/dev-launcher-worker-process.test.ts",
           "test/production-compose.test.ts",
           "test/runtime-config.test.ts"
         ],
@@ -80,7 +86,7 @@
       },
       {
         "name": "completion",
-        "gross_line_forecast": 3500,
+        "gross_line_forecast": 3000,
         "gross_byte_forecast": 300000,
         "existing_paths": [
           "dev/launcher/api-client.ts",
@@ -97,7 +103,7 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 4500,
+        "gross_line_forecast": 5000,
         "gross_byte_forecast": 700000,
         "existing_paths": [
           "config/external-review-remediation-budget-v1.json",
@@ -258,6 +264,7 @@
         "dev/launcher/deterministic-stream.ts",
         "dev/launcher/envoy-egress.ts",
         "dev/launcher/fixtures.ts",
+        "dev/launcher/main.ts",
         "dev/launcher/operations.ts",
         "dev/launcher/otlp-fixture.ts",
         "dev/launcher/profiles.ts",
@@ -349,7 +356,7 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 17000,
+      "gross_line_high": 17325,
       "gross_byte_forecast": {
         "total": 2700000
       },

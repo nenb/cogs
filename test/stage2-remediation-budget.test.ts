@@ -239,7 +239,7 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17000)
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17325)
 assert b['global_gross_line_high']==45000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
@@ -570,12 +570,12 @@ assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a
 assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
 assert b['global_gross_line_high']==45000; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17000); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11700,completion=6500,integration=17325); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
 expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=2700000)
 assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==5970000 and 18763891+sum(expected_bytes.values())==24733891
 plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
 assert plan['global_gross_line_forecast']==15100 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
-expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4300,completion=3500,integration=4500)
+expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4300,completion=3000,integration=5000)
 assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15100
 q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=700000)
 assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==1850000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
@@ -586,12 +586,13 @@ existing={
  test/egress-conformance/guest-probes/run-kvm-black-box-case.sh
  test/egress-conformance/stage3-real-runtime/harness.ts test/linux-kvm-git-tools.test.ts''',
  'lifecycle':'''dev/insecure-sandbox/ci-smoke.sh dev/insecure-sandbox/driver.sh
- dev/launcher/contract.ts dev/launcher/core.ts dev/launcher/operations.ts dev/launcher/profiles.ts
+ dev/launcher/contract.ts dev/launcher/control.ts dev/launcher/core.ts dev/launcher/main.ts dev/launcher/operations.ts dev/launcher/profiles.ts
  dev/launcher/state.ts dev/launcher/supervisor.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
+ dev/launcher/worker-entry.ts dev/launcher/worker-process.ts
  schemas/runtime-v1alpha1.json src/runtime/compose.ts src/runtime/config.ts src/skills/session-preparer.ts
- test/dev-launcher-core.test.ts test/dev-launcher-operations.test.ts test/dev-launcher-profiles.test.ts
+ test/dev-launcher-control-otlp.test.ts test/dev-launcher-core.test.ts test/dev-launcher-operations.test.ts test/dev-launcher-profiles.test.ts
  test/dev-launcher-state.test.ts test/dev-launcher-supervisor.test.ts test/dev-launcher-trusted-compose.test.ts test/dev-launcher-trusted-controls.test.ts
- test/production-compose.test.ts test/runtime-config.test.ts''',
+ test/dev-launcher-worker-process.test.ts test/production-compose.test.ts test/runtime-config.test.ts''',
  'completion':'''dev/launcher/api-client.ts src/api/server.ts src/pi/session.ts src/telemetry/worker-telemetry.ts
  test/api-server.test.ts test/dev-launcher-cli-api.test.ts test/pi-session.test.ts
  test/skills-session-preparer.test.ts test/worker-telemetry.test.ts''',
@@ -620,7 +621,7 @@ expected_new={
  'docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md':'integration'}
 assert m['PRODUCT_TEST_NEW_FILES']==expected_new; assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
 assert {e['name']:e['new_files'] for e in plan['owners']}=={o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}; assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
-planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==72 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==72
+planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==78 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==78
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']; q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1]); q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json'])); old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
@@ -634,6 +635,14 @@ assert paths['test/production-compose.test.ts']=='lifecycle'; assert paths['test
 assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned; assert 'schemas/launch-v1alpha1.json' not in planned; assert not any(p.startswith(('.github/','deploy/','images/')) for p in planned)
 adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
 replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
+assert len(replan.splitlines())<=121
+for text in ('HOLD 1', 'HOLD 2', 'HOLD 3', 'HOLD 4', 'persist-credentials: false', '/usr/bin/python3 -I -B',
+ '/usr/bin/bash --noprofile --norc', '/proc/self/ns/user', '/proc/1/ns/user', '(0, 0, 4294967295)',
+ 'read-only coordinate resolution', 'durably writes BEGIN before any main/state mkdir', 'same root custodian',
+ 'their own distinct transaction', 'custodian lease socket', 'Parent independently validates',
+ 'No process-local scope bypass', 'Pending means crash-safe refusal', 'literal prefix matching',
+ 'legacy launcher without an admitted custodian denies before its first effect', 'separate non-production state'):
+ assert text in replan,text
 for p in planned: assert p in adr or p in replan,p
 for p in expected_new: assert p in replan,p
 for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc096ae4ba05','044e127a',
@@ -665,8 +674,11 @@ for row in (
  '| integration | 1,121 | ADR0335/budget tests 500; source-inventory constant synchronization/readiness regeneration 100; later in-file ADR0335 execution-contract amendment and existing tests 200; product execution docs/tests 100; reserve 221 |',
  '| completion | 1,453 | event review corrections/tests 700; telemetry/HTTPS integration 300; reserve 453 |'):
  assert row in replan,row
+historical_forecasts=dict(relay=2800,lifecycle=4300,integration=4500,completion=3500)
 for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integration',3379,1121),('completion',2047,1453)):
- assert expected_forecasts[owner]-used==remaining
+ assert historical_forecasts[owner]-used==remaining  # original gate ledger remains historical
+checkpoint=dict(route=0,revocation=0,relay=1771,lifecycle=3984,completion=2552,integration=4475)
+assert sum(checkpoint.values())==12782 and sum(expected_forecasts[o]-n for o,n in checkpoint.items())==2318
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
@@ -787,8 +799,8 @@ for owner,high in highs.items():
  remediation[owner]+=1
  assert sum(remediation.values())<b['global_gross_line_high']
  veto(f,owner+' cumulative owner high+1 with other owners zero')
-remediation=dict(highs); remediation['integration']-=200
-assert sum(highs.values())==45200
+remediation=dict(highs); remediation['integration']-=525
+assert sum(highs.values())==45525
 assert f()['remediation_gross_added_lines_no_deletion_credit']==45000
 remediation['integration']+=1
 assert all(remediation[o]<=highs[o] for o in highs)
@@ -890,9 +902,9 @@ def veto(label):
  try: f()
  except m['LineBudgetError']: return
  raise AssertionError(label+' bypassed by central measure')
-values=dict(zero); values['completion']=3500
-assert f()['product_test_gross_added_lines_no_deletion_credit']==3500
-values['completion']=3501
+values=dict(zero); values['completion']=3000
+assert f()['product_test_gross_added_lines_no_deletion_credit']==3000
+values['completion']=3001
 assert sum(values.values())<15100
 veto('Q owner overrun')
 values=dict(zero)
