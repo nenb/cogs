@@ -70,6 +70,8 @@ Any breach latches failure, attempts exact cleanup, preserves uncertain custody,
 
 ## Closed ownership and no-deletion-credit budget
 
+**Superseded numeric budget:** [ADR0334](0334-reallocate-measured-product-test-correction.md) replans the measured integrated correction to 12,000 Q-relative gross lines, revised independent line/byte highs and exactly seven new files (the six below plus ADR0334). The historical measurements/forecasts below describe this original gate, not current headroom. Existing path ownership, contracts and execution stops remain unchanged; further source work waits for the ADR0334 gate's two independent reviews and commit.
+
 Measured **at Q, before this gate**: remediation 29,605/30,000; conservative 99,232/100,500; correction-global 43,878/47,000; retained-correction 15,756/16,000; post-H global 5,068/6,000; post-H retained 3,730/4,000; tracked files 1,509/1,509. These are baseline measurements, not final gate measurements or forecasts. Physical current lines were 95,133; correction deploy/workflow gross were 22,640/5,482; post-H deploy/workflow were 692/646.
 
 | Owner | Q gross | Additional gross forecast | Cumulative high | Q new-file count | Added files | New-file high |
