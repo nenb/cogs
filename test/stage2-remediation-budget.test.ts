@@ -556,8 +556,13 @@ assert original((m['DEPLOY_ROOT'],),lambda p: p.endswith('.py'),m['POST_H_REVISI
   assert.equal(result.status, 0, result.stderr);
 });
 
+function assertBudgetProgram(program: string) {
+  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 test("ADR0335 exact ownership matrix, eight files, forecasts and ceilings are closed without transfers", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import copy,json,runpy,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -621,7 +626,7 @@ existing={
  scripts/check-stage2-retained-lines.py scripts/run-launcher-smoke-evidence.ts scripts/stage4-offline-readiness-regenerate.ts
  scripts/stage4-offline-readiness.ts scripts/stage4-offline-source-inventory.ts
  scripts/stage4-runtime-artifact-closure-regenerate.ts scripts/stage4-runtime-artifact-closure.ts
- test/aws-stage2-completion-kata-runtime.py test/aws-stage2-completion-local-result.test.ts
+ test/aws-stage2-completion-kata-runtime.py test/aws-stage2-completion-kata-s5.py test/aws-stage2-completion-local-result.test.ts
  test/ci-infrastructure-boundary.test.ts test/launcher-smoke-evidence.test.ts test/stage2-remediation-budget.test.ts
  test/stage4-offline-readiness.test.ts test/stage4-runtime-artifact-closure.test.ts test/stage4-schema-registry.test.ts'''}
 expected_new={
@@ -639,7 +644,7 @@ assert {e['name']:e['new_files'] for e in plan['owners']}=={
  o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}
 assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
 planned={p:o for o,s in existing.items() for p in s.split()} | expected_new
-assert len(planned)==71 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==71
+assert len(planned)==72 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==72
 for p,owner in planned.items(): assert paths[p]==owner,p
 q=plan['base_revision']
 q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1])
@@ -647,7 +652,7 @@ q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1
 old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
 assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
 historical_tests={'test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-local-result.test.ts'}
-assert {p for p in planned if p.startswith('test/aws-')}==historical_tests
+assert {p for p in planned if p.startswith('test/aws-')}==historical_tests|{'test/aws-stage2-completion-kata-s5.py'}
 for p in historical_tests: assert p in q_names and old[p]==paths[p]==planned[p]=='integration'
 assert set(paths)==set(old)|set(planned)
 assert set(paths)-q_names==set(expected_new) and len(expected_new)==8
@@ -757,9 +762,7 @@ with tempfile.TemporaryDirectory() as directory:
   elif mutation=='q-drift': p['base_revision']='f'*40
   else: p['base_tree']='f'*40
   veto(lambda:check(bad),mutation)
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 actual current integrated worktree passes the unmocked central budget gate", () => {
@@ -792,7 +795,7 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
 });
 
 test("ADR0335 independent correction, hard and Q-relative limits reject isolated overruns", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import copy,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['measure']; ns=f.__globals__
 b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs}
@@ -831,8 +834,7 @@ base=dict(deploy=21948,retained=11844,workflow=4836)
 for key,limit in [('deploy',24500),('retained',31000),('workflow',6000)]:
  values=dict(deploy=0,retained=0,workflow=0); values[key]=limit-base[key]+1
  veto(f,key)
-# Hard conservative is now tighter than correction global; isolate the global
-# boundary with each slice within its real ceiling, then restore the hard stop.
+# Isolate correction global within real slice ceilings, then restore the tighter conservative hard stop.
 ns['HARD_LIMIT']=120000
 values=dict(deploy=24500-base['deploy'],retained=30018-base['retained'],workflow=5482-base['workflow'])
 assert f()['correction_global_gross_added_lines']==60000
@@ -885,13 +887,11 @@ assert sum(g(b).values())==0
 values=dict(m['PRODUCT_TEST_FORECASTS']); tight=copy.deepcopy(b)
 tight['product_test_correction']['global_gross_line_forecast']=15099
 veto(lambda:g(tight),'Q global')
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 central measure invokes the Q-relative gate and reports its nonzero totals", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['measure']; ns=f.__globals__
 b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs}
@@ -917,8 +917,7 @@ def gross(names,allowed,revision):
             if tuple(e['existing_paths']+e['new_files'])==names)
  return values[owner]
 ns['_gross_slice']=gross
-# Keep _product_test_gross real: bypassing its call or zeroing its returned
-# totals must fail this central report contract, not only helper-level tests.
+# Keep _product_test_gross real: central measurement must reject bypassed calls or zeroed totals.
 report=f()
 assert report['product_test_base_revision']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
 assert report['product_test_workstream_gross_added_lines']==expected
@@ -936,13 +935,11 @@ veto('Q owner overrun')
 values=dict(zero)
 for changed in ('dev/launcher/openbao.ts\0','docs/operations/runbooks/index.json\0'):
  veto('out-of-scope or zero-forecast change')
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 central measure enforces every independent byte ceiling with zero line additions", () => {
-  const program = `
+  assertBudgetProgram(`
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['measure']; ns=f.__globals__
 b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs}
@@ -984,13 +981,11 @@ for is_q in (False,True):
  f()  # every owner at its high; global exactly at its independent high
  key='PRODUCT_TEST_GLOBAL_BYTE_FORECAST' if is_q else 'REMEDIATION_GLOBAL_BYTE_HIGH'
  ns[key]-=1; veto('independent byte global with all owners within ceilings'); ns[key]+=1
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 actual gross added-line bytes charge UTF-8, CRLF, full generated lines and ordinary files", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_gross_added_line_bytes']; ns=f.__globals__
@@ -1037,13 +1032,11 @@ with tempfile.TemporaryDirectory() as directory:
  import os
  os.link(root/'edit.ts',root/'hardlink.ts'); git('add','hardlink.ts'); veto(('hardlink.ts',))
  put('.gitignore',b'ignored.ts\n'); put('ignored.ts',b'not free\n'); veto(('ignored.ts',))
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 patch accounting cross-checks historical numstat selection, including src/api/server", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_gross_added_line_bytes']; ns=f.__globals__
@@ -1074,13 +1067,11 @@ with tempfile.TemporaryDirectory() as directory:
  try: f((name,),base)
  except m['LineBudgetError']: pass
  else: raise AssertionError('numstat/patch mismatch accepted')
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("ADR0335 hostile repo, info and global transformations cannot hide raw worktree accounting", () => {
-  const program = String.raw`
+  assertBudgetProgram(String.raw`
 import os,runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_gross_added_line_bytes']; ns=f.__globals__
@@ -1142,9 +1133,7 @@ with tempfile.TemporaryDirectory() as directory:
  assert measured()==(5,len(extra))  # index flags are not raw-byte evidence
  git('update-index','--no-assume-unchanged','--skip-worktree','counted.ts')
  assert measured()==(5,len(extra))
-`;
-  const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
+`);
 });
 
 test("final control accounting requires an absent or safe canonical complete member set", () => {

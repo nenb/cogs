@@ -665,9 +665,33 @@ test("mounted verifier rejects hostile inventory, attributes, hashes, read tuple
   await assert.rejects(verifyCogsMountedSkillBundle(f.port, f.bundle, "/shared/skills", AbortSignal.abort()));
 });
 
+function snapshotKeyPair(): ReturnType<typeof utils.generateKeyPairSync> {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const key = utils.generateKeyPairSync("ed25519");
+    const parsed = utils.parseKey(key.private);
+    if (!(parsed instanceof Error) && !Array.isArray(parsed) && parsed.isPrivateKey()) return key;
+  }
+  throw new Error("snapshot SSH private key fixture unavailable");
+}
+
+test("snapshot SSH fixture retries parse failures within a fixed bound and rejects exhaustion", (t) => {
+  const valid = snapshotKeyPair();
+  let calls = 0;
+  t.mock.method(utils, "generateKeyPairSync", () => (++calls < 16 ? { ...valid, private: "invalid" } : valid));
+  assert.equal(snapshotKeyPair(), valid);
+  assert.equal(calls, 16);
+  t.mock.method(utils, "generateKeyPairSync", () => {
+    calls++;
+    return { ...valid, private: "invalid" };
+  });
+  calls = 0;
+  assert.throws(snapshotKeyPair, /snapshot SSH private key fixture unavailable/);
+  assert.equal(calls, 16);
+});
+
 async function snapshotSshServer(nodes: Map<string, SnapshotNode>, root: string) {
-  const host = utils.generateKeyPairSync("ed25519"),
-    client = utils.generateKeyPairSync("ed25519");
+  const host = snapshotKeyPair(),
+    client = snapshotKeyPair();
   const keyPath = path.join(root, "client-key");
   await writeFile(keyPath, client.private, { mode: 0o600 });
   const hostParsed = utils.parseKey(host.private);
@@ -801,6 +825,7 @@ async function withSupervisor(
     sockets: Set<Socket>;
     lost: Promise<void>;
     losses: () => number;
+    armHeartbeatLoss: () => void;
     shared: ReturnType<typeof mountedFixture>;
     server: Awaited<ReturnType<typeof snapshotSshServer>>;
   }) => Promise<void>,
@@ -831,6 +856,7 @@ async function withSupervisor(
   await writeFile(receiptPath, canonicalSnapshot(receipt), { mode: 0o440 });
   const requests: Array<Record<string, unknown>> = [],
     sockets = new Set<Socket>();
+  let heartbeatLossArmed = false;
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -842,7 +868,7 @@ async function withSupervisor(
       const request = JSON.parse(buffer) as Record<string, unknown>;
       requests.push(request);
       buffer = "";
-      if (mode === "silent" || (mode === "heartbeat-lost" && request.op === "ping")) return;
+      if (mode === "silent" || (heartbeatLossArmed && request.op === "ping")) return;
       if (mode === "release-lost" && request.op === "release") {
         socket.destroy();
         return;
@@ -953,6 +979,9 @@ async function withSupervisor(
       sockets,
       lost: lost.promise,
       losses: () => losses,
+      armHeartbeatLoss: () => {
+        heartbeatLossArmed = true;
+      },
       shared,
       server: ssh,
     });
@@ -1114,6 +1143,7 @@ test("supervisor death, heartbeat expiry and lost release fail closed without re
     await withSupervisor(async (f) => {
       const prepared = await f.preparer.prepare({ launch: f.document });
       const before = structuredClone(f.shared.nodes);
+      if (mode === "heartbeat-lost") f.armHeartbeatLoss(); // Preparation must succeed before injecting loss.
       if (mode === "death") for (const socket of f.sockets) socket.destroy();
       if (mode === "release-lost") await assert.rejects(prepared.dispose());
       await f.lost;

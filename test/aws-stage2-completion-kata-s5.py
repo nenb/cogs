@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -318,10 +319,16 @@ for role_index in range(7):
     for collision in (200, 201):
         child = os.fork()
         if child == 0:
-            values = [os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC) for _ in range(7)]
+            values = []
+            for _ in range(7):
+                # Private regular inodes, not shared /dev/null timestamps; dup retains each after unlink.
+                with tempfile.TemporaryFile() as fixture:
+                    values.append(os.dup(fixture.fileno()))
             os.dup2(values[role_index], collision, inheritable=False)
             os.close(values[role_index]); values[role_index] = collision
             before = tuple(process._fd_identity(item) for item in values)
+            assert len({(item.device, item.inode) for item in before}) == 7
+            assert all(stat.S_ISREG(item.mode) for item in before)
             try:
                 moved = process._relocate_child_internals(tuple(values))
                 assert all(item not in (0, 1, 2, 200, 201) for item in moved)

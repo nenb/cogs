@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -910,8 +910,11 @@ test("KVM generation owner binds exact private state and never adopts replacemen
     await writeFile(join(state, "known_hosts"), "host", { mode: 0o600 });
     assert.equal(invoke(state, "commit", "keys").status, 0);
     const replacement = join(state, "control/client_ed25519_key");
-    await rm(replacement);
-    await writeFile(replacement, "foreign", { mode: 0o600 });
+    const staged = join(dir, "replacement-key"); // Outside the inventoried state directory.
+    await writeFile(staged, "foreign", { mode: 0o600, flag: "wx" });
+    assert.notEqual((await lstat(staged)).ino, (await lstat(replacement)).ino);
+    // Both inodes are live until atomic rename; inode ABA remains possible after unlink/recreate.
+    await rename(staged, replacement);
     assert.notEqual(invoke(state, "intent", "retirement").status, 0);
     assert.notEqual(invoke(state, "remove").status, 0);
     assert.equal(await readFile(replacement, "utf8"), "foreign");
