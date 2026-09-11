@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 45000,
+  "global_gross_line_high": 45200,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -15,7 +15,7 @@
   "product_test_correction": {
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
-    "global_gross_line_forecast": 15350,
+    "global_gross_line_forecast": 15450,
     "global_gross_byte_forecast": 1850000,
     "integration_regeneration_gross_line_forecast": 100,
     "owners": [
@@ -106,7 +106,7 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 5100,
+        "gross_line_forecast": 5200,
         "gross_byte_forecast": 1000000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
@@ -363,7 +363,7 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 17425,
+      "gross_line_high": 17525,
       "gross_byte_forecast": {
         "total": 2700000
       },

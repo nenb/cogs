@@ -239,8 +239,8 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17425)
-assert b['global_gross_line_high']==45000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17525)
+assert b['global_gross_line_high']==45200 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
 assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87)
@@ -569,14 +569,14 @@ ns['_git']=git; b,highs,paths,new,forecasts=f()
 assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a79ad639d96cb227597f3b7',)*2; assert m['CORRECTION_BASE_REVISION']=='6f7d5c4dfdbf9f5ee4b4be0dc7d54839eac07f57'; assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
-assert b['global_gross_line_high']==45000; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17425); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
+assert b['global_gross_line_high']==45200; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
+assert highs==dict(route=2200,revocation=3000,relay=4800,lifecycle=11800,completion=6500,integration=17525); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
 expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=2700000)
 assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==5970000 and 18763891+sum(expected_bytes.values())==24733891
 plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15350 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
-expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=3000,integration=5100)
-assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15350
+assert plan['global_gross_line_forecast']==15450 and plan['global_gross_byte_forecast']==1850000; assert plan['integration_regeneration_gross_line_forecast']==100
+expected_forecasts=dict(route=0,revocation=0,relay=2800,lifecycle=4450,completion=3000,integration=5200)
+assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15450
 q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=1000000)
 assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==2150000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
@@ -639,7 +639,7 @@ for p in ('test/ci-infrastructure-boundary.test.ts','test/launcher-smoke-evidenc
 assert planned['test/dev-launcher-profiles.test.ts']=='lifecycle' and 'scripts/prepare-launcher-images.ts' not in planned
 adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
 replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
-assert len(replan.splitlines())<=121
+assert len(replan.splitlines())<=125
 for text in ('Supported-entrypoint denial revision from \x60c2439e42\x60', 'persist-credentials: false', '/usr/bin/python3 -I -B',
  'controlled Docker orchestration is exclusively', 'It does NOT use', 'no root ledger claim',
  'Closed supported external ingress inventory', 'Current exact key is \x60launcher\x60', 'no insecure execution alias exists',
@@ -717,24 +717,39 @@ for text in ('Reconciled remaining-task ledger from \x60eb9a3ec0\x60', 'ci-smoke
  assert text in replan,text
 assert 132>120 and 30+190+120+46==386>316
 assert expected_forecasts['lifecycle']-3984==30+190+120+46+80==466
-assert expected_forecasts['integration']-4648==102+50+20+20+150+100+10==452
-assert 448+1029+466+452==2395 and sum(q_lines.values())+sum(expected_forecasts.values())==44955<=b['global_gross_line_high']
+assert 5100-4648==102+50+20+20+150+100+10==452 and 448+1029+466+452==2395  # historical
+assert expected_forecasts['integration']-4737==102+61+20+20+150+100+10==463 and 61-50==11
+assert 30+190+120+46+40+40==466 and 448+1029+466+463==2406
+assert sum(q_lines.values())+sum(expected_forecasts.values())==45055<=b['global_gross_line_high']==45200
 assert all(q_lines[o]+expected_forecasts[o]<=highs[o] for o in highs)
-assert 99461+15350==114811<m['HARD_LIMIT'] and 95358+15350==110708<m['HARD_LIMIT']
+assert 99461+15450==114911<m['HARD_LIMIT'] and 95358+15450==110808<m['HARD_LIMIT']
 assert 700000-681198-12000==6802 and 1850000-989430==860570  # historical, not current headroom
 assert 236550-6802==229748 and 693198+236550+10000+60000==999748<=q_bytes['integration']
 assert q_bytes['integration']-693198==236550+10000+60252==306802
 assert 99893+187175+84508+693198+306802==1371576<plan['global_gross_byte_forecast']
 assert 2080477+306802==2387279<=expected_bytes['integration'] and 3168319+306802==3475121<5970000
-assert 4707+30==4737 and expected_forecasts['integration']-4737==13+350==363
+assert 4707+30==4737 and 5100-4737==13+350==363  # prior full allowance remains charged
+assert q_bytes['integration']-703198==236550+15000+6000+2000+2000+20000+12000+3252==296802
+assert 2000+20000+18000+6000+10000+24000==80000
+tasks=dict(completion=60000,lifecycle=80000,relay=120000,integration=296802)
+charges=dict(completion=99893,lifecycle=187175,relay=84508,integration=703198)
+assert sum(tasks.values())==556802 and sum(charges.values())+sum(tasks.values())==1631576<plan['global_gross_byte_forecast']
+assert all(charges[o]+tasks[o]<=q_bytes[o] for o in tasks) and 1850000-1631576==218424
+assert 3171880+556802==3728682<5970000 and 2084038+296802==2380840<expected_bytes['integration']
+for text in ('61/50 gross lines', '11-line overrun', '2,918 raw added-line bytes', '318 lines/13,020 bytes',
+ '/tmp/cogs42-external-ingress-denial-draft.patch', 'fe5625a70ef08181e6d910c837164d8e7c6420ce0055f098961fa1c2bab443c6',
+ 'two passes and one failure', 'insecure-container docker state is invalid', 'expected 0, actual 1',
+ 'separately from preservation 120', 'correction spending requires the existing explicit reviewed task checkpoint',
+ '2,406', '1,631,576', '114,911', '102 lines/15,000 bytes', 'two independent governance reviews of the exact final diff'):
+ assert text in replan,text
 for text in ('canonical artifact indivisibly', '229,748 shortfall before implementation', '999,748, rounded to 1,000,000',
- 'remaining implementation/contingency 60,252', '2,150,000', '300,000 excess is not spendable global capacity', '<=10,000 raw added-line bytes'):
+ 'remaining implementation/contingency 60,252', '2,150,000', '300,000 excess is not spendable global capacity'):
  assert text in replan,text
 for text in ('132/120 gross lines', 'complete-driver denial conversion/entry sentinels 190', 'inherited contingency 46 + withheld fit buffer 80',
  'this governance 102', '2,395 total remain before this amendment', '44,955', '114,811', '12,000 gross added-line bytes',
  'complete future implementation byte fit is not proven', 'No accounting algorithm changes'):
  assert text in replan,text
-index=Path('docs/adr/README.md').read_text(); assert all(t in index for t in ('132/120','15,350','44,955','114,811'))
+index=Path('docs/adr/README.md').read_text(); assert all(t in index for t in ('132/120','61/50','15,450','45,055','45,200','114,911','1,631,576'))
 for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
  'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
  'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
@@ -814,7 +829,7 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   ])
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
-    ["lines", 15350],
+    ["lines", 15450],
     ["line_bytes", 1850000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
@@ -855,9 +870,9 @@ for owner,high in highs.items():
  remediation[owner]+=1
  assert sum(remediation.values())<b['global_gross_line_high']
  veto(f,owner+' cumulative owner high+1 with other owners zero')
-remediation=dict(highs); remediation['integration']-=725
-assert sum(highs.values())==45725
-assert f()['remediation_gross_added_lines_no_deletion_credit']==45000
+remediation=dict(highs); remediation['integration']-=625
+assert sum(highs.values())==45825
+assert f()['remediation_gross_added_lines_no_deletion_credit']==45200
 remediation['integration']+=1
 assert all(remediation[o]<=highs[o] for o in highs)
 veto(f,'remediation global high+1 with every owner within high')
@@ -899,7 +914,7 @@ def q_gross(names,allowed,revision):
  assert revision==m['PRODUCT_TEST_Q'] and all(allowed(p) for p in names)
  return values[next(e['name'] for e in b['product_test_correction']['owners'] if tuple(e['existing_paths']+e['new_files'])==names)]
 gs['_gross_slice']=q_gross
-assert sum(g(b).values())==15350
+assert sum(g(b).values())==15450
 for owner,high in m['PRODUCT_TEST_FORECASTS'].items():
  values=dict(zero); values[owner]=high
  assert g(b)==values
@@ -917,7 +932,7 @@ ordinary='docs/adr/0333-authorize-controlled-product-test-corrections.md\0'
 assert sum(g(b).values())==0
 # A tighter synthetic global proves the combined Q cap is also checked independently.
 values=dict(m['PRODUCT_TEST_FORECASTS']); tight=copy.deepcopy(b)
-tight['product_test_correction']['global_gross_line_forecast']=15349
+tight['product_test_correction']['global_gross_line_forecast']=15449
 veto(lambda:g(tight),'Q global')
 `);
 });
@@ -953,7 +968,7 @@ report=f()
 assert report['product_test_base_revision']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
 assert report['product_test_workstream_gross_added_lines']==expected
 assert report['product_test_gross_added_lines_no_deletion_credit']==110
-assert report['product_test_global_gross_line_forecast']==15350
+assert report['product_test_global_gross_line_forecast']==15450
 def veto(label):
  try: f()
  except m['LineBudgetError']: return
@@ -961,7 +976,7 @@ def veto(label):
 values=dict(zero); values['completion']=3000
 assert f()['product_test_gross_added_lines_no_deletion_credit']==3000
 values['completion']=3001
-assert sum(values.values())<15350
+assert sum(values.values())<15450
 veto('Q owner overrun')
 values=dict(zero)
 for changed in ('dev/launcher/openbao.ts\0','docs/operations/runbooks/index.json\0'):
