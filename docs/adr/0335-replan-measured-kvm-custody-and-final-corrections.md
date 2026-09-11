@@ -1,6 +1,6 @@
 # ADR 0335: Replan measured KVM custody and final corrections
-- Status: Budget gate committed (`08593a43`); exact canonical synchronization byte replan from `086b2c2c`; supported-entrypoint denial remains planned, not implemented; final implementation review and local execution pending
-- Scope: Governance/budget gate only; no product source or execution authority
+- Status: Budget gate committed (`08593a43`); canonical synchronization byte replan committed (`fdf7726b`); supported-ingress denial implemented at `9ef95d29`, source-reviewed pending execution gate
+- Scope: Governance/budget and implemented supported-ingress denial bookkeeping; plan-only/future-source statements below record historical gate scope, not current implementation status; no execution authority, finding closure or Docker/KVM/AWS admission
 - Reviewed input: `/tmp/cogs42-kvm-budget-replan.md`; earlier protected-owner plans at `cc58ba37`, `2d8f203b` and `6bd60d3e` are superseded below
 ## Baseline and decision
 Baseline Q remains `8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38`, tree `181128aae8617eb58c5dce743416f4f69266c02c`. Reviewed pre-gate correction HEAD was `e3c1e938f3237df468ebf266f2b1cc096ae4ba05`; ADR0334 is `044e127a`. Historical pre-gate usage was 8,604/12,000 lines and 416,404/1,300,000 bytes: completion 2,047; lifecycle 2,446; relay 732; integration 3,379. These are checkpoint measurements, not current usage. The three-file Docker topology and subsequent source corrections remain unexecuted; final implementation review remains pending. Finding12 remains open because real KVM lacks ADR0333's external generation envelope.

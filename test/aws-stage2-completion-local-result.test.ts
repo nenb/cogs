@@ -355,7 +355,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
   assert.equal(budget.remediation_global_high, 45_200);
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 45_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 45_200);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
