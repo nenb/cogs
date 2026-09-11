@@ -1,0 +1,96 @@
+# ADR 0335: Replan measured KVM custody and final corrections
+
+- Status: Reviewed replan; governance implementation pending two independent reviews and commit
+- Scope: Governance/budget gate only; no product source or execution authority
+- Reviewed input: `/tmp/cogs42-kvm-budget-replan.md`
+
+## Baseline and decision
+
+Baseline Q remains `8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38`, tree `181128aae8617eb58c5dce743416f4f69266c02c`. Current correction HEAD is `e3c1e938f3237df468ebf266f2b1cc096ae4ba05`; ADR0334 is `044e127a`. Measured Q-relative gross usage before this gate is 8,604/12,000 lines and 416,404/1,300,000 bytes: completion 2,047; lifecycle 2,446; relay 732; integration 3,379. These are the reviewed checkpoint measurements, not measurements after this ADR's additions. The three-file Docker functional topology is source-complete but unexecuted. Finding12 remains open because real KVM lacks the external generation envelope required by ADR0333.
+
+Add this governance-only ADR as the eighth and final planned file. This supersedes ADR0334's numeric forecasts/highs, seven-file allocation and remaining-task ledger, and clarifies ADR0333 finding12's source-only tranche and later execution stop. ADR0333's path matrix, production contracts, deferred restrictions and all other stops remain unchanged. No correction, post-H, final-H, remediation or physical/conservative accounting anchor moves. **No historical gross transfers: zero lines and zero files transferred.** Existing commits gain no retrospective authority if this gate fails.
+
+## Independent line and byte budgets
+
+| Owner | Q baseline | New Q-relative forecast | Cumulative remediation high |
+| --- | ---: | ---: | ---: |
+| route | 2,023 | 0 | 2,200 |
+| revocation | 2,984 | 0 | 3,000 |
+| completion | 2,972 | 3,500 | 6,500 |
+| lifecycle | 7,348 | 4,300 | 11,700 |
+| relay | 1,953 | 2,800 | 4,800 |
+| integration | 12,325 | 4,500 | 17,000 |
+| total | 29,605 | 15,100 | 45,000 global |
+
+The Q forecast endpoint is 44,705, not permission to transfer spare capacity up to the 45,000 global high. Owner highs sum to 45,200; the global 45,000 remains an independent stop. Route/revocation forecasts remain zero, including byte/mode-identical route-index regeneration. No deletion, compression, rename/copy, net-line shortcut or ownership-transfer credit is permitted.
+
+| Independent ceiling | High | Preserved constraint |
+| --- | ---: | --- |
+| correction retained / global | 31,000 / 60,000 | Deploy 24,500 and workflow 6,000 unchanged |
+| post-H retained / global | 19,000 / 21,000 | Deploy 1,500 and workflow 1,200 unchanged |
+| physical / conservative hard | strictly below 115,000 | Preferred 90,000 advisory; mutable owners strictly below 2,000 |
+| tracked files | 1,517 | 1,509 at Q + eight planned; 1,420 remediation baseline + 97 |
+| source aggregate bytes | 26,000,000 | Serialized source inventory 262,144 unchanged |
+
+Every cap applies independently, even when another cap is tighter. Deploy/workflow/mutable-owner highs stay unchanged.
+
+| Owner | Product Q-relative byte forecast | Cumulative remediation byte high |
+| --- | ---: | ---: |
+| route | 0 | 350,000 |
+| revocation | 0 | 220,000 |
+| completion | 300,000 | 800,000 |
+| lifecycle | 450,000 | 1,200,000 |
+| relay | 400,000 | 700,000 |
+| integration | 700,000 | 2,700,000 |
+| total | 1,850,000 | 5,970,000 |
+
+These are exact owner totals, not a new source/test/docs category split. Baseline source bytes 18,763,891 + cumulative byte highs 5,970,000 = 24,733,891, below 26,000,000. Aggregate forecast fit does not replace actual owner byte gates or later independent source-inventory implementation and serialized-size checks. Source-inventory constant synchronization and deterministic readiness regeneration remain mandatory later work, not performed or claimed by this gate.
+
+## Exact remaining-task ledger and review release
+
+The 6,496 remaining gross lines at the reviewed HEAD are allocated without transfer. Governance, tests, docs, later amendments and regeneration consume these totals; they are not free.
+
+| Owner | Remaining | Closed remaining tasks |
+| --- | ---: | --- |
+| relay | 2,068 | bounded helper/call-site/QMP/tests 1,400; review reserve 668 |
+| lifecycle | 1,854 | mounted-snapshot/compose corrections 400; launcher/insecure acquisition corrections 450; production HTTPS/capability/live-mount tests 350; profile truncation 50; runtime schema/docs 50; review reserve 554 |
+| integration | 1,121 | ADR0335/budget tests 500; source-inventory constant synchronization/readiness regeneration 100; later in-file ADR0335 execution-contract amendment and existing tests 200; product execution docs/tests 100; reserve 221 |
+| completion | 1,453 | event review corrections/tests 700; telemetry/HTTPS integration 300; reserve 453 |
+
+Any owner crossing stops and requires another reviewed gate. No reserve release before that owner's named tasks complete; release requires an explicit reviewed checkpoint identifying remaining work, task consumption, reserve use and the exact changed-since-review diff. Named-task consumption and reserve release are controlled by code review and changed-since-review checkpoints. Owner line/byte gates are mechanical; the checker truthfully enforces owner/path totals, not task purpose inferred from line diffs. Review corrections must stay within the named allocations and authorized releases; spare capacity is not transferable.
+
+## Exact eight-file allocation
+
+Integration new-file high becomes 87; total owner new-file highs become 97. Other highs stay route 1, revocation 0, relay 1, lifecycle 5 and completion 3. Exactly these eight paths are allocated across the entire Q-relative correction, not eight additional files in this gate:
+
+| New path (absent from Q) | Owner |
+| --- | --- |
+| `dev/linux-kvm/bounded-command.py` | relay |
+| `src/skills/snapshot-session-preparer.ts` | lifecycle |
+| `dev/product-test/host-custody.py` | integration |
+| `dev/product-test/runner.ts` | integration |
+| `dev/product-test/snapshot-owner.ts` | integration |
+| `docs/adr/0333-authorize-controlled-product-test-corrections.md` | integration |
+| `docs/adr/0334-reallocate-measured-product-test-correction.md` | integration |
+| `docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md` | integration |
+
+Only ADR0335 is created now. No new fixture, report, restriction, schema, image or execution-gate file is implied. Existing ownership remains exact and unique, including all historical Q allocations. Tests extend existing files.
+
+## Finding12: source-only tranche, no execution authority
+
+Finding12 implementation in the later source tranche is source-only: add the bounded-command helper, convert every admitted driver/smoke/conformance guest invocation, bound QMP, reject truncation and prove behavior with portable subprocess/fault tests. It performs no Docker/KVM execution and makes no finding-closure or host-containment claim. The initial functional product-test topology is Docker-only and mechanically rejects a KVM profile, so finding12 cannot be triggered by that product scenario. Portable command bounds do not establish an external generation envelope.
+
+Actual KVM execution remains prohibited until focused/full source reviews pass and ADR0335 is amended in an existing-file, independently reviewed local-execution gate. That later in-file amendment must specify the complete fresh protected-runner envelope then used, including:
+
+- stop-before-exec placement for every driver/smoke/helper process and cgroup escape prevention;
+- all writable paths and logs, fixed storage/quota, and exact lifetime/settlement deadlines;
+- the existing non-initial network namespace and root-owned `/run/cogs-kvm-network-domain/<device>-<inode>` lease;
+- preloaded image/cache identity and receipt-bound retirement.
+
+It must use existing allocated paths or stop for another budget/file gate; no ninth file is implied. Missing prerequisites fail before effects. The present ADR is not that amendment. Docker execution also still requires the separate reviewed local-execution gate; an unexecuted topology or portable test cannot substitute for it.
+
+## Enforcement and validation boundary
+
+The budget checker/tests must enforce actual Q-relative owner line+byte highs, global and every independent cap, the exact eight-file allocation, no ownership transfer/deletion credit and hostile central/attribute bypasses. Preserve raw UTF-8 added-line bytes including actual LF/CRLF, full canonical generated-line charges, ordinary untracked-file charges, and NUL/UTF-8/ordinary-file checks. Preserve isolated Git configuration/attributes, uncached index, explicit repository-transform rejection, Myers/indent/U3 patch selection and numstat cross-check; no filter, textconv, rename/copy or staged-clean-output bypass. Historical ADR0334 accounting details remain applicable.
+
+Only this ADR, `docs/adr/README.md`, the ADR0334 supersession reference, `config/external-review-remediation-budget-v1.json`, `scripts/check-stage2-retained-lines.py` and `test/stage2-remediation-budget.test.ts` change in this governance gate. Run local budget measurement against actual current integrated usage, targeted budget tests and formatting/diff checks. No full check, readiness regeneration, source implementation, Docker/KVM execution or finding closure is claimed. Do not commit pending two independent reviews. No AWS/provider/model/credential operation or authoritative H/G/Q workflow is authorized; no retirement or evidence relabeling. **Stop immediately before every AWS-facing command.**

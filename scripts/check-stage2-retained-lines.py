@@ -23,12 +23,12 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-# ADR0334 budgets only; historical anchors and deploy/workflow stops do not move.
-HARD_LIMIT = 112_000
+# ADR0335 budgets only; historical anchors and deploy/workflow stops do not move.
+HARD_LIMIT = 115_000
 DEPLOY_CORRECTION_HIGH = 24_500
-RETAINED_CORRECTION_HIGH = 28_000
+RETAINED_CORRECTION_HIGH = 31_000
 WORKFLOW_CORRECTION_HIGH = 6_000
-GLOBAL_CORRECTION_HIGH = 56_000
+GLOBAL_CORRECTION_HIGH = 60_000
 REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
@@ -36,17 +36,17 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # ADR0309 reserves are an independent gross diff, not subtraction of two gross
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
-POST_H_HIGHS = {"deploy": 1_500, "retained": 16_000, "workflow": 1_200, "global": 18_000}
+POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global": 21_000}
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
-PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 1_600,
-                          "lifecycle": 3_800, "completion": 3_000, "integration": 3_600}
-PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 150_000,
-                               "lifecycle": 350_000, "completion": 250_000, "integration": 550_000}
-REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 550_000,
-                         "lifecycle": 1_050_000, "completion": 700_000, "integration": 2_500_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_300_000
-REMEDIATION_GLOBAL_BYTE_HIGH = 5_370_000
+PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_800,
+                          "lifecycle": 4_300, "completion": 3_500, "integration": 4_500}
+PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 700_000}
+REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 2_700_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 1_850_000
+REMEDIATION_GLOBAL_BYTE_HIGH = 5_970_000
 PRODUCT_TEST_NEW_FILES = {
     "dev/linux-kvm/bounded-command.py": "relay",
     "src/skills/snapshot-session-preparer.ts": "lifecycle",
@@ -55,6 +55,7 @@ PRODUCT_TEST_NEW_FILES = {
     "dev/product-test/snapshot-owner.ts": "integration",
     "docs/adr/0333-authorize-controlled-product-test-corrections.md": "integration",
     "docs/adr/0334-reallocate-measured-product-test-correction.md": "integration",
+    "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md": "integration",
 }
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
@@ -410,14 +411,14 @@ def _remediation_budget():
                            "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 42_000)
+             and data["global_gross_line_high"] == 45_000)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1516,
-                                        "source_inventory_bytes": 25_000_000,
+    _require(data["source_limits"] == {"tracked_files": 1517,
+                                        "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = {"route": 2_200, "revocation": 3_000, "relay": 3_600,
-                "lifecycle": 11_200, "completion": 6_000, "integration": 16_000}
+    expected = {"route": 2_200, "revocation": 3_000, "relay": 4_800,
+                "lifecycle": 11_700, "completion": 6_500, "integration": 17_000}
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -443,9 +444,9 @@ def _remediation_budget():
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
-                                "lifecycle": 5, "completion": 3, "integration": 86})
-    _require(sum(new_file_highs.values()) == 96
-             and sum(forecast["total"] for forecast in forecasts.values()) == 5_370_000)
+                                "lifecycle": 5, "completion": 3, "integration": 87})
+    _require(sum(new_file_highs.values()) == 97
+             and sum(forecast["total"] for forecast in forecasts.values()) == 5_970_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
@@ -468,8 +469,8 @@ def _product_test_budget(data, allocations):
         "base_revision", "base_tree", "global_gross_line_forecast", "global_gross_byte_forecast",
         "integration_regeneration_gross_line_forecast", "owners"})
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
-             and plan["global_gross_line_forecast"] == 12_000
-             and plan["global_gross_byte_forecast"] == 1_300_000
+             and plan["global_gross_line_forecast"] == 15_100
+             and plan["global_gross_byte_forecast"] == 1_850_000
              and plan["integration_regeneration_gross_line_forecast"] == 100)
     _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
@@ -499,14 +500,14 @@ def _product_test_budget(data, allocations):
                 planned[path] = owner
                 if kind == "new_files":
                     new[path] = owner
-    _require(new == PRODUCT_TEST_NEW_FILES and sum(forecasts.values()) == 12_000)
+    _require(new == PRODUCT_TEST_NEW_FILES and sum(forecasts.values()) == 15_100)
     _require(set(allocations) == set(q_allocations) | set(planned))
     _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
     # Preserve cumulative planning and charge the entire forecast, not remaining
     # endpoint headroom after deletions. Readiness is INCLUDED in integration.
     q_gross = {"route": 2_023, "revocation": 2_984, "relay": 1_953,
                "lifecycle": 7_348, "completion": 2_972, "integration": 12_325}
-    _require(sum(q_gross.values()) + 12_000 <= data["global_gross_line_high"])
+    _require(sum(q_gross.values()) + 15_100 <= data["global_gross_line_high"])
     _require(all(q_gross[entry["name"]] + forecasts[entry["name"]] <= entry["gross_line_high"]
                  for entry in data["owners"]))
     return planned
@@ -708,11 +709,11 @@ def measure():
         "product_test_workstream_gross_added_lines": product_test_gross,
         "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
-        "product_test_global_gross_line_forecast": 12_000,
+        "product_test_global_gross_line_forecast": 15_100,
         "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),
-        "product_test_global_gross_byte_forecast": 1_300_000,
+        "product_test_global_gross_byte_forecast": 1_850_000,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,

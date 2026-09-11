@@ -1,22 +1,22 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 42000,
+  "global_gross_line_high": 45000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1516,
-    "source_inventory_bytes": 25000000,
+    "tracked_files": 1517,
+    "source_inventory_bytes": 26000000,
     "serialized_source_inventory_bytes": 262144
   },
   "product_test_correction": {
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
-    "global_gross_line_forecast": 12000,
-    "global_gross_byte_forecast": 1300000,
+    "global_gross_line_forecast": 15100,
+    "global_gross_byte_forecast": 1850000,
     "integration_regeneration_gross_line_forecast": 100,
     "owners": [
       {
@@ -35,8 +35,8 @@
       },
       {
         "name": "relay",
-        "gross_line_forecast": 1600,
-        "gross_byte_forecast": 150000,
+        "gross_line_forecast": 2800,
+        "gross_byte_forecast": 400000,
         "existing_paths": [
           "dev/linux-kvm/ci-smoke.sh",
           "dev/linux-kvm/driver.sh",
@@ -47,8 +47,8 @@
       },
       {
         "name": "lifecycle",
-        "gross_line_forecast": 3800,
-        "gross_byte_forecast": 350000,
+        "gross_line_forecast": 4300,
+        "gross_byte_forecast": 450000,
         "existing_paths": [
           "dev/insecure-sandbox/ci-smoke.sh",
           "dev/insecure-sandbox/driver.sh",
@@ -76,8 +76,8 @@
       },
       {
         "name": "completion",
-        "gross_line_forecast": 3000,
-        "gross_byte_forecast": 250000,
+        "gross_line_forecast": 3500,
+        "gross_byte_forecast": 300000,
         "existing_paths": [
           "dev/launcher/api-client.ts",
           "src/api/server.ts",
@@ -93,8 +93,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 3600,
-        "gross_byte_forecast": 550000,
+        "gross_line_forecast": 4500,
+        "gross_byte_forecast": 700000,
         "existing_paths": [
           "config/external-review-remediation-budget-v1.json",
           "docs/adr/README.md",
@@ -122,7 +122,8 @@
           "dev/product-test/runner.ts",
           "dev/product-test/snapshot-owner.ts",
           "docs/adr/0333-authorize-controlled-product-test-corrections.md",
-          "docs/adr/0334-reallocate-measured-product-test-correction.md"
+          "docs/adr/0334-reallocate-measured-product-test-correction.md",
+          "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md"
         ]
       }
     ]
@@ -187,9 +188,9 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 3600,
+      "gross_line_high": 4800,
       "gross_byte_forecast": {
-        "total": 550000
+        "total": 700000
       },
       "new_file_high": 1,
       "paths": [
@@ -234,9 +235,9 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 11200,
+      "gross_line_high": 11700,
       "gross_byte_forecast": {
-        "total": 1050000
+        "total": 1200000
       },
       "new_file_high": 5,
       "paths": [
@@ -303,9 +304,9 @@
     },
     {
       "name": "completion",
-      "gross_line_high": 6000,
+      "gross_line_high": 6500,
       "gross_byte_forecast": {
-        "total": 700000
+        "total": 800000
       },
       "new_file_high": 3,
       "paths": [
@@ -339,11 +340,11 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 16000,
+      "gross_line_high": 17000,
       "gross_byte_forecast": {
-        "total": 2500000
+        "total": 2700000
       },
-      "new_file_high": 86,
+      "new_file_high": 87,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -457,6 +458,7 @@
         "docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md",
         "docs/adr/0333-authorize-controlled-product-test-corrections.md",
         "docs/adr/0334-reallocate-measured-product-test-correction.md",
+        "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",

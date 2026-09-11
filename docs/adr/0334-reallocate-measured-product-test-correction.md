@@ -6,6 +6,8 @@
 
 ## Measured replan
 
+**Superseded budget and remaining-task ledger:** [ADR0335](0335-replan-measured-kvm-custody-and-final-corrections.md) replans the correction to 15,100 Q-relative gross lines, revised independent line/byte highs and exactly eight new files. The numbers and seven-file allocation below remain historical. ADR0335 preserves ownership and execution stops, limits finding12's implementation tranche to source-only work, and requires a later independently reviewed in-file execution-contract amendment before actual KVM execution. Its governance implementation remains pending two independent reviews and commit; no source or execution authority is added by this reference.
+
 Baseline remains Q `8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38`. Governance commit is `aaf200fdcb7b0ca09241790f660c68142accf9de`. Integrated source commits currently implement bounded events, telemetry default fetch, production mounted-snapshot verification/zero-integration admission, and generation-bound launcher/KVM/insecure custody.
 
 Measured Q-relative gross additions after integration are 5,870/6,000: completion 2,047/1,200, lifecycle 2,446/2,200, relay 732/900, integration 645/1,700. The global total happens to fit but two independent owner forecasts fail; no deletion or compression credit is permitted. Remaining required work—bounded KVM helper, three-file product-test owner/topology, integrated tests, review corrections and deterministic readiness regeneration—cannot fit the remaining 130 lines or relay remainder.
