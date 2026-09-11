@@ -162,12 +162,13 @@ def validate():
         if token!=generation.encode()+b'\n' or not re.fullmatch('[a-f0-9]{32}',generation):
             raise RuntimeError('driver generation mismatch')
         value=read_json(state/authority)
-        if set(value)!={'version','generation','profile','sourceRevision','locator','directory','pending','failed','uncertain','keys','inventory'} \
+        if set(value)!={'version','generation','profile','sourceRevision','locator','directory','pending','guest','failed','uncertain','keys','inventory'} \
            or value['version']!='cogs.linux-kvm-owner/v1' or value['generation']!=generation \
            or value['profile']!=profile or value['sourceRevision']!=revision or value['locator']!=locator \
            or value['directory']!=[info.st_dev,info.st_ino] or type(value['keys']) is not list \
            or type(value['inventory']) is not list or type(value['failed']) is not bool \
-           or type(value['uncertain']) is not bool or (value['pending'] is not None and type(value['pending']) is not str):
+           or type(value['uncertain']) is not bool or (value['pending'] is not None and type(value['pending']) is not str) \
+           or (value['guest'] is not None and type(value['guest']) is not str):
             raise RuntimeError('invalid generation authority')
         return value
     finally: os.close(fd)
@@ -238,7 +239,7 @@ if action=='init':
         finally: os.close(fd)
         value={'version':'cogs.linux-kvm-owner/v1','generation':generation,'profile':profile,
                'sourceRevision':revision,'locator':locator,'directory':[info.st_dev,info.st_ino],
-               'pending':None,'failed':False,'uncertain':False,'keys':[],'inventory':[]}
+               'pending':None,'guest':None,'failed':False,'uncertain':False,'keys':[],'inventory':[]}
         save(value); fsync_dir(parent) # immutable generation authority precedes subordinate effects
         value['pending']='bootstrap'; save(value)
         for name,item in (('qemu.owner',{'phase':'never'}),('network.owner',{'phase':'never','steps':[]})):
@@ -258,7 +259,18 @@ value=None
 try:
     value=validate()
     if value['uncertain']: raise RuntimeError('sticky driver custody uncertainty')
-    if action=='check':
+    if value['guest'] is not None and action not in ('guest-done','guest-fail'):
+        # A killed helper/driver cannot turn lost remote completion into reuse.
+        raise RuntimeError('unfinished guest command; recovery custody retained')
+    if action=='guest-start':
+        if value['failed'] or not key: raise Rejected('failed generation is cleanup-only')
+        value['guest']=key; save(value)
+    elif action in ('guest-done','guest-fail'):
+        if value['guest']!=key: raise RuntimeError('guest command intent mismatch')
+        value['guest']=None
+        if action=='guest-fail': value['failed']=True
+        save(value)
+    elif action=='check':
         if value['failed'] and key!='destroy': raise Rejected('failed generation is cleanup-only')
         if value['pending'] is not None or not same_inventory(value['inventory']): raise RuntimeError('state inventory changed')
     elif action=='intent':
@@ -302,16 +314,19 @@ select_network_names() {
 }
 select_network_names
 
-ssh_args() {
-  printf '%s\0' -F /dev/null -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
-    -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes \
-    -o UserKnownHostsFile="$state/known_hosts" -o IdentitiesOnly=yes -o IdentityAgent=none \
-    -o ForwardAgent=no -o ClearAllForwardings=yes -i "$state/control/client_ed25519_key"
-}
-run_ssh() {
-  local args=()
-  while IFS= read -r -d '' item; do args+=("$item"); done < <(ssh_args)
-  ssh "${args[@]}" root@"$guest_ip" "$@"
+bounded_guest() {
+  local command=$1
+  [[ $# -eq 1 ]] || return 1
+  generation_owner guest-start "$command" || return 1
+  if python3 -I "$repo/dev/linux-kvm/bounded-command.py" "$command" "$state" "$generation" "$proxy_port"; then
+    generation_owner guest-done "$command" || return 1
+  else
+    local status=$?
+    # Only the helper's settled failure permits VM cleanup. Local uncertainty,
+    # a signal, or a lost helper response retains pending custody for recovery.
+    if [[ $status -eq 1 ]]; then generation_owner guest-fail "$command" || true; fi
+    return 1
+  fi
 }
 
 # State is trusted, private, host-owned custody, not a guest-writable PID hint.
@@ -715,32 +730,12 @@ start_vm() {
     >"$state/qemu.stdout" 2>"$state/qemu.stderr" 9>&- &
   echo $! > "$state/qemu.pid"
   qemu_owner capture
-  for _ in $(seq 1 600); do
-    qemu_owner check || return 1
-    run_ssh true >/dev/null 2>&1 && return 0
-    sleep 0.2
-  done
-  echo 'FAIL: verified SSH did not become ready' >&2
-  return 1
+  bounded_guest readiness || return 1
+  qemu_owner check
 }
 
 query_kvm() {
-  python3 - "$state/qmp.sock" <<'PY'
-import json,socket,sys
-with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
- client.settimeout(10); client.connect(sys.argv[1]); stream=client.makefile('rwb',buffering=0)
- def recv(identifier=None):
-  while True:
-   line=stream.readline()
-   if not line: raise RuntimeError('QMP closed')
-   message=json.loads(line)
-   if identifier is None or message.get('id')==identifier: return message
- if 'QMP' not in recv(): raise RuntimeError('bad QMP greeting')
- stream.write(b'{"execute":"qmp_capabilities","id":"caps"}\n'); recv('caps')
- stream.write(b'{"execute":"query-kvm","id":"kvm"}\n'); result=recv('kvm').get('return',{})
- if result.get('present') is not True or result.get('enabled') is not True: raise RuntimeError('KVM inactive')
- print(json.dumps(result,sort_keys=True))
-PY
+  bounded_guest qmp
 }
 
 verify_git_tools() {
@@ -749,70 +744,23 @@ verify_git_tools() {
   tr '\0' ' ' < "/proc/$pid/cmdline" | grep -F -- "readonly=on,file=$state/git-tools.img" >/dev/null || {
     echo 'FAIL: Git tools disk is not attached read-only' >&2; return 1;
   }
-  run_ssh 'set -euo pipefail
-    test "$(findmnt -rn -o TARGET /opt/cogs-git)" = /opt/cogs-git
-    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)"
-    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)"
-    findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"
-    source=$(findmnt -rn -o SOURCE /opt/cogs-git)
-    test "$(blkid -s LABEL -o value "$source")" = COGS_GITTOOLS
-    test "$(blockdev --getro "$source")" = 1
-    test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
-    test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
-    test "$(stat -c "%u:%g:%a:%F" /opt/cogs-git/bin/git)" = "0:0:755:regular file"
-    ! find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o \( ! -type l -a -perm /0022 \) -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .
-    grep -qx $'"'"'git\t1:2.47.3-0+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
-    grep -qx $'"'"'libcurl3t64-gnutls\t8.14.1-2+deb13u4\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
-    grep -qx $'"'"'libngtcp2-16\t1.11.0-1+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
-    grep -qx $'"'"'libngtcp2-crypto-gnutls8\t1.11.0-1+deb13u1\tamd64'"'"' /opt/cogs-git/cogs-git-tools-manifest.tsv
-    test "$(git --version)" = "git version 2.47.3"
-    ! ldd /opt/cogs-git/usr/bin/git 2>/dev/null | grep -q "not found"
-    work=$(mktemp -d /tmp/cogs-git-verify.XXXXXX)
-    trap '\''rm -rf "$work"'\'' EXIT
-    cd "$work"
-    git init -q
-    git config user.email cogs@example.invalid
-    git config user.name cogs
-    printf proof > proof.txt
-    git add proof.txt
-    git commit -q -m proof
-    commit=$(git rev-parse --verify HEAD)
-    test "${#commit}" = 40
-    git notes --ref=cogs add -m note "$commit"
-    git notes --ref=cogs show "$commit" >/dev/null
-    git fsck --no-progress >/dev/null'
+  bounded_guest git-tools
 }
 
 verify_checks() {
   generation_owner check
   qemu_owner check
   query_kvm >/dev/null
-  run_ssh 'test "$(id -u)" = 0'
-  run_ssh 'test -d /workspace'
+  bounded_guest root
+  bounded_guest workspace
   verify_git_tools
-  run_ssh 'test -z "$(ip route show default)"'
-  run_ssh 'test "$(cat /sys/class/net/eth0/address)" = 52:54:00:c0:65:01'
-  run_ssh 'for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c "%u:%g:%a:%F" "$skill_root")" = "0:0:700:directory"; done'
-  fingerprint=$(ssh-keygen -lf "$state/control/host_ed25519_key.pub" -E sha256 | awk '{print $2}')
-  scanned=$(ssh-keyscan -T 5 -t ed25519 "$guest_ip" 2>/dev/null | ssh-keygen -lf - -E sha256 | awk '{print $2}')
-  [[ "$fingerprint" == "$scanned" ]] || { echo 'FAIL: guest host-key fingerprint mismatch' >&2; return 1; }
-  host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
-  guest_boot_id=$(run_ssh 'cat /proc/sys/kernel/random/boot_id')
-  guest_kernel=$(run_ssh 'uname -r')
-  [[ -n "$guest_boot_id" && "$guest_boot_id" != "$host_boot_id" && -n "$guest_kernel" ]] || {
-    echo 'FAIL: guest boot or kernel identity is invalid' >&2; return 1;
-  }
+  bounded_guest no-default-route
+  bounded_guest mac
+  bounded_guest skills
+  bounded_guest host-key
 }
 emit_ready() {
-  local command=$1
-  python3 -I - "$guest_kernel" "$image_sha512" "$host_ip" "$guest_ip" "$proxy_port" "$generation" "$command" <<'PY'
-import json,sys
-kernel,digest,host,guest,port,generation,command=sys.argv[1:]
-value={'status':'ready','profile':'linux-kvm','guest_root':True,'kvm_enabled':True,'distinct_boot_ids':True,
-       'guest_kernel':kernel,'guest_image_sha512':digest,'host_ip':host,'guest_ip':guest,
-       'proxy_port':int(port),'generation':generation,'command':command}
-print(json.dumps(value,separators=(',',':')))
-PY
+  bounded_guest "receipt-$1"
 }
 release_lock() {
   flock -u 9 || { echo 'FAIL: linux-kvm driver lock release failed' >&2; return 1; }
@@ -845,20 +793,20 @@ case "$operation" in
     start_vm >&2
     owner_stage_commit
     verify_checks >&2
+    emit_ready create
     disarm_owner_errors
     release_lock
-    emit_ready create
     ;;
   verify)
     verify_checks >&2
-    release_lock
     emit_ready verify
+    release_lock
     ;;
   reset)
     arm_owner_errors
     owner_stage reset
     qemu_owner check >&2
-    run_ssh 'printf reset-persistent > /workspace/reset-marker; sync' >&2
+    bounded_guest reset-write >&2
     stop_vm >&2
     remove_network >&2
     printf '{"phase":"never","steps":[]}\n' > "$state/network.owner"
@@ -868,12 +816,12 @@ case "$operation" in
     cogs_git_tools_verify_image_file "$state/git-tools.img"
     prepare_seed
     start_vm
-    run_ssh grep -qx reset-persistent /workspace/reset-marker
+    bounded_guest reset-read
     owner_stage_commit
     verify_checks >&2
+    emit_ready reset
     disarm_owner_errors
     release_lock
-    emit_ready reset
     ;;
   destroy)
     generation_owner intent retirement
@@ -886,9 +834,14 @@ import json,sys
 print(json.dumps({'profile':'linux-kvm','status':'destroyed','generation':sys.argv[1],'command':'destroy'},separators=(',',':')))
 PY
     ;;
-  ssh)
-    shift
-    run_ssh "$@"
+  probe)
+    [[ $# -eq 2 ]] || exit 2
+    case "$2" in
+      boot-id|clear-firewall|deny-host-ssh|deny-public-https|no-default-route|proxy-connect|reset-read)
+        bounded_guest "$2" ;;
+      *) echo 'FAIL: unallocated guest command' >&2; exit 2 ;;
+    esac
+    release_lock
     ;;
-  *) echo 'usage: driver.sh {prepare-cache|create|verify|reset|destroy|ssh}' >&2; exit 2 ;;
+  *) echo 'usage: driver.sh {prepare-cache|create|verify|reset|destroy|probe fixed-id}' >&2; exit 2 ;;
 esac

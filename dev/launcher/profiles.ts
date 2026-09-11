@@ -61,7 +61,8 @@ async function invoke(
   if (signal) runOptions.signal = signal;
   if (seams) runOptions.seams = seams;
   const result = await runCommand(descriptor(profile, driver, state, action, generation), runOptions);
-  if (result.status !== "ok" || result.cleanupUncertain) throw new Error("launcher profile operation failed");
+  if (result.status !== "ok" || result.cleanupUncertain || result.stdoutTruncated || result.stderrTruncated)
+    throw new Error("launcher profile operation failed");
   const parsed = normalizeDriverResult(result.stdout, profile, action, generation);
   if (action === "destroy") await verifyProfileAbsent(state);
   return parsed;

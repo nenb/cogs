@@ -17,7 +17,7 @@ const sourceRevision = "1".repeat(40);
 const generation = "a".repeat(32);
 const execFileAsync = promisify(execFile);
 
-function fakeSeams(output: string, code = 0, calls: unknown[] = []): RunnerSeams {
+function fakeSeams(output: string, code = 0, calls: unknown[] = [], truncated?: "stdout" | "stderr"): RunnerSeams {
   const value = JSON.parse(output);
   output = `${JSON.stringify({ ...value, generation, ...(value.status === "ready" ? { command: "verify" } : {}) })}\n`;
   return Object.freeze({
@@ -34,6 +34,7 @@ function fakeSeams(output: string, code = 0, calls: unknown[] = []): RunnerSeams
       queueMicrotask(() => {
         child.stdout.end(output);
         child.stderr.end("");
+        if (truncated) child[truncated].emit("data", {}); // dropped chunk, exact valid stdout remains
         child.emit("close", code, null);
       });
       return child;
@@ -174,6 +175,26 @@ test("profiles reject runner cleanup uncertainty even when status is ok", async 
   }
 });
 
+test("profiles reject either truncation flag with otherwise exact successful receipts", async () => {
+  const { state: launcherState } = await state();
+  try {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const adapter = createProfileAdapter(
+        "insecure-container",
+        fakeSeams(
+          '{"version":"cogs.dev-driver/v1alpha1","profile":"insecure-container","authority":"functional-only","command":"create","result":"pass"}\n',
+          0,
+          [],
+          stream,
+        ),
+      );
+      await assert.rejects(() => adapter.create(launcherState, generation), /operation failed/);
+    }
+  } finally {
+    await cleanup(launcherState);
+  }
+});
+
 test("profiles reject action mismatch and do not accept create output for reset", async () => {
   const { state: launcherState } = await state();
   try {
@@ -264,9 +285,10 @@ test("launcher smoke scripts quote driver paths and document aggregate failures"
   const kvmSmoke = await readFile(join(process.cwd(), "dev/linux-kvm/ci-smoke.sh"), "utf8");
   assert.doesNotMatch(kvmSmoke, /\$driver ssh/u);
   assert.doesNotMatch(kvmSmoke, /\$\(\$driver ssh/u);
-  assert.match(kvmSmoke, /guest_boot=\$\("\$driver" ssh cat \/proc\/sys\/kernel\/random\/boot_id\)/u);
-  assert.match(kvmSmoke, /! "\$driver" ssh 'timeout 2 bash -c "<\/dev\/tcp\/1\.1\.1\.1\/443"'/u);
-  assert.match(kvmSmoke, /second_boot=\$\("\$driver" ssh cat \/proc\/sys\/kernel\/random\/boot_id\)/u);
+  assert.match(kvmSmoke, /"\$driver" probe boot-id >"\$boot_records\/first"/u);
+  assert.match(kvmSmoke, /"\$driver" probe deny-public-https/u);
+  assert.match(kvmSmoke, /"\$driver" probe boot-id >"\$boot_records\/second"/u);
+  assert.doesNotMatch(kvmSmoke, /! "\$driver" probe|"\$driver" ssh/u);
 
   const insecureSmoke = await readFile(join(process.cwd(), "dev/insecure-sandbox/ci-smoke.sh"), "utf8");
   assert.match(insecureSmoke, /set -uo pipefail/u);

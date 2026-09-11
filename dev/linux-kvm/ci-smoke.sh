@@ -8,6 +8,7 @@ started=$(python3 -c 'import time; print(time.time_ns()//1000000)')
 passed=false
 acquired=false
 helper_safe=true
+boot_records=
 export COGS_KVM_GENERATION COGS_SOURCE_REVISION
 COGS_KVM_GENERATION=$(python3 -I -c 'import secrets; print(secrets.token_hex(16))')
 COGS_SOURCE_REVISION=${COGS_SOURCE_REVISION:-$(git -C "$repo" rev-parse HEAD)}
@@ -38,6 +39,10 @@ cleanup() {
     fi
     write_report fail 'Linux/KVM isolated driver setup or teardown failed.'
     status=1
+  fi
+  if [[ -n "$boot_records" ]]; then
+    rm -f -- "$boot_records/first" "$boot_records/second"
+    rmdir -- "$boot_records"
   fi
   exit "$status"
 }
@@ -118,15 +123,15 @@ trap 'exit 1' INT TERM HUP
 run_ready create
 acquired=true
 run_ready verify
-host_boot=$(cat /proc/sys/kernel/random/boot_id)
-guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
-[[ -n "$guest_boot" && "$guest_boot" != "$host_boot" ]]
-"$driver" ssh 'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true'
+boot_records=$(mktemp -d)
+"$driver" probe boot-id >"$boot_records/first"
+"$driver" probe clear-firewall
 # These are bounded defense-in-depth diagnostics only. No listener/route control
 # makes either failure causal firewall evidence, so the report grants no such credit.
-! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/22"' >/dev/null 2>&1
-! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/1.1.1.1/443"' >/dev/null 2>&1
-! "$driver" ssh 'ip route show default | grep -q .'
+# A helper/SSH timeout is failure, never a successful negative diagnostic.
+"$driver" probe deny-host-ssh
+"$driver" probe deny-public-https
+"$driver" probe no-default-route
 
 proxy_probe() {
   python3 - "$driver" "$proxy_port" <<'PY'
@@ -144,13 +149,11 @@ try:
     fd=os.pidfd_open(child.pid,0)
     poll=select.poll(); poll.register(fd,select.POLLIN)
     signal.pthread_sigmask(signal.SIG_SETMASK,previous)
-    for _ in range(20):
-        if poll.poll(0): raise RuntimeError('proxy helper exited before probe')
-        result=subprocess.run([sys.argv[1],'ssh',f'timeout 2 bash -c "</dev/tcp/192.0.2.1/{sys.argv[2]}"'],
-                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        if result.returncode==0: break
-        time.sleep(.1)
-    else: raise RuntimeError('proxy probe failed')
+    time.sleep(.1)
+    if poll.poll(0): raise RuntimeError('proxy helper exited before probe')
+    result=subprocess.run([sys.argv[1],'probe','proxy-connect'], timeout=45,
+                          stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if result.returncode!=0: raise RuntimeError('proxy probe failed; no remote retry')
 finally:
     # Defer handled signals during retirement; there is exactly one cleanup owner.
     for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP): signal.signal(sig,signal.SIG_IGN)
@@ -180,17 +183,33 @@ probe_receipt=$(proxy_probe) || probe_status=$?
 helper_safe=true
 [[ "$probe_status" == 0 ]] || exit 1
 
-first_boot=$guest_boot
 run_ready reset
-second_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
-[[ -n "$second_boot" && "$second_boot" != "$first_boot" && "$second_boot" != "$host_boot" ]]
-"$driver" ssh grep -qx reset-persistent /workspace/reset-marker
+"$driver" probe boot-id >"$boot_records/second"
+python3 -I - "$boot_records" <<'PY'
+import json,pathlib,re,sys
+records=[]
+for name in ('first','second'):
+    with open(pathlib.Path(sys.argv[1])/name,'rb') as stream: raw=stream.read(129)
+    value=json.loads(raw)
+    if len(raw)>128 or type(value) is not dict or set(value)!={'boot-id'} \
+       or raw!=(json.dumps(value,separators=(',',':'))+'\n').encode() \
+       or type(value['boot-id']) is not str or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',value['boot-id']):
+        raise SystemExit('FAIL: invalid boot receipt')
+    records.append(value['boot-id'].encode()+b'\n')
+with open('/proc/sys/kernel/random/boot_id','rb') as stream: host=stream.read(38)
+if not re.fullmatch(rb'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n',host) or len(set([host,*records]))!=3:
+    raise SystemExit('FAIL: boot identities not distinct')
+PY
+"$driver" probe reset-read
 destroy_receipt=$(mktemp)
 destroy_status=0
 "$driver" destroy >"$destroy_receipt" || destroy_status=$?
 if [[ $destroy_status -eq 0 ]]; then acquired=false; fi
 [[ $destroy_status -eq 0 ]] && exact_receipt "$destroy_receipt" destroy
 rm -f "$destroy_receipt"
+rm -f -- "$boot_records/first" "$boot_records/second"
+rmdir -- "$boot_records"
+boot_records=
 write_report pass 'Active KVM booted a distinct root guest, used the generation-bound proxy probe, and reset preserved the workspace on a fresh boot. Non-proxy connection failures are diagnostic only and grant no firewall-enforcement evidence.'
 passed=true
 printf 'PASS: authoritative Linux/KVM driver smoke wrote %s\n' "$report"

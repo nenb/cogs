@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
@@ -68,8 +67,6 @@ const wrongProxyAuthorization = encodeProxyAuthorizationBasic(wrongCapability);
 const revocationPollIntervalMs = 500;
 const revocationObservationBoundMs = 20_000;
 const harnessReplacementReadyBoundMs = 40_000;
-const debianGuestImageSha512 =
-  "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667";
 let rootToken = "";
 let scopedToken = "";
 let caPem = "";
@@ -348,7 +345,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
         proxy_port: 18080,
       },
     );
-    assert.match(sidecar.network_evidence.kvm.guest_kernel, /^[A-Za-z0-9._+-]+$/);
+    assert.match(sidecar.network_evidence.kvm.guest_kernel, /^[A-Za-z0-9._+-]{1,64}$/);
     assert.match(sidecar.network_evidence.kvm.guest_image_sha512, /^[a-f0-9]{128}$/);
     exactKeys(sidecar.network_evidence.relay, [
       "acceptedConnections",
@@ -1031,65 +1028,10 @@ async function deleteCredential(): Promise<void> {
 }
 
 async function verifyKvmGuest(): Promise<KvmEvidence> {
-  await access("/dev/kvm", fsConstants.R_OK | fsConstants.W_OK);
-  const driver = resolve("dev/linux-kvm/driver.sh");
-  const { stdout } = (await execFileAsync(driver, ["verify"], {
-    timeout: 30_000,
-    maxBuffer: 64 * 1024,
-    windowsHide: true,
-  })) as { stdout: string };
-  const parsed = JSON.parse(stdout) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad KVM verification");
-  const value = parsed as Record<string, unknown>;
-  exactKeys(value, [
-    "distinct_boot_ids",
-    "guest_image_sha512",
-    "guest_ip",
-    "guest_kernel",
-    "guest_root",
-    "host_ip",
-    "kvm_enabled",
-    "profile",
-    "proxy_port",
-    "status",
-  ]);
-  assert.deepEqual(
-    {
-      status: value.status,
-      profile: value.profile,
-      guest_root: value.guest_root,
-      kvm_enabled: value.kvm_enabled,
-      distinct_boot_ids: value.distinct_boot_ids,
-      host_ip: value.host_ip,
-      guest_ip: value.guest_ip,
-      proxy_port: value.proxy_port,
-    },
-    {
-      status: "ready",
-      profile: "linux-kvm",
-      guest_root: true,
-      kvm_enabled: true,
-      distinct_boot_ids: true,
-      host_ip: "192.0.2.1",
-      guest_ip: "192.0.2.2",
-      proxy_port: 18080,
-    },
-  );
-  if (typeof value.guest_kernel !== "string") throw new Error("bad KVM verification");
-  const guestKernel = value.guest_kernel;
-  assert.match(guestKernel, /^[A-Za-z0-9._+-]+$/);
-  assert.equal(value.guest_image_sha512, debianGuestImageSha512);
-  return Object.freeze({
-    kvm_present: true,
-    kvm_enabled: true,
-    guest_root: true,
-    distinct_boot_ids: true,
-    guest_kernel: guestKernel,
-    guest_image_sha512: debianGuestImageSha512,
-    host_ip: "192.0.2.1",
-    guest_ip: "192.0.2.2",
-    proxy_port: 18080,
-  });
+  // Keep the enabled container harness effect-free at every dormant KVM cut.
+  // A future migration needs retained acquisition authority AND fixed helper IDs;
+  // neither ambient environment nor the old black-box SSH script grants it.
+  throw new Error("ADR0335: KVM conformance remains unadmitted");
 }
 
 async function proxyProbe(
@@ -1151,35 +1093,13 @@ async function runKvmBypassMatrix(
 }
 
 async function guestProbe(
-  scenario: string,
-  kind: string,
-  targetPort: number,
-  capability: string,
-  expect: "allow" | "deny" | "safe",
+  _scenario: string,
+  _kind: string,
+  _targetPort: number,
+  _capability: string,
+  _expect: "allow" | "deny" | "safe",
 ): Promise<{ passed: boolean; diagnosticsRedacted: string }> {
-  const script = resolve("test/egress-conformance/guest-probes/run-kvm-black-box-case.sh");
-  const { stdout } = (await execFileAsync(script, [], {
-    env: {
-      ...process.env,
-      COGS_SUITE_GUEST_PROXY: "http://192.0.2.1:18080",
-      COGS_SUITE_TARGET_PORT: String(targetPort),
-      COGS_SUITE_PUBLIC_CA: trustPath,
-      COGS_SUITE_CAPABILITY: encodeProxyAuthorizationBasic(capability),
-      COGS_SUITE_SCENARIO: scenario,
-      COGS_SUITE_KIND: kind,
-      COGS_SUITE_EXPECT: expect,
-    },
-    timeout: 30_000,
-    maxBuffer: 64 * 1024,
-    windowsHide: true,
-  })) as { stdout: string };
-  const parsed = JSON.parse(stdout) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad guest probe");
-  const result = parsed as Record<string, unknown>;
-  exactKeys(result, ["diagnosticsRedacted", "passed"]);
-  if (typeof result.passed !== "boolean" || typeof result.diagnosticsRedacted !== "string")
-    throw new Error("bad guest probe");
-  return { passed: result.passed, diagnosticsRedacted: result.diagnosticsRedacted };
+  throw new Error("ADR0335: KVM conformance remains unadmitted");
 }
 
 async function waitForReplacement(
