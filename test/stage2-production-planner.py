@@ -172,7 +172,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 "RootDeviceType": "ebs", "State": "available"}]}
         if "init" in arguments:
             provider_root = root / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
-            provider_root.mkdir(parents=True)
+            provider_root.mkdir(parents=True, exist_ok=True)
             (provider_root / "tofu-provider-aws_v6.54.0_x5").write_bytes(b"provider")
             return b"initialized\n"
         output_path = next((item[5:] for item in arguments if item.startswith("-out=")), None)
@@ -235,6 +235,16 @@ with tempfile.TemporaryDirectory() as temporary:
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).read_bytes() == package_path.read_bytes()
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).stat().st_mode & 0o777 == 0o600
     assert len(draft["plan_sha256s"]) == len(set(draft["plan_sha256s"])) == 7
+    for ordinal in range(1, 8):
+        staged = json.loads((output / "plans" / f"{ordinal:02d}.staged-plan.json").read_bytes())
+        assert staged["ordinal"] == ordinal and staged["tf_data_dir"] == f"{ordinal:02d}.tf-data"
+        assert staged["state_path"] == f"{ordinal:02d}.terraform.tfstate"
+        assert staged["plan_path"] == f"{ordinal:02d}.tfplan"
+        assert staged["plan_sha256"] == hashlib.sha256(
+            (output / "plans" / f"{ordinal:02d}.tfplan").read_bytes()).hexdigest()
+    try: planner.cycle_paths(output / "plans", 1)
+    except planner.PlanningError: pass
+    else: raise AssertionError("stale cycle paths were adopted")
     assert draft["executor_principal_commitment"] == planner.production.executor_principal_commitment(
         "aws", "000000000000", "executor")
     assert draft["inventory_observer_principal_commitment"] == \

@@ -20,6 +20,11 @@ test("inventory owns complete pagination and explicit ENI and EIP public-address
   assert.match(source, /--starting-token/u);
   assert.match(source, /"-state=" \+ str\(state\)/u);
   assert.match(source, /TF_CLI_CONFIG_FILE/u);
+  assert.match(source, /TF_DATA_DIR/u);
+  assert.match(source, /-backend-config=path=/u);
+  assert.match(source, /describe-instance-information/u);
+  assert.match(source, /remote-send\.intent\.json/u);
+  assert.match(source, /InvocationDoesNotExist/u);
   assert.match(source, /inventory_observer_principal_commitment/u);
   assert.match(source, /eni_public_associations/u);
   assert.match(source, /account-region-wide-public-address/u);

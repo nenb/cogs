@@ -180,6 +180,48 @@ def run(arguments, timeout, environment, parse=False):
     require(type(value) is dict); return value
 
 
+def cycle_paths(plans, ordinal):
+    """Allocate one non-reusable local-backend namespace for a staged cycle."""
+    require(type(ordinal) is int and 1 <= ordinal <= 7)
+    prefix = f"{ordinal:02d}"
+    paths = {
+        "tf_data_dir": plans / f"{prefix}.tf-data",
+        "state_path": plans / f"{prefix}.terraform.tfstate",
+        "plan_path": plans / f"{prefix}.tfplan",
+        "plan_json_path": plans / f"{prefix}.plan.json",
+        "stage_path": plans / f"{prefix}.staged-plan.json",
+        "variables_path": plans / f"{prefix}.tfvars.json",
+    }
+    # A planning output is single-attempt custody.  No old local cache, state,
+    # plan, or path-binding receipt can be adopted by a different cycle.
+    require(all(not path.exists() and not path.is_symlink() for path in paths.values()))
+    paths["tf_data_dir"].mkdir(mode=0o700)
+    return paths
+
+
+def stage_plan(paths, ordinal, batch, plan, shown):
+    require(plan == paths["plan_path"] and paths["tf_data_dir"].is_dir()
+            and paths["state_path"].parent == plan.parent
+            and plan.is_file() and paths["plan_json_path"].is_file())
+    value = {
+        "version": "cogs.stage2-local-staged-plan/v1",
+        "ordinal": ordinal, "batch_commitment": batch,
+        "tf_data_dir": paths["tf_data_dir"].name,
+        "state_path": paths["state_path"].name,
+        "plan_path": plan.name, "plan_json_path": paths["plan_json_path"].name,
+        "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "plan_json_sha256": hashlib.sha256(canonical(shown)).hexdigest(),
+    }
+    value["path_identity"] = hashlib.sha256(
+        b"cogs.stage2-local-plan-path/v1\0" + canonical(value)[:-1]).hexdigest()
+    raw = canonical(value)
+    fd = os.open(paths["stage_path"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try: require(os.write(fd, raw) == len(raw)); os.fsync(fd)
+    finally: os.close(fd)
+    require(read(paths["stage_path"])[1] == value)
+    return value
+
+
 def main(arguments):
     require(len(arguments) == 5 and os.environ.get("COGS_STAGE2_AWS_PLAN_AUTHORIZATION") ==
             "authorize-read-only-stage2-production-planning")
@@ -300,6 +342,7 @@ def main(arguments):
     draft["ami_commitment"] = production.resolved_ami_commitment(draft)
     email = os.environ.get("COGS_STAGE2_BUDGET_ALERT_EMAIL", "")
     require(3 <= len(email) <= 254 and "@" in email and "\n" not in email)
+    require(not output.exists() and not output.is_symlink())
     output.mkdir(mode=0o700); plans = output / "plans"; plans.mkdir(mode=0o700)
     package_output = output / production.QUALIFICATION_PACKAGE_NAME
     fd = os.open(package_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -314,8 +357,14 @@ def main(arguments):
                         "AWS_CONFIG_FILE": str(config), "AWS_PROFILE": "nebula"})
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
         environment.pop(name)
-    run((str(tofu), "init", "-backend=false", "-input=false", "-lockfile=readonly"),
-        300, environment)
+    # Provider installation is local-only.  It has an explicit disposable local
+    # backend too; no plan cycle can inherit this bootstrap cache.
+    bootstrap_data, bootstrap_state = plans / ".provider-tf-data", plans / ".provider.tfstate"
+    require(not bootstrap_data.exists() and not bootstrap_state.exists())
+    bootstrap_data.mkdir(mode=0o700)
+    run((str(tofu), "init", "-input=false", "-lockfile=readonly",
+         "-backend-config=path=" + str(bootstrap_state)), 300,
+        {**environment, "TF_DATA_DIR": str(bootstrap_data)})
     provider_root = ROOT / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
     providers = [path for path in provider_root.iterdir()
                  if path.is_file() and "provider-aws" in path.name]
@@ -326,6 +375,7 @@ def main(arguments):
     batch = production.approval_batch_commitment(draft)
     hashes = []
     for ordinal in range(1, 8):
+        paths = cycle_paths(plans, ordinal)
         variables = {"aws_profile": "nebula", "aws_region": "us-east-1",
             "ami_id": image["ImageId"], "ami_owner_id": image["OwnerId"],
             "ami_commitment": draft["ami_commitment"], "batch_commitment": batch,
@@ -334,18 +384,30 @@ def main(arguments):
             "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(draft["expires_unix_ns"] // 10**9)),
             "budget_alert_email": email, "account_id_sha256": draft["account_commitment"]}
-        varfile = plans / f"{ordinal:02d}.tfvars.json"; varfile.write_bytes(canonical(variables))
-        plan = plans / f"{ordinal:02d}.tfplan"
+        paths["variables_path"].write_bytes(canonical(variables))
+        local_environment = {**environment, "TF_DATA_DIR": str(paths["tf_data_dir"])}
+        run((str(tofu), "init", "-input=false", "-lockfile=readonly",
+             "-backend-config=path=" + str(paths["state_path"])), 300, local_environment)
+        # The exact state path is passed to plan as well as the explicit local
+        # backend, so a changed backend configuration cannot silently redirect it.
         run((str(tofu), "plan", "-input=false", "-lock=false", "-refresh=true",
-            "-var-file=" + str(varfile), "-out=" + str(plan)), 900, environment)
-        shown = run((str(tofu), "show", "-json", str(plan)), 120, environment, True)
-        plan_json = plans / f"{ordinal:02d}.plan.json"
-        plan_json.write_bytes(canonical(shown)); varfile.unlink()
+            "-state=" + str(paths["state_path"]), "-var-file=" + str(paths["variables_path"]),
+            "-out=" + str(paths["plan_path"])), 900, local_environment)
+        shown = run((str(tofu), "show", "-json", str(paths["plan_path"])), 120, local_environment, True)
+        fd = os.open(paths["plan_json_path"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            rendered = canonical(shown); require(os.write(fd, rendered) == len(rendered)); os.fsync(fd)
+        finally: os.close(fd)
+        paths["variables_path"].unlink()
         run(("/usr/bin/python3", str(ROOT / "deploy/aws-feasibility/check-plan.py"),
-             str(plan_json)), 30, environment)
-        hashes.append(hashlib.sha256(plan.read_bytes()).hexdigest())
+             str(paths["plan_json_path"])), 30, local_environment)
+        staged = stage_plan(paths, ordinal, batch, paths["plan_path"], shown)
+        require(staged["plan_sha256"] == hashlib.sha256(paths["plan_path"].read_bytes()).hexdigest())
+        hashes.append(staged["plan_sha256"])
     credentials.unlink(); config.unlink()
     draft["plan_sha256s"] = hashes
+    # The bootstrap cache and its local state are never staged as plan inputs.
+    require(not bootstrap_state.exists())
     (output / "approval-draft.json").write_bytes(canonical(draft))
     (output / "tofu").write_bytes(tofu.read_bytes()); os.chmod(output / "tofu", 0o555)
     (output / "tofu-provider-aws").write_bytes(provider_raw)
