@@ -1,8 +1,8 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 67927,
-  "global_gross_byte_high": 30000000,
+  "global_gross_line_high": 69357,
+  "global_gross_byte_high": 31200000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -10,14 +10,14 @@
   },
   "source_limits": {
     "tracked_files": 1620,
-    "source_inventory_bytes": 49000000,
+    "source_inventory_bytes": 50000000,
     "serialized_source_inventory_bytes": 262144
   },
   "product_test_correction": {
     "base_revision": "eda2dc499153f3053772790c02ea6d332403742e",
     "base_tree": "9ad48a2be811745f0d8032a0a9f52a33c4b2edec",
-    "global_gross_line_forecast": 37927,
-    "global_gross_byte_forecast": 27000000,
+    "global_gross_line_forecast": 39357,
+    "global_gross_byte_forecast": 28200000,
     "owners": [
       {
         "name": "route",
@@ -64,8 +64,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 17527,
-        "gross_byte_forecast": 17100000,
+        "gross_line_forecast": 18957,
+        "gross_byte_forecast": 18300000,
         "existing_paths": [
           ".github/workflows/ci.yml",
           ".github/workflows/insecure-container.yml",
@@ -221,6 +221,7 @@
           "test/stage2-prebuilt-local-kata-workflow.test.ts",
           "test/stage2-prebuilt-local-static-control-workflow.test.ts",
           "test/stage2-prebuilt-rehearsal-grant.py",
+          "test/stage2-prebuilt-rehearsal-grant.test.ts",
           "test/stage2-prebuilt-rehearsal-workflow.test.ts",
           "test/stage2-prebuilt-rootfs-producer-workflow.test.ts",
           "test/stage2-prebuilt-rootfs-publisher-workflow.test.ts",
@@ -269,18 +270,18 @@
       "gross_bytes": 11000000
     },
     "remaining_tranche": {
-      "gross_lines": 19927,
-      "gross_bytes": 19000000,
+      "gross_lines": 21357,
+      "gross_bytes": 20200000,
       "allocations": [
         {
           "name": "pre_h_final_governance",
-          "gross_lines": 2600,
-          "gross_bytes": 1000000,
+          "gross_lines": 2700,
+          "gross_bytes": 1100000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 2600,
-              "gross_bytes": 1000000
+              "gross_lines": 2700,
+              "gross_bytes": 1100000
             }
           ],
           "paths": [
@@ -290,8 +291,8 @@
             "docs/adr/README.md",
             "test/ci-infrastructure-boundary.test.ts"
           ],
-          "pre_h_gross_lines": 2600,
-          "pre_h_gross_bytes": 1000000,
+          "pre_h_gross_lines": 2700,
+          "pre_h_gross_bytes": 1100000,
           "required_pre_h_order": [
             "reviewed_non_aws_design",
             "corrected_source",
@@ -531,6 +532,48 @@
             "scripts/render-aws-stage2-completion-report-v3.ts",
             "test/aws-stage2-completion-evidence-v3.test.ts"
           ],
+          "enforced_path_categories": {
+            "deployment_custody_and_direct_ingress": {
+              "all_task_paths_except": [
+                "deploy/aws-feasibility/.terraform.lock.hcl",
+                "deploy/aws-feasibility/check-plan.py",
+                "deploy/aws-feasibility/main.tf",
+                "deploy/aws-feasibility/outputs.tf",
+                "deploy/aws-feasibility/variables.tf",
+                "deploy/aws-feasibility/versions.tf",
+                "schemas/aws-stage2-completion-production-approval-v5.json",
+                "scripts/stage2-production-approval.py",
+                "scripts/stage2-production-planner.py",
+                "scripts/stage2-stage-production-approval.py",
+                "test/stage2-production-approval.py",
+                "test/stage2-production-approval.test.ts",
+                "test/stage2-production-planner.py",
+                "test/stage2-production-planner.test.ts"
+              ]
+            },
+            "opentofu_backend_and_workflow_compatibility": {
+              "paths": [
+                "deploy/aws-feasibility/.terraform.lock.hcl",
+                "deploy/aws-feasibility/check-plan.py",
+                "deploy/aws-feasibility/main.tf",
+                "deploy/aws-feasibility/outputs.tf",
+                "deploy/aws-feasibility/variables.tf",
+                "deploy/aws-feasibility/versions.tf",
+                "scripts/stage2-production-planner.py",
+                "test/stage2-production-planner.py",
+                "test/stage2-production-planner.test.ts"
+              ]
+            },
+            "approval_staging_and_focused_authority_tests": {
+              "paths": [
+                "schemas/aws-stage2-completion-production-approval-v5.json",
+                "scripts/stage2-production-approval.py",
+                "scripts/stage2-stage-production-approval.py",
+                "test/stage2-production-approval.py",
+                "test/stage2-production-approval.test.ts"
+              ]
+            }
+          },
           "withheld_forecast": {
             "gross_lines": 200,
             "gross_bytes": 200000,
@@ -602,22 +645,34 @@
             "scripts/stage4-offline-source-inventory.ts",
             "scripts/stage4-runtime-artifact-closure-regenerate.ts",
             "scripts/stage4-runtime-artifact-closure.ts",
+            "test/stage2-prebuilt-rehearsal-grant.test.ts",
             "test/stage4-offline-readiness.test.ts",
             "test/stage4-runtime-artifact-closure.test.ts",
             "test/stage4-schema-registry.test.ts"
           ],
           "pre_h_gross_lines": 1800,
-          "pre_h_gross_bytes": 2000000
+          "pre_h_gross_bytes": 2000000,
+          "no_mint_downstream_consumers": [
+            ".github/workflows/stage2-prebuilt-kvm-rehearsal.yml",
+            "deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py",
+            "deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py",
+            "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
+            "scripts/stage2-prebuilt-rehearsal-grant.py",
+            "test/stage2-prebuilt-rehearsal-grant.py",
+            "test/stage2-prebuilt-rehearsal-grant.test.ts",
+            "test/stage2-prebuilt-rehearsal-workflow.test.ts"
+          ]
         },
         {
           "name": "final_hgq_control_reserve",
-          "gross_lines": 4170,
-          "gross_bytes": 4400000,
+          "gross_lines": 5500,
+          "gross_bytes": 5500000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 4170,
-              "gross_bytes": 4400000
+              "gross_lines": 5500,
+              "gross_bytes": 5500000
             }
           ],
           "paths": [
@@ -680,8 +735,8 @@
             "test/stage2-production-workflows.test.ts",
             "test/stage2-remediation-budget.test.ts"
           ],
-          "pre_h_gross_lines": 670,
-          "pre_h_gross_bytes": 900000,
+          "pre_h_gross_lines": 2000,
+          "pre_h_gross_bytes": 2000000,
           "final_minimum_lines": 3500,
           "final_minimum_bytes": 3500000
         }
@@ -904,9 +959,9 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 35000,
+      "gross_line_high": 36430,
       "gross_byte_forecast": {
-        "total": 20000000
+        "total": 21200000
       },
       "new_file_high": 180,
       "paths": [
@@ -1200,6 +1255,7 @@
         "test/stage2-prebuilt-local-kata-workflow.test.ts",
         "test/stage2-prebuilt-local-static-control-workflow.test.ts",
         "test/stage2-prebuilt-rehearsal-grant.py",
+        "test/stage2-prebuilt-rehearsal-grant.test.ts",
         "test/stage2-prebuilt-rehearsal-workflow.test.ts",
         "test/stage2-prebuilt-rootfs-producer-workflow.test.ts",
         "test/stage2-prebuilt-rootfs-publisher-workflow.test.ts",
