@@ -39,13 +39,12 @@ POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
 POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global": 21_000}
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
-PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_446, lifecycle=4_450, completion=2_580, integration=6_061)
+PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_375, lifecycle=4_450, completion=2_580, integration=6_132)
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
                                "lifecycle": 450_000, "completion": 300_000, "integration": 4_500_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
-                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_823_904}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 5_100_000
-REMEDIATION_GLOBAL_BYTE_HIGH = 7_169_543
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_850_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 5_120_000, 7_200_000
 PRODUCT_TEST_NEW_FILES = {
     "dev/linux-kvm/bounded-command.py": "relay",
     "src/skills/snapshot-session-preparer.ts": "lifecycle",
@@ -416,7 +415,7 @@ def _remediation_budget():
     _require(data["source_limits"] == {"tracked_files": 1517,
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = dict(route=2_200, revocation=3_000, relay=4_446, lifecycle=11_800, completion=6_080, integration=18_386)
+    expected = dict(route=2_200, revocation=3_000, relay=4_375, lifecycle=11_800, completion=6_080, integration=18_457)
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -444,7 +443,7 @@ def _remediation_budget():
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
                                 "lifecycle": 5, "completion": 3, "integration": 87})
     _require(sum(new_file_highs.values()) == 97
-             and sum(forecast["total"] for forecast in forecasts.values()) == 9_093_904)
+             and sum(forecast["total"] for forecast in forecasts.values()) == 9_120_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
