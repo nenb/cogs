@@ -50,10 +50,11 @@ PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 700_000,
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_000_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 11_000_000, 14_000_000
-PRODUCT_TEST_PATH_OWNER_SHA256 = "529706128347d2fb960a5d424e7102bbd2ab967605c7d5195a728d9d22681132"
-PRODUCT_TEST_TASK_PATH_SHA256 = "7a3b13b48e4f06b28d52c53f236afd5429ab6f1cf507c37bbe0b39c762bc597e"
+PRODUCT_TEST_PATH_OWNER_SHA256 = "bbb8a65b6065382fc763d5942edc6abfb4ebb75f46992f203a1c04249c28b757"
+PRODUCT_TEST_TASK_PATH_SHA256 = "f15937607a02bec0540cfa3d0d5c3e5092e2560c242b2239d88477d1a9e4fd7c"
 PRODUCT_TEST_NEW_FILES = {
     "docs/adr/0337-correct-protected-product-runtime-ancestry.md": "integration",
+    "docs/adr/0338-plan-pre-h-final-corrections.md": "integration",
 }
 PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
 PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
@@ -62,6 +63,13 @@ SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
 PRODUCT_TEST_RUNTIME_PATHS = frozenset((
     PRODUCT_TEST_WORKFLOW_PATH,
     "test/ci-infrastructure-boundary.test.ts",
+))
+PRODUCT_TEST_GOVERNANCE_PATHS = frozenset((
+    "config/external-review-remediation-budget-v1.json",
+    "docs/adr/0338-plan-pre-h-final-corrections.md",
+    "docs/adr/README.md",
+    "scripts/check-stage2-retained-lines.py",
+    "test/stage2-remediation-budget.test.ts",
 ))
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
@@ -473,8 +481,8 @@ def _remediation_budget():
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
-                                "lifecycle": 5, "completion": 3, "integration": 89})
-    _require(sum(new_file_highs.values()) == 99)
+                                "lifecycle": 5, "completion": 3, "integration": 90})
+    _require(sum(new_file_highs.values()) == 100)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
@@ -561,7 +569,8 @@ def _product_test_budget(data, allocations):
     tasks = tranche["allocations"]
     task_owner_lines, task_owner_bytes = {}, {}
     required_tasks = (("runtime_correction_and_tests", 1_000, 1_000_000, {"integration": (1_000, 1_000_000)}),
-                      ("future_hgq_control_and_evidence", 2_000, 2_000_000, {"integration": (2_000, 2_000_000)}))
+                      ("pre_h_final_governance", 600, 600_000, {"integration": (600, 600_000)}),
+                      ("future_hgq_control_and_evidence", 1_400, 1_400_000, {"integration": (1_400, 1_400_000)}))
     _require(len(tasks) == len(required_tasks))
     for task, expected_task in zip(tasks, required_tasks):
         name, lines, raw_bytes, expected_owners = expected_task
@@ -595,8 +604,10 @@ def _product_test_task_paths(task, planned):
     all_paths = set(planned)
     if task == "runtime_correction_and_tests":
         names = set(PRODUCT_TEST_RUNTIME_PATHS)
+    elif task == "pre_h_final_governance":
+        names = set(PRODUCT_TEST_GOVERNANCE_PATHS)
     elif task == "future_hgq_control_and_evidence":
-        names = all_paths - set(PRODUCT_TEST_RUNTIME_PATHS)
+        names = all_paths - set(PRODUCT_TEST_RUNTIME_PATHS) - set(PRODUCT_TEST_GOVERNANCE_PATHS)
     else:
         raise LineBudgetError()
     _require(names <= all_paths)

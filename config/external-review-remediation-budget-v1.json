@@ -149,7 +149,10 @@
           "test/stage4-runtime-artifact-closure.test.ts",
           "test/stage4-schema-registry.test.ts"
         ],
-        "new_files": ["docs/adr/0337-correct-protected-product-runtime-ancestry.md"]
+        "new_files": [
+          "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
+          "docs/adr/0338-plan-pre-h-final-corrections.md"
+        ]
       }
     ],
     "checkpoint_revision": "eda2dc499153f3053772790c02ea6d332403742e",
@@ -180,14 +183,27 @@
           "path_gross_line_highs": []
         },
         {
-          "name": "future_hgq_control_and_evidence",
-          "gross_lines": 2000,
-          "gross_bytes": 2000000,
+          "name": "pre_h_final_governance",
+          "gross_lines": 600,
+          "gross_bytes": 600000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 2000,
-              "gross_bytes": 2000000
+              "gross_lines": 600,
+              "gross_bytes": 600000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "future_hgq_control_and_evidence",
+          "gross_lines": 1400,
+          "gross_bytes": 1400000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 1400,
+              "gross_bytes": 1400000
             }
           ],
           "path_gross_line_highs": []
@@ -415,7 +431,7 @@
       "gross_byte_forecast": {
         "total": 5630000
       },
-      "new_file_high": 89,
+      "new_file_high": 90,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -533,6 +549,7 @@
         "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
         "docs/adr/0336-converge-remaining-product-governance.md",
         "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
+        "docs/adr/0338-plan-pre-h-final-corrections.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
