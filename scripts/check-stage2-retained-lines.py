@@ -37,40 +37,32 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
 POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global": 21_000}
-PRODUCT_TEST_Q = "8ca95b1e97447466587bbfae63318d9fce620e68"
-PRODUCT_TEST_Q_TREE = "dff53b023e8e4ee4bac4897f200124b3daed9de7"
-PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 15_537, 5_120_000
-PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 2_000, 2_000_000
-PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_675, lifecycle=4_550, completion=2_580, integration=7_732)
-PRODUCT_TEST_REMAINING_FORECASTS = dict(route=0, revocation=0, relay=300, lifecycle=100, completion=0, integration=1_600)
+PRODUCT_TEST_Q = "eda2dc499153f3053772790c02ea6d332403742e"
+PRODUCT_TEST_Q_TREE = "9ad48a2be811745f0d8032a0a9f52a33c4b2edec"
+# The protected squash consumes the entire prior allocation. It is never
+# recomputed from the candidate's net tree or released by a deletion.
+PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
+PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 3_000, 3_000_000
+PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_675, lifecycle=4_550, completion=2_580, integration=10_732)
+PRODUCT_TEST_REMAINING_FORECASTS = dict(route=0, revocation=0, relay=0, lifecycle=0, completion=0, integration=3_000)
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 700_000,
-                               "lifecycle": 550_000, "completion": 300_000, "integration": 5_570_000}
+                               "lifecycle": 550_000, "completion": 300_000, "integration": 8_570_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_000_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 8_000_000, 11_000_000
-PRODUCT_TEST_PATH_OWNER_SHA256 = "f110c552c20a3c380b52acb2fb9284ee12461bc2fe2c22fb977fd8f85b32399c"
-PRODUCT_TEST_TASK_PATH_SHA256 = "a15d79943be0631fb2ee2d689c06579804bac92486bc3138e19a7ae5ab9e388d"
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 11_000_000, 14_000_000
+PRODUCT_TEST_PATH_OWNER_SHA256 = "529706128347d2fb960a5d424e7102bbd2ab967605c7d5195a728d9d22681132"
+PRODUCT_TEST_TASK_PATH_SHA256 = "7a3b13b48e4f06b28d52c53f236afd5429ab6f1cf507c37bbe0b39c762bc597e"
 PRODUCT_TEST_NEW_FILES = {
-    "docs/adr/0336-converge-remaining-product-governance.md": "integration",
+    "docs/adr/0337-correct-protected-product-runtime-ancestry.md": "integration",
 }
 PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
 PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
-PRODUCT_TEST_WORKFLOW_LINE_HIGH = 300
 SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
 SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
-PRODUCT_TEST_HELPER_INTEGRATION_PATHS = frozenset((
-    "dev/product-test/host-custody.py", "dev/product-test/snapshot-owner.ts",
-    "test/ci-infrastructure-boundary.test.ts"))
-PRODUCT_TEST_DOCKER_PATHS = frozenset((
-    PRODUCT_TEST_WORKFLOW_PATH, "dev/product-test/runner.ts", "scripts/run-launcher-smoke-evidence.ts",
-    "test/launcher-smoke-evidence.test.ts"))
-PRODUCT_TEST_GOVERNANCE_PATHS = frozenset((
-    "config/external-review-remediation-budget-v1.json",
-    "docs/adr/0336-converge-remaining-product-governance.md",
-    "docs/adr/README.md",
-    "scripts/check-stage2-retained-lines.py",
-    "test/aws-stage2-completion-local-result.test.ts",
-    "test/stage2-remediation-budget.test.ts"))
+PRODUCT_TEST_RUNTIME_PATHS = frozenset((
+    PRODUCT_TEST_WORKFLOW_PATH,
+    "test/ci-infrastructure-boundary.test.ts",
+))
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -443,11 +435,11 @@ def _remediation_budget():
                            "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 48_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
+             and data["global_gross_line_high"] == 52_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
     _require(data["source_limits"] == {"tracked_files": 1530,
-                                        "source_inventory_bytes": 30_000_000,
+                                        "source_inventory_bytes": 34_000_000,
                                         "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
     try:
         producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
@@ -481,8 +473,8 @@ def _remediation_budget():
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
-                                "lifecycle": 5, "completion": 3, "integration": 88})
-    _require(sum(new_file_highs.values()) == 98)
+                                "lifecycle": 5, "completion": 3, "integration": 89})
+    _require(sum(new_file_highs.values()) == 99)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
@@ -513,9 +505,9 @@ def _product_test_budget(data, allocations):
              and plan["checkpoint_revision"] == PRODUCT_TEST_Q and plan["checkpoint_tree"] == PRODUCT_TEST_Q_TREE
              and plan["retained_allocation"] == {"gross_lines": PRODUCT_TEST_RETAINED_LINES,
                                                    "gross_bytes": PRODUCT_TEST_RETAINED_BYTES}
-             and plan["remediation_retained_allocation"] == {"gross_lines": 45_200,
-                                                               "gross_bytes": 7_200_000}
-             and plan["global_gross_line_forecast"] == 18_000
+             and plan["remediation_retained_allocation"] == {"gross_lines": 48_000,
+                                                               "gross_bytes": 11_000_000}
+             and plan["global_gross_line_forecast"] == 21_000
              and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST)
     tranche = plan["remaining_tranche"]
     _require(isinstance(tranche, dict) and set(tranche) == {"gross_lines", "gross_bytes", "allocations"}
@@ -555,10 +547,11 @@ def _product_test_budget(data, allocations):
                     new[path] = owner
     _require(new == PRODUCT_TEST_NEW_FILES and not (set(planned) & PRODUCT_TEST_EXCLUDED_PATHS)
              and not any(_product_path_denied(path) for path in planned))
-    _require(sum(forecasts.values()) == PRODUCT_TEST_RETAINED_LINES + PRODUCT_TEST_REMAINING_LINES
-             and sum(entry["gross_byte_forecast"] for entry in plan["owners"])
-             == PRODUCT_TEST_RETAINED_BYTES + PRODUCT_TEST_REMAINING_BYTES)
-    _require(sum(forecasts.values()) < plan["global_gross_line_forecast"]
+    # Owner forecasts describe the closed path matrix. The independently fixed
+    # squash allocation remains consumed even where no owner path spends it.
+    _require(sum(forecasts.values()) == 20_537
+             and sum(entry["gross_byte_forecast"] for entry in plan["owners"]) == 10_120_000
+             and sum(forecasts.values()) < plan["global_gross_line_forecast"]
              and sum(entry["gross_byte_forecast"] for entry in plan["owners"])
              < plan["global_gross_byte_forecast"])
     _require(set(allocations) == set(q_allocations) | set(planned))
@@ -567,11 +560,8 @@ def _product_test_budget(data, allocations):
     _require(hashlib.sha256(canonical).hexdigest() == PRODUCT_TEST_PATH_OWNER_SHA256)
     tasks = tranche["allocations"]
     task_owner_lines, task_owner_bytes = {}, {}
-    required_tasks = (("helper", 452, 350_000, {"integration": (352, 250_000), "lifecycle": (100, 100_000)}),
-                      ("docker_workflow_and_tests", 550, 650_000, {"integration": (550, 650_000)}),
-                      ("kvm_gate_and_tests", 300, 300_000, {"relay": (300, 300_000)}),
-                      ("final_controls_and_evidence", 145, 600_000, {"integration": (145, 600_000)}),
-                      ("governance", 553, 100_000, {"integration": (553, 100_000)}))
+    required_tasks = (("runtime_correction_and_tests", 1_000, 1_000_000, {"integration": (1_000, 1_000_000)}),
+                      ("future_hgq_control_and_evidence", 2_000, 2_000_000, {"integration": (2_000, 2_000_000)}))
     _require(len(tasks) == len(required_tasks))
     for task, expected_task in zip(tasks, required_tasks):
         name, lines, raw_bytes, expected_owners = expected_task
@@ -590,34 +580,23 @@ def _product_test_budget(data, allocations):
         highs = {entry["path"]: entry["gross_lines"] for entry in task["path_gross_line_highs"]
                  if isinstance(entry, dict) and set(entry) == {"path", "gross_lines"}}
         _require(len(highs) == len(task["path_gross_line_highs"]))
-        if name == "docker_workflow_and_tests":
-            _require(highs == {PRODUCT_TEST_WORKFLOW_PATH: PRODUCT_TEST_WORKFLOW_LINE_HIGH})
-        else:
-            _require(not highs)
-    _require(task_owner_lines == {"integration": 1_600, "lifecycle": 100, "relay": 300}
-             and task_owner_bytes == {"integration": 1_600_000, "lifecycle": 100_000, "relay": 300_000})
+        _require(not highs)
+    _require(task_owner_lines == {"integration": 3_000}
+             and task_owner_bytes == {"integration": 3_000_000})
     task_canonical = json.dumps(tasks, sort_keys=True, separators=(",", ":")).encode("utf-8")
     _require(hashlib.sha256(task_canonical).hexdigest() == PRODUCT_TEST_TASK_PATH_SHA256)
     _require(sum(forecasts.values()) < data["global_gross_line_high"]
              and PRODUCT_TEST_RETAINED_LINES + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
-             and 45_200 + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
-             and 7_200_000 + PRODUCT_TEST_REMAINING_BYTES < data["global_gross_byte_high"])
+             and 48_000 + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
+             and 11_000_000 + PRODUCT_TEST_REMAINING_BYTES <= data["global_gross_byte_high"])
     return planned
 
 def _product_test_task_paths(task, planned):
     all_paths = set(planned)
-    lifecycle = {path for path, owner in planned.items() if owner == "lifecycle"}
-    relay = {path for path, owner in planned.items() if owner == "relay"}
-    if task == "helper":
-        names = lifecycle | PRODUCT_TEST_HELPER_INTEGRATION_PATHS
-    elif task == "docker_workflow_and_tests":
-        names = set(PRODUCT_TEST_DOCKER_PATHS)
-    elif task == "kvm_gate_and_tests":
-        names = relay
-    elif task == "governance":
-        names = set(PRODUCT_TEST_GOVERNANCE_PATHS)
-    elif task == "final_controls_and_evidence":
-        names = all_paths - lifecycle - relay - PRODUCT_TEST_HELPER_INTEGRATION_PATHS - PRODUCT_TEST_DOCKER_PATHS - PRODUCT_TEST_GOVERNANCE_PATHS
+    if task == "runtime_correction_and_tests":
+        names = set(PRODUCT_TEST_RUNTIME_PATHS)
+    elif task == "future_hgq_control_and_evidence":
+        names = all_paths - set(PRODUCT_TEST_RUNTIME_PATHS)
     else:
         raise LineBudgetError()
     _require(names <= all_paths)
@@ -658,7 +637,6 @@ def _product_test_consumption(budget):
     task_bytes = dict(task_lines)
     task_owner_lines = {task["name"]: {} for task in tasks}
     task_owner_bytes = {task["name"]: {} for task in tasks}
-    workflow_lines = 0
     for revision, target in slices:
         changed = _product_test_changes(revision, target)
         if target is None:
@@ -680,10 +658,6 @@ def _product_test_consumption(budget):
                 owner_byte_charge = _gross_added_line_bytes(owner_names, revision, target)
                 task_owner_lines[task["name"]][owner] = task_owner_lines[task["name"]].get(owner, 0) + owner_line_charge
                 task_owner_bytes[task["name"]][owner] = task_owner_bytes[task["name"]].get(owner, 0) + owner_byte_charge
-            if task["name"] == "docker_workflow_and_tests":
-                workflow_lines += _gross_slice((PRODUCT_TEST_WORKFLOW_PATH,),
-                                               lambda path: path == PRODUCT_TEST_WORKFLOW_PATH,
-                                               revision, target)
     for task in tasks:
         owner_highs = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
                        for entry in task["owner_allocations"]}
@@ -693,13 +667,12 @@ def _product_test_consumption(budget):
                          and task_owner_bytes[task["name"]].get(owner, 0) <= high[1]
                          for owner, high in owner_highs.items()))
     consumed_lines, consumed_bytes = sum(owner_lines.values()), sum(owner_bytes.values())
-    _require(workflow_lines <= PRODUCT_TEST_WORKFLOW_LINE_HIGH
-             and all(owner_lines[owner] <= high for owner, high in PRODUCT_TEST_REMAINING_FORECASTS.items())
+    _require(all(owner_lines[owner] <= high for owner, high in PRODUCT_TEST_REMAINING_FORECASTS.items())
              and consumed_lines <= PRODUCT_TEST_REMAINING_LINES
              and consumed_bytes <= PRODUCT_TEST_REMAINING_BYTES
-             and PRODUCT_TEST_RETAINED_LINES + consumed_lines < plan["global_gross_line_forecast"]
-             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes < plan["global_gross_byte_forecast"])
-    return owner_lines, owner_bytes, task_lines, task_bytes, workflow_lines
+             and PRODUCT_TEST_RETAINED_LINES + consumed_lines <= plan["global_gross_line_forecast"]
+             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes <= plan["global_gross_byte_forecast"])
+    return owner_lines, owner_bytes, task_lines, task_bytes, 0
 
 def _product_test_gross(budget):
     return _product_test_consumption(budget)[0]
@@ -882,7 +855,7 @@ def measure():
         "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
         "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_gross.values()),
-        "product_test_global_gross_line_forecast": 18_000,
+        "product_test_global_gross_line_forecast": 21_000,
         "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),

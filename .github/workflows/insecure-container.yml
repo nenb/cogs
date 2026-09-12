@@ -92,16 +92,16 @@ jobs:
       - name: Root-copy and verify the exact protected build realm
         run: |
           set -euo pipefail
-          PROTECTED="/opt/cogs-product-$CANDIDATE"
+          PROTECTED="/var/lib/cogs-product-test/protected-$CANDIDATE"
           NODE=$(readlink -f "$(command -v node)")
           sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" NODE="$NODE" CHECKOUT="$GITHUB_WORKSPACE" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,shutil,stat,subprocess
           os.umask(0o077)
           candidate=os.environ['CANDIDATE']; root=os.environ['CHECKOUT']; protected=os.environ['PROTECTED']; node=os.environ['NODE']
           fail=lambda s: (_ for _ in ()).throw(SystemExit('FAIL: '+s))
-          if not (len(candidate)==40 and all(c in '0123456789abcdef' for c in candidate) and os.path.realpath(root)==root and os.path.dirname(protected)=='/opt'): fail('invalid protected realm')
+          if not (len(candidate)==40 and all(c in '0123456789abcdef' for c in candidate) and os.path.realpath(root)==root and os.path.dirname(protected)=='/var/lib/cogs-product-test' and os.path.basename(protected)=='protected-'+candidate): fail('invalid protected realm')
           os.makedirs('/var/lib/cogs-product-test',mode=0o700,exist_ok=True)
-          for path,mode in [('/opt',None),('/var/lib',None),('/var/lib/cogs-product-test',0o700)]:
+          for path,mode in [('/var/lib',None),('/var/lib/cogs-product-test',0o700)]:
               info=os.lstat(path)
               if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or (mode is not None and stat.S_IMODE(info.st_mode)!=mode): fail('unsafe protected ancestry')
           if os.path.lexists(protected): fail('protected realm already exists')
@@ -210,10 +210,35 @@ jobs:
           import hashlib,json,os,re,stat
           raw=open(os.environ['RECEIPT'],'rb').read(); value=json.loads(raw)
           if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
-          parent='/var/lib/cogs-product-test'; build=json.load(open(parent+'/build-receipt.json'))
+          parent='/var/lib/cogs-product-test'; source='protected-'+value['candidate']; evidence='build-receipt.json'; lock=value['generation']+'.lock'
+          source_info=os.stat(parent+'/'+source,follow_symlinks=False)
+          if not stat.S_ISDIR(source_info.st_mode) or source_info.st_uid!=0 or stat.S_IMODE(source_info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe protected source')
+          build=json.load(open(parent+'/'+evidence))
           if any(build.get(k)!=value[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt')) or not all(isinstance(build.get(k),str) for k in ('image_os','image_version')): raise SystemExit('FAIL: product evidence binding mismatch')
-          names=os.listdir(parent); generations=[n for n in names if re.fullmatch(r'[a-f0-9]{32}',n)]
-          if generations!=[value['generation']]: raise SystemExit('FAIL: product generation inventory mismatch')
+          parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+          try:
+              names=os.listdir(parent_fd); generations=[n for n in names if re.fullmatch(r'[a-f0-9]{32}',n)]
+              if set(names)!={source,evidence,lock,value['generation']} or generations!=[value['generation']]: raise SystemExit('FAIL: product root inventory mismatch')
+              lock_fd=os.open(lock,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
+              try:
+                  lock_info=os.fstat(lock_fd); lock_path=os.stat(lock,dir_fd=parent_fd,follow_symlinks=False)
+                  same=lambda a,b:(a.st_dev,a.st_ino)==(b.st_dev,b.st_ino)
+                  if not same(lock_info,lock_path) or not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid!=0 or lock_info.st_gid!=0 or lock_info.st_nlink!=1 or stat.S_IMODE(lock_info.st_mode)!=0o600 or not 1<=lock_info.st_size<=32768: raise SystemExit('FAIL: unsafe generation lock')
+                  lock_raw=os.pread(lock_fd,lock_info.st_size,0)
+                  if len(lock_raw)!=lock_info.st_size or not same(lock_info,os.stat(lock,dir_fd=parent_fd,follow_symlinks=False)): raise SystemExit('FAIL: replaced generation lock')
+                  lines=lock_raw.splitlines(keepends=True)
+                  if not lines or any(not line.endswith(b'\n') for line in lines) or len(lines)>2: raise SystemExit('FAIL: invalid generation lock content')
+                  lock_values=[]
+                  for line in lines:
+                      item=json.loads(line)
+                      if (json.dumps(item,sort_keys=True,separators=(',',':'))+'\n').encode()!=line: raise SystemExit('FAIL: noncanonical generation lock content')
+                      lock_values.append(item)
+                  first=lock_values[0]; allowed={'generation','seconds','cleanup_only','purpose'}
+                  if type(first) is not dict or not {'generation','seconds'}<=set(first)<=allowed or first['generation']!=value['generation'] or type(first['seconds']) is not int or not 60<=first['seconds']<=600 or ('cleanup_only' in first and first['cleanup_only'] is not True) or ('purpose' in first and first['purpose'] not in ('run','capability-probe')): raise SystemExit('FAIL: invalid generation lock config')
+                  if len(lock_values)==2 and lock_values[1]!={'generation':value['generation'],'cleanup_required':True}: raise SystemExit('FAIL: secret or invalid generation lock tail')
+                  lock_metadata={'name':lock,'mode':stat.S_IMODE(lock_info.st_mode),'size':lock_info.st_size,'sha256':'sha256:'+hashlib.sha256(lock_raw).hexdigest()}
+              finally: os.close(lock_fd)
+          finally: os.close(parent_fd)
           control=parent+'/'+value['generation']+'/control'; info=os.stat(control,follow_symlinks=False)
           if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe product control')
           rows=[]
@@ -226,7 +251,7 @@ jobs:
               else:
                   if s.st_size>1048576: raise SystemExit('FAIL: unknown large product control entry')
                   rows.append({'name':name,'kind':'control-digest','mode':stat.S_IMODE(s.st_mode),'size':s.st_size,'sha256':'sha256:'+hashlib.sha256(open(p,'rb').read()).hexdigest()})
-          evidence={'version':'cogs.product-control-digests/v1','candidate':value['candidate'],'generation':value['generation'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'tree':value['tree'],'source_inventory':value['source_inventory'],'image_os':build['image_os'],'image_version':build['image_version'],'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest(),'control':rows}
+          evidence={'version':'cogs.product-control-digests/v1','candidate':value['candidate'],'generation':value['generation'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'tree':value['tree'],'source_inventory':value['source_inventory'],'image_os':build['image_os'],'image_version':build['image_version'],'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest(),'generation_lock':lock_metadata,'control':rows}
           data=(json.dumps(evidence,sort_keys=True,separators=(',',':'))+'\n').encode()
           if len(data)>65536: raise SystemExit('FAIL: product evidence bound')
           fd=os.open(os.environ['EVIDENCE'],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
