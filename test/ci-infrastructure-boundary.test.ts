@@ -169,11 +169,20 @@ test("protected product workflow is manual, protected-main, credential-free and 
   assert.match(source, /docker build --pull=false --network=none/u);
   assert.match(source, /--protected-linux/u);
   assert.match(source, /Root-copy and verify|Root-create bound immutable restrictions/u);
-  assert.match(source, /\/opt\/cogs-product-\$CANDIDATE/u);
+  assert.match(source, /\/var\/lib\/cogs-product-test\/protected-\$CANDIDATE/u);
+  assert.match(source, /os\.path\.dirname\(protected\)=='\/var\/lib\/cogs-product-test'/u);
+  assert.match(source, /os\.path\.basename\(protected\)=='protected-'\+candidate/u);
+  assert.match(source, /\('\/var\/lib\/cogs-product-test',0o700\)/u);
+  assert.doesNotMatch(source, /\/opt\/cogs-product-\$CANDIDATE/u);
+  assert.match(source, /source='protected-'\+value\['candidate'\]; evidence='build-receipt\.json'/u);
+  assert.match(source, /set\(names\)!==?\{source,evidence,value\['generation'\]\}/u);
   assert.match(source, /source_inventory|npm_closure|ImageVersion/u);
   assert.match(source, /time\.time_ns\(\)\/\/1_000_000\+900_000/u);
   assert.match(source, /Root-inventory exactly one generation/u);
   assert.doesNotMatch(source, /dev\/insecure-sandbox|envoy|run-launcher-smoke-evidence/u);
+  const adr = await readFile(join(root, "docs/adr/0337-correct-protected-product-runtime-ancestry.md"), "utf8");
+  assert.match(adr, /34688544414[\s\S]*attempt 1[\s\S]*before application execution/u);
+  assert.match(adr, /never H, G, or Q/u);
 });
 
 test("legacy package hooks, aliases and exports remain closed while the protected workflow is admitted", async () => {
