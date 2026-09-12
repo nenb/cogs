@@ -52,9 +52,7 @@
         "name": "lifecycle",
         "gross_line_forecast": 1000,
         "gross_byte_forecast": 1000000,
-        "existing_paths": [
-          "test/production-compose.test.ts"
-        ],
+        "existing_paths": ["test/production-compose.test.ts"],
         "new_files": []
       },
       {
@@ -162,6 +160,7 @@
           "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
           "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
           "docs/security-evidence/stage4-offline-readiness-package.json",
+          "schemas/aws-stage2-completion-evidence-v3.json",
           "schemas/aws-stage2-completion-production-approval-v5.json",
           "schemas/stage2-formal-local-artifact-custody-v2.json",
           "schemas/stage2-formal-local-cycle-receipt-v2.json",
@@ -169,6 +168,8 @@
           "schemas/stage2-pre-aws-qualification-package-v5.json",
           "scripts/check-stage2-retained-lines.py",
           "scripts/prepare-stage2-fixed-source.py",
+          "scripts/provision-stage2-nft-owner.py",
+          "scripts/render-aws-stage2-completion-report-v3.ts",
           "scripts/stage2-formal-local-qualification.py",
           "scripts/stage2-hosted-opt-mode.py",
           "scripts/stage2-local-settlement.py",
@@ -190,6 +191,7 @@
           "scripts/stage4-offline-source-inventory.ts",
           "scripts/stage4-runtime-artifact-closure-regenerate.ts",
           "scripts/stage4-runtime-artifact-closure.ts",
+          "scripts/validate-aws-stage2-completion-evidence-v3.ts",
           "test/aws-stage2-completion-campaign-aws-adapter.test.ts",
           "test/aws-stage2-completion-campaign-aws-provider.py",
           "test/aws-stage2-completion-campaign-aws-provider.test.ts",
@@ -205,6 +207,7 @@
           "test/aws-stage2-completion-campaign-state.test.ts",
           "test/aws-stage2-completion-cycle-authority.py",
           "test/aws-stage2-completion-cycle-authority.test.ts",
+          "test/aws-stage2-completion-evidence-v3.test.ts",
           "test/aws-stage2-completion-kata-coordinator.py",
           "test/aws-stage2-completion-kata-coordinator.test.ts",
           "test/aws-stage2-completion-kata-native-recover.py",
@@ -366,12 +369,16 @@
             "deploy/aws-feasibility/validate.sh",
             "deploy/aws-feasibility/variables.tf",
             "deploy/aws-feasibility/versions.tf",
+            "schemas/aws-stage2-completion-evidence-v3.json",
             "schemas/aws-stage2-completion-production-approval-v5.json",
             "schemas/aws-stage2-production-custody-v1.json",
             "schemas/aws-stage2-production-principal-contract-v1.json",
+            "scripts/provision-stage2-nft-owner.py",
+            "scripts/render-aws-stage2-completion-report-v3.ts",
             "scripts/stage2-production-approval.py",
             "scripts/stage2-production-planner.py",
             "scripts/stage2-stage-production-approval.py",
+            "scripts/validate-aws-stage2-completion-evidence-v3.ts",
             "test/aws-stage2-completion-campaign-aws-adapter.py",
             "test/aws-stage2-completion-campaign-aws-adapter.test.ts",
             "test/aws-stage2-completion-campaign-aws-provider.py",
@@ -389,6 +396,7 @@
             "test/aws-stage2-completion-campaign-state.test.ts",
             "test/aws-stage2-completion-cycle-authority.py",
             "test/aws-stage2-completion-cycle-authority.test.ts",
+            "test/aws-stage2-completion-evidence-v3.test.ts",
             "test/aws-stage2-completion-kata-coordinator.py",
             "test/aws-stage2-completion-kata-coordinator.test.ts",
             "test/aws-stage2-completion-kata-native-recover.py",
@@ -422,9 +430,7 @@
             }
           ],
           "ingress_inventory": {
-            "planner_cli": [
-              "scripts/stage2-production-planner.py"
-            ],
+            "planner_cli": ["scripts/stage2-production-planner.py"],
             "approval_and_staging_front_doors": [
               "scripts/stage2-production-approval.py",
               "scripts/stage2-stage-production-approval.py"
@@ -465,7 +471,8 @@
               "deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py",
               "deploy/aws-feasibility/remote/completion_rootfs_builder.py",
               "deploy/aws-feasibility/remote/completion_rootfs_plan.py",
-              "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py"
+              "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
+              "scripts/provision-stage2-nft-owner.py"
             ],
             "legacy_shell_effect_routes": [
               "deploy/aws-feasibility/apply.sh",
@@ -1113,6 +1120,7 @@
         "scripts/pi-real-provider-integration.ts",
         "scripts/prepare-launcher-images.ts",
         "scripts/prepare-stage2-fixed-source.py",
+        "scripts/provision-stage2-nft-owner.py",
         "scripts/render-aws-stage2-completion-report-v3.ts",
         "scripts/run-launcher-smoke-evidence.ts",
         "scripts/stage2-formal-local-qualification.py",
