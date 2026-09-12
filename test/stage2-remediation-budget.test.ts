@@ -278,7 +278,7 @@ assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
 assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=49000000,serialized_source_inventory_bytes=262144)
 adr0338=Path('docs/adr/0338-plan-pre-h-final-corrections.md').read_text()
-for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'max_attempts=1', 'Old-effect quiescence is an', 'NotAfter + 120 seconds', 'account-and-region inventory passes', 'cleanup_reserve_ns > 3,060,000,000,000', 'one orchestration process and one invocation per', 'pinned OpenTofu non-AWS backend/saved-plan', 'do not run OpenTofu now', 'final-byte restart ordering', 'cloud-init preparation that installs only that exact tool set', 'versioned S3 backend/object custody', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
+for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'completion_campaign_remote_adapter.py', 'max_attempts=1', 'only retry guarantee is that it sets the **client**', 'Old-effect quiescence is an', 'NotAfter + 120 seconds', 'account-and-region inventory passes', 'tests must require \`cleanup_reserve_ns >', 'normal effect time at most 180 minutes', 'cleanup/reconciliation, including', 'campaign workflow wall time at most 240 minutes', '472,000', 'no successor NORMAL authority', 'separately authenticated cleanup-only recovery owner', 'Recovery-of-recovery', 'Final-byte durable/readback/hash-bound', 'run-stage2-completion-full', 'run-stage2-completion-readiness', 'recover-stage2-completion-remote', 'v7 is only a pinned historical artifact-decoding fixture', 'decode-only', 'one orchestration process and one invocation per', 'pinned OpenTofu non-AWS backend/saved-plan', 'actual \`versions.tf\` OpenTofu', 'do not run OpenTofu now', 'final-byte restart ordering', 'cloud-init preparation that installs only that exact tool set', 'versioned S3 backend/object custody', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
  assert phrase in adr0338,phrase
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
@@ -577,27 +577,33 @@ assert [x['name'] for x in t['allocations']]==['pre_h_final_governance','aws_pri
 assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(1600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(4727,4800000)]
 assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(1600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(1227,1300000)]
 assert t['allocations'][-1]['final_minimum_lines']==3500 and t['allocations'][-1]['final_minimum_bytes']==3500000
-assert t['allocations'][1]['measured_slices']==[{'name':'deployment_and_direct_python_ingress','gross_lines':5600,'gross_bytes':6300000},{'name':'workflow_and_opentofu_compatibility','gross_lines':1400,'gross_bytes':1700000}]
+assert t['allocations'][1]['forecast_slices']==[{'name':'deployment_custody_and_direct_ingress','owner':'integration','gross_lines':5200,'gross_bytes':6000000},{'name':'opentofu_backend_and_workflow_compatibility','owner':'integration','gross_lines':1100,'gross_bytes':1300000},{'name':'approval_staging_and_focused_authority_tests','owner':'integration','gross_lines':500,'gross_bytes':500000}]
+assert sum(x['gross_lines'] for x in t['allocations'][1]['forecast_slices'])==6800<7000
+assert sum(x['gross_bytes'] for x in t['allocations'][1]['forecast_slices'])==7800000<8000000
+assert set(t['allocations'][1]['ingress_inventory'])=={'planner_cli','approval_and_staging_front_doors','aws_entry_and_recovery','direct_cycle_python','legacy_shell_effect_routes','decode_only'}
 planned={q:e['name'] for e in p['owners'] for q in e['existing_paths']+e['new_files']}
 task_paths={x['name']:set(x['paths']) for x in t['allocations']}
 assert set().union(*task_paths.values())==set(planned)
 assert sum(map(len,task_paths.values()))==len(planned)
 aws=task_paths['aws_principal_denial_and_cycle_custody']
-assert {'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_adapter.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','test/aws-stage2-completion-campaign-aws-adapter.py','test/aws-stage2-completion-campaign-aws-adapter.test.ts','test/aws-stage2-completion-campaign-aws-provider.py','test/aws-stage2-completion-campaign-ingress.py','test/aws-stage2-completion-cycle-authority.py'} <= aws
+assert {'deploy/aws-feasibility/.terraform.lock.hcl','deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/main.tf','deploy/aws-feasibility/variables.tf','deploy/aws-feasibility/outputs.tf','deploy/aws-feasibility/versions.tf','deploy/aws-feasibility/completion_campaign_aws_adapter.py','deploy/aws-feasibility/completion_campaign_remote_adapter.py','deploy/aws-feasibility/completion_campaign_evidence_issuer.py','deploy/aws-feasibility/completion_campaign_state.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py','test/aws-stage2-completion-campaign-aws-adapter.py','test/aws-stage2-completion-campaign-aws-adapter.test.ts','test/aws-stage2-completion-campaign-aws-provider.py','test/aws-stage2-completion-campaign-ingress.py','test/aws-stage2-completion-campaign-receipts.py','test/aws-stage2-completion-campaign-state.test.ts','test/aws-stage2-completion-cycle-authority.py','test/aws-stage2-completion-cycle-authority.test.ts'} <= aws
 direct_python={path for names in task_paths.values() for path in names if path in {'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_entry.py','deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py','deploy/aws-feasibility/completion_campaign_aws_provider.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py'}}
 assert direct_python=={'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_entry.py','deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py','deploy/aws-feasibility/completion_campaign_aws_provider.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py'}
+inventory=t['allocations'][1]['ingress_inventory']; assert inventory['direct_cycle_python']==['deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py']
+assert inventory['decode_only']==['deploy/aws-feasibility/completion_campaign_codec.py','deploy/aws-feasibility/completion_campaign_contracts.py','deploy/aws-feasibility/completion_campaign_receipts.py']
 assert {'test/aws-stage2-completion-campaign-ingress.py','test/aws-stage2-completion-cycle-authority.py','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts'} <= set(planned)
 assert 'dev/linux-kvm/git-tools.sh' in task_paths['protected_product_and_kvm_contract']
 assert {'.github/workflows/ci.yml','test/ci-infrastructure-boundary.test.ts'} <= task_paths['pre_h_final_governance']
 assert {'deploy/aws-feasibility/versions.tf','deploy/aws-feasibility/run-runtime-validation.sh','deploy/aws-feasibility/run-measurement-campaign.sh','deploy/aws-feasibility/run-measurement-validation.sh','deploy/aws-feasibility/remote/validate-runtime.sh'} <= aws
 legacy_shells={'deploy/aws-feasibility/'+path for path in ('apply.sh','destroy.sh','inventory.sh','plan.sh','recover-production-campaign-entry.sh','recover-production-campaign.sh','run-measurement-campaign.sh','run-measurement-validation.sh','run-production-campaign.sh','run-production-effect.sh','run-production-inventory.sh','run-production-remote.sh','run-runtime-validation.sh','validate.sh','remote/measure-runtime.sh','remote/recover-stage2-completion-remote.sh','remote/run-stage2-completion-full-rehearsal.sh','remote/run-stage2-completion-full.sh','remote/run-stage2-completion-readiness-rehearsal.sh','remote/run-stage2-completion-readiness.sh','remote/run-stage2-completion-remote.sh','remote/validate-runtime.sh')}
 assert {path for path in aws if path.startswith('deploy/aws-feasibility/') and path.endswith('.sh')}==legacy_shells
+assert set(inventory['legacy_shell_effect_routes'])==legacy_shells
 assert 'scripts/stage4-offline-readiness-regenerate.ts' in task_paths['generated_readiness_and_no_mint_authorization']
 final=task_paths['final_hgq_control_reserve']
 mirrors={'.github/workflows/'+name+'.yml' for name in ('stage2-prebuilt-rootfs-producer','stage2-prebuilt-rootfs-diagnostic-producer','stage2-prebuilt-rootfs-publisher','stage2-prebuilt-rootfs-diagnostic-publisher','stage2-local-static-control-prebuilt-candidate','stage2-prebuilt-mixed-hg-preflight','stage2-prebuilt-local-kata-qualification','stage2-prebuilt-kvm-rehearsal','stage2-prebuilt-kvm-integration-diagnostic','stage2-production-plan','stage2-production-approval','stage2-production-campaign')}
 assert mirrors <= final
 assert sum('/stage2-completion-local-control-v8/' in name for name in final)==13
-assert {'biome.json','scripts/check-stage2-retained-lines.py','test/stage2-remediation-budget.test.ts','scripts/prepare-stage2-fixed-source.py','scripts/stage2-hosted-opt-mode.py','scripts/stage2-local-settlement.py','scripts/stage2-native-settlement.py','scripts/stage2-prebuilt-kvm-diagnostic-lock.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-rootfs-producer.py','scripts/stage2-prebuilt-rootfs-publisher.py','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-stage-prebuilt-control.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_formal_cycle_authority.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py','schemas/stage2-formal-local-cycle-receipt-v2.json','test/stage2-prebuilt-local-kata-workflow.test.ts','test/stage2-prebuilt-static-control-runtime-boundary.py'} <= final
+assert {'biome.json','scripts/check-stage2-retained-lines.py','test/stage2-remediation-budget.test.ts','scripts/prepare-stage2-fixed-source.py','scripts/stage2-hosted-opt-mode.py','scripts/stage2-local-settlement.py','scripts/stage2-native-settlement.py','scripts/stage2-prebuilt-kvm-diagnostic-lock.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-rootfs-producer.py','scripts/stage2-prebuilt-rootfs-publisher.py','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-stage-prebuilt-control.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_formal_cycle_authority.py','schemas/stage2-formal-local-cycle-receipt-v2.json','test/stage2-prebuilt-local-kata-workflow.test.ts','test/stage2-prebuilt-static-control-runtime-boundary.py'} <= final
 assert task_paths['final_hgq_control_reserve']==set(m['PRODUCT_TEST_TASK_PATHS']['final_hgq_control_reserve'])
 assert {'schemas/aws-stage2-production-principal-contract-v1.json','schemas/aws-stage2-production-custody-v1.json'} <= set(planned)
 # A detached worktree retains the real historical objects and path semantics. Its
@@ -615,20 +621,37 @@ with tempfile.TemporaryDirectory() as d:
    try: f()
    except m['LineBudgetError']: return
    raise AssertionError(kind+' mutation accepted')
-  for kind in ('path','owner','reserve','pre_h','minimum','source'):
+  for kind in ('path','owner','reserve','pre_h','minimum','source','inventory'):
    bad=copy.deepcopy(b)
    if kind=='path': bad['product_test_correction']['remaining_tranche']['allocations'][1]['paths'].remove('deploy/aws-feasibility/completion_campaign_aws_adapter.py')
    elif kind=='owner': bad['product_test_correction']['owners'][5]['existing_paths'].remove('scripts/stage2-production-planner.py')
    elif kind=='reserve': bad['product_test_correction']['remaining_tranche']['allocations'][4]['gross_lines']+=1
    elif kind=='pre_h': bad['product_test_correction']['remaining_tranche']['allocations'][4]['pre_h_gross_lines']+=1
    elif kind=='minimum': bad['product_test_correction']['remaining_tranche']['allocations'][4]['final_minimum_lines']-=1
-   else: bad['source_limits']['tracked_files']-=1
+   elif kind=='source': bad['source_limits']['tracked_files']-=1
+   else: bad['product_test_correction']['remaining_tranche']['allocations'][1]['ingress_inventory']['decode_only'].append('deploy/aws-feasibility/main.tf')
    veto(kind,bad); path.write_text(json.dumps(b)); f()
  finally:
   ns.update(original)
   subprocess.run(['git','worktree','remove','--force',str(fixture)],check=True)
 `);
 });
+test("ADR0338 hard-limit consumers retain the strict 120,000 stop", () => {
+  assertBudgetProgram(`
+from pathlib import Path
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+assert m['HARD_LIMIT']==120000 and m['REMEDIATION_BUDGET_LINE_LIMIT']==1200
+checker=Path('scripts/check-stage2-retained-lines.py').read_text()
+assert 'current < HARD_LIMIT and conservative < HARD_LIMIT' in checker
+assert '_require(report["hard_satisfied"])' in checker
+adr=Path('docs/adr/0338-plan-pre-h-final-corrections.md').read_text()
+index=Path('docs/adr/README.md').read_text()
+assert 'strict 120,000 hard limit' in adr and 'strict 120,000-line stop' in index
+assert Path('config/external-review-remediation-budget-v1.json').read_text().count('"forecast_slices"')==1
+`);
+});
+
 test("ADR0338 retained plus task ceilings reject exact +1 line and byte overruns", () => {
   assertBudgetProgram(`
 import runpy

@@ -35,6 +35,18 @@ and 28 / 283,754 explicitly identified prior checkpoint work). Those charges
 remain charged. The checker now assigns every admitted path to one **named**
 task; it has no complement task. It preserves historical owners, including the
 integration-owned KVM workflow, and rejects every path not in the exact matrix.
+The AWS task remains independently capped at 7,000 / 8,000,000, but its
+three non-transferable forecasts deliberately consume only 6,800 / 7,800,000:
+deployment/custody/direct ingress 5,200 / 6,000,000; pinned OpenTofu
+backend/workflow compatibility 1,100 / 1,300,000; and approval/staging/focused
+authority tests 500 / 500,000. The remaining 200 / 200,000 is withheld, not a
+fourth slice. The exact config maps these forecasts to the actual integration
+owner: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`,
+`.terraform.lock.hcl`, actual `completion_campaign_aws_adapter.py` and
+`completion_campaign_remote_adapter.py`, bootstrap/provider, state, receipt,
+and identity owners plus controller/provider/remote-adapter/state/receipt/
+cycle-authority ingress tests. A slice or task overrun stops for a reviewed replan; no owner, forecast,
+or withheld room transfers.
 It reports each task's gross consumed and remaining lines/bytes. Every task has
 an explicit pre-H maximum; the final task's pre-H maximum is 1,227 / 1,300,000,
 which mechanically withholds at least 3,500 / 3,500,000 for H/G/Q. This is a
@@ -46,7 +58,7 @@ release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
 | pre-H final governance | 1,600 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
-| AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,600 / 6,300,000 measured deployment/direct-Python-ingress slice plus 1,400 / 1,700,000 workflow/OpenTofu-compatibility slice; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
+| AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,200 / 6,000,000 deployment/custody/direct-ingress + 1,100 / 1,300,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
 | generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
 | final H/G/Q control reserve | 4,727 / 4,800,000 total; **≤1,227 / 1,300,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
@@ -111,22 +123,35 @@ verifiable identities for operator, approver/budget/security reviewer, executor,
 and zero-inventory observer; their role, expiry, candidate/tree, package, and
 contract version are immutable inputs. Missing, equal, expired, stale,
 unauthenticated, or representation-only identities deny. A role cannot attest
-itself or another role. The exact direct-Python ingress inventory is
-`check-plan.py`, `completion_campaign_aws_entry.py`,
-`completion_campaign_aws_recovery_entry.py`, `completion_campaign_aws_provider.py`,
-`remote/completion_cycle_full.py`, `remote/completion_cycle_readiness.py`,
-`remote/completion_formal_cycle_full.py`, and
-`remote/completion_formal_cycle_readiness.py`; the exact test matrix is the new
-`test/aws-stage2-completion-campaign-ingress.py`,
-`test/aws-stage2-completion-cycle-authority.py`, provider/adapter tests, and
-formal-qualification tests. It must invoke every route directly with
-credential/install/network/tofu/AWS/SSM sentinels and prove the denial is first.
-Pre-H, v7 is accepted only as a pinned historical artifact-decoding fixture;
-its decoding tests cannot execute it. Every current-source route, including the
-two `completion_cycle_*` entries, is denied until fresh Q. Tests use fake
-executables and effect sentinels to prove every identity case and each stale
-H/G/Q/run/artifact/control/qualification identity stops before OIDC/STS/provider/tofu/SSM
-or network. Documentation, hashes, and the allocation do not lift this denial.
+itself or another role. The closed ingress inventory distinguishes planner CLI
+`stage2-production-planner.py`; approval/staging front doors
+`stage2-production-approval.py` and `stage2-stage-production-approval.py`; AWS
+entry/recovery (`check-plan.py`, AWS entry/recovery, actual AWS/remote adapters
+and provider); direct-cycle Python (`completion_cycle_{full,readiness}.py` and
+`completion_formal_cycle_{full,readiness}.py`); and every listed legacy shell
+effect route. Codec, contract, and receipt **decode-only** modes are a separate
+read-only class: they may decode a supplied historical byte fixture but cannot
+construct a principal, grant, client, backend, inventory, or effect intent.
+The config/checker require this exact inventory, no overlap, and named-task
+ownership; focused ingress, controller, provider, remote-adapter, state,
+receipt, and cycle-authority tests invoke each effect-capable member directly
+with credential/install/network/tofu/AWS/SSM sentinels and prove denial first.
+
+Pre-H, v7 is only a pinned historical artifact-decoding fixture: its decoding
+tests cannot execute it, and the current route set transitions to denial. The
+sole future exception is a separately reviewed, candidate/tree/package-bound,
+expiry-bounded non-AWS no-mint grant that names exactly logical
+`run-stage2-completion-full`, `run-stage2-completion-readiness`, and
+`recover-stage2-completion-remote` (or an explicitly reviewed replacement with
+the same bindings). It admits only full/readiness observation or cleanup of the
+grant's own persisted non-AWS intent; direct, stale, substituted, or ungranted
+invocation denies before any effect. It cannot mint credentials/resources,
+become AWS authority, or authorize an AWS entry/recovery or legacy wrapper:
+those remain unconditional denial. Fresh Q is still required for every other
+current source route. Tests must cover valid v7 decode-only fixture versus the
+current-denial transition, every grant binding/expiry mutation, and direct
+ungranted full/readiness/recovery invocation. Documentation, hashes, and the
+allocation do not lift a denial.
 
 The future Python route, not a legacy shell route, must use the actual
 `completion_campaign_aws_adapter.py` as the sole production custody owner.
@@ -172,16 +197,44 @@ missing, foreign, incomplete, late, or contradictory observation is sticky
 uncertainty. A paused old process may resume only with expired credentials; its
 request must be rejected. It never gets a new epoch or usable credential.
 
-The cleanup budget is a contract inequality, not a promise: it must be strictly
-greater than `900 session + 120 skew + 4×60 request + 4×300 poll/terminal +
-2×300 inventory = 3,060 seconds`. The current v5 1,800-second maximum is
-therefore insufficient: later source must raise the approval/contract/schema
-limit and tests to require `cleanup_reserve_ns > 3,060,000,000,000`, or effects
-remain denied. Recovery reads external custody, never runner disk. A lost
-response, cancellation, runner destruction, missing receipt, or ambiguous
-normal **or cleanup** intent is never resent: it stays uncertain until the
-protocol above proves its outcome. Cleanup ends only after final inventory,
-immutable settlement, and credential retirement.
+Recovery has no successor NORMAL authority. Conditional on the external fence
+above, exactly one separately authenticated cleanup-only recovery owner may
+hold a bounded recovery lease, and exactly one independently authenticated,
+read-only observer may hold an observation lease; both differ from executor,
+planner, approver, and each other. The cleanup owner may act only on
+externally persisted intents in its fenced epoch: reconcile, cancel, terminate,
+revoke, and request the observer's inventory. It may never do normal work,
+issue a new normal intent, or reissue an ambiguous normal **or cleanup** intent.
+The observer can only read and persist the two fenced inventory passes. Their
+leases and credentials end no later than cleanup; loss/expiry leaves sticky
+uncertainty. Recovery-of-recovery is another separately authenticated
+cleanup-only owner after the old lease and credential `NotAfter` plus fence
+proof; it inherits only the same persisted-intent set and cannot promote to
+NORMAL. Final-byte durable/readback/hash-bound settlement is required before
+any later recovery owner, invocation, epoch, or credential is admitted.
+
+The simultaneous limits are: normal effect time at most 180 minutes; all
+cleanup/reconciliation, including delegated-credential quiescence, at most 60
+minutes; each executor, cleanup, and observer STS credential at most 15
+minutes; and the campaign workflow wall time at most 240 minutes. Its exact
+cleanup inequality is `cleanup_reserve_ns = 3,600,000,000,000 > 900 STS + 120
+fence skew + 4×60 request + 4×300 terminal/poll + 2×300 inventory =
+3,060,000,000,000`; tests must require `cleanup_reserve_ns >
+3,060,000,000,000`, and 540 seconds remains withheld inside cleanup. At the
+conservative `$0.118/hour`, 240 minutes costs `4 × 0.118 × 1,000,000 =
+472,000` microUSD, strictly below the 500,000 microUSD limit. Later
+`stage2-production-plan` and `stage2-production-approval` drafts each timeout
+at 30 minutes and are non-effecting; their immutable approval expires before
+campaign admission. Only a read-back draft approved before the 240-minute
+campaign starts may bind that run; no plan/approval refresh, effect, or grant
+is allowed after its 180-minute normal-effect boundary. These are future
+contract/schema/workflow timeouts, not authority now.
+
+Recovery reads external custody, never runner disk. A lost response,
+cancellation, runner destruction, missing receipt, or ambiguous normal **or
+cleanup** intent is never resent: it stays uncertain until the protocol above
+proves its outcome. Cleanup ends only after final inventory, immutable
+settlement, and credential retirement.
 
 Planner, adapter, and provider/controller share the custody handle and explicit
 per-cycle `TF_DATA_DIR`, S3 backend metadata, versioned state/plan-object IDs,
@@ -189,9 +242,10 @@ saved-plan bytes, and identity; they initialize/reopen that backend
 cross-process before plan/apply compatibility and reject stale, fenced,
 replaced, foreign, or cross-cycle metadata. Before any source implementation,
 a separately authorized **pinned OpenTofu non-AWS backend/saved-plan
-compatibility gate** must authenticate the exact binary/provider bytes and use
-only a non-AWS test backend with no credentials, provider calls, plan apply, or
-network effects. A second, later separately authorized real-control-backend gate
+compatibility gate** must authenticate the actual `versions.tf` OpenTofu
+`= 1.12.4`, AWS-provider `= 6.54.0`, lockfile hashes, and exact binary/provider
+bytes, then use only a non-AWS test backend with no credentials, provider calls,
+plan apply, or network effects. A second, later separately authorized real-control-backend gate
 must prove S3/DynamoDB state and saved-plan compatibility before any workload
 credential or apply. Neither gate is authorized here: do not run OpenTofu now. Fake end-to-end tests traverse
 planner → staging → **actual adapter** → provider → fresh recovery owner and
@@ -212,14 +266,15 @@ send with authenticated AWS CLI `max_attempts=1` (`AWS_MAX_ATTEMPTS=1`)/equivale
 and binds the returned command/instance receipt before polling only that pair.
 Orchestration guarantees only one orchestration process and one invocation per
 durable intent, plus authenticated idempotency where supported and the
-reconciliation above. It makes **no** claim to detect invisible provider or
-transport retries. A lost response or unknown internal retry is uncertainty,
-not success proof and not permission for a second invocation. Observational
-reads may retry only within the deadline and never create/settle an effect
-intent. The same no-second-invocation rule covers ambiguous cleanup. Terminal,
-mismatched, incomplete, or late `Success` is fatal; tests cover propagation,
-foreign IDs, response/output completeness, timeout, unknown-retry/lost-response
-uncertainty, and no reissue.
+reconciliation above. Its only retry guarantee is that it sets the **client**
+AWS CLI/equivalent request maximum to one; it makes **no** claim about provider
+internal retries, transport delivery, or invisible duplicate effects. A lost
+response or unknown internal retry is uncertainty, not success proof and not
+permission for a second invocation. Observational reads may retry only within
+the deadline and never create/settle an effect intent. The same no-second-
+invocation rule covers ambiguous cleanup. Terminal, mismatched, incomplete, or
+late `Success` is fatal; tests cover propagation, foreign IDs, response/output
+completeness, timeout, unknown-retry/lost-response uncertainty, and no reissue.
 
 ## Host bootstrap contract to be implemented later
 
