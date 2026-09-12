@@ -165,10 +165,16 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
     cosign = read(source / "cosign", 160 * 1024 * 1024)
     tofu = read(source / "tofu", 140 * 1024 * 1024)
     provider_binary = read(source / "tofu-provider-aws", 1024 * 1024 * 1024)
-    tofu_config = ("provider_installation { dev_overrides { "
-                   "\"registry.opentofu.org/hashicorp/aws\" = \"" +
-                   str(DESTINATION) + "\" } direct { exclude = "
-                   "[\"registry.opentofu.org/hashicorp/aws\"] } }\n").encode("ascii")
+    mirror = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64/terraform-provider-aws_v6.54.0_x5"
+    tofu_config = ("provider_installation {\n"
+                   "  filesystem_mirror {\n"
+                   "    path = \"" + str(DESTINATION / "provider-mirror") + "\"\n"
+                   "    include = [\"registry.opentofu.org/hashicorp/aws\"]\n"
+                   "  }\n"
+                   "  direct {\n"
+                   "    exclude = [\"registry.opentofu.org/hashicorp/aws\"]\n"
+                   "  }\n"
+                   "}\n").encode("ascii")
     budget_email = read(budget_email_path, 1024)
     aws_config = read(aws_config_path, 4096)
     aws_credentials = read(aws_credentials_path, 16 * 1024)
@@ -199,7 +205,7 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
         plans.append((ordinal, binary, plan_json))
     expected = {**fixed, "cosign": cosign, "tofu": tofu,
                 "terraform-provider-aws_v6.54.0_x5": provider_binary,
-                "tofu-cli.tfrc": tofu_config,
+                "provider-mirror/" + mirror: provider_binary, "tofu-cli.tfrc": tofu_config,
                 "budget-alert-email.txt": budget_email, "aws-config": aws_config,
                 "aws-credentials": aws_credentials}
     for ordinal, binary, plan_json in plans:
@@ -231,6 +237,13 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
         write(STAGING / "cosign", cosign, 0o555)
         write(STAGING / "tofu", tofu, 0o555)
         write(STAGING / "terraform-provider-aws_v6.54.0_x5", provider_binary, 0o555)
+        mirror_path = STAGING / "provider-mirror" / mirror
+        mirror_path.parent.mkdir(mode=0o700, parents=True)
+        os.chown(STAGING / "provider-mirror", 0, 0)
+        for parent in mirror_path.parents:
+            if parent == STAGING: break
+            os.chown(parent, 0, 0); os.chmod(parent, 0o700)
+        write(mirror_path, provider_binary, 0o555)
         write(STAGING / "tofu-cli.tfrc", tofu_config)
         write(STAGING / "budget-alert-email.txt", budget_email)
         write(STAGING / "aws-config", aws_config)

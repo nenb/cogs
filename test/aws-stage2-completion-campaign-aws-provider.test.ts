@@ -24,6 +24,8 @@ test("inventory owns complete pagination and explicit ENI and EIP public-address
   assert.match(source, /-backend-config=path=/u);
   assert.match(source, /describe-instance-information/u);
   assert.match(source, /remote-send\.intent\.json/u);
+  assert.match(source, /_sha256_file\(plan\) == grant\.plan_sha256/u);
+  assert.match(source, /ConnectionLost", "Inactive"/u);
   assert.match(source, /InvocationDoesNotExist/u);
   assert.match(source, /inventory_observer_principal_commitment/u);
   assert.match(source, /eni_public_associations/u);

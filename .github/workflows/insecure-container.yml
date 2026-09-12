@@ -225,14 +225,25 @@ jobs:
       - name: Run only the selected protected profile or its probe-only generations
         run: |
           set -euo pipefail
-          if ! sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" "$PRODUCT_MODE" "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json"; then
-            CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" RECEIPT="$RUNNER_TEMP/product-receipt.json" /usr/bin/python3 -I -B - <<'PY'
-          import hashlib,json,os
+          status=0
+          sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" "$PRODUCT_MODE" "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json" || status=$?
+          if (( status != 0 )); then
+            sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" STATUS="$status" RECEIPT="$RUNNER_TEMP/product-receipt.json" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" /usr/bin/python3 -I -B - <<'PY' || :
+          import hashlib,json,os,stat
           build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read()
-          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'diagnostic':'protected runner failed','partial_output_sha256':'sha256:'+hashlib.sha256(open(os.environ['RECEIPT'],'rb').read()).hexdigest()}
-          open(os.environ['RECEIPT'],'wb').write((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode())
+          receipt=os.environ['RECEIPT']; info=os.lstat(receipt)
+          if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>32768: raise SystemExit('unsafe partial receipt')
+          partial=open(receipt,'rb').read()
+          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'diagnostic':'protected runner failed','partial_output_sha256':'sha256:'+hashlib.sha256(partial).hexdigest()}
+          data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          if len(data)>2048: raise SystemExit('oversized failure receipt')
+          fd=os.open(receipt,os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW)
+          try:
+              if os.write(fd,data)!=len(data): raise SystemExit('short failure receipt')
+              os.fsync(fd); os.fchown(fd,int(os.environ['RUNNER_UID']),int(os.environ['RUNNER_GID'])); os.fchmod(fd,0o400)
+          finally: os.close(fd)
           PY
-            exit 1
+            exit "$status"
           fi
           test "$(wc -c <"$RUNNER_TEMP/product-receipt.json")" -le 32768
       - name: Root-inventory pass generation and create digest evidence
@@ -296,22 +307,27 @@ jobs:
         if: always() && matrix.authority == 'probe-only'
         run: |
           set -euo pipefail
-          sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
+          sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,re
-          raw=open(os.environ['RECEIPT'],'rb').read()
-          rows=[json.loads(line) for line in raw.splitlines()]
-          if not 1<=len(rows)<=16 or any(row.get('purpose')!='capability-probe' or not re.fullmatch(r'[a-f0-9]{32}',row.get('generation','')) for row in rows): raise SystemExit('FAIL: invalid probe receipt')
-          if len({row['generation'] for row in rows}) != len(rows): raise SystemExit('FAIL: probe generation reuse')
-          value={'version':'cogs.product-probe-inventory/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'probe_count':len(rows),'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+          raw=open(os.environ['RECEIPT'],'rb').read(); rows=[json.loads(line) for line in raw.splitlines()]
+          build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read(); bound=json.loads(build)
+          profile=os.environ['PROFILE']; skills='nonempty' if profile=='nonempty' else 'empty'
+          required={'purpose','generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed','start_code','running','ssh','sftp'}
+          capabilities={'CHOWN','DAC_OVERRIDE','FOWNER','SETGID','SETUID','KILL','NET_BIND_SERVICE','SYS_CHROOT'}
+          if os.environ['AUTHORITY']!='probe-only' or len(raw)>32768 or len(rows)!=len(capabilities) or any(set(row)!=required or row['purpose']!='capability-probe' or not re.fullmatch(r'[a-f0-9]{32}',row['generation']) or row['retired_generation']!=row['generation'] for row in rows): raise SystemExit('FAIL: invalid probe receipt')
+          bindings=('candidate','tree','source_inventory','run_id','run_attempt','skills')
+          if any(any(row[k]!=bound.get(k) for k in bindings) or row['candidate']!=os.environ['CANDIDATE'] or row['run_id']!=os.environ['GITHUB_RUN_ID'] or row['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or row['skills']!=skills or row['profile_case']!=profile or row['build_receipt_sha256']!='sha256:'+hashlib.sha256(build).hexdigest() for row in rows): raise SystemExit('FAIL: probe provenance binding mismatch')
+          if {row['generation'] for row in rows}!={row['retired_generation'] for row in rows} or len({row['generation'] for row in rows})!=len(rows) or {row['removed'] for row in rows}!=capabilities: raise SystemExit('FAIL: probe capability coverage or retired generation mismatch')
+          value={'version':'cogs.product-probe-inventory/v1','candidate':bound['candidate'],'tree':bound['tree'],'source_inventory':bound['source_inventory'],'run_id':bound['run_id'],'run_attempt':bound['run_attempt'],'skills':skills,'profile':profile,'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'probe_count':len(rows),'capability_coverage':sorted(capabilities),'retired_generations':sorted(row['generation'] for row in rows),'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
           data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
-          if len(data)>2048: raise SystemExit('FAIL: probe evidence bound')
+          if len(data)>4096: raise SystemExit('FAIL: probe evidence bound')
           open(os.environ['EVIDENCE'],'xb').write(data)
           PY
       - name: Upload bounded product evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: protected-product-${{ github.run_id }}-${{ github.run_attempt }}
+          name: protected-product-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}-${{ matrix.authority }}
           path: |
             ${{ runner.temp }}/product-evidence.json
             ${{ runner.temp }}/product-receipt.json

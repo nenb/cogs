@@ -67,7 +67,10 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /authority: probe-only/u);
   assert.match(workflow, /cogs\.product-probe-inventory\/v1/u);
   assert.match(workflow, /cogs\.product-failure-receipt\/v1/u);
-  assert.match(workflow, /probe generation reuse/u);
+  assert.match(workflow, /probe capability coverage or retired generation mismatch/u);
+  assert.match(workflow, /build_receipt_sha256/u);
+  assert.match(workflow, /capability_coverage/u);
+  assert.match(workflow, /AUTHORITY'\]!='probe-only'/u);
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
 });
 
@@ -364,6 +367,7 @@ for plan in scenarios:
   owner=m.Custody.__new__(m.Custody);owner.generation=plan[0]['generation'];owner.root='/var/lib/cogs-product-test/'+owner.generation
   owner.probe=True;owner.recovery=False;owner.failed=False;owner.cg='/fake-cgroup';owner.disk=None
   owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
+  owner.build={'candidate':'a'*40,'tree':'b'*40,'source_inventory':'sha256:'+'c'*64,'run_id':'1','run_attempt':'1','skills':'empty','profile_case':'empty'}
   journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
   owner.records=set()
   owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}

@@ -171,7 +171,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 "Architecture": "x86_64", "VirtualizationType": "hvm",
                 "RootDeviceType": "ebs", "State": "available"}]}
         if "init" in arguments:
-            provider_root = root / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+            data = Path(environment["TF_DATA_DIR"])
+            assert data.is_dir() and data.parent == root / "output" / "plans"
+            provider_root = data / "providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
             provider_root.mkdir(parents=True, exist_ok=True)
             (provider_root / "tofu-provider-aws_v6.54.0_x5").write_bytes(b"provider")
             return b"initialized\n"

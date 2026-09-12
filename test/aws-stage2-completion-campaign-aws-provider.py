@@ -83,8 +83,16 @@ class Clock:
 class Fake:
     def __init__(self, account):
         self.account, self.calls, self.ssm_mode, self.ssm_reads = account, [], "missing-command", 0
+        self.ssm_rows = None
     def __call__(self, argv, timeout, environment):
         self.calls.append((argv, timeout, environment))
+        if argv[0] == str(provider.TOFU) and "init" in argv:
+            data = Path(environment["TF_DATA_DIR"])
+            assert data.is_dir() and Path(environment["TF_CLI_CONFIG_FILE"]).is_file()
+            mirror = data.parents[2] / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64/terraform-provider-aws_v6.54.0_x5"
+            assert mirror.read_bytes() == b"provider"
+            (data / "fake-init-cache").write_text("initialized")
+            return provider.Completed(b"initialized\n")
         if argv[0] == str(provider.TOFU) and "show" in argv:
             return provider.Completed(Path(argv[-1]).with_name("campaign.plan.json").read_bytes())
         if "get-caller-identity" in argv:
@@ -97,8 +105,9 @@ class Fake:
                     item.startswith("Key=InstanceIds,Values=") for item in argv):
                 instance = next(item.removeprefix("Key=InstanceIds,Values=") for item in argv
                                 if item.startswith("Key=InstanceIds,Values="))
-                return provider.Completed(raw({"InstanceInformationList": [{
-                    "InstanceId": instance, "PingStatus": "Online"}]}))
+                rows = self.ssm_rows.pop(0) if self.ssm_rows else [{
+                    "InstanceId": instance, "PingStatus": "Online"}]
+                return provider.Completed(raw({"InstanceInformationList": rows}))
             if "send-command" in argv:
                 return provider.Completed(raw({"Command": {"CommandId": "command-12345678"}})
                                           if self.ssm_mode == "success" else raw({}))
@@ -107,7 +116,8 @@ class Fake:
                 if self.ssm_reads == 1:
                     return provider.Completed(b"", b"InvocationDoesNotExist", 255)
                 command, instance = argv[argv.index("--command-id") + 1], argv[argv.index("--instance-id") + 1]
-                return provider.Completed(raw({"CommandId": command, "InstanceId": instance,
+                observed_instance = "i-mismatch" if self.ssm_mode == "mismatch" else instance
+                return provider.Completed(raw({"CommandId": command, "InstanceId": observed_instance,
                                                 "Status": "Success", "StandardErrorContent": "",
                                                 "StandardOutputContent": "receipt\n"}))
             # Force a real two-page chain for EIP coverage. Both pages contain
@@ -138,12 +148,17 @@ with tempfile.TemporaryDirectory() as temporary:
     provider.AWS = root / "aws"
     provider.TOFU = root / "tofu"
     provider.TOFU_PROVIDER = root / "terraform-provider-aws_v6.54.0_x5"
+    provider.TOFU_CONFIG = root / "tofu-cli.tfrc"
     provider.TOFU_SHA256 = d("tofu")
     root.mkdir(exist_ok=True)
     account = "000000000000"
     provider.AWS.write_bytes(b"aws"); provider.AWS.chmod(0o700)
     provider.TOFU.write_bytes(b"tofu"); provider.TOFU.chmod(0o700)
     provider.TOFU_PROVIDER.write_bytes(b"provider"); provider.TOFU_PROVIDER.chmod(0o700)
+    mirror = root / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64/terraform-provider-aws_v6.54.0_x5"
+    mirror.parent.mkdir(parents=True); mirror.write_bytes(b"provider"); mirror.chmod(0o700)
+    provider.TOFU_CONFIG.write_text('provider_installation {\n  filesystem_mirror {\n    path = "' + str(root / "provider-mirror") + '"\n  }\n}\n')
+    provider.ENV = {**provider.ENV, "TF_CLI_CONFIG_FILE": str(provider.TOFU_CONFIG)}
     plan_bytes = b"reviewed-plan-bytes"
     plans = [hashlib.sha256(plan_bytes if index == 1 else f"plan-{index}".encode()).hexdigest()
              for index in range(1, 8)]
@@ -191,21 +206,43 @@ with tempfile.TemporaryDirectory() as temporary:
         "resource_changes": [{"address": "aws_launch_template.host",
                               "change": {"after": {"image_id": current.ami_id}}}]}))
 
+    fake.ssm_mode = "mismatch"
     try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
     except provider.ProviderBoundaryError: pass
-    else: raise AssertionError("missing SSM command identity accepted")
+    else: raise AssertionError("mismatched SSM command identity accepted")
     sends = [call for call, _, _ in fake.calls if "send-command" in call]
     assert len(sends) == 1 and (provider.STATE_ROOT / "cycle-7/remote-send.intent.json").is_file()
     assert not (provider.STATE_ROOT / "cycle-7/remote-send.receipt.json").exists()
+    try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("SSM send was retried after an identity mismatch")
+    assert len([call for call, _, _ in fake.calls if "send-command" in call]) == 1
     fake.ssm_mode, fake.ssm_reads = "success", 0
+    fake.ssm_rows = [[{"InstanceId": f"i-{2:017x}", "PingStatus": "ConnectionLost"}],
+                     [{"InstanceId": f"i-{2:017x}", "PingStatus": "Online"}]]
     remote = boundary.remote(2, grants[2].mode, grants[2].grant_commitment, 60)
-    assert remote == b"receipt\n" and clock.value == 5
+    assert remote == b"receipt\n" and clock.value == 10
     send_calls = [call for call, _, _ in fake.calls if "send-command" in call]
     poll_calls = [call for call, _, _ in fake.calls if "get-command-invocation" in call]
     assert len(send_calls) == 2 and len(poll_calls) == 2
     assert all(call[call.index("--command-id") + 1] == "command-12345678"
                and call[call.index("--instance-id") + 1] == f"i-{2:017x}" for call in poll_calls)
     assert (provider.STATE_ROOT / "cycle-2/remote-send.receipt.json").is_file()
+    # Exact-instance registrations may be offline, but foreign, duplicate, and
+    # malformed rows are never propagation candidates and no failure sends.
+    before_sends = len(send_calls)
+    for rows in ([{"InstanceId": "i-foreign", "PingStatus": "Online"}],
+                 [{"InstanceId": f"i-{1:017x}", "PingStatus": "Online"}, {"InstanceId": f"i-{1:017x}", "PingStatus": "Online"}],
+                 [{"InstanceId": f"i-{1:017x}"}]):
+        fake.ssm_rows = [rows]
+        try: boundary.remote(1, grants[1].mode, grants[1].grant_commitment, 60)
+        except provider.ProviderBoundaryError: pass
+        else: raise AssertionError("invalid SSM registration accepted")
+    fake.ssm_rows = [[{"InstanceId": f"i-{1:017x}", "PingStatus": "Inactive"}]]
+    try: boundary.remote(1, grants[1].mode, grants[1].grant_commitment, 1)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("offline SSM registration exceeded deadline")
+    assert len([call for call, _, _ in fake.calls if "send-command" in call]) == before_sends
     shell = json.loads((provider.STATE_ROOT / "cycle-7/ssm-parameters.json").read_bytes())["commands"][0]
     assert f'origin {current.qualification_revision}' in shell and '$w/G' not in shell
     assert 'w=/root/cogs-stage2-bootstrap; owned=0' in shell
@@ -222,6 +259,12 @@ with tempfile.TemporaryDirectory() as temporary:
         tuple(row) for row in receipt_value["resource_commitments"])
     receipt = production.EffectReceipt(**receipt_value)
     assert receipt.kind == "plan" and receipt.identity_commitment == plans[0]
+    (cycle1 / "campaign.tfplan").write_bytes(b"plan-2")
+    before_apply = len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU) and "apply" in call])
+    try: boundary.effect("apply", 1, "full", grants[1].grant_commitment, d("hostile-replacement"))
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("cross-cycle approved plan replacement reached apply")
+    assert len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU) and "apply" in call]) == before_apply
     try:
         boundary.effect("plan", 1, "full", grants[1].grant_commitment, d("second"))
     except provider.ProviderBoundaryError: pass

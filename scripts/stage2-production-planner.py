@@ -365,7 +365,7 @@ def main(arguments):
     run((str(tofu), "init", "-input=false", "-lockfile=readonly",
          "-backend-config=path=" + str(bootstrap_state)), 300,
         {**environment, "TF_DATA_DIR": str(bootstrap_data)})
-    provider_root = ROOT / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+    provider_root = bootstrap_data / "providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
     providers = [path for path in provider_root.iterdir()
                  if path.is_file() and "provider-aws" in path.name]
     require(len(providers) == 1)

@@ -381,10 +381,13 @@ class FixedProvider:
     def _claim(self, directory: Path, name: str, intent: str) -> Path:
         production._digest(intent)
         claim = directory / f"{name}.intent.json"
-        _write_once(claim, canonical({
-            "version": "cogs.stage2-provider-invocation-intent/v1",
-            "operation": name, "intent_commitment": intent, "invocation_count": 1,
-        }))
+        try:
+            _write_once(claim, canonical({
+                "version": "cogs.stage2-provider-invocation-intent/v1",
+                "operation": name, "intent_commitment": intent, "invocation_count": 1,
+            }))
+        except FileExistsError as error:
+            raise ProviderBoundaryError("provider invocation replay") from error
         return claim
 
     def _common(self, directory: Path, grant, kind: str, intent: str,
@@ -532,7 +535,10 @@ class FixedProvider:
             self._validate_plan_bindings(plan_json, grant)
             identity = grant.plan_sha256
         elif kind == "apply":
-            _require((directory / "plan.receipt.json").is_file())
+            _require((directory / "plan.receipt.json").is_file()
+                     and plan.is_file() and not plan.is_symlink()
+                     and _sha256_file(plan) == grant.plan_sha256,
+                     "approved plan bytes changed before apply")
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "apply", "-input=false", "-lock-timeout=30s",
                        "-state=" + str(state), "-auto-approve", str(plan)), 900,
@@ -646,8 +652,9 @@ class FixedProvider:
         instance = output["instance_id"]
         deadline = self.clock() + max(1, authorized_timeout - 10)
         # A missing registration is tolerated only before the first SSM
-        # observation.  A foreign row, duplicate row, or non-Online status is
-        # never a propagation excuse.
+        # observation. A foreign, duplicate, or malformed row is never a
+        # propagation excuse, while an exact registered offline agent is polled
+        # through the fixed deadline rather than treated as a terminal failure.
         while True:
             _require(self.clock() < deadline, "SSM Online observation timed out")
             online = self._run((str(AWS), "--region", self.approval.region, "ssm",
@@ -661,9 +668,10 @@ class FixedProvider:
                 continue
             _require(len(rows) == 1 and type(rows[0]) is dict
                      and rows[0].get("InstanceId") == instance
-                     and rows[0].get("PingStatus") == "Online",
-                     "exact instance is not SSM Online")
-            break
+                     and rows[0].get("PingStatus") in {"Online", "ConnectionLost", "Inactive"},
+                     "invalid exact SSM instance observation")
+            if rows[0]["PingStatus"] == "Online": break
+            self.sleeper(min(5, max(0, deadline - self.clock())))
         intent = directory / "remote-send.intent.json"
         intent_value = {"version": "cogs.stage2-remote-send-intent/v1",
                         "grant_commitment": grant.grant_commitment, "instance_id": instance,
