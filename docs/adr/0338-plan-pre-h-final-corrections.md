@@ -18,15 +18,15 @@ delete, rename, copy, compression, net-size, or prior-checkpoint credit.
 
 The historical product allocation is 18,000 lines / 8,000,000 bytes and the
 historical remediation allocation is 48,000 / 11,000,000. The separately
-allocated prospective matrix is exactly **15,127 / 15,000,000**, so cumulative
-product ceilings are **33,127 / 23,000,000** and remediation ceilings are
-**63,127 / 26,000,000**. The source ceiling is
-`18,763,891 + 26,000,000 = 44,763,891 <= 45,000,000`; tracked files are
-`1,420 + 200 = 1,620 <= 1,620`. The measured current 99,872 leaves 15,128 before the strict 115,000 hard
-limit; the 15,127 forward ceiling remains below it (114,999 maximum), never
-deletion credit. Integration's new-file cap is 180
+allocated prospective matrix is exactly **19,127 / 19,000,000**, so cumulative
+product ceilings are **37,127 / 27,000,000** and remediation ceilings are
+**67,127 / 30,000,000**. The source ceiling is
+`18,763,891 + 30,000,000 = 48,763,891 <= 49,000,000`; tracked files are
+`1,420 + 200 = 1,620 <= 1,620`. The measured current 99,908 leaves 20,092 before
+the strict 120,000 hard limit; the 19,127 forward ceiling remains below it
+(119,035 maximum), never deletion credit. Integration's new-file cap is 180
 (total 200); it specifically funds the custody schema, fake end-to-end adapter
-test, and thirteen fresh v8 control members. Each owner and task ceiling is
+and direct-ingress tests, and thirteen fresh v8 control members. Each owner and task ceiling is
 independent and non-transferable.
 
 The ledger at the review baseline charged 402 lines / 319,440 bytes after the
@@ -36,25 +36,27 @@ remain charged. The checker now assigns every admitted path to one **named**
 task; it has no complement task. It preserves historical owners, including the
 integration-owned KVM workflow, and rejects every path not in the exact matrix.
 It reports each task's gross consumed and remaining lines/bytes. Every task has
-an explicit pre-H maximum; the final task's pre-H maximum is 1,127 / 1,000,000,
-which mechanically withholds at least 2,500 / 3,000,000 for H/G/Q. This is a
+an explicit pre-H maximum; the final task's pre-H maximum is 1,227 / 1,300,000,
+which mechanically withholds at least 3,500 / 3,500,000 for H/G/Q. This is a
 capacity guarantee, not a claim that its paths are isolated: pre-H edits to a
-final-task path consume that task and its pre-H maximum. Current checker accounting
-(lines/bytes consumed → remaining) is governance 1,110/79,092 → 290/920,908;
-AWS 5/264 → 4,295/4,799,736; product 49/6,423 → 3,951/3,193,577; readiness
-6/281,045 → 1,794/1,718,955; final 392/58,478 → 3,235/3,941,522.
+final-task path consume that task and its pre-H maximum. The checker reports each measured consumed/remaining task total and separately
+enforces the final pre-H maximum; it does not treat lower current consumption as
+release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
-| pre-H final governance | 1,400 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
-| AWS principal denial and cycle custody | 4,300 / 4,800,000 pre-H maximum | actual adapter, planner, production model/provider/controller/state/receipts, versioned backend config, every legacy shell denial, custody schema, and fake adapter → provider → recovery/effect-sentinel tests |
+| pre-H final governance | 1,600 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
+| AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,600 / 6,300,000 measured deployment/direct-Python-ingress slice plus 1,400 / 1,700,000 workflow/OpenTofu-compatibility slice; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
 | generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
-| final H/G/Q control reserve | 3,627 / 4,000,000 total; **≤1,127 / 1,000,000 pre-H**, leaving **≥2,500 / 3,000,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
+| final H/G/Q control reserve | 4,727 / 4,800,000 total; **≤1,227 / 1,300,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
 
 The final H/G/Q task is separately charged but shares its listed paths with the
 pre-H plan; it is not an isolated-path reserve. Its enforced pre-H maximum and
-final minimum above protect final-chain capacity. Its exact list includes all
+final minimum above protect final-chain capacity. Release of that separately
+withheld H/G/Q reserve requires a later independent review of measured task
+consumption, the exact changed-since-review diff, and the H/G/Q gate; it is
+never released by a passing pre-H checker or a lower endpoint. Its exact list includes all
 twelve mirrors exercised by the equality test: rootfs producer and diagnostic producer; rootfs publisher
 and diagnostic publisher; static-control candidate; mixed-H/G preflight;
 local-Kata qualification; KVM rehearsal and integration diagnostic; and
@@ -84,10 +86,11 @@ boundary scripts; Kata preparation and all three formal-cycle adapters; and the
 static-control runtime-boundary test. The AWS task includes the actual
 production owner `completion_campaign_aws_adapter.py`, not a substitute
 fake-only controller, plus the new Python fake end-to-end
-adapter → provider → recovery test and existing adapter/provider tests. Alongside
-the existing ADR documents, the only new non-control files are the immutable
-`schemas/aws-stage2-production-{principal-contract,custody}-v1.json` and that
-fake end-to-end test; no unlisted new file is allowed.
+adapter → provider → recovery test and existing adapter/provider tests. Alongside the existing ADR documents, the only new non-control files are the
+immutable `schemas/aws-stage2-production-{principal-contract,custody}-v1.json`,
+the fake end-to-end test, and
+`test/aws-stage2-completion-campaign-ingress.py`; no unlisted new file is
+allowed.
 
 ## Blocking AWS authority contract
 
@@ -108,10 +111,22 @@ verifiable identities for operator, approver/budget/security reviewer, executor,
 and zero-inventory observer; their role, expiry, candidate/tree, package, and
 contract version are immutable inputs. Missing, equal, expired, stale,
 unauthenticated, or representation-only identities deny. A role cannot attest
-itself or another role. Tests use fake executables and effect sentinels to prove
-that each of those cases, and each stale package identity (H, G, Q, run,
-artifact, control, qualification), stops before OIDC/STS/provider/tofu/SSM or
-network. Documentation, hashes, and the allocation do not lift this denial.
+itself or another role. The exact direct-Python ingress inventory is
+`check-plan.py`, `completion_campaign_aws_entry.py`,
+`completion_campaign_aws_recovery_entry.py`, `completion_campaign_aws_provider.py`,
+`remote/completion_cycle_full.py`, `remote/completion_cycle_readiness.py`,
+`remote/completion_formal_cycle_full.py`, and
+`remote/completion_formal_cycle_readiness.py`; the exact test matrix is the new
+`test/aws-stage2-completion-campaign-ingress.py`,
+`test/aws-stage2-completion-cycle-authority.py`, provider/adapter tests, and
+formal-qualification tests. It must invoke every route directly with
+credential/install/network/tofu/AWS/SSM sentinels and prove the denial is first.
+Pre-H, v7 is accepted only as a pinned historical artifact-decoding fixture;
+its decoding tests cannot execute it. Every current-source route, including the
+two `completion_cycle_*` entries, is denied until fresh Q. Tests use fake
+executables and effect sentinels to prove every identity case and each stale
+H/G/Q/run/artifact/control/qualification identity stops before OIDC/STS/provider/tofu/SSM
+or network. Documentation, hashes, and the allocation do not lift this denial.
 
 The future Python route, not a legacy shell route, must use the actual
 `completion_campaign_aws_adapter.py` as the sole production custody owner.
@@ -137,48 +152,87 @@ prior generation and monotonically increasing epoch. Missing/replaced/foreign
 state or plan bytes, failed condition, local-cache disagreement, or unreadable
 custody is sticky uncertainty and denies effects.
 
-Lease expiry alone never permits takeover. Recovery records the old session's
-bounded STS `NotAfter`, waits through `NotAfter + configured skew`, then
-verifies that no old process or session can still effect before it CAS-advances
-the epoch. Until that proof, it reports uncertainty and opens no new cycle;
-there is no merely-expired-lease takeover. Every admitted operation carries its
-epoch and deterministic `(campaign, cycle, verb, prior-state)` intent ID.
-Recovery reads external custody, never runner disk, and reconciles persisted
-intent only by exact campaign tags/IDs and bounded observations. A lost response,
-cancellation, runner destruction, missing receipt, or ambiguous normal **or
-cleanup** intent is never resent: it stays sticky uncertain until exact
-post-session reconciliation proves its outcome. Cleanup has the same
-intent-before-send rule and ends only with fresh authenticated account/region
-zero-inventory receipt, immutable final settlement, and credential retirement.
+Lease expiry alone never permits takeover. **Old-effect quiescence is an
+observation protocol, not a Boolean.** Each executor STS session is at most 900
+seconds; external custody persists its authenticated `NotAfter` before any
+intent. Recovery may not CAS an epoch before `NotAfter + 120 seconds`, and then
+must reconcile every accepted asynchronous intent by its deterministic
+`(campaign, cycle, epoch, verb, prior-state)` ID and exact campaign/intent tags.
+For each recorded SSM `(command-id, instance-id)` it observes that exact pair
+terminal, or sends one recorded cancel intent and observes the same pair's
+terminal cancellation; a different command, instance, status, absent output,
+or absent observation is uncertainty. It submits and observes termination of
+the exact tagged instance, revokes the instance role's older sessions, removes
+the exact scheduler, role policy/attachment, role, and instance profile, and
+waits through every delegated credential `NotAfter` where one was issued. Only
+then does the independent observer perform two complete, bounded,
+account-and-region inventory passes separated by the configured poll interval.
+Every observation is authenticated, tagged, persisted, and read back; any
+missing, foreign, incomplete, late, or contradictory observation is sticky
+uncertainty. A paused old process may resume only with expired credentials; its
+request must be rejected. It never gets a new epoch or usable credential.
+
+The cleanup budget is a contract inequality, not a promise: it must be strictly
+greater than `900 session + 120 skew + 4×60 request + 4×300 poll/terminal +
+2×300 inventory = 3,060 seconds`. The current v5 1,800-second maximum is
+therefore insufficient: later source must raise the approval/contract/schema
+limit and tests to require `cleanup_reserve_ns > 3,060,000,000,000`, or effects
+remain denied. Recovery reads external custody, never runner disk. A lost
+response, cancellation, runner destruction, missing receipt, or ambiguous
+normal **or cleanup** intent is never resent: it stays uncertain until the
+protocol above proves its outcome. Cleanup ends only after final inventory,
+immutable settlement, and credential retirement.
 
 Planner, adapter, and provider/controller share the custody handle and explicit
 per-cycle `TF_DATA_DIR`, S3 backend metadata, versioned state/plan-object IDs,
 saved-plan bytes, and identity; they initialize/reopen that backend
 cross-process before plan/apply compatibility and reject stale, fenced,
-replaced, foreign, or cross-cycle metadata. Fake end-to-end tests traverse
+replaced, foreign, or cross-cycle metadata. Before any source implementation,
+a separately authorized **pinned OpenTofu non-AWS backend/saved-plan
+compatibility gate** must authenticate the exact binary/provider bytes and use
+only a non-AWS test backend with no credentials, provider calls, plan apply, or
+network effects. A second, later separately authorized real-control-backend gate
+must prove S3/DynamoDB state and saved-plan compatibility before any workload
+credential or apply. Neither gate is authorized here: do not run OpenTofu now. Fake end-to-end tests traverse
 planner → staging → **actual adapter** → provider → fresh recovery owner and
 model runner loss, CAS conflicts, lost normal/cleanup responses, reconciliation,
-and final zero inventory. In particular they pause an old operation **after
-admission**, expire the lease, attempt takeover, wait through session expiry,
-advance only after the old-session proof, then resume the old operation and
-reject it. This ADR neither provisions that external service/principals nor
-invokes tofu/AWS.
+and final zero inventory. They also prove final-byte restart ordering: no new
+process, invocation, epoch, or credential is admitted until the old epoch's
+terminal reconciliation/settlement record has had its final byte durably
+written, versioned read back, and hash-bound; crash at any earlier byte is
+uncertainty. In particular they pause an old operation **after admission**,
+expire the lease, attempt takeover, wait through session expiry and every
+quiescence observation, advance only after the proof, then resume the old
+operation and reject it for expired credentials. This ADR neither provisions
+that external service/principals nor invokes tofu/AWS.
 
 For remote validation the provider first observes exact-instance SSM `Online`
 within one monotonic deadline, records durable send intent, invokes AWS CLI SSM
 send with authenticated AWS CLI `max_attempts=1` (`AWS_MAX_ATTEMPTS=1`)/equivalent CLI max-attempts one,
 and binds the returned command/instance receipt before polling only that pair.
-Orchestration never reissues. There is one OpenTofu process per durable intent;
-where the provider supports them it supplies deterministic idempotency tokens.
-Terraform cannot promise one underlying HTTP request: provider-internal retry or
-lost response is sticky uncertainty until post-session reconciliation, never
-success proof or a second invocation. `versions.tf`, provider configuration and
-the provider/adapter tests must pin and verify this policy. Observational
+Orchestration guarantees only one orchestration process and one invocation per
+durable intent, plus authenticated idempotency where supported and the
+reconciliation above. It makes **no** claim to detect invisible provider or
+transport retries. A lost response or unknown internal retry is uncertainty,
+not success proof and not permission for a second invocation. Observational
 reads may retry only within the deadline and never create/settle an effect
 intent. The same no-second-invocation rule covers ambiguous cleanup. Terminal,
 mismatched, incomplete, or late `Success` is fatal; tests cover propagation,
-foreign IDs, response/output completeness, timeout, internal-retry/lost-response
+foreign IDs, response/output completeness, timeout, unknown-retry/lost-response
 uncertainty, and no reissue.
+
+## Host bootstrap contract to be implemented later
+
+A later separately reviewed gate must choose exactly one authenticated host
+bootstrap authority before the one-shot remote command: either (1) a prepared,
+immutable image whose authenticated descriptor binds `git`, `python`, `tar`,
+`zstd`, and cloud-init identities/versions/digests, or (2) bounded deterministic
+cloud-init preparation that installs only that exact tool set, verifies each
+identity/digest, persists a receipt, and finishes before the one-shot command.
+The command may not use ambient PATH, package resolution, bootstrap retries, or
+unverified tools. Missing image provenance, preparation receipt, deadline, or
+any tool identity denies. This is future source and AWS-gate work; no image,
+cloud-init, install, command, or effect occurs now.
 
 ## Product and KVM contract to be implemented later
 

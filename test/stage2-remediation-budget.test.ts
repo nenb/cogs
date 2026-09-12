@@ -239,10 +239,10 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=7000,lifecycle=14000,completion=6200,integration=31000); assert sum(new.values())==200
-assert b['global_gross_line_high']==63127 and b['global_gross_byte_high']==26000000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=7000,lifecycle=14000,completion=6200,integration=35000); assert sum(new.values())==200
+assert b['global_gross_line_high']==67127 and b['global_gross_byte_high']==30000000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6500,60000,2000)
+assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(120000,24500,31000,6500,60000,2000)
 assert new==dict(route=1,revocation=0,relay=5,lifecycle=10,completion=4,integration=180)
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
@@ -255,7 +255,7 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==116
+assert len(set(paths)-baseline)==117
 for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md','docs/adr/0324-retire-failed-static-generation-and-correct-authority.md','docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md','docs/adr/0326-reconcile-historical-stage2-retirement-policy.md','docs/adr/0327-retire-failed-formal-generation-and-separate-runtime-contracts.md','docs/adr/0328-freeze-runtime-corrected-H-and-authorize-control.md','docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md','docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md','docs/adr/0331-freeze-image-bound-H-and-authorize-control.md','docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md'):
  assert paths[current]=='integration' and Path(current).is_file()
 image_qualification=Path('docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md').read_text()
@@ -276,9 +276,9 @@ control=Path('docs/adr/0320-freeze-corrected-H-and-authorize-control.md').read_t
 assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
 assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
-assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=45000000,serialized_source_inventory_bytes=262144)
+assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=49000000,serialized_source_inventory_bytes=262144)
 adr0338=Path('docs/adr/0338-plan-pre-h-final-corrections.md').read_text()
-for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'max_attempts=1', 'NotAfter + configured skew', 'versioned S3 backend/object custody', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
+for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'max_attempts=1', 'Old-effect quiescence is an', 'NotAfter + 120 seconds', 'account-and-region inventory passes', 'cleanup_reserve_ns > 3,060,000,000,000', 'one orchestration process and one invocation per', 'pinned OpenTofu non-AWS backend/saved-plan', 'do not run OpenTofu now', 'final-byte restart ordering', 'cloud-init preparation that installs only that exact tool set', 'versioned S3 backend/object custody', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
  assert phrase in adr0338,phrase
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
@@ -568,21 +568,25 @@ import copy,json,runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_budget']; ns=f.__globals__
 b,highs,paths,new,forecasts=f(); p=b['product_test_correction']; t=p['remaining_tranche']
-assert (b['global_gross_line_high'],b['global_gross_byte_high'])==(63127,26000000)
-assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=45000000,serialized_source_inventory_bytes=262144)
+assert (b['global_gross_line_high'],b['global_gross_byte_high'])==(67127,30000000)
+assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=49000000,serialized_source_inventory_bytes=262144)
 assert (p['retained_allocation'],p['remediation_retained_allocation'])==({'gross_lines':18000,'gross_bytes':8000000},{'gross_lines':48000,'gross_bytes':11000000})
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast'])==(33127,23000000)
-assert (t['gross_lines'],t['gross_bytes'])==(15127,15000000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast'])==(37127,27000000)
+assert (t['gross_lines'],t['gross_bytes'])==(19127,19000000)
 assert [x['name'] for x in t['allocations']]==['pre_h_final_governance','aws_principal_denial_and_cycle_custody','protected_product_and_kvm_contract','generated_readiness_and_no_mint_authorization','final_hgq_control_reserve']
-assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(1400,1000000),(4300,4800000),(4000,3200000),(1800,2000000),(3627,4000000)]
-assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(1400,1000000),(4300,4800000),(4000,3200000),(1800,2000000),(1127,1000000)]
-assert t['allocations'][-1]['final_minimum_lines']==2500 and t['allocations'][-1]['final_minimum_bytes']==3000000
+assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(1600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(4727,4800000)]
+assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(1600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(1227,1300000)]
+assert t['allocations'][-1]['final_minimum_lines']==3500 and t['allocations'][-1]['final_minimum_bytes']==3500000
+assert t['allocations'][1]['measured_slices']==[{'name':'deployment_and_direct_python_ingress','gross_lines':5600,'gross_bytes':6300000},{'name':'workflow_and_opentofu_compatibility','gross_lines':1400,'gross_bytes':1700000}]
 planned={q:e['name'] for e in p['owners'] for q in e['existing_paths']+e['new_files']}
 task_paths={x['name']:set(x['paths']) for x in t['allocations']}
 assert set().union(*task_paths.values())==set(planned)
 assert sum(map(len,task_paths.values()))==len(planned)
 aws=task_paths['aws_principal_denial_and_cycle_custody']
-assert {'deploy/aws-feasibility/completion_campaign_aws_adapter.py','test/aws-stage2-completion-campaign-aws-adapter.py','test/aws-stage2-completion-campaign-aws-adapter.test.ts','test/aws-stage2-completion-campaign-aws-provider.py'} <= aws
+assert {'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_adapter.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','test/aws-stage2-completion-campaign-aws-adapter.py','test/aws-stage2-completion-campaign-aws-adapter.test.ts','test/aws-stage2-completion-campaign-aws-provider.py','test/aws-stage2-completion-campaign-ingress.py','test/aws-stage2-completion-cycle-authority.py'} <= aws
+direct_python={path for names in task_paths.values() for path in names if path in {'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_entry.py','deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py','deploy/aws-feasibility/completion_campaign_aws_provider.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py'}}
+assert direct_python=={'deploy/aws-feasibility/check-plan.py','deploy/aws-feasibility/completion_campaign_aws_entry.py','deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py','deploy/aws-feasibility/completion_campaign_aws_provider.py','deploy/aws-feasibility/remote/completion_cycle_full.py','deploy/aws-feasibility/remote/completion_cycle_readiness.py','deploy/aws-feasibility/remote/completion_formal_cycle_full.py','deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py'}
+assert {'test/aws-stage2-completion-campaign-ingress.py','test/aws-stage2-completion-cycle-authority.py','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts'} <= set(planned)
 assert 'dev/linux-kvm/git-tools.sh' in task_paths['protected_product_and_kvm_contract']
 assert {'.github/workflows/ci.yml','test/ci-infrastructure-boundary.test.ts'} <= task_paths['pre_h_final_governance']
 assert {'deploy/aws-feasibility/versions.tf','deploy/aws-feasibility/run-runtime-validation.sh','deploy/aws-feasibility/run-measurement-campaign.sh','deploy/aws-feasibility/run-measurement-validation.sh','deploy/aws-feasibility/remote/validate-runtime.sh'} <= aws
@@ -652,7 +656,7 @@ def run(extra_lines=0,extra_bytes=0):
  ns['_gross_slice']=lambda names,*ignored:charge(names,'gross_lines')
  ns['_gross_added_line_bytes']=lambda names,*ignored:charge(names,'gross_bytes')
  return f(b)
-assert run()[0]['integration']==10227 and run()[1]['integration']==10100000
+assert run()[0]['integration']==13227 and run()[1]['integration']==13600000
 for lines,raw in ((1,0),(0,1)):
  try: run(lines,raw)
  except m['LineBudgetError']: pass
@@ -698,9 +702,9 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
     0,
   );
   assert.ok(report.conservative_lines_no_deletion_credit >= 99_463);
-  assert.ok(consumedProductLines <= 15_127);
-  assert.ok(report.conservative_lines_no_deletion_credit + (15_127 - consumedProductLines) < report.hard_limit);
-  assert.deepEqual(report.product_test_final_hgq_minimum, { lines: 2500, bytes: 3000000 });
+  assert.ok(consumedProductLines <= 19_127);
+  assert.ok(report.conservative_lines_no_deletion_credit + (19_127 - consumedProductLines) < report.hard_limit);
+  assert.deepEqual(report.product_test_final_hgq_minimum, { lines: 3500, bytes: 3500000 });
   for (const kind of ["lines", "line_bytes"] as const) {
     const consumed = report[`product_test_task_gross_added_${kind}`];
     const maxima = report[`product_test_task_pre_h_${kind === "lines" ? "line" : "byte"}_maxima`];
@@ -720,8 +724,8 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   ])
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
-    ["lines", 33127],
-    ["line_bytes", 23000000],
+    ["lines", 37127],
+    ["line_bytes", 27000000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
     assert.equal(usage.route, 0);
@@ -763,10 +767,10 @@ for owner,high in highs.items():
  assert sum(remediation.values())<b['global_gross_line_high']
  veto(f,owner+' cumulative owner high+1 with other owners zero')
 remediation=dict(highs)
-assert sum(highs.values())==63400>b['global_gross_line_high']
+assert sum(highs.values())==67400>b['global_gross_line_high']
 remediation['integration']-=273
-assert sum(remediation.values())==63127
-assert f()['remediation_gross_added_lines_no_deletion_credit']==63127
+assert sum(remediation.values())==67127
+assert f()['remediation_gross_added_lines_no_deletion_credit']==67127
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 base=dict(deploy=21948,retained=11844,workflow=4836)
 for key,limit in [('deploy',24500),('retained',31000),('workflow',6500)]:
@@ -827,7 +831,7 @@ report=f()
 assert report['product_test_base_revision']=='eda2dc499153f3053772790c02ea6d332403742e'
 assert report['product_test_workstream_gross_added_lines']==expected
 assert report['product_test_gross_added_lines_no_deletion_credit']==55
-assert report['product_test_global_gross_line_forecast']==33127
+assert report['product_test_global_gross_line_forecast']==37127
 `);
 });
 test("ADR0335 central measure enforces every independent byte ceiling with zero line additions", () => {
@@ -838,7 +842,7 @@ b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 ns['_product_test_gross']=lambda budget:zero
 ns['_gross_slice']=lambda *args:0
-assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==23000000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==26000000
+assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==27000000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==30000000
 cumulative=dict(route=1,revocation=2,relay=3,lifecycle=4,completion=5,integration=6)
 correction=dict(route=0,revocation=0,relay=7,lifecycle=8,completion=9,integration=10)
 ns['_product_test_consumption']=lambda budget:(zero,dict(correction),{}, {},0)
@@ -854,7 +858,7 @@ assert report['remediation_workstream_gross_added_line_bytes']==cumulative
 assert report['product_test_workstream_gross_added_line_bytes']==correction
 assert report['remediation_gross_added_line_bytes_no_deletion_credit']==21
 assert report['product_test_gross_added_line_bytes_no_deletion_credit']==34
-assert report['product_test_global_gross_byte_forecast']==23000000
+assert report['product_test_global_gross_byte_forecast']==27000000
 assert report['product_test_workstream_gross_byte_forecasts']==m['PRODUCT_TEST_BYTE_FORECASTS']
 def veto(label):
  try: f()
@@ -867,7 +871,7 @@ for is_q in (False,):
   values=correction if is_q else cumulative; values[owner]=high
   assert f()['remediation_gross_added_lines_no_deletion_credit']==0
   values[owner]+=1
-  assert sum(values.values())<(23000000 if is_q else 26000000)
+  assert sum(values.values())<(27000000 if is_q else 30000000)
   veto(str((is_q,owner,'isolated byte high+1')))
  cumulative=dict(zero); correction=dict(zero)
  values=correction if is_q else cumulative; values.update(limits)

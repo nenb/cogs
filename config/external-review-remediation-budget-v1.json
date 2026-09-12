@@ -1,8 +1,8 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 63127,
-  "global_gross_byte_high": 26000000,
+  "global_gross_line_high": 67127,
+  "global_gross_byte_high": 30000000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -10,14 +10,14 @@
   },
   "source_limits": {
     "tracked_files": 1620,
-    "source_inventory_bytes": 45000000,
+    "source_inventory_bytes": 49000000,
     "serialized_source_inventory_bytes": 262144
   },
   "product_test_correction": {
     "base_revision": "eda2dc499153f3053772790c02ea6d332403742e",
     "base_tree": "9ad48a2be811745f0d8032a0a9f52a33c4b2edec",
-    "global_gross_line_forecast": 33127,
-    "global_gross_byte_forecast": 23000000,
+    "global_gross_line_forecast": 37127,
+    "global_gross_byte_forecast": 27000000,
     "owners": [
       {
         "name": "route",
@@ -64,8 +64,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 12727,
-        "gross_byte_forecast": 13100000,
+        "gross_line_forecast": 16727,
+        "gross_byte_forecast": 17100000,
         "existing_paths": [
           ".github/workflows/ci.yml",
           ".github/workflows/insecure-container.yml",
@@ -86,6 +86,7 @@
           "config/external-review-remediation-budget-v1.json",
           "config/stage2-retired-revisions-v1.json",
           "deploy/aws-feasibility/apply.sh",
+          "deploy/aws-feasibility/check-plan.py",
           "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
           "deploy/aws-feasibility/completion_campaign_aws_entry.py",
           "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -101,6 +102,8 @@
           "deploy/aws-feasibility/plan.sh",
           "deploy/aws-feasibility/recover-production-campaign-entry.sh",
           "deploy/aws-feasibility/recover-production-campaign.sh",
+          "deploy/aws-feasibility/remote/completion_cycle_full.py",
+          "deploy/aws-feasibility/remote/completion_cycle_readiness.py",
           "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py",
           "deploy/aws-feasibility/remote/completion_formal_cycle_full.py",
           "deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py",
@@ -167,7 +170,10 @@
           "test/aws-stage2-completion-campaign-controller.test.ts",
           "test/aws-stage2-completion-campaign-production.py",
           "test/aws-stage2-completion-campaign-production.test.ts",
+          "test/aws-stage2-completion-campaign-remote-adapter.py",
+          "test/aws-stage2-completion-campaign-remote-adapter.test.ts",
           "test/aws-stage2-completion-campaign-state.py",
+          "test/aws-stage2-completion-cycle-authority.py",
           "test/aws-stage2-completion-local-result.test.ts",
           "test/ci-infrastructure-boundary.test.ts",
           "test/stage2-formal-local-qualification.py",
@@ -209,7 +215,8 @@
           "docs/adr/0338-plan-pre-h-final-corrections.md",
           "schemas/aws-stage2-production-custody-v1.json",
           "schemas/aws-stage2-production-principal-contract-v1.json",
-          "test/aws-stage2-completion-campaign-aws-adapter.py"
+          "test/aws-stage2-completion-campaign-aws-adapter.py",
+          "test/aws-stage2-completion-campaign-ingress.py"
         ]
       }
     ],
@@ -224,17 +231,17 @@
       "gross_bytes": 11000000
     },
     "remaining_tranche": {
-      "gross_lines": 15127,
-      "gross_bytes": 15000000,
+      "gross_lines": 19127,
+      "gross_bytes": 19000000,
       "allocations": [
         {
           "name": "pre_h_final_governance",
-          "gross_lines": 1400,
+          "gross_lines": 1600,
           "gross_bytes": 1000000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 1400,
+              "gross_lines": 1600,
               "gross_bytes": 1000000
             }
           ],
@@ -245,22 +252,23 @@
             "docs/adr/README.md",
             "test/ci-infrastructure-boundary.test.ts"
           ],
-          "pre_h_gross_lines": 1400,
+          "pre_h_gross_lines": 1600,
           "pre_h_gross_bytes": 1000000
         },
         {
           "name": "aws_principal_denial_and_cycle_custody",
-          "gross_lines": 4300,
-          "gross_bytes": 4800000,
+          "gross_lines": 7000,
+          "gross_bytes": 8000000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 4300,
-              "gross_bytes": 4800000
+              "gross_lines": 7000,
+              "gross_bytes": 8000000
             }
           ],
           "paths": [
             "deploy/aws-feasibility/apply.sh",
+            "deploy/aws-feasibility/check-plan.py",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
             "deploy/aws-feasibility/completion_campaign_aws_entry.py",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -276,6 +284,8 @@
             "deploy/aws-feasibility/plan.sh",
             "deploy/aws-feasibility/recover-production-campaign-entry.sh",
             "deploy/aws-feasibility/recover-production-campaign.sh",
+            "deploy/aws-feasibility/remote/completion_cycle_full.py",
+            "deploy/aws-feasibility/remote/completion_cycle_readiness.py",
             "deploy/aws-feasibility/remote/measure-runtime.sh",
             "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
             "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
@@ -304,17 +314,33 @@
             "test/aws-stage2-completion-campaign-aws-provider.py",
             "test/aws-stage2-completion-campaign-aws-provider.test.ts",
             "test/aws-stage2-completion-campaign-controller.test.ts",
+            "test/aws-stage2-completion-campaign-ingress.py",
             "test/aws-stage2-completion-campaign-production.py",
             "test/aws-stage2-completion-campaign-production.test.ts",
+            "test/aws-stage2-completion-campaign-remote-adapter.py",
+            "test/aws-stage2-completion-campaign-remote-adapter.test.ts",
             "test/aws-stage2-completion-campaign-state.py",
+            "test/aws-stage2-completion-cycle-authority.py",
             "test/aws-stage2-completion-local-result.test.ts",
             "test/stage2-production-approval.py",
             "test/stage2-production-approval.test.ts",
             "test/stage2-production-planner.py",
             "test/stage2-production-planner.test.ts"
           ],
-          "pre_h_gross_lines": 4300,
-          "pre_h_gross_bytes": 4800000
+          "pre_h_gross_lines": 7000,
+          "pre_h_gross_bytes": 8000000,
+          "measured_slices": [
+            {
+              "name": "deployment_and_direct_python_ingress",
+              "gross_lines": 5600,
+              "gross_bytes": 6300000
+            },
+            {
+              "name": "workflow_and_opentofu_compatibility",
+              "gross_lines": 1400,
+              "gross_bytes": 1700000
+            }
+          ]
         },
         {
           "name": "protected_product_and_kvm_contract",
@@ -390,13 +416,13 @@
         },
         {
           "name": "final_hgq_control_reserve",
-          "gross_lines": 3627,
-          "gross_bytes": 4000000,
+          "gross_lines": 4727,
+          "gross_bytes": 4800000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 3627,
-              "gross_bytes": 4000000
+              "gross_lines": 4727,
+              "gross_bytes": 4800000
             }
           ],
           "paths": [
@@ -463,10 +489,10 @@
             "test/stage2-production-workflows.test.ts",
             "test/stage2-remediation-budget.test.ts"
           ],
-          "pre_h_gross_lines": 1127,
-          "pre_h_gross_bytes": 1000000,
-          "final_minimum_lines": 2500,
-          "final_minimum_bytes": 3000000
+          "pre_h_gross_lines": 1227,
+          "pre_h_gross_bytes": 1300000,
+          "final_minimum_lines": 3500,
+          "final_minimum_bytes": 3500000
         }
       ]
     }
@@ -687,9 +713,9 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 31000,
+      "gross_line_high": 35000,
       "gross_byte_forecast": {
-        "total": 16000000
+        "total": 20000000
       },
       "new_file_high": 180,
       "paths": [
@@ -722,6 +748,7 @@
         "config/external-review-remediation-budget-v1.json",
         "config/stage2-retired-revisions-v1.json",
         "deploy/aws-feasibility/apply.sh",
+        "deploy/aws-feasibility/check-plan.py",
         "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
         "deploy/aws-feasibility/completion_campaign_aws_entry.py",
         "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -918,6 +945,7 @@
         "test/aws-stage2-completion-campaign-aws-provider.py",
         "test/aws-stage2-completion-campaign-aws-provider.test.ts",
         "test/aws-stage2-completion-campaign-controller.test.ts",
+        "test/aws-stage2-completion-campaign-ingress.py",
         "test/aws-stage2-completion-campaign-production.py",
         "test/aws-stage2-completion-campaign-production.test.ts",
         "test/aws-stage2-completion-campaign-remote-adapter.py",
