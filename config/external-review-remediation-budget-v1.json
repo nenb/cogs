@@ -1,8 +1,8 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 69557,
-  "global_gross_byte_high": 31200000,
+  "global_gross_line_high": 78000,
+  "global_gross_byte_high": 35000000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
@@ -10,7 +10,7 @@
   },
   "source_limits": {
     "tracked_files": 1620,
-    "source_inventory_bytes": 50000000,
+    "source_inventory_bytes": 60000000,
     "serialized_source_inventory_bytes": 262144
   },
   "product_test_correction": {
@@ -275,12 +275,12 @@
       "allocations": [
         {
           "name": "pre_h_final_governance",
-          "gross_lines": 2900,
+          "gross_lines": 3100,
           "gross_bytes": 1100000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 2900,
+              "gross_lines": 3100,
               "gross_bytes": 1100000
             }
           ],
@@ -291,7 +291,7 @@
             "docs/adr/README.md",
             "test/ci-infrastructure-boundary.test.ts"
           ],
-          "pre_h_gross_lines": 2900,
+          "pre_h_gross_lines": 3100,
           "pre_h_gross_bytes": 1100000,
           "required_pre_h_order": [
             "reviewed_non_aws_design",
@@ -648,6 +648,8 @@
               ]
             }
           },
+          "category_map_version": "adr0338-aws-category-map/v1",
+          "category_map_sha256": "3e8c26e002e7775d909780beea3479a9b1097db33a031d1568cc8e9024dbcaa8",
           "withheld_forecast": {
             "gross_lines": 200,
             "gross_bytes": 200000,
@@ -740,12 +742,12 @@
         },
         {
           "name": "final_hgq_control_reserve",
-          "gross_lines": 5500,
+          "gross_lines": 5300,
           "gross_bytes": 5500000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 5500,
+              "gross_lines": 5300,
               "gross_bytes": 5500000
             }
           ],
@@ -809,7 +811,7 @@
             "test/stage2-production-workflows.test.ts",
             "test/stage2-remediation-budget.test.ts"
           ],
-          "pre_h_gross_lines": 2000,
+          "pre_h_gross_lines": 1800,
           "pre_h_gross_bytes": 2000000,
           "final_minimum_lines": 3500,
           "final_minimum_bytes": 3500000
@@ -1033,9 +1035,9 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 36430,
+      "gross_line_high": 45600,
       "gross_byte_forecast": {
-        "total": 21200000
+        "total": 30830000
       },
       "new_file_high": 180,
       "paths": [

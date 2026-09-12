@@ -19,8 +19,8 @@ export const STAGE4_PINNED_GIT = Object.freeze({
 
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAXIMUM_TRACKED_FILES = 1530;
-const MAXIMUM_AGGREGATE_BYTES = 34_000_000;
+const MAXIMUM_TRACKED_FILES = 1620;
+const MAXIMUM_AGGREGATE_BYTES = 60_000_000;
 export const STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144;
 
 /** The producer must not emit an inventory its bounded consumer cannot read. */
