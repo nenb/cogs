@@ -18,13 +18,15 @@ delete, rename, copy, compression, net-size, or prior-checkpoint credit.
 
 The historical product allocation is 18,000 lines / 8,000,000 bytes and the
 historical remediation allocation is 48,000 / 11,000,000. The separately
-allocated prospective matrix is exactly **19,127 / 19,000,000**, so cumulative
-product ceilings are **37,127 / 27,000,000** and remediation ceilings are
-**67,127 / 30,000,000**. The source ceiling is
+allocated prospective matrix is exactly **19,527 / 19,000,000**, so cumulative
+product ceilings are **37,527 / 27,000,000** and remediation ceilings are
+**67,527 / 30,000,000**. The pre-H governance task rises honestly from its
+already consumed 1,799 lines to 2,200 lines; it is not presented as one-line
+headroom or funded from the AWS holdback. The source ceiling is
 `18,763,891 + 30,000,000 = 48,763,891 <= 49,000,000`; tracked files are
 `1,420 + 200 = 1,620 <= 1,620`. The measured current 99,908 leaves 20,092 before
-the strict 120,000 hard limit; the 19,127 forward ceiling remains below it
-(119,035 maximum), never deletion credit. Integration's new-file cap is 180
+the strict 120,000 hard limit; the 19,527 forward ceiling remains below it
+(119,435 maximum), never deletion credit. Integration's new-file cap is 180
 (total 200); it specifically funds the custody schema, fake end-to-end adapter
 and direct-ingress tests, and thirteen fresh v8 control members. Each owner and task ceiling is
 independent and non-transferable.
@@ -63,7 +65,7 @@ release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
-| pre-H final governance | 1,800 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
+| pre-H final governance | 2,200 / 1,000,000 pre-H maximum | ADR/index/allocation plus required readiness-before-PR order and exact-head CI workflow/topology tests |
 | AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,200 / 6,000,000 deployment/custody/direct-ingress + 1,100 / 1,300,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
 | generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
@@ -103,13 +105,19 @@ producer, publisher and static-control boundary scripts; and the
 static-control runtime-boundary test. The AWS custody task, rather than the
 H/G/Q reserve, owns Kata preparation, `completion_cycle_authority.py`, the
 coordinator grant consumer, all formal-cycle adapters, rehearsal/recovery
-entrypoints, and their direct-denial tests. It also owns the root-only
-`provision-stage2-nft-owner.py` ingress and derives the complete executable
-closure from every planned AWS Python/shell front door, excluding only the
-listed import-only evidence issuer; an unclassified executable path denies.
-The existing v3 completion-evidence schema, validator, renderer, and focused
-test are in this task for the later separate-deadline/historical-decode change,
-not authority to change or execute them now. The AWS task includes the actual
+entrypoints, and their direct-denial tests. AWS ingress is derived independently
+from the capabilities that can obtain AWS credentials, touch the control account
+or native backend, construct a provider, issue SSM, inventory, or cause a
+resource effect—not from every executable in the allocated integration task.
+The root-only `provision-stage2-nft-owner.py` and unrelated local/package/Kata
+front doors remain separately governed non-AWS routes. In particular,
+`scripts/run-stage2-package-native-candidate.py` and
+`scripts/run-stage2-phase-a-candidate.py` are explicitly classified as non-AWS
+diagnostic routes: they are neither AWS ingress targets nor part of the AWS
+completeness claim. The config/checker reject overlap with AWS targets. The
+existing v3 completion-evidence schema, validator, renderer, and focused test
+are AWS budget consumers for the later separate-deadline/historical-decode
+change, not authority to change or execute them now. The AWS task includes the actual
 production owner `completion_campaign_aws_adapter.py`, not a substitute
 fake-only controller, plus the new Python fake end-to-end
 adapter → provider → recovery test and existing adapter/provider tests. Alongside the existing ADR documents, the only new non-control files are the
@@ -137,23 +145,22 @@ verifiable identities for operator, approver/budget/security reviewer, executor,
 and zero-inventory observer; their role, expiry, candidate/tree, package, and
 contract version are immutable inputs. Missing, equal, expired, stale,
 unauthenticated, or representation-only identities deny. A role cannot attest
-itself or another role. The closed ingress inventory names the planner CLI
-`stage2-production-planner.py`; approval/staging front doors
-`stage2-production-approval.py` and `stage2-stage-production-approval.py`; all
-AWS entry/recovery, provider, controller, production, state, and actual
-AWS/remote-adapter front doors; all direct-cycle, diagnostic, full/readiness
-**rehearsal**, and formal Python entrypoints; `completion_cycle_authority.py`
-and the `completion_kata_coordinator.py` grant consumer; every other executable
-local rootfs/package/Kata/trusted-launcher front door; and every listed legacy
-shell effect route. Codec, contract, receipt, and artifact-verifier
-**decode-only** modes are a separate read-only class: they may decode a
+itself or another role. The closed **AWS** ingress inventory names the planner
+CLI `stage2-production-planner.py`; approval/staging front doors
+`stage2-production-approval.py` and `stage2-stage-production-approval.py`; and
+only credential/control-account/backend/provider, SSM/inventory/resource-effect,
+and legacy shell front doors. It is an independently enumerated,
+capability-scoped set, not an assertion that every Python or shell executable
+in the broad AWS task is AWS-capable. Codec, contract, receipt, and artifact-
+verifier **decode-only** modes are a separate read-only class: they may decode a
 supplied historical byte fixture but cannot construct a principal, grant,
-client, backend, inventory, or effect intent. The config/checker require this
-complete exact inventory, no overlap, named-task ownership, and the exact
-budget-consumer category list; focused ingress, controller, provider,
-remote-adapter, state, receipt, coordinator, rehearsal, and recovery tests
-invoke each effect-capable member directly with credential/install/network/
-tofu/AWS/SSM sentinels and prove denial first.
+client, backend, inventory, or effect intent. The two named native-candidate
+diagnostics and other non-AWS diagnostics are governed by their separate route
+contracts, not this AWS target set. The config/checker require the exact AWS
+inventory, no overlap, named-task ownership, diagnostic exclusion, and exact
+budget-consumer list; focused AWS ingress/controller/provider/remote-adapter/
+state/receipt/coordinator/recovery tests invoke each AWS target directly with
+credential/install/network/tofu/AWS/SSM sentinels and prove denial first.
 
 Pre-H, v7 is only a pinned historical artifact-decoding fixture: its decoding
 tests cannot execute it, and the current route set transitions to denial. The
@@ -185,23 +192,98 @@ preauthorization supplies those values plus expected workload account/region,
 package/candidate/tree, custody and principal-contract versions, and a distinct
 planning principal before workload credentials exist.
 
-The planner first authenticates only that planning principal, checks the preauthorization, and uses conditional DynamoDB writes to bind STS and AMI *discoveries* into the approval batch. It transitions the namespace **seed** to the discovered approval-batch namespace by CAS; discovered values never change the seed/key. Future AWS implementation uses three distinct roles: a normal executor role, a cleanup-only workload role, and a control-account custody/fence role. Normal sessions use AWS-valid `DurationSeconds=900` (or a larger later-reviewed value) and may be renewed only while the normal window and its custody epoch remain open. The cleanup role is distinct in trust, permissions, session tags, and credential material; it can never assume or refresh the normal role.
+The planner first authenticates only that planning principal, checks the
+preauthorization, and uses conditional DynamoDB writes to bind STS and AMI
+*discoveries* into the approval batch. It transitions the namespace **seed** to
+the discovered approval-batch namespace by CAS; discoveries never change the
+seed/key. The later design separates a normal workload role, a normal native-
+backend role, a cleanup-only workload role, a recovery/fence role, a session
+broker, and an adapter-journal custody helper/role. The broker may only call
+`sts:AssumeRole` for the two dedicated normal roles; it has no workload API,
+S3, or DynamoDB permission. Cleanup is distinct in trust, permissions, tags,
+and credential material and can never assume or refresh normal authority.
 
-External custody is not a workload cleanup capability. The custody role alone has S3 version/object and DynamoDB conditional-write permissions, restricted to the exact control-account namespace and leading key. The normal and cleanup workload roles have no direct `s3:Put*`, `s3:Delete*`, or DynamoDB write permission. They submit a signed application request carrying campaign, cycle, epoch, operation ID, expected generation, and an application key; the custody service independently checks that key, object/key prefix, hash, prior state, and DynamoDB CAS condition before making the durable write. A cleanup request can append only its pre-existing unresolved-cleanup intent or terminal observation; it cannot overwrite campaign/approval/normal records. S3 versioned backend state, saved-plan bytes and immutable objects, plus DynamoDB generation-numbered `campaign`, `intent`, `receipt`, hash-chained `journal`, lease, and current-generation pointer, survive runner loss. Each pointer/lease/journal transition is conditional on prior generation and monotonically increasing epoch. Missing/replaced/foreign state or plan bytes, failed condition, local-cache disagreement, or unreadable custody is sticky uncertainty and denies effects.
+OpenTofu uses its native S3 backend, not an adapter post-copy. Before a cycle,
+a separately administered control account provides a pre-existing versioned,
+encrypted bucket and an exact per-cycle backend key/workspace. The normal
+backend role is assumed only for that native backend and can use the exact
+bucket/prefix and native conditional `.tflock` lockfile/CAS protocol; it cannot
+call workload APIs. The workload role cannot read or write S3 backend objects
+or DynamoDB custody. S3 state and saved-plan bytes stay in that backend through
+plan/apply/reopen; copying state after an apply is not a substitute. The
+adapter journal is separate from the backend: its tightly scoped custody
+helper/role accepts a signed request containing campaign, cycle, epoch,
+operation ID, expected generation, and application key, then independently
+checks exact object prefix/DynamoDB leading key, hash, prior state, and the
+DynamoDB conditional-write/CAS condition. A cleanup request may append only its
+persisted unresolved-cleanup intent or terminal observation. Missing,
+replaced, foreign, or unreadable state/plan/journal, a failed condition, or
+local-cache disagreement is sticky uncertainty and denies effects.
 
-Lease expiry alone never permits takeover. **Old-effect quiescence is an observation protocol, not a Boolean.** At normal-window close, an independently authenticated recovery/fence controller may immediately install and activate a narrow normal-role inline deny whose only target is the normal role's recorded workload-action set and whose condition is `aws:TokenIssueTime` strictly before the durably recorded fence instant. The controller has no workload permissions and cannot assume either workload role. It writes the fence version and CAS activation receipt through custody, blocks any new normal-role issue through the normal admission record, waits the bounded 10-minute fence-propagation phase, and proves rejection: the pre-fence accepted, read-only probe action is retried with the recorded old normal token against its exact campaign scope and must return the expected explicit deny. Missing proof, a different token, probe, policy version, or scope, an accepted old call, or a late propagation result is sticky uncertainty. This is implementable AWS token-issue-time revocation, not an impossible 300-second credential assumption.
+**Old-effect quiescence is an observation protocol, not a Boolean.** At normal
+window close, recovery fences every outstanding normal workload **and** native-
+backend session without attempting an issuance-inventory race. It attaches an
+unconditional explicit `Deny: *` session-policy/role-permission-boundary to each
+dedicated normal role, disables further `sts:AssumeRole` trust for those roles,
+and durably records the exact policy/boundary and trust versions through
+custody. The recovery/fence role has only those exact role-fencing and custody
+request permissions, no workload APIs; the broker remains assume-role-only.
+After bounded IAM propagation, recovery probes representative previously
+permitted workload and backend calls with recorded normal sessions and requires
+explicit denial. Missing or late propagation, an accepted probe, mismatched
+role/policy/session/scope, or absent proof is sticky uncertainty. Only then may
+cleanup reconcile every accepted asynchronous normal intent; cleanup itself is
+a distinct role and never receives normal or backend authority.
+
+The future IAM matrix is action-by-action and deny-by-default:
+
+| Principal | Permitted AWS actions | Exact scope and application checks |
+| --- | --- | --- |
+| session broker | `sts:AssumeRole` | Exact normal-workload and normal-backend role ARNs only; no workload API. |
+| normal backend | `s3:GetObject`, `GetObjectVersion`, `PutObject`, `DeleteObject`, `ListBucket` | One encrypted/versioned bucket, exact campaign/cycle prefix and workspace/key; `PutObject`/`DeleteObject` are only native conditional `.tflock` lockfile/CAS operations. No workload APIs or DynamoDB custody. |
+| normal workload | `ec2:CreateVpc`, `CreateInternetGateway`, `AttachInternetGateway`, `CreateSubnet`, `CreateRouteTable`, `CreateRoute`, `AssociateRouteTable`, `CreateSecurityGroup`, `CreateLaunchTemplate`, `RunInstances`, `CreateTags`, `ssm:SendCommand`, `scheduler:CreateSchedule`, `budgets:CreateBudget`, `iam:CreateRole`, `PutRolePolicy`, `AttachRolePolicy`, `CreateInstanceProfile`, `AddRoleToInstanceProfile` | Destructive actions use exact tagged ARNs/IDs where AWS supports them; unavoidable create scope is application-validated against exact account, region, campaign tags, and recorded IDs. No S3/DynamoDB custody. |
+| cleanup workload | `ssm:CancelCommand`, `ListCommandInvocations`, `ec2:DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `TerminateInstances`, `DetachVolume`, `DeleteVolume`, `DetachNetworkInterface`, `DeleteNetworkInterface`, `ReleaseAddress`, `DeleteLaunchTemplate`, `DeleteSecurityGroup`, `DeleteRoute`, `DisassociateRouteTable`, `DeleteRouteTable`, `DetachInternetGateway`, `DeleteInternetGateway`, `DeleteSubnet`, `DeleteVpc`, `scheduler:GetSchedule`, `DeleteSchedule`, `budgets:DescribeBudget`, `DeleteBudget`, `iam:GetRole`, `GetPolicy`, `DetachRolePolicy`, `DeleteRolePolicy`, `DeletePolicyVersion`, `DeletePolicy`, `RemoveRoleFromInstanceProfile`, `DeleteInstanceProfile`, `DeleteRole`, `RevokeSession` | Only persisted unresolved intent IDs and exact campaign tags; broad describe/list is granted only for named AWS read actions lacking resource scoping, then application validates exact account/region/tag/ID. No create, normal effect, or direct custody write. |
+| observer | `ec2:DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `ssm:ListCommandInvocations`, `scheduler:GetSchedule`, `budgets:DescribeBudget`, `iam:GetRole`, `GetPolicy` | Read-only; broad describe/list only where AWS lacks resource-level scope; application verifies exact account, region, tags, and IDs. |
+| recovery/fence | `iam:PutRolePermissionsBoundary`, `iam:UpdateAssumeRolePolicy`, exact custody-request action | Exact dedicated normal-role ARNs; unconditional deny-all and disabled trust only; no assume or workload API. |
+| adapter custody helper | `s3:GetObject`, `PutObject`, `ListBucket`, `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems` | Exact journal S3 prefix and DynamoDB table/leading key only; application CAS/conditional expressions are mandatory for every journal/pointer/lease write. |
+
+No table row gets a wildcard resource effect. Where an AWS action cannot be
+resource-scoped, its broad permission is explicit and the application validates
+exact account, region, tags, and IDs before accepting the result; where AWS
+supports destructive resource scope, the policy uses it.
 
 Only after that proof does recovery admit one separately authenticated cleanup-only owner. It reconciles every accepted asynchronous normal intent by its deterministic `(campaign, cycle, epoch, verb, prior-state)` ID and exact campaign/intent tags. For each recorded SSM `(command-id, instance-id)` it observes that exact pair terminal, or sends one recorded cancel intent and observes the same pair's terminal cancellation; a different command, instance, status, absent output, or absent observation is uncertainty. Cleanup authority covers the complete exact tagged/ID graph, in dependency order: (1) SSM command; (2) instance, attached EBS volumes, ENIs, and EIPs; (3) scheduler and budget; (4) launch template; (5) IAM attachments, customer policies, instance profile, and role; (6) security group, routes, route-table association, internet gateway, subnet, and VPC; then (7) final cleanup of the declared external backend objects where applicable. Every delete/cancel/terminate/revoke has a durable deterministic intent `(campaign, cycle, epoch, verb, exact-ID, prior-state)`, exact tag and ID scope, bounded observe/reconcile loop, and lost-response rule: no ambiguous intent is reissued. Dependency failure, foreign tag/ID, missing readback, or unresolved response is sticky uncertainty. The future least-privilege cleanup policy must enumerate exactly the corresponding SSM cancel/list, EC2 terminate/describe/delete/detach/release, Scheduler delete/get, Budgets delete/describe, IAM detach/delete/remove/revoke/ get, and custody-service request actions, each restricted to the recorded campaign tags and IDs; no wildcard create, normal-effect action, or direct custody-store mutation is granted to cleanup. It waits through every delegated credential `NotAfter` where one was issued. Only then does the independently authenticated, read-only observer perform two complete, bounded, account-and-region inventory passes separated by the configured poll interval. Every observation is authenticated, tagged, persisted, and read back; any missing, foreign, incomplete, late, or contradictory observation is sticky uncertainty. A paused old process may resume only with its fenced credential; its request must be rejected.
 
 Recovery has no successor NORMAL authority. The cleanup admission record is not terminal settlement. Exactly one independently authenticated, read-only observer may hold the matching observation lease; both differ from executor, planner, approver, and each other. A cleanup owner acts only on externally persisted unresolved intents in its fenced epoch: reconcile, cancel, terminate, revoke, delete in the declared graph order, and request the observer's inventory. It may never do normal work, issue a new normal intent, or reissue an ambiguous normal **or cleanup** intent. The observer can only read and persist the two fenced inventory passes. Their leases and credentials end no later than cleanup; loss/expiry leaves sticky uncertainty.
 
-A cleanup owner requests `DurationSeconds=1800`, satisfying AWS's 900-second minimum. There are at most two cleanup epochs. The first ends at its credential and lease `NotAfter`; a second can be admitted only after that NotAfter + 120 seconds, the observer/fence proof, and a CAS-persisted unresolved-cleanup intent set. It continues those deterministic IDs and never replaces an ambiguous operation. If the second owner cannot settle before its own authority ends, the result is sticky uncertainty/manual intervention with **no normal authority**. No third cleanup epoch, credential refresh, or promotion exists.
+Each cleanup epoch requests an actual `DurationSeconds=1800` credential, above
+AWS's 900-second minimum. There are at most two epochs: epoch one is bounded to
+1,800 seconds, then a 120-second NotAfter/skew fence, then epoch two is bounded
+to 1,800 seconds, leaving 1,680 seconds of the 90-minute cleanup phase for
+separately bounded reconcile/inventory/terminal operations. A second owner can
+be admitted only after the first NotAfter + 120 seconds, fence proof, and a
+CAS-persisted unresolved-cleanup intent set. It continues deterministic IDs and
+never replaces an ambiguous operation. If it cannot settle, the result is sticky
+uncertainty/manual intervention with **no normal authority**. No third epoch,
+credential refresh, or promotion exists.
 
 Only final-byte durable, versioned readback, hash-bound **terminal settlement** (complete graph, credentials, and inventory) gates any future normal authority, normal epoch, normal credential, or normal invocation. A cleanup recovery process is not a normal process: it may be admitted only under the preceding two-epoch fenced rule and only to finish persisted unresolved cleanup. No normal process, invocation, epoch, or credential is admitted until the old epoch's terminal settlement record has had its final byte durably written, versioned read back, and hash-bound.
 
-One absolute workflow budget is fixed: setup `10` minutes + normal resource window `120` minutes + revoke/fence propagation and old-call proof `10` minutes + cleanup/reconciliation `90` minutes + final publication `10` minutes = `240` minutes. The cleanup window admits epoch one for 30 minutes, a 120-second NotAfter/skew fence, epoch two with requested 1800-second credentials for at most its remaining authority, and bounded terminal observation; it never borrows from final publication. The priced resource exposure is only normal + cleanup, `120 + 90 = 210` minutes; at 118,000 microUSD/hour this is exactly `210 / 60 × 118,000 = 413,000` microUSD, strictly below 500,000. Setup, fence, and final publication have no priced resource authority. Tests must enumerate every graph operation, permission, bounded level, credential lifetime, both cleanup epochs, propagation proof, and this exact phase sum; a new operation/permission, serial level, lifetime, or `+1` minute/microUSD overrun denies. Later `stage2-production-plan` and `stage2-production-approval` drafts each timeout at 30 minutes and are non-effecting. First the plan draft is read back; then approval consumes that exact draft; then the immutable approval is read back and must be unexpired at campaign admission. Its admission validity spans only normal authority and ends no later than the 120-minute normal resource boundary; cleanup/recovery derives only its previously persisted cleanup credential, never an approval refresh. No plan/approval refresh, normal effect, or grant is allowed after that boundary. These are future contract/schema/workflow timeouts, not authority now.
+One absolute workflow budget is fixed: setup `10` minutes + normal resource
+window `120` minutes + revoke/fence propagation and old-call proof `10` minutes
++ cleanup/reconciliation `90` minutes + final publication `10` minutes = `240`
+minutes. Resource exposure includes the control/fence phase: `120 + 10 + 90 =
+220` minutes. At 118,000 microUSD/hour its ceiling is
+`ceil(220 / 60 × 118,000) = 432,667` microUSD, strictly below 500,000. Setup and
+final publication have no priced resource authority. The two actual 1,800-second
+cleanup sessions, their 120-second fence, and the separately bounded remaining
+operations fit inside cleanup and never borrow from final publication. Tests
+must enumerate every graph operation, IAM action, bounded level, credential
+lifetime, both cleanup epochs, propagation proof, and this exact phase/resource
+sum; a new action, serial level, lifetime, or `+1` minute/microUSD overrun
+denies. Later `stage2-production-plan` and `stage2-production-approval` drafts each timeout at 30 minutes and are non-effecting. First the plan draft is read back; then approval consumes that exact draft; then the immutable approval is read back and must be unexpired at campaign admission. Its admission validity spans only normal authority and ends no later than the 120-minute normal resource boundary; cleanup/recovery derives only its previously persisted cleanup credential, never an approval refresh. No plan/approval refresh, normal effect, or grant is allowed after that boundary. These are future contract/schema/workflow timeouts, not authority now.
 
-The future v3 evidence schema/validator/renderer/tests must expose separate absolute `normal_deadline` and `cleanup_deadline` fields, the 10/120/10/90/10 phase commitment, 413,000-microUSD resource-exposure forecast, normal fence proof, cleanup epoch count/NotAfter/skew, and terminal publication deadline. They must retain historical v1/v2 decoding as decode-only input: historical bytes may render their historical form but cannot satisfy v3 authority, settlement, or issuance. Boundary tests cover each phase exact limit and `+1`, old-token rejection before cleanup, accepted async SSM reconciliation, first and second cleanup admission, failed second settlement, and final-byte normal re-admission ordering. This ADR does not alter the existing schema, validator, renderer, fixtures, or tests.
+The future v3 evidence schema/validator/renderer/tests must expose separate absolute `normal_deadline` and `cleanup_deadline` fields, the 10/120/10/90/10 phase commitment, 432,667-microUSD resource-exposure ceiling, normal workload/backend fence proof, cleanup epoch count/NotAfter/skew, and terminal publication deadline. They must retain historical v1/v2 decoding as decode-only input: historical bytes may render their historical form but cannot satisfy v3 authority, settlement, or issuance. Boundary tests cover each phase exact limit and `+1`, old-token rejection before cleanup, accepted async SSM reconciliation, first and second cleanup admission, failed second settlement, and final-byte normal re-admission ordering. This ADR does not alter the existing schema, validator, renderer, fixtures, or tests.
 
 Recovery reads external custody, never runner disk. A lost response,
 cancellation, runner destruction, missing receipt, or ambiguous normal **or
@@ -218,17 +300,19 @@ a separately authorized **pinned OpenTofu non-AWS backend/saved-plan
 compatibility gate** must authenticate the actual `versions.tf` OpenTofu
 `= 1.12.4`, AWS-provider `= 6.54.0`, lockfile hashes, and exact binary/provider
 bytes, then use only a non-AWS test backend with no credentials, provider calls,
-plan apply, or network effects. A second, later separately authorized real-control-backend gate
-must prove S3/DynamoDB state and saved-plan compatibility before any workload
-credential or apply. Neither gate is authorized here: do not run OpenTofu now. Fake end-to-end tests traverse
+plan apply, or network effects. Offline fake/static tests cannot prove native
+live S3 backend compatibility or custody. A second, later separately authorized
+authenticated real-control-account compatibility gate must prove the native
+S3-lockfile/CAS and DynamoDB-journal state/saved-plan compatibility before any
+workload credential or apply; no post-copy result substitutes for that gate. Neither gate is authorized here: do not run OpenTofu now. Fake end-to-end tests traverse
 planner → staging → **actual adapter** → provider → fresh recovery owner and
 model runner loss, CAS conflicts, lost normal/cleanup responses, reconciliation,
 and final zero inventory. They also prove final-byte restart ordering: no new **normal** process, invocation, epoch, or credential is admitted until the old epoch's terminal reconciliation/settlement record has had its final byte durably written, versioned read back, and hash-bound; a cleanup process may enter only through the separately proven two-epoch fence rule. Crash at any earlier byte is uncertainty.
 
 In particular they pause an old operation **after admission**,
-expire the lease, attempt takeover, wait through session expiry and every
-quiescence observation, advance only after the proof, then resume the old
-operation and reject it for expired credentials. This ADR neither provisions
+expire the lease, attempt takeover, wait through bounded IAM propagation and
+every quiescence observation, advance only after the proof, then resume the old
+operation and reject it through the explicit deny-all fence. This ADR neither provisions
 that external service/principals nor invokes tofu/AWS.
 
 For remote validation the provider first observes exact-instance SSM `Online`
@@ -303,15 +387,23 @@ Merging this plan **never authorizes dispatch**. Before implementation PR public
 and verify the exact PR head SHA in **Quality**, **Secret scan**, **Images**, and every applicable root PR job. Required protected-PR evidence is exactly those successful exact-head jobs—not a synthetic merge ref and not a skipped native job. Native remains a later separately authorized
 gate; product and KVM remain later gates. Main-push CI may observe merged bytes, but grants no authority and is not PR-head substitute evidence. `workflow_dispatch`, product workflow, KVM workflow, and every Stage2/AWS workflow remain forbidden by this plan; no AWS workflow is created or enabled.
 
-Those CI results are evidence only, not product/KVM execution authority. Product/KVM runs may be considered only in a later exact protected-main implementation gate after focused validation,
+Those CI results are evidence only, not product/KVM execution authority. An
+offline plan draft is only a non-AWS artifact and cannot discover, authenticate,
+or assert a control account, bucket, role, backend, or live compatibility. It is
+distinct from later, separately authorized **authenticated control-account
+planning**, which may authenticate the named planning principal and inspect the
+pre-existing backend but still grants no workload credential, plan apply, or
+resource effect. Product/KVM runs may be considered only in a later exact
+protected-main implementation gate after focused validation,
 independent exact-tree reviews, changed-since-review checks, and the required exact-head PR checks. That gate must mechanically admit the complete profile/probe matrix, sealed execution closure, limits, image provenance, failure
 handoff, and shared `git-tools.sh` gate. It may authorize only first-created attempt-one product/KVM runs for that exact commit, never cancellation replacement, concurrency cancellation, rerun, retry, or redispatch.
 
 The required pre-H order is exact:
 
-1. separately reviewed pre-source compatibility design (including the pinned
-   non-AWS compatibility gate and the role/fence/evidence contract), with no
-   source, credential, backend, provider, or dispatch effect;
+1. separately reviewed offline pre-source compatibility design (including the
+   pinned non-AWS compatibility gate and the role/fence/evidence contract), with
+   no source, credential, backend, provider, or dispatch effect; authenticated
+   control-account planning remains a later separately authorized gate;
 2. corrected source;
 3. focused tests;
 4. separately authorized deterministic readiness regeneration and freshness check;
@@ -322,11 +414,13 @@ The required pre-H order is exact:
 9. recovery/residue validation and two independent audits;
 10. final full validation and deterministic regeneration;
 11. exact-tree reviews and changed-since-review checks;
-12. separately reviewed pre-dispatch review of the exact candidate, external
-    custody, normal/cleanup role split, fence proof, v3 evidence boundaries,
-    and unchanged denial inventory;
-13. retirement/freeze decision; then
-14. H.
+12. separately authorized authenticated control-account planning and native
+    backend compatibility gate, with no workload credential or resource effect;
+13. separately reviewed pre-dispatch review of the exact candidate, external
+    custody, normal/backend/cleanup role split, fence proof, v3 evidence
+    boundaries, and unchanged denial inventory;
+14. retirement/freeze decision; then
+15. H.
 
 The no-mint pre-H rehearsal binds its exact candidate publication/readback and
 may not mint credentials/resources or claim production. It does **not** require
