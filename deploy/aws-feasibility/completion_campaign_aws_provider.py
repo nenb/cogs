@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import stat
@@ -45,7 +46,9 @@ ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 TOFU = ROOT / "tofu"
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
-TOFU_PROVIDER = ROOT / "terraform-provider-aws_v6.54.0_x5"
+PROVIDER_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+PACKAGE_MAX_FILES = 64
+PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
 AWS = Path("/usr/local/bin/aws")
 PYTHON = Path("/usr/bin/python3")
 APPROVAL = ROOT / "approval.json"
@@ -134,6 +137,52 @@ def _write_once(path: Path, raw: bytes, mode: int = 0o600) -> None:
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def _package_binary() -> Path:
+    """Recheck the exact staged unpacked package before every OpenTofu call."""
+    manifest = decode(_read(ROOT / "provider-package.json", 64 * 1024), 64 * 1024)
+    _require(set(manifest) == {"version", "prefix", "root_mode", "file_count", "total_bytes",
+             "files", "provider_path", "provider_binary_sha256"}
+             and manifest["version"] == "cogs.stage2-opentofu-provider-package/v1"
+             and manifest["prefix"] == PROVIDER_PREFIX and type(manifest["files"]) is list
+             and 1 <= manifest["file_count"] == len(manifest["files"]) <= PACKAGE_MAX_FILES
+             and type(manifest["total_bytes"]) is int and 0 < manifest["total_bytes"] <= PACKAGE_MAX_BYTES)
+    root = ROOT / "provider-mirror" / PROVIDER_PREFIX
+    root_info = root.lstat()
+    _require(stat.S_ISDIR(root_info.st_mode) and not root.is_symlink()
+             and stat.S_IMODE(root_info.st_mode) == manifest["root_mode"])
+    names, total = set(), 0
+    for row in manifest["files"]:
+        _require(type(row) is dict and set(row) == {"name", "mode", "size", "sha256"}
+                 and type(row["name"]) is str and re.fullmatch(r"[A-Za-z0-9._+-]+", row["name"]) is not None
+                 and row["name"] not in names and type(row["mode"]) is int and 0 <= row["mode"] <= 0o777
+                 and type(row["size"]) is int and 0 < row["size"] <= PACKAGE_MAX_BYTES
+                 and type(row["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is not None)
+        names.add(row["name"]); path = root / row["name"]
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                     and stat.S_IMODE(before.st_mode) == row["mode"] and before.st_size == row["size"])
+            digest = hashlib.sha256(); remaining = before.st_size
+            while remaining:
+                block = os.read(descriptor, min(1024 * 1024, remaining))
+                _require(block); digest.update(block); remaining -= len(block)
+            after = os.fstat(descriptor)
+            _require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                     and digest.hexdigest() == row["sha256"])
+        finally: os.close(descriptor)
+        total += row["size"]
+    entries = tuple(root.iterdir())
+    _require(all(path.is_file() and not path.is_symlink() for path in entries)
+             and {path.name for path in entries} == names and total == manifest["total_bytes"])
+    provider = manifest["provider_path"]
+    _require(type(provider) is str and provider in names and provider.startswith("terraform-provider-aws")
+             and manifest["provider_binary_sha256"] == next(row["sha256"] for row in manifest["files"]
+                                                              if row["name"] == provider))
+    return root / provider
 
 
 def _read(path: Path, maximum: int = MAX_OUTPUT) -> bytes:
@@ -278,9 +327,10 @@ class FixedProvider:
                  "AWS CLI differs from authenticated planning bytes")
         self.aws_identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
                              seen.st_gid, seen.st_size, seen.st_mtime_ns, seen.st_ctime_ns)
+        self.provider_binary = _package_binary()
         self.tool_identities = {}
         for path, digest in ((TOFU, TOFU_SHA256),
-                             (TOFU_PROVIDER, approval.provider_binary_sha256)):
+                             (self.provider_binary, approval.provider_binary_sha256)):
             tool = path.stat()
             _require(stat.S_ISREG(tool.st_mode) and tool.st_uid == os.geteuid()
                      and (os.geteuid() != 0 or tool.st_gid == 0)
@@ -330,8 +380,10 @@ class FixedProvider:
         _require(set(environment) >= set(ENV) and all(type(key) is str and type(value) is str
                  for key, value in environment.items()), "invalid provider environment")
         if argv[0] == str(TOFU):
+            _require(_package_binary() == self.provider_binary,
+                     "OpenTofu provider package changed before invocation")
             for path, digest in ((TOFU, TOFU_SHA256),
-                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                                 (self.provider_binary, self.approval.provider_binary_sha256)):
                 tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
                     tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
                 _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
@@ -352,8 +404,10 @@ class FixedProvider:
                      and _sha256_file(AWS.resolve()) == self.approval.aws_cli_sha256,
                      "AWS CLI changed during invocation")
         if argv[0] == str(TOFU):
+            _require(_package_binary() == self.provider_binary,
+                     "OpenTofu provider package changed during invocation")
             for path, digest in ((TOFU, TOFU_SHA256),
-                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                                 (self.provider_binary, self.approval.provider_binary_sha256)):
                 tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
                     tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
                 _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
@@ -610,6 +664,11 @@ class FixedProvider:
                  and value["control_revision"] == self.approval.control_revision
                  and value["rootfs_descriptor_sha256"] == self.approval.rootfs_descriptor_sha256)
 
+    def _remaining_timeout(self, deadline: float, cap: float = 60) -> float:
+        remaining = deadline - self.clock()
+        _require(remaining > 0 and cap > 0, "SSM observation deadline elapsed")
+        return min(cap, remaining)
+
     def remote(self, ordinal: int, mode: str, grant_commitment: str,
                authorized_timeout: int) -> bytes:
         _require(type(authorized_timeout) is int and 1 <= authorized_timeout <= 7_800)
@@ -660,7 +719,7 @@ class FixedProvider:
             online = self._run((str(AWS), "--region", self.approval.region, "ssm",
                                 "describe-instance-information", "--filters",
                                 "Key=InstanceIds,Values=" + instance, "--output", "json",
-                                "--no-cli-pager"), 60, True)
+                                "--no-cli-pager"), self._remaining_timeout(deadline), True)
             rows = online.get("InstanceInformationList")
             _require(type(rows) is list, "invalid SSM Online observation")
             if not rows:
@@ -680,13 +739,12 @@ class FixedProvider:
         # send response is lost, it remains an uncertainty rather than a resend.
         _require(not intent.exists(), "remote send already attempted")
         _write_once(intent, canonical(intent_value), 0o400)
-        _require(self.clock() < deadline, "SSM send deadline elapsed")
         sent = self._run((str(AWS), "--region", self.approval.region, "ssm",
                           "send-command", "--instance-ids", instance,
                           "--document-name", "AWS-RunShellScript", "--timeout-seconds",
                           str(authorized_timeout),
                           "--parameters", "file://" + str(parameters), "--output", "json",
-                          "--no-cli-pager"), 60, True)
+                          "--no-cli-pager"), self._remaining_timeout(deadline), True)
         command_id = sent.get("Command", {}).get("CommandId")
         _require(type(command_id) is str and 8 <= len(command_id) <= 128)
         sent_receipt = {**intent_value, "command_id": command_id}
@@ -697,7 +755,7 @@ class FixedProvider:
             observed = self._run((str(AWS), "--region", self.approval.region, "ssm",
                                   "get-command-invocation", "--command-id", command_id,
                                   "--instance-id", instance, "--output", "json",
-                                  "--no-cli-pager"), 60, True,
+                                  "--no-cli-pager"), self._remaining_timeout(deadline), True,
                                  allow_initial_absence=not seen_invocation)
             if observed is None:
                 _require(not seen_invocation and self.clock() < deadline,

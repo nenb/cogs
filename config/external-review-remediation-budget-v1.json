@@ -60,15 +60,18 @@
           "gross_lines": 4457,
           "gross_bytes": 8400000,
           "paths": [
+            ".github/workflows/stage2-production-approval.yml",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
             "deploy/aws-feasibility/completion_campaign_controller.py",
             "deploy/aws-feasibility/completion_campaign_production.py",
             "deploy/aws-feasibility/destroy.sh",
             "scripts/stage2-production-planner.py",
+            "scripts/stage2-stage-production-approval.py",
             "test/aws-stage2-completion-campaign-aws-provider.py",
             "test/aws-stage2-completion-campaign-aws-provider.test.ts",
             "test/stage2-production-planner.py",
-            "test/stage2-production-planner.test.ts"
+            "test/stage2-production-planner.test.ts",
+            "test/stage2-production-workflows.test.ts"
           ]
         },
         {

@@ -19,6 +19,10 @@ assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (21557,20200000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (39557,28200000)
 assert tasks[-1]['paths'] == []
+local=tasks[2]['paths']
+assert 'scripts/stage2-stage-production-approval.py' in local
+assert 'test/stage2-production-workflows.test.ts' in local
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 8400000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1530,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}

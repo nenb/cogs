@@ -110,9 +110,13 @@ jobs:
             "$(jq -er '.pre_aws_package_sha256' "$out/approval.json")"
           cp -R "$RUNNER_TEMP/planning/plans" "$out/plans"
           install -m 0555 "$RUNNER_TEMP/planning/tofu" "$out/tofu"
-          test "$(sha256sum "$RUNNER_TEMP/planning/tofu-provider-aws" | cut -d' ' -f1)" = \
+          test -f "$RUNNER_TEMP/planning/provider-package.json"
+          test -f "$RUNNER_TEMP/planning/provider-package.tar"
+          test "$(jq -er '.provider_binary_sha256' "$RUNNER_TEMP/planning/provider-package.json")" = \
             "$(jq -er '.provider_binary_sha256' "$out/approval.json")"
-          install -m 0555 "$RUNNER_TEMP/planning/tofu-provider-aws" "$out/tofu-provider-aws"
+          install -m 0600 "$RUNNER_TEMP/planning/provider-package.json" "$out/provider-package.json"
+          tar -xf "$RUNNER_TEMP/planning/provider-package.tar" -C "$out"
+          test -d "$out/provider-package"
 
       - name: Bind authentication, signer, principals, and first-created run
         run: |

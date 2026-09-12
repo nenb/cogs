@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tempfile
@@ -89,8 +90,10 @@ class Fake:
         if argv[0] == str(provider.TOFU) and "init" in argv:
             data = Path(environment["TF_DATA_DIR"])
             assert data.is_dir() and Path(environment["TF_CLI_CONFIG_FILE"]).is_file()
-            mirror = data.parents[2] / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64/terraform-provider-aws_v6.54.0_x5"
-            assert mirror.read_bytes() == b"provider"
+            mirror_root = data.parents[2] / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+            assert provider._package_binary() == mirror_root / "terraform-provider-aws_v6.54.0_x5"
+            assert (mirror_root / "LICENSE").read_bytes() == b"license\n"
+            assert (mirror_root / "terraform-provider-aws_v6.54.0_x5").read_bytes() == b"provider"
             (data / "fake-init-cache").write_text("initialized")
             return provider.Completed(b"initialized\n")
         if argv[0] == str(provider.TOFU) and "show" in argv:
@@ -147,16 +150,24 @@ with tempfile.TemporaryDirectory() as temporary:
     provider.STATE_ROOT = root / "provider-state"
     provider.AWS = root / "aws"
     provider.TOFU = root / "tofu"
-    provider.TOFU_PROVIDER = root / "terraform-provider-aws_v6.54.0_x5"
     provider.TOFU_CONFIG = root / "tofu-cli.tfrc"
     provider.TOFU_SHA256 = d("tofu")
     root.mkdir(exist_ok=True)
     account = "000000000000"
     provider.AWS.write_bytes(b"aws"); provider.AWS.chmod(0o700)
     provider.TOFU.write_bytes(b"tofu"); provider.TOFU.chmod(0o700)
-    provider.TOFU_PROVIDER.write_bytes(b"provider"); provider.TOFU_PROVIDER.chmod(0o700)
-    mirror = root / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64/terraform-provider-aws_v6.54.0_x5"
-    mirror.parent.mkdir(parents=True); mirror.write_bytes(b"provider"); mirror.chmod(0o700)
+    mirror_root = root / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+    mirror_root.mkdir(parents=True)
+    (mirror_root / "LICENSE").write_bytes(b"license\n"); (mirror_root / "LICENSE").chmod(0o444)
+    mirror = mirror_root / "terraform-provider-aws_v6.54.0_x5"
+    mirror.write_bytes(b"provider"); mirror.chmod(0o555)
+    manifest = {"version": "cogs.stage2-opentofu-provider-package/v1",
+                "prefix": provider.PROVIDER_PREFIX, "root_mode": stat.S_IMODE(mirror_root.stat().st_mode),
+                "file_count": 2, "total_bytes": 16,
+                "files": [{"name": "LICENSE", "mode": 0o444, "size": 8, "sha256": d("license\n")},
+                          {"name": mirror.name, "mode": 0o555, "size": 8, "sha256": d("provider")}],
+                "provider_path": mirror.name, "provider_binary_sha256": d("provider")}
+    (root / "provider-package.json").write_bytes(raw(manifest))
     provider.TOFU_CONFIG.write_text('provider_installation {\n  filesystem_mirror {\n    path = "' + str(root / "provider-mirror") + '"\n  }\n}\n')
     provider.ENV = {**provider.ENV, "TF_CLI_CONFIG_FILE": str(provider.TOFU_CONFIG)}
     plan_bytes = b"reviewed-plan-bytes"
@@ -172,9 +183,30 @@ with tempfile.TemporaryDirectory() as temporary:
     assert approval_identity == (0o600, os.geteuid(), 1,
                                  approval_stat.st_size), approval_identity
     boundary = provider.FixedProvider(fake, clock=clock, sleeper=clock.sleep)
+    license_path = mirror_root / "LICENSE"; original_license = license_path.read_bytes()
+    def package_rejected(label, mutate, restore):
+        mutate()
+        try: provider._package_binary()
+        except (OSError, provider.ProviderBoundaryError): pass
+        else: raise AssertionError(label + " package closure was accepted")
+        restore()
+        assert provider._package_binary() == mirror
+    package_rejected("missing", license_path.unlink,
+                     lambda: (license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    extra = mirror_root / "unexpected"
+    package_rejected("extra", lambda: extra.write_bytes(b"extra"), extra.unlink)
+    package_rejected("replaced", lambda: (license_path.chmod(0o644), license_path.write_bytes(b"replaced")),
+                     lambda: (license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    package_rejected("hardlink", lambda: (license_path.unlink(), os.link(mirror, license_path)),
+                     lambda: (license_path.unlink(), license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    package_rejected("symlink", lambda: (license_path.unlink(), license_path.symlink_to(mirror.name)),
+                     lambda: (license_path.unlink(), license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    # Package identity mutation, even when restored byte-for-byte, requires a
+    # fresh owner; the old owner intentionally retains its changed ctime guard.
+    boundary = provider.FixedProvider(fake, clock=clock, sleeper=clock.sleep)
 
     grants = {}
-    for ordinal in (1, 2, 7):
+    for ordinal in range(1, 8):
         cycle = provider.STATE_ROOT / f"cycle-{ordinal}"; cycle.mkdir(parents=True)
         (cycle / "campaign.tfplan").write_bytes(plan_bytes)
         item = grant(current, ordinal); grants[ordinal] = item
@@ -205,6 +237,12 @@ with tempfile.TemporaryDirectory() as temporary:
         "variables": plan_variables,
         "resource_changes": [{"address": "aws_launch_template.host",
                               "change": {"after": {"image_id": current.ami_id}}}]}))
+    cross_cycle_package = provider.STATE_ROOT / "cycle-3/tf-data/providers" / provider.PROVIDER_PREFIX
+    cross_cycle_package.mkdir(parents=True)
+    try: boundary._local_backend(provider.STATE_ROOT / "cycle-3", grants[3])
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("cross-cycle provider package was adopted")
+    shutil.rmtree(provider.STATE_ROOT / "cycle-3/tf-data")
 
     fake.ssm_mode = "mismatch"
     try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
@@ -231,18 +269,21 @@ with tempfile.TemporaryDirectory() as temporary:
     # Exact-instance registrations may be offline, but foreign, duplicate, and
     # malformed rows are never propagation candidates and no failure sends.
     before_sends = len(send_calls)
-    for rows in ([{"InstanceId": "i-foreign", "PingStatus": "Online"}],
-                 [{"InstanceId": f"i-{1:017x}", "PingStatus": "Online"}, {"InstanceId": f"i-{1:017x}", "PingStatus": "Online"}],
-                 [{"InstanceId": f"i-{1:017x}"}]):
+    for ordinal, rows in ((3, [{"InstanceId": "i-foreign", "PingStatus": "Online"}]),
+                          (4, [{"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}, {"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}]),
+                          (5, [{"InstanceId": f"i-{5:017x}"}])):
         fake.ssm_rows = [rows]
-        try: boundary.remote(1, grants[1].mode, grants[1].grant_commitment, 60)
+        try: boundary.remote(ordinal, grants[ordinal].mode, grants[ordinal].grant_commitment, 60)
         except provider.ProviderBoundaryError: pass
         else: raise AssertionError("invalid SSM registration accepted")
-    fake.ssm_rows = [[{"InstanceId": f"i-{1:017x}", "PingStatus": "Inactive"}]]
-    try: boundary.remote(1, grants[1].mode, grants[1].grant_commitment, 1)
+    fake.ssm_rows = [[{"InstanceId": f"i-{6:017x}", "PingStatus": "Inactive"}]]
+    try: boundary.remote(6, grants[6].mode, grants[6].grant_commitment, 1)
     except provider.ProviderBoundaryError: pass
     else: raise AssertionError("offline SSM registration exceeded deadline")
     assert len([call for call, _, _ in fake.calls if "send-command" in call]) == before_sends
+    ssm_timeouts = [timeout for call, timeout, _ in fake.calls
+                    if call[0] == str(provider.AWS) and "ssm" in call]
+    assert ssm_timeouts and all(0 < timeout <= 60 for timeout in ssm_timeouts)
     shell = json.loads((provider.STATE_ROOT / "cycle-7/ssm-parameters.json").read_bytes())["commands"][0]
     assert f'origin {current.qualification_revision}' in shell and '$w/G' not in shell
     assert 'w=/root/cogs-stage2-bootstrap; owned=0' in shell

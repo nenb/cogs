@@ -131,11 +131,13 @@ test("future campaign has one sealed caller, explicit credential files, recovery
   assert.match(stager, /aws-credentials/u);
   assert.match(stager, /ASIA\[A-Z0-9\]/u);
   assert.match(stager, /"\/usr\/bin\/unshare", "--net"/u);
-  assert.match(stager, /terraform-provider-aws_v6\.54\.0_x5/u);
+  assert.match(stager, /cogs\.stage2-opentofu-provider-package\/v1/u);
+  assert.match(stager, /PACKAGE_MAX_FILES = 64/u);
+  assert.match(stager, /st_nlink == 1/u);
   assert.match(stager, /filesystem_mirror/u);
   assert.match(stager, /provider-mirror/u);
   assert.match(stager, /registry\.opentofu\.org\/hashicorp\/aws/u);
-  assert.match(stager, /provider-mirror\/" \+ mirror: provider_binary/u);
+  assert.match(stager, /provider_package\(mirror_root, provider_manifest\)/u);
   assert.doesNotMatch(stager, /dev_overrides/u);
   assert.match(campaign, /role_duration_seconds/u);
   assert.match(campaign, /expires_unix_ns/u);

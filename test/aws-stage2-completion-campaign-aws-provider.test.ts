@@ -26,6 +26,9 @@ test("inventory owns complete pagination and explicit ENI and EIP public-address
   assert.match(source, /remote-send\.intent\.json/u);
   assert.match(source, /_sha256_file\(plan\) == grant\.plan_sha256/u);
   assert.match(source, /ConnectionLost", "Inactive"/u);
+  assert.match(source, /def _remaining_timeout[\s\S]*remaining > 0[\s\S]*min\(cap, remaining\)/u);
+  assert.match(source, /self\._remaining_timeout\(deadline\)/u);
+  assert.match(source, /cogs\.stage2-opentofu-provider-package\/v1/u);
   assert.match(source, /InvocationDoesNotExist/u);
   assert.match(source, /inventory_observer_principal_commitment/u);
   assert.match(source, /eni_public_associations/u);

@@ -175,7 +175,9 @@ with tempfile.TemporaryDirectory() as temporary:
             assert data.is_dir() and data.parent == root / "output" / "plans"
             provider_root = data / "providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
             provider_root.mkdir(parents=True, exist_ok=True)
-            (provider_root / "tofu-provider-aws_v6.54.0_x5").write_bytes(b"provider")
+            (provider_root / "LICENSE").write_bytes(b"license\n")
+            (provider_root / "terraform-provider-aws_v6.54.0_x5").write_bytes(b"provider")
+            (provider_root / "terraform-provider-aws_v6.54.0_x5").chmod(0o755)
             return b"initialized\n"
         output_path = next((item[5:] for item in arguments if item.startswith("-out=")), None)
         if output_path is not None:
@@ -236,6 +238,13 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "runtime_commitment" not in draft
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).read_bytes() == package_path.read_bytes()
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).stat().st_mode & 0o777 == 0o600
+    provider_manifest = json.loads((output / planner.PACKAGE_MANIFEST).read_bytes())
+    package_root = output / "provider-package"
+    assert planner.provider_package(package_root) == provider_manifest
+    assert (output / "provider-package.tar").is_file()
+    assert {row["name"] for row in provider_manifest["files"]} == {
+        "LICENSE", "terraform-provider-aws_v6.54.0_x5"}
+    assert provider_manifest["provider_binary_sha256"] == d("provider")
     assert len(draft["plan_sha256s"]) == len(set(draft["plan_sha256s"])) == 7
     for ordinal in range(1, 8):
         staged = json.loads((output / "plans" / f"{ordinal:02d}.staged-plan.json").read_bytes())
