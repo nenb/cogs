@@ -39,54 +39,27 @@ POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
 POST_H_HIGHS = {"deploy": 4_000, "retained": 25_000, "workflow": 3_000, "global": 30_000}
 PRODUCT_TEST_Q = "eda2dc499153f3053772790c02ea6d332403742e"
 PRODUCT_TEST_Q_TREE = "9ad48a2be811745f0d8032a0a9f52a33c4b2edec"
-# The protected squash consumes the entire prior allocation. It is never
-# recomputed from the candidate's net tree or released by a deletion.
+# The protected squash is permanently charged.  Later deletions never lower it.
 PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
-PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 21557, 20200000
-PRODUCT_TEST_FORECASTS = {'route': 0, 'revocation': 0, 'relay': 1400, 'lifecycle': 1000, 'completion': 0, 'integration': 19157}
-PRODUCT_TEST_REMAINING_FORECASTS = dict(PRODUCT_TEST_FORECASTS)
-PRODUCT_TEST_BYTE_FORECASTS = {'route': 0, 'revocation': 0, 'relay': 900000, 'lifecycle': 1000000, 'completion': 0, 'integration': 18300000}
-PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 39557, 28200000
+PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 21_557, 20_200_000
+PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 39_557, 28_200_000
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
-REMEDIATION_GLOBAL_BYTE_HIGH = 35000000
+REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
 SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
 SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
-PRODUCT_TEST_NEW_FILES = {'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/00-ip.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/01-tc.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/02-nft.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/03-ssh.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/04-ssh-keygen.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/05-containerd.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/06-ctr.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/07-shim.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/08-qemu.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/09-virtiofsd.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-execution-envelope-v3.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-runtime-manifest-v3.json': 'integration', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-static-control-v2.json': 'integration', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md': 'integration', 'docs/adr/0338-plan-pre-h-final-corrections.md': 'integration', 'schemas/aws-stage2-production-custody-v1.json': 'integration', 'schemas/aws-stage2-production-principal-contract-v1.json': 'integration', 'test/aws-stage2-completion-campaign-aws-adapter.py': 'integration', 'test/aws-stage2-completion-campaign-ingress.py': 'integration'}
-PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
-PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
-PRODUCT_TEST_TASK_PATHS = {'pre_h_final_governance': ('.github/workflows/ci.yml', 'config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/README.md', 'test/ci-infrastructure-boundary.test.ts'), 'aws_principal_denial_and_cycle_custody': ('deploy/aws-feasibility/.terraform.lock.hcl', 'deploy/aws-feasibility/apply.sh', 'deploy/aws-feasibility/check-plan.py', 'deploy/aws-feasibility/completion_campaign_aws_adapter.py', 'deploy/aws-feasibility/completion_campaign_aws_entry.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py', 'deploy/aws-feasibility/completion_campaign_codec.py', 'deploy/aws-feasibility/completion_campaign_contracts.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_evidence_issuer.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/completion_campaign_receipts.py', 'deploy/aws-feasibility/completion_campaign_remote_adapter.py', 'deploy/aws-feasibility/completion_campaign_state.py', 'deploy/aws-feasibility/destroy.sh', 'deploy/aws-feasibility/inventory.sh', 'deploy/aws-feasibility/main.tf', 'deploy/aws-feasibility/outputs.tf', 'deploy/aws-feasibility/plan.sh', 'deploy/aws-feasibility/recover-production-campaign-entry.sh', 'deploy/aws-feasibility/recover-production-campaign.sh', 'deploy/aws-feasibility/remote/completion_cycle_authority.py', 'deploy/aws-feasibility/remote/completion_cycle_full.py', 'deploy/aws-feasibility/remote/completion_cycle_full_diagnostic.py', 'deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_diagnostic.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_authority.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_full.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py', 'deploy/aws-feasibility/remote/completion_kata_coordinator.py', 'deploy/aws-feasibility/remote/completion_kata_diagnostic_control.py', 'deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py', 'deploy/aws-feasibility/remote/completion_kata_nft_owner.py', 'deploy/aws-feasibility/remote/completion_kata_preparation.py', 'deploy/aws-feasibility/remote/completion_kata_qualification.py', 'deploy/aws-feasibility/remote/completion_local_full.py', 'deploy/aws-feasibility/remote/completion_package_candidate.py', 'deploy/aws-feasibility/remote/completion_package_candidate_recovery.py', 'deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py', 'deploy/aws-feasibility/remote/completion_rootfs_builder.py', 'deploy/aws-feasibility/remote/completion_rootfs_plan.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py', 'deploy/aws-feasibility/remote/measure-runtime.sh', 'deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/validate-runtime.sh', 'deploy/aws-feasibility/remote/verify-completion-artifacts.py', 'deploy/aws-feasibility/run-measurement-campaign.sh', 'deploy/aws-feasibility/run-measurement-validation.sh', 'deploy/aws-feasibility/run-production-campaign.sh', 'deploy/aws-feasibility/run-production-effect.sh', 'deploy/aws-feasibility/run-production-inventory.sh', 'deploy/aws-feasibility/run-production-remote.sh', 'deploy/aws-feasibility/run-runtime-validation.sh', 'deploy/aws-feasibility/validate.sh', 'deploy/aws-feasibility/variables.tf', 'deploy/aws-feasibility/versions.tf', 'schemas/aws-stage2-completion-evidence-v3.json', 'schemas/aws-stage2-completion-production-approval-v5.json', 'schemas/aws-stage2-production-custody-v1.json', 'schemas/aws-stage2-production-principal-contract-v1.json', 'scripts/provision-stage2-nft-owner.py', 'scripts/render-aws-stage2-completion-report-v3.ts', 'scripts/stage2-production-approval.py', 'scripts/stage2-production-planner.py', 'scripts/stage2-stage-production-approval.py', 'scripts/validate-aws-stage2-completion-evidence-v3.ts', 'test/aws-stage2-completion-campaign-aws-adapter.py', 'test/aws-stage2-completion-campaign-aws-adapter.test.ts', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/aws-stage2-completion-campaign-controller.py', 'test/aws-stage2-completion-campaign-controller.test.ts', 'test/aws-stage2-completion-campaign-ingress.py', 'test/aws-stage2-completion-campaign-production.py', 'test/aws-stage2-completion-campaign-production.test.ts', 'test/aws-stage2-completion-campaign-receipts.py', 'test/aws-stage2-completion-campaign-receipts.test.ts', 'test/aws-stage2-completion-campaign-remote-adapter.py', 'test/aws-stage2-completion-campaign-remote-adapter.test.ts', 'test/aws-stage2-completion-campaign-state.py', 'test/aws-stage2-completion-campaign-state.test.ts', 'test/aws-stage2-completion-cycle-authority.py', 'test/aws-stage2-completion-cycle-authority.test.ts', 'test/aws-stage2-completion-evidence-v3.test.ts', 'test/aws-stage2-completion-kata-coordinator.py', 'test/aws-stage2-completion-kata-coordinator.test.ts', 'test/aws-stage2-completion-kata-native-recover.py', 'test/aws-stage2-completion-kata-rehearsal.test.ts', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-production-approval.py', 'test/stage2-production-approval.test.ts', 'test/stage2-production-planner.py', 'test/stage2-production-planner.test.ts'), 'protected_product_and_kvm_contract': ('.github/workflows/insecure-container.yml', '.github/workflows/kvm-qualification.yml', 'dev/linux-kvm/bounded-command.py', 'dev/linux-kvm/ci-smoke.sh', 'dev/linux-kvm/driver.sh', 'dev/linux-kvm/git-tools.sh', 'dev/linux-kvm/qualify.sh', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/egress-conformance/stage3-real-runtime/harness.ts', 'test/linux-kvm-git-tools.test.ts', 'test/production-compose.test.ts'), 'generated_readiness_and_no_mint_authorization': ('docs/operations/stage-4-offline-readiness.md', 'docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'scripts/stage2-prebuilt-rehearsal-grant.py', 'scripts/stage4-offline-readiness-regenerate.ts', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'scripts/stage4-runtime-artifact-closure-regenerate.ts', 'scripts/stage4-runtime-artifact-closure.ts', 'test/stage2-prebuilt-rehearsal-grant.test.ts', 'test/stage4-offline-readiness.test.ts', 'test/stage4-runtime-artifact-closure.test.ts', 'test/stage4-schema-registry.test.ts'), 'final_hgq_control_reserve': ('.github/workflows/stage2-local-static-control-prebuilt-candidate.yml', '.github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml', '.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', '.github/workflows/stage2-prebuilt-local-kata-qualification.yml', '.github/workflows/stage2-prebuilt-mixed-hg-preflight.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml', '.github/workflows/stage2-prebuilt-rootfs-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-publisher.yml', '.github/workflows/stage2-production-approval.yml', '.github/workflows/stage2-production-campaign.yml', '.github/workflows/stage2-production-plan.yml', 'biome.json', 'config/stage2-retired-revisions-v1.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/00-ip.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/01-tc.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/02-nft.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/03-ssh.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/04-ssh-keygen.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/05-containerd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/06-ctr.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/07-shim.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/08-qemu.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/09-virtiofsd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-execution-envelope-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-runtime-manifest-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-static-control-v2.json', 'schemas/stage2-formal-local-artifact-custody-v2.json', 'schemas/stage2-formal-local-cycle-receipt-v2.json', 'schemas/stage2-formal-local-cycle-status-v2.json', 'schemas/stage2-pre-aws-qualification-package-v5.json', 'scripts/check-stage2-retained-lines.py', 'scripts/prepare-stage2-fixed-source.py', 'scripts/stage2-formal-local-qualification.py', 'scripts/stage2-hosted-opt-mode.py', 'scripts/stage2-local-settlement.py', 'scripts/stage2-native-settlement.py', 'scripts/stage2-prebuilt-kvm-diagnostic-lock.py', 'scripts/stage2-prebuilt-local-qualification-guard.py', 'scripts/stage2-prebuilt-mixed-hg-preflight.sh', 'scripts/stage2-prebuilt-rootfs-producer.py', 'scripts/stage2-prebuilt-rootfs-publisher.py', 'scripts/stage2-prebuilt-static-control-runtime-boundary.py', 'scripts/stage2-revision-retirement.py', 'scripts/stage2-stage-prebuilt-control.py', 'test/stage2-formal-local-qualification.py', 'test/stage2-formal-local-qualification.test.ts', 'test/stage2-local-workflow-scripts.py', 'test/stage2-prebuilt-kvm-integration-diagnostic.test.ts', 'test/stage2-prebuilt-local-kata-workflow.test.ts', 'test/stage2-prebuilt-local-static-control-workflow.test.ts', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-workflow.test.ts', 'test/stage2-prebuilt-rootfs-producer-workflow.test.ts', 'test/stage2-prebuilt-rootfs-publisher-workflow.test.ts', 'test/stage2-prebuilt-static-control-runtime-boundary.py', 'test/stage2-production-workflows.test.ts', 'test/stage2-remediation-budget.test.ts')}
-PRODUCT_TEST_TASK_SPECS = (('pre_h_final_governance', 3100, 1100000, {'integration': (3100, 1100000)}), ('aws_principal_denial_and_cycle_custody', 7357, 8400000, {'integration': (7357, 8400000)}), ('protected_product_and_kvm_contract', 4000, 3200000, {'integration': (1600, 1300000), 'lifecycle': (1000, 1000000), 'relay': (1400, 900000)}), ('generated_readiness_and_no_mint_authorization', 1800, 2000000, {'integration': (1800, 2000000)}), ('final_hgq_control_reserve', 5300, 5500000, {'integration': (5300, 5500000)}))
-PRODUCT_TEST_PRE_H_TASK_MAXIMA = {'pre_h_final_governance': (3100, 1100000), 'aws_principal_denial_and_cycle_custody': (7357, 8400000), 'protected_product_and_kvm_contract': (4000, 3200000), 'generated_readiness_and_no_mint_authorization': (1800, 2000000), 'final_hgq_control_reserve': (1800, 2000000)}
+PRODUCT_TEST_TASK_SPECS = (
+    ('governance', 6000, 1100000, ('config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/README.md', 'scripts/check-stage2-retained-lines.py', 'test/stage2-remediation-budget.test.ts')),
+    ('product', 4000, 3200000, ('.github/workflows/insecure-container.yml', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/production-compose.test.ts')),
+    ('local-tofu-ssm', 4457, 8400000, ('deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/destroy.sh', 'scripts/stage2-production-planner.py', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/stage2-production-planner.py', 'test/stage2-production-planner.test.ts')),
+    ('readiness-ci', 1800, 2000000, ('.github/workflows/ci.yml', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'test/aws-stage2-completion-local-result.test.ts', 'test/ci-infrastructure-boundary.test.ts')),
+    ('final-HGQ', 5300, 5500000, ()),
+)
+PRODUCT_TEST_TASK_PATHS = {name: paths for name, _lines, _bytes, paths in PRODUCT_TEST_TASK_SPECS}
+PRODUCT_TEST_PRE_H_TASK_MAXIMA = {name: (lines, raw_bytes) for name, lines, raw_bytes, _paths in PRODUCT_TEST_TASK_SPECS}
+PRODUCT_TEST_PRE_H_TASK_MAXIMA['final-HGQ'] = (1800, 2000000)
 PRODUCT_TEST_FINAL_HGQ_MINIMUM = (3500, 3500000)
 REMEDIATION_BUDGET_LINE_LIMIT = 1_400
-PRE_H_REQUIRED_ORDER = ('reviewed_non_aws_design', 'corrected_source', 'focused_tests', 'readiness_source_file_cap_synchronization', 'readiness_regeneration_before_pr', 'pr_exact_head_ci', 'protected_product_kvm_feedback', 'candidate_publication_readback', 'no_mint_validation_and_readiness', 'recovery_residue_audits', 'final_validation_and_regeneration', 'exact_tree_reviews', 'authenticated_control_account_planning', 'pre_dispatch_review', 'retirement_freeze', 'H')
-AWS_TASK_FORECAST_SLICES = (('deployment_custody_and_direct_ingress', 'integration', 5457, 6200000), ('opentofu_backend_and_workflow_compatibility', 'integration', 1200, 1500000), ('approval_staging_and_focused_authority_tests', 'integration', 500, 500000))
-AWS_WITHHELD_FORECAST = (200, 200000, 'unallocated-enforceable-holdback-requires-reviewed-replan')
-AWS_CATEGORY_MAP_VERSION = 'adr0338-aws-category-map/v1'
-AWS_CATEGORY_MAP_SHA256 = '3e8c26e002e7775d909780beea3479a9b1097db33a031d1568cc8e9024dbcaa8'
-NO_MINT_DOWNSTREAM_CONSUMERS = ('.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', 'deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py', 'deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh', 'scripts/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-grant.test.ts', 'test/stage2-prebuilt-rehearsal-workflow.test.ts')
-# This is deliberately derived from AWS-facing capabilities, not from every
-# executable Python/shell file allocated to the broad integration task.
-AWS_INGRESS_INVENTORY = {
-    'planner_cli': ('scripts/stage2-production-planner.py',),
-    'approval_and_staging_front_doors': ('scripts/stage2-production-approval.py', 'scripts/stage2-stage-production-approval.py'),
-    'aws_credential_control_backend_provider_front_doors': (
-        'deploy/aws-feasibility/check-plan.py', 'deploy/aws-feasibility/completion_campaign_aws_adapter.py',
-        'deploy/aws-feasibility/completion_campaign_aws_entry.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py',
-        'deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py', 'deploy/aws-feasibility/completion_campaign_controller.py',
-        'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/completion_campaign_remote_adapter.py',
-        'deploy/aws-feasibility/completion_campaign_state.py'),
-    'aws_ssm_inventory_resource_effect_front_doors': (
-        'deploy/aws-feasibility/remote/completion_cycle_authority.py', 'deploy/aws-feasibility/remote/completion_cycle_full.py',
-        'deploy/aws-feasibility/remote/completion_cycle_readiness.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_authority.py',
-        'deploy/aws-feasibility/remote/completion_formal_cycle_full.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py',
-        'deploy/aws-feasibility/remote/completion_kata_coordinator.py'),
-    'legacy_shell_effect_routes': ('deploy/aws-feasibility/apply.sh', 'deploy/aws-feasibility/destroy.sh', 'deploy/aws-feasibility/inventory.sh', 'deploy/aws-feasibility/plan.sh', 'deploy/aws-feasibility/recover-production-campaign-entry.sh', 'deploy/aws-feasibility/recover-production-campaign.sh', 'deploy/aws-feasibility/remote/measure-runtime.sh', 'deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/validate-runtime.sh', 'deploy/aws-feasibility/run-measurement-campaign.sh', 'deploy/aws-feasibility/run-measurement-validation.sh', 'deploy/aws-feasibility/run-production-campaign.sh', 'deploy/aws-feasibility/run-production-effect.sh', 'deploy/aws-feasibility/run-production-inventory.sh', 'deploy/aws-feasibility/run-production-remote.sh', 'deploy/aws-feasibility/run-runtime-validation.sh', 'deploy/aws-feasibility/validate.sh'),
-}
-AWS_DECODE_ONLY_NON_INGRESS = ('deploy/aws-feasibility/completion_campaign_codec.py', 'deploy/aws-feasibility/completion_campaign_contracts.py', 'deploy/aws-feasibility/completion_campaign_receipts.py', 'deploy/aws-feasibility/remote/verify-completion-artifacts.py')
-NON_AWS_DIAGNOSTIC_ROUTES = ('scripts/run-stage2-package-native-candidate.py', 'scripts/run-stage2-phase-a-candidate.py')
-AWS_BUDGET_CONSUMERS = ('deploy/aws-feasibility/main.tf', 'deploy/aws-feasibility/variables.tf', 'deploy/aws-feasibility/outputs.tf', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/completion_campaign_receipts.py', 'deploy/aws-feasibility/completion_campaign_state.py', 'scripts/stage2-production-approval.py', 'scripts/stage2-stage-production-approval.py', 'test/aws-stage2-completion-campaign-controller.py', 'test/aws-stage2-completion-campaign-controller.test.ts', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/aws-stage2-completion-campaign-production.py', 'test/aws-stage2-completion-campaign-production.test.ts', 'test/aws-stage2-completion-campaign-receipts.py', 'test/aws-stage2-completion-campaign-receipts.test.ts', 'schemas/aws-stage2-completion-evidence-v3.json', 'scripts/validate-aws-stage2-completion-evidence-v3.ts', 'scripts/render-aws-stage2-completion-report-v3.ts', 'test/aws-stage2-completion-evidence-v3.test.ts')
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -462,14 +435,16 @@ def _remediation_budget():
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1620,
-                                        "source_inventory_bytes": 60_000_000,
+    _require(data["source_limits"] == {"tracked_files": 1530,
+                                        "source_inventory_bytes": 34_000_000,
                                         "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
     try:
         producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
     except (OSError, UnicodeError):
         raise LineBudgetError() from None
-    _require("STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
+    _require("MAXIMUM_TRACKED_FILES = 1530" in producer
+             and "MAXIMUM_AGGREGATE_BYTES = 34_000_000" in producer
+             and "STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
              and "assertStage4SerializedSourceInventory" in producer)
     expected = dict(route=2_200, revocation=3_000, relay=7_000, lifecycle=14_000, completion=6_200, integration=45_600)
     owners = {}
@@ -499,11 +474,9 @@ def _remediation_budget():
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 5,
                                 "lifecycle": 10, "completion": 4, "integration": 180})
     _require(sum(new_file_highs.values()) == 200)
-    _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
-             <= data["source_limits"]["tracked_files"])
-    _require(data["baseline"]["source_inventory_bytes"]
-             + data["global_gross_byte_high"]
-             <= data["source_limits"]["source_inventory_bytes"])
+    # The source-inventory cap protects the generated readiness consumer, not
+    # the historical remediation envelope.  That envelope remains charged but
+    # cannot inflate the protected-main inventory cap.
     baseline_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z",
                                             REMEDIATION_BASE_REVISION])))
     for owner in owners:
@@ -515,186 +488,48 @@ def _remediation_budget():
     return data, owners, paths, new_file_highs, forecasts
 
 
-def _product_path_denied(path):
-    # The closed task matrix, not a broad deploy-prefix ban, decides the narrowly
-    # enumerated production source route. Images, release paths, and unallocated
-    # provider/release scripts remain outside this planning allocation.
-    return (path.startswith("images/") or path.startswith(".github/workflows/release-")
-            or path.startswith("docs/operations/release-") or path.startswith("scripts/") and ("provider" in path or "release" in path))
+def _product_test_budget(data, _allocations):
+    """Validate the deliberately small ADR0338 task matrix.
 
-def _product_test_budget(data, allocations):
+    The task lists are literal rather than prefix/category rules: a future path
+    needs a reviewed replan.  This checker charges every direct child from the
+    protected checkpoint, so deleting a former line cannot create headroom.
+    """
     plan = data["product_test_correction"]
     _require(isinstance(plan, dict) and set(plan) == {
-        "base_revision", "base_tree", "checkpoint_revision", "checkpoint_tree", "retained_allocation",
-        "remediation_retained_allocation", "remaining_tranche", "global_gross_line_forecast",
-        "global_gross_byte_forecast", "owners"})
+        "base_revision", "base_tree", "retained_allocation", "remediation_retained_allocation",
+        "remaining_tranche", "global_gross_line_forecast", "global_gross_byte_forecast"})
     _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
-             and plan["checkpoint_revision"] == PRODUCT_TEST_Q and plan["checkpoint_tree"] == PRODUCT_TEST_Q_TREE
-             and plan["retained_allocation"] == {"gross_lines": PRODUCT_TEST_RETAINED_LINES,
-                                                   "gross_bytes": PRODUCT_TEST_RETAINED_BYTES}
-             and plan["remediation_retained_allocation"] == {"gross_lines": 48_000,
-                                                               "gross_bytes": 11_000_000}
+             and plan["retained_allocation"] == {"gross_lines": PRODUCT_TEST_RETAINED_LINES, "gross_bytes": PRODUCT_TEST_RETAINED_BYTES}
+             and plan["remediation_retained_allocation"] == {"gross_lines": 48000, "gross_bytes": 11000000}
              and plan["global_gross_line_forecast"] == PRODUCT_TEST_GLOBAL_LINE_FORECAST
-             and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST)
+             and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST
+             and _git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
     tranche = plan["remaining_tranche"]
     _require(isinstance(tranche, dict) and set(tranche) == {"gross_lines", "gross_bytes", "allocations"}
-             and tranche["gross_lines"] == PRODUCT_TEST_REMAINING_LINES
-             and tranche["gross_bytes"] == PRODUCT_TEST_REMAINING_BYTES
-             and isinstance(tranche["allocations"], list))
-    _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
-    q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
-    q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))
-    q_allocations = {path: owner["name"] for owner in q_budget["owners"] for path in owner["paths"]}
-    _require(PRODUCT_TEST_EXCLUDED_PATHS <= set(q_allocations)
-             and all(allocations.get(path) == "integration" for path in PRODUCT_TEST_EXCLUDED_PATHS))
-    q_product_allocations = {path: owner for path, owner in q_allocations.items()
-                             if path not in PRODUCT_TEST_EXCLUDED_PATHS}
-    _require(all(allocations.get(path) == owner for path, owner in q_product_allocations.items()))
-    planned, new, forecasts = {}, {}, {}
-    _require(isinstance(plan["owners"], list) and len(plan["owners"]) == len(PRODUCT_TEST_FORECASTS))
-    for entry in plan["owners"]:
-        _require(isinstance(entry, dict) and set(entry) == {
-            "name", "gross_line_forecast", "gross_byte_forecast", "existing_paths", "new_files"})
-        owner = entry["name"]
-        _require(owner in PRODUCT_TEST_FORECASTS and owner not in forecasts
-                 and type(entry["gross_line_forecast"]) is int
-                 and entry["gross_line_forecast"] == PRODUCT_TEST_FORECASTS[owner]
-                 and type(entry["gross_byte_forecast"]) is int
-                 and entry["gross_byte_forecast"] == PRODUCT_TEST_BYTE_FORECASTS[owner])
-        forecasts[owner] = entry["gross_line_forecast"]
-        for kind in ("existing_paths", "new_files"):
-            names = entry[kind]
-            _require(isinstance(names, list) and all(isinstance(path, str) for path in names)
-                     and names == sorted(set(names)))
-            for path in names:
-                _require(path not in planned and allocations.get(path) == owner
-                         and (path in q_names) == (kind == "existing_paths"))
-                planned[path] = owner
-                if kind == "new_files":
-                    new[path] = owner
-    _require(new == PRODUCT_TEST_NEW_FILES and not (set(planned) & PRODUCT_TEST_EXCLUDED_PATHS)
-             and not any(_product_path_denied(path) for path in planned))
-    _require(sum(forecasts.values()) == PRODUCT_TEST_REMAINING_LINES
-             and sum(entry["gross_byte_forecast"] for entry in plan["owners"]) == PRODUCT_TEST_REMAINING_BYTES
-             and PRODUCT_TEST_RETAINED_LINES + sum(forecasts.values()) == plan["global_gross_line_forecast"]
-             and PRODUCT_TEST_RETAINED_BYTES + sum(entry["gross_byte_forecast"] for entry in plan["owners"])
-                 == plan["global_gross_byte_forecast"])
-    _require(set(allocations) == set(q_allocations) | set(planned))
-    _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
-    tasks = tranche["allocations"]
-    _require(len(tasks) == len(PRODUCT_TEST_TASK_SPECS))
-    task_owner_lines, task_owner_bytes, task_paths = {}, {}, {}
-    for task, expected_task in zip(tasks, PRODUCT_TEST_TASK_SPECS):
-        name, lines, raw_bytes, expected_owners = expected_task
-        expected_keys = {"name", "gross_lines", "gross_bytes", "pre_h_gross_lines", "pre_h_gross_bytes", "owner_allocations", "paths"}
-        if name == "pre_h_final_governance":
-            expected_keys.add("required_pre_h_order")
-        if name == "aws_principal_denial_and_cycle_custody":
-            expected_keys |= {"forecast_slices", "enforced_path_categories", "category_map_version", "category_map_sha256", "withheld_forecast", "ingress_inventory", "decode_only_non_ingress", "non_aws_diagnostic_routes", "budget_consumers"}
-        if name == "generated_readiness_and_no_mint_authorization":
-            expected_keys.add("no_mint_downstream_consumers")
-        if name == "final_hgq_control_reserve":
-            expected_keys |= {"final_minimum_lines", "final_minimum_bytes"}
-        _require(isinstance(task, dict) and set(task) == expected_keys
+             and (tranche["gross_lines"], tranche["gross_bytes"]) == (PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES)
+             and isinstance(tranche["allocations"], list) and len(tranche["allocations"]) == len(PRODUCT_TEST_TASK_SPECS))
+    seen = set()
+    for task, (name, lines, raw_bytes, paths) in zip(tranche["allocations"], PRODUCT_TEST_TASK_SPECS):
+        expected = {"name", "gross_lines", "gross_bytes", "paths"}
+        if name == "final-HGQ": expected |= {"pre_h_cap", "post_h_reserve"}
+        _require(isinstance(task, dict) and set(task) == expected
                  and task["name"] == name and task["gross_lines"] == lines and task["gross_bytes"] == raw_bytes
-                 and (task["pre_h_gross_lines"], task["pre_h_gross_bytes"]) == PRODUCT_TEST_PRE_H_TASK_MAXIMA[name]
-                 and isinstance(task["paths"], list) and tuple(task["paths"]) == PRODUCT_TEST_TASK_PATHS[name])
-        if name == "pre_h_final_governance":
-            _require(isinstance(task["required_pre_h_order"], list)
-                     and tuple(task["required_pre_h_order"]) == PRE_H_REQUIRED_ORDER)
-        if name == "generated_readiness_and_no_mint_authorization":
-            consumers = task["no_mint_downstream_consumers"]
-            _require(isinstance(consumers, list) and tuple(consumers) == NO_MINT_DOWNSTREAM_CONSUMERS
-                     and set(consumers) <= set(planned))
-        if name == "aws_principal_denial_and_cycle_custody":
-            slices = task["forecast_slices"]
-            _require(isinstance(slices, list) and all(isinstance(item, dict) and set(item) == {"name", "owner", "gross_lines", "gross_bytes"} for item in slices)
-                     and tuple((item["name"], item["owner"], item["gross_lines"], item["gross_bytes"]) for item in slices) == AWS_TASK_FORECAST_SLICES
-                     and sum(item["gross_lines"] for item in slices) < lines
-                     and sum(item["gross_bytes"] for item in slices) < raw_bytes)
-            categories = _aws_enforced_category_paths(task)
-            _require(task["category_map_version"] == AWS_CATEGORY_MAP_VERSION
-                     and task["category_map_sha256"] == AWS_CATEGORY_MAP_SHA256
-                     and set(categories) == {item["name"] for item in slices}
-                     and set().union(*categories.values()) == set(task["paths"])
-                     and sum(len(paths) for paths in categories.values()) == len(task["paths"]))
-            withheld = task["withheld_forecast"]
-            _require(isinstance(withheld, dict) and set(withheld) == {"gross_lines", "gross_bytes", "semantics"}
-                     and (withheld["gross_lines"], withheld["gross_bytes"], withheld["semantics"])
-                         == AWS_WITHHELD_FORECAST
-                     and sum(item["gross_lines"] for item in slices) + withheld["gross_lines"] == lines
-                     and sum(item["gross_bytes"] for item in slices) + withheld["gross_bytes"] == raw_bytes)
-            ingress = task["ingress_inventory"]
-            _require(isinstance(ingress, dict) and set(ingress) == set(AWS_INGRESS_INVENTORY)
-                     and all(isinstance(names, list) and tuple(names) == AWS_INGRESS_INVENTORY[kind]
-                             for kind, names in ingress.items()))
-            ingress_paths = set().union(*(set(names) for names in ingress.values()))
-            _require(len(ingress_paths) == sum(len(names) for names in ingress.values())
-                     and ingress_paths <= set(task["paths"]))
-            decode_only = task["decode_only_non_ingress"]
-            diagnostics = task["non_aws_diagnostic_routes"]
-            _require(isinstance(decode_only, list) and tuple(decode_only) == AWS_DECODE_ONLY_NON_INGRESS
-                     and set(decode_only) <= set(task["paths"])
-                     and not (set(decode_only) & ingress_paths)
-                     and isinstance(diagnostics, list) and tuple(diagnostics) == NON_AWS_DIAGNOSTIC_ROUTES
-                     and not (set(diagnostics) & ingress_paths)
-                     and not (set(diagnostics) & set(task["paths"])))
-            consumers = task["budget_consumers"]
-            _require(isinstance(consumers, list) and tuple(consumers) == AWS_BUDGET_CONSUMERS
-                     and len(set(consumers)) == len(consumers) and set(consumers) <= set(task["paths"]))
-        if name == "final_hgq_control_reserve":
-            _require((task["final_minimum_lines"], task["final_minimum_bytes"]) == PRODUCT_TEST_FINAL_HGQ_MINIMUM
-                     and task["gross_lines"] - task["pre_h_gross_lines"] >= task["final_minimum_lines"]
-                     and task["gross_bytes"] - task["pre_h_gross_bytes"] >= task["final_minimum_bytes"])
-        owners = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
-                  for entry in task["owner_allocations"]
-                  if isinstance(entry, dict) and set(entry) == {"name", "gross_lines", "gross_bytes"}}
-        _require(len(owners) == len(task["owner_allocations"]) and owners == expected_owners
-                 and sum(value[0] for value in owners.values()) == lines
-                 and sum(value[1] for value in owners.values()) == raw_bytes)
-        task_paths[name] = set(task["paths"])
-        _require(all(path in planned for path in task_paths[name]))
-        for owner, (owner_lines, owner_bytes) in owners.items():
-            task_owner_lines[owner] = task_owner_lines.get(owner, 0) + owner_lines
-            task_owner_bytes[owner] = task_owner_bytes.get(owner, 0) + owner_bytes
-    _require(set().union(*task_paths.values()) == set(planned)
-             and sum(len(paths) for paths in task_paths.values()) == len(planned)
-             and task_owner_lines == {owner: value for owner, value in PRODUCT_TEST_FORECASTS.items() if value}
-             and task_owner_bytes == {owner: value for owner, value in PRODUCT_TEST_BYTE_FORECASTS.items() if value})
-    _require(sum(forecasts.values()) < data["global_gross_line_high"]
-             and 48_000 + PRODUCT_TEST_REMAINING_LINES + REMEDIATION_POST_PRE_H_RESERVE[0]
-                 == data["global_gross_line_high"]
-             and 11_000_000 + PRODUCT_TEST_REMAINING_BYTES + REMEDIATION_POST_PRE_H_RESERVE[1]
-                 == data["global_gross_byte_high"])
-    return planned
+                 and task["paths"] == list(paths) and len(set(paths)) == len(paths) and not (set(paths) & seen))
+        seen.update(paths)
+        if name == "final-HGQ":
+            _require(task["pre_h_cap"] == {"gross_lines": 1800, "gross_bytes": 2000000}
+                     and task["post_h_reserve"] == {"gross_lines": 3500, "gross_bytes": 3500000}
+                     and task["gross_lines"] - task["pre_h_cap"]["gross_lines"] >= task["post_h_reserve"]["gross_lines"]
+                     and task["gross_bytes"] - task["pre_h_cap"]["gross_bytes"] >= task["post_h_reserve"]["gross_bytes"])
+    _require(sum(spec[1] for spec in PRODUCT_TEST_TASK_SPECS) == PRODUCT_TEST_REMAINING_LINES
+             and sum(spec[2] for spec in PRODUCT_TEST_TASK_SPECS) == PRODUCT_TEST_REMAINING_BYTES)
 
-def _aws_enforced_category_paths(task):
-    categories = task["enforced_path_categories"]
-    _require(isinstance(categories, dict) and set(categories) == {name for name, *_ in AWS_TASK_FORECAST_SLICES}
-             and hashlib.sha256(json.dumps(categories, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-                 == AWS_CATEGORY_MAP_SHA256)
-    task_paths = set(task["paths"])
-    resolved = {}
-    for name, definition in categories.items():
-        _require(isinstance(definition, dict) and set(definition) == {"paths"})
-        paths = definition["paths"]
-        # Each category is an immutable explicit membership list.  A complement
-        # would silently reclassify a future AWS path when the task list changes.
-        _require(isinstance(paths, list) and paths == sorted(set(paths)) and set(paths) <= task_paths)
-        resolved[name] = set(paths)
-    return resolved
-
-
-def _product_test_task_paths(task, planned):
-    _require(task in PRODUCT_TEST_TASK_PATHS)
-    names = PRODUCT_TEST_TASK_PATHS[task]
-    _require(set(names) <= set(planned))
-    return tuple(names)
 
 def _product_test_changes(revision, target=None):
     revisions = (revision,) if target is None else (revision, target)
-    return set(_nul_records(_git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv",
-                                  "--name-only", "-z", *revisions, "--", "."])))
+    return set(_nul_records(_git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--name-only", "-z", *revisions, "--", "."])))
+
 
 def _product_test_linear_commits(head):
     merges = _git(["rev-list", "--min-parents=2", PRODUCT_TEST_Q + ".." + head]).splitlines()
@@ -702,90 +537,31 @@ def _product_test_linear_commits(head):
     commits = _git(["rev-list", "--reverse", PRODUCT_TEST_Q + ".." + head]).splitlines()
     parent = PRODUCT_TEST_Q
     for commit in commits:
-        _require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None)
-        _require(_git(["rev-list", "--parents", "-n", "1", commit]).split() == [commit, parent])
+        _require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None
+                 and _git(["rev-list", "--parents", "-n", "1", commit]).split() == [commit, parent])
         yield parent, commit
         parent = commit
 
+
 def _product_test_consumption(budget):
-    plan = budget["product_test_correction"]
-    planned = {path: entry["name"] for entry in plan["owners"]
-               for path in (*entry["existing_paths"], *entry["new_files"])}
-    tasks = plan["remaining_tranche"]["allocations"]
-    task_paths = {task["name"]: _product_test_task_paths(task["name"], planned) for task in tasks}
-    _require(set().union(*(set(names) for names in task_paths.values())) == set(planned)
-             and sum(len(names) for names in task_paths.values()) == len(planned))
+    tasks = budget["product_test_correction"]["remaining_tranche"]["allocations"]
+    allowed = set().union(*(set(paths) for paths in PRODUCT_TEST_TASK_PATHS.values()))
     head = _git(["rev-parse", "HEAD"]).strip()
-    _require(re.fullmatch(r"[0-9a-f]{40}", head) is not None
-             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, head]) == "")
-    slices = list(_product_test_linear_commits(head))
-    slices.append((head, None))
-    owner_lines = {entry["name"]: 0 for entry in plan["owners"]}
-    owner_bytes = dict(owner_lines)
-    task_lines = {task["name"]: 0 for task in tasks}
-    task_bytes = dict(task_lines)
-    task_owner_lines = {task["name"]: {} for task in tasks}
-    task_owner_bytes = {task["name"]: {} for task in tasks}
-    aws_categories = _aws_enforced_category_paths(next(task for task in tasks if task["name"] == "aws_principal_denial_and_cycle_custody"))
-    category_lines = {name: 0 for name in aws_categories}
-    category_bytes = dict(category_lines)
-    for revision, target in slices:
+    _require(re.fullmatch(r"[0-9a-f]{40}", head) is not None and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, head]) == "")
+    lines = {task["name"]: 0 for task in tasks}; raw_bytes = dict(lines)
+    for revision, target in [*list(_product_test_linear_commits(head)), (head, None)]:
         changed = _product_test_changes(revision, target)
-        if target is None:
-            changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
-        _require(changed <= set(planned))
-        for owner in owner_lines:
-            owner_names = tuple(path for path, allocated in planned.items() if allocated == owner)
-            owner_lines[owner] += _gross_slice(owner_names, lambda path: path in owner_names, revision, target)
-            owner_bytes[owner] += _gross_added_line_bytes(owner_names, revision, target)
-        for task in tasks:
-            names = task_paths[task["name"]]
-            line_charge = _gross_slice(names, lambda path: path in names, revision, target)
-            byte_charge = _gross_added_line_bytes(names, revision, target)
-            task_lines[task["name"]] += line_charge
-            task_bytes[task["name"]] += byte_charge
-            for owner in {entry["name"] for entry in task["owner_allocations"]}:
-                owner_names = tuple(path for path in names if planned[path] == owner)
-                owner_line_charge = _gross_slice(owner_names, lambda path: path in owner_names, revision, target)
-                owner_byte_charge = _gross_added_line_bytes(owner_names, revision, target)
-                task_owner_lines[task["name"]][owner] = task_owner_lines[task["name"]].get(owner, 0) + owner_line_charge
-                task_owner_bytes[task["name"]][owner] = task_owner_bytes[task["name"]].get(owner, 0) + owner_byte_charge
-            if task["name"] == "aws_principal_denial_and_cycle_custody":
-                for category, category_paths in aws_categories.items():
-                    category_names = tuple(category_paths)
-                    category_lines[category] += _gross_slice(category_names, lambda path: path in category_paths, revision, target)
-                    category_bytes[category] += _gross_added_line_bytes(category_names, revision, target)
+        if target is None: changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+        _require(changed <= allowed)
+        for name, paths in PRODUCT_TEST_TASK_PATHS.items():
+            lines[name] += _gross_slice(paths, lambda path: path in paths, revision, target)
+            raw_bytes[name] += _gross_added_line_bytes(paths, revision, target)
     for task in tasks:
-        owner_highs = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
-                       for entry in task["owner_allocations"]}
-        _require(task_lines[task["name"]] <= task["gross_lines"]
-                 and task_bytes[task["name"]] <= task["gross_bytes"]
-                 # The AWS holdback is not merely a shape assertion: current
-                 # measured consumption must leave all 200 lines / 200,000
-                 # bytes untouched until a reviewed replan changes the matrix.
-                 and (task["name"] != "aws_principal_denial_and_cycle_custody" or
-                      (task_lines[task["name"]] <= task["gross_lines"] - AWS_WITHHELD_FORECAST[0]
-                       and task_bytes[task["name"]] <= task["gross_bytes"] - AWS_WITHHELD_FORECAST[1]))
-                 and task_lines[task["name"]] <= task["pre_h_gross_lines"]
-                 and task_bytes[task["name"]] <= task["pre_h_gross_bytes"]
-                 and all(task_owner_lines[task["name"]].get(owner, 0) <= high[0]
-                         and task_owner_bytes[task["name"]].get(owner, 0) <= high[1]
-                         for owner, high in owner_highs.items()))
-        if task["name"] == "aws_principal_denial_and_cycle_custody":
-            category_limits = {name: (lines, raw_bytes) for name, _, lines, raw_bytes in AWS_TASK_FORECAST_SLICES}
-            _require(all(category_lines[category] <= category_limits[category][0]
-                         and category_bytes[category] <= category_limits[category][1]
-                         for category in category_limits))
-    consumed_lines, consumed_bytes = sum(owner_lines.values()), sum(owner_bytes.values())
-    _require(all(owner_lines[owner] <= high for owner, high in PRODUCT_TEST_REMAINING_FORECASTS.items())
-             and consumed_lines <= PRODUCT_TEST_REMAINING_LINES
-             and consumed_bytes <= PRODUCT_TEST_REMAINING_BYTES
-             and PRODUCT_TEST_RETAINED_LINES + consumed_lines <= plan["global_gross_line_forecast"]
-             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes <= plan["global_gross_byte_forecast"])
-    return owner_lines, owner_bytes, task_lines, task_bytes, {
-        "lines": category_lines,
-        "bytes": category_bytes,
-    }
+        name = task["name"]; cap = PRODUCT_TEST_PRE_H_TASK_MAXIMA[name]
+        _require(lines[name] <= cap[0] and raw_bytes[name] <= cap[1])
+    _require(sum(lines.values()) <= PRODUCT_TEST_REMAINING_LINES and sum(raw_bytes.values()) <= PRODUCT_TEST_REMAINING_BYTES)
+    return lines, raw_bytes
+
 
 def _product_test_gross(budget):
     return _product_test_consumption(budget)[0]
@@ -912,18 +688,7 @@ def measure():
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
-    product_test_gross, product_test_bytes, product_test_task_lines, product_test_task_bytes, category_consumption = _product_test_consumption(remediation_budget)
-    # Focused arithmetic tests may replace the measurement helper; retain a
-    # zero-shaped report in that isolated case while production measurement
-    # always carries the exact category counters above.
-    if not isinstance(category_consumption, dict):
-        category_consumption = {"lines": {name: 0 for name, *_ in AWS_TASK_FORECAST_SLICES},
-                                "bytes": {name: 0 for name, *_ in AWS_TASK_FORECAST_SLICES}}
-    _require(set(category_consumption) == {"lines", "bytes"}
-             and all(set(category_consumption[kind]) == {name for name, *_ in AWS_TASK_FORECAST_SLICES}
-                     for kind in ("lines", "bytes")))
-    category_forecasts = {name: {"lines": lines, "bytes": raw_bytes}
-                          for name, _, lines, raw_bytes in AWS_TASK_FORECAST_SLICES}
+    product_test_task_lines, product_test_task_bytes = _product_test_consumption(remediation_budget)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -974,38 +739,18 @@ def measure():
         "post_h_reserve_highs": POST_H_HIGHS,
         "post_h_reserve_limits_satisfied": post_h_satisfied,
         "product_test_base_revision": PRODUCT_TEST_Q,
-        "product_test_workstream_gross_added_lines": product_test_gross,
         "product_test_task_gross_added_lines": product_test_task_lines,
         "product_test_task_pre_h_line_maxima": {name: limits[0] for name, limits in PRODUCT_TEST_PRE_H_TASK_MAXIMA.items()},
-        "product_test_task_remaining_lines": {name: task["gross_lines"] - product_test_task_lines.get(name, 0)
-                                              for task in remediation_budget["product_test_correction"]["remaining_tranche"]["allocations"]
-                                              for name in (task["name"],)},
-        "product_test_final_hgq_minimum": {"lines": PRODUCT_TEST_FINAL_HGQ_MINIMUM[0], "bytes": PRODUCT_TEST_FINAL_HGQ_MINIMUM[1]},
-        "product_test_aws_category_map": {"version": AWS_CATEGORY_MAP_VERSION, "sha256": AWS_CATEGORY_MAP_SHA256},
-        "product_test_aws_category_forecasts": category_forecasts,
-        "product_test_aws_category_gross_added": category_consumption,
-        "product_test_aws_category_remaining": {
-            kind: {name: category_forecasts[name][kind] - category_consumption[kind][name]
-                   for name in category_forecasts}
-            for kind in ("lines", "bytes")
-        },
-        "product_test_aws_holdback": {
-            "lines": AWS_WITHHELD_FORECAST[0], "bytes": AWS_WITHHELD_FORECAST[1],
-            "semantics": AWS_WITHHELD_FORECAST[2], "consumed": {"lines": 0, "bytes": 0},
-        },
-        "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
-        "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
-        "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_gross.values()),
-        "product_test_global_gross_line_forecast": PRODUCT_TEST_GLOBAL_LINE_FORECAST,
-        "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_task_gross_added_line_bytes": product_test_task_bytes,
         "product_test_task_pre_h_byte_maxima": {name: limits[1] for name, limits in PRODUCT_TEST_PRE_H_TASK_MAXIMA.items()},
-        "product_test_task_remaining_line_bytes": {name: task["gross_bytes"] - product_test_task_bytes.get(name, 0)
-                                                     for task in remediation_budget["product_test_correction"]["remaining_tranche"]["allocations"]
-                                                     for name in (task["name"],)},
-        "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
-        "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),
-        "product_test_retained_and_consumed_gross_line_bytes": PRODUCT_TEST_RETAINED_BYTES + sum(product_test_bytes.values()),
+        "product_test_task_remaining_lines": {name: PRODUCT_TEST_PRE_H_TASK_MAXIMA[name][0] - product_test_task_lines[name] for name in product_test_task_lines},
+        "product_test_task_remaining_line_bytes": {name: PRODUCT_TEST_PRE_H_TASK_MAXIMA[name][1] - product_test_task_bytes[name] for name in product_test_task_bytes},
+        "product_test_final_hgq_reserve": {"lines": PRODUCT_TEST_FINAL_HGQ_MINIMUM[0], "bytes": PRODUCT_TEST_FINAL_HGQ_MINIMUM[1]},
+        "product_test_gross_added_lines_no_deletion_credit": sum(product_test_task_lines.values()),
+        "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_task_bytes.values()),
+        "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_task_lines.values()),
+        "product_test_retained_and_consumed_gross_line_bytes": PRODUCT_TEST_RETAINED_BYTES + sum(product_test_task_bytes.values()),
+        "product_test_global_gross_line_forecast": PRODUCT_TEST_GLOBAL_LINE_FORECAST,
         "product_test_global_gross_byte_forecast": PRODUCT_TEST_GLOBAL_BYTE_FORECAST,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
