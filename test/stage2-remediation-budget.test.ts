@@ -240,7 +240,7 @@ from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
 assert highs==dict(route=2200,revocation=3000,relay=7000,lifecycle=14000,completion=6200,integration=35000); assert sum(new.values())==200
-assert b['global_gross_line_high']==67527 and b['global_gross_byte_high']==30000000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert b['global_gross_line_high']==67927 and b['global_gross_byte_high']==30000000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(120000,24500,31000,6500,60000,2000)
 assert new==dict(route=1,revocation=0,relay=5,lifecycle=10,completion=4,integration=180)
@@ -278,7 +278,7 @@ assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
 assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=49000000,serialized_source_inventory_bytes=262144)
 adr0338=Path('docs/adr/0338-plan-pre-h-final-corrections.md').read_text()
-for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'completion_campaign_remote_adapter.py', 'max_attempts=1', 'only retry guarantee is that it sets the **client**', 'Old-effect quiescence is an', 'NotAfter + 120 seconds', 'account-and-region inventory passes', 'must enumerate every graph', 'DurationSeconds=1800', 'unconditional explicit', 'There are at most two epochs', 'uncertainty/manual intervention', 'no normal authority', 'One absolute workflow budget is fixed: setup', '+ cleanup/reconciliation', 'Resource exposure includes the control/fence phase', '432,667', 'normal_deadline', 'cleanup_deadline', 'historical v1/v2 decoding as decode-only', 'no successor NORMAL authority', 'terminal settlement', 'run-stage2-completion-full', 'run-stage2-completion-readiness', 'recover-stage2-completion-remote', 'v7 is only a pinned historical artifact-decoding fixture', 'decode-only', 'one orchestration process and one invocation per', 'pinned OpenTofu non-AWS backend/saved-plan', 'actual \`versions.tf\` OpenTofu', 'do not run OpenTofu now', 'final-byte restart ordering', 'deterministic cloud-init preparation that installs only that exact closure', 'pre-existing versioned', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'No-mint” may create only bounded **local synthetic**', 'no cloud credential or AWS resource authority', 'bootstrap executable closure', 'TLS trust closure', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
+for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'completion_campaign_remote_adapter.py', 'max_attempts=1', 'only retry guarantee is that it sets the **client**', 'Old-effect quiescence is an', 'NotAfter + 120 seconds', 'account-and-region inventory passes', 'must enumerate every graph', 'DurationSeconds=1800', 'unconditional explicit', 'There are at most two epochs', 'uncertainty/manual intervention', 'no normal authority', 'One absolute workflow budget is fixed: setup', '+ cleanup/reconciliation', 'Resource exposure includes the control/fence phase', '594,000', 'normal_deadline', 'normal_fence_deadline', 'cleanup_deadline', 'historical v1/v2 decoding as decode-only', 'no successor NORMAL authority', 'terminal settlement', 'run-stage2-completion-full', 'run-stage2-completion-readiness', 'recover-stage2-completion-remote', 'v7 is only a pinned historical artifact-decoding fixture', 'decode-only', 'one orchestration process and one invocation per', 'pinned OpenTofu non-AWS backend/saved-plan', 'actual \`versions.tf\` OpenTofu', 'do not run OpenTofu now', 'final-byte restart ordering', 'deterministic cloud-init preparation that installs only that exact closure', 'pre-existing versioned', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'No-mint” may create only bounded **local synthetic**', 'no cloud credential or AWS resource authority', 'bootstrap executable closure', 'TLS trust closure', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
  assert phrase in adr0338,phrase
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
@@ -568,14 +568,14 @@ import copy,json,runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_budget']; ns=f.__globals__
 b,highs,paths,new,forecasts=f(); p=b['product_test_correction']; t=p['remaining_tranche']
-assert (b['global_gross_line_high'],b['global_gross_byte_high'])==(67527,30000000)
+assert (b['global_gross_line_high'],b['global_gross_byte_high'])==(67927,30000000)
 assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=49000000,serialized_source_inventory_bytes=262144)
 assert (p['retained_allocation'],p['remediation_retained_allocation'])==({'gross_lines':18000,'gross_bytes':8000000},{'gross_lines':48000,'gross_bytes':11000000})
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast'])==(37527,27000000)
-assert (t['gross_lines'],t['gross_bytes'])==(19527,19000000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast'])==(37927,27000000)
+assert (t['gross_lines'],t['gross_bytes'])==(19927,19000000)
 assert [x['name'] for x in t['allocations']]==['pre_h_final_governance','aws_principal_denial_and_cycle_custody','protected_product_and_kvm_contract','generated_readiness_and_no_mint_authorization','final_hgq_control_reserve']
-assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(2200,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(4527,4800000)]
-assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(2200,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(1027,1300000)]
+assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(2600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(4527,4800000)]
+assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(2600,1000000),(7000,8000000),(4000,3200000),(1800,2000000),(1027,1300000)]
 assert t['allocations'][-1]['final_minimum_lines']==3500 and t['allocations'][-1]['final_minimum_bytes']==3500000
 assert t['allocations'][1]['forecast_slices']==[{'name':'deployment_custody_and_direct_ingress','owner':'integration','gross_lines':5200,'gross_bytes':6000000},{'name':'opentofu_backend_and_workflow_compatibility','owner':'integration','gross_lines':1100,'gross_bytes':1300000},{'name':'approval_staging_and_focused_authority_tests','owner':'integration','gross_lines':500,'gross_bytes':500000}]
 assert sum(x['gross_lines'] for x in t['allocations'][1]['forecast_slices'])==6800<7000
@@ -657,7 +657,7 @@ index=Path('docs/adr/README.md').read_text()
 assert 'strict 120,000 hard limit' in adr and 'strict 120,000-line stop' in index
 config=Path('config/external-review-remediation-budget-v1.json').read_text()
 assert config.count('"forecast_slices"')==1 and '"gross_lines": 200' in config and '"gross_bytes": 200000' in config
-assert '6,800/7,800,000' in adr and '432,667' in adr
+assert '6,800/7,800,000' in adr and '594,000' in adr
 `);
 });
 
@@ -674,6 +674,8 @@ def run(extra_lines=0,extra_bytes=0):
   names=tuple(names)
   for task in p['remaining_tranche']['allocations']:
    limit=task['pre_h_'+field]
+   if task['name']=='aws_principal_denial_and_cycle_custody':
+    limit-=m['AWS_WITHHELD_FORECAST'][0 if field=='gross_lines' else 1]
    if names==tasks[task['name']]: return limit+(extra_lines if field=='gross_lines' else extra_bytes)
    for allocation in task['owner_allocations']:
     owner_names=tuple(path for path in tasks[task['name']] if planned[path]==allocation['name'])
@@ -688,7 +690,7 @@ def run(extra_lines=0,extra_bytes=0):
  ns['_gross_slice']=lambda names,*ignored:charge(names,'gross_lines')
  ns['_gross_added_line_bytes']=lambda names,*ignored:charge(names,'gross_bytes')
  return f(b)
-assert run()[0]['integration']==13627 and run()[1]['integration']==13600000
+assert run()[0]['integration']==14027 and run()[1]['integration']==13600000
 for lines,raw in ((1,0),(0,1)):
  try: run(lines,raw)
  except m['LineBudgetError']: pass
@@ -734,8 +736,8 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
     0,
   );
   assert.ok(report.conservative_lines_no_deletion_credit >= 99_463);
-  assert.ok(consumedProductLines <= 19_527);
-  assert.ok(report.conservative_lines_no_deletion_credit + (19_527 - consumedProductLines) < report.hard_limit);
+  assert.ok(consumedProductLines <= 19_927);
+  assert.ok(report.conservative_lines_no_deletion_credit + (19_927 - consumedProductLines) < report.hard_limit);
   assert.deepEqual(report.product_test_final_hgq_minimum, { lines: 3500, bytes: 3500000 });
   for (const kind of ["lines", "line_bytes"] as const) {
     const consumed = report[`product_test_task_gross_added_${kind}`];
@@ -756,7 +758,7 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   ])
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
-    ["lines", 37527],
+    ["lines", 37927],
     ["line_bytes", 27000000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
@@ -800,14 +802,14 @@ for owner,high in highs.items():
  veto(f,owner+' cumulative owner high+1 with other owners zero')
 # The global boundary is independently enforced even when a synthetic owner
 # ceiling is raised enough to reach it.
-b['owners'][-1]['gross_line_high']+=128
+b['owners'][-1]['gross_line_high']+=528
 remediation=dict(highs)
-remediation['integration']+=128
-assert sum(remediation.values())==67528>b['global_gross_line_high']
+remediation['integration']+=528
+assert sum(remediation.values())==67928>b['global_gross_line_high']
 veto(f,'cumulative global high+1')
 remediation['integration']-=1
-assert sum(remediation.values())==67527
-assert f()['remediation_gross_added_lines_no_deletion_credit']==67527
+assert sum(remediation.values())==67927
+assert f()['remediation_gross_added_lines_no_deletion_credit']==67927
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 base=dict(deploy=21948,retained=11844,workflow=4836)
 for key,limit in [('deploy',24500),('retained',31000),('workflow',6500)]:
@@ -868,7 +870,7 @@ report=f()
 assert report['product_test_base_revision']=='eda2dc499153f3053772790c02ea6d332403742e'
 assert report['product_test_workstream_gross_added_lines']==expected
 assert report['product_test_gross_added_lines_no_deletion_credit']==55
-assert report['product_test_global_gross_line_forecast']==37527
+assert report['product_test_global_gross_line_forecast']==37927
 `);
 });
 test("ADR0335 central measure enforces every independent byte ceiling with zero line additions", () => {

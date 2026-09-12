@@ -1,7 +1,7 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 67527,
+  "global_gross_line_high": 67927,
   "global_gross_byte_high": 30000000,
   "baseline": {
     "tracked_files": 1420,
@@ -16,7 +16,7 @@
   "product_test_correction": {
     "base_revision": "eda2dc499153f3053772790c02ea6d332403742e",
     "base_tree": "9ad48a2be811745f0d8032a0a9f52a33c4b2edec",
-    "global_gross_line_forecast": 37527,
+    "global_gross_line_forecast": 37927,
     "global_gross_byte_forecast": 27000000,
     "owners": [
       {
@@ -64,7 +64,7 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 17127,
+        "gross_line_forecast": 17527,
         "gross_byte_forecast": 17100000,
         "existing_paths": [
           ".github/workflows/ci.yml",
@@ -269,17 +269,17 @@
       "gross_bytes": 11000000
     },
     "remaining_tranche": {
-      "gross_lines": 19527,
+      "gross_lines": 19927,
       "gross_bytes": 19000000,
       "allocations": [
         {
           "name": "pre_h_final_governance",
-          "gross_lines": 2200,
+          "gross_lines": 2600,
           "gross_bytes": 1000000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 2200,
+              "gross_lines": 2600,
               "gross_bytes": 1000000
             }
           ],
@@ -290,7 +290,7 @@
             "docs/adr/README.md",
             "test/ci-infrastructure-boundary.test.ts"
           ],
-          "pre_h_gross_lines": 2200,
+          "pre_h_gross_lines": 2600,
           "pre_h_gross_bytes": 1000000,
           "required_pre_h_order": [
             "reviewed_non_aws_design",
