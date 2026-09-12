@@ -17,8 +17,8 @@
     "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
     "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
     "global_gross_line_forecast": 15537,
-    "global_gross_byte_forecast": 3900000,
-    "integration_regeneration_gross_line_forecast": 348,
+    "global_gross_byte_forecast": 4500000,
+    "integration_regeneration_gross_line_forecast": 400,
     "integration_synchronization_gross_byte_forecast": 60000,
     "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
     "owners": [
@@ -38,7 +38,7 @@
       },
       {
         "name": "relay",
-        "gross_line_forecast": 2800,
+        "gross_line_forecast": 2650,
         "gross_byte_forecast": 400000,
         "existing_paths": [
           "dev/linux-kvm/ci-smoke.sh",
@@ -109,8 +109,8 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 5707,
-        "gross_byte_forecast": 3220000,
+        "gross_line_forecast": 5857,
+        "gross_byte_forecast": 3900000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
@@ -211,7 +211,7 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 4800,
+      "gross_line_high": 4650,
       "gross_byte_forecast": {
         "total": 700000
       },
@@ -366,9 +366,9 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 18032,
+      "gross_line_high": 18182,
       "gross_byte_forecast": {
-        "total": 4600000
+        "total": 5200000
       },
       "new_file_high": 87,
       "paths": [

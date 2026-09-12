@@ -427,10 +427,10 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     {
       route: [2_200, 1, { total: 350_000 }],
       revocation: [3_000, 0, { total: 220_000 }],
-      relay: [4_800, 1, { total: 700_000 }],
+      relay: [4_650, 1, { total: 700_000 }],
       lifecycle: [11_800, 5, { total: 1_200_000 }],
       completion: [6_080, 3, { total: 800_000 }],
-      integration: [18_032, 87, { total: 4_600_000 }],
+      integration: [18_182, 87, { total: 5_200_000 }],
     },
   );
   assert.equal(
@@ -439,7 +439,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
-    7_870_000,
+    8_470_000,
   );
   const paths = manifest.owners.flatMap((owner) => owner.paths);
   assert.equal(new Set(paths).size, paths.length);
