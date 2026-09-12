@@ -42,35 +42,33 @@ PRODUCT_TEST_Q_TREE = "9ad48a2be811745f0d8032a0a9f52a33c4b2edec"
 # The protected squash consumes the entire prior allocation. It is never
 # recomputed from the candidate's net tree or released by a deletion.
 PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
-PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 3_000, 3_000_000
-PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_675, lifecycle=4_550, completion=2_580, integration=10_732)
-PRODUCT_TEST_REMAINING_FORECASTS = dict(route=0, revocation=0, relay=0, lifecycle=0, completion=0, integration=3_000)
-PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 700_000,
-                               "lifecycle": 550_000, "completion": 300_000, "integration": 8_570_000}
-REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_000_000,
-                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 11_000_000, 14_000_000
-PRODUCT_TEST_PATH_OWNER_SHA256 = "bbb8a65b6065382fc763d5942edc6abfb4ebb75f46992f203a1c04249c28b757"
-PRODUCT_TEST_TASK_PATH_SHA256 = "f15937607a02bec0540cfa3d0d5c3e5092e2560c242b2239d88477d1a9e4fd7c"
+PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 15_000, 13_000_000
+PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=1_400, lifecycle=1_000, completion=0, integration=12_600)
+PRODUCT_TEST_REMAINING_FORECASTS = dict(PRODUCT_TEST_FORECASTS)
+PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 900_000,
+                               "lifecycle": 1_000_000, "completion": 0, "integration": 11_100_000}
+PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 33_000, 21_000_000
+REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_200_000,
+                         "lifecycle": 1_500_000, "completion": 900_000, "integration": 14_000_000}
+REMEDIATION_GLOBAL_BYTE_HIGH = 24_000_000
+SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
+SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
 PRODUCT_TEST_NEW_FILES = {
     "docs/adr/0337-correct-protected-product-runtime-ancestry.md": "integration",
     "docs/adr/0338-plan-pre-h-final-corrections.md": "integration",
+    "schemas/aws-stage2-production-principal-contract-v1.json": "integration",
 }
 PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
 PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
-SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
-SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
-PRODUCT_TEST_RUNTIME_PATHS = frozenset((
-    PRODUCT_TEST_WORKFLOW_PATH,
-    "test/ci-infrastructure-boundary.test.ts",
-))
-PRODUCT_TEST_GOVERNANCE_PATHS = frozenset((
-    "config/external-review-remediation-budget-v1.json",
-    "docs/adr/0338-plan-pre-h-final-corrections.md",
-    "docs/adr/README.md",
-    "scripts/check-stage2-retained-lines.py",
-    "test/stage2-remediation-budget.test.ts",
-))
+PRODUCT_TEST_TASK_PATHS = {'pre_h_final_governance': ('config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/README.md', 'scripts/check-stage2-retained-lines.py', 'test/stage2-remediation-budget.test.ts'), 'aws_principal_denial_and_cycle_custody': ('.github/workflows/stage2-production-approval.yml', '.github/workflows/stage2-production-campaign.yml', '.github/workflows/stage2-production-plan.yml', 'deploy/aws-feasibility/completion_campaign_aws_entry.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py', 'deploy/aws-feasibility/completion_campaign_codec.py', 'deploy/aws-feasibility/completion_campaign_contracts.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/completion_campaign_receipts.py', 'deploy/aws-feasibility/completion_campaign_state.py', 'schemas/aws-stage2-completion-production-approval-v5.json', 'schemas/aws-stage2-production-principal-contract-v1.json', 'schemas/stage2-pre-aws-qualification-package-v5.json', 'scripts/stage2-production-approval.py', 'scripts/stage2-production-planner.py', 'scripts/stage2-stage-production-approval.py', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-controller.test.ts', 'test/aws-stage2-completion-campaign-production.py', 'test/aws-stage2-completion-campaign-production.test.ts', 'test/aws-stage2-completion-campaign-state.py', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-production-approval.py', 'test/stage2-production-approval.test.ts', 'test/stage2-production-planner.py', 'test/stage2-production-planner.test.ts', 'test/stage2-production-workflows.test.ts'), 'protected_product_and_kvm_contract': ('.github/workflows/insecure-container.yml', '.github/workflows/kvm-qualification.yml', 'dev/linux-kvm/bounded-command.py', 'dev/linux-kvm/ci-smoke.sh', 'dev/linux-kvm/driver.sh', 'dev/linux-kvm/git-tools.sh', 'dev/linux-kvm/qualify.sh', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/ci-infrastructure-boundary.test.ts', 'test/egress-conformance/stage3-real-runtime/harness.ts', 'test/linux-kvm-git-tools.test.ts', 'test/production-compose.test.ts'), 'generated_readiness_and_no_mint_authorization': ('.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', 'docs/operations/stage-4-offline-readiness.md', 'docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'scripts/stage2-prebuilt-rehearsal-grant.py', 'scripts/stage4-offline-readiness-regenerate.ts', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'scripts/stage4-runtime-artifact-closure-regenerate.ts', 'scripts/stage4-runtime-artifact-closure.ts', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-workflow.test.ts', 'test/stage4-offline-readiness.test.ts', 'test/stage4-runtime-artifact-closure.test.ts', 'test/stage4-schema-registry.test.ts'), 'final_hgq_control_reserve': ('.github/workflows/stage2-prebuilt-mixed-hg-preflight.yml', '.github/workflows/stage2-prebuilt-rootfs-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-publisher.yml', 'config/stage2-retired-revisions-v1.json', 'scripts/stage2-revision-retirement.py')}
+PRODUCT_TEST_TASK_SPECS = (
+    ("pre_h_final_governance", 1_600, 1_000_000, {"integration": (1_600, 1_000_000)}),
+    ("aws_principal_denial_and_cycle_custody", 5_000, 4_800_000, {"integration": (5_000, 4_800_000)}),
+    ("protected_product_and_kvm_contract", 4_000, 3_200_000,
+     {"integration": (1_600, 1_300_000), "lifecycle": (1_000, 1_000_000), "relay": (1_400, 900_000)}),
+    ("generated_readiness_and_no_mint_authorization", 2_800, 3_000_000, {"integration": (2_800, 3_000_000)}),
+    ("final_hgq_control_reserve", 1_600, 1_000_000, {"integration": (1_600, 1_000_000)}),
+)
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -443,11 +441,11 @@ def _remediation_budget():
                            "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 52_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
+             and data["global_gross_line_high"] == 63_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1530,
-                                        "source_inventory_bytes": 34_000_000,
+    _require(data["source_limits"] == {"tracked_files": 1600,
+                                        "source_inventory_bytes": 43_000_000,
                                         "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
     try:
         producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
@@ -455,7 +453,7 @@ def _remediation_budget():
         raise LineBudgetError() from None
     _require("STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
              and "assertStage4SerializedSourceInventory" in producer)
-    expected = dict(route=2_200, revocation=3_000, relay=4_628, lifecycle=11_800, completion=6_080, integration=20_157)
+    expected = dict(route=2_200, revocation=3_000, relay=7_000, lifecycle=14_000, completion=6_200, integration=31_000)
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -480,9 +478,9 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
-                                "lifecycle": 5, "completion": 3, "integration": 90})
-    _require(sum(new_file_highs.values()) == 100)
+    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 5,
+                                "lifecycle": 10, "completion": 4, "integration": 160})
+    _require(sum(new_file_highs.values()) == 180)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
@@ -500,7 +498,10 @@ def _remediation_budget():
 
 
 def _product_path_denied(path):
-    return (path.startswith("deploy/aws-feasibility/") or path.startswith("images/") or path.startswith(".github/workflows/release-")
+    # The closed task matrix, not a broad deploy-prefix ban, decides the narrowly
+    # enumerated production source route. Images, release paths, and unallocated
+    # provider/release scripts remain outside this planning allocation.
+    return (path.startswith("images/") or path.startswith(".github/workflows/release-")
             or path.startswith("docs/operations/release-") or path.startswith("scripts/") and ("provider" in path or "release" in path))
 
 def _product_test_budget(data, allocations):
@@ -515,7 +516,7 @@ def _product_test_budget(data, allocations):
                                                    "gross_bytes": PRODUCT_TEST_RETAINED_BYTES}
              and plan["remediation_retained_allocation"] == {"gross_lines": 48_000,
                                                                "gross_bytes": 11_000_000}
-             and plan["global_gross_line_forecast"] == 21_000
+             and plan["global_gross_line_forecast"] == PRODUCT_TEST_GLOBAL_LINE_FORECAST
              and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST)
     tranche = plan["remaining_tranche"]
     _require(isinstance(tranche, dict) and set(tranche) == {"gross_lines", "gross_bytes", "allocations"}
@@ -555,63 +556,46 @@ def _product_test_budget(data, allocations):
                     new[path] = owner
     _require(new == PRODUCT_TEST_NEW_FILES and not (set(planned) & PRODUCT_TEST_EXCLUDED_PATHS)
              and not any(_product_path_denied(path) for path in planned))
-    # Owner forecasts describe the closed path matrix. The independently fixed
-    # squash allocation remains consumed even where no owner path spends it.
-    _require(sum(forecasts.values()) == 20_537
-             and sum(entry["gross_byte_forecast"] for entry in plan["owners"]) == 10_120_000
-             and sum(forecasts.values()) < plan["global_gross_line_forecast"]
-             and sum(entry["gross_byte_forecast"] for entry in plan["owners"])
-             < plan["global_gross_byte_forecast"])
+    _require(sum(forecasts.values()) == PRODUCT_TEST_REMAINING_LINES
+             and sum(entry["gross_byte_forecast"] for entry in plan["owners"]) == PRODUCT_TEST_REMAINING_BYTES
+             and PRODUCT_TEST_RETAINED_LINES + sum(forecasts.values()) == plan["global_gross_line_forecast"]
+             and PRODUCT_TEST_RETAINED_BYTES + sum(entry["gross_byte_forecast"] for entry in plan["owners"])
+                 == plan["global_gross_byte_forecast"])
     _require(set(allocations) == set(q_allocations) | set(planned))
     _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
-    canonical = json.dumps(planned, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    _require(hashlib.sha256(canonical).hexdigest() == PRODUCT_TEST_PATH_OWNER_SHA256)
     tasks = tranche["allocations"]
-    task_owner_lines, task_owner_bytes = {}, {}
-    required_tasks = (("runtime_correction_and_tests", 1_000, 1_000_000, {"integration": (1_000, 1_000_000)}),
-                      ("pre_h_final_governance", 600, 600_000, {"integration": (600, 600_000)}),
-                      ("future_hgq_control_and_evidence", 1_400, 1_400_000, {"integration": (1_400, 1_400_000)}))
-    _require(len(tasks) == len(required_tasks))
-    for task, expected_task in zip(tasks, required_tasks):
+    _require(len(tasks) == len(PRODUCT_TEST_TASK_SPECS))
+    task_owner_lines, task_owner_bytes, task_paths = {}, {}, {}
+    for task, expected_task in zip(tasks, PRODUCT_TEST_TASK_SPECS):
         name, lines, raw_bytes, expected_owners = expected_task
-        _require(isinstance(task, dict) and set(task) == {"name", "gross_lines", "gross_bytes", "owner_allocations", "path_gross_line_highs"}
+        _require(isinstance(task, dict) and set(task) == {"name", "gross_lines", "gross_bytes", "owner_allocations", "paths"}
                  and task["name"] == name and task["gross_lines"] == lines and task["gross_bytes"] == raw_bytes
-                 and isinstance(task["path_gross_line_highs"], list))
+                 and isinstance(task["paths"], list) and tuple(task["paths"]) == PRODUCT_TEST_TASK_PATHS[name])
         owners = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
                   for entry in task["owner_allocations"]
                   if isinstance(entry, dict) and set(entry) == {"name", "gross_lines", "gross_bytes"}}
         _require(len(owners) == len(task["owner_allocations"]) and owners == expected_owners
                  and sum(value[0] for value in owners.values()) == lines
                  and sum(value[1] for value in owners.values()) == raw_bytes)
+        task_paths[name] = set(task["paths"])
+        _require(all(path in planned for path in task_paths[name]))
         for owner, (owner_lines, owner_bytes) in owners.items():
             task_owner_lines[owner] = task_owner_lines.get(owner, 0) + owner_lines
             task_owner_bytes[owner] = task_owner_bytes.get(owner, 0) + owner_bytes
-        highs = {entry["path"]: entry["gross_lines"] for entry in task["path_gross_line_highs"]
-                 if isinstance(entry, dict) and set(entry) == {"path", "gross_lines"}}
-        _require(len(highs) == len(task["path_gross_line_highs"]))
-        _require(not highs)
-    _require(task_owner_lines == {"integration": 3_000}
-             and task_owner_bytes == {"integration": 3_000_000})
-    task_canonical = json.dumps(tasks, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    _require(hashlib.sha256(task_canonical).hexdigest() == PRODUCT_TEST_TASK_PATH_SHA256)
+    _require(set().union(*task_paths.values()) == set(planned)
+             and sum(len(paths) for paths in task_paths.values()) == len(planned)
+             and task_owner_lines == {owner: value for owner, value in PRODUCT_TEST_FORECASTS.items() if value}
+             and task_owner_bytes == {owner: value for owner, value in PRODUCT_TEST_BYTE_FORECASTS.items() if value})
     _require(sum(forecasts.values()) < data["global_gross_line_high"]
-             and PRODUCT_TEST_RETAINED_LINES + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
-             and 48_000 + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
-             and 11_000_000 + PRODUCT_TEST_REMAINING_BYTES <= data["global_gross_byte_high"])
+             and 48_000 + PRODUCT_TEST_REMAINING_LINES == data["global_gross_line_high"]
+             and 11_000_000 + PRODUCT_TEST_REMAINING_BYTES == data["global_gross_byte_high"])
     return planned
 
 def _product_test_task_paths(task, planned):
-    all_paths = set(planned)
-    if task == "runtime_correction_and_tests":
-        names = set(PRODUCT_TEST_RUNTIME_PATHS)
-    elif task == "pre_h_final_governance":
-        names = set(PRODUCT_TEST_GOVERNANCE_PATHS)
-    elif task == "future_hgq_control_and_evidence":
-        names = all_paths - set(PRODUCT_TEST_RUNTIME_PATHS) - set(PRODUCT_TEST_GOVERNANCE_PATHS)
-    else:
-        raise LineBudgetError()
-    _require(names <= all_paths)
-    return tuple(sorted(names))
+    _require(task in PRODUCT_TEST_TASK_PATHS)
+    names = PRODUCT_TEST_TASK_PATHS[task]
+    _require(set(names) <= set(planned))
+    return tuple(names)
 
 def _product_test_changes(revision, target=None):
     revisions = (revision,) if target is None else (revision, target)
@@ -866,7 +850,7 @@ def measure():
         "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
         "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_gross.values()),
-        "product_test_global_gross_line_forecast": 21_000,
+        "product_test_global_gross_line_forecast": PRODUCT_TEST_GLOBAL_LINE_FORECAST,
         "product_test_workstream_gross_added_line_bytes": product_test_bytes,
         "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),

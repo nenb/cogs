@@ -1,60 +1,173 @@
-# ADR 0338: Plan pre-H final corrections and preserve AWS denial
+# ADR 0338: Correct the pre-H plan and preserve all effect denials
 
 ## Status
-Accepted planning/governance gate only. This decision supersedes neither a historical H/G/Q identity nor ADR0337's protected-squash accounting. It authorizes this ADR, the ADR index, the closed budget configuration/checker, and their focused governance tests only. It does **not** authorize product, workflow, OpenTofu, provider, SSM, AWS, Docker, KVM, readiness, full-suite, image, release, or dispatch work.
 
-## Baseline and accounting
-The protected product checkpoint remains `eda2dc499153f3053772790c02ea6d332403742e`, tree `9ad48a2be811745f0d8032a0a9f52a33c4b2edec`; it is not H, G, or Q. Every successor must remain a direct linear child for the checker, and every added line and UTF-8 added-line byte is cumulatively charged from that checkpoint without deletion, rename, copy, net-size, compression, or prior-checkpoint credit.
+Accepted **planning and budget governance only**. This commit authorizes only this
+ADR, its index entry, the closed allocation, its checker, and focused governance
+validation. It grants no product, KVM, workflow dispatch, Docker, OpenTofu,
+OIDC/STS, provider, AWS, SSM, network, inventory, remote-command, readiness,
+full-suite, image, release, H/G/Q, or no-mint effect.
 
-This plan consumes a separately closed governance task of at most **600 gross lines / 600,000 raw added-line bytes** in these exact paths:
+`eda2dc499153f3053772790c02ea6d332403742e` / tree
+`9ad48a2be811745f0d8032a0a9f52a33c4b2edec` remains a protected product
+checkpoint, not H, G, or Q. Every successor is a direct linear child. Added
+lines and UTF-8 added-line bytes remain cumulative from that checkpoint: no
+delete, rename, copy, compression, net-size, or prior-checkpoint credit.
 
-- `docs/adr/0338-plan-pre-h-final-corrections.md`
-- `docs/adr/README.md`
-- `config/external-review-remediation-budget-v1.json`
-- `scripts/check-stage2-retained-lines.py`
-- `test/stage2-remediation-budget.test.ts`
+## Closed accounting and path custody
 
-The remaining final-H/G/Q control-and-evidence task is **1,400 / 1,400,000**. Runtime correction/tests retain **1,000 / 1,000,000**. Thus the final tranche remains exactly **3,000 / 3,000,000**, product remains `18,000 + consumed <= 21,000` lines and `8,000,000 + consumed <= 11,000,000` bytes, and remediation remains `48,000 + consumed <= 52,000` lines and `11,000,000 + consumed <= 14,000,000` bytes. The hard limit remains strictly below 115,000 lines. The remediation new-file high rises only from 99 to 100: `1,420 + 100 = 1,520 <= 1,530`; source aggregate remains `18,763,891 + 14,000,000 = 32,763,891 <= 34,000,000`, leaving 1,236,109 bytes. The serialized inventory stays 262,144 bytes. These are independent ceilings, not transferable balances.
+The historical product allocation is 18,000 lines / 8,000,000 bytes and the
+historical remediation allocation is 48,000 / 11,000,000. The separately
+allocated prospective matrix is exactly 15,000 / 13,000,000, so the cumulative
+product ceilings are **33,000 / 21,000,000** and remediation ceilings are
+**63,000 / 24,000,000**. The source ceiling is
+`18,763,891 + 24,000,000 = 42,763,891 <= 43,000,000`; tracked files are
+`1,420 + 180 = 1,600 <= 1,600`. The hard-line calculation is separately
+conservative: the measured current 99,899 leaves 15,100 before strict 115,000;
+the 15,000-line matrix is a ceiling, not deletion credit. Each owner and task
+ceiling is independent and non-transferable.
 
-## Ten completed whole-tree review outcomes and adjudication
+The ledger at the review baseline charged 402 lines / 319,440 bytes after the
+checkpoint (264 / 27,093 governance, 110 / 8,593 protected-product runtime,
+and 28 / 283,754 explicitly identified prior checkpoint work). Those charges
+remain charged. The checker now assigns every admitted path to one **named**
+task; it has no complement task. It preserves historical owners, including the
+integration-owned KVM workflow, and rejects every path not in the exact matrix.
 
-1. **OpenBao:** defer it. It is nonblocking only for the narrowed Stage2 synthetic measurement. A synthetic port or fixture is not OpenBao availability, identity, PKI, revocation, Kubernetes, cloud, or production evidence and grants no production claim.
-2. **Historical H/G/Q guards:** retain them. Their hardcoded identities are expected until a fresh Q exists. They must reject stale selection, not be relabeled as current authorization.
-3. **Old AWS packages:** deny their AWS admission. A package bound to an old H/G/Q, old run, old artifact, or old control/qualification identity is a vetoed input even if an old local guard would otherwise pass.
-4. **OpenTofu local state:** correct source only. `deploy/aws-feasibility/plan.sh`, `apply.sh`, `destroy.sh`, and `run-measurement-validation.sh` must later initialize an explicit local backend and use fresh, per-cycle state/plan paths; no stale state may be read across cycles.
-5. **SSM readiness:** correct source only. `deploy/aws-feasibility/apply.sh` must later bound `Online` polling and bind the observed instance ID, command ID, deadline, and timing receipt.
-6. **Same-command propagation:** correct source only. `deploy/aws-feasibility/run-measurement-validation.sh` must later poll and retrieve only the command it created for the already authenticated instance; `Online`, timeout, terminal status, and output must be causally tied to that one command.
-7. **Empty skills product case:** require one fresh protected non-AWS runner for `skills=empty`, with a separately created generation, sealed inputs, exact inventory, and exact settlement.
-8. **Nonempty skills product case:** require a different fresh protected non-AWS runner for a canonical nonempty shared/user pair; it must not reuse the empty runner, generation, publication, image tag, receipt, or state.
-9. **Input capability probes:** require full-minus-one probes for every admitted input capability on fresh probe generations. A probe missing, substituting, widening, or retaining a capability must fail before candidate work and settle only its own exact resources.
-10. **SSH capability probes:** require a separate full-minus-one probe for each measured SSH/SFTP capability, with exact allowed/denied operation evidence. Guest mutation results are supplemental and cannot replace the authenticated capability/mount proof.
+| Named task | Ceiling (lines / bytes) | Exact responsibility |
+| --- | ---: | --- |
+| pre-H final governance | 1,600 / 1,000,000 | this ADR/index, allocation/checker, governance tests |
+| AWS principal denial and cycle custody | 5,000 / 4,800,000 | actual planner, production model/provider/controller/state/receipts, production workflows, schemas/config, and fake tests |
+| protected product and KVM contract | 4,000 / 3,200,000 | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
+| generated readiness and no-mint authorization | 2,800 / 3,000,000 | readiness generators/artifacts/tests and the separately reviewed no-mint grant/workflow/tests |
+| final H/G/Q control reserve | 1,600 / 1,000,000 | only the enumerated producer/publisher/preflight and retirement-control paths |
 
-Outcomes 4–6 are source corrections only; no `tofu`, provider, AWS CLI, SSM, inventory, or remote command may be invoked under this ADR. Outcomes 7–10 are product requirements, not evidence that either runner exists or has run.
+The final H/G/Q reserve is deliberately distinct from product, AWS, readiness,
+and governance work. The JSON allocation is the authoritative exact path list,
+including existing production Python (`completion_campaign_production.py`,
+`completion_campaign_aws_provider.py`, controller/state/contracts/receipts),
+planner/approval scripts, workflows, schemas, configuration, and fake tests.
+It contains a single future immutable
+`schemas/aws-stage2-production-principal-contract-v1.json`; no unlisted new
+file is allowed. Legacy measurement shell wrappers are **not** repair targets:
+they remain denied and non-authorizing unless a later exact static-denial change
+is separately budgeted and reviewed.
 
-## Future implementation matrix and invariants
+## Blocking AWS authority contract
 
-The future source-only correction is limited to the already allocated paths below; an unlisted path, new file, workflow, or schema stops for a reviewed scope/budget decision.
+Principal separation is **unimplemented and blocking**, not a present mechanical
+veto. Until a later source implementation and separately authorized decision,
+every production entry point must make an unconditional, pre-credential AWS
+deny decision. It must run before reading credentials or package authority and
+before OIDC, STS, provider construction, OpenTofu, SSM, network, inventory, or
+remote-command code. Thus an old package cannot become executable merely
+because an old workflow or a domain-separated hash still parses.
 
-| Task | Exact future paths | Required invariant |
-| --- | --- | --- |
-| stale-package AWS denial and fresh H/G/Q admission | `scripts/stage2-production-planner.py`, `scripts/stage2-production-approval.py`, `scripts/stage2-stage-production-approval.py`, `.github/workflows/stage2-production-plan.yml`, `.github/workflows/stage2-production-approval.yml`, `.github/workflows/stage2-production-campaign.yml`, `test/stage2-production-planner.py`, `test/stage2-production-approval.py`, `test/stage2-production-workflows.test.ts` | Old package/revision/run/artifact identities deny before any AWS-facing effect; existing hardcoded H/G/Q guards remain until a separately frozen fresh Q. |
-| local-state and SSM source repair | `deploy/aws-feasibility/plan.sh`, `deploy/aws-feasibility/apply.sh`, `deploy/aws-feasibility/destroy.sh`, `deploy/aws-feasibility/run-measurement-validation.sh`, `test/stage2-production-planner.py`, `test/aws-stage2-completion-campaign-aws-provider.py` | Explicit per-cycle local backend/state, bounded `Online`, and instance/command/receipt sameness; no execution in this tranche. |
-| separate product profiles and probes | `dev/product-test/host-custody.py`, `dev/product-test/runner.ts`, `dev/product-test/snapshot-owner.ts`, `test/production-compose.test.ts`, `test/ci-infrastructure-boundary.test.ts`, `.github/workflows/insecure-container.yml` | Empty and nonempty use distinct fresh protected runners and exact generations; each input and SSH capability is full-minus-one faulted before work. |
-| KVM capability-probe parity | `dev/linux-kvm/driver.sh`, `dev/linux-kvm/ci-smoke.sh`, `dev/linux-kvm/qualify.sh`, `dev/linux-kvm/bounded-command.py`, `test/linux-kvm-git-tools.test.ts`, `test/egress-conformance/stage3-real-runtime/harness.ts`, `.github/workflows/kvm-qualification.yml` | A probe is non-authorizing, has no candidate pass/evidence authority, cannot reuse state, and preserves uncertain custody. |
-| final H/G/Q controls | existing allocated Stage2 control/evidence paths only | Fresh H then direct-child G then fresh Q; no old package admission and no AWS step. |
+The future immutable authority contract must bind authenticated, individually
+verifiable identities for operator, approver/budget/security reviewer, executor,
+and zero-inventory observer; their role, expiry, candidate/tree, package, and
+contract version are immutable inputs. Missing, equal, expired, stale,
+unauthenticated, or representation-only identities deny. A role cannot attest
+itself or another role. Tests use fake executables and effect sentinels to prove
+that each of those cases, and each stale package identity (H, G, Q, run,
+artifact, control, qualification), stops before OIDC/STS/provider/tofu/SSM or
+network. Documentation, hashes, and the allocation do not lift this denial.
 
-Every admission checks exact candidate/tree, protected ref, root-owned custody, distinct run/attempt and generation, fixed limits, and no foreign inventory before effect. Failure, timeout, missing receipt, nonempty pre-inventory, stale capability, or uncertain cleanup fails closed and preserves custody. No timeout, empty inventory assertion, local test, package parse, or historical Q is authorization.
+The future Python route, not the legacy shell route, must establish one durable
+cycle intent before any effect; one owner controls that intent, cleanup and
+terminal reconciliation. It must not reissue an effect after lost response,
+cancellation, crash, or reentry, and it must block a new cycle while state or
+cleanup is uncertain. Planner and production provider/controller must use the
+same authenticated cycle handle, explicit per-cycle `TF_DATA_DIR`, local backend
+metadata, state path, saved-plan identity and custody. They initialize the
+backend cross-process before plan/apply compatibility is relied upon and reject
+stale, replaced, foreign, or cross-cycle state/plan metadata. Fake-command tests
+cover all seven plans, backend initialization, state continuity, crash cuts,
+and zero effect reissue; this ADR does not invoke tofu.
 
-## Hostile and no-effect validation
+For remote validation the production provider first performs bounded SSM
+`Online` observation for the exact instance. Under one monotonic overall
+deadline it records a durable send intent, sends **exactly once**, durably binds
+the returned command/instance receipt, and polls only that pair. Each request is
+bounded within the same deadline; known propagation observations are transient,
+terminal/mismatched/incomplete observations are fatal. A `Success` observed
+after the deadline is rejected. Lost-send response, crash/reentry, propagation,
+foreign IDs, response code/output completeness, timeout and cleanup tests prove
+one send, no resend, and no late-success acceptance.
 
-Focused future tests must mutate an old package identity one field at a time (H, G, Q, run, artifact, control, qualification), stale/replaced local state, missing/late/foreign `Online`, mismatched SSM command output, duplicate or foreign instance ID, reused runner/generation, empty/nonempty cross-use, each missing/widened input/SSH capability, late probe failure, and cleanup uncertainty. Each negative must prove it stops before the relevant effect sentinel. The source-only AWS tests use fake executables and temporary files only: zero `tofu`, AWS CLI, provider, SSM, network, inventory, or remote command calls. Product and KVM probe models use no Docker, KVM, SSH server, workflow dispatch, or privileged host operation.
+## Product and KVM contract to be implemented later
 
-For this planning commit, validation is limited to the central budget checker, `test/stage2-remediation-budget.test.ts`, formatter, and diff/path inspection. It claims no product behavior, no readiness/full suite, no Docker/KVM, no OpenTofu/provider/SSM/AWS result, and no workflow dispatch.
+The later implementation has two separate protected fresh runners and
+generations: one authenticated `skills=empty` case and one canonical nonempty
+shared/user case. Image/build/pass/**failure** receipts authenticate the exact
+profile, generation, candidate/tree, image identity, runner, limits and
+settlement. They cannot share runner, generation, image tag, publication, state,
+or pass authority.
 
-## Authority and later gates
+The contract enumerates every admitted input capability and every measured
+SSH/SFTP capability. For each it creates a fresh full-minus-one probe with its
+own generation, input/mount identity, expected allowed operation and expected
+denied operation. SSH and SFTP probes must prove their intended boundary with
+successful control and denied-operation oracles, not merely a startup failure.
+Missing, substituted, widened, retained, late-failed, or foreign capability
+fails before candidate work. Probe receipts aggregate coverage but are never a
+candidate pass or dispatch authority.
 
-After this commit is merged to protected main, protected **non-AWS** product/KVM dispatch is authorized only under the existing protected workflow admission plus the fresh-runner/profile/probe invariants above. This is not authorization for AWS, and it does not permit a workflow edit or dispatch in this branch.
+Both product and KVM produce a bounded, secret-safe failure/uncertainty receipt
+independent of a pass receipt: identity, deadline class, cleanup intent,
+settlement observations, redacted diagnostics, and quarantine disposition. It
+never uploads credentials, raw disks, or workspace images. Hosted runners are
+ephemeral: artifact upload is an authenticated handoff of that bounded record,
+not proof that local custody survives runner disposal. If handoff or quarantine
+cannot complete before disposal, the result is uncertain/failed and cannot pass.
 
-There is no single-operator exception now. Future AWS remains mechanically denied until a separate AWS authorization binds distinct authenticated operator, approver/budget/security reviewer, executor, and zero-inventory observer, or a later reviewed decision explicitly supersedes this rule. No role may self-attest another role; missing, equal, expired, or unauthenticated identities deny before credentials, OpenTofu, provider, AWS, SSM, inventory, or remote effects.
+## Later authorization and required order
 
-A later no-mint full/readiness rehearsal requires its own reviewed authorization. It must bind the fresh Q and exact no-mint inputs, state that it cannot create credentials/resources or claim production, and separately authorize its validation scope. This ADR grants neither that rehearsal nor a production claim.
+Merging this plan **never authorizes dispatch**. Product/KVM runs may be
+considered only in a later, exact protected-main implementation commit after:
+focused validation; independent exact-tree implementation reviews; changed-since
+review checks; and the explicitly permitted CI results. That later gate must
+mechanically admit the complete profile/probe matrix, sealed execution closure,
+limits, image provenance, failure handoff, and the shared `git-tools.sh` gate.
+It may authorize only the first-created attempt-one product/KVM runs for that
+exact commit. It grants no cancellation replacement, concurrency cancellation,
+rerun, retry, or redispatch authority.
+
+The required pre-H order is exact:
+
+1. corrected source;
+2. focused tests;
+3. the separately authorized protected product/KVM feedback runs;
+4. candidate publication and durable readback;
+5. separately reviewed no-mint full validation plus generated readiness;
+6. recovery/residue validation and two independent audits;
+7. final full validation and deterministic regeneration;
+8. exact-tree reviews and changed-since-review checks;
+9. retirement/freeze decision; then
+10. H.
+
+The no-mint pre-H rehearsal binds its exact candidate publication/readback and
+may not mint credentials/resources or claim production. It does **not** require
+a fresh Q. A later rehearsal after Q, if desired, is a different separately
+reviewed authorization.
+
+The intermediate audits are: source/path/budget ownership; production principal
+and pre-credential denial; planner/provider state and no-effect sentinels; SSM
+one-send/crash recovery; product input/SSH/SFTP probe matrix; KVM shared-gate
+and custody; failure-artifact/quarantine; candidate publication/readback;
+recovery/residue; generated readiness; and two independent final implementation
+audits. Hosted image convergence is explicit: exact image digest/tag and build
+provenance converge across empty, nonempty, probe and KVM receipts before the
+final full/regeneration gate; any mismatch stops.
+
+After H, only the separately decided direct-child G and fresh Q sequence may
+proceed under their own gates. A retirement/freeze decision must enumerate the
+superseded H/G/Q/run/artifact identities and preserve their denial. This plan
+creates neither effects nor AWS authority.
+
+## Validation for this commit
+
+Run only the central checker, `test/stage2-remediation-budget.test.ts`,
+formatting, and diff/path inspection. No product behavior, full/readiness
+result, Docker/KVM, OpenTofu/provider/SSM/AWS result, dispatch, or production
+claim is made.
