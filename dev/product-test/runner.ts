@@ -71,6 +71,15 @@ export type Restrictions = Readonly<{
   candidate: string;
   owner: string;
   expires: number;
+  run_id: string;
+  run_attempt: string;
+  tree: string;
+  source_inventory: string;
+  dockerignore: string;
+  package_lock: string;
+  npm_closure: string;
+  image_os: string;
+  image_version: string;
   profile: typeof PROFILE;
   breach: "fail-and-settle-exact";
   findings: readonly number[];
@@ -88,13 +97,18 @@ export function admitRestrictions(bytes: Buffer, candidate: string, now: number)
   check(canonical(value) === text);
   check(
     Object.keys(value).sort().join() ===
-      "version baseline candidate owner expires profile breach findings seconds skills sandbox_image worker_image stock_worker_image fresh_protected_runner"
+      "version baseline candidate owner expires run_id run_attempt tree source_inventory dockerignore package_lock npm_closure image_os image_version profile breach findings seconds skills sandbox_image worker_image stock_worker_image fresh_protected_runner"
         .split(" ")
         .sort()
         .join(),
   );
   check(value.version === "cogs.product-restrictions/v1" && value.baseline === BASELINE);
   check(/^[a-f0-9]{40}$/.test(candidate) && value.candidate === candidate && value.owner === "repository-owner");
+  check(/^[1-9][0-9]{0,19}$/.test(value.run_id) && /^[1-9][0-9]{0,9}$/.test(value.run_attempt));
+  check(/^[a-f0-9]{40}$/.test(value.tree) && /^sha256:[a-f0-9]{64}$/.test(value.source_inventory));
+  check(/^sha256:[a-f0-9]{64}$/.test(value.dockerignore) && /^sha256:[a-f0-9]{64}$/.test(value.package_lock));
+  check(/^sha256:[a-f0-9]{64}$/.test(value.npm_closure));
+  check(/^[A-Za-z0-9._-]{1,128}$/.test(value.image_os) && /^[A-Za-z0-9._-]{1,128}$/.test(value.image_version));
   check(value.profile === PROFILE && value.breach === "fail-and-settle-exact" && value.fresh_protected_runner === true);
   check(
     Number.isSafeInteger(value.expires) &&
@@ -390,7 +404,19 @@ async function createSandbox(host: CustodyPort, spec: ContainerSpec) {
     argv: containerArguments(host, spec, ["--env", "COGS_PROXY_ENDPOINT=http://127.0.0.1:18080"], "0:0"),
   });
 }
-export async function productMain(restrictions: Restrictions, removed?: string): Promise<void> {
+export type ProductPassReceipt = Readonly<{
+  version: "cogs.product-pass-receipt/v1";
+  generation: string;
+  candidate: string;
+  tree: string;
+  source_inventory: string;
+  run_id: string;
+  run_attempt: string;
+}>;
+export async function productMain(
+  restrictions: Restrictions,
+  removed?: string,
+): Promise<ProductPassReceipt | undefined> {
   if (removed !== undefined) sandboxCapabilities(removed);
   check(admittedRestrictions.has(restrictions) && restrictions.expires > Date.now() + restrictions.seconds * 1000);
   const generation = randomBytes(16).toString("hex");
@@ -530,7 +556,21 @@ export async function productMain(restrictions: Restrictions, removed?: string):
     check(evidence.traces > 0 && evidence.metrics > 0 && evidence.audit > 0 && evidence.omitted === true);
     return true;
   });
-  if (measurement) process.stdout.write(canonical(measurement)); // only after receipt-bound settlement
+  if (measurement) {
+    process.stdout.write(canonical(measurement)); // only after receipt-bound settlement
+    return undefined;
+  }
+  // This is emitted only after withProductCustody observed the root settlement
+  // receipt and host.closed; it contains no control contents or credentials.
+  return Object.freeze({
+    version: "cogs.product-pass-receipt/v1",
+    generation,
+    candidate: restrictions.candidate,
+    tree: restrictions.tree,
+    source_inventory: restrictions.source_inventory,
+    run_id: restrictions.run_id,
+    run_attempt: restrictions.run_attempt,
+  });
 }
 
 async function material(name: string): Promise<string> {
@@ -1100,6 +1140,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     );
     if (process.argv[2] === "--capability-probes") {
       for (const removed of SANDBOX_CAPABILITIES) await productMain(restrictions, removed);
-    } else await productMain(restrictions);
+    } else {
+      const receipt = await productMain(restrictions);
+      check(receipt);
+      process.stdout.write(canonical(receipt));
+    }
   }
 }

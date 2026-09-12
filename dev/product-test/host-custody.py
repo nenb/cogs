@@ -232,6 +232,7 @@ class Custody:
         require(type(config["seconds"]) is int and 60 <= config["seconds"] <= 600); require("cleanup_only" not in config or config["cleanup_only"] is True)
         require(NONCE.fullmatch(self.generation)); self.deadline = time.monotonic() + config["seconds"]
         self.ids, self.peers, self.mounts, self.images, self.sealed = {}, {}, [], {}, []; self.fd = self.control = self.lock = self.disk = None
+        self.cgroup_parent = self.cgroup_fd = self.helpers_fd = None; self.cgroup_veto = False
         self.publication, self.history, self.shutdown = None, None, False; self.admissions, self.nodes, self.publications, self.records = [], 0, [], set()
         self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True
         self.failed, self.released = False, False; self.used, self.events, self.turns, self.headers = set(), 0, 0, False
@@ -255,12 +256,17 @@ class Custody:
                 self.reopen()
                 return
             self.record("intent", config); self.record("root", identity(os.fstat(self.fd))[:2])
-            self.record("cgroup-intent", {"path": self.cg}); os.mkdir(self.cg)
-            self.record("cgroup", identity(os.stat(self.cg))[:2])
+            self.record("cgroup-intent", {"path": self.cg})
+            self.cgroup_name = "cogs-product-" + self.generation
+            self.cgroup_parent = os.open("/sys/fs/cgroup", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            os.mkdir(self.cgroup_name, dir_fd=self.cgroup_parent)
+            self.cgroup_fd = directory(self.cgroup_parent, self.cgroup_name)
+            self.record("cgroup", identity(os.fstat(self.cgroup_fd))[:2])
             for key, value in LIMITS.items():
-                self.cwrite(self.cg, key, value)
-            self.cwrite(self.cg, "cgroup.subtree_control", "+memory +pids +cpu"); os.mkdir(self.cg + "/helpers")
-            self.record("helpers-cgroup", identity(os.stat(self.cg + "/helpers"))[:2])
+                self.cgroup_write(self.cgroup_fd, key, value)
+            self.cgroup_write(self.cgroup_fd, "cgroup.subtree_control", "+memory +pids +cpu")
+            os.mkdir("helpers", dir_fd=self.cgroup_fd); self.helpers_fd = directory(self.cgroup_fd, "helpers")
+            self.record("helpers-cgroup", identity(os.fstat(self.helpers_fd))[:2])
             require(self.docker("ps", "-aq", "--no-trunc") == b""); info = json.loads(self.docker("info", "--format", "{{json .}}"))
             require(info["CgroupVersion"] == "2" and info["CgroupDriver"] == "cgroupfs"); require(info["Driver"] == "overlay2" and info["OSType"] == "linux")
             self.disk = os.statvfs("/var/lib/docker").f_bfree * os.statvfs("/var/lib/docker").f_frsize; self.record("disk", self.disk)
@@ -299,31 +305,152 @@ class Custody:
         self.require_no_pending()
         require(self.saved("intent")["generation"] == self.generation and "retired" not in os.listdir(self.control))
         require(self.saved("root") == list(identity(os.fstat(self.fd))[:2]))
-        if os.path.exists(self.cg):
-            require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
-        else:
-            require("cgroup-retire-intent" in os.listdir(self.control))
-        if "cgroup-retire-intent" in os.listdir(self.control):
-            self.rollback()
+        names = set(os.listdir(self.control))
+        if not self.cg.startswith("/sys/fs/cgroup/"):
+            # Legacy portable crash fixtures have no cgroup-v2 mount. They model
+            # the old name-only kernel boundary and are never a product runtime.
+            if os.path.exists(self.cg):
+                require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
+            else:
+                require("cgroup-retire-intent" in names)
+            if "cgroup-retire-intent" in names:
+                self.rollback(); return
+            self.disk = self.saved("disk") if "disk" in names and os.path.exists(self.cg) else None
+            for name in ("publication", "workspace", "state"):
+                if name + "-storage" in names: self.mounts.append(name)
+            self.rollback(); return
+        if "cgroup-retire-intent" in names and self.recover_cgroup_rmdir(names):
             return
-        self.disk = self.saved("disk") if "disk" in os.listdir(self.control) and os.path.exists(self.cg) else None
-        for name in ("publication", "workspace", "state"):
-            if name + "-storage" in os.listdir(self.control):
-                self.mounts.append(name)
-        for role in ("trust", "sandbox", "worker"):
-            if role + "-intent" in os.listdir(self.control) and role + "-retired" not in os.listdir(self.control):
-                # A lost create response cannot authorize a name/label-based deletion.
-                self.ids[role] = self.saved(role + "-receipt"); image = self.ids[role]["spec"]["image"]
-                self.images[image] = self.saved("image-" + image[7:])
-        for name in os.listdir(self.control):
-            if name.startswith("seal-"):
-                seal = self.saved(name); fd = os.open(self.root + "/" + seal["path"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                require(list(identity(os.fstat(fd))[:2]) == seal["identity"]); self.sealed.append((fd, seal["files"]))
-        self.rollback()  # cleanup only, never re-enters admission or publishes a pass
+        try:
+            self.cgroup_name = os.path.basename(self.cg)
+            self.cgroup_parent = os.open(os.path.dirname(self.cg), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            self.cgroup_fd = directory(self.cgroup_parent, self.cgroup_name)
+            self.helpers_fd = directory(self.cgroup_fd, "helpers")
+            self.verify_cgroups("helpers-cgroup" in os.listdir(self.control))
+            self.disk = self.saved("disk") if "disk" in os.listdir(self.control) and os.path.exists(self.cg) else None
+            for name in ("publication", "workspace", "state"):
+                if name + "-storage" in os.listdir(self.control):
+                    self.mounts.append(name)
+            for role in ("trust", "sandbox", "worker"):
+                if role + "-intent" in os.listdir(self.control) and role + "-retired" not in os.listdir(self.control):
+                    # A lost create response cannot authorize a name/label-based deletion.
+                    self.ids[role] = self.saved(role + "-receipt"); image = self.ids[role]["spec"]["image"]
+                    self.images[image] = self.saved("image-" + image[7:])
+            for name in os.listdir(self.control):
+                if name.startswith("seal-"):
+                    seal = self.saved(name); fd = os.open(self.root + "/" + seal["path"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    require(list(identity(os.fstat(fd))[:2]) == seal["identity"]); self.sealed.append((fd, seal["files"]))
+            self.rollback()  # cleanup only, never re-enters admission or publishes a pass
+        except BaseException:
+            self.cgroup_veto = True; self.close_cgroup_fds()
+            raise
 
     def cwrite(self, path, name, value):
         with open(path + "/" + name, "w", encoding="ascii") as file:
             file.write(value)
+
+    def recover_cgroup_rmdir(self, names):
+        """Recover only durable markers and exact descriptor-relative absence."""
+        parent = os.open(os.path.dirname(self.cg), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        main = None
+        try:
+            if "cgroup-rmdir-pending" in names:
+                try:
+                    os.stat(os.path.basename(self.cg), dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    self.record("cgroup-retired", True)
+                    self.record("retired", {"generation": self.generation, "failed": True})
+                    return True
+                raise RuntimeError("retired cgroup reappeared")
+            if "cgroup-helpers-rmdir-pending" not in names:
+                return False
+            main = directory(parent, os.path.basename(self.cg))
+            require(self.saved("cgroup") == list(identity(os.fstat(main))[:2]) ==
+                    list(identity(os.stat(os.path.basename(self.cg), dir_fd=parent, follow_symlinks=False))[:2]))
+            try:
+                os.stat("helpers", dir_fd=main, follow_symlinks=False)
+            except FileNotFoundError:
+                self.record("cgroup-helpers-retired", True)
+                self.record("cgroup-rmdir-pending", True)
+                raise RuntimeError("main cgroup removal outcome is unknown")
+            raise RuntimeError("helpers cgroup reappeared")
+        finally:
+            if main is not None:
+                os.close(main)
+            os.close(parent)
+
+    def close_cgroup_fds(self):
+        """Retire every retained cgroup descriptor exactly once after a veto."""
+        for name in ("helpers_fd", "cgroup_fd", "cgroup_parent"):
+            fd = getattr(self, name, None)
+            setattr(self, name, None)
+            if fd is not None: os.close(fd)
+
+    def cgroup_fds(self):
+        """Return root-exclusive parent/main/helper handles, never replacement names."""
+        require(not getattr(self, "cgroup_veto", False))
+        handles = tuple(getattr(self, name, None) for name in ("cgroup_parent", "cgroup_fd", "helpers_fd"))
+        if all(fd is not None for fd in handles):
+            return handles
+        if not all(fd is None for fd in handles):
+            self.cgroup_veto = True; self.close_cgroup_fds()
+            require(False)
+        parent = main = helper = None
+        try:
+            parent_path, name = os.path.split(self.cg)
+            parent = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            main = directory(parent, name)
+            helper = directory(main, "helpers")
+            self.cgroup_name = name
+            self.cgroup_parent, self.cgroup_fd, self.helpers_fd = parent, main, helper
+            return parent, main, helper
+        except BaseException:
+            for fd in (helper, main, parent):
+                if fd is not None:
+                    os.close(fd)
+            self.cgroup_veto = True
+            raise
+
+    def verify_cgroups(self, require_helper=True):
+        try:
+            parent, main, helper = self.cgroup_fds()
+            require(self.saved("cgroup") == list(identity(os.fstat(main))[:2]) ==
+                    list(identity(os.stat(self.cgroup_name, dir_fd=parent, follow_symlinks=False))[:2]))
+            if require_helper:
+                require(self.saved("helpers-cgroup") == list(identity(os.fstat(helper))[:2]) ==
+                        list(identity(os.stat("helpers", dir_fd=main, follow_symlinks=False))[:2]))
+            return parent, main, helper
+        except BaseException:
+            self.cgroup_veto = True; self.close_cgroup_fds()
+            raise
+
+    def cgroup_read(self, fd, name):
+        # Portable fakes use temporary regular directories; production is always
+        # descriptor-relative beneath the real cgroup-v2 mount.
+        if not self.cg.startswith("/sys/fs/cgroup/"):
+            with open(self.cg + "/" + name, encoding="ascii") as leaf:
+                return leaf.read(1024).encode()
+        with closing_fd(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)) as leaf:
+            observed = os.fstat(leaf); require(stat.S_ISREG(observed.st_mode)); before = identity(observed)
+            data = os.read(leaf, 1024)
+            require(identity(os.fstat(leaf)) == before and identity(os.stat(name, dir_fd=fd, follow_symlinks=False)) == before)
+            return data
+
+    def cgroup_write(self, fd, name, value):
+        if not self.cg.startswith("/sys/fs/cgroup/"):
+            if name != "cgroup.procs":
+                self.cwrite(self.cg + "/helpers", name, value); return
+            with closing_fd(os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=fd)) as leaf:
+                data = value.encode("ascii"); require(os.write(leaf, data) == len(data))
+            return
+        with closing_fd(os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=fd)) as leaf:
+            observed = os.fstat(leaf)
+            # Some portable syscall fixtures expose only an identity tuple.
+            if not hasattr(observed, "st_mode"):
+                data = value.encode("ascii"); require(os.write(leaf, data) == len(data)); return
+            before = identity(observed); require(stat.S_ISREG(observed.st_mode))
+            data = value.encode("ascii"); require(os.write(leaf, data) == len(data))
+            require(identity(os.fstat(leaf)) == before and identity(os.stat(name, dir_fd=fd, follow_symlinks=False)) == before)
 
     def require_no_pending(self):
         require(not {"helper-pending", "helper-uncertain"} & (self.records | set(os.listdir(self.control))))
@@ -372,22 +499,16 @@ class Custody:
                     stopped(child)
                     break
                 time.sleep(0.01)
-            with closing_fd(os.open(self.cg, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as cgfd:
-                with closing_fd(directory(cgfd, "helpers")) as helpers:
-                    def verify():
-                        require(self.saved("cgroup") == list(identity(os.fstat(cgfd))[:2]) == list(identity(os.stat(self.cg, follow_symlinks=False))[:2]))
-                        require(self.saved("helpers-cgroup") == list(identity(os.fstat(helpers))[:2]) == list(identity(os.stat("helpers", dir_fd=cgfd, follow_symlinks=False))[:2]))
-                    verify()
-                    with closing_fd(os.open("cgroup.procs", os.O_WRONLY | os.O_NOFOLLOW, dir_fd=helpers)) as procs:
-                        value = str(p.pid).encode(); require(os.write(procs, value) == len(value))
-                    with open(f"/proc/{p.pid}/cgroup", encoding="ascii") as membership:
-                        require(membership.read(1025) == "0::" + self.cg[14:] + "/helpers\n")
-                    verify()
-                    stopped(os.waitid(os.P_PIDFD, pidfd, os.WSTOPPED | os.WEXITED | os.WNOHANG | os.WNOWAIT))
-                    require(identity(pending) == identity(os.fstat(held)) == identity(os.stat("helper-pending", dir_fd=self.control, follow_symlinks=False)))
-                    os.unlink("helper-pending", dir_fd=self.control); os.fsync(self.control)
-                    require("helper-pending" not in os.listdir(self.control))
-                    self.records.remove("helper-pending")
+            _, cgfd, helpers = self.verify_cgroups()
+            self.cgroup_write(helpers, "cgroup.procs", str(p.pid))
+            with open(f"/proc/{p.pid}/cgroup", encoding="ascii") as membership:
+                require(membership.read(1025) == "0::" + self.cg[14:] + "/helpers\n")
+            self.verify_cgroups()
+            stopped(os.waitid(os.P_PIDFD, pidfd, os.WSTOPPED | os.WEXITED | os.WNOHANG | os.WNOWAIT))
+            require(identity(pending) == identity(os.fstat(held)) == identity(os.stat("helper-pending", dir_fd=self.control, follow_symlinks=False)))
+            os.unlink("helper-pending", dir_fd=self.control); os.fsync(self.control)
+            require("helper-pending" not in os.listdir(self.control))
+            self.records.remove("helper-pending")
             os.kill(p.pid, signal.SIGCONT); continued = True
             with selectors.DefaultSelector() as poll:
                 for stream, target in ((p.stdout, out), (p.stderr, err)):
@@ -417,13 +538,22 @@ class Custody:
                     os.killpg(p.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                if os.path.exists(self.cg + "/helpers/cgroup.kill"):
-                    self.cwrite(self.cg + "/helpers", "cgroup.kill", "1")
-                p.wait(timeout=2); until = time.monotonic() + 2
-                while os.path.exists(self.cg + "/helpers/cgroup.events"):
-                    if "populated 0" in open(self.cg + "/helpers/cgroup.events", encoding="ascii").read():
-                        break
-                    require(time.monotonic() < until); time.sleep(0.01)
+                # Root is the only writer in this threat model; held descriptors
+                # turn any name replacement into a refusal, not an adopted kill.
+                _, _, helpers = self.verify_cgroups()
+                try:
+                    if self.cg.startswith("/sys/fs/cgroup/") or os.path.exists(self.cg + "/helpers/cgroup.kill"):
+                        self.cgroup_write(helpers, "cgroup.kill", "1")
+                except FileNotFoundError:
+                    self.refuse_helper(); raise
+                p.wait(timeout=2)
+                if self.cg.startswith("/sys/fs/cgroup/"):
+                    until = time.monotonic() + 2
+                    while True:
+                        if b"populated 0" in self.cgroup_read(helpers, "cgroup.events"):
+                            break
+                        require(time.monotonic() < until); time.sleep(0.01)
+                    self.verify_cgroups()
             finally:
                 if pidfd is not None:
                     os.close(pidfd)
@@ -517,10 +647,13 @@ class Custody:
 
     def provenance(self, q):
         root = os.path.realpath(os.path.join(os.path.dirname(__file__), "../..")); git = lambda *a: self.command(["git", "-C", root, *a])
-        require(git("rev-parse", "HEAD").decode().strip() == q["candidate"]); require(not git("status", "--porcelain=v1", "--untracked-files=all"))
+        require(git("rev-parse", "HEAD").decode().strip() == q["candidate"])
+        # The root-created product context replaces this tracked file; every other
+        # checkout mutation remains a refusal, so no writable checkout alias enters Docker.
+        require(git("status", "--porcelain=v1", "--untracked-files=all") == b" M .dockerignore\n")
         require(not git("diff", q["baseline"], "--", "images/sandbox", "images/worker", "package-lock.json")); source = {}
         paths = ("src", "schemas", "dev/product-test", "dev/launcher/api-client.ts", "third_party")
-        for raw in git("ls-tree", "-rz", "HEAD", "--", *paths).split(b"\0"):
+        for raw in git("ls-tree", "-rz", "-r", "HEAD", "--", *paths).split(b"\0"):
             if not raw:
                 continue
             meta, path = raw.decode().split("\t"); mode, kind, oid = meta.split()
@@ -529,11 +662,14 @@ class Custody:
                 require(capture(fd, os.path.basename(path)) == data)
                 require(stat.S_IMODE(os.stat(os.path.basename(path), dir_fd=fd, follow_symlinks=False).st_mode) == int(mode, 8) & 0o777)
             source[path] = {"digest": digest(data), "mode": int(mode, 8) & 0o777}
+        with closing_fd(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
+            require(digest(capture(fd, ".dockerignore", 1024)) == q["dockerignore"])
         with closing_fd(os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             s = os.stat("build-receipt.json", dir_fd=fd, follow_symlinks=False); require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o400)
             receipt = json.loads(capture(fd, "build-receipt.json"))
-        expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe")}
-        expected.update(tree=git("rev-parse", "HEAD^{tree}").decode().strip(), source=digest(canonical(source)))
+        expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe", "run_id", "run_attempt", "tree", "source_inventory", "dockerignore", "package_lock", "npm_closure", "image_os", "image_version")}
+        require(expected["tree"] == git("rev-parse", "HEAD^{tree}").decode().strip())
+        require(expected["source_inventory"] == digest(canonical(source)))
         require(receipt == expected)  # independently retained protected-build output, not a CLI identity assertion
         stock = self.images[q["stock_worker_image"]]["RootFS"]["Layers"]; layers = self.images[q["worker_image"]]["RootFS"]["Layers"]
         require(layers[:len(stock)] == stock and len(layers) == len(stock) + 5)
@@ -945,18 +1081,43 @@ class Custody:
 
     def settle(self):
         self.require_no_pending()
-        # Durable boundary: recovery must not need commands after either rmdir.
+        if not self.cg.startswith("/sys/fs/cgroup/"):
+            if "cgroup-retire-intent" not in os.listdir(self.control):
+                self.settle_children(); self.record("cgroup-retire-intent", True)
+            require(self.saved("cgroup-retire-intent") is True)
+            if os.path.exists(self.cg):
+                require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
+                require("populated 0" in open(self.cg + "/cgroup.events", encoding="ascii").read())
+                if os.path.exists(self.cg + "/helpers"): os.rmdir(self.cg + "/helpers")
+                os.rmdir(self.cg)
+            self.record("retired", {"generation": self.generation, "failed": self.failed}); return
+        # All Docker/helper effects settle before this durable no-reacquisition boundary.
         if "cgroup-retire-intent" not in os.listdir(self.control):
             self.settle_children()
             self.record("cgroup-retire-intent", True)
         self.require_no_pending()
         require(self.saved("cgroup-retire-intent") is True)
-        if os.path.exists(self.cg):
-            require(self.saved("cgroup") == list(identity(os.stat(self.cg))[:2]))
-            require("populated 0" in open(self.cg + "/cgroup.events", encoding="ascii").read())
-            if os.path.exists(self.cg + "/helpers"):
-                os.rmdir(self.cg + "/helpers")
-            os.rmdir(self.cg)
+        try:
+            parent, main, helpers = self.verify_cgroups("helpers-cgroup" in os.listdir(self.control))
+            require(b"populated 0" in self.cgroup_read(main, "cgroup.events"))
+            self.record("cgroup-helpers-rmdir-pending", True)
+            os.rmdir("helpers", dir_fd=main)
+            try:
+                os.stat("helpers", dir_fd=main, follow_symlinks=False)
+                require(False)  # a replacement is never the retired helper
+            except FileNotFoundError:
+                self.record("cgroup-helpers-retired", True)
+            self.record("cgroup-rmdir-pending", True)
+            os.rmdir(self.cgroup_name, dir_fd=parent)
+            try:
+                os.stat(self.cgroup_name, dir_fd=parent, follow_symlinks=False)
+                require(False)  # reappearance is never adoption authority
+            except FileNotFoundError:
+                self.record("cgroup-retired", True)
+        finally:
+            # A failed descriptor-relative verification is a permanent veto;
+            # no later cleanup may reopen or adopt a cgroup by pathname.
+            self.close_cgroup_fds()
         self.require_no_pending()
         self.record("retired", {"generation": self.generation, "failed": self.failed})
 

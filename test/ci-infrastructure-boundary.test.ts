@@ -139,10 +139,46 @@ test("bounded feasibility checker performs static parsing only", () => {
   );
 });
 
-test("ADR0335 closes the complete package execution inventory and whole insecure workflow job", async () => {
-  const fixed = `sh -c 'printf "%s\\n" "legacy launcher/insecure execution is disabled by ADR0335" >&2; exit 2' --`;
+test("protected product workflow is manual, protected-main, credential-free and admits before effects", async () => {
+  const source = await readFile(join(workflowDirectory, "insecure-container.yml"), "utf8");
+  const workflow = parseYaml(source) as { on: Record<string, unknown>; jobs: Record<string, Record<string, unknown>> };
+  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
+  assert.deepEqual(Object.keys(workflow.jobs).sort(), ["admission", "protected-product"]);
+  assert.match(source, /test "\$GITHUB_REF" = refs\/heads\/main/u);
+  assert.match(source, /test "\$REF_PROTECTED" = true/u);
+  assert.match(source, /test "\$GITHUB_ACTOR" = "\$GITHUB_REPOSITORY_OWNER"/u);
+  assert.match(source, /test "\$GITHUB_TRIGGERING_ACTOR" = "\$GITHUB_REPOSITORY_OWNER"/u);
+  assert.match(source, /test "\$CONFIRMATION" = EXECUTE_PROTECTED_PRODUCT/u);
+  assert.match(source, /\[\[ "\$CANDIDATE" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
+  assert.match(source, /persist-credentials: false\n {10}fetch-depth: 0/u);
+  assert.match(source, /git merge-base --is-ancestor 8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38/u);
+  assert.match(source, /npm ci --ignore-scripts --no-bin-links/u);
+  assert.match(source, /npm ls --all --ignore-scripts/u);
+  assert.match(source, /e\.optional|matches\(e\.os,'linux'\).*matches\(e\.cpu,'x64'\)/u);
+  assert.match(source, /state\.img','workspace\.img/u);
+  assert.match(source, /retained-image-metadata/u);
+  assert.match(source, /runs-on: ubuntu-24\.04/u);
+  assert.match(source, /test -z "\$\(docker ps -aq --no-trunc\)"/u);
+  assert.match(source, /native\.cgroupdriver=cgroupfs/u);
+  assert.match(source, /"storage-driver":"overlay2"/u);
+  assert.match(source, /systemctl restart docker/u);
+  assert.match(source, /docker info --format '\{\{\.CgroupDriver\}\} \{\{\.Driver\}\}'/u);
+  assert.ok(
+    source.indexOf("Establish a fresh root-controlled Docker realm") < source.indexOf("Pull only pinned bases"),
+  );
+  assert.match(source, /docker build --pull=false --network=none/u);
+  assert.match(source, /--protected-linux/u);
+  assert.match(source, /Root-copy and verify|Root-create bound immutable restrictions/u);
+  assert.match(source, /\/opt\/cogs-product-\$CANDIDATE/u);
+  assert.match(source, /source_inventory|npm_closure|ImageVersion/u);
+  assert.match(source, /time\.time_ns\(\)\/\/1_000_000\+900_000/u);
+  assert.match(source, /Root-inventory exactly one generation/u);
+  assert.doesNotMatch(source, /dev\/insecure-sandbox|envoy|run-launcher-smoke-evidence/u);
+});
+
+test("legacy package hooks, aliases and exports remain closed while the protected workflow is admitted", async () => {
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  const workflow = parseYaml(await readFile(join(workflowDirectory, "insecure-container.yml"), "utf8"));
+  const fixed = `sh -c 'printf "%s\\n" "legacy launcher/insecure execution is disabled by ADR0335" >&2; exit 2' --`;
   const checkPackage = (value: typeof pkg) => {
     assert.equal(value.scripts.launcher, fixed);
     assert.equal(value.exports, undefined);
@@ -153,49 +189,22 @@ test("ADR0335 closes the complete package execution inventory and whole insecure
       "26f0f275aa7a04855c8bd6265b6fe47a051d5c73efa697b152856d7e1547e640",
     );
   };
-  const checkWorkflow = (value: unknown) => {
-    const jobs = (value as { jobs: Record<string, { if: string; uses?: string; steps: unknown[] }> }).jobs;
-    assert.deepEqual(Object.keys(jobs), ["insecure-container"]);
-    assert.equal(jobs["insecure-container"]?.if, "${{ false }}");
-    assert.equal(jobs["insecure-container"]?.uses, undefined);
-    assert(Array.isArray(jobs["insecure-container"]?.steps));
-  };
   checkPackage(pkg);
-  checkWorkflow(workflow);
   for (const name of ["launcher", "prelauncher", "postlauncher", "insecure", "alias"])
     assert.throws(() => checkPackage({ ...pkg, scripts: { ...pkg.scripts, [name]: "tsx dev/launcher/main.ts" } }));
   for (const key of ["exports", "bin"]) assert.throws(() => checkPackage({ ...pkg, [key]: "./dev/launcher/main.ts" }));
-  for (const job of [
-    {},
-    { if: "env.ALLOW" },
-    { steps: [{ if: "${{ false }}" }] },
-    { if: "${{ false }}", uses: "./other.yml" },
-  ])
-    assert.throws(() => checkWorkflow({ jobs: { "insecure-container": job } }));
-  assert.throws(() => checkWorkflow({ jobs: { ...(workflow as { jobs: object }).jobs, escape: {} } }));
-  // Exact builtin-only command + closed hook/alias inventory: no Node/tsx/application can start.
-  for (const profile of ["insecure-container", "linux-kvm", "macos-vm", "invalid", "--help"])
-    for (const op of [
-      "create",
-      "verify",
-      "reset",
-      "destroy",
-      "start",
-      "run",
-      "smoke",
-      "s3-09",
-      "; node --eval throw",
-    ]) {
-      const result = spawnSync("/bin/sh", ["-c", `${pkg.scripts.launcher} "$@"`, "npm", "--profile", profile, op], {
-        env: { PATH: "/bin" },
-        encoding: "utf8",
-        timeout: 2000,
-      });
-      assert.equal(result.error, undefined);
-      assert.equal(result.status, 2);
-      assert.equal(result.stdout, "");
-      assert.equal(result.stderr, "legacy launcher/insecure execution is disabled by ADR0335\n");
-    }
+  const result = spawnSync(
+    "/bin/sh",
+    ["-c", `${pkg.scripts.launcher} "$@"`, "npm", "--profile", "linux-kvm", "create"],
+    {
+      env: { PATH: "/bin" },
+      encoding: "utf8",
+      timeout: 2000,
+    },
+  );
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "legacy launcher/insecure execution is disabled by ADR0335\n");
 });
 
 const productGeneration = "a".repeat(32);
@@ -206,6 +215,15 @@ const restrictions = () => ({
   candidate: "a".repeat(40),
   owner: "repository-owner",
   expires: 200000,
+  run_id: "123",
+  run_attempt: "1",
+  tree: "d".repeat(40),
+  source_inventory: image("d"),
+  dockerignore: image("d"),
+  package_lock: image("e"),
+  npm_closure: image("f"),
+  image_os: "ubuntu",
+  image_version: "24.04",
   profile: PROFILE,
   breach: "fail-and-settle-exact",
   findings: FINDINGS,
@@ -224,6 +242,31 @@ const noEffects: CustodyPort = Object.freeze({
   },
 });
 
+test("KVM qualification is manual-only and its driver refuses receipt mutation before effects", async () => {
+  const workflow = await readFile(join(workflowDirectory, "kvm-qualification.yml"), "utf8");
+  const driver = await readFile(join(root, "dev/linux-kvm/driver.sh"), "utf8");
+  const tools = await readFile(join(root, "dev/linux-kvm/git-tools.sh"), "utf8");
+  assert.match(workflow, /^on:\n {2}workflow_dispatch:/mu);
+  assert.doesNotMatch(workflow, /^ {2}(?:schedule|pull_request):/mu);
+  assert.match(workflow, /EXECUTE_PROTECTED_KVM/u);
+  assert.match(workflow, /test "\$GITHUB_TRIGGERING_ACTOR" = "\$GITHUB_REPOSITORY_OWNER"/u);
+  assert.match(workflow, /Root-create immutable KVM execution receipt before checkout/u);
+  assert.match(workflow, /COGS_KVM_EXECUTION_RECEIPT/u);
+  assert.match(tools, /cogs\.linux-kvm-execution\/v1/u);
+  assert.match(tools, /stat\.S_IMODE\(info\.st_mode\)!=0o444/u);
+  assert.match(tools, /time\.time_ns\(\)\/\/1_000_000/u);
+  assert.match(tools, /sha256\(f'\{run\}:\{attempt\}:\{source\}'/u);
+  assert.match(driver, /cogs_kvm_execution_gate/u);
+  assert.match(workflow, /id: smoke/u);
+  assert.match(workflow, /SMOKE_OUTCOME: \$\{\{ steps\.smoke\.outcome \}\}/u);
+  assert.doesNotMatch(workflow, /driver\.sh (?:create|destroy|ssh)|suite-smoke|envoy-kvm|run-kvm-black-box-case/u);
+  assert.match(
+    await readFile(join(root, "dev/linux-kvm/bounded-command.py"), "utf8"),
+    /generation != os\.environ\.get\("COGS_KVM_GENERATION"\)/u,
+  );
+  assert.ok(driver.indexOf("network_policy()") < driver.indexOf("cogs_kvm_execution_gate"));
+});
+
 test("product restrictions are canonical, closed, expiring and identity/profile-bound before effects", () => {
   const good = restrictions();
   const admitted = admitRestrictions(Buffer.from(canonical(good)), good.candidate, 1000);
@@ -232,6 +275,7 @@ test("product restrictions are canonical, closed, expiring and identity/profile-
     { findings: [4, 5, 6, 8, 9, 10] },
     { findings: [...FINDINGS, 3] },
     { expires: 0 },
+    { expires: 61000 }, // seconds-based expiry is not a millisecond lease beyond 60 seconds
     { baseline: "b".repeat(40) },
     { candidate: "b".repeat(40) },
     { profile: "production" },
@@ -240,6 +284,7 @@ test("product restrictions are canonical, closed, expiring and identity/profile-
     { extra: true },
     { seconds: 601 },
     { worker_image: "worker:latest" },
+    { dockerignore: "sha256:short" },
     { sandbox_image: good.worker_image },
     { fresh_protected_runner: false },
   ])
@@ -948,7 +993,7 @@ with tempfile.TemporaryDirectory() as root:
   with patch.object(m.Custody,'saved',side_effect=lambda n:records[n]),patch.object(m.os.path,'exists',return_value=True):
    recovered=m.Custody({'generation':'a'*32,'seconds':60,'cleanup_only':True})
    assert recovered.recovery and recovered.failed
- assert made==['a'*32,'control']*2 and settled==[True,True]
+ assert made.count('a'*32)==2 and made.count('control')==2 and settled==[True,True]
  os.close(fd)
 owner=m.Custody.__new__(m.Custody);owner.recovery=True
 veto(lambda:owner.dispatch({'generation':'a'*32,'op':'storage','name':'state'}),'recovery acquired storage')

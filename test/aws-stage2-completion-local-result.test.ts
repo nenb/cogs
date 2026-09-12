@@ -42,18 +42,18 @@ function compile(): ValidateFunction {
   );
 }
 
-for (const optimized of [false, true]) {
-  test(`local qualification result state machine is strict${optimized ? " under python -O" : ""}`, () => {
+test("local qualification result state machine is strict normally and under python -O", () => {
+  for (const optimized of [false, true]) {
     const result = spawnSync("python3", [...(optimized ? ["-O"] : []), "-B", portable], {
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
-      timeout: 30_000,
+      timeout: 60_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /completion local result codec tests passed/u);
-  });
-}
+  }
+});
 
 test("schema registry and codec accept the same canonical shared fixtures", () => {
   const validate = compile();

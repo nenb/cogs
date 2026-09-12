@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
-# ADR0335 has issued no exact local execution authorization. A caller nonce,
-# workflow event, environment opt-in or network lease cannot replace that gate.
-printf 'FAIL: ADR0335 local KVM execution authorization is not issued\n' >&2
-exit 1
-
 report=${1:-docs/security-evidence/generated/kvm-driver-smoke.json}
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+script=${BASH_SOURCE[0]}
+repo=${script%/dev/linux-kvm/ci-smoke.sh}
+[[ "$repo" != "$script" ]] || repo=$PWD
+repo=$(builtin cd "$repo" && builtin pwd -P)
+# shellcheck source=dev/linux-kvm/git-tools.sh
+source "$repo/dev/linux-kvm/git-tools.sh"
+cogs_kvm_execution_gate
 driver="$repo/dev/linux-kvm/driver.sh"
-started=$(python3 -c 'import time; print(time.time_ns()//1000000)')
+started=$(/usr/bin/python3 -I -B -c 'import time; print(time.time_ns()//1000000)')
 passed=false
 acquired=false
 helper_safe=true
 boot_records=
 export COGS_KVM_GENERATION COGS_SOURCE_REVISION
-COGS_KVM_GENERATION=$(python3 -I -c 'import secrets; print(secrets.token_hex(16))')
-COGS_SOURCE_REVISION=${COGS_SOURCE_REVISION:-$(git -C "$repo" rev-parse HEAD)}
-[[ "$COGS_SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]] || exit 1
+# The gate has already bound this generation to the workflow run/attempt/source;
+# a random smoke nonce would silently create an unreceipted execution path.
+[[ "${COGS_KVM_GENERATION:-}" =~ ^[a-f0-9]{32}$ && "${COGS_SOURCE_REVISION:-}" =~ ^[a-f0-9]{40}$ ]] || exit 1
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
 [[ "$proxy_port" =~ ^[1-9][0-9]{0,4}$ && "$proxy_port" -ge 1 && "$proxy_port" -le 65535 ]] || exit 1
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}

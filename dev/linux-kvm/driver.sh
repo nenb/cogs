@@ -26,15 +26,15 @@ if [[ "$operation" == print-network-policy ]]; then
   network_policy cgfixture CGFIXI CGFIXF 18080
   exit 0
 fi
-# ADR0335 has issued no exact local execution authorization. Deny ALL effectful
-# actions (including cache/cleanup) before sourcing helpers or creating the lock.
-# Only the pure policy renderer above is admitted; no ambient opt-in is authority.
-printf 'FAIL: ADR0335 local KVM execution authorization is not issued\n' >&2
-exit 1
-
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+script=${BASH_SOURCE[0]}
+repo=${script%/dev/linux-kvm/driver.sh}
+[[ "$repo" != "$script" ]] || repo=$PWD
+repo=$(builtin cd "$repo" && builtin pwd -P)
 # shellcheck source=dev/linux-kvm/git-tools.sh
 source "$repo/dev/linux-kvm/git-tools.sh"
+# The renderer above is the sole ungated path. Every other operation binds the
+# root-written workflow receipt before locks, state paths or subprocesses.
+cogs_kvm_execution_gate
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
 cache=${COGS_KVM_CACHE_DIR:-$repo/.cogs-dev/cache}
 image_name=debian-13-generic-amd64-20260712-2537.qcow2

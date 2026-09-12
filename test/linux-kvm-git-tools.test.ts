@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,82 @@ async function sourceGitTools(command: string, env: Record<string, string> = {})
     timeout: 10_000,
   });
 }
+
+test("shared KVM receipt gate accepts a root-owned positive fixture", async () => {
+  const { spawnSync } = await import("node:child_process");
+  if (process.platform !== "linux" || spawnSync("sudo", ["-n", "true"]).status !== 0) return;
+  const source = "a".repeat(40);
+  const run = "123";
+  const attempt = "1";
+  const generation = createHash("sha256").update(`${run}:${attempt}:${source}`).digest("hex").slice(0, 32);
+  const receipt = join(tmpdir(), `cogs-kvm-gate-${process.pid}.json`);
+  const protectedReceipt = `/run/cogs-kvm-gate-${process.pid}.json`;
+  const value = {
+    version: "cogs.linux-kvm-execution/v1",
+    run_id: run,
+    run_attempt: attempt,
+    candidate: source,
+    source_revision: source,
+    generation,
+    expires: Date.now() + 60_000,
+  };
+  try {
+    await writeFile(receipt, `${JSON.stringify(value, Object.keys(value).sort())}\n`, { mode: 0o600 });
+    assert.equal(
+      spawnSync("sudo", ["-n", "install", "-o", "root", "-g", "root", "-m", "0444", receipt, protectedReceipt]).status,
+      0,
+    );
+    const result = await sourceGitTools("cogs_kvm_execution_gate", {
+      COGS_KVM_EXECUTION_RECEIPT: protectedReceipt,
+      COGS_KVM_GENERATION: generation,
+      COGS_SOURCE_REVISION: source,
+      GITHUB_RUN_ID: run,
+      GITHUB_RUN_ATTEMPT: attempt,
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    spawnSync("sudo", ["-n", "rm", "-f", protectedReceipt]);
+    await rm(receipt, { force: true });
+  }
+});
+
+test("shared KVM receipt gate rejects a root-owned receipt with a mismatched source binding", async () => {
+  const { spawnSync } = await import("node:child_process");
+  if (process.platform !== "linux" || spawnSync("sudo", ["-n", "true"]).status !== 0) return;
+  const source = "a".repeat(40);
+  const run = "123";
+  const attempt = "1";
+  const generation = createHash("sha256").update(`${run}:${attempt}:${source}`).digest("hex").slice(0, 32);
+  const receipt = join(tmpdir(), `cogs-kvm-gate-negative-${process.pid}.json`);
+  const protectedReceipt = `/run/cogs-kvm-gate-negative-${process.pid}.json`;
+  const value = {
+    version: "cogs.linux-kvm-execution/v1",
+    run_id: run,
+    run_attempt: attempt,
+    candidate: source,
+    source_revision: source,
+    generation,
+    expires: Date.now() + 60_000,
+  };
+  try {
+    await writeFile(receipt, `${JSON.stringify(value, Object.keys(value).sort())}\n`, { mode: 0o600 });
+    assert.equal(
+      spawnSync("sudo", ["-n", "install", "-o", "root", "-g", "root", "-m", "0444", receipt, protectedReceipt]).status,
+      0,
+    );
+    const result = await sourceGitTools("cogs_kvm_execution_gate", {
+      COGS_KVM_EXECUTION_RECEIPT: protectedReceipt,
+      COGS_KVM_GENERATION: generation,
+      COGS_SOURCE_REVISION: "b".repeat(40),
+      GITHUB_RUN_ID: run,
+      GITHUB_RUN_ATTEMPT: attempt,
+    });
+    assert.notEqual(result.status, 0, result.stderr);
+  } finally {
+    spawnSync("sudo", ["-n", "rm", "-f", protectedReceipt]);
+    await rm(receipt, { force: true });
+  }
+});
 
 test("ADR0037 Git tools manifest is exact, bounded, and not parameterized", async () => {
   const result = await sourceGitTools("cogs_git_tools_manifest");
@@ -230,15 +307,26 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
 
 test("KVM workflow artifacts remain metadata reports and do not upload Git tools cache or image", async () => {
   const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
-  assert.match(workflow, /path: docs\/security-evidence\/generated\//u);
+  assert.match(
+    workflow,
+    /path: \|\n {12}docs\/security-evidence\/generated\/kvm-qualification\.json\n {12}docs\/security-evidence\/generated\/kvm-driver-smoke\.json/u,
+  );
   assert.doesNotMatch(workflow, /git-tools\.img|\.deb|COGS_KVM_CACHE_DIR/u);
   assert.match(workflow, /dev\/linux-kvm\/ci-smoke\.sh/u);
-  assert.match(workflow, /dev\/linux-kvm\/driver\.sh create/u);
+  assert.match(workflow, /id: smoke/u);
   assert.match(workflow, /driver\.sh prepare-cache/u);
+  assert.doesNotMatch(workflow, /driver\.sh (?:create|destroy|ssh)|envoy-kvm|suite-smoke|run-kvm-black-box-case/u);
   assert.ok(workflow.indexOf("driver.sh prepare-cache") < workflow.indexOf("ip netns add"));
   assert.match(workflow, /cogs-exclusive-netns-v1/u);
-  assert.match(workflow, /sudo ip netns exec "\$COGS_KVM_NETNS" sudo -u "\$USER"/u);
-  assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'stage2-only'\)/u);
+  assert.match(workflow, /sudo -n ip netns exec "\$COGS_KVM_NETNS" sudo -n -u "\$USER"/u);
+  assert.match(workflow, /EXECUTE_PROTECTED_KVM/u);
+  assert.match(workflow, /GITHUB_TRIGGERING_ACTOR/u);
+  assert.match(workflow, /cogs\.linux-kvm-execution\/v1/u);
+  assert.match(
+    workflow,
+    /COGS_KVM_GENERATION="\$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="\$COGS_KVM_EXECUTION_RECEIPT"/u,
+  );
+  assert.match(workflow, /GITHUB_RUN_ID="\$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="\$GITHUB_RUN_ATTEMPT"/u);
   assert.match(workflow, /if ! pids=\$\(sudo ip netns pids "\$COGS_KVM_NETNS"\); then/u);
   assert.ok(
     workflow.indexOf('sudo ip netns delete "$COGS_KVM_NETNS"') < workflow.indexOf('sudo rm -- "$COGS_KVM_LEASE"'),
@@ -1206,7 +1294,7 @@ test("every KVM shell ingress denies before effects regardless of ambient workfl
           },
         });
         assert.equal(result.status, 1, `${path}: ${result.stderr}`);
-        assert.match(result.stderr, /ADR0335/u);
+        assert.match(result.stderr, /ADR0335|KVM execution receipt/u);
         assert.equal(result.stdout, "");
       }
     }

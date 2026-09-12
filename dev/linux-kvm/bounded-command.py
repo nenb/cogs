@@ -449,10 +449,21 @@ def require_driver(name, state, generation):
         raise Rejected("driver guest intent missing")
 
 
-def require_local_execution():
-    # No exact authorization has been issued by ADR0335's later envelope gate.
-    # Independent of driver custody: direct CLI use must stop before all effects.
-    raise Rejected("ADR0335 local KVM execution authorization is not issued")
+def require_local_execution(generation):
+    """Bind the CLI generation to the shared root receipt before state access."""
+    if generation != os.environ.get("COGS_KVM_GENERATION"):
+        raise Rejected("CLI generation does not match execution receipt")
+    tools = Path(__file__).resolve().with_name("git-tools.sh")
+    completed = subprocess.run(
+        ["/bin/bash", "-c", 'source "$1"; cogs_kvm_execution_gate', "cogs-kvm-gate", str(tools)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=2,
+    )
+    if completed.returncode:
+        raise Rejected("KVM execution receipt binding absent")
 
 
 def main():
@@ -463,10 +474,10 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, cancel)
     try:
-        require_local_execution()
         if len(sys.argv) != 5:
             raise Rejected("fixed command arguments required")
         name, path, generation, port = sys.argv[1:]
+        require_local_execution(generation)
         require_driver(name, Path(path), generation)
         result = execute(name, Path(path), generation, port)
         check_cancelled()

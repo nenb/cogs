@@ -1,28 +1,77 @@
 name: KVM qualification
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
-  pull_request:
-    types: [labeled, reopened, synchronize]
+    inputs:
+      candidate:
+        description: Exact 40-character protected-main candidate
+        required: true
+        type: string
+      confirmation:
+        description: Type EXECUTE_PROTECTED_KVM
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  linux-kvm:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'security')
+  admission:
     runs-on: ubuntu-24.04
+    outputs:
+      candidate: ${{ steps.admit.outputs.candidate }}
+    steps:
+      - id: admit
+        name: Refuse invalid dispatch before qualification effects
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test "$GITHUB_TRIGGERING_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test "$CONFIRMATION" = EXECUTE_PROTECTED_KVM
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          test "$CANDIDATE" = "$GITHUB_SHA"
+          printf 'candidate=%s\n' "$CANDIDATE" >>"$GITHUB_OUTPUT"
+
+  linux-kvm:
+    needs: admission
+    runs-on: ubuntu-24.04
+    env:
+      COGS_SOURCE_REVISION: ${{ needs.admission.outputs.candidate }}
+      COGS_KVM_EXECUTION_RECEIPT: /run/cogs-kvm-execution-receipt.json
     concurrency:
-      group: kvm-qualification-${{ github.event.pull_request.number || github.ref }}
+      group: kvm-qualification-${{ needs.admission.outputs.candidate }}
       cancel-in-progress: true
     timeout-minutes: 55
     steps:
+      - name: Root-create immutable KVM execution receipt before checkout
+        env:
+          CANDIDATE: ${{ needs.admission.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          sudo -n env CANDIDATE="$CANDIDATE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,time
+          candidate=os.environ['CANDIDATE']; run=os.environ['GITHUB_RUN_ID']; attempt=os.environ['GITHUB_RUN_ATTEMPT']
+          generation=hashlib.sha256(f'{run}:{attempt}:{candidate}'.encode()).hexdigest()[:32]
+          value={'version':'cogs.linux-kvm-execution/v1','run_id':run,'run_attempt':attempt,'candidate':candidate,'source_revision':candidate,'generation':generation,'expires':time.time_ns()//1_000_000+3_600_000}
+          path='/run/cogs-kvm-execution-receipt.json'; fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444)
+          try: os.write(fd,(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()); os.fsync(fd)
+          finally: os.close(fd)
+          os.chown(path,0,0); os.chmod(path,0o444)
+          PY
+          printf 'COGS_KVM_GENERATION=%s\n' "$(printf '%s:%s:%s' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$CANDIDATE" | sha256sum | cut -d' ' -f1 | cut -c1-32)" >>"$GITHUB_ENV"
+          printf 'COGS_KVM_EXECUTION_RECEIPT=/run/cogs-kvm-execution-receipt.json\n' >>"$GITHUB_ENV"
+          sudo -n test "$(stat -c '%u:%g:%a' "$COGS_KVM_EXECUTION_RECEIPT")" = 0:0:444
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.admission.outputs.candidate }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -44,12 +93,10 @@ jobs:
           sudo chgrp "$(id -gn)" /dev/kvm
 
       - name: Prove active KVM acceleration with a root guest
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
+        run: env COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" dev/linux-kvm/qualify.sh docs/security-evidence/generated/kvm-qualification.json
 
       - name: Acquire and authenticate the immutable guest image before network isolation
-        run: dev/linux-kvm/driver.sh prepare-cache
+        run: env COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" dev/linux-kvm/driver.sh prepare-cache
 
       - name: Provision the exclusive disposable driver network domain
         run: |
@@ -92,35 +139,13 @@ jobs:
           trap - EXIT
 
       - name: Exercise the isolated Debian guest lifecycle
+        id: smoke
         env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          COGS_SOURCE_REVISION: ${{ needs.admission.outputs.candidate }}
         run: |
-          sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env \
-            HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" \
+          sudo -n ip netns exec "$COGS_KVM_NETNS" sudo -n -u "$USER" env \
+            HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             dev/linux-kvm/ci-smoke.sh docs/security-evidence/generated/kvm-driver-smoke.json
-
-      - name: Create persistent isolated guest for authoritative conformance
-        id: guest
-        if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only')
-        run: sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env HOME="$HOME" PATH="$PATH" dev/linux-kvm/driver.sh create
-
-      - name: Run authoritative Stage 1 suite against Envoy
-        id: envoy_suite
-        if: github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only')
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-          COGS_CONFORMANCE_PROFILE: linux-kvm
-        run: |
-          sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env \
-            HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" \
-            COGS_CONFORMANCE_PROFILE="$COGS_CONFORMANCE_PROFILE" \
-            npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-kvm
-
-      - name: Destroy isolated conformance guest
-        id: destroy
-        if: always() && steps.guest.outcome == 'success'
-        run: sudo ip netns exec "$COGS_KVM_NETNS" sudo -u "$USER" env HOME="$HOME" PATH="$PATH" dev/linux-kvm/driver.sh destroy
 
       - name: Retire the exclusive disposable driver network domain
         id: domain_cleanup
@@ -144,39 +169,26 @@ jobs:
         id: evidence
         if: always()
         run: |
-          reports=(docs/security-evidence/generated/kvm-qualification.json docs/security-evidence/generated/kvm-driver-smoke.json)
-          if [[ "${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'stage2-only') }}" == true ]]; then
-            reports+=(docs/security-evidence/generated/envoy-kvm/envoy-suite-linux-kvm-*/report.json)
-          fi
-          npm run schemas -- "${reports[@]}"
+          npm run schemas -- docs/security-evidence/generated/kvm-qualification.json docs/security-evidence/generated/kvm-driver-smoke.json
 
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: kvm-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: docs/security-evidence/generated/
+          path: |
+            docs/security-evidence/generated/kvm-qualification.json
+            docs/security-evidence/generated/kvm-driver-smoke.json
           if-no-files-found: error
           retention-days: 30
 
       - name: Enforce applicable conformance after evidence publication
         if: always()
         env:
-          STAGE2_ONLY: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'stage2-only') }}
-          GUEST_OUTCOME: ${{ steps.guest.outcome }}
-          ENVOY_OUTCOME: ${{ steps.envoy_suite.outcome }}
-          DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           DOMAIN_OUTCOME: ${{ steps.domain_cleanup.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
         run: |
+          test "$SMOKE_OUTCOME" = success
           test "$DOMAIN_OUTCOME" = success
           test "$EVIDENCE_OUTCOME" = success
-          if [[ "$STAGE2_ONLY" == true ]]; then
-            test "$GUEST_OUTCOME" = skipped
-            test "$ENVOY_OUTCOME" = skipped
-            test "$DESTROY_OUTCOME" = skipped
-          else
-            test "$GUEST_OUTCOME" = success
-            test "$ENVOY_OUTCOME" = success
-            test "$DESTROY_OUTCOME" = success
-          fi

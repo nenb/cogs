@@ -41,6 +41,7 @@
           "dev/linux-kvm/bounded-command.py",
           "dev/linux-kvm/ci-smoke.sh",
           "dev/linux-kvm/driver.sh",
+          "dev/linux-kvm/git-tools.sh",
           "dev/linux-kvm/qualify.sh",
           "test/egress-conformance/guest-probes/run-kvm-black-box-case.sh",
           "test/egress-conformance/stage3-real-runtime/harness.ts",
@@ -112,6 +113,8 @@
         "gross_byte_forecast": 5570000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
+          ".github/workflows/kvm-qualification.yml",
+          "README.md",
           "config/external-review-remediation-budget-v1.json",
           "dev/product-test/host-custody.py",
           "dev/product-test/runner.ts",
@@ -164,12 +167,12 @@
       "allocations": [
         {
           "name": "helper",
-          "gross_lines": 350,
+          "gross_lines": 452,
           "gross_bytes": 350000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 250,
+              "gross_lines": 352,
               "gross_bytes": 250000
             },
             {
@@ -213,12 +216,12 @@
         },
         {
           "name": "final_controls_and_evidence",
-          "gross_lines": 300,
+          "gross_lines": 165,
           "gross_bytes": 550000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 300,
+              "gross_lines": 165,
               "gross_bytes": 550000
             }
           ],
@@ -226,12 +229,12 @@
         },
         {
           "name": "governance",
-          "gross_lines": 500,
+          "gross_lines": 533,
           "gross_bytes": 150000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 500,
+              "gross_lines": 533,
               "gross_bytes": 150000
             }
           ],
@@ -311,6 +314,7 @@
         "dev/linux-kvm/bounded-command.py",
         "dev/linux-kvm/ci-smoke.sh",
         "dev/linux-kvm/driver.sh",
+        "dev/linux-kvm/git-tools.sh",
         "dev/linux-kvm/qualify.sh",
         "scripts/validate-stage3-real-runtime-sidecars.ts",
         "src/egress/proxy-capability.ts",
@@ -485,6 +489,7 @@
         ".github/workflows/stage2-production-plan.yml",
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
+        "README.md",
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
         "config/stage2-retired-revisions-v1.json",

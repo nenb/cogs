@@ -48,8 +48,8 @@ PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 700_000,
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_000_000,
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 8_000_000, 11_000_000
-PRODUCT_TEST_PATH_OWNER_SHA256 = "34f45b46730936600877474c9b2179f1498927d255607fcac67960f9f3c07961"
-PRODUCT_TEST_TASK_PATH_SHA256 = "58ba5c47ed9399bce6cb68a8bcd0191afbc6aa41fb4dab4401d50b6cd1749ad4"
+PRODUCT_TEST_PATH_OWNER_SHA256 = "f110c552c20a3c380b52acb2fb9284ee12461bc2fe2c22fb977fd8f85b32399c"
+PRODUCT_TEST_TASK_PATH_SHA256 = "18553a685d9b37c770dc6fd9b49207acd8f89db0a35346fc9a7d566a61500013"
 PRODUCT_TEST_NEW_FILES = {
     "docs/adr/0336-converge-remaining-product-governance.md": "integration",
 }
@@ -59,10 +59,10 @@ PRODUCT_TEST_WORKFLOW_LINE_HIGH = 300
 SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
 SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
 PRODUCT_TEST_HELPER_INTEGRATION_PATHS = frozenset((
-    "dev/product-test/host-custody.py", "dev/product-test/runner.ts",
-    "dev/product-test/snapshot-owner.ts", "test/ci-infrastructure-boundary.test.ts"))
+    "dev/product-test/host-custody.py", "dev/product-test/snapshot-owner.ts",
+    "test/ci-infrastructure-boundary.test.ts"))
 PRODUCT_TEST_DOCKER_PATHS = frozenset((
-    PRODUCT_TEST_WORKFLOW_PATH, "scripts/run-launcher-smoke-evidence.ts",
+    PRODUCT_TEST_WORKFLOW_PATH, "dev/product-test/runner.ts", "scripts/run-launcher-smoke-evidence.ts",
     "test/launcher-smoke-evidence.test.ts"))
 PRODUCT_TEST_GOVERNANCE_PATHS = frozenset((
     "config/external-review-remediation-budget-v1.json",
@@ -567,11 +567,11 @@ def _product_test_budget(data, allocations):
     _require(hashlib.sha256(canonical).hexdigest() == PRODUCT_TEST_PATH_OWNER_SHA256)
     tasks = tranche["allocations"]
     task_owner_lines, task_owner_bytes = {}, {}
-    required_tasks = (("helper", 350, 350_000, {"integration": (250, 250_000), "lifecycle": (100, 100_000)}),
+    required_tasks = (("helper", 452, 350_000, {"integration": (352, 250_000), "lifecycle": (100, 100_000)}),
                       ("docker_workflow_and_tests", 550, 650_000, {"integration": (550, 650_000)}),
                       ("kvm_gate_and_tests", 300, 300_000, {"relay": (300, 300_000)}),
-                      ("final_controls_and_evidence", 300, 550_000, {"integration": (300, 550_000)}),
-                      ("governance", 500, 150_000, {"integration": (500, 150_000)}))
+                      ("final_controls_and_evidence", 165, 550_000, {"integration": (165, 550_000)}),
+                      ("governance", 533, 150_000, {"integration": (533, 150_000)}))
     _require(len(tasks) == len(required_tasks))
     for task, expected_task in zip(tasks, required_tasks):
         name, lines, raw_bytes, expected_owners = expected_task

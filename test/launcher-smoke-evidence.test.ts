@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ENVOY_IMAGE } from "../dev/launcher/envoy-egress.ts";
 import { OPENBAO_IMAGE } from "../dev/openbao-model-auth/image.ts";
+import { WORKER_DOCKERFILE } from "../dev/product-test/runner.ts";
 import {
   LAUNCHER_DOCKER,
   LAUNCHER_IMAGE_ENV,
@@ -485,28 +486,120 @@ test("launcher preparation excludes retired OpenBao and remains outside active w
       workflow,
       /prepare-launcher-images|run-launcher-smoke-evidence|stage3-real-runtime|openbao-model-auth/,
     );
-    assert.match(workflow, /COGS_SOURCE_REVISION: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   }
-  assert.match(insecure, /id: envoy_response[\s\S]*COGS_ENVOY_RESPONSE_TEST: "1"/u);
-  assert.match(insecure, /docker pull "node@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"/u);
-  assert.match(
-    insecure,
-    /ENVOY_RESPONSE_OUTCOME: \$\{\{ steps\.envoy_response\.outcome \}\}[\s\S]*test "\$ENVOY_RESPONSE_OUTCOME" = success/u,
-  );
-  assert.match(kvm, /id: envoy_suite\n {8}if: [^\n]*stage2-only[^\n]*\n {8}continue-on-error: true/);
-  assert.match(kvm, /id: destroy\n {8}if: always\(\) && steps\.guest\.outcome == 'success'/);
+  assert.match(insecure, /CANDIDATE: \$\{\{ needs\.admission\.outputs\.candidate \}\}/);
+  assert.match(kvm, /COGS_SOURCE_REVISION: \$\{\{ needs\.admission\.outputs\.candidate \}\}/);
+  assert.match(insecure, /EXECUTE_PROTECTED_PRODUCT/u);
+  assert.match(insecure, /docker build --pull=false --network=none/u);
+  assert.doesNotMatch(insecure, /envoy_response|COGS_ENVOY_RESPONSE_TEST/u);
+  assert.match(kvm, /id: smoke/);
   assert.match(kvm, /id: domain_cleanup\n {8}if: always\(\) && env\.COGS_KVM_NETNS != ''/);
   assert.match(kvm, /id: evidence\n {8}if: always\(\)/);
   for (const [variable, step] of [
-    ["GUEST_OUTCOME", "guest"],
-    ["ENVOY_OUTCOME", "envoy_suite"],
-    ["DESTROY_OUTCOME", "destroy"],
+    ["SMOKE_OUTCOME", "smoke"],
     ["DOMAIN_OUTCOME", "domain_cleanup"],
     ["EVIDENCE_OUTCOME", "evidence"],
   ] as const) {
     assert(kvm.includes(`${variable}: \${{ steps.${step}.outcome }}`));
   }
-  assert.match(kvm, /if \[\[ "\$STAGE2_ONLY" == true \]\]; then[\s\S]*"\$GUEST_OUTCOME" = skipped/u);
-  assert.match(kvm, /else[\s\S]*"\$ENVOY_OUTCOME" = success[\s\S]*"\$DESTROY_OUTCOME" = success/u);
-  assert.match(kvm, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
+  assert.match(kvm, /test "\$SMOKE_OUTCOME" = success/u);
+  assert.doesNotMatch(kvm, /envoy_suite|steps\.guest|driver\.sh create|driver\.sh destroy|suite-smoke/u);
+  assert.match(kvm, /ref: \$\{\{ needs\.admission\.outputs\.candidate \}\}/);
+});
+
+test("protected Docker context is an exact root-owned COPY closure and preserves digest provenance", async () => {
+  const source = await readFile(join(process.cwd(), ".github/workflows/insecure-container.yml"), "utf8");
+  const expected = `**
+!.dockerignore
+!src/
+!src/**
+!schemas/
+!schemas/**
+!dev/
+!dev/product-test/
+!dev/product-test/**
+!dev/launcher/
+!dev/launcher/api-client.ts
+!third_party/
+!third_party/**
+`;
+  const copyClosure = ["src", "schemas", "dev/product-test", "dev/launcher/api-client.ts", "third_party"];
+  const assertContext = (candidate: string) => {
+    const literal = /dockerignore=b"""([\s\S]*?)"""/u.exec(candidate)?.[1]?.replaceAll("\n          ", "\n");
+    assert.equal(literal, expected, "deny-all context has only the product closure");
+    assert.match(candidate, /os\.replace\(temporary,'\.dockerignore'/u);
+    assert.match(candidate, /stat\.S_IMODE\(info\.st_mode\)!=0o400/u);
+    assert.match(candidate, /'dockerignore':'sha256:'\+hashlib\.sha256\(dockerignore\)\.hexdigest\(\)/u);
+    assert.match(candidate, /--build-arg PINNED_WORKER="\$STOCK_WORKER"/u);
+    assert.doesNotMatch(candidate, /--build-arg PINNED_WORKER="\$STOCK_WORKER_ID"/u);
+    assert.match(candidate, /'stock_worker_image':os\.environ\['STOCK_WORKER_ID'\]/u);
+  };
+  assertContext(source);
+  const copies = [...WORKER_DOCKERFILE.matchAll(/^COPY --chown=0:0 (\S+) \/opt\/cogs\/\1$/gmu)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(copies, copyClosure, "Docker COPY and .dockerignore closures are equal");
+  for (const mutation of [
+    source.replace("!schemas/**", "!schemas/runtime-v1alpha1.json"),
+    source.replace("!dev/launcher/api-client.ts", "!dev/launcher/"),
+    source.replace('PINNED_WORKER="$STOCK_WORKER"', 'PINNED_WORKER="$STOCK_WORKER_ID"'),
+    source.replace("stat.S_IMODE(info.st_mode)!=0o400", "stat.S_IMODE(info.st_mode)!=0o644"),
+  ])
+    assert.throws(() => assertContext(mutation), "context or provenance mutation was accepted");
+});
+
+test("production cgroup descriptor syscalls close on veto and recover only durable exact absence", () => {
+  const python = String.raw`
+import importlib.util,os,tempfile
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+g='a'*32
+def fixture(root):
+ control=root+'/control';cg=root+'/cogs-product-'+g;os.mkdir(control);os.mkdir(cg);os.mkdir(cg+'/helpers');open(cg+'/cgroup.events','w').write('populated 0\n')
+ o=m.Custody.__new__(m.Custody);o.generation=g;o.cg='/sys/fs/cgroup/cogs-product-'+g;o.cgroup_name='cogs-product-'+g;o.cgroup_parent=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.cgroup_fd=os.open(cg,os.O_RDONLY|os.O_DIRECTORY);o.helpers_fd=os.open(cg+'/helpers',os.O_RDONLY|os.O_DIRECTORY);o.cgroup_veto=False
+ o.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.control=os.open(control,os.O_RDONLY|os.O_DIRECTORY);o.records=set();o.failed=True;o.ids={};o.peers={};o.sealed=[];o.mounts=[];o.disk=None
+ journal={}
+ def record(n,v):
+  journal[n]=v;o.records.add(n);open(control+'/'+n,'w').write('x')
+ o.record=record;o.saved=lambda n:journal[n];o.settle_children=lambda:None
+ record('cgroup',list(m.identity(os.fstat(o.cgroup_fd))[:2]));record('helpers-cgroup',list(m.identity(os.fstat(o.helpers_fd))[:2]));record('cgroup-retire-intent',True)
+ return o,journal,cg,control
+with tempfile.TemporaryDirectory() as root:
+ o,journal,cg,control=fixture(root);fds=(o.cgroup_parent,o.cgroup_fd,o.helpers_fd);real_rmdir=os.rmdir
+ def rmdir(name,*,dir_fd=None):
+  if name==o.cgroup_name: os.unlink(cg+'/cgroup.events')
+  return real_rmdir(name,dir_fd=dir_fd)
+ with patch.object(m.os,'rmdir',side_effect=rmdir):o.settle()
+ assert not os.path.exists(cg) and journal['cgroup-rmdir-pending'] is True and journal['cgroup-retired'] is True and 'retired' in journal
+ for fd in fds:
+  try: os.fstat(fd)
+  except OSError: pass
+  else: raise AssertionError('retained production cgroup descriptor leaked')
+with tempfile.TemporaryDirectory() as root:
+ o,journal,cg,control=fixture(root);journal['cgroup']=[0,0]
+ try:o.verify_cgroups()
+ except RuntimeError:pass
+ else:raise AssertionError('foreign production cgroup accepted')
+ assert o.cgroup_veto and o.cgroup_parent is o.cgroup_fd is o.helpers_fd is None
+ try:o.cgroup_fds()
+ except RuntimeError:pass
+ else:raise AssertionError('veto reopened a cgroup pathname')
+ os.close(o.control);os.close(o.fd)
+with tempfile.TemporaryDirectory() as root:
+ o,journal,cg,control=fixture(root);o.failed=False;parent=o.cgroup_parent;os.close(o.helpers_fd);os.close(o.cgroup_fd);os.rmdir(cg+'/helpers');os.unlink(cg+'/cgroup.events');os.rmdir(cg);o.helpers_fd=o.cgroup_fd=o.cgroup_parent=None
+ journal['cgroup-rmdir-pending']=True;open(control+'/cgroup-rmdir-pending','w').write('x');o.command=lambda *a:(_ for _ in ()).throw(AssertionError('recovery command'))
+ real_open=os.open
+ def opened(path,*args,**kwargs): return os.dup(parent) if path=='/sys/fs/cgroup' else real_open(path,*args,**kwargs)
+ with patch.object(m.os,'open',side_effect=opened): assert o.recover_cgroup_rmdir({'cgroup-rmdir-pending'})
+ assert journal['cgroup-retired'] is True and journal['retired']=={'generation':g,'failed':True}
+ os.close(parent);os.close(o.control);os.close(o.fd)
+print('production cgroup syscall contracts passed')
+`;
+  const result = spawnSync("python3", ["-I", "-B", "-c", python], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "production cgroup syscall contracts passed");
 });
