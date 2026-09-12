@@ -9,7 +9,13 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { capabilityRemovalScenario, withProductCustody } from "../dev/product-test/runner.ts";
+import {
+  capabilityRemovalScenario,
+  PROBE_GENERATION_SECONDS,
+  PROBE_SUITE_SECONDS,
+  requireProbeSuiteWindow,
+  withProductCustody,
+} from "../dev/product-test/runner.ts";
 import {
   type ContainerSpec,
   type CustodyPort,
@@ -72,6 +78,25 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /capability_coverage/u);
   assert.match(workflow, /AUTHORITY'\]!='probe-only'/u);
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
+});
+
+test("probe suites reserve eight sequential 600-second generations and cleanup", async () => {
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  assert.match(workflow, /timeout_minutes: 100/u);
+  assert.match(workflow, /lifetime_ms=5340000/u);
+  assert.match(workflow, /eight independent\n {10}# 600-second effects/u);
+  assert.equal(PROBE_GENERATION_SECONDS, 600);
+  assert.equal(PROBE_SUITE_SECONDS, 5280);
+  // A fake clock crosses the old five-minute expiry boundary while every
+  // sequential generation still has its independent 600-second reservation.
+  let now = 0;
+  const restrictions = { seconds: 600, expires: PROBE_SUITE_SECONDS * 1000 + 1 } as never;
+  for (let generation = 0; generation < 8; generation++) {
+    requireProbeSuiteWindow(restrictions, now, generation);
+    now += 660_000;
+  }
+  assert.ok(now > 300_000);
+  assert.throws(() => requireProbeSuiteWindow(restrictions, now, 7));
 });
 
 test("product helper identity is unreaped through final signals and directory modes defeat ambient umask", () => {

@@ -739,12 +739,16 @@ class FixedProvider:
         # send response is lost, it remains an uncertainty rather than a resend.
         _require(not intent.exists(), "remote send already attempted")
         _write_once(intent, canonical(intent_value), 0o400)
+        # The durable intent makes this the only allowed SendCommand request;
+        # AWS CLI retries would otherwise turn one subprocess into many sends.
+        send_environment = {**ENV, "AWS_MAX_ATTEMPTS": "1", "AWS_RETRY_MODE": "standard"}
         sent = self._run((str(AWS), "--region", self.approval.region, "ssm",
                           "send-command", "--instance-ids", instance,
                           "--document-name", "AWS-RunShellScript", "--timeout-seconds",
                           str(authorized_timeout),
                           "--parameters", "file://" + str(parameters), "--output", "json",
-                          "--no-cli-pager"), self._remaining_timeout(deadline), True)
+                          "--no-cli-pager"), self._remaining_timeout(deadline), True,
+                         environment=send_environment)
         command_id = sent.get("Command", {}).get("CommandId")
         _require(type(command_id) is str and 8 <= len(command_id) <= 128)
         sent_receipt = {**intent_value, "command_id": command_id}

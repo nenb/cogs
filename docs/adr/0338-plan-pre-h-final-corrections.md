@@ -27,7 +27,7 @@ unavailable before a later review.
 | --- | ---: | --- |
 | governance | 6,000 / 1,100,000 | ADR0338, index, budget, central checker, focused budget test |
 | product | 4,000 / 3,200,000 | protected product workflow and ancestry record; future source is limited to separate empty/nonempty runners and existing capability probes with profile-bound receipts/tests |
-| local-tofu-ssm | 4,457 / 8,400,000 | Python production planner, approval stager, provider/controller, normal cleanup shell entry, and their fake planner/provider/workflow tests |
+| local-tofu-ssm | 4,457 / 8,400,000 | Production plan/approval/campaign workflows; Python planner, approval stager, adapter, provider/controller, normal cleanup shell entry; and their fake planner/provider/adapter/workflow tests |
 | readiness-ci | 1,800 / 2,000,000 | protected-main CI and source-inventory/readiness files and tests |
 | final-HGQ | 5,300 / 5,500,000 | no Row 1 implementation paths; at most 1,800 / 2,000,000 pre-H, retaining the unavailable 3,500 / 3,500,000 reserve |
 
@@ -52,9 +52,11 @@ Only the following temporary campaign work may be implemented under this row:
    command-and-instance pair. Orchestration never resends. Tests use fakes.
 4. Planner bootstrap preserves a bounded complete OpenTofu AWS provider package
    (ordinary files including `LICENSE` and the executable) by exact relative
-   names, modes, byte counts, and SHA-256 digests. The approval stager verifies
-   that closure and places only that exact package in the filesystem mirror used
-   by `init -lockfile=readonly`; no package acquisition or execution is authorized.
+   names, modes, byte counts, and SHA-256 digests. Its mode-bearing tar archive,
+   archive digest, and manifest pass unchanged through approval; campaign safely
+   extracts and verifies that exact closure before staging only it in the
+   filesystem mirror used by `init -lockfile=readonly`. No package acquisition
+   or execution is authorized.
 5. The existing normal cleanup path remains intact. On its normal path it
    destroys and confirms zero before the next cycle.
 

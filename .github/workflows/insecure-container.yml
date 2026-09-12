@@ -43,7 +43,7 @@ jobs:
     needs: admission
     name: protected-${{ matrix.profile }}-${{ matrix.authority }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,18 +52,22 @@ jobs:
             skills: empty
             authority: candidate-pass
             mode: --protected-linux
+            timeout_minutes: 35
           - profile: nonempty
             skills: nonempty
             authority: candidate-pass
             mode: --protected-linux
+            timeout_minutes: 35
           - profile: empty
             skills: empty
             authority: probe-only
             mode: --capability-probes
+            timeout_minutes: 100
           - profile: nonempty
             skills: nonempty
             authority: probe-only
             mode: --capability-probes
+            timeout_minutes: 100
     concurrency:
       group: protected-product-${{ needs.admission.outputs.candidate }}-${{ matrix.profile }}-${{ matrix.authority }}
       cancel-in-progress: false
@@ -208,11 +212,17 @@ jobs:
       - name: Root-create bound immutable restrictions and build receipt
         run: |
           set -euo pipefail
-          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_SKILLS="$PRODUCT_SKILLS" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
+          # Probe suites get a fresh 5,280-second grant: eight independent
+          # 600-second effects plus eight 60-second cleanups.  The 100-minute
+          # job bound leaves setup and final evidence time without extending a
+          # generation's own effect limit.
+          lifetime_ms=900000
+          if test "$PRODUCT_AUTHORITY" = probe-only; then lifetime_ms=5340000; fi
+          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_SKILLS="$PRODUCT_SKILLS" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" RESTRICTION_LIFETIME_MS="$lifetime_ms" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,time
           inv=json.load(open(os.environ['PROTECTED']+'/.cogs-product-inventory.json'))
           common={'candidate':os.environ['CANDIDATE'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'tree':inv['tree'],'source_inventory':inv['source_inventory'],'dockerignore':inv['dockerignore'],'package_lock':inv['package_lock'],'npm_closure':inv['npm_closure'],'image_os':os.environ['IMAGE_OS'],'image_version':os.environ['IMAGE_VERSION']}
-          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+900_000,'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':os.environ['PRODUCT_SKILLS'],'sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
+          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+int(os.environ['RESTRICTION_LIFETIME_MS']),'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':os.environ['PRODUCT_SKILLS'],'sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
           recipe='sha256:'+hashlib.sha256(open(os.environ['PROTECTED']+'/Dockerfile','rb').read()).hexdigest()
           build={'candidate':value['candidate'],'baseline':value['baseline'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'skills':value['skills'],'profile_case':os.environ['PRODUCT_PROFILE'],'authority':os.environ['PRODUCT_AUTHORITY'],'recipe':recipe,**common}
           for path,body in [(os.environ['RESTRICTIONS'],value),('/var/lib/cogs-product-test/build-receipt.json',build)]:

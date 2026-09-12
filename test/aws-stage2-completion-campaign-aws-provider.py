@@ -112,6 +112,7 @@ class Fake:
                     "InstanceId": instance, "PingStatus": "Online"}]
                 return provider.Completed(raw({"InstanceInformationList": rows}))
             if "send-command" in argv:
+                assert environment["AWS_MAX_ATTEMPTS"] == "1" and environment["AWS_RETRY_MODE"] == "standard"
                 return provider.Completed(raw({"Command": {"CommandId": "command-12345678"}})
                                           if self.ssm_mode == "success" else raw({}))
             if "get-command-invocation" in argv:

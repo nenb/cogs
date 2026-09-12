@@ -43,6 +43,8 @@ PACKAGE_MAX_FILES = 64
 PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
 PACKAGE_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
 PACKAGE_MANIFEST = "provider-package.json"
+PACKAGE_ARCHIVE = "provider-package.tar"
+PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 
 
 class PlanningError(Exception): pass
@@ -460,12 +462,20 @@ def main(arguments):
     (output / "approval-draft.json").write_bytes(canonical(draft))
     (output / "tofu").write_bytes(tofu.read_bytes()); os.chmod(output / "tofu", 0o555)
     (output / PACKAGE_MANIFEST).write_bytes(canonical(provider_manifest))
+    # Artifact services do not preserve executable modes for unpacked files.  The
+    # ordinary provider closure therefore crosses every workflow boundary only
+    # in this mode-bearing archive, accompanied by its exact byte digest.
     package_output = output / "provider-package"
     copy_provider_package(provider_root, package_output, provider_manifest)
-    with tarfile.open(output / "provider-package.tar", "x") as archive:
+    archive_path = output / PACKAGE_ARCHIVE
+    with tarfile.open(archive_path, "x") as archive:
         archive.add(package_output, arcname="provider-package", recursive=False)
         for row in provider_manifest["files"]:
             archive.add(package_output / row["name"], arcname="provider-package/" + row["name"], recursive=False)
+    archive_digest = "sha256:" + hashlib.sha256(_read_regular(archive_path, PACKAGE_MAX_BYTES)).hexdigest()
+    (output / PACKAGE_ARCHIVE_DIGEST).write_text(archive_digest + "\n", encoding="ascii")
+    for path in package_output.iterdir(): path.unlink()
+    package_output.rmdir()
 
 
 if __name__ == "__main__":

@@ -71,6 +71,9 @@ test("approval authenticates only the exact planning workflow artifact", () => {
   assert.match(approval, /stage2-production-plan\.yml/u);
   assert.match(approval, /COGS_STAGE2_CONTROL_REVISION/u);
   assert.match(approval, /approval-authentication\.bundle\.json/u);
+  assert.match(approval, /provider-package\.tar\.sha256/u);
+  assert.match(approval, /install -m 0600 "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
+  assert.doesNotMatch(approval, /tar -xf "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
   assert.match(approval, /--network none/u);
   assert.match(approval, /5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68/u);
   assert.ok(approval.indexOf(retiredH) < approval.indexOf("gh api --paginate"));
@@ -138,6 +141,9 @@ test("future campaign has one sealed caller, explicit credential files, recovery
   assert.match(stager, /provider-mirror/u);
   assert.match(stager, /registry\.opentofu\.org\/hashicorp\/aws/u);
   assert.match(stager, /provider_package\(mirror_root, provider_manifest\)/u);
+  assert.match(stager, /provider_package_archive\(source, provider_manifest\)/u);
+  assert.match(campaign, /verify-provider-package "\$out"/u);
+  assert.match(campaign, /provider-package\.tar\.sha256/u);
   assert.doesNotMatch(stager, /dev_overrides/u);
   assert.match(campaign, /role_duration_seconds/u);
   assert.match(campaign, /expires_unix_ns/u);
@@ -146,6 +152,7 @@ test("future campaign has one sealed caller, explicit credential files, recovery
     assert.match(source, /\(\[\.\[\]\.total_count\] \| unique\) == \[1\]/u);
   }
   assert.match(providerEntry, /subprocess\.Popen[\s\S]*selectors\.DefaultSelector/u);
+  assert.match(providerEntry, /AWS_MAX_ATTEMPTS": "1"/u);
   assert.doesNotMatch(providerEntry, /subprocess\.run/u);
   for (const source of [campaignEntry, recoveryEntry, providerEntry, fullEntry, readinessEntry]) {
     assert.match(source, /owner\.failed/u);

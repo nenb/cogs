@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stage one authenticated approval and seven plans into fixed root custody."""
 import hashlib
+import io
 import json
 import os
 import re
@@ -9,6 +10,8 @@ import runpy
 import stat
 import subprocess
 import sys
+import tarfile
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
@@ -24,6 +27,8 @@ PACKAGE_MAX_FILES = 64
 PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
 PACKAGE_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
 PACKAGE_MANIFEST = "provider-package.json"
+PACKAGE_ARCHIVE = "provider-package.tar"
+PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 
 
 class StagingError(Exception): pass
@@ -87,6 +92,52 @@ def provider_package(root, manifest):
             and expected[provider][1] & 0o111
             and manifest["provider_binary_sha256"] == hashlib.sha256(expected[provider][0]).hexdigest())
     return expected
+
+
+def provider_package_archive(source, manifest):
+    """Safely materialize precisely the closure committed by the archive digest."""
+    source = Path(source)
+    archive_raw = read(source / PACKAGE_ARCHIVE, PACKAGE_MAX_BYTES + 1024 * 1024)
+    digest_raw = read(source / PACKAGE_ARCHIVE_DIGEST, 72)
+    expected_digest = b"sha256:" + hashlib.sha256(archive_raw).hexdigest().encode("ascii") + b"\n"
+    require(digest_raw == expected_digest)
+    require(all("/" not in row["name"] for row in manifest["files"]))
+    expected = {"provider-package": (tarfile.DIRTYPE, manifest["root_mode"], 0)}
+    expected.update({"provider-package/" + row["name"]: (tarfile.REGTYPE, row["mode"], row["size"])
+                     for row in manifest["files"]})
+    try:
+        archive = tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:")
+        members = archive.getmembers()
+        require(len(members) == len(expected))
+        seen = set()
+        for member in members:
+            require(member.name in expected and member.name not in seen)
+            kind, mode, size = expected[member.name]
+            require(member.type == kind and stat.S_IMODE(member.mode) == mode
+                    and member.size == size and member.uid >= 0 and member.gid >= 0)
+            seen.add(member.name)
+        require(seen == set(expected))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "provider-package"
+            root.mkdir(mode=manifest["root_mode"])
+            os.chmod(root, manifest["root_mode"])
+            for row in manifest["files"]:
+                member = archive.getmember("provider-package/" + row["name"])
+                stream = archive.extractfile(member); require(stream is not None)
+                raw = stream.read(row["size"] + 1); require(len(raw) == row["size"])
+                target = root / row["name"]
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             row["mode"])
+                try:
+                    require(os.write(fd, raw) == len(raw)); os.fsync(fd)
+                finally: os.close(fd)
+                os.chmod(target, row["mode"])
+            return provider_package(root, manifest)
+    except (tarfile.TarError, OSError, EOFError) as error:
+        raise StagingError() from error
+    finally:
+        try: archive.close()
+        except UnboundLocalError: pass
 
 
 def write(path, raw, mode=0o400):
@@ -211,7 +262,7 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
     except (UnicodeError, ValueError, TypeError, RecursionError) as error: raise StagingError() from error
     require(json.dumps(provider_manifest, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n" == package_raw)
-    package_files = provider_package(source / "provider-package", provider_manifest)
+    package_files = provider_package_archive(source, provider_manifest)
     provider_binary = package_files[provider_manifest["provider_path"]][0]
     require(hashlib.sha256(provider_binary).hexdigest() == approval.provider_binary_sha256)
     mirror = PACKAGE_PREFIX
@@ -333,10 +384,17 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
 
 if __name__ == "__main__":
     try:
-        require(len(sys.argv) == 5)
-        result = stage(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
-        raw = f"approval_sha256={result}\n".encode("ascii")
-        require(sys.stdout.buffer.write(raw) == len(raw))
+        if len(sys.argv) == 3 and sys.argv[1] == "verify-provider-package":
+            raw = read(Path(sys.argv[2]) / PACKAGE_MANIFEST, 64 * 1024)
+            manifest = json.loads(raw)
+            require(json.dumps(manifest, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n" == raw)
+            provider_package_archive(sys.argv[2], manifest)
+        else:
+            require(len(sys.argv) == 5)
+            result = stage(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+            raw = f"approval_sha256={result}\n".encode("ascii")
+            require(sys.stdout.buffer.write(raw) == len(raw))
     except (OSError, StagingError, KeyError, TypeError, ValueError,
             production.ProductionCampaignError):
         raise SystemExit(2)
