@@ -412,6 +412,7 @@ export type ProductPassReceipt = Readonly<{
   source_inventory: string;
   run_id: string;
   run_attempt: string;
+  skills: "empty" | "nonempty";
 }>;
 export async function productMain(
   restrictions: Restrictions,
@@ -570,6 +571,7 @@ export async function productMain(
     source_inventory: restrictions.source_inventory,
     run_id: restrictions.run_id,
     run_attempt: restrictions.run_attempt,
+    skills: restrictions.skills,
   });
 }
 

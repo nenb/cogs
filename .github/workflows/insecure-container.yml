@@ -41,13 +41,38 @@ jobs:
 
   protected-product:
     needs: admission
+    name: protected-${{ matrix.profile }}-${{ matrix.authority }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: empty
+            skills: empty
+            authority: candidate-pass
+            mode: --protected-linux
+          - profile: nonempty
+            skills: nonempty
+            authority: candidate-pass
+            mode: --protected-linux
+          - profile: empty
+            skills: empty
+            authority: probe-only
+            mode: --capability-probes
+          - profile: nonempty
+            skills: nonempty
+            authority: probe-only
+            mode: --capability-probes
     concurrency:
-      group: protected-product-${{ needs.admission.outputs.candidate }}
+      group: protected-product-${{ needs.admission.outputs.candidate }}-${{ matrix.profile }}-${{ matrix.authority }}
       cancel-in-progress: false
     env:
       CANDIDATE: ${{ needs.admission.outputs.candidate }}
+      PRODUCT_PROFILE: ${{ matrix.profile }}
+      PRODUCT_SKILLS: ${{ matrix.skills }}
+      PRODUCT_AUTHORITY: ${{ matrix.authority }}
+      PRODUCT_MODE: ${{ matrix.mode }}
       STOCK_WORKER: ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535
       SANDBOX: ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe
     steps:
@@ -183,13 +208,13 @@ jobs:
       - name: Root-create bound immutable restrictions and build receipt
         run: |
           set -euo pipefail
-          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
+          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_SKILLS="$PRODUCT_SKILLS" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,time
           inv=json.load(open(os.environ['PROTECTED']+'/.cogs-product-inventory.json'))
           common={'candidate':os.environ['CANDIDATE'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'tree':inv['tree'],'source_inventory':inv['source_inventory'],'dockerignore':inv['dockerignore'],'package_lock':inv['package_lock'],'npm_closure':inv['npm_closure'],'image_os':os.environ['IMAGE_OS'],'image_version':os.environ['IMAGE_VERSION']}
-          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+900_000,'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':'empty','sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
+          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+900_000,'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':os.environ['PRODUCT_SKILLS'],'sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
           recipe='sha256:'+hashlib.sha256(open(os.environ['PROTECTED']+'/Dockerfile','rb').read()).hexdigest()
-          build={'candidate':value['candidate'],'baseline':value['baseline'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'recipe':recipe,**common}
+          build={'candidate':value['candidate'],'baseline':value['baseline'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'skills':value['skills'],'profile_case':os.environ['PRODUCT_PROFILE'],'authority':os.environ['PRODUCT_AUTHORITY'],'recipe':recipe,**common}
           for path,body in [(os.environ['RESTRICTIONS'],value),('/var/lib/cogs-product-test/build-receipt.json',build)]:
               fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
               try: os.write(fd,(json.dumps(body,sort_keys=True,separators=(',',':'))+'\n').encode()); os.fsync(fd)
@@ -197,24 +222,32 @@ jobs:
               os.chown(path,0,0); os.chmod(path,0o400)
           PY
           sudo -n test "$(stat -c '%u:%g:%a' "$RUNNER_TEMP/cogs-product-restrictions.json")" = 0:0:400
-      - name: Run only the protected root product runner
+      - name: Run only the selected protected profile or its probe-only generations
         run: |
           set -euo pipefail
-          sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" --protected-linux "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json"
-          test "$(wc -c <"$RUNNER_TEMP/product-receipt.json")" -le 2048
-      - name: Root-inventory exactly one generation and create digest evidence
-        if: always()
+          if ! sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" "$PRODUCT_MODE" "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json"; then
+            CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" RECEIPT="$RUNNER_TEMP/product-receipt.json" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os
+          build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read()
+          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'diagnostic':'protected runner failed','partial_output_sha256':'sha256:'+hashlib.sha256(open(os.environ['RECEIPT'],'rb').read()).hexdigest()}
+          open(os.environ['RECEIPT'],'wb').write((json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode())
+          PY
+            exit 1
+          fi
+          test "$(wc -c <"$RUNNER_TEMP/product-receipt.json")" -le 32768
+      - name: Root-inventory pass generation and create digest evidence
+        if: always() && matrix.authority == 'candidate-pass'
         run: |
           set -euo pipefail
-          sudo -n env CANDIDATE="$CANDIDATE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
+          sudo -n env CANDIDATE="$CANDIDATE" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,re,stat
           raw=open(os.environ['RECEIPT'],'rb').read(); value=json.loads(raw)
-          if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
+          if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt','skills'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
           parent='/var/lib/cogs-product-test'; source='protected-'+value['candidate']; evidence='build-receipt.json'; lock=value['generation']+'.lock'
           source_info=os.stat(parent+'/'+source,follow_symlinks=False)
           if not stat.S_ISDIR(source_info.st_mode) or source_info.st_uid!=0 or stat.S_IMODE(source_info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe protected source')
           build=json.load(open(parent+'/'+evidence))
-          if any(build.get(k)!=value[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt')) or not all(isinstance(build.get(k),str) for k in ('image_os','image_version')): raise SystemExit('FAIL: product evidence binding mismatch')
+          if any(build.get(k)!=value[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt','skills')) or build.get('profile_case')!=os.environ['PRODUCT_PROFILE'] or build.get('authority')!=os.environ['PRODUCT_AUTHORITY'] or not all(isinstance(build.get(k),str) for k in ('image_os','image_version')): raise SystemExit('FAIL: product evidence binding mismatch')
           parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
           try:
               names=os.listdir(parent_fd); generations=[n for n in names if re.fullmatch(r'[a-f0-9]{32}',n)]
@@ -259,11 +292,28 @@ jobs:
           finally: os.close(fd)
           os.chown(os.environ['EVIDENCE'],int(os.environ['RUNNER_UID']),int(os.environ['RUNNER_GID'])); os.chmod(os.environ['EVIDENCE'],0o400)
           PY
+      - name: Inventory probe-only generations without candidate pass authority
+        if: always() && matrix.authority == 'probe-only'
+        run: |
+          set -euo pipefail
+          sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,re
+          raw=open(os.environ['RECEIPT'],'rb').read()
+          rows=[json.loads(line) for line in raw.splitlines()]
+          if not 1<=len(rows)<=16 or any(row.get('purpose')!='capability-probe' or not re.fullmatch(r'[a-f0-9]{32}',row.get('generation','')) for row in rows): raise SystemExit('FAIL: invalid probe receipt')
+          if len({row['generation'] for row in rows}) != len(rows): raise SystemExit('FAIL: probe generation reuse')
+          value={'version':'cogs.product-probe-inventory/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'probe_count':len(rows),'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+          data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          if len(data)>2048: raise SystemExit('FAIL: probe evidence bound')
+          open(os.environ['EVIDENCE'],'xb').write(data)
+          PY
       - name: Upload bounded product evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: protected-product-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/product-evidence.json
+          path: |
+            ${{ runner.temp }}/product-evidence.json
+            ${{ runner.temp }}/product-receipt.json
           if-no-files-found: error
           retention-days: 30

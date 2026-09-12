@@ -57,6 +57,20 @@ import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
 import type { CogsExecPort, SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
 
+test("protected workflow separates profile jobs and preserves probe-only no-pass inventory", async () => {
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  for (const profile of ["profile: empty", "profile: nonempty"])
+    assert.equal(workflow.split(profile).length - 1, 2, `missing independent ${profile} jobs`);
+  assert.match(workflow, /mode: --protected-linux/u);
+  assert.match(workflow, /mode: --capability-probes/u);
+  assert.match(workflow, /authority: candidate-pass/u);
+  assert.match(workflow, /authority: probe-only/u);
+  assert.match(workflow, /cogs\.product-probe-inventory\/v1/u);
+  assert.match(workflow, /cogs\.product-failure-receipt\/v1/u);
+  assert.match(workflow, /probe generation reuse/u);
+  assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
+});
+
 test("product helper identity is unreaped through final signals and directory modes defeat ambient umask", () => {
   const result = spawnSync(
     "python3",
