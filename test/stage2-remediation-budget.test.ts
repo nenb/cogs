@@ -244,7 +244,7 @@ assert b['global_gross_line_high']==45200 and b['base_revision']=='242bbefeae544
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
 assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87)
-assert sum(new.values())==97 and sum(x['total'] for x in forecasts.values())==8470000
+assert sum(new.values())==97 and sum(x['total'] for x in forecasts.values())==9120000
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -571,14 +571,14 @@ assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLO
 assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
 assert b['global_gross_line_high']==45200; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
 assert highs==dict(route=2200,revocation=3000,relay=4650,lifecycle=11800,completion=6080,integration=18182); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97
-expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=5200000)
-assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==8470000 and b['global_gross_byte_high']==m['REMEDIATION_GLOBAL_BYTE_HIGH']==6550000 and 18763891+b['global_gross_byte_high']==25313891<26000000
+expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=5850000)
+assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==9120000 and b['global_gross_byte_high']==m['REMEDIATION_GLOBAL_BYTE_HIGH']==7200000 and 18763891+b['global_gross_byte_high']==25963891<26000000
 plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==4500000; assert plan['integration_regeneration_gross_line_forecast']==400
+assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==5100000; assert plan['integration_regeneration_gross_line_forecast']==400
 expected_forecasts=dict(route=0,revocation=0,relay=2650,lifecycle=4450,completion=2580,integration=5857)
 assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15537
-q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=3900000)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==5050000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
+q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=4500000)
+assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==5650000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
 existing={
  'route':'docs/operations/runbooks/index.json',
  'revocation':'',
@@ -701,9 +701,9 @@ for row in (
 previous=json.loads(git(['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:config/external-review-remediation-budget-v1.json'])); expected=copy.deepcopy(previous)
 expected['product_test_correction']['integration_synchronization_gross_byte_forecast']=60000
 next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=1200000
-expected['global_gross_byte_high']=6550000; expected['product_test_correction']['global_gross_byte_forecast']=4500000
-next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=3900000
-next(e for e in expected['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5200000
+expected['global_gross_byte_high']=7200000; expected['product_test_correction']['global_gross_byte_forecast']=5100000
+next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=4500000
+next(e for e in expected['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5850000
 expected['product_test_correction']['integration_regeneration_gross_line_forecast']=400
 for name,delta in (('completion',-420),('relay',-150),('integration',570)):
  next(e for e in expected['product_test_correction']['owners'] if e['name']==name)['gross_line_forecast']+=delta; next(e for e in expected['owners'] if e['name']==name)['gross_line_high']+=delta
@@ -738,13 +738,28 @@ q_bytes['integration'],expected_bytes['integration']=3220000,4600000  # historic
 for usage,limits,global_high,endpoint,full_integration in ((dict(route=0,revocation=0,completion=159893,lifecycle=267175,relay=204508,integration=3199781+extra),q_bytes,3900000,3848357,3851576),(dict(route=96627,revocation=114977,completion=228357+60000,lifecycle=478274+80000,relay=177404+120000,integration=4566903+extra),expected_bytes,6550000,5939542,5955639)):
  assert all(usage[o]<=limits[o] for o in usage) and sum(usage.values())==endpoint<global_high and f'{endpoint:,}' in replan
  assert sum(usage.values())+limits['integration']-usage['integration']==full_integration<global_high
-q_bytes['integration'],expected_bytes['integration']=3900000,5200000  # restore current independent highs
+q_bytes['integration'],expected_bytes['integration']=3900000,5200000  # historical e53dcf53 funding; retain its failed-fit evidence
 assert 2497788+24000+5000+10000+11981+2*280680==3110129 and 3864910+24000+5000+10000+11981+2*280680==4477251 and 67993+19+38640==106652
 assert 5383+156+2*5==5549 and 42+22==64 and 22+76==98 and 4295+40+115==4450 and 11603+40+157==11800
 assert 300+579==879 and 20000+90000==110000==120000-10000 and 84508+110000==194508 and 177404+110000==287404
 for base,other,limits,cap,total in ((3110129,621576,q_bytes,4500000,4454357),(4477251,1345639,expected_bytes,6550000,6545542)):
  endpoint=base+106652+2*300000+11000+5000; assert endpoint<limits['integration'] and endpoint+other==total<cap; assert f'{endpoint:,}' in replan and f'{total:,}' in replan
 assert 6545542+10000>6550000 and 621576+3900000>4500000 and 1345639+5200000<6550000
+q_bytes['integration'],expected_bytes['integration']=4500000,5850000; checkpoints=2; runs_per_checkpoint=2; funded_bundles=2
+assert checkpoints*runs_per_checkpoint==4 and (4-funded_bundles)*300000==600000
+for base,other,limits,old_high,old_global,cap,endpoint,total in ((3216781,621576,q_bytes,3900000,4500000,5100000,4432781,5054357),(4583903,1345639,expected_bytes,5200000,6550000,7200000,5799903,7145542)):
+ assert base+11000+5000+4*300000==endpoint>old_high and endpoint+other==total>old_global
+ assert endpoint+12000<limits['integration'] and total+12000<cap and f'{endpoint:,}' in replan and f'{total:,}' in replan
+assert 4432781-3900000==532781 and 5799903-5200000==599903 and 26000000-(18763891+7200000)==36109
+assert 4500000+621576==5121576>5100000 and 5850000+1345639==7195639<7200000
+assert 5549+64==5613 and 5613+4+4+150+76+10==5857 and 4*5-10==10  # unchanged tasks cannot fund four runs' lines
+prior=json.loads(git(['show','e53dcf5348a39c5dd5a102982c555b2c565a9879:config/external-review-remediation-budget-v1.json'])); amended=copy.deepcopy(prior)
+amended['global_gross_byte_high']=7200000; amended['product_test_correction']['global_gross_byte_forecast']=5100000
+next(e for e in amended['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5850000; next(e for e in amended['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=4500000
+assert b==amended  # exactly four byte highs change; every line/task/anchor/path/file constraint stays fixed
+raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3','5e008f934792741f3050204a944f12e8c875960a','e53dcf5348a39c5dd5a102982c555b2c565a9879','--']); additions=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]
+assert len(additions)==64 and sum(len(l)-1 for l in additions)==10780 and 10780+220==11000  # retain full prior governance charge
+for text in ('two complete runs per checkpoint','FOUR future bundles','Exactly two additional bundles cost 600,000','10,780 actual +220 withheld','60 gross lines/12,000','25,963,891<26,000,000','remaining LINE failed fit','Line caps/tasks remain unchanged','No implementation, regeneration'): assert text in replan,text
 for text in ('5e008f934792741f3050204a944f12e8c875960a','O_DIRECTORY|O_NOFOLLOW','fstat','descriptor-relative lstat','helpers-cgroup','No path-only exists/rmdir','foreign empty cgroup','final events/kill/rmdir','106,652','348+42','governance 64/11,000','correction 76/5,000','associated task bytes 10,000','KVM gate 300/20,000'): assert text in replan,text
 assert plan['integration_synchronization_gross_byte_forecast']==60000 and 25249+18687==43936 and 43936-12000==31936
 assert 60000-43936==16064 and 727775+908==728683 and 12000+6000+8000+20000+236550+60000==342550
@@ -832,7 +847,7 @@ with tempfile.TemporaryDirectory() as directory:
  def check(bad):
   path.write_text(json.dumps(bad)); return f()
  check(b)
- for value in (6500000,6549999,6550001,6550000.0,True,None):
+ for value in (6500000,6550000,7199999,7200001,7200000.0,True,None):
   bad=copy.deepcopy(b); bad['global_gross_byte_high']=value; veto(lambda:check(bad),'remediation global bytes')
  for field in b['source_limits']:
   for delta in (-1,1):
@@ -902,7 +917,7 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
     ["lines", 15537],
-    ["line_bytes", 4500000],
+    ["line_bytes", 5100000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
     assert.equal(usage.route, 0);
@@ -1063,7 +1078,7 @@ b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 ns['_product_test_gross']=lambda budget:zero
 ns['_gross_slice']=lambda *args:0
-assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==4500000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==6550000
+assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==5100000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==7200000
 cumulative=dict(route=1,revocation=2,relay=3,lifecycle=4,completion=5,integration=6)
 correction=dict(route=0,revocation=0,relay=7,lifecycle=8,completion=9,integration=10)
 def raw_bytes(names,revision):
@@ -1078,7 +1093,7 @@ assert report['remediation_workstream_gross_added_line_bytes']==cumulative
 assert report['product_test_workstream_gross_added_line_bytes']==correction
 assert report['remediation_gross_added_line_bytes_no_deletion_credit']==21
 assert report['product_test_gross_added_line_bytes_no_deletion_credit']==34
-assert report['product_test_global_gross_byte_forecast']==4500000
+assert report['product_test_global_gross_byte_forecast']==5100000
 assert report['product_test_workstream_gross_byte_forecasts']==m['PRODUCT_TEST_BYTE_FORECASTS']
 def veto(label):
  try: f()
@@ -1091,7 +1106,7 @@ for is_q in (False,True):
   values=correction if is_q else cumulative; values[owner]=high
   assert f()['remediation_gross_added_lines_no_deletion_credit']==0
   values[owner]+=1
-  assert sum(values.values())<(4500000 if is_q else 6550000)
+  assert sum(values.values())<(5100000 if is_q else 7200000)
   veto(str((is_q,owner,'isolated byte high+1')))
  cumulative=dict(zero); correction=dict(zero)
  values=correction if is_q else cumulative; values.update(limits)

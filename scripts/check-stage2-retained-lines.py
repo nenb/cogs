@@ -42,11 +42,11 @@ PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
 PRODUCT_TEST_FORECASTS = {"route": 0, "revocation": 0, "relay": 2_650,
                           "lifecycle": 4_450, "completion": 2_580, "integration": 5_857}
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
-                               "lifecycle": 450_000, "completion": 300_000, "integration": 3_900_000}
+                               "lifecycle": 450_000, "completion": 300_000, "integration": 4_500_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
-                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_200_000}
-PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 4_500_000
-REMEDIATION_GLOBAL_BYTE_HIGH = 6_550_000
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_850_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 5_100_000
+REMEDIATION_GLOBAL_BYTE_HIGH = 7_200_000
 PRODUCT_TEST_NEW_FILES = {
     "dev/linux-kvm/bounded-command.py": "relay",
     "src/skills/snapshot-session-preparer.ts": "lifecycle",
@@ -446,7 +446,7 @@ def _remediation_budget():
     _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
                                 "lifecycle": 5, "completion": 3, "integration": 87})
     _require(sum(new_file_highs.values()) == 97
-             and sum(forecast["total"] for forecast in forecasts.values()) == 8_470_000)
+             and sum(forecast["total"] for forecast in forecasts.values()) == 9_120_000)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
