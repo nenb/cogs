@@ -39,7 +39,7 @@ POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
 POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global": 21_000}
 PRODUCT_TEST_Q = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38"
 PRODUCT_TEST_Q_TREE = "181128aae8617eb58c5dce743416f4f69266c02c"
-PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_550, lifecycle=4_450, completion=2_580, integration=5_957)
+PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_446, lifecycle=4_450, completion=2_580, integration=6_061)
 PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 400_000,
                                "lifecycle": 450_000, "completion": 300_000, "integration": 4_500_000}
 REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 700_000,
@@ -416,7 +416,7 @@ def _remediation_budget():
     _require(data["source_limits"] == {"tracked_files": 1517,
                                         "source_inventory_bytes": 26_000_000,
                                         "serialized_source_inventory_bytes": 262_144})
-    expected = dict(route=2_200, revocation=3_000, relay=4_550, lifecycle=11_800, completion=6_080, integration=18_282)
+    expected = dict(route=2_200, revocation=3_000, relay=4_446, lifecycle=11_800, completion=6_080, integration=18_386)
     owners = {}
     paths = {}
     new_file_highs = {}
