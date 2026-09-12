@@ -36,19 +36,25 @@ remain charged. The checker now assigns every admitted path to one **named**
 task; it has no complement task. It preserves historical owners, including the
 integration-owned KVM workflow, and rejects every path not in the exact matrix.
 The AWS task remains independently capped at 7,000 / 8,000,000, but its
-three non-transferable forecasts deliberately consume only 6,800 / 7,800,000:
-deployment/custody/direct ingress 5,200 / 6,000,000; pinned OpenTofu
-backend/workflow compatibility 1,100 / 1,300,000; and approval/staging/focused
-authority tests 500 / 500,000. The remaining 200 / 200,000 is withheld, not a
-fourth slice. The exact config maps these forecasts to the actual integration
+three non-transferable forecast categories deliberately consume only 6,800 /
+7,800,000: deployment/custody/direct ingress 5,200 / 6,000,000; pinned
+OpenTofu backend/workflow compatibility 1,100 / 1,300,000; and
+approval/staging/focused authority tests 500 / 500,000. The remaining 200 /
+200,000 is an **enforceable unallocated holdback**, not a fourth forecast:
+config and checker require it exactly, and it can be used only by a reviewed
+replan. Category forecasts are planning estimates, not measured sub-limits; the
+named-task ceiling is the measured enforcement boundary. The exact config maps these forecasts to the actual integration
 owner: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`,
 `.terraform.lock.hcl`, actual `completion_campaign_aws_adapter.py` and
 `completion_campaign_remote_adapter.py`, bootstrap/provider, state, receipt,
 and identity owners plus controller/provider/remote-adapter/state/receipt/
-cycle-authority ingress tests. A slice or task overrun stops for a reviewed replan; no owner, forecast,
-or withheld room transfers.
+cycle-authority ingress tests. It also assigns the concrete cost-budget
+consumers—OpenTofu budget/scheduler declarations, controller/provider,
+production/receipt/state, approval/staging, and their focused tests—to that
+same task and category. A slice, task, or holdback overrun stops for a reviewed
+replan; no owner, forecast, category, or withheld room transfers.
 It reports each task's gross consumed and remaining lines/bytes. Every task has
-an explicit pre-H maximum; the final task's pre-H maximum is 1,227 / 1,300,000,
+an explicit pre-H maximum; the final task's pre-H maximum is 1,027 / 1,300,000,
 which mechanically withholds at least 3,500 / 3,500,000 for H/G/Q. This is a
 capacity guarantee, not a claim that its paths are isolated: pre-H edits to a
 final-task path consume that task and its pre-H maximum. The checker reports each measured consumed/remaining task total and separately
@@ -57,11 +63,11 @@ release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
-| pre-H final governance | 1,600 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
+| pre-H final governance | 1,800 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
 | AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,200 / 6,000,000 deployment/custody/direct-ingress + 1,100 / 1,300,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
 | generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
-| final H/G/Q control reserve | 4,727 / 4,800,000 total; **≤1,227 / 1,300,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
+| final H/G/Q control reserve | 4,527 / 4,800,000 total; **≤1,027 / 1,300,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
 
 The final H/G/Q task is separately charged but shares its listed paths with the
 pre-H plan; it is not an isolated-path reserve. Its enforced pre-H maximum and
@@ -91,11 +97,13 @@ following complete legacy shell-entrypoint denial set:
 `remote/run-stage2-completion-readiness-rehearsal.sh`,
 `remote/run-stage2-completion-readiness.sh`,
 `remote/run-stage2-completion-remote.sh`, and `remote/validate-runtime.sh`.
-It further enumerates the H-owned
-consumer closure that the guard seals: fixed-source preparation, hosted mode,
-local/native settlement, diagnostic lock, producer, publisher and static-control
-boundary scripts; Kata preparation and all three formal-cycle adapters; and the
-static-control runtime-boundary test. The AWS task includes the actual
+It further enumerates the H-owned consumer closure that the guard seals:
+fixed-source preparation, hosted mode, local/native settlement, diagnostic lock,
+producer, publisher and static-control boundary scripts; and the
+static-control runtime-boundary test. The AWS custody task, rather than the
+H/G/Q reserve, owns Kata preparation, `completion_cycle_authority.py`, the
+coordinator grant consumer, all formal-cycle adapters, rehearsal/recovery
+entrypoints, and their direct-denial tests. The AWS task includes the actual
 production owner `completion_campaign_aws_adapter.py`, not a substitute
 fake-only controller, plus the new Python fake end-to-end
 adapter → provider → recovery test and existing adapter/provider tests. Alongside the existing ADR documents, the only new non-control files are the
@@ -123,31 +131,38 @@ verifiable identities for operator, approver/budget/security reviewer, executor,
 and zero-inventory observer; their role, expiry, candidate/tree, package, and
 contract version are immutable inputs. Missing, equal, expired, stale,
 unauthenticated, or representation-only identities deny. A role cannot attest
-itself or another role. The closed ingress inventory distinguishes planner CLI
+itself or another role. The closed ingress inventory names the planner CLI
 `stage2-production-planner.py`; approval/staging front doors
-`stage2-production-approval.py` and `stage2-stage-production-approval.py`; AWS
-entry/recovery (`check-plan.py`, AWS entry/recovery, actual AWS/remote adapters
-and provider); direct-cycle Python (`completion_cycle_{full,readiness}.py` and
-`completion_formal_cycle_{full,readiness}.py`); and every listed legacy shell
-effect route. Codec, contract, and receipt **decode-only** modes are a separate
-read-only class: they may decode a supplied historical byte fixture but cannot
-construct a principal, grant, client, backend, inventory, or effect intent.
-The config/checker require this exact inventory, no overlap, and named-task
-ownership; focused ingress, controller, provider, remote-adapter, state,
-receipt, and cycle-authority tests invoke each effect-capable member directly
-with credential/install/network/tofu/AWS/SSM sentinels and prove denial first.
+`stage2-production-approval.py` and `stage2-stage-production-approval.py`; all
+AWS entry/recovery, provider, controller, production, state, and actual
+AWS/remote-adapter front doors; all direct-cycle, diagnostic, full/readiness
+**rehearsal**, and formal Python entrypoints; `completion_cycle_authority.py`
+and the `completion_kata_coordinator.py` grant consumer; every other executable
+local rootfs/package/Kata/trusted-launcher front door; and every listed legacy
+shell effect route. Codec, contract, receipt, and artifact-verifier
+**decode-only** modes are a separate read-only class: they may decode a
+supplied historical byte fixture but cannot construct a principal, grant,
+client, backend, inventory, or effect intent. The config/checker require this
+complete exact inventory, no overlap, named-task ownership, and the exact
+budget-consumer category list; focused ingress, controller, provider,
+remote-adapter, state, receipt, coordinator, rehearsal, and recovery tests
+invoke each effect-capable member directly with credential/install/network/
+tofu/AWS/SSM sentinels and prove denial first.
 
 Pre-H, v7 is only a pinned historical artifact-decoding fixture: its decoding
 tests cannot execute it, and the current route set transitions to denial. The
-sole future exception is a separately reviewed, candidate/tree/package-bound,
-expiry-bounded non-AWS no-mint grant that names exactly logical
+sole future exception is a separately reviewed,
+candidate/tree/package/expiry-bound non-AWS no-mint grant that names exactly logical
 `run-stage2-completion-full`, `run-stage2-completion-readiness`, and
 `recover-stage2-completion-remote` (or an explicitly reviewed replacement with
-the same bindings). It admits only full/readiness observation or cleanup of the
-grant's own persisted non-AWS intent; direct, stale, substituted, or ungranted
-invocation denies before any effect. It cannot mint credentials/resources,
-become AWS authority, or authorize an AWS entry/recovery or legacy wrapper:
-those remain unconditional denial. Fresh Q is still required for every other
+the same bindings). It admits only full/readiness observation or cleanup of the grant's own
+persisted non-AWS intent; direct, stale, substituted, or ungranted invocation
+denies before any effect. “No-mint” may create only bounded **local synthetic**
+rootfs, input, network, runtime, and Kata resources beneath existing local
+custody. It confers neither qualification nor evidence authority and absolutely
+no cloud credential or AWS resource authority. It cannot mint credentials or
+AWS resources, become AWS authority, or authorize an AWS entry/recovery or
+legacy wrapper: those remain unconditional denial. Fresh Q is still required for every other
 current source route. Tests must cover valid v7 decode-only fixture versus the
 current-denial transition, every grant binding/expiry mutation, and direct
 ungranted full/readiness/recovery invocation. Documentation, hashes, and the
@@ -186,48 +201,82 @@ must reconcile every accepted asynchronous intent by its deterministic
 For each recorded SSM `(command-id, instance-id)` it observes that exact pair
 terminal, or sends one recorded cancel intent and observes the same pair's
 terminal cancellation; a different command, instance, status, absent output,
-or absent observation is uncertainty. It submits and observes termination of
-the exact tagged instance, revokes the instance role's older sessions, removes
-the exact scheduler, role policy/attachment, role, and instance profile, and
-waits through every delegated credential `NotAfter` where one was issued. Only
-then does the independent observer perform two complete, bounded,
-account-and-region inventory passes separated by the configured poll interval.
+or absent observation is uncertainty. Cleanup authority covers the complete
+exact tagged/ID graph, in dependency order: (1) SSM command; (2) instance,
+attached EBS volumes, ENIs, and EIPs; (3) scheduler and budget; (4) launch
+template; (5) IAM attachments, customer policies, instance profile, and role;
+(6) security group, routes, route-table association, internet gateway, subnet,
+and VPC; then (7) final cleanup of the declared external backend objects where
+applicable. Every delete/cancel/terminate/revoke has a durable deterministic
+intent `(campaign, cycle, epoch, verb, exact-ID, prior-state)`, exact tag and
+ID scope, bounded observe/reconcile loop, and lost-response rule: no ambiguous
+intent is reissued. Dependency failure, foreign tag/ID, missing readback, or
+unresolved response is sticky uncertainty. The future least-privilege policy
+must enumerate exactly the corresponding SSM cancel/list, EC2
+terminate/describe/delete/detach/release, Scheduler delete/get, Budgets
+delete/describe, IAM detach/delete/remove/revoke/get, and external-backend
+read/delete actions, each restricted to the recorded campaign tags and IDs; no
+wildcard create or normal-effect action is granted to cleanup. It waits through
+every delegated credential `NotAfter` where one was issued. Only then does the independent
+observer perform two complete, bounded, account-and-region inventory passes
+separated by the configured poll interval.
 Every observation is authenticated, tagged, persisted, and read back; any
 missing, foreign, incomplete, late, or contradictory observation is sticky
 uncertainty. A paused old process may resume only with expired credentials; its
 request must be rejected. It never gets a new epoch or usable credential.
 
-Recovery has no successor NORMAL authority. Conditional on the external fence
-above, exactly one separately authenticated cleanup-only recovery owner may
-hold a bounded recovery lease, and exactly one independently authenticated,
-read-only observer may hold an observation lease; both differ from executor,
-planner, approver, and each other. The cleanup owner may act only on
-externally persisted intents in its fenced epoch: reconcile, cancel, terminate,
-revoke, and request the observer's inventory. It may never do normal work,
-issue a new normal intent, or reissue an ambiguous normal **or cleanup** intent.
-The observer can only read and persist the two fenced inventory passes. Their
-leases and credentials end no later than cleanup; loss/expiry leaves sticky
-uncertainty. Recovery-of-recovery is another separately authenticated
-cleanup-only owner after the old lease and credential `NotAfter` plus fence
-proof; it inherits only the same persisted-intent set and cannot promote to
-NORMAL. Final-byte durable/readback/hash-bound settlement is required before
-any later recovery owner, invocation, epoch, or credential is admitted.
+Recovery has no successor NORMAL authority. Old normal executor expiry plus
+fence proof first admits exactly one separately authenticated **cleanup-only
+owner admission record**; that record is not terminal settlement. Exactly one
+independently authenticated, read-only observer may hold the matching
+observation lease; both differ from executor, planner, approver, and each
+other. The cleanup owner may act only on externally persisted unresolved
+intents in its fenced epoch: reconcile, cancel, terminate, revoke, delete in
+the declared graph order, and request the observer's inventory. It may never
+do normal work, issue a new normal intent, or reissue an ambiguous normal **or
+cleanup** intent. The observer can only read and persist the two fenced
+inventory passes. Their leases and credentials end no later than cleanup;
+loss/expiry leaves sticky uncertainty.
+
+Recovery-of-recovery is another separately authenticated cleanup-only owner
+only after the prior cleanup credential and lease `NotAfter + 120 seconds`
+fence proof. It continues the prior durable unresolved-cleanup-operation set
+and its deterministic IDs; it does not issue a replacement for an ambiguous
+operation and cannot promote to NORMAL. Only final-byte durable, versioned
+readback, hash-bound **terminal settlement** (complete graph, credentials, and
+inventory) gates any future normal authority, normal epoch, normal credential,
+or normal invocation. It does not block the narrowly fenced recovery-of-
+recovery admission required to finish unresolved cleanup.
 
 The simultaneous limits are: normal effect time at most 180 minutes; all
 cleanup/reconciliation, including delegated-credential quiescence, at most 60
 minutes; each executor, cleanup, and observer STS credential at most 15
-minutes; and the campaign workflow wall time at most 240 minutes. Its exact
-cleanup inequality is `cleanup_reserve_ns = 3,600,000,000,000 > 900 STS + 120
-fence skew + 4×60 request + 4×300 terminal/poll + 2×300 inventory =
-3,060,000,000,000`; tests must require `cleanup_reserve_ns >
-3,060,000,000,000`, and 540 seconds remains withheld inside cleanup. At the
+minutes; each recovery-of-recovery credential/lease at most the remaining
+cleanup window; and the campaign workflow wall time at most 240 minutes.
+Normal executor expiry and its 120-second fence occur before cleanup admission
+and are not borrowed from cleanup time. The exact 60-minute worst-case cleanup
+inequality enumerates the graph and credential lifetimes: a cleanup owner and
+its lease are capped at 300 seconds (within the 900-second STS maximum), so a
+recovery-of-recovery waits `300 credential/lease NotAfter + 120 fence`; the
+seven dependency levels above each allow `60` seconds for all durable
+create-cancel/delete/terminate/revoke intents in that level and `120` seconds
+for exact observe/reconcile; two independent inventory passes allow `2×300`.
+Thus `cleanup_reserve_ns = 3,600,000,000,000 > 300 + 120 + 7×60 + 7×120 +
+2×300 = 2,280 seconds`. The remaining 1,320 seconds is explicit slack, not
+permission for another intent or credential. Tests must enumerate every graph
+operation, permission, bounded level, and credential lifetime rather than
+accept a scalar; a new operation/permission, serial level, or lifetime that
+breaks this strict inequality denies. The current 3,600-second reserve is not
+a claim that an unmeasured serial graph fits it. At the
 conservative `$0.118/hour`, 240 minutes costs `4 × 0.118 × 1,000,000 =
-472,000` microUSD, strictly below the 500,000 microUSD limit. Later
-`stage2-production-plan` and `stage2-production-approval` drafts each timeout
-at 30 minutes and are non-effecting; their immutable approval expires before
-campaign admission. Only a read-back draft approved before the 240-minute
-campaign starts may bind that run; no plan/approval refresh, effect, or grant
-is allowed after its 180-minute normal-effect boundary. These are future
+472,000` microUSD, strictly below the 500,000 microUSD limit. Later `stage2-production-plan` and `stage2-production-approval` drafts each
+timeout at 30 minutes and are non-effecting. First the plan draft is read back;
+then approval consumes that exact draft; then the immutable approval is read
+back and must be unexpired at campaign admission. Its admission validity spans
+only normal authority and ends no later than the 180-minute normal-effect
+boundary; cleanup/recovery derives only its previously persisted cleanup
+credential, never an approval refresh. No plan/approval refresh, normal effect,
+or grant is allowed after that boundary. These are future
 contract/schema/workflow timeouts, not authority now.
 
 Recovery reads external custody, never runner disk. A lost response,
@@ -280,13 +329,18 @@ completeness, timeout, unknown-retry/lost-response uncertainty, and no reissue.
 
 A later separately reviewed gate must choose exactly one authenticated host
 bootstrap authority before the one-shot remote command: either (1) a prepared,
-immutable image whose authenticated descriptor binds `git`, `python`, `tar`,
-`zstd`, and cloud-init identities/versions/digests, or (2) bounded deterministic
-cloud-init preparation that installs only that exact tool set, verifies each
-identity/digest, persists a receipt, and finishes before the one-shot command.
-The command may not use ambient PATH, package resolution, bootstrap retries, or
-unverified tools. Missing image provenance, preparation receipt, deadline, or
-any tool identity denies. This is future source and AWS-gate work; no image,
+immutable image whose authenticated descriptor binds the complete absolute
+bootstrap executable closure—launcher, script/artifact bytes, interpreter,
+loader, transitive shared libraries, `git`, `python`, `tar`, `zstd`, cloud-init,
+CA bundle, TLS hostname and trust-anchor/SPKI policy—or (2) bounded
+deterministic cloud-init preparation that installs only that exact closure,
+verifies every identity/digest and TLS trust input, persists a receipt, and
+finishes before the one-shot command. Equivalently, the authenticated descriptor
+may name one absolute launcher that verifies the entire closure before exec.
+The command may not use ambient PATH, package resolution, bootstrap retries,
+ambient TLS trust, or unverified tools. Missing image provenance, preparation
+receipt, deadline, launcher closure, TLS trust closure, or any tool identity
+denies. This is future source and AWS-gate work; no image,
 cloud-init, install, command, or effect occurs now.
 
 ## Product and KVM contract to be implemented later
