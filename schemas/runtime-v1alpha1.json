@@ -23,7 +23,9 @@
         "session_root",
         "shared_skill_oci",
         "private_skill_source",
-        "private_skill_store"
+        "private_skill_store",
+        "skill_snapshot_receipt",
+        "skill_snapshot_control_socket"
       ],
       "properties": {
         "launch_document": { "const": "/etc/cogs/launch.json" },
@@ -37,7 +39,9 @@
         "session_root": { "const": "/var/lib/cogs/session/sessions" },
         "shared_skill_oci": { "const": "/var/lib/cogs/skills/shared-oci" },
         "private_skill_source": { "const": "/var/lib/cogs/skills/private-source" },
-        "private_skill_store": { "const": "/var/lib/cogs/skills/private-store" }
+        "private_skill_store": { "const": "/var/lib/cogs/skills/private-store" },
+        "skill_snapshot_receipt": { "const": "/run/cogs/skills/snapshot-receipt.json" },
+        "skill_snapshot_control_socket": { "const": "/run/cogs/skills/control.sock" }
       }
     },
     "api": {

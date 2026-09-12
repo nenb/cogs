@@ -6,7 +6,7 @@ import posix from "node:path/posix";
 import { createSyntheticSourceInfo, loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
 import type { LaunchConfig } from "../launch/config.ts";
 import { type CogsSftpPort, CogsSftpStatusError, type SshConnectionManager } from "../ssh/connection.ts";
-import type { CogsSkillBundleHandle } from "./bundle.ts";
+import { type CogsSkillBundleHandle, verifyCogsSkillBundle } from "./bundle.ts";
 import type { CogsPrivateSkillStore } from "./local-private-store.ts";
 import type { CogsSharedSkillOciResolver } from "./oci-layout.ts";
 import {
@@ -28,7 +28,7 @@ export interface CogsPreparedSkillSet {
   readonly guestSubtree: string;
   readonly fileCount: number;
   readonly byteCount: number;
-  readonly readOnlyEnforced: false;
+  readonly readOnlyEnforced: boolean;
 }
 export interface CogsPreparedSkillMetadata {
   readonly shared: CogsPreparedSkillSet;
@@ -50,6 +50,7 @@ export interface CogsSkillPreparerPort {
   }) => Promise<CogsPreparedSkills>;
 }
 
+/** Explicit non-production, guest-mutating preparer. Production uses the mounted consumer. */
 export function createCogsSkillSessionPreparer(options: {
   readonly ssh: SshConnectionManager;
   readonly sharedResolver: CogsSharedSkillOciResolver;
@@ -81,7 +82,6 @@ async function prepareSkills(
   launch: LaunchConfig,
   signal: AbortSignal | undefined,
 ): Promise<CogsPreparedSkills> {
-  const temps: string[] = [];
   let sharedRemote: CogsSftpMaterializedBundle | undefined;
   let userRemote: CogsSftpMaterializedBundle | undefined;
   let linked: ReturnType<typeof linkedSignal> | undefined;
@@ -89,37 +89,10 @@ async function prepareSkills(
     validateOptionalSignal(signal);
     linked = linkedSignal(signal);
     throwIfAborted(linked.signal);
-    const sharedRevision = asDigest(launch.skills.shared_revision);
-    const userRevision = asDigest(launch.skills.user_revision);
-    const shared = await options.sharedResolver.resolve({ manifestDigest: sharedRevision, signal: linked.signal });
-    const user = await options.privateStore.snapshot({
-      userId: launch.user_id,
-      expectedDigest: userRevision,
-      signal: linked.signal,
-    });
-    const sharedTemp = await materializeHostTemp("shared", shared.bundle, temps);
-    const userTemp = await materializeHostTemp("user", user.bundle, temps);
+    const { shared, user, sharedRevision, userRevision, piSkills, eagerTrustedSkillPrompt } =
+      await loadCogsRetainedSkillPair(options, launch, linked.signal);
     const sharedGuestSubtree = derivedGuestSubtree(launch.skills.shared_path, shared.bundle.digest);
     const userGuestSubtree = derivedGuestSubtree(launch.skills.user_path, user.bundle.digest);
-    const candidateBudget = { count: 0, bytes: 0 };
-    const loaded = [
-      await loadOneBundle("shared", shared.bundle, sharedTemp, sharedGuestSubtree, sharedRevision, candidateBudget),
-      await loadOneBundle("user", user.bundle, userTemp, userGuestSubtree, userRevision, candidateBudget),
-    ];
-    const names = new Set<string>();
-    const piSkills: Skill[] = [];
-    const promptSkills: unknown[] = [];
-    for (const one of loaded) {
-      for (const skill of one.skills) {
-        if (names.has(skill.name)) throw new CogsSkillPreparationError();
-        names.add(skill.name);
-        piSkills.push(skill);
-      }
-      promptSkills.push(...one.promptEntries);
-    }
-    const eagerTrustedSkillPrompt = buildEagerPrompt(promptSkills);
-    await cleanupTemps(temps);
-    temps.length = 0;
     const sftpInput =
       options.operationTimeoutMs === undefined
         ? { signal: linked.signal }
@@ -169,7 +142,6 @@ async function prepareSkills(
     });
     return prepared;
   } catch (error) {
-    await cleanupTemps(temps).catch(() => undefined);
     await disposeRemote(
       options.ssh,
       [sharedRemote, userRemote].filter((x): x is CogsSftpMaterializedBundle => x !== undefined),
@@ -179,6 +151,64 @@ async function prepareSkills(
     throw new CogsSkillPreparationError();
   } finally {
     linked?.dispose();
+  }
+}
+
+/** Both preparers discover from these retained canonical bytes, never guest markdown. */
+export async function loadCogsRetainedSkillPair(
+  options: { sharedResolver: CogsSharedSkillOciResolver; privateStore: CogsPrivateSkillStore },
+  launch: LaunchConfig,
+  signal: AbortSignal,
+  /** Explicit caller-owned publication; production preparers never forward this from their options. */
+  discoveryRoots?: Readonly<Record<"shared" | "user", string>>,
+) {
+  const temps: string[] = [];
+  try {
+    throwIfAborted(signal);
+    const sharedRevision = asDigest(launch.skills.shared_revision);
+    const userRevision = asDigest(launch.skills.user_revision);
+    const resolved = await options.sharedResolver.resolve({ manifestDigest: sharedRevision, signal });
+    throwIfAborted(signal);
+    const snapshotted = await options.privateStore.snapshot({
+      userId: launch.user_id,
+      expectedDigest: userRevision,
+      signal,
+    });
+    throwIfAborted(signal);
+    const sharedBundle = verifyCogsSkillBundle(resolved.bundle.copyBytes());
+    const userBundle = verifyCogsSkillBundle(snapshotted.bundle.copyBytes());
+    if (
+      resolved.manifestDigest !== sharedRevision ||
+      resolved.bundleDigest !== sharedBundle.digest ||
+      snapshotted.digest !== userRevision ||
+      userBundle.digest !== userRevision
+    )
+      throw new CogsSkillPreparationError();
+    const shared = Object.freeze({ bundle: sharedBundle, bundleDigest: sharedBundle.digest });
+    const user = Object.freeze({ bundle: userBundle, digest: userBundle.digest });
+    const budget = { count: 0, bytes: 0 };
+    const loaded = [];
+    for (const [scope, bundle, revision, root] of [
+      ["shared", sharedBundle, sharedRevision, launch.skills.shared_path],
+      ["user", userBundle, userRevision, launch.skills.user_path],
+    ] as const) {
+      throwIfAborted(signal);
+      const temp = discoveryRoots?.[scope] ?? (await materializeHostTemp(scope, bundle, temps));
+      loaded.push(await loadOneBundle(scope, bundle, temp, derivedGuestSubtree(root, bundle.digest), revision, budget));
+    }
+    const piSkills = loaded.flatMap((one) => one.skills);
+    if (new Set(piSkills.map((skill) => skill.name)).size !== piSkills.length) throw new CogsSkillPreparationError();
+    throwIfAborted(signal);
+    return Object.freeze({
+      shared,
+      user,
+      sharedRevision,
+      userRevision,
+      piSkills: Object.freeze(piSkills),
+      eagerTrustedSkillPrompt: buildEagerPrompt(loaded.flatMap((one) => one.promptEntries)),
+    });
+  } finally {
+    await cleanupTemps(temps);
   }
 }
 
@@ -300,7 +330,7 @@ function buildEagerPrompt(entries: readonly unknown[]): string {
   return prompt;
 }
 
-async function readAgentsFile(
+export async function readAgentsFile(
   sftp: CogsSftpPort,
   signal: AbortSignal,
 ): Promise<{ status: CogsAgentsStatus; file?: CogsAgentsFile }> {

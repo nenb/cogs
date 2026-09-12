@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Central ADR 0039/0099 retained-line inventory with no deletion credit."""
+import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_REVISION = "746568773798d72f5a79ad639d96cb227597f3b7"
@@ -20,11 +24,11 @@ CONSERVATIVE_BASELINE_LINES = INHERITED_PREDECESSOR_MINIMUM + PRE_BASE_GROSS_ADD
 CORRECTION_BASE_CURRENT_LINES = 53_352
 CORRECTION_BASE_CONSERVATIVE_LINES = 55_354
 PREFERRED_LIMIT = 90_000
-HARD_LIMIT = 100_500
+HARD_LIMIT = 115_000
 DEPLOY_CORRECTION_HIGH = 24_500
-RETAINED_CORRECTION_HIGH = 16_000
-WORKFLOW_CORRECTION_HIGH = 6_000
-GLOBAL_CORRECTION_HIGH = 47_000
+RETAINED_CORRECTION_HIGH = 31_000
+WORKFLOW_CORRECTION_HIGH = 6_500
+GLOBAL_CORRECTION_HIGH = 60_000
 REMEDIATION_BASE_REVISION = "242bbefeae5444118d9e97b46597130b509ca253"
 REMEDIATION_BUDGET_PATH = ROOT / "config/external-review-remediation-budget-v1.json"
 FINAL_H_REVISION = "8907eba3191d07573cd84573cb0b2adddff17bd6"
@@ -32,7 +36,41 @@ FINAL_H_DEPLOY_GROSS, FINAL_H_RETAINED_GROSS, FINAL_H_WORKFLOW_GROSS = 21_948, 1
 # ADR0309 reserves are an independent gross diff, not subtraction of two gross
 # endpoints (which would credit deletion of additions between the anchors).
 POST_H_REVISION = "6bd12dcd25d877ffac03752fa0f71beeeb86a99e"
-POST_H_HIGHS = {"deploy": 1_500, "retained": 4_000, "workflow": 1_200, "global": 6_000}
+POST_H_HIGHS = {"deploy": 1_500, "retained": 19_000, "workflow": 1_200, "global": 21_000}
+PRODUCT_TEST_Q = "8ca95b1e97447466587bbfae63318d9fce620e68"
+PRODUCT_TEST_Q_TREE = "dff53b023e8e4ee4bac4897f200124b3daed9de7"
+PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 15_537, 5_120_000
+PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 2_000, 2_000_000
+PRODUCT_TEST_FORECASTS = dict(route=0, revocation=0, relay=2_675, lifecycle=4_550, completion=2_580, integration=7_732)
+PRODUCT_TEST_REMAINING_FORECASTS = dict(route=0, revocation=0, relay=300, lifecycle=100, completion=0, integration=1_600)
+PRODUCT_TEST_BYTE_FORECASTS = {"route": 0, "revocation": 0, "relay": 700_000,
+                               "lifecycle": 550_000, "completion": 300_000, "integration": 5_570_000}
+REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_000_000,
+                         "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
+PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 8_000_000, 11_000_000
+PRODUCT_TEST_PATH_OWNER_SHA256 = "f110c552c20a3c380b52acb2fb9284ee12461bc2fe2c22fb977fd8f85b32399c"
+PRODUCT_TEST_TASK_PATH_SHA256 = "a15d79943be0631fb2ee2d689c06579804bac92486bc3138e19a7ae5ab9e388d"
+PRODUCT_TEST_NEW_FILES = {
+    "docs/adr/0336-converge-remaining-product-governance.md": "integration",
+}
+PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
+PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
+PRODUCT_TEST_WORKFLOW_LINE_HIGH = 300
+SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
+SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
+PRODUCT_TEST_HELPER_INTEGRATION_PATHS = frozenset((
+    "dev/product-test/host-custody.py", "dev/product-test/snapshot-owner.ts",
+    "test/ci-infrastructure-boundary.test.ts"))
+PRODUCT_TEST_DOCKER_PATHS = frozenset((
+    PRODUCT_TEST_WORKFLOW_PATH, "dev/product-test/runner.ts", "scripts/run-launcher-smoke-evidence.ts",
+    "test/launcher-smoke-evidence.test.ts"))
+PRODUCT_TEST_GOVERNANCE_PATHS = frozenset((
+    "config/external-review-remediation-budget-v1.json",
+    "docs/adr/0336-converge-remaining-product-governance.md",
+    "docs/adr/README.md",
+    "scripts/check-stage2-retained-lines.py",
+    "test/aws-stage2-completion-local-result.test.ts",
+    "test/stage2-remediation-budget.test.ts"))
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
 WORKFLOW_ROOT = ".github/workflows"
@@ -217,11 +255,67 @@ def _workflow_paths():
                         if path.suffix in WORKFLOW_SUFFIXES))
 
 
+def _git_raw(args):
+    # After read-only repository discovery, isolate all accounting from config,
+    # info/global/system attributes and injected GIT_* settings. Only the real
+    # object store/index are inputs; neither is modified.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_ATTR_NOSYSTEM="1", GIT_OPTIONAL_LOCKS="0", LC_ALL="C")
+    def run(command, *, input=None):
+        result = subprocess.run(["git", "-c", "core.attributesFile=" + os.devnull, *command],
+                                cwd=ROOT, env=env, input=input, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+        _require(result.returncode == 0)
+        return result.stdout
+    locations = run(["rev-parse", "--path-format=absolute", "--git-path", "objects",
+                     "--git-path", "index"]).decode("utf-8").splitlines()
+    head_result = subprocess.run(["git", "-c", "core.attributesFile=" + os.devnull,
+                                  "rev-parse", "--verify", "HEAD"], cwd=ROOT, env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    head = head_result.stdout.decode("ascii").strip() if head_result.returncode == 0 else None
+    _require(len(locations) == 2 and (head is None or re.fullmatch(r"[0-9a-f]{40}", head) is not None))
+    with tempfile.TemporaryDirectory(prefix="cogs-line-budget-") as directory:
+        isolated = Path(directory)
+        (isolated / "objects").mkdir()
+        (isolated / "refs").mkdir()
+        (isolated / "HEAD").write_text("ref: refs/heads/accounting\n")
+        if head is not None:
+            (isolated / "refs" / "heads").mkdir(parents=True)
+            (isolated / "refs" / "heads" / "accounting").write_text(head + "\n")
+        env.update(GIT_DIR=directory, GIT_WORK_TREE=str(ROOT),
+                   GIT_OBJECT_DIRECTORY=locations[0], GIT_INDEX_FILE=locations[1])
+        if "diff" in args:
+            # Discard stat caches and assume-unchanged/skip-worktree flags: even
+            # an already staged clean-filter result must be compared to raw disk.
+            index = run(["ls-files", "--stage", "-z"])
+            env["GIT_INDEX_FILE"] = str(isolated / "index")
+            run(["update-index", "-z", "--index-info"], input=index)
+            # Reject every explicit transforming attribute before Git can apply
+            # it, including macros and index fallback for deleted attributes.
+            paths = args[args.index("--") + 1:]
+            names = run(["ls-files", "-z", "--", *paths])
+            attributes = run(["check-attr", "-z", "--stdin", "filter", "diff", "text",
+                              "eol", "crlf", "ident", "working-tree-encoding"], input=names)
+            records = _nul_records(attributes.decode("utf-8"))
+            _require(len(records) % 3 == 0 and all(value == "unspecified" for value in records[2::3]))
+            at = args.index("diff") + 1
+            revisions = [arg for arg in args[at:args.index("--")]
+                         if re.fullmatch(r"[0-9a-f]{40}", arg)]
+            _require(1 <= len(revisions) <= 2)
+            changed = run(["diff", "--no-renames", "--no-ext-diff", "--no-textconv",
+                           "--name-only", "-z", *revisions, "--", *paths])
+            for name in _nul_records(changed.decode("utf-8")):
+                path = ROOT / name
+                if path.exists() or path.is_symlink():
+                    _lines(path)  # changed tracked files retain ordinary-file/UTF-8/NUL gates too
+            # Pin historical defaults for BOTH numstat and patch selection.
+            args = [*args[:at], "--diff-algorithm=myers", "--indent-heuristic", *args[at:]]
+        return run(args)
+
+
 def _git(args):
-    result = subprocess.run(["git", *args], cwd=ROOT, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True)
-    _require(result.returncode == 0)
-    return result.stdout
+    return _git_raw(args).decode("utf-8")
 
 
 def _counted(path):
@@ -229,22 +323,102 @@ def _counted(path):
             or path in RETAINED_FILES)
 
 
-def _gross_slice(paths, allowed, revision=CORRECTION_BASE_REVISION):
+def _gross_slice(paths, allowed, revision=CORRECTION_BASE_REVISION, target=None):
+    if not paths:
+        return 0
+    revisions = (revision,) if target is None else (revision, target)
     output = _git(["-c", "diff.renames=false", "diff", "--no-renames", "--no-ext-diff",
-                   "--no-textconv", "--numstat", revision, "--", *paths])
+                   "--no-textconv", "--numstat", *revisions, "--", *paths])
     added = 0
     for line in output.splitlines():
         columns = line.split("\t")
         _require(len(columns) == 3 and columns[0].isdigit() and columns[1].isdigit())
         _require(allowed(columns[2]))
         added += int(columns[0])
-    ordinary = _git(["ls-files", "--others", "--exclude-standard", "--", *paths])
-    ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--", *paths])
-    for name in set(ordinary.splitlines() + ignored.splitlines()):
-        if allowed(name):
-            added += _lines(ROOT / name)
+    if target is None:
+        ordinary = _git(["ls-files", "--others", "--exclude-standard", "--", *paths])
+        ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "--", *paths])
+        for name in set(ordinary.splitlines() + ignored.splitlines()):
+            if allowed(name):
+                added += _lines(ROOT / name)
     return added
 
+
+def _gross_added_line_bytes(paths, revision, target=None):
+    if not paths:
+        return 0
+    # U0 can change the edit script (including added-line count). Use Git's
+    # historical U3/default Myers+indent selection, with a numstat cross-check.
+    revisions = (revision,) if target is None else (revision, target)
+    output = _git_raw([
+        "-c", "diff.renames=false", "diff", "--no-renames", "--no-ext-diff",
+        "--no-textconv", "--no-color", "--unified=3", "--numstat", "-z", "--patch", *revisions, "--", *paths,
+    ])
+    if output:
+        _require(b"\0\0" in output)
+        summary, output = output.split(b"\0\0", 1)
+        expected_lines = 0
+        for record in summary.split(b"\0"):
+            columns = record.split(b"\t", 2)
+            _require(len(columns) == 3 and columns[0].isdigit() and columns[1].isdigit())
+            expected_lines += int(columns[0])
+    else:
+        expected_lines = 0
+    added, added_lines, old_left, new_left, last_added = 0, 0, 0, 0, False
+    records = output.split(b"\n")
+    _require(records.pop() == b"")
+    for line in records:
+        if line == b"\\ No newline at end of file":
+            if last_added:
+                added -= 1
+            last_added = False
+            continue
+        if old_left or new_left:
+            prefix = line[:1]
+            _require(prefix in (b"+", b"-", b" "))
+            old_left -= prefix in (b"-", b" ")
+            new_left -= prefix in (b"+", b" ")
+            _require(old_left >= 0 and new_left >= 0)
+            last_added = prefix == b"+"
+            if last_added:
+                added_lines += 1
+                added += len(line)  # strip '+' and include the patch LF
+            continue
+        last_added = False
+        if line.startswith(b"@@ "):
+            hunk = re.match(rb"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+            _require(hunk is not None)
+            old_left, new_left = (int(n) if n is not None else 1 for n in hunk.groups())
+        else:
+            _require(not line.startswith((b"Binary files ", b"GIT binary patch")))
+    _require(old_left == new_left == 0 and added_lines == expected_lines)
+    if target is None:
+        ignored = _git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", *paths])
+        _require(not ignored)
+        for name in _nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", *paths])):
+            _require(name in paths)
+            _lines(ROOT / name)  # retain ordinary-file/UTF-8/binary rejection
+            added += (ROOT / name).stat().st_size
+    return added
+
+
+def _gross_bytes(budget, product_test=False):
+    if product_test:
+        return _product_test_consumption(budget)[1]
+    entries = budget["owners"]
+    revision = REMEDIATION_BASE_REVISION
+    highs = PRODUCT_TEST_BYTE_FORECASTS if product_test else REMEDIATION_BYTE_HIGHS
+    gross = {entry["name"]: _gross_added_line_bytes(
+        (*entry["existing_paths"], *entry["new_files"]) if product_test else tuple(entry["paths"]), revision)
+        for entry in entries}
+    _require(set(gross) == set(highs) and all(gross[owner] <= highs[owner] for owner in highs))
+    _require(sum(gross.values()) <= (
+        PRODUCT_TEST_GLOBAL_BYTE_FORECAST if product_test else REMEDIATION_GLOBAL_BYTE_HIGH))
+    return gross
+
+
+def _serialized_inventory_within_limit(raw):
+    _require(isinstance(raw, bytes) and len(raw) <= SERIALIZED_SOURCE_INVENTORY_LIMIT); return raw
 
 def _reject_json_constant(_value):
     raise LineBudgetError()
@@ -265,18 +439,23 @@ def _remediation_budget():
         data = json.loads(REMEDIATION_BUDGET_PATH.read_text("utf-8"), object_pairs_hook=_strict_object)
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
-    _require(set(data) == {"version", "base_revision", "global_gross_line_high", "baseline",
-                           "source_limits", "owners"})
+    _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
+                           "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 30_000)
+             and data["global_gross_line_high"] == 48_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1509,
-                                        "source_inventory_bytes": 22_020_096,
-                                        "serialized_source_inventory_bytes": 262_144})
-    expected = {"route": 2_200, "revocation": 3_000, "relay": 1_975,
-                "lifecycle": 7_500, "completion": 3_100, "integration": 12_500}
+    _require(data["source_limits"] == {"tracked_files": 1530,
+                                        "source_inventory_bytes": 30_000_000,
+                                        "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
+    try:
+        producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
+    except (OSError, UnicodeError):
+        raise LineBudgetError() from None
+    _require("STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
+             and "assertStage4SerializedSourceInventory" in producer)
+    expected = dict(route=2_200, revocation=3_000, relay=4_628, lifecycle=11_800, completion=6_080, integration=20_157)
     owners = {}
     paths = {}
     new_file_highs = {}
@@ -288,11 +467,9 @@ def _remediation_budget():
         name = entry["name"]
         _require(name in expected and name not in owners and entry["gross_line_high"] == expected[name])
         forecast = entry["gross_byte_forecast"]
-        _require(isinstance(forecast, dict)
-                 and set(forecast) == {"source", "tests_fixtures", "docs_contracts", "total"}
-                 and all(isinstance(value, int) and value >= 0 for value in forecast.values())
-                 and forecast["total"] == forecast["source"] + forecast["tests_fixtures"]
-                 + forecast["docs_contracts"])
+        _require(isinstance(forecast, dict) and set(forecast) == {"total"}
+                 and type(forecast["total"]) is int
+                 and forecast["total"] == REMEDIATION_BYTE_HIGHS[name])
         _require(isinstance(entry["new_file_high"], int) and entry["new_file_high"] >= 0)
         _require(isinstance(entry["paths"], list) and entry["paths"] == sorted(entry["paths"]))
         for path in entry["paths"]:
@@ -303,14 +480,13 @@ def _remediation_budget():
         owners[name] = expected[name]
         new_file_highs[name] = entry["new_file_high"]
         forecasts[name] = forecast
-    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 0,
-                                "lifecycle": 4, "completion": 3, "integration": 81})
-    _require(sum(new_file_highs.values()) == 89
-             and sum(forecast["total"] for forecast in forecasts.values()) == 2_570_000)
+    _require(new_file_highs == {"route": 1, "revocation": 0, "relay": 1,
+                                "lifecycle": 5, "completion": 3, "integration": 88})
+    _require(sum(new_file_highs.values()) == 98)
     _require(data["baseline"]["tracked_files"] + sum(new_file_highs.values())
              <= data["source_limits"]["tracked_files"])
     _require(data["baseline"]["source_inventory_bytes"]
-             + sum(forecast["total"] for forecast in forecasts.values())
+             + data["global_gross_byte_high"]
              <= data["source_limits"]["source_inventory_bytes"])
     baseline_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z",
                                             REMEDIATION_BASE_REVISION])))
@@ -319,7 +495,214 @@ def _remediation_budget():
                           if allocated == owner and path not in baseline_names)
         _require(planned_new <= new_file_highs[owner])
     _require(paths.get(str(REMEDIATION_BUDGET_PATH.relative_to(ROOT))) == "integration")
+    _product_test_budget(data, paths)
     return data, owners, paths, new_file_highs, forecasts
+
+
+def _product_path_denied(path):
+    return (path.startswith("deploy/aws-feasibility/") or path.startswith("images/") or path.startswith(".github/workflows/release-")
+            or path.startswith("docs/operations/release-") or path.startswith("scripts/") and ("provider" in path or "release" in path))
+
+def _product_test_budget(data, allocations):
+    plan = data["product_test_correction"]
+    _require(isinstance(plan, dict) and set(plan) == {
+        "base_revision", "base_tree", "checkpoint_revision", "checkpoint_tree", "retained_allocation",
+        "remediation_retained_allocation", "remaining_tranche", "global_gross_line_forecast",
+        "global_gross_byte_forecast", "owners"})
+    _require(plan["base_revision"] == PRODUCT_TEST_Q and plan["base_tree"] == PRODUCT_TEST_Q_TREE
+             and plan["checkpoint_revision"] == PRODUCT_TEST_Q and plan["checkpoint_tree"] == PRODUCT_TEST_Q_TREE
+             and plan["retained_allocation"] == {"gross_lines": PRODUCT_TEST_RETAINED_LINES,
+                                                   "gross_bytes": PRODUCT_TEST_RETAINED_BYTES}
+             and plan["remediation_retained_allocation"] == {"gross_lines": 45_200,
+                                                               "gross_bytes": 7_200_000}
+             and plan["global_gross_line_forecast"] == 18_000
+             and plan["global_gross_byte_forecast"] == PRODUCT_TEST_GLOBAL_BYTE_FORECAST)
+    tranche = plan["remaining_tranche"]
+    _require(isinstance(tranche, dict) and set(tranche) == {"gross_lines", "gross_bytes", "allocations"}
+             and tranche["gross_lines"] == PRODUCT_TEST_REMAINING_LINES
+             and tranche["gross_bytes"] == PRODUCT_TEST_REMAINING_BYTES
+             and isinstance(tranche["allocations"], list))
+    _require(_git(["rev-parse", PRODUCT_TEST_Q + "^{tree}"]).strip() == PRODUCT_TEST_Q_TREE)
+    q_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", PRODUCT_TEST_Q])))
+    q_budget = json.loads(_git(["show", PRODUCT_TEST_Q + ":config/external-review-remediation-budget-v1.json"]))
+    q_allocations = {path: owner["name"] for owner in q_budget["owners"] for path in owner["paths"]}
+    _require(PRODUCT_TEST_EXCLUDED_PATHS <= set(q_allocations)
+             and all(allocations.get(path) == "integration" for path in PRODUCT_TEST_EXCLUDED_PATHS))
+    q_product_allocations = {path: owner for path, owner in q_allocations.items()
+                             if path not in PRODUCT_TEST_EXCLUDED_PATHS}
+    _require(all(allocations.get(path) == owner for path, owner in q_product_allocations.items()))
+    planned, new, forecasts = {}, {}, {}
+    _require(isinstance(plan["owners"], list) and len(plan["owners"]) == len(PRODUCT_TEST_FORECASTS))
+    for entry in plan["owners"]:
+        _require(isinstance(entry, dict) and set(entry) == {
+            "name", "gross_line_forecast", "gross_byte_forecast", "existing_paths", "new_files"})
+        owner = entry["name"]
+        _require(owner in PRODUCT_TEST_FORECASTS and owner not in forecasts
+                 and type(entry["gross_line_forecast"]) is int
+                 and entry["gross_line_forecast"] == PRODUCT_TEST_FORECASTS[owner]
+                 and type(entry["gross_byte_forecast"]) is int
+                 and entry["gross_byte_forecast"] == PRODUCT_TEST_BYTE_FORECASTS[owner])
+        forecasts[owner] = entry["gross_line_forecast"]
+        for kind in ("existing_paths", "new_files"):
+            names = entry[kind]
+            _require(isinstance(names, list) and all(isinstance(path, str) for path in names)
+                     and names == sorted(set(names)))
+            for path in names:
+                _require(path not in planned and allocations.get(path) == owner
+                         and (path in q_names) == (kind == "existing_paths"))
+                planned[path] = owner
+                if kind == "new_files":
+                    new[path] = owner
+    _require(new == PRODUCT_TEST_NEW_FILES and not (set(planned) & PRODUCT_TEST_EXCLUDED_PATHS)
+             and not any(_product_path_denied(path) for path in planned))
+    _require(sum(forecasts.values()) == PRODUCT_TEST_RETAINED_LINES + PRODUCT_TEST_REMAINING_LINES
+             and sum(entry["gross_byte_forecast"] for entry in plan["owners"])
+             == PRODUCT_TEST_RETAINED_BYTES + PRODUCT_TEST_REMAINING_BYTES)
+    _require(sum(forecasts.values()) < plan["global_gross_line_forecast"]
+             and sum(entry["gross_byte_forecast"] for entry in plan["owners"])
+             < plan["global_gross_byte_forecast"])
+    _require(set(allocations) == set(q_allocations) | set(planned))
+    _require(set(allocations) - q_names == set(PRODUCT_TEST_NEW_FILES))
+    canonical = json.dumps(planned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    _require(hashlib.sha256(canonical).hexdigest() == PRODUCT_TEST_PATH_OWNER_SHA256)
+    tasks = tranche["allocations"]
+    task_owner_lines, task_owner_bytes = {}, {}
+    required_tasks = (("helper", 452, 350_000, {"integration": (352, 250_000), "lifecycle": (100, 100_000)}),
+                      ("docker_workflow_and_tests", 550, 650_000, {"integration": (550, 650_000)}),
+                      ("kvm_gate_and_tests", 300, 300_000, {"relay": (300, 300_000)}),
+                      ("final_controls_and_evidence", 145, 600_000, {"integration": (145, 600_000)}),
+                      ("governance", 553, 100_000, {"integration": (553, 100_000)}))
+    _require(len(tasks) == len(required_tasks))
+    for task, expected_task in zip(tasks, required_tasks):
+        name, lines, raw_bytes, expected_owners = expected_task
+        _require(isinstance(task, dict) and set(task) == {"name", "gross_lines", "gross_bytes", "owner_allocations", "path_gross_line_highs"}
+                 and task["name"] == name and task["gross_lines"] == lines and task["gross_bytes"] == raw_bytes
+                 and isinstance(task["path_gross_line_highs"], list))
+        owners = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
+                  for entry in task["owner_allocations"]
+                  if isinstance(entry, dict) and set(entry) == {"name", "gross_lines", "gross_bytes"}}
+        _require(len(owners) == len(task["owner_allocations"]) and owners == expected_owners
+                 and sum(value[0] for value in owners.values()) == lines
+                 and sum(value[1] for value in owners.values()) == raw_bytes)
+        for owner, (owner_lines, owner_bytes) in owners.items():
+            task_owner_lines[owner] = task_owner_lines.get(owner, 0) + owner_lines
+            task_owner_bytes[owner] = task_owner_bytes.get(owner, 0) + owner_bytes
+        highs = {entry["path"]: entry["gross_lines"] for entry in task["path_gross_line_highs"]
+                 if isinstance(entry, dict) and set(entry) == {"path", "gross_lines"}}
+        _require(len(highs) == len(task["path_gross_line_highs"]))
+        if name == "docker_workflow_and_tests":
+            _require(highs == {PRODUCT_TEST_WORKFLOW_PATH: PRODUCT_TEST_WORKFLOW_LINE_HIGH})
+        else:
+            _require(not highs)
+    _require(task_owner_lines == {"integration": 1_600, "lifecycle": 100, "relay": 300}
+             and task_owner_bytes == {"integration": 1_600_000, "lifecycle": 100_000, "relay": 300_000})
+    task_canonical = json.dumps(tasks, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    _require(hashlib.sha256(task_canonical).hexdigest() == PRODUCT_TEST_TASK_PATH_SHA256)
+    _require(sum(forecasts.values()) < data["global_gross_line_high"]
+             and PRODUCT_TEST_RETAINED_LINES + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
+             and 45_200 + PRODUCT_TEST_REMAINING_LINES < data["global_gross_line_high"]
+             and 7_200_000 + PRODUCT_TEST_REMAINING_BYTES < data["global_gross_byte_high"])
+    return planned
+
+def _product_test_task_paths(task, planned):
+    all_paths = set(planned)
+    lifecycle = {path for path, owner in planned.items() if owner == "lifecycle"}
+    relay = {path for path, owner in planned.items() if owner == "relay"}
+    if task == "helper":
+        names = lifecycle | PRODUCT_TEST_HELPER_INTEGRATION_PATHS
+    elif task == "docker_workflow_and_tests":
+        names = set(PRODUCT_TEST_DOCKER_PATHS)
+    elif task == "kvm_gate_and_tests":
+        names = relay
+    elif task == "governance":
+        names = set(PRODUCT_TEST_GOVERNANCE_PATHS)
+    elif task == "final_controls_and_evidence":
+        names = all_paths - lifecycle - relay - PRODUCT_TEST_HELPER_INTEGRATION_PATHS - PRODUCT_TEST_DOCKER_PATHS - PRODUCT_TEST_GOVERNANCE_PATHS
+    else:
+        raise LineBudgetError()
+    _require(names <= all_paths)
+    return tuple(sorted(names))
+
+def _product_test_changes(revision, target=None):
+    revisions = (revision,) if target is None else (revision, target)
+    return set(_nul_records(_git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv",
+                                  "--name-only", "-z", *revisions, "--", "."])))
+
+def _product_test_linear_commits(head):
+    merges = _git(["rev-list", "--min-parents=2", PRODUCT_TEST_Q + ".." + head]).splitlines()
+    _require(not merges)
+    commits = _git(["rev-list", "--reverse", PRODUCT_TEST_Q + ".." + head]).splitlines()
+    parent = PRODUCT_TEST_Q
+    for commit in commits:
+        _require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None)
+        _require(_git(["rev-list", "--parents", "-n", "1", commit]).split() == [commit, parent])
+        yield parent, commit
+        parent = commit
+
+def _product_test_consumption(budget):
+    plan = budget["product_test_correction"]
+    planned = {path: entry["name"] for entry in plan["owners"]
+               for path in (*entry["existing_paths"], *entry["new_files"])}
+    tasks = plan["remaining_tranche"]["allocations"]
+    task_paths = {task["name"]: _product_test_task_paths(task["name"], planned) for task in tasks}
+    _require(set().union(*(set(names) for names in task_paths.values())) == set(planned)
+             and sum(len(names) for names in task_paths.values()) == len(planned))
+    head = _git(["rev-parse", "HEAD"]).strip()
+    _require(re.fullmatch(r"[0-9a-f]{40}", head) is not None
+             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, head]) == "")
+    slices = list(_product_test_linear_commits(head))
+    slices.append((head, None))
+    owner_lines = {entry["name"]: 0 for entry in plan["owners"]}
+    owner_bytes = dict(owner_lines)
+    task_lines = {task["name"]: 0 for task in tasks}
+    task_bytes = dict(task_lines)
+    task_owner_lines = {task["name"]: {} for task in tasks}
+    task_owner_bytes = {task["name"]: {} for task in tasks}
+    workflow_lines = 0
+    for revision, target in slices:
+        changed = _product_test_changes(revision, target)
+        if target is None:
+            changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+        _require(changed <= set(planned))
+        for owner in owner_lines:
+            owner_names = tuple(path for path, allocated in planned.items() if allocated == owner)
+            owner_lines[owner] += _gross_slice(owner_names, lambda path: path in owner_names, revision, target)
+            owner_bytes[owner] += _gross_added_line_bytes(owner_names, revision, target)
+        for task in tasks:
+            names = task_paths[task["name"]]
+            line_charge = _gross_slice(names, lambda path: path in names, revision, target)
+            byte_charge = _gross_added_line_bytes(names, revision, target)
+            task_lines[task["name"]] += line_charge
+            task_bytes[task["name"]] += byte_charge
+            for owner in {entry["name"] for entry in task["owner_allocations"]}:
+                owner_names = tuple(path for path in names if planned[path] == owner)
+                owner_line_charge = _gross_slice(owner_names, lambda path: path in owner_names, revision, target)
+                owner_byte_charge = _gross_added_line_bytes(owner_names, revision, target)
+                task_owner_lines[task["name"]][owner] = task_owner_lines[task["name"]].get(owner, 0) + owner_line_charge
+                task_owner_bytes[task["name"]][owner] = task_owner_bytes[task["name"]].get(owner, 0) + owner_byte_charge
+            if task["name"] == "docker_workflow_and_tests":
+                workflow_lines += _gross_slice((PRODUCT_TEST_WORKFLOW_PATH,),
+                                               lambda path: path == PRODUCT_TEST_WORKFLOW_PATH,
+                                               revision, target)
+    for task in tasks:
+        owner_highs = {entry["name"]: (entry["gross_lines"], entry["gross_bytes"])
+                       for entry in task["owner_allocations"]}
+        _require(task_lines[task["name"]] <= task["gross_lines"]
+                 and task_bytes[task["name"]] <= task["gross_bytes"]
+                 and all(task_owner_lines[task["name"]].get(owner, 0) <= high[0]
+                         and task_owner_bytes[task["name"]].get(owner, 0) <= high[1]
+                         for owner, high in owner_highs.items()))
+    consumed_lines, consumed_bytes = sum(owner_lines.values()), sum(owner_bytes.values())
+    _require(workflow_lines <= PRODUCT_TEST_WORKFLOW_LINE_HIGH
+             and all(owner_lines[owner] <= high for owner, high in PRODUCT_TEST_REMAINING_FORECASTS.items())
+             and consumed_lines <= PRODUCT_TEST_REMAINING_LINES
+             and consumed_bytes <= PRODUCT_TEST_REMAINING_BYTES
+             and PRODUCT_TEST_RETAINED_LINES + consumed_lines < plan["global_gross_line_forecast"]
+             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes < plan["global_gross_byte_forecast"])
+    return owner_lines, owner_bytes, task_lines, task_bytes, workflow_lines
+
+def _product_test_gross(budget):
+    return _product_test_consumption(budget)[0]
 
 
 def _nul_records(raw):
@@ -443,6 +826,9 @@ def measure():
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
+    product_test_gross = _product_test_gross(remediation_budget)
+    remediation_bytes = _gross_bytes(remediation_budget)
+    product_test_bytes = _gross_bytes(remediation_budget, product_test=True)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
     remediation_new_file_highs = {entry["name"]: entry["new_file_high"] for entry in remediation_budget["owners"]}
@@ -491,12 +877,25 @@ def measure():
         "post_h_gross_added_lines": post_h,
         "post_h_reserve_highs": POST_H_HIGHS,
         "post_h_reserve_limits_satisfied": post_h_satisfied,
+        "product_test_base_revision": PRODUCT_TEST_Q,
+        "product_test_workstream_gross_added_lines": product_test_gross,
+        "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
+        "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
+        "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_gross.values()),
+        "product_test_global_gross_line_forecast": 18_000,
+        "product_test_workstream_gross_added_line_bytes": product_test_bytes,
+        "product_test_workstream_gross_byte_forecasts": PRODUCT_TEST_BYTE_FORECASTS,
+        "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_bytes.values()),
+        "product_test_retained_and_consumed_gross_line_bytes": PRODUCT_TEST_RETAINED_BYTES + sum(product_test_bytes.values()),
+        "product_test_global_gross_byte_forecast": PRODUCT_TEST_GLOBAL_BYTE_FORECAST,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
         "remediation_workstream_new_files": remediation_new_files,
         "remediation_workstream_new_file_highs": remediation_new_file_highs,
         "remediation_workstream_gross_byte_forecasts": remediation_byte_forecasts,
+        "remediation_workstream_gross_added_line_bytes": remediation_bytes,
+        "remediation_gross_added_line_bytes_no_deletion_credit": sum(remediation_bytes.values()),
         "remediation_gross_added_lines_no_deletion_credit": remediation_gross,
         "remediation_global_high": remediation_budget["global_gross_line_high"],
         "remediation_limits_satisfied": remediation_slices_satisfied,

@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Qualification boots a guest and is therefore effectful.  It shares the
+# driver gate; only the driver's policy renderer is intentionally pure.
+script=${BASH_SOURCE[0]}
+repo=${script%/dev/linux-kvm/qualify.sh}
+[[ "$repo" != "$script" ]] || repo=$PWD
+repo=$(builtin cd "$repo" && builtin pwd -P)
+# shellcheck source=dev/linux-kvm/git-tools.sh
+source "$repo/dev/linux-kvm/git-tools.sh"
+cogs_kvm_execution_gate
 
 report_path=${1:-kvm-qualification-report.json}
 started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')

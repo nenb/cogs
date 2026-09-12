@@ -26,6 +26,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
+import { createApiClient } from "../dev/launcher/api-client.ts";
+import { admitScenarioValue } from "../dev/product-test/runner.ts";
 import { createFakeModelStream } from "../spikes/pi-embedding.ts";
 import { createApiServer } from "../src/api/server.ts";
 import type { ModelApiKeySource } from "../src/auth/model-auth.ts";
@@ -43,6 +45,8 @@ import type { CogsGitCheckpointer } from "../src/session/git-checkpoint.ts";
 import type { CogsGitMapRecord } from "../src/session/git-map.ts";
 import type { CogsGitObservation, CogsGitObserver } from "../src/session/git-observer.ts";
 import type { CogsPreparedSkills, CogsSkillPreparerPort } from "../src/skills/session-preparer.ts";
+import { createSshBashToolPort } from "../src/ssh/bash-tool.ts";
+import type { CogsExecPort, SshConnectionManager } from "../src/ssh/connection.ts";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -444,6 +448,71 @@ function oneTextStream(text: string): StreamFn {
     return stream;
   };
 }
+
+test("closed product scenario rejects proto/getters before serialization and vetoes native writes", async () => {
+  for (const value of [JSON.parse('{"nested":{"__proto__":1}}'), Array.from({ length: 2049 }, () => 1)])
+    assert.throws(() => admitScenarioValue(value));
+  let getter = false;
+  assert.throws(() =>
+    admitScenarioValue(
+      Object.defineProperty({}, "data", {
+        enumerable: true,
+        get: () => {
+          getter = true;
+          return 1;
+        },
+      }),
+    ),
+  );
+  assert.equal(getter, false);
+  for (const veto of ["session", "message"]) {
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-prewrite-"));
+    let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+    let denied = 0;
+    try {
+      const cwd = resolve(root, "workspace"),
+        agentDir = resolve(root, "agent"),
+        sessionRoot = resolve(root, "sessions");
+      await mkdir(cwd);
+      await mkdir(agentDir);
+      const create = createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot,
+          sessionId: "product-session",
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "synthetic",
+          toolPorts: fakePorts([]),
+          streamFn: createFakeModelStream({ calls: 0, observedApiKeys: [] }),
+          historyAdmission: (entry) => {
+            admitScenarioValue(entry);
+            if ((entry as { type: string }).type === veto) {
+              denied++;
+              throw new Error("supervisor veto");
+            }
+          },
+        }),
+      );
+      if (veto === "session") {
+        await assert.rejects(create);
+        assert.deepEqual(await readdir(resolve(sessionRoot, "product-session")), []);
+      } else {
+        adapter = await create;
+        const file = adapter.sessionFile();
+        assert.ok(file);
+        const before = await readFile(file);
+        await adapter.input({ requestId: "veto", correlationId: "veto", kind: "prompt", content: "synthetic" });
+        await eventually(() => assert.equal(denied, 1));
+        assert.deepEqual(await readFile(file), before);
+      }
+      assert.equal(denied, 1);
+    } finally {
+      await adapter?.dispose().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
 
 test("Pi session adapter constructs locked runtime-only SDK components, only Cogs tools, and native JSONL", async () => {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "cogs-pi-session-"));
@@ -1499,13 +1568,13 @@ test("Pi session rejects malformed tool args and malformed tool results without 
       }),
     );
     (large as unknown as { forwardEvent: (event: { type: string; [key: string]: unknown }) => void }).forwardEvent({
-      type: "hostile_large_event",
+      type: "agent_start",
       text: `${"x".repeat(4090)}${secret}${"y".repeat(2_000_000)}`,
     });
     const largeText = largeEvents.join("\n");
     assert.equal(largeText.includes(secret), false);
-    assert.equal(largeText.includes("[redacted]"), true);
-    assert.equal(largeText.includes("[truncated]"), true);
+    assert.equal(largeText.includes('"status":"omitted"'), true);
+    assert.equal(largeText.includes('"reason":"input_limit"'), true);
     assert.equal(largeText.includes(innocentPrefix), false);
     assert.ok(largeEvents.every((event) => Buffer.byteLength(event, "utf8") < 24 * 1024));
     await large.dispose();
@@ -3379,6 +3448,15 @@ test("authenticated Pi session rejects hostile prepared paths and metadata befor
         }),
       },
       {
+        name: "forged-read-only-authority",
+        prepared: hostilePrepared({
+          metadata: Object.freeze({
+            ...hostilePrepared().metadata,
+            shared: Object.freeze({ ...hostilePrepared().metadata.shared, readOnlyEnforced: true }),
+          }),
+        }),
+      },
+      {
         name: "guest-subtree-digest-mismatch",
         prepared: hostilePrepared({
           metadata: Object.freeze({
@@ -4453,41 +4531,13 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "aborted" } });
     session._emit({ type: "message_start", message: { role: "assistant" } });
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "error" } });
-    session._emit({ type: "message_start", message: { role: "assistant" } });
-    session._emit({ type: "message_end", message: { role: "assistant" } });
-    let getterInvoked = false;
-    let contentGetterInvoked = false;
-    const hostileContentMessage = Object.freeze(
-      Object.defineProperty({ role: "assistant", stopReason: "stop" }, "content", {
-        enumerable: true,
-        get: () => {
-          contentGetterInvoked = true;
-          return "SECRET_CONTENT";
-        },
-      }),
-    );
-    session._emit({ type: "message_start", message: hostileContentMessage });
-    session._emit({ type: "message_end", message: hostileContentMessage });
-    session._emit({
-      type: "message_start",
-      message: Object.defineProperty({}, "role", {
-        enumerable: true,
-        get: () => {
-          getterInvoked = true;
-          return "assistant";
-        },
-      }),
-    });
-    session._emit({
-      type: "message_end",
-      message: new Proxy(
-        { role: "assistant" },
-        {
-          getOwnPropertyDescriptor: () => {
-            throw new Error("trap");
-          },
-        },
-      ),
+    // Invalid callback shapes now fail closed; their no-observation contract is tested separately.
+    // Keep synthetic telemetry counters independent from the closed public usage projection.
+    (adapter as unknown as { usageObject: () => unknown }).usageObject = () => ({
+      model: "anthropic/claude-sonnet-4-5",
+      entries: 0,
+      cost: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     });
     turnCalls = 0;
     currentBefore = beforeStats;
@@ -4521,9 +4571,6 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
         .slice(0, 5),
       ["ok", "ok", "ok", "cancelled", "error"],
     );
-    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").map((span) => span.attributes?.outcome)[5], "error");
-    assert.equal(getterInvoked, false);
-    assert.equal(contentGetterInvoked, false);
     assert.deepEqual(metricValues(telemetry.metrics, "token.input"), [10, 3, 86_400_001]);
     assert.deepEqual(metricValues(telemetry.metrics, "token.output"), [4, 5, 1]);
     assert.deepEqual(metricValues(telemetry.metrics, "token.cache"), [2, 3, 1]);
@@ -4533,7 +4580,7 @@ test("Pi telemetry handles policy denial, throwing sink, model events and usage 
     await adapter.dispose();
     session._emit({ type: "message_start", message: { role: "assistant" } });
     session._emit({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
-    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").length, 12);
+    assert.equal(telemetryByName(telemetry.spans, "pi.model_call").length, 10);
 
     const throwing = await createCogsPiSession(
       withDefaults({
@@ -5687,6 +5734,263 @@ test("non-owned Pi session dispose retains host runtime directories", async () =
     assert.ok(await lstat(sessionRoot));
     await assert.rejects(adapter.disposeOwnedRuntime(), /Pi owned runtime cleanup failed/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi callback admission precedes model, Git and telemetry; rejected publication is fatal", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-event-admission-"));
+  let traps = 0;
+  const trap = () => {
+    traps++;
+    throw new Error("SECRET");
+  };
+  const proxy = new Proxy({}, { get: trap, getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap });
+  const bad = [
+    proxy,
+    { type: "message_end", message: proxy },
+    Object.defineProperty({}, "type", { get: trap }),
+    {
+      type: "message_start",
+      message: Object.defineProperty({ role: "assistant" }, "content", { get: trap, enumerable: true }),
+    },
+  ];
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    for (let i = 0; i < bad.length + 2; i++) {
+      const telemetry = recordingTelemetry();
+      let model = 0,
+        git = 0,
+        fatal = "",
+        published = 0;
+      const adapter = await createCogsPiSession(
+        withDefaults({
+          cwd,
+          agentDir,
+          sessionRoot: resolve(root, `session-${i}`),
+          sessionId: `session-${i}`,
+          model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          apiKey: "sk-test-event-secret",
+          toolPorts: fakePorts([]),
+          streamFn: oneTextStream("unused"),
+          telemetry: telemetry.sink,
+          emit: () => {
+            published++;
+            return i === bad.length ? false : (undefined as unknown as boolean);
+          },
+          onFatal: (reason) => {
+            fatal = reason;
+          },
+        }),
+      );
+      const internal = adapter as unknown as {
+        forwardEvent(raw: unknown): void;
+        observeModelEvent: () => void;
+        runtime: { gitBinding: unknown };
+      };
+      internal.observeModelEvent = () => {
+        model++;
+      };
+      internal.runtime.gitBinding = {
+        messageEnd: () => {
+          git++;
+        },
+        dispose: async () => undefined,
+      };
+      const before = telemetry.spans.length;
+      internal.forwardEvent(i < bad.length ? bad[i] : { type: "agent_start" });
+      await eventually(() => assert.notEqual(fatal, ""));
+      assert.equal(fatal, i < bad.length ? "invalid-pi-event" : "publish-failed");
+      if (i < bad.length) {
+        assert.equal(model, 0);
+        assert.equal(git, 0);
+        assert.equal(published, 0);
+        assert.equal(telemetry.spans.length, before);
+      }
+      assert.equal((await adapter.state()).runState, "shutdown");
+      await adapter.dispose();
+    }
+    assert.equal(traps, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SSH decoding integrity survives real bash updates, Pi admission, SSE and launcher validation", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-lossy-event-"));
+  let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+  const api = createApiServer({
+    bearerToken: "t".repeat(32),
+    sessionId: "lossy-event",
+    maxEventBytes: 4096,
+    lifecycle: { ready: true, state: "ready", requestShutdown: async () => undefined },
+    session: {
+      state: async () => ({ runState: "idle" }),
+      input: async () => "running",
+      abort: async () => ({ aborted: true, runState: "aborting" }),
+    },
+    history: { entries: async () => ({ entries: [] }) },
+    exporter: { createExport: async () => null },
+  });
+  // Only the SSH transport is doubled: the production decoder and Pi tool path run unchanged.
+  const manager = {
+    withBashExec: async (_input: unknown, operation: (port: CogsExecPort) => Promise<unknown>) => {
+      const listeners: Array<(bytes: Buffer) => void> = [];
+      return operation({
+        onStdout: (listener) => {
+          listeners.push(listener);
+        },
+        onStderr: (listener) => {
+          listeners.push(listener);
+        },
+        signal: async () => undefined,
+        terminal: async () => {
+          // Same decoded text; only stderr contains invalid source bytes.
+          for (const [index, listener] of listeners.entries())
+            for (const bytes of [
+              index === 0 ? Buffer.from("�") : Buffer.from([0xff]),
+              Buffer.from([0xc3]),
+              Buffer.from([0xa9]),
+            ])
+              listener(bytes);
+          return { code: 0, signal: null };
+        },
+      });
+    },
+  } as unknown as SshConnectionManager;
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    let fatal = "";
+    adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "lossy-event",
+        preparedResources: hostilePrepared(),
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-event-secret",
+        toolPorts: { ...fakePorts([]), ...createSshBashToolPort({ manager }) },
+        streamFn: oneToolStream("bash", { command: "printf fixed" }),
+        emit: api.publish,
+        onFatal: (reason) => {
+          fatal = reason;
+        },
+      }),
+    );
+    const { port } = await api.listen();
+    await adapter.input({ requestId: "utf8", correlationId: "utf8", kind: "prompt", content: "run" });
+    await eventually(async () => assert.equal((await adapter?.state())?.runState, "settled"));
+    const updates: Array<{ stream: string; chunk: string; lossyUtf8: boolean }> = [];
+    // This consumes the bounded retained frames, not a replay-reliability guarantee.
+    for await (const event of createApiClient({ port, token: "t".repeat(32) }).events(0, 100)) {
+      if (event.data.kind === "run_settled") break;
+      if (event.data.kind !== "tool_update") continue;
+      const payload = asRecord(event.data.payload);
+      assert.equal(asRecord(payload.cogs_transport).status, "complete");
+      const partial = asRecord(asRecord(payload.detail).partialResult);
+      const details = asRecord(partial.details);
+      if (details.terminal === true) {
+        assert.equal(details.lossyUtf8, undefined);
+        continue;
+      }
+      const text = asRecord((partial.content as unknown[])[0]).text;
+      const chunk = JSON.parse(text as string).chunk as string;
+      assert.equal(typeof details.lossyUtf8, "boolean");
+      updates.push({ stream: details.stream as string, chunk, lossyUtf8: details.lossyUtf8 as boolean });
+    }
+    // Pi's streaming secret-redaction tail coalesces these small chunks per stream.
+    assert.deepEqual(updates, [
+      { stream: "stdout", chunk: "�é", lossyUtf8: false },
+      { stream: "stderr", chunk: "�é", lossyUtf8: true },
+    ]);
+    assert.equal(fatal, "");
+  } finally {
+    await adapter?.dispose();
+    await api.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("omitted Pi detail accepts with no subscriber, then next turn and explicit shutdown", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-event-next-turn-"));
+  let adapter: Awaited<ReturnType<typeof createCogsPiSession>> | undefined;
+  const api = createApiServer({
+    bearerToken: "t".repeat(32),
+    sessionId: "event-next",
+    maxEventBytes: 4096,
+    lifecycle: { ready: true, state: "ready", requestShutdown: async () => undefined },
+    session: {
+      state: async () => ({ runState: "idle" }),
+      input: async () => "running",
+      abort: async () => ({ aborted: true, runState: "aborting" }),
+    },
+    history: { entries: async () => ({ entries: [] }) },
+    exporter: { createExport: async () => null },
+  });
+  try {
+    const cwd = resolve(root, "cwd"),
+      agentDir = resolve(root, "agent");
+    await mkdir(cwd);
+    await mkdir(agentDir);
+    let fatal = "";
+    adapter = await createCogsPiSession(
+      withDefaults({
+        cwd,
+        agentDir,
+        sessionRoot: resolve(root, "sessions"),
+        sessionId: "event-next",
+        preparedResources: hostilePrepared(),
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        apiKey: "sk-test-event-secret",
+        toolPorts: fakePorts([]),
+        streamFn: oneTextStream("ok"),
+        emit: api.publish,
+        onFatal: (reason) => {
+          fatal = reason;
+        },
+      }),
+    );
+    const { port } = await api.listen();
+    (adapter as unknown as { forwardEvent(raw: unknown): void }).forwardEvent({
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      isError: false,
+      result: { text: "x".repeat(60000) },
+    });
+    const response = await fetch(`http://127.0.0.1:${port}/v1/events`, {
+      headers: { authorization: `Bearer ${"t".repeat(32)}` },
+    });
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const received = (async () => {
+      let text = "";
+      while (!text.includes('"kind":"shutdown_ready"'))
+        text += Buffer.from((await reader.read()).value ?? []).toString();
+      await reader.cancel();
+      return text;
+    })();
+    received.catch(() => undefined);
+    for (const requestId of ["first", "second"]) {
+      await adapter.input({ requestId, correlationId: requestId, kind: "prompt", content: "ok" });
+      await eventually(async () => assert.equal((await adapter?.state())?.runState, "settled"));
+    }
+    await adapter.prepareShutdown({ requestId: "shutdown", correlationId: "shutdown" });
+    assert.equal(fatal, "");
+    const text = await received;
+    assert.match(text, /"status":"omitted","reason":"frame_limit"/);
+    assert.equal(text.split('"kind":"run_settled"').length - 1, 2);
+    assert.equal((await adapter.state()).runState, "shutdown");
+  } finally {
+    await api.close();
+    await adapter?.dispose();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,97 +1,244 @@
-name: Insecure container smoke
+name: Protected product execution
 
 on:
-  pull_request:
-    types: [labeled, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: Exact 40-character main commit
+        required: true
+        type: string
+      confirmation:
+        description: Type EXECUTE_PROTECTED_PRODUCT
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  insecure-container:
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'security')
+  admission:
+    runs-on: ubuntu-24.04
+    outputs:
+      candidate: ${{ steps.admit.outputs.candidate }}
+    steps:
+      - id: admit
+        name: Refuse an invalid dispatch before application effects
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test "$GITHUB_TRIGGERING_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test "$CONFIRMATION" = EXECUTE_PROTECTED_PRODUCT
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          test "$CANDIDATE" = "$GITHUB_SHA"
+          printf 'candidate=%s\n' "$CANDIDATE" >>"$GITHUB_OUTPUT"
+
+  protected-product:
+    needs: admission
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     concurrency:
-      group: insecure-container-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: true
+      group: protected-product-${{ needs.admission.outputs.candidate }}
+      cancel-in-progress: false
+    env:
+      CANDIDATE: ${{ needs.admission.outputs.candidate }}
+      STOCK_WORKER: ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535
+      SANDBOX: ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe
     steps:
-      - name: Check out source
+      - name: Check out exactly the admitted candidate without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.admission.outputs.candidate }}
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install locked JavaScript dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build and verify the non-authoritative SSH/SFTP driver
-        id: smoke
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: dev/insecure-sandbox/ci-smoke.sh docs/security-evidence/generated/insecure-container-smoke.json
-
-      - name: Run pinned Envoy functional conformance
-        id: envoy
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/ci-smoke.ts docs/security-evidence/generated/envoy
-
-      - name: Run shared Stage 1 suite against Envoy
-        id: envoy_suite
-        continue-on-error: true
-        env:
-          COGS_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: npx --no-install tsx test/egress-conformance/proxy-adapters/envoy/suite-smoke.ts docs/security-evidence/generated/envoy-suite
-
-      - name: Run pinned Envoy response-phase regression
-        id: envoy_response
-        continue-on-error: true
-        env:
-          COGS_ENVOY_RESPONSE_TEST: "1"
+          fetch-depth: 0
+      - name: Verify baseline ancestry and install the locked no-links closure
         run: |
-          docker pull "node@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"
-          npx --no-install tsx --test test/egress-envoy-runtime-config.test.ts
-
-      - name: Validate functional-only evidence
-        id: evidence
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          git merge-base --is-ancestor 8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38 "$CANDIDATE"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          env -i HOME="$HOME" PATH="$PATH" npm ci --ignore-scripts --no-bin-links
+          env -i HOME="$HOME" PATH="$PATH" npm ls --all --ignore-scripts >/dev/null
+      - name: Establish a fresh root-controlled Docker realm before pulls or builds
+        run: |
+          set -euo pipefail
+          test -z "$(docker ps -aq --no-trunc)"
+          printf '%s\n' '{"exec-opts":["native.cgroupdriver=cgroupfs"],"storage-driver":"overlay2"}' | \
+            sudo -n install -o root -g root -m 0644 /dev/stdin /etc/docker/daemon.json
+          sudo -n systemctl restart docker
+          deadline=$((SECONDS + 45))
+          while (( SECONDS < deadline )); do
+            if test "$(docker info --format '{{.CgroupDriver}} {{.Driver}}' 2>/dev/null || :)" = 'cgroupfs overlay2'; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(docker info --format '{{.CgroupDriver}} {{.Driver}}')" = 'cgroupfs overlay2'
+          test -z "$(docker ps -aq --no-trunc)"
+      - name: Pull only pinned bases before the offline build
+        run: |
+          set -euo pipefail
+          docker pull "$STOCK_WORKER"
+          docker pull "$SANDBOX"
+          printf 'STOCK_WORKER_ID=%s\nSANDBOX_ID=%s\n' \
+            "$(docker image inspect --format '{{.Id}}' "$STOCK_WORKER")" \
+            "$(docker image inspect --format '{{.Id}}' "$SANDBOX")" >>"$GITHUB_ENV"
+      - name: Root-copy and verify the exact protected build realm
+        run: |
+          set -euo pipefail
+          PROTECTED="/opt/cogs-product-$CANDIDATE"
+          NODE=$(readlink -f "$(command -v node)")
+          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" NODE="$NODE" CHECKOUT="$GITHUB_WORKSPACE" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,shutil,stat,subprocess
+          os.umask(0o077)
+          candidate=os.environ['CANDIDATE']; root=os.environ['CHECKOUT']; protected=os.environ['PROTECTED']; node=os.environ['NODE']
+          fail=lambda s: (_ for _ in ()).throw(SystemExit('FAIL: '+s))
+          if not (len(candidate)==40 and all(c in '0123456789abcdef' for c in candidate) and os.path.realpath(root)==root and os.path.dirname(protected)=='/opt'): fail('invalid protected realm')
+          os.makedirs('/var/lib/cogs-product-test',mode=0o700,exist_ok=True)
+          for path,mode in [('/opt',None),('/var/lib',None),('/var/lib/cogs-product-test',0o700)]:
+              info=os.lstat(path)
+              if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or (mode is not None and stat.S_IMODE(info.st_mode)!=mode): fail('unsafe protected ancestry')
+          if os.path.lexists(protected): fail('protected realm already exists')
+          # Reject source aliases before copying; root never dereferences a link.
+          for current,dirs,files in os.walk(root,followlinks=False):
+              for name in dirs+files:
+                  info=os.lstat(os.path.join(current,name))
+                  if stat.S_ISLNK(info.st_mode) or (not stat.S_ISDIR(info.st_mode) and info.st_nlink!=1): fail('source link or alias')
+          shutil.copytree(root,protected,copy_function=shutil.copy2)
+          for current,dirs,files in os.walk(protected,topdown=False,followlinks=False):
+              for name in dirs+files: os.chown(os.path.join(current,name),0,0,follow_symlinks=False)
+              os.chown(current,0,0,follow_symlinks=False)
+          os.chmod(protected,0o700)
+          def run(*args): return subprocess.check_output(args,text=True,cwd=protected).strip()
+          if run('/usr/bin/git','rev-parse','HEAD')!=candidate or run('/usr/bin/git','status','--porcelain=v1','--untracked-files=all'): fail('protected candidate drift')
+          # The sealed copy closes every applicable lock entry. Only an optional
+          # dependency or a lock cpu/os constraint excluding linux/x64 may be absent.
+          npm=shutil.which('npm'); fail('npm unavailable') if npm is None else None
+          closure=subprocess.check_output([node,'-e',r'''const fs=require('fs'),crypto=require('crypto'),p=process.argv[1],npm=process.argv[2],l=JSON.parse(fs.readFileSync(p+'/package-lock.json'));if(l.lockfileVersion!==3||!l.packages||!l.packages[''])process.exit(2);const matches=(v,w)=>!Array.isArray(v)||(!v.includes('!'+w)&&(v.some(x=>x===w)||!v.some(x=>!x.startsWith('!'))));const rows=[];for(const k of Object.keys(l.packages).filter(k=>k.startsWith('node_modules/')).sort()){const e=l.packages[k],q=p+'/'+k,app=matches(e.os,'linux')&&matches(e.cpu,'x64'),present=fs.existsSync(q)&&fs.lstatSync(q).isDirectory();if(!present&&app&&!e.optional)process.exit(3);if(present){const j=q+'/package.json';if(!fs.existsSync(j))process.exit(4);rows.push([k,crypto.createHash('sha256').update(fs.readFileSync(j)).digest('hex')]);}else rows.push([k,'absent',!!e.optional,app]);}require('child_process').execFileSync(npm,['--prefix',p,'ls','--all','--ignore-scripts'],{stdio:'ignore'});process.stdout.write(crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex'));''',protected,npm],text=True)
+          source={}
+          raw=subprocess.check_output(['/usr/bin/git','ls-tree','-rz','-r','HEAD','--','src','schemas','dev/product-test','dev/launcher/api-client.ts','third_party'],cwd=protected)
+          for row in raw.split(b'\0'):
+              if not row: continue
+              meta,path=row.split(b'\t',1); mode,kind,oid=meta.decode().split(); rel=path.decode()
+              if kind!='blob' or mode not in ('100644','100755'): fail('invalid source inventory')
+              data=subprocess.check_output(['/usr/bin/git','cat-file','blob',oid],cwd=protected)
+              info=os.lstat(os.path.join(protected,rel))
+              if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=(int(mode,8)&0o777) or open(os.path.join(protected,rel),'rb').read()!=data: fail('protected source drift')
+              source[rel]={'digest':'sha256:'+hashlib.sha256(data).hexdigest(),'mode':int(mode,8)&0o777}
+          # Docker receives no checkout alias: replace the copied ignore file only
+          # after the exact source closure has been verified in the root realm.
+          dockerignore=b"""**
+          !.dockerignore
+          !src/
+          !src/**
+          !schemas/
+          !schemas/**
+          !dev/
+          !dev/product-test/
+          !dev/product-test/**
+          !dev/launcher/
+          !dev/launcher/api-client.ts
+          !third_party/
+          !third_party/**
+          """
+          root_fd=os.open(protected,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+          try:
+              temporary='.cogs-product-dockerignore.tmp'
+              fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=root_fd)
+              try:
+                  if os.write(fd,dockerignore)!=len(dockerignore): fail('short dockerignore write')
+                  os.fchown(fd,0,0); os.fchmod(fd,0o400); os.fsync(fd)
+              finally: os.close(fd)
+              os.replace(temporary,'.dockerignore',src_dir_fd=root_fd,dst_dir_fd=root_fd); os.fsync(root_fd)
+              info=os.stat('.dockerignore',dir_fd=root_fd,follow_symlinks=False)
+              if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_gid!=0 or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o400: fail('unsafe product dockerignore')
+              with os.fdopen(os.open('.dockerignore',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=root_fd),'rb') as f:
+                  if f.read()!=dockerignore: fail('product dockerignore drift')
+          finally: os.close(root_fd)
+          for current,dirs,files in os.walk(protected,followlinks=False):
+              for name in dirs+files:
+                  info=os.lstat(os.path.join(current,name))
+                  if stat.S_ISLNK(info.st_mode) or (not stat.S_ISDIR(info.st_mode) and info.st_nlink!=1) or info.st_uid!=0 or info.st_gid!=0 or info.st_mode&0o022: fail('protected link or writable alias')
+          inventory='sha256:'+hashlib.sha256((json.dumps(source,sort_keys=True,separators=(',',':'))+'\n').encode()).hexdigest()
+          value={'candidate':candidate,'tree':run('/usr/bin/git','rev-parse','HEAD^{tree}'),'source_inventory':inventory,'dockerignore':'sha256:'+hashlib.sha256(dockerignore).hexdigest(),'package_lock':'sha256:'+hashlib.sha256(open(protected+'/package-lock.json','rb').read()).hexdigest(),'npm_closure':'sha256:'+closure}
+          with open(protected+'/.cogs-product-inventory.json','x',encoding='utf8') as f: f.write(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n')
+          with open(protected+'/.git/info/exclude','a',encoding='utf8') as f: f.write('/.cogs-product-inventory.json\n/Dockerfile\n')
+          os.chown(protected+'/.cogs-product-inventory.json',0,0); os.chmod(protected+'/.cogs-product-inventory.json',0o400)
+          PY
+          printf 'PROTECTED=%s\nNODE=%s\n' "$PROTECTED" "$NODE" >>"$GITHUB_ENV"
+      - name: Emit fixed worker recipe and build only from protected copy
+        run: |
+          set -euo pipefail
+          sudo -n env -i PATH=/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" --dockerfile >"$RUNNER_TEMP/Dockerfile"
+          sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/Dockerfile" "$PROTECTED/Dockerfile"
+          sudo -n docker build --pull=false --network=none --build-arg PINNED_WORKER="$STOCK_WORKER" \
+            --file "$PROTECTED/Dockerfile" --tag "cogs-product:$CANDIDATE" "$PROTECTED"
+          printf 'WORKER_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "cogs-product:$CANDIDATE")" >>"$GITHUB_ENV"
+      - name: Root-create bound immutable restrictions and build receipt
+        run: |
+          set -euo pipefail
+          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,time
+          inv=json.load(open(os.environ['PROTECTED']+'/.cogs-product-inventory.json'))
+          common={'candidate':os.environ['CANDIDATE'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'tree':inv['tree'],'source_inventory':inv['source_inventory'],'dockerignore':inv['dockerignore'],'package_lock':inv['package_lock'],'npm_closure':inv['npm_closure'],'image_os':os.environ['IMAGE_OS'],'image_version':os.environ['IMAGE_VERSION']}
+          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+900_000,'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':'empty','sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
+          recipe='sha256:'+hashlib.sha256(open(os.environ['PROTECTED']+'/Dockerfile','rb').read()).hexdigest()
+          build={'candidate':value['candidate'],'baseline':value['baseline'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'recipe':recipe,**common}
+          for path,body in [(os.environ['RESTRICTIONS'],value),('/var/lib/cogs-product-test/build-receipt.json',build)]:
+              fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+              try: os.write(fd,(json.dumps(body,sort_keys=True,separators=(',',':'))+'\n').encode()); os.fsync(fd)
+              finally: os.close(fd)
+              os.chown(path,0,0); os.chmod(path,0o400)
+          PY
+          sudo -n test "$(stat -c '%u:%g:%a' "$RUNNER_TEMP/cogs-product-restrictions.json")" = 0:0:400
+      - name: Run only the protected root product runner
+        run: |
+          set -euo pipefail
+          sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" --protected-linux "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json"
+          test "$(wc -c <"$RUNNER_TEMP/product-receipt.json")" -le 2048
+      - name: Root-inventory exactly one generation and create digest evidence
         if: always()
         run: |
-          npm run schemas -- \
-            docs/security-evidence/generated/insecure-container-smoke.json \
-            docs/security-evidence/generated/envoy/envoy-candidate-*/report.json \
-            docs/security-evidence/generated/envoy-suite/envoy-suite-*/report.json
-
-      - name: Upload validated insecure-container evidence
-        if: always() && steps.evidence.outcome == 'success'
+          set -euo pipefail
+          sudo -n env CANDIDATE="$CANDIDATE" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,re,stat
+          raw=open(os.environ['RECEIPT'],'rb').read(); value=json.loads(raw)
+          if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
+          parent='/var/lib/cogs-product-test'; build=json.load(open(parent+'/build-receipt.json'))
+          if any(build.get(k)!=value[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt')) or not all(isinstance(build.get(k),str) for k in ('image_os','image_version')): raise SystemExit('FAIL: product evidence binding mismatch')
+          names=os.listdir(parent); generations=[n for n in names if re.fullmatch(r'[a-f0-9]{32}',n)]
+          if generations!=[value['generation']]: raise SystemExit('FAIL: product generation inventory mismatch')
+          control=parent+'/'+value['generation']+'/control'; info=os.stat(control,follow_symlinks=False)
+          if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe product control')
+          rows=[]
+          for name in sorted(os.listdir(control)):
+              p=control+'/'+name; s=os.stat(p,follow_symlinks=False)
+              if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022 or s.st_nlink!=1: raise SystemExit('FAIL: unsafe product control entry')
+              if name in ('state.img','workspace.img'):
+                  # Retained images are evidence custody, not evidence content.
+                  rows.append({'name':name,'kind':'retained-image-metadata','mode':stat.S_IMODE(s.st_mode),'size':s.st_size,'dev':s.st_dev,'inode':s.st_ino})
+              else:
+                  if s.st_size>1048576: raise SystemExit('FAIL: unknown large product control entry')
+                  rows.append({'name':name,'kind':'control-digest','mode':stat.S_IMODE(s.st_mode),'size':s.st_size,'sha256':'sha256:'+hashlib.sha256(open(p,'rb').read()).hexdigest()})
+          evidence={'version':'cogs.product-control-digests/v1','candidate':value['candidate'],'generation':value['generation'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'tree':value['tree'],'source_inventory':value['source_inventory'],'image_os':build['image_os'],'image_version':build['image_version'],'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest(),'control':rows}
+          data=(json.dumps(evidence,sort_keys=True,separators=(',',':'))+'\n').encode()
+          if len(data)>65536: raise SystemExit('FAIL: product evidence bound')
+          fd=os.open(os.environ['EVIDENCE'],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+          try: os.write(fd,data); os.fsync(fd)
+          finally: os.close(fd)
+          os.chown(os.environ['EVIDENCE'],int(os.environ['RUNNER_UID']),int(os.environ['RUNNER_GID'])); os.chmod(os.environ['EVIDENCE'],0o400)
+          PY
+      - name: Upload bounded product evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: insecure-container-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            docs/security-evidence/generated/insecure-container-smoke.json
-            docs/security-evidence/generated/envoy/
-            docs/security-evidence/generated/envoy-suite/
+          name: protected-product-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/product-evidence.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Enforce smoke result after evidence publication
-        if: always()
-        env:
-          DRIVER_OUTCOME: ${{ steps.smoke.outcome }}
-          ENVOY_OUTCOME: ${{ steps.envoy.outcome }}
-          ENVOY_SUITE_OUTCOME: ${{ steps.envoy_suite.outcome }}
-          ENVOY_RESPONSE_OUTCOME: ${{ steps.envoy_response.outcome }}
-        run: |
-          test "$DRIVER_OUTCOME" = success
-          test "$ENVOY_OUTCOME" = success
-          test "$ENVOY_SUITE_OUTCOME" = success
-          test "$ENVOY_RESPONSE_OUTCOME" = success

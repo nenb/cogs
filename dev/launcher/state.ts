@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import {
   type LauncherPhase,
   type LauncherProfile,
   launcherRecoveryVersion,
+  normalizeProfile,
   parseCanonicalManifest,
   stateIdFor,
 } from "./contract.ts";
@@ -120,15 +121,34 @@ export async function withStateLock<T>(state: LauncherState, operation: () => Pr
   return output;
 }
 
-async function releaseLock(state: LauncherState, lease: { dev: number; ino: number; owner: string }): Promise<void> {
+type HeldFile = Awaited<ReturnType<typeof open>>;
+type LockLease = { dev: number; ino: number; owner: string; file: HeldFile };
+
+async function releaseLock(state: LauncherState, lease: LockLease): Promise<void> {
+  try {
+    await releaseHeldLock(state, lease);
+  } catch {
+    throw new Error("launcher state lock cleanup failed");
+  } finally {
+    await lease.file.close();
+  }
+}
+
+async function releaseHeldLock(state: LauncherState, lease: LockLease): Promise<void> {
   const stat = await lstat(state.lockDir);
   if (!stat.isDirectory() || stat.dev !== lease.dev || stat.ino !== lease.ino || (stat.mode & 0o777) !== dirMode)
     throw new Error("launcher state lock cleanup failed");
   const entries = await readdir(state.lockDir);
   if (entries.length !== 1 || entries[0] !== "owner") throw new Error("launcher state lock cleanup failed");
   const ownerPath = join(state.lockDir, "owner");
-  if ((await readFileNoFollow(ownerPath, 128)) !== lease.owner) throw new Error("launcher state lock cleanup failed");
-  await unlink(ownerPath);
+  const ownerStat = await lease.file.stat();
+  validateFile(ownerStat);
+  if (ownerStat.size > 128) throw new Error("launcher state lock cleanup failed");
+  const bytes = Buffer.alloc(128);
+  const { bytesRead } = await lease.file.read(bytes, 0, bytes.length, 0);
+  if (bytes.subarray(0, bytesRead).toString("utf8") !== lease.owner)
+    throw new Error("launcher state lock cleanup failed");
+  await retireFile(state, ownerPath, lease.file);
   await rmdir(state.lockDir);
   try {
     await lstat(state.lockDir);
@@ -139,18 +159,140 @@ async function releaseLock(state: LauncherState, lease: { dev: number; ino: numb
   throw new Error("launcher state lock remained");
 }
 
-export async function createState(state: LauncherState, profile: LauncherProfile): Promise<LauncherManifest> {
+// Issuer registration is independent of mutable manifest/worker phases. A copied
+// object, a discovered driver sentinel, or a locator alone is not authority.
+export type Acquisition = Readonly<{
+  generation: string;
+  profile: LauncherProfile;
+  sourceRevision: string;
+  dir: string;
+  driverStateDir: string;
+}>;
+type Custody = { dev: number | bigint; ino: number | bigint; text: string };
+const acquisitions = new WeakMap<Acquisition, Custody | undefined>();
+const acquisitionFile = ".cogs-launcher-acquisition";
+const driverReceipt = ".cogs-launcher-driver";
+const retirementIntent = ".cogs-launcher-retirement";
+const uncertaintyFile = ".cogs-launcher-uncertainty";
+
+export function issueAcquisition(state: LauncherState, profile: LauncherProfile): Acquisition {
+  if (normalizeProfile(profile) === "macos-vm") throw new Error("launcher profile prerequisite failed");
+  const authority = Object.freeze({
+    generation: randomBytes(16).toString("hex"),
+    profile,
+    sourceRevision: state.sourceRevision,
+    dir: state.dir,
+    driverStateDir: state.driverStateDir,
+  });
+  acquisitions.set(authority, undefined);
+  return authority;
+}
+
+export async function readAcquisition(state: LauncherState): Promise<Acquisition> {
+  await assertNoRetirement(state);
+  const stat = await validateOwnedState(state);
+  const text = await readFileNoFollow(join(state.dir, acquisitionFile), 4096);
+  const record = JSON.parse(text);
+  if (canonicalJson(record) !== text || Object.keys(record).sort().join(",") !== "authority,dev,ino")
+    throw new Error("invalid launcher acquisition");
+  const a = record.authority;
+  if (
+    !a ||
+    Object.keys(a).sort().join(",") !== "dir,driverStateDir,generation,profile,sourceRevision" ||
+    a.dir !== state.dir ||
+    a.driverStateDir !== state.driverStateDir ||
+    typeof a.generation !== "string" ||
+    !/^[a-f0-9]{32}$/.test(a.generation) ||
+    typeof a.sourceRevision !== "string" ||
+    !/^[a-f0-9]{40}$/.test(a.sourceRevision) ||
+    normalizeProfile(a.profile) === "macos-vm" ||
+    stat.dev !== record.dev ||
+    stat.ino !== record.ino
+  )
+    throw new Error("invalid launcher acquisition");
+  const authority: Acquisition = Object.freeze(a);
+  acquisitions.set(authority, { dev: stat.dev, ino: stat.ino, text });
+  return authority;
+}
+
+export async function assertAcquisition(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertNoRetirement(state);
+  const custody = acquisitions.get(authority);
+  if (!custody || authority.dir !== state.dir || authority.driverStateDir !== state.driverStateDir)
+    throw new Error("invalid launcher acquisition");
+  const current = await validateOwnedState(state);
+  if (!sameFile(current, custody) || (await readFileNoFollow(join(state.dir, acquisitionFile), 4096)) !== custody.text)
+    throw new Error("launcher acquisition replaced");
+}
+
+export async function markAcquisitionUncertain(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertAcquisition(state, authority);
+  // Separate from the mutable worker recovery marker: clearing a worker phase
+  // or its recovery record must never clear acquisition uncertainty.
+  await writeExclusive(join(state.dir, uncertaintyFile), `${authority.generation}\n`);
+}
+
+export async function assertAcquisitionUsable(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertAcquisition(state, authority);
+  try {
+    await lstat(join(state.dir, uncertaintyFile));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("launcher sandbox not ready; sticky acquisition uncertainty");
+}
+
+export async function publishDriverAcquisition(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertAcquisition(state, authority);
+  await writeExclusive(join(state.dir, driverReceipt), `${authority.generation}\n`);
+}
+
+export async function assertDriverAcquisition(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertAcquisition(state, authority);
+  if ((await readFileNoFollow(join(state.dir, driverReceipt), 128)) !== `${authority.generation}\n`)
+    throw new Error("invalid launcher driver acquisition");
+  try {
+    await lstat(join(state.dir, retirementIntent));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("launcher retirement already attempted; cleanup required");
+}
+
+export async function consumeDriverAcquisition(state: LauncherState, authority: Acquisition): Promise<void> {
+  await assertDriverAcquisition(state, authority);
+  // Durable one-shot intent precedes invocation. Lost destroy responses never
+  // permit retry/adoption, even if a replacement appears at the same locator.
+  await writeExclusive(join(state.dir, retirementIntent), `${authority.generation}\n`);
+}
+
+export async function createState(
+  state: LauncherState,
+  profile: LauncherProfile,
+  authority = issueAcquisition(state, profile),
+): Promise<LauncherManifest> {
+  if (
+    !acquisitions.has(authority) ||
+    acquisitions.get(authority) !== undefined ||
+    authority.dir !== state.dir ||
+    authority.profile !== profile ||
+    authority.sourceRevision !== state.sourceRevision
+  )
+    throw new Error("invalid launcher acquisition");
+  await assertNoRetirement(state);
   let ownsSentinel = false;
   try {
     await mkdir(state.dir, { mode: dirMode });
     await ensureDirectory(state.dir);
-    try {
-      await writeExclusive(state.sentinelPath, `${state.stateId}\n`);
-      ownsSentinel = true;
-    } catch (error) {
-      await rm(state.dir, { recursive: false, force: true }).catch(() => undefined);
-      throw error;
-    }
+    await writeExclusive(state.sentinelPath, `${state.stateId}\n`);
+    ownsSentinel = true;
+    const stat = await lstat(state.dir);
+    const text = canonicalJson({ authority, dev: stat.dev, ino: stat.ino });
+    acquisitions.set(authority, { dev: stat.dev, ino: stat.ino, text });
+    await writeExclusive(join(state.dir, acquisitionFile), text);
+    await fsyncDir(state.root);
     await mkdir(state.controlDir, { mode: dirMode });
     await mkdir(state.sandboxDir, { mode: dirMode });
     await chmodStrictDirs(state);
@@ -198,11 +340,12 @@ export async function clearRecovery(
   seams: Readonly<{ beforeFinalRevalidate?: () => void | Promise<void> }> = Object.freeze({}),
 ): Promise<void> {
   const captured = snapshotClearRecoverySeams(seams);
+  await assertNoRetirement(state);
   const parent = await validateOwnedState(state);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let closeFailed = false;
   try {
-    handle = await open(state.recoveryPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(state.recoveryPath, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error("launcher recovery cleanup failed");
@@ -225,15 +368,7 @@ export async function clearRecovery(
     validateRecoveryMarker(finalPathStat);
     if (!sameFile(finalPathStat, marker) || (await realpath(state.recoveryPath)) !== state.recoveryPath)
       throw new Error("launcher recovery cleanup failed");
-    const finalHandle = await open(state.recoveryPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const finalOpenStat = await finalHandle.stat();
-      validateRecoveryMarker(finalOpenStat);
-      if (!sameFile(finalOpenStat, marker)) throw new Error("launcher recovery cleanup failed");
-    } finally {
-      await finalHandle.close();
-    }
-    await unlink(state.recoveryPath);
+    await retireFile(state, state.recoveryPath, handle);
     try {
       await lstat(state.recoveryPath);
       throw new Error("launcher recovery cleanup failed");
@@ -342,33 +477,138 @@ function sameFile(
   return a.dev === b.dev && a.ino === b.ino;
 }
 
-export async function removeOwnedState(state: LauncherState): Promise<void> {
+export async function removeOwnedState(state: LauncherState, authority?: Acquisition): Promise<void> {
+  authority ??= await readAcquisition(state);
+  await assertAcquisition(state, authority);
   const before = await validateOwnedState(state);
+  const allowed = new Set([
+    "manifest.json",
+    ".cogs-launcher-owner",
+    ".cogs-launcher-recovery",
+    acquisitionFile,
+    driverReceipt,
+    retirementIntent,
+    uncertaintyFile,
+    "control",
+  ]);
+  for (const name of await readdir(state.dir)) {
+    if (!allowed.has(name)) throw new Error("launcher state cleanup uncertain");
+    if (name !== "control") await checkedFile(join(state.dir, name));
+  }
+  await ensureDirectory(state.controlDir);
+  await ensureDirectory(state.sandboxDir);
+  if ((await readdir(state.controlDir)).join(",") !== "sandbox" || (await readdir(state.sandboxDir)).length !== 0)
+    throw new Error("launcher state cleanup uncertain");
   if (before.nlink < 2) throw new Error("invalid launcher state");
   await atomicWrite(
     state.recoveryPath,
     canonicalJson({ version: launcherRecoveryVersion, stateId: state.stateId, reason: "cleanup-in-progress" }),
   );
+  await assertAcquisition(state, authority);
+  const members = new Map<string, HeldFile>();
   const tombstone = join(state.root, `.remove-${state.stateId}-${randomBytes(8).toString("hex")}`);
-  await rename(state.dir, tombstone);
-  const moved = await lstat(tombstone);
-  if (moved.dev !== before.dev || moved.ino !== before.ino) throw new Error("launcher state cleanup uncertain");
-  if ((await readFileNoFollow(join(tombstone, ".cogs-launcher-owner"), 128)) !== `${state.stateId}\n`)
-    throw new Error("launcher state cleanup uncertain");
+  let retirementStarted = false;
   try {
-    await lstat(state.dir);
-    throw new Error("launcher state cleanup uncertain");
+    for (const name of await readdir(state.dir)) {
+      if (!allowed.has(name)) throw new Error("launcher state cleanup uncertain");
+      if (name !== "control") members.set(name, await openRetirementFile(join(state.dir, name)));
+    }
+    const control = await lstat(state.controlDir),
+      sandbox = await lstat(state.sandboxDir);
+    retirementStarted = true;
+    await rename(state.dir, tombstone);
+    const moved = await lstat(tombstone);
+    if (moved.dev !== before.dev || moved.ino !== before.ino) throw new Error("launcher state cleanup uncertain");
+    if ((await readFileNoFollow(join(tombstone, ".cogs-launcher-owner"), 128)) !== `${state.stateId}\n`)
+      throw new Error("launcher state cleanup uncertain");
+    try {
+      await lstat(state.dir);
+      throw new Error("launcher state cleanup uncertain");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const movedControl = join(tombstone, "control"),
+      movedSandbox = join(movedControl, "sandbox");
+    if (!sameFile(await lstat(movedControl), control) || !sameFile(await lstat(movedSandbox), sandbox))
+      throw new Error("launcher state cleanup uncertain");
+    // Empty-directory operations cannot sweep a newly introduced foreign member.
+    await rmdir(movedSandbox);
+    await rmdir(movedControl);
+    for (const [name, handle] of members) {
+      if (!sameFile(await lstat(tombstone), before)) throw new Error("launcher state cleanup uncertain");
+      await retireFile(state, join(tombstone, name), handle);
+    }
+    await rmdir(tombstone);
+    try {
+      await lstat(tombstone);
+      throw new Error("launcher state cleanup uncertain");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await fsyncDir(state.root);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (retirementStarted) await mkdir(tombstone, { mode: dirMode }).catch(() => undefined);
+    throw error;
+  } finally {
+    await Promise.all([...members.values()].map((handle) => handle.close()));
   }
-  await rm(tombstone, { recursive: true, force: false });
+}
+
+// This private disposal namespace is never handed to workers/tools. Keep the
+// original descriptor live through rename (including inode-reuse attacks), then
+// validate the moved inode. Never unlink in the replaceable authority namespace.
+// Any failed move/deletion leaves a durable, state-specific veto: no retry/adoption.
+async function assertNoRetirement(state: LauncherState): Promise<void> {
+  if (
+    (await readdir(state.root)).some(
+      (name) => name.startsWith(`.retire-${state.stateId}-`) || name.startsWith(`.remove-${state.stateId}-`),
+    )
+  )
+    throw new Error("launcher state cleanup uncertain; sticky retirement custody");
+}
+
+async function openRetirementFile(path: string): Promise<HeldFile> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
-    await lstat(tombstone);
-    throw new Error("launcher state cleanup uncertain");
+    validateFile(await handle.stat());
+    return handle;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await handle.close();
+    throw error;
   }
+}
+
+async function retireFile(state: LauncherState, path: string, handle: HeldFile): Promise<void> {
+  const marker = await handle.stat();
+  validateFile(marker);
+  const parent = await lstat(dirname(path));
+  const quarantine = join(state.root, `.retire-${state.stateId}-${randomBytes(16).toString("hex")}`);
+  await mkdir(quarantine, { mode: dirMode });
   await fsyncDir(state.root);
+  try {
+    const moved = join(quarantine, "member");
+    await rename(path, moved);
+    await fsyncDir(dirname(path));
+    await fsyncDir(quarantine);
+    if (!sameFile(await checkedFile(moved), marker)) throw new Error("launcher state cleanup uncertain");
+    await unlink(moved);
+    await handle.close();
+    // A replacement at the old name is preserved, never restored over or swept.
+    try {
+      await lstat(path);
+      throw new Error("launcher state cleanup uncertain");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!sameFile(await lstat(dirname(path)), parent)) throw new Error("launcher state cleanup uncertain");
+    await fsyncDir(quarantine);
+    await rmdir(quarantine);
+    await fsyncDir(state.root);
+  } catch (error) {
+    // Even failure of the final parent fsync must not erase the retirement veto.
+    await mkdir(quarantine, { mode: dirMode }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export function manifestFor(state: LauncherState, profile: LauncherProfile, phase: LauncherPhase): LauncherManifest {
@@ -382,8 +622,9 @@ export function manifestFor(state: LauncherState, profile: LauncherProfile, phas
   });
 }
 
-async function acquireLock(state: LauncherState): Promise<{ dev: number; ino: number; owner: string }> {
+async function acquireLock(state: LauncherState): Promise<LockLease> {
   await ensureDirectory(state.root);
+  await assertNoRetirement(state);
   let stat: Awaited<ReturnType<typeof lstat>> | undefined;
   try {
     await mkdir(state.lockDir, { mode: dirMode });
@@ -396,13 +637,14 @@ async function acquireLock(state: LauncherState): Promise<{ dev: number; ino: nu
     )
       throw new Error("launcher state lock is uncertain");
     const owner = `${process.pid}\n${randomBytes(16).toString("hex")}\n`;
+    let file: HeldFile;
     try {
-      await writeExclusive(join(state.lockDir, "owner"), owner);
+      file = await writeExclusive(join(state.lockDir, "owner"), owner, true);
     } catch (error) {
       await removeJustCreatedEmptyLock(state, stat);
       throw error;
     }
-    return { dev: stat.dev, ino: stat.ino, owner };
+    return { dev: stat.dev, ino: stat.ino, owner, file };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
@@ -497,10 +739,14 @@ async function ensureDirectory(path: string, allowedMode = dirMode): Promise<voi
 
 async function checkedFile(path: string) {
   const stat = await lstat(path);
+  validateFile(stat);
+  return stat;
+}
+
+function validateFile(stat: Stats): void {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("invalid launcher state");
   if (geteuid() !== undefined && stat.uid !== geteuid()) throw new Error("invalid launcher state");
   if ((stat.mode & 0o777) !== fileMode) throw new Error("invalid launcher state");
-  return stat;
 }
 
 async function writeManifest(state: LauncherState, manifest: LauncherManifest): Promise<void> {
@@ -515,19 +761,28 @@ async function writeRecovery(state: LauncherState, reason: string): Promise<void
   );
 }
 
-async function writeExclusive(path: string, content: string): Promise<void> {
+async function writeExclusive(path: string, content: string): Promise<undefined>;
+async function writeExclusive(path: string, content: string, retain: true): Promise<HeldFile>;
+async function writeExclusive(path: string, content: string, retain = false): Promise<HeldFile | undefined> {
   const handle = await open(
     path,
-    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    constants.O_CREAT |
+      constants.O_EXCL |
+      (retain ? constants.O_RDWR : constants.O_WRONLY) |
+      constants.O_NONBLOCK |
+      constants.O_NOFOLLOW,
     fileMode,
   );
+  let retained = false;
   try {
     await handle.writeFile(content);
     await handle.sync();
+    await fsyncDir(dirname(path));
+    retained = retain;
+    return retain ? handle : undefined;
   } finally {
-    await handle.close();
+    if (!retained) await handle.close();
   }
-  await fsyncDir(dirname(path));
 }
 
 async function atomicWrite(path: string, content: string): Promise<void> {
@@ -565,7 +820,7 @@ async function fsyncDir(path: string): Promise<void> {
 }
 
 async function readFileNoFollow(path: string, maxBytes: number): Promise<string> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat();
     if (

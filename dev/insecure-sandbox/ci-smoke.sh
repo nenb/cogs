@@ -1,19 +1,34 @@
 #!/usr/bin/env bash
+# Refusal is not cleanup or evidence; leave all uncertain legacy state untouched.
+printf '%s\n' 'legacy launcher/insecure execution is disabled by ADR0335' >&2
+return 2 2>/dev/null || exit 2
+
 set -uo pipefail
 umask 077
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 report=${1:-"$repo/docs/security-evidence/generated/insecure-container-smoke.json"}
 driver="$repo/dev/insecure-sandbox/driver.sh"
 state=${COGS_INSECURE_STATE_DIR:-"$repo/.cogs-dev/insecure-sandbox"}
+source_revision=${COGS_SOURCE_REVISION:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)}
+abort() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+[[ "$source_revision" =~ ^[a-f0-9]{40}$ ]] || abort 'insecure-container source revision is absent or invalid'
+command -v openssl >/dev/null 2>&1 || abort 'insecure-container smoke requires openssl'
+generation=$(openssl rand -hex 16)
+[[ "$generation" =~ ^[a-f0-9]{32}$ ]] || abort 'could not issue an insecure-container generation'
+export COGS_INSECURE_GENERATION=$generation COGS_INSECURE_ORIGINAL_REVISION=$source_revision
 started=$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)
 started_ms=$(date +%s%3N)
 status=0
 # Keep -e disabled: this smoke accumulates guarded step failures into one redacted evidence report.
 verify_passed=false
-cleanup_pending=true
+cleanup_pending=false
 diagnostics=()
 tmp_report=''
+receipt_file=''
 image_id=''
 
 if command -v timeout >/dev/null 2>&1; then
@@ -31,6 +46,26 @@ bounded() {
   "$timeout_command" --signal=TERM --kill-after=10s "$duration" "$@"
 }
 
+run_driver() {
+  local duration=$1 command=$2 rc expected canonical bytes lines
+  receipt_file=$(mktemp "${TMPDIR:-/tmp}/cogs-insecure-receipt.XXXXXX") || return 1
+  bounded "$duration" "$driver" "$command" >"$receipt_file"
+  rc=$?
+  expected=pass
+  (( rc == 0 )) || expected=fail
+  canonical=$(printf '{"version":"cogs.dev-driver/v1alpha1","profile":"insecure-container","authority":"functional-only","command":"%s","result":"%s","generation":"%s"}' \
+    "$command" "$expected" "$generation")
+  bytes=$(wc -c < "$receipt_file")
+  lines=$(wc -l < "$receipt_file")
+  if (( bytes != ${#canonical} + 1 || lines != 1 )) || [[ "$(<"$receipt_file")" != "$canonical" ]]; then
+    printf 'insecure-container rejected malformed, extra, duplicate, stale, or non-LF receipt for %s\n' "$command" >&2
+    rc=1
+  fi
+  rm -f -- "$receipt_file"
+  receipt_file=''
+  return "$rc"
+}
+
 append_failure() {
   status=1
   diagnostics+=("$1")
@@ -40,11 +75,13 @@ cleanup() {
   local exit_status=$?
   trap - EXIT INT TERM HUP
   if [[ "$cleanup_pending" == true ]]; then
-    if ! bounded 2m "$driver" destroy >/dev/null; then
-      printf 'insecure-container emergency teardown failed\n' >&2
+    cleanup_pending=false
+    if ! run_driver 2m destroy; then
+      printf 'insecure-container emergency teardown failed; cleanup authority was consumed\n' >&2
       exit_status=1
     fi
   fi
+  [[ -z "$receipt_file" ]] || rm -f -- "$receipt_file"
   [[ -z "$tmp_report" ]] || rm -f -- "$tmp_report"
   exit "$exit_status"
 }
@@ -58,35 +95,40 @@ trap cleanup EXIT
 trap interrupted INT TERM HUP
 rm -f -- "$report"
 
-if ! bounded 12m "$driver" create; then
-  append_failure 'insecure-container create failed or exceeded its deadline'
+if ! run_driver 12m create; then
+  append_failure 'insecure-container create failed, exceeded its deadline, or returned an invalid receipt'
 else
+  cleanup_pending=true
   container=$(<"$state/container")
   if ! image_id=$(bounded 30s docker container inspect --format '{{.Image}}' "$container" 2>/dev/null) \
       || [[ ! "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
     append_failure 'tested container image provenance was unavailable'
   fi
-  if ! bounded 2m "$driver" verify; then
+  if ! run_driver 2m verify; then
     append_failure 'insecure-container SSH/SFTP verification failed or exceeded its deadline'
   fi
-  if ! bounded 12m "$driver" reset; then
+  if ! run_driver 12m reset; then
     append_failure 'insecure-container reset failed or exceeded its deadline'
-  elif ! bounded 2m "$driver" verify; then
+  elif ! run_driver 2m verify; then
     append_failure 'post-reset SSH/SFTP verification failed or exceeded its deadline'
   else
     verify_passed=true
     reset_container=$(<"$state/container")
-    if ! reset_image_id=$(bounded 30s docker container inspect --format '{{.Image}}' "$reset_container" 2>/dev/null) \
+    if [[ "$reset_container" != "$container" ]]; then
+      append_failure 'reset replaced the exact acquired container'
+    elif ! reset_image_id=$(bounded 30s docker container inspect --format '{{.Image}}' "$reset_container" 2>/dev/null) \
         || [[ "$reset_image_id" != "$image_id" ]]; then
       append_failure 'reset used an unexpected container image'
     fi
   fi
 fi
 
-if ! bounded 2m "$driver" destroy; then
-  append_failure 'insecure-container teardown failed or exceeded its deadline'
-else
+if [[ "$cleanup_pending" == true ]]; then
+  # Consume the one-shot cleanup authority before invocation: lost/malformed output must not trigger a retry.
   cleanup_pending=false
+  if ! run_driver 2m destroy; then
+    append_failure 'insecure-container teardown failed, exceeded its deadline, or returned an invalid receipt'
+  fi
 fi
 
 completed=$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)
@@ -94,11 +136,6 @@ completed_ms=$(date +%s%3N)
 if ! docker_version=$(bounded 30s docker version --format '{{.Server.Version}}' 2>/dev/null) || [[ -z "$docker_version" ]]; then
   docker_version=unavailable
   append_failure 'Docker runtime provenance was unavailable'
-fi
-source_revision=${COGS_SOURCE_REVISION:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)}
-if [[ ! "$source_revision" =~ ^[a-f0-9]{40}$ ]]; then
-  printf 'insecure-container source revision is absent or invalid\n' >&2
-  exit 1
 fi
 if (( ${#diagnostics[@]} == 0 )); then
   diagnostics=('Create, SSH/SFTP, reset, post-reset, injected host-key pin, controller-key denial, root, workspace, CA, and proxy-input wiring controls passed.')
@@ -122,7 +159,7 @@ if ! STATUS=$status \
   DOCKER_VERSION=$docker_version \
   REPORT_ID="insecure-container-${GITHUB_RUN_ID:-local}" \
   SOURCE_REVISION="$source_revision" \
-  python3 - "$tmp_report" <<'PY'
+  python3 -I - "$tmp_report" <<'PY'
 import json
 import os
 import platform

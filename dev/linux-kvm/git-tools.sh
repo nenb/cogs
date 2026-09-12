@@ -15,6 +15,47 @@ readonly COGS_GIT_TOOLS_DPKG_DEB=/usr/bin/dpkg-deb
 readonly COGS_GIT_TOOLS_MKFS=/usr/sbin/mkfs.ext4
 readonly COGS_GIT_TOOLS_DEBUGFS=/usr/sbin/debugfs
 
+# The single authority gate for every effectful KVM ingress.  The receipt is
+# written by root before checkout and remains readable, but never writable, by
+# the runner user.  Its parent chain is checked too: a protected leaf below an
+# aliasable directory is not custody.
+cogs_kvm_execution_gate() {
+  /usr/bin/python3 -I -B - "${COGS_KVM_EXECUTION_RECEIPT:-}" "${COGS_KVM_GENERATION:-}" "${COGS_SOURCE_REVISION:-}" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ATTEMPT:-}" <<'PY'
+import hashlib,json,os,re,stat,sys,time
+path,generation,source,run,attempt=sys.argv[1:]
+fail=lambda text: (_ for _ in ()).throw(SystemExit('FAIL: '+text))
+if not (path and os.path.isabs(path) and re.fullmatch(r'[a-f0-9]{32}',generation) and re.fullmatch(r'[a-f0-9]{40}',source) and re.fullmatch(r'[1-9][0-9]{0,19}',run) and re.fullmatch(r'[1-9][0-9]{0,9}',attempt)): fail('KVM execution receipt binding absent')
+# lstat every component from /; do not let a protected file hide behind a link
+# or a group/world-writable alias.
+parts=[p for p in path.split('/') if p]
+fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+try:
+    for index,name in enumerate(parts):
+        info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+        if info.st_uid!=0 or info.st_mode & 0o022: fail('unsafe KVM execution receipt ancestry')
+        if index+1==len(parts):
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o444 or info.st_size>2048: fail('unsafe KVM execution receipt')
+            leaf=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=fd)
+            try:
+                held=os.fstat(leaf)
+                if (held.st_dev,held.st_ino,held.st_mode,held.st_uid,held.st_gid,held.st_nlink,held.st_size)!=(info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,info.st_nlink,info.st_size): fail('replaced KVM execution receipt')
+                raw=os.read(leaf,2049)
+            finally: os.close(leaf)
+        else:
+            if not stat.S_ISDIR(info.st_mode): fail('unsafe KVM execution receipt ancestry')
+            nextfd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=fd)
+            os.close(fd); fd=nextfd
+finally: os.close(fd)
+if len(raw)!=info.st_size or not raw.endswith(b'\n'): fail('invalid KVM execution receipt')
+try: value=json.loads(raw)
+except (UnicodeDecodeError,json.JSONDecodeError): fail('invalid KVM execution receipt')
+if type(value) is not dict or raw!=json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n': fail('noncanonical KVM execution receipt')
+required={'version','run_id','run_attempt','candidate','source_revision','generation','expires'}
+expected_generation=hashlib.sha256(f'{run}:{attempt}:{source}'.encode()).hexdigest()[:32]
+if set(value)!=required or value.get('version')!='cogs.linux-kvm-execution/v1' or value.get('run_id')!=run or value.get('run_attempt')!=attempt or value.get('candidate')!=source or value.get('source_revision')!=source or value.get('generation')!=generation or generation!=expected_generation or type(value.get('expires')) is not int or value['expires']<=time.time_ns()//1_000_000: fail('KVM execution receipt mismatch')
+PY
+}
+
 cogs_git_tools_manifest() {
   cat <<'EOF'
 git	1:2.47.3-0+deb13u1	amd64	git_2.47.3-0+deb13u1_amd64.deb	8861572	https://deb.debian.org/debian/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb	3e35662fd5c46add561703e54031a1d8ad9df45811927689f0a51122b13be722

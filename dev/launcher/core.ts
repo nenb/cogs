@@ -1,12 +1,22 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { types } from "node:util";
 import { deepFreeze, type LauncherManifest, type LauncherProfile, normalizeProfile } from "./contract.ts";
 import { requireSessionControlsAbsent } from "./control.ts";
 import { createProfileAdapter, type ProfileAdapter } from "./profiles.ts";
 import {
+  type Acquisition,
+  assertAcquisition,
+  assertAcquisitionUsable,
+  assertDriverAcquisition,
+  consumeDriverAcquisition,
   createState,
+  issueAcquisition,
   type LauncherState,
+  markAcquisitionUncertain,
   markRecovery,
+  publishDriverAcquisition,
+  readAcquisition,
   readManifest,
   removeOwnedState,
   resolveLauncherState,
@@ -22,32 +32,64 @@ export type LauncherCoreOptions = Readonly<{
   adapter?: ProfileAdapter;
 }>;
 
-export type SandboxResult = Readonly<{ manifest: LauncherManifest; workerReady: false }>;
+export type SandboxResult = Readonly<{ manifest: LauncherManifest; workerReady: false; generation: string }>;
+const completedAcquisitions = new WeakMap<SandboxResult, Acquisition>();
+
+export function acquiredSandbox(value: unknown, options: LauncherCoreOptions): Acquisition {
+  const a = value && typeof value === "object" ? completedAcquisitions.get(value as SandboxResult) : undefined;
+  if (
+    !a ||
+    a.dir !== `${options.root}/${options.name}` ||
+    a.profile !== options.profile ||
+    a.sourceRevision !== options.sourceRevision
+  )
+    throw new Error("invalid launcher acquisition receipt");
+  return a;
+}
 
 export async function createSandbox(options: LauncherCoreOptions, signal?: AbortSignal): Promise<SandboxResult> {
   const captured = snapshotOptions(options);
   const state = await stateFrom(captured);
-  return await withStateLock(state, async () => {
+  const acquisition = issueAcquisition(state, captured.profile);
+  const output = await withStateLock<SandboxResult>(state, async () => {
     const { profile } = captured;
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(profile), profile);
-    let manifest = await createState(state, profile);
+    let manifest = await createState(state, profile, acquisition);
+    let driverAcquired = false;
     try {
-      await expectResult(adapter.create(state, signal), profile, "create");
-      await expectResult(adapter.verify(state, signal), manifest.profile, "verify");
+      await assertAcquisition(state, acquisition);
+      await expectResult(adapter.create(state, acquisition.generation, signal), profile, "create", acquisition);
+      driverAcquired = true;
+      await publishDriverAcquisition(state, acquisition);
+      await assertDriverAcquisition(state, acquisition);
+      await expectResult(
+        adapter.verify(state, acquisition.generation, signal),
+        manifest.profile,
+        "verify",
+        acquisition,
+      );
+      await assertAcquisition(state, acquisition);
       manifest = await writePhase(state, manifest, "sandbox-ready");
-      return deepFreeze({ manifest, workerReady: false });
+      return deepFreeze({ manifest, workerReady: false, generation: acquisition.generation });
     } catch (error) {
       try {
-        await expectResult(adapter.destroy(state), manifest.profile, "destroy");
+        if (!driverAcquired) throw new Error("driver acquisition not acknowledged");
+        await consumeDriverAcquisition(state, acquisition);
+        await expectResult(adapter.destroy(state, acquisition.generation), manifest.profile, "destroy", acquisition);
         await ensureDriverAbsent(state);
-        await removeOwnedState(state);
+        await removeOwnedState(state, acquisition);
       } catch {
-        await markRecovery(state, "create-rollback-failed").catch(() => undefined);
-        await writePhase(state, manifest, "cleanup-required").catch(() => undefined);
+        await recover(state, acquisition, manifest, "create-rollback-failed");
       }
       throw error;
     }
+  }).catch(async (error) => {
+    await markAcquisitionUncertain(state, acquisition).catch(() => undefined);
+    throw error;
   });
+  // A lock-release failure is a lost response, never an outer cleanup receipt.
+  completedAcquisitions.set(output, acquisition);
+  return output;
 }
 
 export async function resetSandbox(options: LauncherCoreOptions, signal?: AbortSignal): Promise<SandboxResult> {
@@ -57,18 +99,28 @@ export async function resetSandbox(options: LauncherCoreOptions, signal?: AbortS
     const manifest = await requireReady(state, captured.profile, captured.sourceRevision);
     await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
+    const acquisition = await readAcquisition(state);
+    await assertDriverAcquisition(state, acquisition);
     try {
-      await expectResult(adapter.reset(state, signal), manifest.profile, "reset");
-      await expectResult(adapter.verify(state, signal), manifest.profile, "verify");
-      return deepFreeze({ manifest, workerReady: false });
+      await expectResult(adapter.reset(state, acquisition.generation, signal), manifest.profile, "reset", acquisition);
+      await assertDriverAcquisition(state, acquisition);
+      await expectResult(
+        adapter.verify(state, acquisition.generation, signal),
+        manifest.profile,
+        "verify",
+        acquisition,
+      );
+      await assertAcquisition(state, acquisition);
+      return deepFreeze({ manifest, workerReady: false, generation: acquisition.generation });
     } catch (error) {
       try {
-        await expectResult(adapter.destroy(state), manifest.profile, "destroy");
+        await consumeDriverAcquisition(state, acquisition);
+        await expectResult(adapter.destroy(state, acquisition.generation), manifest.profile, "destroy", acquisition);
         await ensureDriverAbsent(state);
       } catch {
-        await markRecovery(state, "reset-cleanup-failed").catch(() => undefined);
+        await recover(state, acquisition, manifest, "reset-cleanup-failed");
       }
-      await writePhase(state, manifest, "cleanup-required").catch(() => undefined);
+      await recover(state, acquisition, manifest, "reset-failed");
       throw error;
     }
   });
@@ -81,12 +133,19 @@ export async function statusSandbox(options: LauncherCoreOptions, signal?: Abort
     const manifest = await requireReady(state, captured.profile, captured.sourceRevision);
     await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
+    const acquisition = await readAcquisition(state);
+    await assertDriverAcquisition(state, acquisition);
     try {
-      await expectResult(adapter.verify(state, signal), manifest.profile, "verify");
-      return deepFreeze({ manifest, workerReady: false });
+      await expectResult(
+        adapter.verify(state, acquisition.generation, signal),
+        manifest.profile,
+        "verify",
+        acquisition,
+      );
+      await assertAcquisition(state, acquisition);
+      return deepFreeze({ manifest, workerReady: false, generation: acquisition.generation });
     } catch (error) {
-      await writePhase(state, manifest, "cleanup-required").catch(() => undefined);
-      await markRecovery(state, "status-verify-failed").catch(() => undefined);
+      await recover(state, acquisition, manifest, "status-verify-failed");
       throw error;
     }
   });
@@ -95,51 +154,67 @@ export async function statusSandbox(options: LauncherCoreOptions, signal?: Abort
 export async function destroySandbox(
   options: LauncherCoreOptions,
   signal?: AbortSignal,
+  expectedAcquisition?: Acquisition,
 ): Promise<{ removed: boolean }> {
   const captured = snapshotOptions(options);
   const state = await stateFrom(captured);
   return await withStateLock(state, async () => {
-    let manifest: LauncherManifest;
-    try {
-      manifest = await readManifest(state);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        const { profile } = captured;
-        await ensureDriverParentCanonical(state);
-        const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(profile), profile);
-        await expectResult(adapter.destroy(state, signal), profile, "destroy");
-        await ensureDriverAbsent(state);
-        return deepFreeze({ removed: true });
-      }
-      throw error;
-    }
-    if (manifest.profile !== captured.profile) throw new Error("invalid launcher state");
+    // Explicit operator destroy may load retained launcher custody. Automatic
+    // rollback must supply the issuer's exact successful acquisition capability.
+    const acquisition = expectedAcquisition ?? (await readAcquisition(state));
+    await assertDriverAcquisition(state, acquisition);
+    const manifest = await readManifest(state);
+    if (
+      manifest.profile !== captured.profile ||
+      acquisition.profile !== captured.profile ||
+      manifest.sourceRevision !== acquisition.sourceRevision
+    )
+      throw new Error("invalid launcher state");
     if (manifest.phase === "worker-ready") throw new Error("launcher worker cleanup required");
     await requireSessionControlsAbsent(state);
     const adapter = captureAdapter(captured.adapter ?? createProfileAdapter(manifest.profile), manifest.profile);
     const destroying = await writePhase(state, manifest, "destroying");
     try {
-      await expectResult(adapter.destroy(state, signal), manifest.profile, "destroy");
+      await consumeDriverAcquisition(state, acquisition);
+      const driverState = Object.freeze({ ...state, sourceRevision: acquisition.sourceRevision });
+      await expectResult(
+        adapter.destroy(driverState, acquisition.generation, signal),
+        manifest.profile,
+        "destroy",
+        acquisition,
+      );
       await ensureDriverAbsent(state);
-      await removeOwnedState(state);
+      await removeOwnedState(state, acquisition);
       return deepFreeze({ removed: true });
     } catch (error) {
-      await markRecovery(state, "destroy-uncertain").catch(() => undefined);
-      await writePhase(state, destroying, "cleanup-required").catch(() => undefined);
+      await recover(state, acquisition, destroying, "destroy-uncertain");
       throw error;
     }
   });
+}
+
+async function recover(state: LauncherState, acquisition: Acquisition, manifest: LauncherManifest, reason: string) {
+  await assertAcquisition(state, acquisition)
+    .then(async () => {
+      await markAcquisitionUncertain(state, acquisition).catch(() => undefined);
+      await markRecovery(state, reason);
+      await assertAcquisition(state, acquisition);
+      await writePhase(state, manifest, "cleanup-required");
+    })
+    .catch(() => undefined);
 }
 
 async function expectResult(
   result: Promise<import("./contract.ts").DriverResult>,
   profile: LauncherProfile,
   operation: import("./contract.ts").DriverResult["operation"],
+  acquisition: Acquisition,
 ): Promise<void> {
   const resolved = await result;
-  if (!resolved || typeof resolved !== "object") throw new Error("invalid launcher profile result");
+  if (!resolved || typeof resolved !== "object" || types.isProxy(resolved))
+    throw new Error("invalid launcher profile result");
   const descriptors = Object.getOwnPropertyDescriptors(resolved);
-  const keys = ["authority", "operation", "profile", "result"];
+  const keys = ["authority", "generation", "operation", "profile", "result"];
   if (
     Object.getPrototypeOf(resolved) !== Object.prototype ||
     !Object.isFrozen(resolved) ||
@@ -157,6 +232,7 @@ async function expectResult(
   const authority = profile === "linux-kvm" ? "authoritative-local" : "functional-only";
   const expectedResult = profile === "linux-kvm" ? (operation === "destroy" ? "destroyed" : "ready") : "pass";
   if (
+    values.generation !== acquisition.generation ||
     values.profile !== profile ||
     values.operation !== operation ||
     values.authority !== authority ||
@@ -253,12 +329,26 @@ async function requireReady(
   sourceRevision: string,
 ): Promise<LauncherManifest> {
   const manifest = await readManifest(state);
-  if (manifest.profile !== profile || manifest.phase !== "sandbox-ready" || manifest.sourceRevision !== sourceRevision)
+  const acquisition = await readAcquisition(state);
+  if (
+    acquisition.profile !== profile ||
+    acquisition.sourceRevision !== sourceRevision ||
+    manifest.profile !== profile ||
+    manifest.phase !== "sandbox-ready" ||
+    manifest.sourceRevision !== sourceRevision
+  )
     throw new Error("launcher sandbox not ready");
-  return manifest;
+  await assertAcquisitionUsable(state, acquisition);
+  try {
+    await lstat(state.recoveryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return manifest;
+    throw error;
+  }
+  throw new Error("launcher sandbox not ready; sticky cleanup uncertainty");
 }
 
 async function stateFrom(options: LauncherCoreOptions): Promise<LauncherState> {
-  normalizeProfile(options.profile);
+  if (normalizeProfile(options.profile) === "macos-vm") throw new Error("launcher profile prerequisite failed");
   return await resolveLauncherState({ root: options.root, name: options.name, sourceRevision: options.sourceRevision });
 }

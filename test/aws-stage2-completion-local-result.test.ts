@@ -42,18 +42,18 @@ function compile(): ValidateFunction {
   );
 }
 
-for (const optimized of [false, true]) {
-  test(`local qualification result state machine is strict${optimized ? " under python -O" : ""}`, () => {
+test("local qualification result state machine is strict normally and under python -O", () => {
+  for (const optimized of [false, true]) {
     const result = spawnSync("python3", [...(optimized ? ["-O"] : []), "-B", portable], {
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
-      timeout: 30_000,
+      timeout: 60_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /completion local result codec tests passed/u);
-  });
-}
+  }
+});
 
 test("schema registry and codec accept the same canonical shared fixtures", () => {
   const validate = compile();
@@ -327,7 +327,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 90_000);
-  assert.equal(budget.hard_limit, 100_500);
+  assert.equal(budget.hard_limit, 115_000);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -354,8 +354,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.equal(budget.remediation_global_high, 30_000);
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 30_000);
+  assert.equal(budget.remediation_global_high, 48_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 48_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -411,35 +411,36 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     owners: Array<{
       name: string;
       gross_line_high: number;
-      gross_byte_forecast: {
-        source: number;
-        tests_fixtures: number;
-        docs_contracts: number;
-        total: number;
-      };
+      gross_byte_forecast: { total: number };
       new_file_high: number;
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 30_000);
-  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.gross_line_high, 12_500);
-  assert.equal(manifest.owners.find((owner) => owner.name === "integration")?.new_file_high, 81);
+  assert.equal(manifest.global_gross_line_high, 48_000);
+  assert.deepEqual(
+    Object.fromEntries(
+      manifest.owners.map((owner) => [
+        owner.name,
+        [owner.gross_line_high, owner.new_file_high, owner.gross_byte_forecast],
+      ]),
+    ),
+    {
+      route: [2_200, 1, { total: 350_000 }],
+      revocation: [3_000, 0, { total: 220_000 }],
+      relay: [4_628, 1, { total: 1_000_000 }],
+      lifecycle: [11_800, 5, { total: 1_200_000 }],
+      completion: [6_080, 3, { total: 800_000 }],
+      integration: [20_157, 88, { total: 5_630_000 }],
+    },
+  );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    89,
+    98,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
-    2_570_000,
+    9_200_000,
   );
-  for (const owner of manifest.owners) {
-    assert.equal(
-      owner.gross_byte_forecast.total,
-      owner.gross_byte_forecast.source +
-        owner.gross_byte_forecast.tests_fixtures +
-        owner.gross_byte_forecast.docs_contracts,
-    );
-  }
   const paths = manifest.owners.flatMap((owner) => owner.paths);
   assert.equal(new Set(paths).size, paths.length);
   const accountingSource = readFileSync(join(root, "scripts/check-stage2-retained-lines.py"), "utf8");

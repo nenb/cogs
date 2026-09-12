@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -8,6 +9,15 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { capabilityRemovalScenario, withProductCustody } from "../dev/product-test/runner.ts";
+import {
+  type ContainerSpec,
+  type CustodyPort,
+  containerArguments,
+  SANDBOX_CAPABILITIES,
+  SANDBOX_CAPABILITY_MASK,
+  sandboxCapabilities,
+} from "../dev/product-test/snapshot-owner.ts";
 import { type ApiServer, type ApiServerOptions, createApiServer, type JsonValue } from "../src/api/server.ts";
 import { type ModelApiKeySource, type OpenBaoIdentityPort, OpenBaoModelApiKeyStore } from "../src/auth/model-auth.ts";
 import type { CogsEnvoyRuntimeConfig } from "../src/egress/envoy-runtime-config.ts";
@@ -27,7 +37,7 @@ import {
   joinCloseWork,
   registerCloseOwner,
 } from "../src/launch/close.ts";
-import type { LaunchConfig } from "../src/launch/config.ts";
+import { type LaunchConfig, validateLaunchConfig } from "../src/launch/config.ts";
 import { LaunchLifecycle, type LaunchLifecycleOptions } from "../src/launch/lifecycle.ts";
 import { type ProductionMainPort, runProductionMain } from "../src/main.ts";
 import {
@@ -46,6 +56,372 @@ import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
 import type { CogsExecPort, SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+
+test("product helper identity is unreaped through final signals and directory modes defeat ambient umask", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import importlib.util,os,signal,tempfile,time,types
+from contextlib import ExitStack
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as root:
+ parent=os.open(root,os.O_RDONLY|os.O_DIRECTORY);previous=os.umask(0o077)
+ try:
+  for mode in (0o555,0o755,0o750):
+   fd=m.directory(parent,str(mode),mode)
+   assert os.fstat(fd).st_mode&0o777==mode
+   os.close(fd)
+   with patch.object(m.os,'fchmod',side_effect=AssertionError('reopen mutated mode')):
+    os.close(m.directory(parent,str(mode)))
+  closed=[];close=os.close
+  with patch.object(m.os,'fchmod'),patch.object(m.os,'close',side_effect=lambda fd:(closed.append(fd),close(fd))):
+   try: m.directory(parent,'chmod-ineffective',0o755)
+   except RuntimeError: pass
+   else: raise AssertionError('mode verification missing')
+  assert len(closed)==1
+ finally: os.umask(previous);os.close(parent)
+class Stream:
+ def fileno(self): return 20
+ def close(self): pass
+class Poll:
+ def __enter__(self): self.entries={};return self
+ def __exit__(self,*a): pass
+ def register(self,stream,event,target): self.entries[stream]=types.SimpleNamespace(fd=20,data=target,fileobj=stream)
+ def unregister(self,stream): del self.entries[stream]
+ def get_map(self): return self.entries
+ def select(self,*a): return [(key,1) for key in self.entries.values()]
+for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal'):
+ events=[];reaped=False
+ class Process:
+  pid=12345;stdout=Stream();stderr=Stream()
+  def wait(self,**kw):
+   global reaped
+   assert events[-2:]==['killpg','cgroup.kill'],events
+   reaped=True;events.append('reap-and-reuse');return 0
+ def waitid(kind,fd,flags):
+  assert kind==3 and fd==77 and flags&os.WNOWAIT and flags&os.WNOHANG and not reaped
+  events.append('observe')
+  if mode=='timeout': return None
+  stopped=flags&os.WSTOPPED and mode!='early-exit'
+  bad=mode.removeprefix('restop-') if events.count('observe')==2 else ''
+  return types.SimpleNamespace(si_pid=1 if bad=='pid' else 12345,si_code=os.CLD_STOPPED if stopped and bad!='code' else os.CLD_EXITED,si_status=signal.SIGTERM if bad=='signal' else signal.SIGSTOP if stopped else 7 if mode.startswith('nonzero') else 0)
+ def killpg(pid,sig):
+  assert pid==12345 and sig==signal.SIGKILL and not reaped,'numeric PGID was reused by an unrelated group'
+  events.append('killpg')
+ with tempfile.TemporaryDirectory() as root:
+  owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.records=set();owner.failed=False
+  owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);owner.control=m.directory(owner.fd,'control',0o700)
+  owner.cg=root+'/cgroup';os.mkdir(owner.cg);os.mkdir(owner.cg+'/helpers');open(owner.cg+'/helpers/cgroup.procs','w').close()
+  owner.deadline=time.monotonic()+.03;owner.cwrite=lambda path,name,value:events.append(name)
+  real_stat=os.stat;real_fstat=os.fstat;real_close=os.close;real_open=open;real_read=os.read;real_sync=os.fsync;real_unlink=os.unlink;real_write=os.write
+  def root_stat(value):
+   return types.SimpleNamespace(**{n:0 if n=='st_uid' else getattr(value,n) for n in dir(value) if n.startswith('st_')})
+  def sync(fd):
+   real_sync(fd);events.append('control-sync' if fd==owner.control else 'file-sync')
+  def unlink(name,**kw):
+   assert name=='helper-pending' and kw=={'dir_fd':owner.control};events.append('unlink');real_unlink(name,**kw)
+  def spawn(argv,**kw):
+   assert events[-1]=='control-sync' and 'preexec_fn' in kw and kw['start_new_session']
+   assert m.capture(owner.control,'helper-pending',1024)==m.canonical({'version':1,'generation':owner.generation,'parent_pid':os.getpid()})
+   assert real_stat('helper-pending',dir_fd=owner.control).st_mode&0o777==0o400
+   return Process()
+  def write(fd,data):
+   if data==b'12345': events.append('cgroup.procs')
+   return real_write(fd,data)
+  def opened(path,*a,**kw):
+   if path=='/proc/12345/cgroup': events.append('membership');return m.io.StringIO('0::'+owner.cg[14:]+'/helpers\n')
+   return real_open(path,*a,**kw)
+  def resume(pid,sig):
+   assert (pid,sig)==(12345,signal.SIGCONT) and 'helper-pending' not in os.listdir(owner.control) and 'helper-pending' not in owner.records
+   assert events.index('cgroup.procs')<events.index('membership')<events.index('unlink') and events[-1]=='control-sync'
+   events.append('continue')
+  try:
+   with ExitStack() as stack:
+    patches=[patch.object(m.os,'fchown'),patch.object(m.os,'stat',side_effect=lambda *a,**kw:root_stat(real_stat(*a,**kw))),patch.object(m.os,'fstat',side_effect=lambda fd:root_stat(real_fstat(fd))),patch.object(m.os,'fsync',side_effect=sync),patch.object(m.os,'unlink',side_effect=unlink),patch.object(m.os,'write',side_effect=write),patch('builtins.open',side_effect=opened),patch.object(m.subprocess,'Popen',side_effect=spawn),patch.object(m.os,'pidfd_open',create=True,return_value=77),patch.object(m.os,'P_PIDFD',create=True,new=3),patch.object(m.os,'waitid',create=True,side_effect=waitid),patch.object(m.os,'kill',side_effect=resume),patch.object(m.os,'killpg',side_effect=killpg),patch.object(m.os,'close',side_effect=lambda fd:None if fd==77 else real_close(fd)),patch.object(m.os,'set_blocking'),patch.object(m.os,'read',side_effect=lambda fd,n:(b'xx' if mode=='overflow' else b'') if fd==20 else real_read(fd,n)),patch.object(m.selectors,'DefaultSelector',Poll),patch.object(m.os.path,'exists',side_effect=lambda p:p.endswith('cgroup.kill'))]
+    for p in patches: stack.enter_context(p)
+    for name,path in [('cgroup',owner.cg),('helpers-cgroup',owner.cg+'/helpers')]: owner.record(name,list(m.identity(os.stat(path))[:2]))
+    try:
+     measured=mode=='nonzero-measurement'
+     assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
+    except RuntimeError: assert mode not in ('success','nonzero-measurement')
+    else: assert mode in ('success','nonzero-measurement')
+   assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
+   assert ('helper-pending' in os.listdir(owner.control))==(mode in ('early-exit','timeout') or mode.startswith('restop-'))
+   if mode=='success':
+    assert events.index('cgroup.procs')<events.index('continue')<events.index('killpg')
+    with patch.object(m.os,'fchown'),patch.object(m.os,'stat',side_effect=lambda *a,**kw:root_stat(real_stat(*a,**kw))),patch.object(m.os,'fstat',side_effect=lambda fd:root_stat(real_fstat(fd))),patch('builtins.open',side_effect=lambda p,*a,**kw:m.io.StringIO('populated 0\n') if p==owner.cg+'/cgroup.events' else real_open(p,*a,**kw)):
+     owner.record('intent',{'generation':owner.generation});owner.record('root',list(m.identity(os.fstat(owner.fd))[:2]))
+     real_unlink(owner.cg+'/helpers/cgroup.procs')  # fixture pseudo-file, not a kernel cgroup member
+     fresh=m.Custody.__new__(m.Custody);fresh.__dict__.update(owner.__dict__);fresh.records=set()
+     fresh.settle_children=lambda:events.append('cleanup');fresh.reopen()
+     assert fresh.saved('retired')=={'generation':owner.generation,'failed':True} and not os.path.exists(owner.cg)
+     assert events[-1]=='cleanup' and 'helper-pending' not in os.listdir(owner.control)
+  finally: os.close(owner.control);os.close(owner.fd)
+`,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("product custody retirement crash cuts recover without reacquiring commands or adopting cgroups", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import copy,importlib.util,json,os,selectors,tempfile,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+class Crash(BaseException): pass
+for failed in (False,True):
+ for cut in ('intent','helpers','parent'):
+  for drift in ('none','identity','population','foreign-child','invalid-intent','pending','uncertain'):
+   with tempfile.TemporaryDirectory() as root:
+    cg=root+'/cgroup';os.mkdir(cg);os.mkdir(cg+'/helpers');os.mkdir(root+'/control')
+    cgfd=os.open(cg,os.O_RDONLY|os.O_DIRECTORY)  # keep the original inode unavailable for reuse
+    cid='b'*64;image='sha256:'+'c'*64;generation='a'*32;calls=[];removed=[];owners=[];armed=True
+    journal={'intent':{'generation':generation},'root':list(m.identity(os.stat(root))[:2]),
+     'cgroup':list(m.identity(os.stat(cg))[:2]),'disk':100,'worker-intent':{},
+     'worker-receipt':{'id':cid,'spec':{'image':image}},'image-'+image[7:]:{'Config':{'Labels':{}}},
+     'state-storage':{},'state-backing':[1,2],'state-loop':{'name':'/dev/loop9'},'state-mount':['exact-mount']}
+    live=[{'name':'/dev/loop9'},['exact-mount']];present=True
+    real_open=open;real_rmdir=os.rmdir
+    def persist(n,v):
+     assert n not in journal or journal[n]==v
+     journal[n]=copy.deepcopy(v)
+     with real_open(root+'/control/'+n,'wb') as f: f.write(m.canonical(v))
+    for n,v in list(journal.items()): persist(n,v)
+    def command(argv,*a,**kw):
+     global present
+     assert os.path.isdir(cg+'/helpers') and 'cgroup-retire-intent' not in journal,'command custody retired too soon'
+     calls.append(argv[0])
+     if argv[0]=='ps': return (cid+'\n').encode() if present else b''
+     if argv[0]=='inspect': return m.canonical([{'Id':cid,'Image':image,'Config':{'Labels':{'cogs.product.generation':generation}}}])
+     if argv[0]=='rm': assert argv==['rm','-f',cid];present=False
+     if argv[0]=='umount': live[1]=None
+     if argv[0]=='losetup': assert argv==['losetup','--detach','/dev/loop9'];live[0]=None
+     return b''
+    def observation(name): command(['inventory']);return tuple(live)
+    def record(n,v):
+     global armed
+     if n=='cgroup-retire-intent':
+      assert not present and live==[None,None] and 'state-detached' in journal
+      assert ('evidence' in calls)==(not failed)
+     persist(n,v)
+     if n=='cgroup-retire-intent' and cut=='intent' and armed: armed=False;raise Crash()
+    def owner():
+     o=m.Custody.__new__(m.Custody);owners.append(o)
+     o.root=root;o.cg=cg;o.generation=generation;o.recovery=True;o.failed=failed;o.disk=None
+     o.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.control=os.open(root+'/control',os.O_RDONLY|os.O_DIRECTORY)
+     o.ids={};o.images={};o.peers={};o.sealed=[];o.mounts=[];o.records=set(journal);o.selector=selectors.DefaultSelector()
+     o.saved=lambda n:json.loads(m.capture(o.control,n));o.record=lambda n,v:(record(n,v),o.records.add(n))[0];o.command=command
+     o.docker=lambda *args,**kw:command(list(args),**kw);o.storage_observation=observation
+     o.evidence=lambda:command(['evidence'])
+     return o
+    def remove(path,*a,**kw):
+     global armed
+     assert path in (cg+'/helpers',cg) and journal['cgroup-retire-intent'] is True
+     real_rmdir(path,*a,**kw);removed.append(path)
+     if cut==('parent' if path==cg else 'helpers') and armed: armed=False;raise Crash()
+    def opened(path,*a,**kw):
+     return m.io.StringIO('populated '+('1' if drift=='population' and not armed else '0')+'\n') if path==cg+'/cgroup.events' else real_open(path,*a,**kw)
+    try:
+     with patch('builtins.open',side_effect=opened),patch.object(m.os,'rmdir',side_effect=remove),patch.object(m.os,'statvfs',return_value=types.SimpleNamespace(f_bfree=100,f_frsize=1)):
+      first=owner();first.disk=100;first.ids={'worker':copy.deepcopy(journal['worker-receipt'])}
+      first.images={image:journal['image-'+image[7:]]};first.mounts=['state']
+      try: first.settle()
+      except Crash: pass
+      else: raise AssertionError('crash cut not reached')
+      assert 'retired' not in journal and not present and live==[None,None]
+      prior_calls=list(calls);prior_removed=list(removed)
+      if drift=='identity':
+       if os.path.exists(cg): os.rename(cg,cg+'.held')
+       os.mkdir(cg)  # never adopt a replacement, including after parent absence
+      if drift=='foreign-child' and os.path.exists(cg): os.mkdir(cg+'/foreign')
+      if drift=='invalid-intent':
+       journal.pop('cgroup-retire-intent');persist('cgroup-retire-intent',False)
+      if drift in ('pending','uncertain'): persist('helper-'+drift,{'version':1,'generation':generation,'parent_pid':os.getpid()})
+      fresh=owner()
+      rejected=drift in ('identity','invalid-intent','pending','uncertain') or drift in ('population','foreign-child') and cut!='parent'
+      try: fresh.reopen()
+      except (RuntimeError,OSError): assert rejected
+      else:
+       assert not rejected and journal['retired']=={'generation':generation,'failed':True}
+       assert not os.path.exists(cg) and removed==[cg+'/helpers',cg]
+       fresh.settle()  # repeating terminal settlement has no child effects or removals
+       assert removed==[cg+'/helpers',cg]
+      assert calls==prior_calls,'recovery reran Docker/inventory/helper commands'
+      if rejected:
+       assert 'retired' not in journal
+       assert all(p!=cg for p in removed[len(prior_removed):])
+       if drift=='foreign-child': assert os.path.isdir(cg+'/foreign')
+    finally:
+     os.close(cgfd)
+     for o in owners: os.close(o.control);os.close(o.fd);o.selector.close()
+`,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("every capability-removal scenario executes create/start/pinned SSH/SFTP/probe/receipt cleanup without worker authority", async () => {
+  const generation = "a".repeat(32);
+  const full: ContainerSpec = {
+    image: `sha256:${"c".repeat(64)}`,
+    network: "none",
+    caps: SANDBOX_CAPABILITIES,
+    mask: SANDBOX_CAPABILITY_MASK,
+    mounts: [],
+    tmpfs: {},
+  };
+  const scenarios: Array<Array<Record<string, unknown>>> = [];
+  for (const removed of SANDBOX_CAPABILITIES) {
+    for (const failure of [undefined, "create", "capability-probe", "settle"] as const) {
+      const calls: Array<Record<string, unknown>> = [];
+      const host: CustodyPort = {
+        root: `/var/lib/cogs-product-test/${generation}`,
+        generation,
+        purpose: "capability-probe",
+        closed: Promise.resolve(),
+        request: async <T>(op: string, fields: Record<string, unknown> = {}) => {
+          calls.push({ generation, op, ...fields });
+          if (op === failure) throw new Error("injected uncertainty");
+          return (
+            op === "create"
+              ? "b".repeat(64)
+              : op === "settle"
+                ? { retired: true, failed: true }
+                : { purpose: "capability-probe", removed }
+          ) as T;
+        },
+      };
+      const execute = () =>
+        withProductCustody(host, async () => {
+          assert.deepEqual(await capabilityRemovalScenario(host, full, removed), {
+            purpose: "capability-probe",
+            removed,
+          });
+          return false;
+        });
+      if (failure) await assert.rejects(execute);
+      else await execute();
+      assert.deepEqual(
+        calls.map((q) => q.op),
+        failure === "create" ? ["create", "settle"] : ["create", "capability-probe", "settle"],
+      );
+      assert.equal(calls.at(-1)?.passed, false);
+      assert.ok(calls[0]);
+      const spec = calls[0].spec as ContainerSpec;
+      assert.deepEqual(spec, { ...full, ...sandboxCapabilities(removed) });
+      assert.deepEqual(
+        (calls[0].argv as string[]).filter((_, i, a) => a[i - 1] === "--cap-add"),
+        spec.caps,
+      );
+      assert.throws(() => containerArguments({ ...host, purpose: "run" }, spec, [], "0:0"));
+      assert.throws(() => containerArguments(host, full, [], "0:0"));
+      if (!failure) scenarios.push(calls);
+    }
+  }
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import copy,importlib.util,json,os,selectors,sys,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+scenarios=json.load(sys.stdin)
+for plan in scenarios:
+ for mode in ('success','start-failure','ssh-denied','sftp-denied','lost-start','lost-probe','foreign-cleanup'):
+  owner=m.Custody.__new__(m.Custody);owner.generation=plan[0]['generation'];owner.root='/var/lib/cogs-product-test/'+owner.generation
+  owner.probe=True;owner.recovery=False;owner.failed=False;owner.cg='/fake-cgroup';owner.disk=None
+  owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
+  journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
+  owner.records=set()
+  owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}
+  owner.record=lambda n,v:journal.setdefault(n,copy.deepcopy(v));owner.saved=lambda n:journal[n]
+  def inspect(identity):
+   assert identity==cid
+   return {'Image':spec['image'],'State':{'Running':alive},'Config':{'Env':['COGS_PROXY_ENDPOINT=http://127.0.0.1:18080'],'Labels':{'cogs.product.generation':'foreign' if mode=='foreign-cleanup' else owner.generation}}}
+  owner.inspect=inspect
+  def docker(op,*args,**kw):
+   global alive
+   calls.append(op)
+   if op=='create': return (cid+'\n').encode()
+   if op=='start':
+    assert 'sandbox-receipt' in journal and owner.ids['sandbox']['id']==cid
+    assert kw=={'status':True};alive=mode!='start-failure'
+    if mode=='lost-start': raise RuntimeError('lost start')
+    return (1 if mode=='start-failure' else 0),b''
+   if op=='ps': return (cid+'\n').encode() if 'rm' not in calls else b''
+   assert op=='rm' and args==('-f',cid);alive=False;return b''
+  owner.docker=docker
+  def authenticate(role):
+   global auth
+   calls.append('authenticate');auth+=1
+   assert role=='sandbox' and alive
+   if mode=='lost-probe': raise RuntimeError('dead authenticated identity')
+   owner.ids[role]['pid']=42;return owner.ids[role]
+  owner.authenticate=authenticate
+  def command(argv,**kw):
+   program=argv[3];calls.append(program)
+   assert argv[:3]==['nsenter','--net=/proc/self/fd/77','--'] and program in ('ssh','sftp')
+   assert kw=={'status':True,'pass_fds':(77,)} and auth>=2
+   for value in ('-F','/dev/null','BatchMode=yes','IdentitiesOnly=yes','IdentityAgent=none','StrictHostKeyChecking=yes','GlobalKnownHostsFile=/dev/null','UserKnownHostsFile='+owner.root+'/authority/known_hosts',owner.root+'/authority/client','root@127.0.0.1'): assert value in argv,value
+   if program=='sftp': assert argv[-3:]==['-b',owner.root+'/authority/sftp-batch','root@127.0.0.1']
+   return (1,b'') if mode==program+'-denied' else (0,b'cogs-capability-probe' if program=='ssh' else b'listing')
+  owner.command=command
+  with patch.object(m.os,'listdir',side_effect=lambda fd:list(journal)),patch.object(m.os.path,'exists',return_value=False),patch.object(m.os,'open',return_value=77) as opened,patch.object(m.os,'close') as closed:
+   try:
+    owner.dispatch(copy.deepcopy(plan[0]));measurement=owner.dispatch(copy.deepcopy(plan[1]))
+    assert measurement['purpose']=='capability-probe' and measurement['container_id']==cid
+    assert measurement['removed']==next(c for c in m.CAPABILITIES if c not in spec['caps'])
+    assert measurement['running']==(mode!='start-failure') and measurement['start_code']==int(mode=='start-failure')
+    assert measurement['ssh']==(None if mode=='start-failure' else mode!='ssh-denied')
+    assert measurement['sftp']==(None if mode in ('start-failure','ssh-denied') else mode!='sftp-denied')
+   except RuntimeError: assert mode in ('lost-start','lost-probe')
+   finally:
+    try: assert owner.dispatch(copy.deepcopy(plan[2]))=={'retired':True,'failed':True}
+    except RuntimeError: assert mode=='foreign-cleanup' and 'rm' not in calls and 'retired' not in journal
+   assert calls[:2]==['create','start']
+   assert ('rm' in calls)==(mode!='foreign-cleanup')
+   assert not any('worker' in n or 'lease' in n or 'evidence' in n for n in journal)
+   if mode=='success': assert calls.index('start')<calls.index('ssh')<calls.index('sftp')<calls.index('rm')
+   if opened.called: closed.assert_called_once_with(77)
+  owner.selector.close()
+ # Python custody independently rejects reduced run sets, full probe sets and other capability mutations before create.
+ for probe,caps,mask in [(False,spec['caps'],spec['mask']),(True,list(m.CAPABILITIES),sum(2**b for b in m.CAPABILITIES.values())),(True,spec['caps'][:-1],spec['mask']),(True,spec['caps']+['SYS_ADMIN'],spec['mask']),(True,spec['caps'],0)]:
+  owner.ids={};owner.probe=probe;calls.clear();q=copy.deepcopy(plan[0]);q['spec'].update(caps=caps,mask=mask)
+  try: owner.dispatch(q)
+  except RuntimeError: pass
+  else: raise AssertionError('capability authority drift')
+  assert not calls
+ owner.probe=True
+ for op in ('lease','evidence','status','authenticate','create','settle'):
+  q={'op':op,'generation':owner.generation,'role':'worker','spec':spec,'passed':True}
+  try: owner.dispatch(q)
+  except RuntimeError: pass
+  else: raise AssertionError('probe gained '+op+' authority')
+`,
+    ],
+    { input: JSON.stringify(scenarios), encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("worker OTLP fetch and first cancellation keep production actual cleanup pending", async () => {
   for (const mode of ["fetch", "cancel"] as const) {
@@ -365,6 +741,8 @@ function runtime(): RuntimeConfig {
       shared_skill_oci: "/var/lib/cogs/skills/shared-oci",
       private_skill_source: "/var/lib/cogs/skills/private-source",
       private_skill_store: "/var/lib/cogs/skills/private-store",
+      skill_snapshot_receipt: "/run/cogs/skills/snapshot-receipt.json",
+      skill_snapshot_control_socket: "/run/cogs/skills/control.sock",
     },
     api: { listen_host: "127.0.0.1", port: 18081 },
     openbao: {
@@ -538,6 +916,7 @@ function harness() {
       await apiCloseWait;
       if (cleanupFailure === "api") throw new Error("api close secret");
     },
+    closeAdmission: () => maybe("api.admission.close"),
     publish: () => true,
   });
   registerCloseOwner(
@@ -614,6 +993,7 @@ function harness() {
     },
     createPi: async (options: AuthenticatedCogsPiSessionOptions) => {
       maybe("pi");
+      assert.equal(options.emit({ kind: "warning", correlation_id: "startup", payload: { code: "startup" } }), false);
       assert.equal(options.streamFn, undefined);
       assert.equal(options.ownedRuntime, undefined);
       assert.equal("turnTimeoutMs" in options, false, "authenticated launch remains the sole turn authority");
@@ -733,6 +1113,57 @@ function emptyPreparedSkills(): never {
   }) as never;
 }
 
+test("schema-valid empty integrations reject in production immediately after both config reads", async () => {
+  const h = harness();
+  const empty = validateLaunchConfig(launch({ integrations: [] }));
+  assert.equal(empty.integrations.length, 0, "shared launch schema remains deliberately unchanged");
+  await assert.rejects(
+    startProductionWorker({
+      seams: {
+        ...h.seams,
+        readLaunch: async () => {
+          await h.seams.readLaunch(runtime());
+          return empty;
+        },
+      },
+    }),
+    ProductionWorkerError,
+  );
+  assert.deepEqual(h.log, ["runtime", "launch"], "no secrets, snapshots, telemetry, storage, auth, SSH, Pi or API");
+});
+
+test("production defaults to mounted authority and cannot fall back to guest materialization", async () => {
+  const h = harness();
+  let guestCalls = 0;
+  await assert.rejects(
+    startProductionWorker({
+      seams: {
+        ...h.seams,
+        createSsh: (options) =>
+          Object.assign(h.seams.createSsh(options), {
+            withSftp: async () => {
+              guestCalls++;
+              throw new Error("guest must not be used without snapshot authority");
+            },
+          }),
+        createPi: async (options) => {
+          await options.skillPreparer.prepare({ launch: launch() });
+          return h.seams.createPi(options);
+        },
+      },
+    }),
+    ProductionWorkerError,
+  );
+  assert.equal(guestCalls, 0);
+  assert.equal(h.log.includes("api"), false);
+  assert.equal(h.log.includes("ssh.close"), true);
+  const source = await readFile(new URL("../src/runtime/compose.ts", import.meta.url), "utf8");
+  assert.match(source, /skillPreparer: createCogsMountedSkillSessionPreparer/);
+  assert.doesNotMatch(source, /createCogsSkillSessionPreparer/);
+  assert.match(source, /await createCogsSharedSkillOciLayoutResolver/);
+  assert.match(source, /await createCogsPrivateSkillStore/);
+});
+
 test("production SSH uses the sandbox image's single guest-root identity", async () => {
   const sshdConfig = await readFile(new URL("../images/sandbox/sshd_config", import.meta.url), "utf8");
   const allowedUsers = sshdConfig
@@ -798,7 +1229,6 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
   let stdout: ((chunk: Buffer) => void) | undefined;
   let stderr: ((chunk: Buffer) => void) | undefined;
   const terminal = Promise.withResolvers<{ code: number; signal: null }>();
-  const shutdownReady = Promise.withResolvers<void>();
   const longPort: CogsExecPort = Object.freeze({
     onStdout: (listener: (chunk: Buffer) => void) => {
       stdout = listener;
@@ -871,7 +1301,6 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
             skillPreparer: Object.freeze({ prepare: async () => emptyPreparedSkills() }),
             emit: (event) => {
               events.push(event.kind);
-              if (event.kind === "shutdown_ready") shutdownReady.resolve();
               return options.emit(event);
             },
           });
@@ -879,28 +1308,7 @@ test("opt-in production turn timeout settles durable authenticated turn after 60
           piSession = pi;
           return pi;
         },
-        createApi: (options) => {
-          const actual = createApiServer(options);
-          const facade: ApiServer = Object.freeze({
-            listen: actual.listen.bind(actual),
-            publish: actual.publish.bind(actual),
-            close: async () => {
-              await new Promise<void>((resolveWait) => {
-                const timer = setTimeout(resolveWait, 5000);
-                void shutdownReady.promise.then(() => {
-                  clearTimeout(timer);
-                  resolveWait();
-                });
-              });
-              await actual.close();
-            },
-          });
-          registerCloseOwner(
-            facade,
-            createCloseOwner(() => facade.close()),
-          );
-          return facade;
-        },
+        createApi: createApiServer,
       },
     });
     const response = await fetch(`http://127.0.0.1:${worker.apiPort}/v1/input`, {
@@ -998,18 +1406,19 @@ test("production composition starts in one exact fail-closed order and closes re
   await assert.rejects(worker.close("requested", { ...closeContext(1000), signal: AbortSignal.abort() }));
   await worker.close();
   await worker.closed;
-  assert.deepEqual(h.log.slice(-7), [
-    "api.close",
+  assert.deepEqual(h.log.slice(-8), [
+    "api.admission.close",
     "pi.state",
     "pi.prepare",
     "pi.dispose",
+    "api.close",
     "egress.close",
     "ssh.close",
     "telemetry.close",
   ]);
 });
 
-test("production cleanup starts API and Pi retirement together and gates dependencies on both", async () => {
+test("production seals admission then retires Pi, API events, and dependencies in order", async () => {
   const h = harness();
   let releaseApi!: () => void;
   const apiRetired = new Promise<void>((resolve) => {
@@ -1024,15 +1433,176 @@ test("production cleanup starts API and Pi retirement together and gates depende
   const worker = await startProductionWorker({ seams: h.seams });
   const closing = worker.close();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.log.includes("api.close"), true);
+  assert.equal(h.log.includes("api.admission.close"), true);
+  assert.equal(h.log.includes("api.close"), false);
   assert.equal(h.log.includes("pi.dispose"), true);
   assert.equal(h.log.includes("egress.close"), false);
-  releaseApi();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.log.includes("egress.close"), false);
   releasePi();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.log.includes("api.close"), true);
+  assert.equal(h.log.includes("egress.close"), false);
+  releaseApi();
   await closing;
   assert.equal(h.log.includes("egress.close"), true);
+});
+
+test("real production API keeps shutdown_ready publishable during admission shutdown, then retires events", async () => {
+  for (const mode of ["http", "signal", "requested", "publication-failure"] as const) {
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-production-shutdown-"));
+    const h = harness(),
+      held = Promise.withResolvers<void>(),
+      entered = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let api!: ApiServer, pi!: CogsPiSessionPorts, worker: ProductionWorkerRuntime | undefined;
+    let prepares = 0,
+      fatals = 0;
+    const accepted: boolean[] = [];
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const cwd = resolve(root, "cwd"),
+        agentDir = resolve(root, "agent");
+      await mkdir(cwd);
+      await mkdir(agentDir);
+      worker = await startProductionWorker({
+        signal: controller.signal,
+        seams: {
+          ...h.seams,
+          readRuntime: async () => ({ ...runtime(), api: { listen_host: "127.0.0.1", port: 0 } }),
+          readLaunch: async () => launch({ model: { ...launch().model, id: "claude-sonnet-4-5" } }),
+          createApi: (options) => (api = createApiServer(options)),
+          createPi: async (options) => {
+            pi = await createAuthenticatedCogsPiSession({
+              ...options,
+              cwd,
+              agentDir,
+              sessionRoot: resolve(root, "sessions"),
+              skillPreparer: Object.freeze({ prepare: async () => emptyPreparedSkills() }),
+              streamFn: longTurnModelStream(),
+              toolPorts: { ...options.toolPorts, bash: async () => ({ stdout: "fixed", exitCode: 0 }) },
+              git: {
+                repositoryId: "workspace-1",
+                observer: Object.freeze({
+                  observeHead: async () => ({
+                    kind: "observed" as const,
+                    repo: "workspace-1",
+                    commit: "a".repeat(40),
+                    observed_at: "2026-01-01T00:00:00.000Z",
+                  }),
+                  nearestAncestor: async () => null,
+                  appendNote: async () => true,
+                  dispose: async () => undefined,
+                }),
+              },
+              emit: (event) => {
+                if (mode === "publication-failure" && event.kind === "shutdown_ready")
+                  void api.close().catch(() => undefined);
+                const result = options.emit(event);
+                if (event.kind === "shutdown_ready") accepted.push(result);
+                return result;
+              },
+              onFatal: (reason) => {
+                fatals++;
+                return options.onFatal(reason);
+              },
+            });
+            const prepare = pi.prepareShutdown.bind(pi);
+            Object.defineProperty(pi, "prepareShutdown", {
+              value: async (input: Parameters<typeof prepare>[0]) => {
+                prepares++;
+                entered.resolve();
+                await held.promise;
+                return prepare(input);
+              },
+            });
+            return pi;
+          },
+        },
+      });
+      await pi.input({ requestId: "settle", correlationId: "settle", kind: "prompt", content: "run" });
+      for (let i = 0; i < 200 && (await pi.state()).runState !== "settled"; i++)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal((await pi.state()).runState, "settled");
+      const base = `http://127.0.0.1:${worker.apiPort}`;
+      const headers = { authorization: `Bearer ${secretBearer}`, "content-type": "application/json" };
+      const response = await fetch(`${base}/v1/events`, { headers });
+      reader = response.body?.getReader();
+      assert.ok(reader);
+      let closing: Promise<void>;
+      if (mode === "signal") {
+        controller.abort();
+        closing = worker.closed;
+      } else if (mode === "requested") closing = worker.close();
+      else {
+        const shutdown = await fetch(`${base}/v1/shutdown`, { method: "POST", headers, body: "{}" });
+        assert.equal(shutdown.status, 202);
+        assert.deepEqual(await shutdown.json(), { version: "cogs.shutdown/v1alpha1", accepted: true });
+        closing = worker.closed;
+      }
+      closing.catch(() => undefined);
+      await entered.promise;
+      assert.equal(worker.ready, false);
+      assert.equal(h.log.includes("egress.close"), false);
+      assert.deepEqual(accepted, []);
+      assert.equal((await fetch(`${base}/health/ready`, { headers })).status, 503);
+      assert.equal(
+        (
+          await fetch(`${base}/v1/input`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ request_id: "late", type: "prompt", content: "no" }),
+          })
+        ).status,
+        503,
+      );
+      // Repeated shutdown is only an acknowledgement; it must not restart preparation.
+      const repeated = await fetch(`${base}/v1/shutdown`, { method: "POST", headers, body: "{}" });
+      assert.equal(repeated.status, 202);
+      await repeated.arrayBuffer();
+      held.resolve();
+      if (mode === "publication-failure") {
+        await assert.rejects(closing, ProductionWorkerError);
+        assert.deepEqual(accepted, [false]);
+        assert.ok(fatals > 0);
+        assert.equal(h.log.includes("egress.close"), false);
+        await assert.rejects(worker.close(), ProductionWorkerError);
+      } else {
+        let text = "";
+        while (!text.includes('"kind":"shutdown_ready"')) {
+          const frame = await reader.read();
+          assert.equal(frame.done, false, "existing SSE stream must survive preparation");
+          text += Buffer.from(frame.value ?? []).toString();
+        }
+        assert.equal(text.split('"kind":"shutdown_ready"').length - 1, 1);
+        await closing;
+        assert.deepEqual(accepted, [true]);
+        assert.equal(fatals, 0);
+        assert.equal(h.log.includes("egress.close"), true);
+        await worker.close();
+      }
+      assert.equal(prepares, 1);
+      assert.equal(
+        api.publish({ kind: "pi_event", correlation_id: "late", payload: { event: { type: "agent_start" } } }),
+        false,
+      );
+    } finally {
+      held.resolve();
+      await reader?.cancel().catch(() => undefined);
+      await worker?.close().catch(() => undefined);
+      await api?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("production preparation rejection still disposes Pi and retires API without releasing dependencies", async () => {
+  const h = harness();
+  h.setFail("pi.prepare");
+  const worker = await startProductionWorker({ seams: h.seams });
+  await assert.rejects(worker.close(), ProductionWorkerError);
+  assert.ok(h.log.indexOf("pi.prepare") < h.log.indexOf("pi.dispose"));
+  assert.ok(h.log.indexOf("pi.dispose") < h.log.indexOf("api.close"));
+  assert.equal(h.log.includes("egress.close"), false);
+  await assert.rejects(worker.closed, ProductionWorkerError);
 });
 
 test("production late actual success cannot heal failed status or certify clean shutdown", async () => {

@@ -173,24 +173,35 @@ test("worker telemetry disabled default is zero I/O and closes immediately", asy
   assert.equal(sink.ready, false);
 });
 
-test("worker telemetry emits exact trace and metric OTLP envelopes without forbidden sentinels", async () => {
+test("worker telemetry default fetch emits exact trace and metric OTLP envelopes without global mutation", async () => {
+  const originalFetch = globalThis.fetch;
+  const descriptors = Object.getOwnPropertyDescriptors(originalFetch);
+  assert.equal(Object.isFrozen(originalFetch), false);
   const collector = await startCollector();
+  let sink: ReturnType<typeof createCogsWorkerTelemetrySink> | undefined;
   try {
-    const sink = createCogsWorkerTelemetrySink({
+    sink = createCogsWorkerTelemetrySink({
       mode: "otlp",
       tracesEndpoint: collector.url("/v1/traces"),
       metricsEndpoint: collector.url("/v1/metrics"),
       allowLoopbackHttpDevelopment: true,
       batchSize: 8,
-      fetch: Object.freeze(fetch),
       clock: Object.freeze({ nowMs: Object.freeze(() => 1234) }),
       random: Object.freeze({ bytes: Object.freeze((length: number) => new Uint8Array(length).fill(0xab)) }),
     });
     assert.equal(sink.span(goodSpan()), true);
     assert.equal(sink.metric(goodMetric()), true);
-    await eventually(() => assert.equal(sink.snapshot().exported, 2));
+    await eventually(() => assert.equal(sink?.snapshot().exported, 2));
     await sink.close();
-    assert.equal(sink.snapshot().exported, 2);
+    assert.deepEqual(sink.snapshot(), { ready: false, queued: 0, exported: 2, dropped: 0, failed: 0, lag_ms: 0 });
+    await retireCogsWorkerTelemetry(sink);
+    assert.equal(globalThis.fetch, originalFetch);
+    assert.equal(Object.isFrozen(originalFetch), false);
+    assert.deepEqual(Object.getOwnPropertyDescriptors(originalFetch), descriptors);
+    assert.deepEqual(
+      collector.records().map((record) => record.path),
+      ["/v1/traces", "/v1/metrics"],
+    );
     const trace = collector.jsonFor("/v1/traces") as {
       resourceSpans: [
         {
@@ -229,9 +240,163 @@ test("worker telemetry emits exact trace and metric OTLP envelopes without forbi
       assert.equal(serialized.includes(sentinel), false, sentinel);
     }
   } finally {
+    try {
+      if (sink) await retireCogsWorkerTelemetry(sink);
+    } finally {
+      await collector.close();
+    }
+  }
+});
+
+test("worker telemetry explicit fetch must be frozen and never falls back to the default", async () => {
+  const collector = await startCollector();
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const override = async (url: string, init: RequestInit): Promise<Response> => {
+    calls.push({ url, init });
+    throw new Error("synthetic transport failure");
+  };
+  const config = {
+    mode: "otlp" as const,
+    tracesEndpoint: collector.url("/v1/traces"),
+    metricsEndpoint: collector.url("/v1/metrics"),
+    allowLoopbackHttpDevelopment: true,
+    fetch: override,
+  };
+  try {
+    for (const fetch of [override, globalThis.fetch, undefined]) {
+      assert.throws(() => createCogsWorkerTelemetrySink({ ...config, fetch } as never), /invalid worker telemetry/);
+    }
+    assert.equal(Object.isFrozen(override), false, "rejection must not freeze caller state");
+    assert.equal(calls.length, 0);
+    const sink = createCogsWorkerTelemetrySink({ ...config, fetch: Object.freeze(override) });
+    try {
+      assert.equal(sink.span(goodSpan()), true);
+      await eventually(() => assert.equal(sink.snapshot().failed, 1));
+      assert.equal(sink.ready, true);
+    } finally {
+      await retireCogsWorkerTelemetry(sink);
+    }
+    assert.deepEqual(sink.snapshot(), { ready: false, queued: 0, exported: 0, dropped: 1, failed: 1, lag_ms: 0 });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, collector.url("/v1/traces"));
+    assert.equal(calls[0]?.init.method, "POST");
+    assert.equal(calls[0]?.init.redirect, "error");
+    assert.ok(calls[0]?.init.signal instanceof AbortSignal);
+    assert.deepEqual(collector.records(), []);
+    assert.equal(Object.isFrozen(globalThis.fetch), false);
+  } finally {
     await collector.close();
   }
 });
+
+test("worker default transport requires explicit development allowance for exact loopback HTTP", async () => {
+  const collector = await startCollector();
+  const config = {
+    mode: "otlp" as const,
+    tracesEndpoint: collector.url("/v1/traces"),
+    metricsEndpoint: collector.url("/v1/metrics"),
+  };
+  try {
+    for (const change of [
+      {},
+      { allowLoopbackHttpDevelopment: false },
+      { allowLoopbackHttpDevelopment: true, tracesEndpoint: "http://localhost/v1/traces" },
+      { allowLoopbackHttpDevelopment: true, metricsEndpoint: "http://synthetic.invalid/v1/metrics" },
+    ]) {
+      assert.throws(() => createCogsWorkerTelemetrySink({ ...config, ...change }), /invalid worker telemetry/);
+    }
+    assert.deepEqual(collector.records(), []);
+  } finally {
+    await collector.close();
+  }
+});
+
+for (const kind of ["traces", "metrics"] as const) {
+  for (const fault of [
+    "status",
+    "redirect",
+    "content-type",
+    "json",
+    "partial",
+    "length",
+    "chunked",
+    "headers-timeout",
+    "body-timeout",
+  ] as const) {
+    test(`worker default loopback ${kind} ${fault} is bounded, retired and loss-accounted`, {
+      timeout: 3000,
+    }, async () => {
+      let responseClosed = false;
+      const collector = await startCollector((request, response) => {
+        if (request.url !== `/v1/${kind}`) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end("{}");
+          return;
+        }
+        response.once("close", () => {
+          responseClosed = true;
+        });
+        if (fault === "headers-timeout") return;
+        response.writeHead(fault === "status" ? 503 : fault === "redirect" ? 307 : 200, {
+          "content-type": fault === "content-type" ? "text/plain" : "application/json",
+          ...(fault === "redirect" ? { location: "/redirect-must-not-be-followed" } : {}),
+          ...(fault === "length" ? { "content-length": "129" } : {}),
+        });
+        if (fault === "body-timeout") {
+          response.write("{");
+          return;
+        }
+        if (fault === "chunked") {
+          response.write(`{}${" ".repeat(127)}`);
+          response.end();
+        } else if (fault === "length") response.end(`{}${" ".repeat(127)}`);
+        else if (fault === "json") response.end("{");
+        else if (fault === "partial") {
+          const countKey = kind === "traces" ? "rejectedSpans" : "rejectedDataPoints";
+          response.end(JSON.stringify({ partialSuccess: { [countKey]: 1 } }));
+        } else response.end("{}");
+      });
+      const sink = createCogsWorkerTelemetrySink({
+        mode: "otlp",
+        tracesEndpoint: collector.url("/v1/traces"),
+        metricsEndpoint: collector.url("/v1/metrics"),
+        allowLoopbackHttpDevelopment: true,
+        timeoutMs: 100,
+        maxResponseBytes: 128,
+        batchSize: 2,
+        clock: Object.freeze({ nowMs: Object.freeze(() => 1) }),
+      });
+      try {
+        assert.equal(sink.span(goodSpan()), true);
+        assert.equal(sink.metric(goodMetric()), true);
+        const failed = kind === "traces" ? 2 : 1;
+        await eventually(() => assert.equal(sink.snapshot().failed, failed));
+        assert.equal(sink.ready, true, "optional transport failure is not authority failure");
+        assert.equal(sink.span(goodSpan()), false, "cooldown rejects new work");
+        await retireCogsWorkerTelemetry(sink);
+        await eventually(() => assert.equal(responseClosed, true));
+        assert.deepEqual(sink.snapshot(), {
+          ready: false,
+          queued: 0,
+          exported: 2 - failed,
+          dropped: failed + 1,
+          failed,
+          lag_ms: 0,
+        });
+        assert.deepEqual(
+          collector.records().map((record) => record.path),
+          kind === "traces" ? ["/v1/traces"] : ["/v1/traces", "/v1/metrics"],
+        );
+      } finally {
+        try {
+          await retireCogsWorkerTelemetry(sink);
+        } finally {
+          await collector.close();
+        }
+      }
+    });
+  }
+}
 
 test("worker telemetry groups repeated metric names into one descriptor with ordered points", async () => {
   const collector = await startCollector();
@@ -243,7 +408,6 @@ test("worker telemetry groups repeated metric names into one descriptor with ord
       metricsEndpoint: collector.url("/v1/metrics"),
       allowLoopbackHttpDevelopment: true,
       batchSize: 4,
-      fetch: Object.freeze(fetch),
       clock: Object.freeze({
         nowMs: Object.freeze(() => {
           now += 1;
@@ -309,7 +473,6 @@ test("worker telemetry emits gauge only for fixed gauge metric names", async () 
       metricsEndpoint: collector.url("/v1/metrics"),
       allowLoopbackHttpDevelopment: true,
       batchSize: 4,
-      fetch: Object.freeze(fetch),
       clock: Object.freeze({ nowMs: Object.freeze(() => 1) }),
       random: Object.freeze({ bytes: Object.freeze((length: number) => new Uint8Array(length).fill(0xad)) }),
     });
@@ -367,7 +530,6 @@ test("worker telemetry batches FIFO, drops newest on overflow, and isolates late
       allowLoopbackHttpDevelopment: true,
       capacity: 2,
       batchSize: 2,
-      fetch: Object.freeze(fetch),
       clock: Object.freeze({ nowMs: Object.freeze(() => 10) }),
       random: Object.freeze({ bytes: Object.freeze((length: number) => new Uint8Array(length).fill(1)) }),
     });
@@ -965,7 +1127,7 @@ function goodMetric(): { name: string; attributes: Record<string, unknown> } {
   return { name: "tool.count", attributes: { tool: "bash", count: 1, value: 1, outcome: "ok" } };
 }
 
-async function startCollector(): Promise<{
+async function startCollector(respond?: (request: IncomingMessage, response: ServerResponse) => void): Promise<{
   url: (path: string) => string;
   waitFor: (count: number) => Promise<void>;
   records: () => Array<{ path: string; body: string }>;
@@ -976,15 +1138,31 @@ async function startCollector(): Promise<{
   const waiters: Array<() => void> = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let bytes = 0;
+    request.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > 262_144 || records.length >= 16) request.destroy();
+      else chunks.push(chunk);
+    });
     request.on("end", () => {
+      assert.equal(request.method, "POST");
+      assert.equal(request.headers["content-type"], "application/json");
+      assert.equal(request.headers.accept, "application/json");
+      assert.equal(request.headers["content-length"], String(bytes));
       records.push({ path: request.url ?? "", body: Buffer.concat(chunks).toString("utf8") });
       for (const waiter of waiters.splice(0)) waiter();
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end("{}\n");
+      if (respond) respond(request, response);
+      else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}\n");
+      }
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  server.setTimeout(1500, (socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.ok(address);
@@ -995,7 +1173,10 @@ async function startCollector(): Promise<{
     jsonFor: (path: string) => JSON.parse(records.find((record) => record.path === path)?.body ?? "null"),
     waitFor: async (count: number) => eventually(() => assert.equal(records.length, count)),
     close: async () =>
-      new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
   };
 }
 

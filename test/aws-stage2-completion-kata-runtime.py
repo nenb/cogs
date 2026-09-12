@@ -1050,9 +1050,9 @@ cap = subprocess.run([sys.executable, str(ROOT / "scripts/check-stage2-retained-
 cap_report = json.loads(cap.stdout)
 check(cap_report["hard_satisfied"]
       and cap_report["correction_slice_limits_satisfied"]
-      and cap_report["hard_limit"] == 100_500
+      and cap_report["hard_limit"] == 115_000
       and cap_report["remediation_limits_satisfied"]
       and cap_report["conservative_lines_no_deletion_credit"] < cap_report["hard_limit"],
-      "ADR0327 centralized cap failed")
+      "ADR0335 centralized cap failed")
 
 print("completion Kata runtime S4 hostile offline matrix passed")

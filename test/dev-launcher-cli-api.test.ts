@@ -256,11 +256,21 @@ test("api SSE client keeps one live connection through fixed replay capacity 32"
     assert.equal(first.value?.id, 1);
     for (let i = 0; i < 40; i += 1) {
       assert.equal(
-        s.api.publish({ kind: "tool_update", correlation_id: "corr-live", payload: { chunk: "metadata" } }),
+        s.api.publish({
+          kind: "tool_update",
+          correlation_id: "corr-live",
+          payload: {
+            event: { type: "tool_execution_update", toolCallId: "tool-1", toolName: "bash" },
+            detail: { chunk: "metadata" },
+          },
+        }),
         true,
       );
     }
-    assert.equal(s.api.publish({ kind: "run_settled", correlation_id: "corr-live", payload: { ok: true } }), true);
+    assert.equal(
+      s.api.publish({ kind: "run_settled", correlation_id: "corr-live", payload: { state: "settled" } }),
+      true,
+    );
     let terminal = 0;
     let count = 1;
     for await (const event of iterator) {
@@ -806,6 +816,52 @@ test("export rejects aggregate oversize and nonenumerable without invoking gette
     await assert.rejects(() => writeSensitiveExport(root, "hidden.json", hostile));
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("launcher SSE requires closed transport/subtype cores and accepts whole-detail omission", async () => {
+  const transport = { version: "cogs.event-detail/v1", status: "omitted", reason: "frame_limit" };
+  const payload = {
+    event: { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", isError: true },
+    cogs_transport: transport,
+  };
+  for (const [valid, candidate] of [
+    [true, payload],
+    [true, { ...payload, detail: { text: "ok" }, cogs_transport: { version: transport.version, status: "complete" } }],
+    [false, { event: payload.event }],
+    [false, { ...payload, extra: true }],
+    [false, { ...payload, detail: { text: "not omitted" } }],
+    [false, { ...payload, cogs_transport: { ...transport, digest: "invented" } }],
+    [false, { ...payload, cogs_transport: { ...transport, reason: "invented" } }],
+    [false, { ...payload, event: { ...payload.event, toolCallId: "x".repeat(129) } }],
+    [false, { ...payload, event: { ...payload.event, isError: undefined } }],
+    [false, { ...payload, event: { ...payload.event, type: "tool_execution_start" } }],
+  ] as const) {
+    const client = createApiClient({
+      port: 9,
+      token,
+      seams: seams((async (url: URL) => {
+        const data = {
+          version: "cogs.event/v1alpha1",
+          seq: 1,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          session_id: "s",
+          correlation_id: "c",
+          kind: "tool_end",
+          payload: candidate,
+        };
+        const response = new Response(`id: 1\nevent: cogs\ndata: ${JSON.stringify(data)}\n\n`, {
+          headers: { "content-type": "text/event-stream", "cache-control": "no-store" },
+        });
+        Object.defineProperty(response, "url", { value: String(url) });
+        return response;
+      }) as unknown as typeof fetch),
+    });
+    const read = async () => {
+      for await (const value of client.events(0, 1)) assert.deepEqual(value.data.payload, candidate);
+    };
+    if (valid) await read();
+    else await assert.rejects(read, /launcher api failed/);
   }
 });
 

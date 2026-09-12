@@ -27,6 +27,8 @@ export interface RuntimeConfig {
     readonly shared_skill_oci: "/var/lib/cogs/skills/shared-oci";
     readonly private_skill_source: "/var/lib/cogs/skills/private-source";
     readonly private_skill_store: "/var/lib/cogs/skills/private-store";
+    readonly skill_snapshot_receipt: "/run/cogs/skills/snapshot-receipt.json";
+    readonly skill_snapshot_control_socket: "/run/cogs/skills/control.sock";
   };
   readonly api: { readonly listen_host: "127.0.0.1" | "0.0.0.0"; readonly port: number };
   readonly openbao: {

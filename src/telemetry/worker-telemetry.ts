@@ -25,6 +25,11 @@ export type CogsWorkerTelemetryMode =
     }>;
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+// Capture once without freezing or subsequently consulting the global transport.
+const builtInFetch = globalThis.fetch;
+const defaultFetch: FetchLike = Object.freeze(
+  (url: string, init: RequestInit): Promise<Response> => builtInFetch(url, init),
+);
 type ClockLike = Readonly<{ nowMs: () => number }>;
 type RandomLike = Readonly<{ bytes: (length: number) => Uint8Array }>;
 
@@ -255,7 +260,7 @@ function snapshotConfig(config: CogsWorkerTelemetryMode):
     ],
   );
   const allow = boolOpt(config, "allowLoopbackHttpDevelopment") ?? false;
-  const fetchFn = (Object.hasOwn(config, "fetch") ? frozenFetch(config.fetch) : fetch) as FetchLike;
+  const fetchFn = Object.hasOwn(config, "fetch") ? frozenFetch(config.fetch) : defaultFetch;
   const clock = clockOpt(config, "clock") ?? Object.freeze({ nowMs: () => Date.now() });
   const random =
     randomOpt(config, "random") ??

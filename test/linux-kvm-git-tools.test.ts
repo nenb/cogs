@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +8,9 @@ import { test } from "node:test";
 const root = process.cwd();
 const gitTools = join(root, "dev/linux-kvm/git-tools.sh");
 const driver = join(root, "dev/linux-kvm/driver.sh");
+const boundedHelper = join(root, "dev/linux-kvm/bounded-command.py");
+const kvmImageSha =
+  "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667";
 
 async function sourceGitTools(command: string, env: Record<string, string> = {}) {
   const { spawnSync } = await import("node:child_process");
@@ -17,6 +21,82 @@ async function sourceGitTools(command: string, env: Record<string, string> = {})
     timeout: 10_000,
   });
 }
+
+test("shared KVM receipt gate accepts a root-owned positive fixture", async () => {
+  const { spawnSync } = await import("node:child_process");
+  if (process.platform !== "linux" || spawnSync("sudo", ["-n", "true"]).status !== 0) return;
+  const source = "a".repeat(40);
+  const run = "123";
+  const attempt = "1";
+  const generation = createHash("sha256").update(`${run}:${attempt}:${source}`).digest("hex").slice(0, 32);
+  const receipt = join(tmpdir(), `cogs-kvm-gate-${process.pid}.json`);
+  const protectedReceipt = `/run/cogs-kvm-gate-${process.pid}.json`;
+  const value = {
+    version: "cogs.linux-kvm-execution/v1",
+    run_id: run,
+    run_attempt: attempt,
+    candidate: source,
+    source_revision: source,
+    generation,
+    expires: Date.now() + 60_000,
+  };
+  try {
+    await writeFile(receipt, `${JSON.stringify(value, Object.keys(value).sort())}\n`, { mode: 0o600 });
+    assert.equal(
+      spawnSync("sudo", ["-n", "install", "-o", "root", "-g", "root", "-m", "0444", receipt, protectedReceipt]).status,
+      0,
+    );
+    const result = await sourceGitTools("cogs_kvm_execution_gate", {
+      COGS_KVM_EXECUTION_RECEIPT: protectedReceipt,
+      COGS_KVM_GENERATION: generation,
+      COGS_SOURCE_REVISION: source,
+      GITHUB_RUN_ID: run,
+      GITHUB_RUN_ATTEMPT: attempt,
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    spawnSync("sudo", ["-n", "rm", "-f", protectedReceipt]);
+    await rm(receipt, { force: true });
+  }
+});
+
+test("shared KVM receipt gate rejects a root-owned receipt with a mismatched source binding", async () => {
+  const { spawnSync } = await import("node:child_process");
+  if (process.platform !== "linux" || spawnSync("sudo", ["-n", "true"]).status !== 0) return;
+  const source = "a".repeat(40);
+  const run = "123";
+  const attempt = "1";
+  const generation = createHash("sha256").update(`${run}:${attempt}:${source}`).digest("hex").slice(0, 32);
+  const receipt = join(tmpdir(), `cogs-kvm-gate-negative-${process.pid}.json`);
+  const protectedReceipt = `/run/cogs-kvm-gate-negative-${process.pid}.json`;
+  const value = {
+    version: "cogs.linux-kvm-execution/v1",
+    run_id: run,
+    run_attempt: attempt,
+    candidate: source,
+    source_revision: source,
+    generation,
+    expires: Date.now() + 60_000,
+  };
+  try {
+    await writeFile(receipt, `${JSON.stringify(value, Object.keys(value).sort())}\n`, { mode: 0o600 });
+    assert.equal(
+      spawnSync("sudo", ["-n", "install", "-o", "root", "-g", "root", "-m", "0444", receipt, protectedReceipt]).status,
+      0,
+    );
+    const result = await sourceGitTools("cogs_kvm_execution_gate", {
+      COGS_KVM_EXECUTION_RECEIPT: protectedReceipt,
+      COGS_KVM_GENERATION: generation,
+      COGS_SOURCE_REVISION: "b".repeat(40),
+      GITHUB_RUN_ID: run,
+      GITHUB_RUN_ATTEMPT: attempt,
+    });
+    assert.notEqual(result.status, 0, result.stderr);
+  } finally {
+    spawnSync("sudo", ["-n", "rm", "-f", protectedReceipt]);
+    await rm(receipt, { force: true });
+  }
+});
 
 test("ADR0037 Git tools manifest is exact, bounded, and not parameterized", async () => {
   const result = await sourceGitTools("cogs_git_tools_manifest");
@@ -199,10 +279,10 @@ test("Git tools executable helpers preserve invalid cache and produce injection-
 });
 
 test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verification and no guest package install", async () => {
-  const text = await readFile(driver, "utf8");
+  const text = (await readFile(driver, "utf8")) + (await readFile(boundedHelper, "utf8"));
   assert.match(text, /source "\$repo\/dev\/linux-kvm\/git-tools\.sh"/u);
   assert.match(text, /prepare_git_tools_disk "\$state" "\$cache"/u);
-  assert.match(text, /prepare-cache\)\n {4}prepare_image\n {4}cogs_git_tools_prepare_cache "\$cache"/u);
+  assert.match(text, /prepare-cache\)\n {4}prepare_image >&2\n {4}cogs_git_tools_prepare_cache "\$cache" >&2/u);
   assert.match(text, /-drive if=virtio,format=raw,readonly=on,file="\$state\/git-tools\.img"/u);
   assert.match(text, /\[LABEL=COGS_GITTOOLS, \/opt\/cogs-git, auto, 'ro,nosuid,nodev'/u);
   assert.match(
@@ -227,15 +307,26 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
 
 test("KVM workflow artifacts remain metadata reports and do not upload Git tools cache or image", async () => {
   const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
-  assert.match(workflow, /path: docs\/security-evidence\/generated\//u);
+  assert.match(
+    workflow,
+    /path: \|\n {12}docs\/security-evidence\/generated\/kvm-qualification\.json\n {12}docs\/security-evidence\/generated\/kvm-driver-smoke\.json/u,
+  );
   assert.doesNotMatch(workflow, /git-tools\.img|\.deb|COGS_KVM_CACHE_DIR/u);
   assert.match(workflow, /dev\/linux-kvm\/ci-smoke\.sh/u);
-  assert.match(workflow, /dev\/linux-kvm\/driver\.sh create/u);
+  assert.match(workflow, /id: smoke/u);
   assert.match(workflow, /driver\.sh prepare-cache/u);
+  assert.doesNotMatch(workflow, /driver\.sh (?:create|destroy|ssh)|envoy-kvm|suite-smoke|run-kvm-black-box-case/u);
   assert.ok(workflow.indexOf("driver.sh prepare-cache") < workflow.indexOf("ip netns add"));
   assert.match(workflow, /cogs-exclusive-netns-v1/u);
-  assert.match(workflow, /sudo ip netns exec "\$COGS_KVM_NETNS" sudo -u "\$USER"/u);
-  assert.match(workflow, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'stage2-only'\)/u);
+  assert.match(workflow, /sudo -n ip netns exec "\$COGS_KVM_NETNS" sudo -n -u "\$USER"/u);
+  assert.match(workflow, /EXECUTE_PROTECTED_KVM/u);
+  assert.match(workflow, /GITHUB_TRIGGERING_ACTOR/u);
+  assert.match(workflow, /cogs\.linux-kvm-execution\/v1/u);
+  assert.match(
+    workflow,
+    /COGS_KVM_GENERATION="\$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="\$COGS_KVM_EXECUTION_RECEIPT"/u,
+  );
+  assert.match(workflow, /GITHUB_RUN_ID="\$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="\$GITHUB_RUN_ATTEMPT"/u);
   assert.match(workflow, /if ! pids=\$\(sudo ip netns pids "\$COGS_KVM_NETNS"\); then/u);
   assert.ok(
     workflow.indexOf('sudo ip netns delete "$COGS_KVM_NETNS"') < workflow.indexOf('sudo rm -- "$COGS_KVM_LEASE"'),
@@ -405,14 +496,15 @@ function serialContract(text: string) {
   );
   assert.equal(text.match(/nohup qemu-system-x86_64/gu)?.length, 1);
   assert.equal(text.match(/-serial\b/gu)?.length, 1);
-  assert.equal(text.match(/serial\.log/gu)?.length, 1);
-  assert.ok(start.indexOf('rm -f "$state/qmp.sock" "$state/serial.log"') < start.indexOf("  nohup "));
-  assert.match(start, /qemu_owner capture[\s\S]*run_ssh true/u);
+  assert.equal(text.match(/serial\.log/gu)?.length ?? 0, 0);
+  assert.ok(start.indexOf('rm -f "$state/qmp.sock"') < start.indexOf("  nohup "));
+  assert.match(start, /qemu_owner capture[\s\S]*bounded_guest readiness/u);
   const routes = text.slice(text.indexOf('case "$operation" in'));
-  assert.match(routes, /create\)[\s\S]*prepare_seed; start_vm; verify/u);
-  assert.match(routes, /reset\)[\s\S]*stop_vm; remove_network[\s\S]*prepare_seed; start_vm/u);
-  assert.match(routes, /cleanup_partial && rm -rf "\$state"/u);
-  assert.match(routes, /stop_vm; remove_network; rm -rf "\$state"/u);
+  assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
+  assert.doesNotMatch(routes, /if ! owner_stage|owner_stage [^;\n]+ [a-z_]+/u);
+  assert.match(routes, /reset\)[\s\S]*stop_vm >&2[\s\S]*remove_network >&2[\s\S]*prepare_seed\n {4}start_vm/u);
+  assert.doesNotMatch(routes, /trap .*rm -rf|rm -rf "\$state"/u);
+  assert.match(routes, /generation_owner intent removal[\s\S]*generation_owner remove/u);
 }
 
 test("driver UART is null on the shared create/reset launch; stage-zero marker capture stays separate", async () => {
@@ -609,7 +701,7 @@ else: raise AssertionError('empty observation accepted')
   );
 });
 
-test("fake launch unlinks legacy serial files without following symlink or hardlink targets", async () => {
+test("fake launch leaves unowned legacy serial entries untouched", async () => {
   const { spawnSync } = await import("node:child_process");
   const start = shellFunction(await readFile(driver, "utf8"), "start_vm");
   const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-serial-"));
@@ -631,7 +723,7 @@ test("fake launch unlinks legacy serial files without following symlink or hardl
           `set -euo pipefail
 state=${JSON.stringify(state)}; tap=fake
 prepare_network() { :; }
-run_ssh() { :; }
+bounded_guest() { [[ "$1" == readiness ]]; }
 sleep() { echo unexpected sleep >&2; return 1; }
 nohup() { printf '%s\\0' "$@" > "$state/argv"; }
 qemu_owner() { if [[ "$1" == capture ]]; then wait "$(<"$state/qemu.pid")"; fi; }
@@ -642,11 +734,58 @@ start_vm
         { encoding: "utf8", timeout: 5_000 },
       );
       assert.equal(result.status, 0, result.stderr);
-      await assert.rejects(lstat(log), { code: "ENOENT" });
+      const retained = await lstat(log);
+      if (kind === "regular") assert.equal(await readFile(log, "utf8"), "legacy");
+      if (kind === "hardlink") assert.equal(retained.ino, original.ino);
       const argv = (await readFile(join(state, "argv"), "utf8")).split("\0");
       assert.equal(argv[argv.indexOf("-serial") + 1], "null");
       assert.equal(await readFile(target, "utf8"), "preserve");
       assert.equal((await lstat(target)).ino, original.ino);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("owner stages propagate nested key and network failures through exact ERR rollback", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const text = await readFile(driver, "utf8");
+  const stages = ["owner_stage", "owner_stage_commit", "owner_stage_error", "arm_owner_errors", "disarm_owner_errors"]
+    .map((name) => shellFunction(text, name))
+    .join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-stage-errors-"));
+  try {
+    for (const [mode, effect] of [
+      [
+        "keys",
+        'prepare_keys() { ssh-keygen; printf continued >> "$CALLS"; }; ssh-keygen() { return 7; }; prepare_keys',
+      ],
+      [
+        "network",
+        'prepare_network() { network_policy > "$STATE/network.policy"; network_owner prepare; printf continued >> "$CALLS"; }; network_policy() { :; }; network_owner() { return 8; }; prepare_network',
+      ],
+    ] as const) {
+      const calls = join(dir, `${mode}.calls`);
+      await writeFile(calls, "");
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+operation=create; owner_stage_key=; CALLS=${JSON.stringify(calls)}; STATE=${JSON.stringify(dir)}
+generation_owner() { printf '%s %s\\n' "$1" "\${2:-}" >> "$CALLS"; }
+rollback_create() { printf 'rollback\\n' >> "$CALLS"; }
+${stages}
+arm_owner_errors
+owner_stage ${mode}
+${effect}
+owner_stage_commit
+printf ready >> "$CALLS"`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.notEqual(result.status, 0, mode);
+      assert.equal(await readFile(calls, "utf8"), `intent ${mode}\nfail ${mode}\nrollback\n`);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -664,7 +803,7 @@ test("cleanup wiring retains uncertainty, has no PID-number signaling or suppres
   assert.doesNotMatch(network, /\|\| true|2>\/dev\/null/u);
   assert.ok(network.indexOf("value['pending']=True; save(value)") < network.indexOf("command(do,before)"));
   assert.match(text, /cleanup_partial\(\) \{\n {2}stop_vm && remove_network/u);
-  assert.match(text, /no retained driver custody; absence is not teardown proof/u);
+  assert.match(text, /no matching retained driver custody/u);
   const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
   assert.doesNotMatch(smoke, /"\$driver" destroy[^\n]*\|\| true/u);
   assert.match(smoke, /smoke requires absent state/u);
@@ -793,105 +932,724 @@ with patch.object(os,'stat',stat_ns), patch.object(pathlib.Path,'lstat',lambda p
   );
 });
 
-test("smoke competitor and mismatched receipt never confer cleanup; successful nonce does", async () => {
-  const { spawnSync } = await import("node:child_process");
-  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
-  const acquisition = smoke.slice(smoke.indexOf('receipt=$("$driver" create)'), smoke.indexOf('"$driver" verify'));
-  const dir = await mkdtemp(join(tmpdir(), "cogs-smoke-race-"));
+test("KVM generation owner binds exact private state and never adopts replacements", async () => {
+  const { spawn, spawnSync } = await import("node:child_process");
+  const source = shellFunction(await readFile(driver, "utf8"), "generation_owner");
+  const program = source.split("<<'PY'\n")[1]?.split("\nPY\n")[0];
+  assert.ok(program);
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-generation-"));
+  const nonce = "a".repeat(32);
+  const revision = "c".repeat(40);
+  const invoke = (state: string, action: string, key = "", source = revision, locator = state) =>
+    spawnSync("python3", ["-I", "-c", program, dir, state, action, nonce, key, source, "linux-kvm", locator], {
+      encoding: "utf8",
+    });
   try {
-    for (const mode of ["competitor", "wrong-receipt", "owned", "retired", "helper-uncertain"]) {
-      const fake = join(dir, "driver");
-      await writeFile(
-        fake,
-        `#!/bin/bash
-if [[ "$1" == create ]]; then
-  printf foreign > "$COGS_KVM_STATE_DIR"
-  [[ "$MODE" != competitor ]] || exit 1
-  nonce=$COGS_KVM_GENERATION
-  [[ "$MODE" != wrong-receipt ]] || nonce=foreign
-  printf '{"status":"ready","profile":"linux-kvm","generation":"%s"}\\n' "$nonce"
-else
-  printf '%s' "$COGS_KVM_GENERATION" > "$COGS_KVM_STATE_DIR.destroyed"
-fi
-`,
-        { mode: 0o700 },
-      );
-      const state = join(dir, mode);
+    const racing = join(dir, "racing");
+    const race = (generation: string) =>
+      new Promise<{ status: number | null }>((resolve) => {
+        const child = spawn("python3", [
+          "-I",
+          "-c",
+          program,
+          dir,
+          racing,
+          "init",
+          generation,
+          "",
+          revision,
+          "linux-kvm",
+          racing,
+        ]);
+        child.on("close", (status) => resolve({ status }));
+      });
+    const raceResults = await Promise.all([race(nonce), race("b".repeat(32))]);
+    assert.deepEqual(raceResults.map(({ status }) => status).sort(), [0, 1]);
+    assert.match(await readFile(join(racing, ".cogs-linux-kvm-v1"), "utf8"), /^(a{32}|b{32})\n$/u);
+
+    const ambient = join(dir, "ambient");
+    await writeFile(ambient, "competitor", { mode: 0o600 });
+    assert.notEqual(invoke(ambient, "init").status, 0);
+    assert.equal(await readFile(ambient, "utf8"), "competitor");
+
+    const state = join(dir, "state");
+    assert.equal(invoke(state, "init").status, 0);
+    const sentinel = join(state, ".cogs-linux-kvm-v1");
+    const sentinelInfo = await lstat(sentinel);
+    assert.equal(await readFile(sentinel, "utf8"), `${nonce}\n`);
+    assert.equal(sentinelInfo.mode & 0o777, 0o600);
+    assert.equal(sentinelInfo.nlink, 1);
+    if (process.getuid) assert.equal(sentinelInfo.uid, process.getuid());
+    const owner = JSON.parse(await readFile(join(state, ".generation.owner"), "utf8"));
+    const stateInfo = await lstat(state);
+    assert.deepEqual(owner.directory, [stateInfo.dev, stateInfo.ino]);
+    assert.equal(owner.profile, "linux-kvm");
+    assert.equal(owner.sourceRevision, revision);
+    assert.equal(owner.locator, state);
+    assert.deepEqual(owner.keys, ["bootstrap"]);
+    assert.notEqual(invoke(state, "check", "verify", "d".repeat(40)).status, 0);
+    assert.notEqual(invoke(state, "check", "verify", revision, `${state}-other`).status, 0);
+
+    assert.equal(invoke(state, "intent", "keys").status, 0);
+    const owned = join(state, "control");
+    await mkdir(owned, { mode: 0o700 });
+    for (const name of ["client_ed25519_key", "client_ed25519_key.pub", "host_ed25519_key", "host_ed25519_key.pub"])
+      await writeFile(join(owned, name), "secret", { mode: 0o600 });
+    await writeFile(join(state, "known_hosts"), "host", { mode: 0o600 });
+    assert.equal(invoke(state, "commit", "keys").status, 0);
+    const replacement = join(state, "control/client_ed25519_key");
+    const staged = join(dir, "replacement-key"); // Outside the inventoried state directory.
+    await writeFile(staged, "foreign", { mode: 0o600, flag: "wx" });
+    assert.notEqual((await lstat(staged)).ino, (await lstat(replacement)).ino);
+    // Both inodes are live until atomic rename; inode ABA remains possible after unlink/recreate.
+    await rename(staged, replacement);
+    assert.notEqual(invoke(state, "intent", "retirement").status, 0);
+    assert.notEqual(invoke(state, "remove").status, 0);
+    assert.equal(await readFile(replacement, "utf8"), "foreign");
+    assert.equal(JSON.parse(await readFile(join(state, ".generation.owner"), "utf8")).uncertain, true);
+
+    for (const [name, mutate] of [
+      ["wrong-nonce", async (path: string) => writeFile(join(path, ".cogs-linux-kvm-v1"), `${"b".repeat(32)}\n`)],
+      ["extra-line", async (path: string) => writeFile(join(path, ".cogs-linux-kvm-v1"), `${nonce}\n\n`)],
+      ["wrong-mode", async (path: string) => chmod(join(path, ".cogs-linux-kvm-v1"), 0o644)],
+      [
+        "hard-link",
+        async (path: string) => {
+          await link(join(path, ".cogs-linux-kvm-v1"), join(path, "sentinel-alias"));
+        },
+      ],
+    ] as const) {
+      const candidate = join(dir, name);
+      assert.equal(invoke(candidate, "init").status, 0);
+      await mutate(candidate);
+      assert.notEqual(invoke(candidate, "check", "verify").status, 0, name);
+    }
+
+    for (const [name, mutation, finish] of [
+      ["pending-extra", async (path: string) => writeFile(join(path, "foreign"), "x", { mode: 0o600 }), "fail"],
+      ["commit-extra", async (path: string) => writeFile(join(path, "foreign"), "x", { mode: 0o600 }), "commit"],
+      [
+        "pending-replacement",
+        async (path: string) => {
+          const target = join(path, "qemu.owner"),
+            staged = join(dir, "replacement-qemu-owner");
+          await writeFile(staged, '{"phase":"never"}\n', { mode: 0o600, flag: "wx" });
+          assert.notEqual((await lstat(staged)).ino, (await lstat(target)).ino);
+          // Distinct live inode outside candidate; unlink/recreate inode ABA is not covered.
+          await rename(staged, target);
+        },
+        "fail",
+      ],
+      ["disk-staging", async (path: string) => mkdir(join(path, "git-tools.staging"), { mode: 0o700 }), "fail"],
+    ] as const) {
+      const candidate = join(dir, name);
+      assert.equal(invoke(candidate, "init").status, 0);
+      assert.equal(invoke(candidate, "intent", name === "disk-staging" ? "disks" : "keys").status, 0);
+      await mutation(candidate);
+      assert.notEqual(invoke(candidate, finish, name === "disk-staging" ? "disks" : "keys").status, 0, name);
+      const retained = JSON.parse(await readFile(join(candidate, ".generation.owner"), "utf8"));
+      assert.equal(retained.uncertain, true);
+      assert.deepEqual(retained.keys, ["bootstrap"]);
+    }
+
+    const partial = join(dir, "partial");
+    assert.equal(invoke(partial, "init").status, 0);
+    assert.equal(invoke(partial, "intent", "disks").status, 0);
+    await writeFile(join(partial, "workspace.img"), "owned", { mode: 0o600 });
+    assert.equal(invoke(partial, "fail", "disks").status, 0);
+    assert.equal(invoke(partial, "intent", "retirement").status, 0);
+    assert.equal(invoke(partial, "commit", "retirement").status, 0);
+    assert.equal(invoke(partial, "intent", "removal").status, 0);
+    assert.equal(invoke(partial, "remove").status, 0);
+    await assert.rejects(lstat(partial), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("KVM receipts are generation-bound canonical closed schemas and smoke rejects extras or duplicates", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const source = await readFile(driver, "utf8");
+  const emitter = shellFunction(source, "emit_ready");
+  assert.match(emitter, /bounded_guest "receipt-\$1"/u); // helper validates before JSON encoding
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const parser = shellFunction(smoke, "exact_receipt");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-receipt-"));
+  try {
+    const base = {
+      status: "ready",
+      profile: "linux-kvm",
+      guest_root: true,
+      kvm_enabled: true,
+      distinct_boot_ids: true,
+      guest_kernel: "6.12",
+      guest_image_sha512: kvmImageSha,
+      host_ip: "192.0.2.1",
+      guest_ip: "192.0.2.2",
+      proxy_port: 18080,
+      generation: "b".repeat(32),
+      command: "create",
+    };
+    for (const [name, raw, accepted] of [
+      ["exact", `${JSON.stringify(base)}\n`, true],
+      ["extra", `${JSON.stringify({ ...base, extra: true })}\n`, false],
+      ["duplicate", `${JSON.stringify(base).replace("{", '{"status":"ready",')}\n`, false],
+      ["two-lines", `${JSON.stringify(base)}\n\n`, false],
+    ] as const) {
+      const path = join(dir, name);
+      await writeFile(path, raw);
       const result = spawnSync(
         "bash",
         [
           "-c",
-          `set -euo pipefail
-state=$COGS_KVM_STATE_DIR; driver=${JSON.stringify(fake)}
-passed=false; acquired=false; helper_safe=true
-write_report() { :; }
-${shellFunction(smoke, "cleanup")}
-trap cleanup EXIT
-${acquisition}
-[[ "$MODE" != retired ]] || acquired=false
-[[ "$MODE" != helper-uncertain ]] || helper_safe=false
-exit 1
+          `set -euo pipefail; COGS_KVM_GENERATION=${"b".repeat(32)}; proxy_port=18080; ${parser}; exact_receipt ${JSON.stringify(path)} create`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status === 0, accepted, `${name}: ${result.stderr}`);
+    }
+    assert.match(smoke, /acquired=false[^\n]*\n {6}"\$driver" destroy/u);
+    assert.match(smoke, /acquired=false[^\n]*\n"\$driver" destroy/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("smoke arms cleanup only from an exact create receipt and does not retry consumed destroy", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const exact = shellFunction(smoke, "exact_receipt");
+  const ready = shellFunction(smoke, "run_ready");
+  const cleanup = shellFunction(smoke, "cleanup");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-smoke-authority-"));
+  const fake = join(dir, "driver");
+  await writeFile(
+    fake,
+    `#!/bin/bash
+printf '%s\n' "$1" >> "$CALLS"
+if [[ "$1" == create ]]; then
+  printf competitor > "$AMBIENT"
+  [[ "$MODE" != failed ]] || exit 1
+  generation=$COGS_KVM_GENERATION
+  [[ "$MODE" != stale ]] || generation=${"c".repeat(32)}
+  printf '{"status":"ready","profile":"linux-kvm","guest_root":true,"kvm_enabled":true,"distinct_boot_ids":true,"guest_kernel":"6.12","guest_image_sha512":"${kvmImageSha}","host_ip":"192.0.2.1","guest_ip":"192.0.2.2","proxy_port":18080,"generation":"%s","command":"create"' "$generation"
+  [[ "$MODE" != extra ]] || printf ',"extra":true'
+  printf '}\\n'
+else
+  printf '{"profile":"linux-kvm","status":"destroyed","generation":"%s","command":"destroy"}\\n' "$COGS_KVM_GENERATION"
+fi
 `,
+    { mode: 0o700 },
+  );
+  try {
+    for (const mode of ["failed", "stale", "extra", "exact"]) {
+      const calls = join(dir, `${mode}.calls`);
+      const ambient = join(dir, `${mode}.ambient`);
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -uo pipefail
+driver=${JSON.stringify(fake)}; proxy_port=18080; passed=false; acquired=false; helper_safe=true; boot_records=
+write_report() { :; }
+${exact}
+${ready}
+${cleanup}
+trap cleanup EXIT
+if run_ready create; then acquired=true; fi
+exit 1`,
         ],
         {
           encoding: "utf8",
-          env: { ...process.env, MODE: mode, COGS_KVM_STATE_DIR: state, COGS_KVM_GENERATION: "a".repeat(32) },
+          env: {
+            ...process.env,
+            MODE: mode,
+            CALLS: calls,
+            AMBIENT: ambient,
+            COGS_KVM_GENERATION: "b".repeat(32),
+          },
         },
       );
       assert.equal(result.status, 1, result.stderr);
-      assert.equal(await readFile(state, "utf8"), "foreign");
-      if (mode === "owned") assert.equal(await readFile(`${state}.destroyed`, "utf8"), "a".repeat(32));
-      else await assert.rejects(lstat(`${state}.destroyed`), { code: "ENOENT" });
+      assert.equal(await readFile(ambient, "utf8"), "competitor");
+      const operations = (await readFile(calls, "utf8")).trim().split("\n");
+      assert.deepEqual(operations, mode === "exact" ? ["create", "destroy"] : ["create"]);
     }
-    const text = await readFile(driver, "utf8");
-    const gate = text.slice(text.indexOf("generation=${COGS_KVM_GENERATION"), text.indexOf("ssh_args()"));
-    const sentinel = join(dir, "sentinel");
-    await writeFile(sentinel, "b".repeat(32));
-    for (const operation of ["destroy", "reset", "verify", "ssh"]) {
-      const result = spawnSync(
-        "bash",
-        ["-c", `set -eu; operation=${operation}; sentinel=${JSON.stringify(sentinel)}; ${gate}`],
-        {
-          encoding: "utf8",
-          env: { ...process.env, COGS_KVM_GENERATION: "a".repeat(32) },
-        },
-      );
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /generation mismatch/u);
+    assert.match(smoke, /if \[\[ \$destroy_status -ne 0 \]\]; then[\s\S]*exit 1/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("smoke destroy failure cannot publish pass or retry after receipt/report failure", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  // Execute the actual final path and EXIT owner; all external effects are fakes.
+  const tail = smoke.slice(smoke.indexOf("destroy_receipt=$(mktemp)"));
+  const cleanup = shellFunction(smoke, "cleanup");
+  const exact = shellFunction(smoke, "exact_receipt");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-smoke-destroy-"));
+  try {
+    for (const entry of ["final", "exit"]) {
+      for (const mode of ["success", "nonzero", "malformed"]) {
+        for (const reportFailure of [false, true]) {
+          const calls = join(dir, "calls");
+          await writeFile(calls, "");
+          const result = spawnSync(
+            "bash",
+            [
+              "-c",
+              `set -euo pipefail
+passed=false; acquired=true; helper_safe=true; report=fake; proxy_port=18080
+boot_records=$(mktemp -d); driver=fake_driver; COGS_KVM_GENERATION=${"b".repeat(32)}
+fake_driver() {
+  [[ "$1" == destroy && "$acquired" == false ]] || exit 99
+  printf 'destroy\\n' >> "$CALLS"
+  ${mode === "nonzero" ? "return 7" : mode === "malformed" ? "printf malformed" : `printf '{"profile":"linux-kvm","status":"destroyed","generation":"%s","command":"destroy"}\\n' "$COGS_KVM_GENERATION"`}
+}
+write_report() {
+  printf '%s\\n' "$1" >> "$CALLS"
+  ${reportFailure ? "return 8" : ":"}
+}
+${exact}
+${cleanup}
+trap cleanup EXIT
+${entry === "final" ? tail : "exit 1"}`,
+            ],
+            {
+              encoding: "utf8",
+              timeout: 10_000,
+              env: { ...process.env, CALLS: calls },
+            },
+          );
+          const recorded = (await readFile(calls, "utf8")).trim().split("\n");
+          assert.equal(recorded.filter((v) => v === "destroy").length, 1, result.stderr);
+          assert.equal(result.status === 0, entry === "final" && mode === "success" && !reportFailure);
+          if (mode !== "success" || entry === "exit") assert(!recorded.includes("pass"));
+        }
+      }
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("KVM nonce receipts preserve the exact launcher schema when custody was not requested", async () => {
+test("every KVM shell ingress denies before effects regardless of ambient workflow or nonce", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { normalizeDriverResult } = await import("../dev/launcher/contract.ts");
-  const source = await readFile(driver, "utf8");
-  const receipt = source.slice(
-    source.indexOf("  # Preserve the launcher's exact legacy result schema"),
-    source.indexOf('\ncase "$operation" in'),
-  );
-  for (const nonce of ["", "a".repeat(32)]) {
-    const result = spawnSync(
-      "bash",
-      [
-        "-c",
-        `set -euo pipefail
-COGS_KVM_GENERATION=${JSON.stringify(nonce)}; generation=${JSON.stringify(nonce)}
-guest_kernel=6.12.95+deb13-amd64; image_sha512=${"a".repeat(128)}
-host_ip=192.0.2.1; guest_ip=192.0.2.2; proxy_port=18080
-receipt() {
-${receipt}
-receipt
-`,
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    if (nonce) assert.equal(JSON.parse(result.stdout).generation, nonce);
-    else assert.equal(normalizeDriverResult(result.stdout, "linux-kvm", "create").result, "ready");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-denied-"));
+  try {
+    const calls = join(dir, "calls");
+    const bin = join(dir, "bin");
+    await mkdir(bin);
+    // Even prerequisites, temp files and reporting are forbidden on denied paths.
+    for (const tool of [
+      "python3",
+      "git",
+      "dirname",
+      "mkdir",
+      "mktemp",
+      "flock",
+      "curl",
+      "sudo",
+      "ssh",
+      "scp",
+      "docker",
+      "socat",
+      "qemu-system-x86_64",
+    ])
+      await writeFile(join(bin, tool), '#!/bin/bash\nprintf effect >> "$CALLS"\nexit 99\n', { mode: 0o700 });
+    const state = join(dir, "state");
+    await mkdir(join(state, "control"), { recursive: true });
+    for (const name of [".cogs-linux-kvm-v1", "known_hosts", "control/client_ed25519_key"])
+      await writeFile(join(state, name), "invalid competitor", { mode: 0o600 });
+    const paths: [string, string[]][] = [
+      ["dev/linux-kvm/ci-smoke.sh", [join(dir, "report")]],
+      ["dev/linux-kvm/qualify.sh", [join(dir, "report")]],
+      ["test/egress-conformance/guest-probes/run-kvm-black-box-case.sh", []],
+      ...["prepare-cache", "create", "verify", "reset", "destroy", "probe", "ssh"].map((op): [string, string[]] => [
+        "dev/linux-kvm/driver.sh",
+        [op, "boot-id"],
+      ]),
+    ];
+    for (const event of ["schedule", "pull_request", "workflow_dispatch"]) {
+      for (const [path, args] of paths) {
+        const result = spawnSync("/bin/bash", [join(root, path), ...args], {
+          encoding: "utf8",
+          timeout: 5_000,
+          env: {
+            PATH: bin,
+            CALLS: calls,
+            GITHUB_EVENT_NAME: event,
+            COGS_KVM_GENERATION: "a".repeat(32),
+            COGS_SOURCE_REVISION: "b".repeat(40),
+            COGS_KVM_STATE_DIR: state,
+            COGS_KVM_EXECUTION_AUTHORIZATION: "true",
+            COGS_SUITE_GUEST_PROXY: "http://192.0.2.1:18080",
+            COGS_SUITE_TARGET_PORT: "443",
+            COGS_SUITE_PUBLIC_CA: join(state, "known_hosts"),
+            COGS_SUITE_CAPABILITY: "fake",
+            COGS_SUITE_SCENARIO: "fake",
+            COGS_SUITE_KIND: "https",
+            COGS_SUITE_EXPECT: "deny",
+          },
+        });
+        assert.equal(result.status, 1, `${path}: ${result.stderr}`);
+        assert.match(result.stderr, /ADR0335|KVM execution receipt/u);
+        assert.equal(result.stdout, "");
+      }
+    }
+    await assert.rejects(lstat(calls), { code: "ENOENT" });
+    await assert.rejects(lstat(join(dir, "report")), { code: "ENOENT" });
+    assert.equal(await readFile(join(state, ".cogs-linux-kvm-v1"), "utf8"), "invalid competitor");
+    const policy = spawnSync("bash", [driver, "print-network-policy"], { encoding: "utf8" });
+    assert.equal(policy.status, 0, policy.stderr);
+    assert.match(policy.stdout, /^\*filter\n/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Import the pure helper only. Portable faults run local Python children and
+// Unix socket fixtures, never SSH, QEMU, Docker, network setup or the driver.
+async function boundedTest(body: string) {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(
+    "python3",
+    [
+      "-B",
+      "-I",
+      "-c",
+      `
+import importlib.util,io,json,os,pathlib,select,signal,subprocess,sys,tempfile,threading,time
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('bounded',${JSON.stringify(boundedHelper)})
+h=importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+native_pidfd=h.Pidfd
+def rejects(fn):
+    try: fn()
+    except (h.Rejected,UnicodeError,ValueError,OSError): pass
+    else: raise AssertionError('fault accepted')
+# macOS has no pidfds. A test-only kqueue observes the unreaped direct child;
+# production still requires Linux pidfds before spawn, without a CLI override.
+if sys.platform=='darwin':
+    class PortableIdentity:
+        @staticmethod
+        def preflight(): pass
+        def __init__(self,pid):
+            self.pid=pid; self.done=False; self.queue=select.kqueue()
+            try: self.queue.control([select.kevent(pid,filter=select.KQ_FILTER_PROC,flags=select.KQ_EV_ADD,fflags=select.KQ_NOTE_EXIT)],0,0)
+            except ProcessLookupError: self.done=True
+        def exited(self):
+            self.done=self.done or bool(self.queue.control(None,1,0)); return self.done
+        def kill(self):
+            if not self.exited(): os.kill(self.pid,signal.SIGKILL)
+        def close(self): self.queue.close()
+    def portable_group_quiet(pgid):
+        lines=subprocess.check_output(['/bin/ps','-axo','pgid=,stat='],timeout=1).splitlines()
+        return all(int(parts[0])!=pgid or parts[1].startswith(b'Z') for line in lines if (parts:=line.split()))
+    native_killpg=os.killpg
+    def portable_killpg(pgid,sig):
+        try: native_killpg(pgid,sig)
+        except PermissionError:
+            # Darwin reports EPERM for a group containing only zombies.
+            if not portable_group_quiet(pgid): raise
+    h.Pidfd=PortableIdentity; h.group_quiet=portable_group_quiet; h.os.killpg=portable_killpg
+${body}
+`,
+    ],
+    { encoding: "utf8", timeout: 30_000, maxBuffer: 128 * 1024 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+}
+
+test("bounded KVM raw caps, simultaneous streams, EOF, deadlines and cancellation retire local children", async () => {
+  await boundedTest(String.raw`
+def run(program,cap=37,seconds=1):
+    return h.bounded([sys.executable,'-I','-c',program],cap,seconds)
+assert run("import os; os.write(1,b'x'*37)")== (0,b'x'*37)
+assert run("import os; os.write(2,b'x'*4096)")== (0,b'')
+for program in (
+    "import os; os.write(1,b'x'*38)",
+    "import os; os.write(2,b'x'*4097)",
+    "import os; os.write(1,b'\\xff')",
+    "import os; os.write(2,b'\\x00')",
+    "import os; os.write(1,b'valid\\r\\n')",
+    "import os; os.write(1,'é'.encode()*19)",
+    "import os; os.write(1,b'x'*38); os.write(2,b'x'*4097)",
+): rejects(lambda:run(program))
+assert run('raise SystemExit(7)')==(7,b'')
+# A single ignored TERM and silent stream cannot evade the absolute deadline.
+started=time.monotonic()
+rejects(lambda:run('import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(20)',seconds=.1))
+assert time.monotonic()-started<4
+# Leader exits, descendant inherits pipes OR closes them before sleeping.
+for close in ('','os.close(1); os.close(2);'):
+    program="import os,time,signal; pid=os.fork();\nif pid==0: "+close+"signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(20)\nelse: os._exit(0)"
+    started=time.monotonic()
+    if not close: rejects(lambda:run(program,seconds=.15))
+    else: assert run(program)==(0,b'')
+    assert time.monotonic()-started<4
+# Cancellation latches through spawn/capture rather than losing child identity.
+original=h.subprocess.Popen
+children=[]
+def spawn(*args,**kwargs):
+    if args[0][0]=='/bin/ps': return original(*args,**kwargs) # portable census only
+    assert kwargs['shell'] is False and kwargs['start_new_session'] is True
+    assert kwargs['stdin']==subprocess.DEVNULL
+    child=original(*args,**kwargs); children.append(child); h.cancelled=True; return child
+with patch.object(h.subprocess,'Popen',spawn): rejects(lambda:run('import time; time.sleep(20)'))
+assert children[0].returncode is not None
+h.cancelled=False
+# Admission of unsupported pidfds is effect-free.
+with patch.object(h.Pidfd,'preflight',side_effect=h.Rejected), patch.object(h.subprocess,'Popen',side_effect=AssertionError):
+    rejects(lambda:run('pass'))
+`);
+});
+
+test("bounded KVM retirement retains pidfd/group identity through TERM/KILL, before any reap", async () => {
+  await boundedTest(String.raw`
+from types import SimpleNamespace as S
+for fail in (False,True):
+    events=[]; clock=[0.0]
+    class Child:
+        pid=42
+        def wait(self,timeout): events.append('reap'); return 0
+    class Held:
+        def exited(self): return not fail
+        def kill(self): events.append('pidfd-kill')
+    def tick(): clock[0]+=.1; return clock[0]
+    with patch.object(h.os,'killpg',lambda pid,sig:events.append((pid,sig))), \
+         patch.object(h,'group_quiet',lambda pid:not fail), patch.object(h.time,'monotonic',tick), patch.object(h.time,'sleep',lambda _:None):
+        if fail: rejects(lambda:h.retire(Child(),Held()))
+        else: assert h.retire(Child(),Held())==0
+    assert events[:2]==[(42,signal.SIGTERM),(42,signal.SIGKILL)]
+    assert events[2:]==['pidfd-kill','reap']
+# Held pidfd, not a potentially reused numeric PID, receives the final signal.
+sent=[]
+held=object.__new__(native_pidfd)
+held.fd=88; held.exited=lambda:False
+with patch.object(signal,'pidfd_send_signal',lambda fd,*args:sent.append(fd),create=True):
+    held.kill()
+assert sent==[88]
+`);
+});
+
+test("bounded KVM fixed IDs validate exact identity bytes, host keys, canonical receipts and remote failures", async () => {
+  await boundedTest(String.raw`
+boot=b'00000000-0000-4000-8000-000000000001\n'
+assert h.identity(boot,'boot-id')==boot[:-1].decode()
+for raw in (boot[:-1],boot+b'\n',boot.replace(b'\n',b'\r\n'),boot+b'x',boot.replace(b'0',b'G'),b'\0'*37):
+    rejects(lambda:h.identity(raw,'boot-id'))
+for raw in (b'6.12\n',b'x'*64+b'\n'): assert h.identity(raw,'kernel')
+for raw in (b'',b'\n',b'x'*65+b'\n',b'6.12\nextra\n',b'6.12\r\n',b'6.12\0\n',b'\xff\n'):
+    rejects(lambda:h.identity(raw,'kernel'))
+for raw in (b'{"a":1,"a":2}',b'{"a":NaN}',b'{"a":Infinity}',b'\xff'):
+    rejects(lambda:h.exact_json(raw))
+state=pathlib.Path('/safe'); nonce='a'*32; calls=[]
+def bounded(argv,cap=16384,seconds=15,deadline=None):
+    calls.append((argv,cap,seconds,deadline)); assert argv[0]=='/usr/bin/ssh'
+    assert argv[-2]=='root@192.0.2.2' and 'IdentityAgent=none' in argv
+    return 0,boot if argv[-1]==h.PROBES['boot-id'] else b'6.12.95-amd64\n' if argv[-1]=='uname -r' else b''
+with patch.object(h,'bounded',bounded), patch.object(h,'read_control',lambda *args:(nonce+'\n').encode()), \
+     patch('builtins.open',lambda *args:io.BytesIO(boot.replace(b'001',b'002'))):
+    for name in h.PROBES: h.guest(state,name,'18080')
+    for command in ('create','verify','reset'):
+        value=h.execute('receipt-'+command,state,nonce,'18080')
+        raw=h.canonical(value)
+        assert raw==json.dumps(value,separators=(',',':')).encode()+b'\n'
+        assert value['generation']==nonce and value['command']==command and value['distinct_boot_ids'] is True
+    before=len(calls)
+    for name,token,port in (('arbitrary',nonce,'18080'),('root','b','18080'),('root',nonce,'1;id'),('root',nonce,'65536')):
+        rejects(lambda:h.execute(name,state,token,port))
+    assert len(calls)==before
+assert any(cap==37 for _,cap,_,_ in calls) and any(cap==65 for _,cap,_,_ in calls)
+for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
+    with patch.object(h,'bounded',return_value=(code,raw)):
+        rejects(lambda:h.guest(state,'boot-id','18080'))
+# Readiness retries ONLY key exchange without a remote command, under one bound.
+scans=[]; guests=[]; clock=[0.0]
+def scan(state,end): scans.append(end); clock[0]+=4; return len(scans)==3
+with patch.object(h,'host_key',scan), patch.object(h,'guest',lambda *args:guests.append(args)), \
+     patch.object(h,'read_control',return_value=(nonce+'\n').encode()), \
+     patch.object(h.time,'monotonic',lambda:clock[0]), patch.object(h.time,'sleep',lambda _:None):
+    h.execute('readiness',state,nonce,'18080')
+assert scans==[120,120,120] and guests==[(state,'ready','18080',120)]
+key=b'192.0.2.2 ssh-ed25519 YWJj\n'
+with patch.object(h,'read_control',return_value=key):
+    for code,raw in ((0,key),(1,b''),(0,key+key),(0,key+b'\n'),(0,key.replace(b'YWJj',b'eA=='))):
+        with patch.object(h,'bounded',return_value=(code,raw)):
+            if raw==key: assert h.host_key(state)
+            elif code==1: assert h.host_key(state) is False
+            else: rejects(lambda:h.host_key(state))
+`);
+});
+
+test("QMP bounds raw line/aggregate/message count, trickle deadlines, malformed responses and short writes", async () => {
+  await boundedTest(String.raw`
+# Deterministic nonblocking socket faults use the actual parser/deadline logic.
+greeting=b'{"QMP":{}}\r\n'; caps=b'{"return":{},"id":"caps"}\r\n'; answer=b'{"return":{"present":true,"enabled":true},"id":"kvm"}\r\n'
+for mode in ('ok','cap','total','count','duplicate','incomplete','trickle','caps-error','false','boolean-int','wrong-id','utf8'):
+    clock=[0.0]; writes=[]
+    event=b'{"event":"tick"}\n'
+    response=greeting+caps+answer
+    if mode=='cap': response=b'x'*8193
+    if mode=='total': response=greeting+caps+(b'{"event":"'+b'x'*8000+b'"}\n')*5+answer
+    if mode=='count': response=greeting+caps+event*31+answer
+    if mode=='duplicate': response=greeting+caps+answer.replace(b'"present":true',b'"present":false,"present":true')
+    if mode=='incomplete': response=greeting+caps+answer[:-2]
+    if mode=='caps-error': response=greeting+b'{"error":{},"id":"caps"}\n'+answer
+    if mode=='false': response=response.replace(b'"enabled":true',b'"enabled":false')
+    if mode=='boolean-int': response=response.replace(b'"enabled":true',b'"enabled":1')
+    if mode=='wrong-id': response=response.replace(b'"id":"kvm"',b'"id":"other"')
+    if mode=='utf8': response=b'{"QMP":"\xff"}\n'
+    pending=bytearray(response)
+    class Socket:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def setblocking(self,value): assert value is False
+        def connect_ex(self,path): return 0
+        def getsockopt(self,*args): return 0
+        def send(self,raw): writes.append(raw[:2]); return min(2,len(raw))
+        def recv(self,size):
+            if mode=='trickle': clock[0]+=.2; return b' '
+            result=bytes(pending[:min(size,47)]); del pending[:len(result)]; return result
+    class Selector:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def register(self,*args): pass
+        def modify(self,*args): pass
+        def select(self,timeout): return [True]
+    with patch.object(h.socket,'socket',lambda *args:Socket()), patch.object(h.selectors,'DefaultSelector',Selector), \
+         patch.object(h.time,'monotonic',lambda:clock[0]):
+        if mode=='ok': h.query_kvm('/fixture')
+        else: rejects(lambda:h.query_kvm('/fixture'))
+    if mode=='ok': assert b''.join(writes)==b'{"execute":"qmp_capabilities","id":"caps"}\n{"execute":"query-kvm","id":"kvm"}\n'
+`);
+});
+
+test("QMP portable Unix-socket observations handle fragmented actual reads and incomplete EOF", async () => {
+  await boundedTest(String.raw`
+import socket
+for incomplete in (False,True):
+    with tempfile.TemporaryDirectory(prefix='qmp-',dir='/tmp') as directory:
+        path=directory+'/q'; server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        server.bind(path); server.listen(1); server.settimeout(2); errors=[]
+        def serve():
+            try:
+                with server.accept()[0] as client:
+                    client.settimeout(2)
+                    for part in (b'{"Q',b'MP":{}}\r',b'\n'): client.sendall(part)
+                    with client.makefile('rb') as stream:
+                        assert stream.readline(129)==b'{"execute":"qmp_capabilities","id":"caps"}\n'
+                        client.sendall(b'{"return":{},"id":"caps"}\r\n')
+                        assert stream.readline(129)==b'{"execute":"query-kvm","id":"kvm"}\n'
+                        client.sendall(b'{"return":{"present":true,"enabled":true},"id":"kvm"}'+(b'' if incomplete else b'\r\n'))
+            except BaseException as error: errors.append(error)
+        thread=threading.Thread(target=serve); thread.start()
+        try:
+            if incomplete: rejects(lambda:h.query_kvm(path))
+            else: h.query_kvm(path)
+        finally:
+            thread.join(3); server.close()
+        assert not thread.is_alive() and not errors,errors
+`);
+});
+
+test("helper CLI cannot discover custody from a sentinel, and uncertain local retirement is distinct", async () => {
+  await boundedTest(String.raw`
+# Direct CLI denial precedes even lock/custody observation, for every fixed ID.
+with patch.object(h,'require_driver',side_effect=AssertionError('custody reached')), \
+     patch.object(h,'execute',side_effect=AssertionError('effect reached')):
+    for name in h.IDS:
+        with patch.object(sys,'argv',['bounded',name,'/safe','a'*32,'18080']): assert h.main()==1
+with patch.object(h.os,'fstat',side_effect=OSError), patch.object(h.subprocess,'Popen',side_effect=AssertionError), \
+     patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
+    assert h.main()==1
+# Primitive local retirement failures become exit 2, not settled guest failure.
+with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
+     patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
+    assert h.main()==2
+native_retire=h.retire
+children=[]; original=h.subprocess.Popen
+def spawn(*args,**kwargs):
+    child=original(*args,**kwargs)
+    if args[0][0]!='/bin/ps': children.append(child)
+    return child
+def fail_after_retirement(child,held):
+    native_retire(child,held); raise OSError('lost proof')
+with patch.object(h.subprocess,'Popen',spawn), patch.object(h,'retire',fail_after_retirement):
+    try: h.bounded([sys.executable,'-I','-c','pass'])
+    except h.RetirementUncertain: pass
+    else: raise AssertionError('local uncertainty erased')
+assert children[0].returncode==0
+# Real control-file no-follow and raw caps; no helper mutates the sentinel.
+with tempfile.TemporaryDirectory() as directory:
+    target=pathlib.Path(directory)/'token'; target.write_bytes(b'a'*32+b'\n'); target.chmod(0o600)
+    assert h.read_control(target,33)==b'a'*32+b'\n'
+    alias=target.with_name('alias'); alias.symlink_to(target)
+    rejects(lambda:h.read_control(alias,33))
+    target.write_bytes(b'a'*33+b'\n'); rejects(lambda:h.read_control(target,33))
+    assert target.read_bytes()==b'a'*33+b'\n'
+`);
+});
+
+test("driver fixed-ID custody fails closed across helper failure, lost completion and foreign generation", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const source = await readFile(driver, "utf8");
+  const functions = ["generation_owner", "bounded_guest"].map((name) => shellFunction(source, name)).join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-guest-custody-"));
+  try {
+    await mkdir(join(dir, ".cogs-dev"), { mode: 0o700 });
+    for (const mode of ["success", "failure", "uncertain", "killed", "lost", "foreign"] as const) {
+      const state = join(dir, ".cogs-dev", mode);
+      const program = `set -euo pipefail; umask 077
+repo=${JSON.stringify(dir)}; state=${JSON.stringify(state)}; source_revision=${"c".repeat(40)}; generation=${"a".repeat(32)}; proxy_port=18080
+${functions}
+generation_owner init
+python3() {
+ if [[ "$2" == */bounded-command.py ]]; then
+   [[ "$3" == root && "$4" == "$state" && "$5" == "$generation" && "$6" == 18080 ]] || exit 9
+   ${mode === "failure" ? "return 1" : mode === "uncertain" ? "return 2" : mode === "killed" ? "return 137" : ":"}
+ else command python3 "$@"; fi
+}
+${mode === "lost" ? "generation_owner guest-start root" : mode === "foreign" ? `generation=${"b".repeat(32)}; bounded_guest root` : "bounded_guest root"}
+`;
+      const result = spawnSync("bash", ["-c", program], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(result.status === 0, mode === "success" || mode === "lost", result.stderr);
+      const custody = JSON.parse(await readFile(join(state, ".generation.owner"), "utf8"));
+      assert.equal(custody.generation, "a".repeat(32));
+      assert.equal(custody.guest, ["lost", "uncertain", "killed"].includes(mode) ? "root" : null);
+      assert.equal(custody.failed, mode === "failure");
+      const check = spawnSync(
+        "bash",
+        ["-c", `${program.slice(0, program.indexOf("generation_owner init"))}generation_owner check verify`],
+        { encoding: "utf8" },
+      );
+      assert.equal(check.status === 0, mode === "success" || mode === "foreign");
+      if (mode === "failure") {
+        const cleanup = spawnSync(
+          "bash",
+          ["-c", `${program.slice(0, program.indexOf("generation_owner init"))}generation_owner check destroy`],
+          { encoding: "utf8" },
+        );
+        assert.equal(cleanup.status, 0, cleanup.stderr); // cleanup-only, no adoption
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const smoke = await readFile(join(root, "dev/linux-kvm/ci-smoke.sh"), "utf8");
+  const harness = await readFile(join(root, "test/egress-conformance/stage3-real-runtime/harness.ts"), "utf8");
+  assert.doesNotMatch(source, /run_ssh|ssh_args|ssh-keyscan|^ {2}ssh\)/mu);
+  assert.match(source, /generation_owner guest-start[\s\S]*bounded-command\.py[\s\S]*generation_owner guest-done/u);
+  for (const command of ["create", "reset"]) {
+    // Receipt bytes are provisional until zero exit; failed unlock never grants
+    // an unlocked rollback permission to mutate the generation afterwards.
+    assert.ok(source.includes(`emit_ready ${command}\n    disarm_owner_errors\n    release_lock`));
+  }
+  assert.doesNotMatch(smoke, /"\$driver" ssh|! "\$driver" probe|\$\("\$driver" probe/u);
+  assert.doesNotMatch(harness, /run-kvm-black-box-case|execFileAsync\(driver/u);
+  assert.match(harness, /unmigrated KVM conformance acquisition is not admitted/u);
 });
 
 test("socat single-child owner retains pidfd through reuse, failures and TERM/KILL retirement", async () => {
@@ -932,7 +1690,7 @@ for mode in ('success','early-exit','kill','timeout','probe-fail','signal','pidf
         def register(self,fd,event): assert fd==88
         def poll(self,ms): return [1] if dead or mode=='early-exit' else []
     def probe(args,**kwargs):
-        calls.append(args); assert '/19090' in args[-1]
+        calls.append(args); assert args==['/fake-driver','probe','proxy-connect'] and kwargs['timeout']==45
         if mode=='signal': raise RuntimeError('interrupted')
         return S(returncode=1 if mode=='probe-fail' else 0)
     with patch.object(subprocess,'Popen',spawn), patch.object(subprocess,'run',probe), \\

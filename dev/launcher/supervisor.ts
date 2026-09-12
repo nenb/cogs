@@ -35,6 +35,8 @@ export type LauncherInventory = Readonly<{
   descriptor: "none" | "starting" | "ready" | "malformed";
   workerLive: boolean | "unknown";
   recovery: "present" | "absent" | "unknown";
+  acquisitionUncertainty: "present" | "absent" | "unknown";
+  retirement: "present" | "absent" | "unknown";
   cleanupRequired: boolean;
   driverState: "present" | "absent" | "unknown";
 }>;
@@ -172,6 +174,10 @@ export async function launcherInventory(
     const manifest = await readManifest(state);
     const descriptor = await descriptorInventory(state, captured);
     const recovery = await recoveryState(state.recoveryPath);
+    // These sticky markers are independent of mutable phase/worker recovery.
+    // Metadata presence is observational only; it never grants cleanup authority.
+    const acquisitionUncertainty = await recoveryState(join(state.dir, ".cogs-launcher-uncertainty"));
+    const retirement = await recoveryState(join(state.dir, ".cogs-launcher-retirement"));
     const driverState = await directoryState(state.driverStateDir);
     return deepFreeze({
       version: "cogs.dev-launcher-inventory/v1alpha1",
@@ -182,12 +188,16 @@ export async function launcherInventory(
       descriptor: descriptor.class,
       workerLive: descriptor.live,
       recovery,
+      acquisitionUncertainty,
+      retirement,
       cleanupRequired:
         manifest.phase === "worker-ready" ||
         manifest.phase === "cleanup-required" ||
         descriptor.class !== "none" ||
         descriptor.live === "unknown" ||
         recovery !== "absent" ||
+        acquisitionUncertainty !== "absent" ||
+        retirement !== "absent" ||
         driverState === "unknown",
       driverState,
     });

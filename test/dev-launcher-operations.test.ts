@@ -9,6 +9,7 @@ import { parseLauncherArgs } from "../dev/launcher/cli.ts";
 import type { LauncherProfile } from "../dev/launcher/contract.ts";
 import { canonicalJson } from "../dev/launcher/contract.ts";
 import { beginWorkerStartup, bindWorkerChild, createApiToken, promoteWorkerReady } from "../dev/launcher/control.ts";
+import { createSandbox, resetSandbox } from "../dev/launcher/core.ts";
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_NORMAL_PROMPT,
@@ -24,13 +25,20 @@ import {
   s309StageExitCode,
   s309StageFromExitCode,
 } from "../dev/launcher/operations.ts";
+import type { ProfileAction, ProfileAdapter } from "../dev/launcher/profiles.ts";
 import {
+  clearRecovery,
+  consumeDriverAcquisition,
   createState,
   type LauncherState,
+  publishDriverAcquisition,
+  readAcquisition,
   readManifest,
   resolveLauncherState,
   writePhase,
 } from "../dev/launcher/state.ts";
+import { launcherInventory } from "../dev/launcher/supervisor.ts";
+import { validateS309Json, validateSmokeJson } from "../scripts/run-launcher-smoke-evidence.ts";
 
 const revision = "d".repeat(40);
 const parentDigest = `sha256:${"1".repeat(64)}`;
@@ -50,6 +58,7 @@ async function roots() {
 async function sandbox(ctx: LauncherOperationContext, name: string, profile: LauncherProfile = "linux-kvm") {
   const state = await resolveLauncherState({ root: ctx.launcherRoot, name, sourceRevision: revision });
   const manifest = await createState(state, profile);
+  await publishDriverAcquisition(state, await readAcquisition(state));
   await writePhase(state, manifest, "sandbox-ready");
   return state;
 }
@@ -251,13 +260,25 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
   return Object.freeze({
     createSandbox: Object.freeze(
       async (o: { root: string; name: string; profile: LauncherProfile; sourceRevision: string }) => {
-        const state = await sandbox(
-          { launcherRoot: o.root, repoRoot: o.root, exportRoot: o.root, sourceRevision: o.sourceRevision },
-          o.name,
-          o.profile,
-        );
         calls.push("create");
-        return Object.freeze({ manifest: await readManifest(state), workerReady: false });
+        const action = (operation: ProfileAction) =>
+          Object.freeze(async (_state: LauncherState, generation: string) =>
+            Object.freeze({
+              generation,
+              profile: o.profile,
+              operation,
+              authority: o.profile === "linux-kvm" ? "authoritative-local" : "functional-only",
+              result: o.profile === "linux-kvm" ? (operation === "destroy" ? "destroyed" : "ready") : "pass",
+            }),
+          );
+        const adapter = Object.freeze({
+          profile: o.profile,
+          create: action("create"),
+          verify: action("verify"),
+          reset: action("reset"),
+          destroy: action("destroy"),
+        }) as ProfileAdapter;
+        return createSandbox({ ...o, adapter });
       },
     ) as never,
     startWorkerForState: Object.freeze(async (state: LauncherState) => {
@@ -297,6 +318,8 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
         descriptor: "none",
         workerLive: false,
         recovery: "absent",
+        acquisitionUncertainty: "absent",
+        retirement: "absent",
         cleanupRequired: false,
         driverState: "absent",
       });
@@ -313,6 +336,72 @@ function opSeams(calls: string[]): Partial<LauncherOperationSeams> {
     }) as never,
   });
 }
+
+for (const op of ["smoke", "s3-09"] as const) {
+  for (const fault of ["failed", "lost", "malformed"] as const) {
+    test(`${op} ${fault} create response never arms outer cleanup`, async () => {
+      const { dir, ctx } = await roots();
+      const calls: string[] = [];
+      const normal = opSeams(calls);
+      try {
+        const overrides = Object.freeze({
+          ...normal,
+          createSandbox: Object.freeze(async (options: Parameters<typeof createSandbox>[0]) => {
+            assert(normal.createSandbox);
+            const receipt = await normal.createSandbox(options);
+            if (fault === "malformed") return Object.freeze({ ...receipt });
+            throw new Error(fault);
+          }),
+        });
+        await assert.rejects(
+          runLauncherOperation(Object.freeze({ op, profile: "linux-kvm", state: "owned" }), ctx, overrides),
+        );
+        assert.deepEqual(calls, ["create"]);
+        const state = await resolveLauncherState({ root: ctx.launcherRoot, name: "owned", sourceRevision: revision });
+        assert.equal((await readManifest(state)).phase, "sandbox-ready");
+        const before = await readFile(state.manifestPath);
+        await assert.rejects(
+          runLauncherOperation(Object.freeze({ op, profile: "linux-kvm", state: "owned" }), ctx, normal),
+        );
+        assert.deepEqual(await readFile(state.manifestPath), before);
+        assert(!calls.includes("destroy"));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("outer retirement consumes acquisition before malformed destroy report", async () => {
+  const { dir, ctx } = await roots();
+  const calls: string[] = [];
+  const normal = opSeams(calls);
+  try {
+    const seams = Object.freeze({
+      ...normal,
+      createApiClient: Object.freeze(() =>
+        passingS309Client(
+          Object.freeze({
+            version: "cogs.export-response/v1alpha1",
+            sensitive: true,
+            bundle: s309ExportBundle(),
+          }),
+        ),
+      ) as never,
+      destroySandbox: Object.freeze(async (_options, _signal, acquisition) => {
+        assert(Object.isFrozen(acquisition));
+        calls.push("destroy");
+        throw new Error("destroy succeeded but report was lost");
+      }) as LauncherOperationSeams["destroySandbox"],
+    });
+    await assert.rejects(
+      runLauncherOperation(Object.freeze({ op: "s3-09", profile: "linux-kvm", state: "once" }), ctx, seams),
+    );
+    assert.equal(calls.filter((c) => c === "destroy").length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("launcher parser accepts exact start operation only", () => {
   assert.equal(parseLauncherArgs(["--profile", "linux-kvm", "--state", "s", "start"]).op, "start");
@@ -375,6 +464,7 @@ test("fixed smoke uses dispatcher sequence and leaves metadata-only output", asy
       opSeams(calls),
     );
     assert.equal(result.complete, true);
+    validateSmokeJson(result, "linux-kvm");
     assert.deepEqual(
       calls.filter((x) => ["create", "start", "stop", "destroy"].includes(x)),
       ["create", "start", "stop", "destroy"],
@@ -542,6 +632,7 @@ test("s3-09 runs fixed integrated KVM scenario with metadata-only proof", async 
       seams,
     );
     assert.equal(result.complete, true);
+    validateS309Json(result);
     assert.equal(result.egressProof, true);
     assert.equal(result.liveEventCount, 259);
     assert.equal(result.liveEventCount > 32, true);
@@ -1135,7 +1226,7 @@ test("macos start failure has no API fallback", async () => {
   const { dir, ctx } = await roots();
   const calls: string[] = [];
   try {
-    await sandbox(ctx, "mac", "macos-vm");
+    await assert.rejects(sandbox(ctx, "mac", "macos-vm"), /prerequisite/);
     const seams = Object.freeze({
       ...opSeams(calls),
       startWorkerForState: Object.freeze(async () => {
@@ -1146,7 +1237,7 @@ test("macos start failure has no API fallback", async () => {
     await assert.rejects(() =>
       runLauncherOperation(Object.freeze({ op: "start", profile: "macos-vm", state: "mac" }), ctx, seams),
     );
-    assert.deepEqual(calls, ["start-failed"]);
+    assert.deepEqual(calls, []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1174,6 +1265,55 @@ test("dispatcher rejects hostile core result getters without invocation", async 
     assert.equal(invoked, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("public status retains acquisition uncertainty after smoke worker-start failure and phase recovery", async () => {
+  for (const op of ["smoke", "s3-09"] as const) {
+    const { dir, ctx } = await roots();
+    const calls: string[] = [];
+    try {
+      const seams = Object.freeze({
+        ...opSeams(calls),
+        startWorkerForState: Object.freeze(async () => {
+          throw new Error("lost worker-start response");
+        }),
+        launcherInventory,
+      });
+      await assert.rejects(
+        runLauncherOperation(Object.freeze({ op, profile: "linux-kvm", state: "sticky" }), ctx, seams),
+      );
+      assert.deepEqual(calls, ["create"]); // no parent destroy on uncertain worker
+      const state = await resolveLauncherState({ root: ctx.launcherRoot, name: "sticky", sourceRevision: revision });
+      await writePhase(state, await readManifest(state), "sandbox-ready");
+      await clearRecovery(state);
+      const observed = await runLauncherOperation(
+        Object.freeze({ op: "status", profile: "linux-kvm", state: "sticky" }),
+        ctx,
+      );
+      const inventory = observed.inventory as Record<string, unknown>;
+      assert.equal(inventory.phase, "sandbox-ready");
+      assert.equal(inventory.recovery, "absent");
+      assert.equal(inventory.acquisitionUncertainty, "present");
+      assert.equal(inventory.retirement, "absent");
+      assert.equal(inventory.cleanupRequired, true);
+      assert(!JSON.stringify(observed).includes(state.dir));
+      const authority = await readAcquisition(state);
+      assert(!JSON.stringify(observed).includes(authority.generation));
+      await assert.rejects(
+        resetSandbox({ root: ctx.launcherRoot, name: "sticky", sourceRevision: revision, profile: "linux-kvm" }),
+        /sticky acquisition uncertainty/,
+      );
+      await consumeDriverAcquisition(state, authority);
+      const retired = await runLauncherOperation(
+        Object.freeze({ op: "status", profile: "linux-kvm", state: "sticky" }),
+        ctx,
+      );
+      assert.equal((retired.inventory as Record<string, unknown>).retirement, "present");
+      assert.equal((retired.inventory as Record<string, unknown>).cleanupRequired, true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

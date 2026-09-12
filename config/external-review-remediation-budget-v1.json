@@ -1,25 +1,253 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 30000,
+  "global_gross_line_high": 48000,
+  "global_gross_byte_high": 11000000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1509,
-    "source_inventory_bytes": 22020096,
+    "tracked_files": 1530,
+    "source_inventory_bytes": 30000000,
     "serialized_source_inventory_bytes": 262144
+  },
+  "product_test_correction": {
+    "base_revision": "8ca95b1e97447466587bbfae63318d9fce620e68",
+    "base_tree": "dff53b023e8e4ee4bac4897f200124b3daed9de7",
+    "global_gross_line_forecast": 18000,
+    "global_gross_byte_forecast": 8000000,
+    "owners": [
+      {
+        "name": "route",
+        "gross_line_forecast": 0,
+        "gross_byte_forecast": 0,
+        "existing_paths": ["docs/operations/runbooks/index.json"],
+        "new_files": []
+      },
+      {
+        "name": "revocation",
+        "gross_line_forecast": 0,
+        "gross_byte_forecast": 0,
+        "existing_paths": [],
+        "new_files": []
+      },
+      {
+        "name": "relay",
+        "gross_line_forecast": 2675,
+        "gross_byte_forecast": 700000,
+        "existing_paths": [
+          "dev/linux-kvm/bounded-command.py",
+          "dev/linux-kvm/ci-smoke.sh",
+          "dev/linux-kvm/driver.sh",
+          "dev/linux-kvm/git-tools.sh",
+          "dev/linux-kvm/qualify.sh",
+          "test/egress-conformance/guest-probes/run-kvm-black-box-case.sh",
+          "test/egress-conformance/stage3-real-runtime/harness.ts",
+          "test/linux-kvm-git-tools.test.ts"
+        ],
+        "new_files": []
+      },
+      {
+        "name": "lifecycle",
+        "gross_line_forecast": 4550,
+        "gross_byte_forecast": 550000,
+        "existing_paths": [
+          "dev/insecure-sandbox/ci-smoke.sh",
+          "dev/insecure-sandbox/driver.sh",
+          "dev/insecure-sandbox/ssh-adapter-smoke.ts",
+          "dev/launcher/cli.ts",
+          "dev/launcher/contract.ts",
+          "dev/launcher/control.ts",
+          "dev/launcher/core.ts",
+          "dev/launcher/main.ts",
+          "dev/launcher/operations.ts",
+          "dev/launcher/profiles.ts",
+          "dev/launcher/runner.ts",
+          "dev/launcher/state.ts",
+          "dev/launcher/supervisor.ts",
+          "dev/launcher/trusted-compose.ts",
+          "dev/launcher/trusted-controls.ts",
+          "dev/launcher/worker-entry.ts",
+          "dev/launcher/worker-process.ts",
+          "schemas/runtime-v1alpha1.json",
+          "src/runtime/compose.ts",
+          "src/runtime/config.ts",
+          "src/skills/session-preparer.ts",
+          "src/skills/snapshot-session-preparer.ts",
+          "test/dev-launcher-control-otlp.test.ts",
+          "test/dev-launcher-core.test.ts",
+          "test/dev-launcher-operations.test.ts",
+          "test/dev-launcher-profiles.test.ts",
+          "test/dev-launcher-state.test.ts",
+          "test/dev-launcher-supervisor.test.ts",
+          "test/dev-launcher-trusted-compose.test.ts",
+          "test/dev-launcher-trusted-controls.test.ts",
+          "test/dev-launcher-worker-process.test.ts",
+          "test/production-compose.test.ts",
+          "test/runtime-config.test.ts"
+        ],
+        "new_files": []
+      },
+      {
+        "name": "completion",
+        "gross_line_forecast": 2580,
+        "gross_byte_forecast": 300000,
+        "existing_paths": [
+          "dev/launcher/api-client.ts",
+          "src/api/server.ts",
+          "src/pi/session.ts",
+          "src/telemetry/worker-telemetry.ts",
+          "test/api-server.test.ts",
+          "test/dev-launcher-cli-api.test.ts",
+          "test/pi-session.test.ts",
+          "test/skills-session-preparer.test.ts",
+          "test/worker-telemetry.test.ts"
+        ],
+        "new_files": []
+      },
+      {
+        "name": "integration",
+        "gross_line_forecast": 7732,
+        "gross_byte_forecast": 5570000,
+        "existing_paths": [
+          ".github/workflows/insecure-container.yml",
+          ".github/workflows/kvm-qualification.yml",
+          "README.md",
+          "config/external-review-remediation-budget-v1.json",
+          "dev/product-test/host-custody.py",
+          "dev/product-test/runner.ts",
+          "dev/product-test/snapshot-owner.ts",
+          "docs/adr/0333-authorize-controlled-product-test-corrections.md",
+          "docs/adr/0334-reallocate-measured-product-test-correction.md",
+          "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
+          "docs/adr/README.md",
+          "docs/operations/production-runtime-foundation.md",
+          "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
+          "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+          "docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json",
+          "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
+          "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+          "docs/security-evidence/stage4-offline-readiness-package.json",
+          "package.json",
+          "scripts/check-stage2-retained-lines.py",
+          "scripts/run-launcher-smoke-evidence.ts",
+          "scripts/stage4-offline-readiness-regenerate.ts",
+          "scripts/stage4-offline-readiness.ts",
+          "scripts/stage4-offline-source-inventory.ts",
+          "scripts/stage4-runtime-artifact-closure-regenerate.ts",
+          "scripts/stage4-runtime-artifact-closure.ts",
+          "test/aws-stage2-completion-kata-runtime.py",
+          "test/aws-stage2-completion-kata-s5.py",
+          "test/aws-stage2-completion-local-result.test.ts",
+          "test/ci-infrastructure-boundary.test.ts",
+          "test/launcher-smoke-evidence.test.ts",
+          "test/stage2-remediation-budget.test.ts",
+          "test/stage4-offline-readiness.test.ts",
+          "test/stage4-runtime-artifact-closure.test.ts",
+          "test/stage4-schema-registry.test.ts"
+        ],
+        "new_files": ["docs/adr/0336-converge-remaining-product-governance.md"]
+      }
+    ],
+    "checkpoint_revision": "8ca95b1e97447466587bbfae63318d9fce620e68",
+    "checkpoint_tree": "dff53b023e8e4ee4bac4897f200124b3daed9de7",
+    "retained_allocation": {
+      "gross_lines": 15537,
+      "gross_bytes": 5120000
+    },
+    "remediation_retained_allocation": {
+      "gross_lines": 45200,
+      "gross_bytes": 7200000
+    },
+    "remaining_tranche": {
+      "gross_lines": 2000,
+      "gross_bytes": 2000000,
+      "allocations": [
+        {
+          "name": "helper",
+          "gross_lines": 452,
+          "gross_bytes": 350000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 352,
+              "gross_bytes": 250000
+            },
+            {
+              "name": "lifecycle",
+              "gross_lines": 100,
+              "gross_bytes": 100000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "docker_workflow_and_tests",
+          "gross_lines": 550,
+          "gross_bytes": 650000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 550,
+              "gross_bytes": 650000
+            }
+          ],
+          "path_gross_line_highs": [
+            {
+              "path": ".github/workflows/insecure-container.yml",
+              "gross_lines": 300
+            }
+          ]
+        },
+        {
+          "name": "kvm_gate_and_tests",
+          "gross_lines": 300,
+          "gross_bytes": 300000,
+          "owner_allocations": [
+            {
+              "name": "relay",
+              "gross_lines": 300,
+              "gross_bytes": 300000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "final_controls_and_evidence",
+          "gross_lines": 145,
+          "gross_bytes": 600000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 145,
+              "gross_bytes": 600000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "governance",
+          "gross_lines": 553,
+          "gross_bytes": 100000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 553,
+              "gross_bytes": 100000
+            }
+          ],
+          "path_gross_line_highs": []
+        }
+      ]
+    }
   },
   "owners": [
     {
       "name": "route",
       "gross_line_high": 2200,
       "gross_byte_forecast": {
-        "source": 100000,
-        "tests_fixtures": 200000,
-        "docs_contracts": 50000,
         "total": 350000
       },
       "new_file_high": 1,
@@ -51,9 +279,6 @@
       "name": "revocation",
       "gross_line_high": 3000,
       "gross_byte_forecast": {
-        "source": 100000,
-        "tests_fixtures": 100000,
-        "docs_contracts": 20000,
         "total": 220000
       },
       "new_file_high": 0,
@@ -78,19 +303,18 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 1975,
+      "gross_line_high": 4628,
       "gross_byte_forecast": {
-        "source": 100000,
-        "tests_fixtures": 260000,
-        "docs_contracts": 40000,
-        "total": 400000
+        "total": 1000000
       },
-      "new_file_high": 0,
+      "new_file_high": 1,
       "paths": [
         "dev/launcher/kvm-relay.ts",
         "dev/linux-kvm/README.md",
+        "dev/linux-kvm/bounded-command.py",
         "dev/linux-kvm/ci-smoke.sh",
         "dev/linux-kvm/driver.sh",
+        "dev/linux-kvm/git-tools.sh",
         "dev/linux-kvm/qualify.sh",
         "scripts/validate-stage3-real-runtime-sidecars.ts",
         "src/egress/proxy-capability.ts",
@@ -127,22 +351,26 @@
     },
     {
       "name": "lifecycle",
-      "gross_line_high": 7500,
+      "gross_line_high": 11800,
       "gross_byte_forecast": {
-        "source": 250000,
-        "tests_fixtures": 430000,
-        "docs_contracts": 70000,
-        "total": 750000
+        "total": 1200000
       },
-      "new_file_high": 4,
+      "new_file_high": 5,
       "paths": [
+        "dev/insecure-sandbox/ci-smoke.sh",
+        "dev/insecure-sandbox/driver.sh",
+        "dev/insecure-sandbox/ssh-adapter-smoke.ts",
+        "dev/launcher/cli.ts",
+        "dev/launcher/contract.ts",
         "dev/launcher/control.ts",
         "dev/launcher/core.ts",
         "dev/launcher/deterministic-stream.ts",
         "dev/launcher/envoy-egress.ts",
         "dev/launcher/fixtures.ts",
+        "dev/launcher/main.ts",
         "dev/launcher/operations.ts",
         "dev/launcher/otlp-fixture.ts",
+        "dev/launcher/profiles.ts",
         "dev/launcher/runner.ts",
         "dev/launcher/state.ts",
         "dev/launcher/supervisor.ts",
@@ -151,6 +379,7 @@
         "dev/launcher/worker-entry.ts",
         "dev/launcher/worker-process.ts",
         "schemas/launcher-cleanup-receipt-v1.json",
+        "schemas/runtime-v1alpha1.json",
         "src/egress/audit-wal.ts",
         "src/egress/envoy-process.ts",
         "src/egress/revocation-watcher.ts",
@@ -162,13 +391,19 @@
         "src/pi/native-persistence.ts",
         "src/pi/owned-runtime.ts",
         "src/runtime/compose.ts",
+        "src/runtime/config.ts",
+        "src/skills/session-preparer.ts",
+        "src/skills/snapshot-session-preparer.ts",
         "src/ssh/bash-tool.ts",
         "src/ssh/connection.ts",
         "test/bash-tool.test.ts",
         "test/dev-launcher-control-otlp.test.ts",
+        "test/dev-launcher-core.test.ts",
         "test/dev-launcher-deterministic-stream.test.ts",
         "test/dev-launcher-envoy-egress.test.ts",
         "test/dev-launcher-operations.test.ts",
+        "test/dev-launcher-profiles.test.ts",
+        "test/dev-launcher-state.test.ts",
         "test/dev-launcher-supervisor.test.ts",
         "test/dev-launcher-trusted-compose.test.ts",
         "test/dev-launcher-trusted-controls.test.ts",
@@ -181,21 +416,20 @@
         "test/launch-lifecycle.test.ts",
         "test/pi-native-persistence.test.ts",
         "test/production-compose.test.ts",
+        "test/runtime-config.test.ts",
         "test/ssh-connection.test.ts",
         "test/stage3-s309-exit-evidence.test.ts"
       ]
     },
     {
       "name": "completion",
-      "gross_line_high": 3100,
+      "gross_line_high": 6080,
       "gross_byte_forecast": {
-        "source": 180000,
-        "tests_fixtures": 280000,
-        "docs_contracts": 40000,
-        "total": 500000
+        "total": 800000
       },
       "new_file_high": 3,
       "paths": [
+        "dev/launcher/api-client.ts",
         "docs/operations/stage-3-internal-api.md",
         "docs/operations/stage-3-ssh-connection.md",
         "schemas/entry-fragments-v1.json",
@@ -210,6 +444,7 @@
         "src/telemetry/otlp-http.ts",
         "src/telemetry/worker-telemetry.ts",
         "test/api-server.test.ts",
+        "test/dev-launcher-cli-api.test.ts",
         "test/egress-completion-queue.test.ts",
         "test/egress-otlp-telemetry.test.ts",
         "test/otlp-http.test.ts",
@@ -224,14 +459,11 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 12500,
+      "gross_line_high": 20157,
       "gross_byte_forecast": {
-        "source": 100000,
-        "tests_fixtures": 100000,
-        "docs_contracts": 150000,
-        "total": 350000
+        "total": 5630000
       },
-      "new_file_high": 81,
+      "new_file_high": 88,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -257,6 +489,7 @@
         ".github/workflows/stage2-production-plan.yml",
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
+        "README.md",
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
         "config/stage2-retired-revisions-v1.json",
@@ -315,6 +548,9 @@
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-execution-envelope-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-runtime-manifest-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json",
+        "dev/product-test/host-custody.py",
+        "dev/product-test/runner.ts",
+        "dev/product-test/snapshot-owner.ts",
         "docs/adr/0308-retire-paused-chain-and-authorize-external-review-remediation.md",
         "docs/adr/0309-retire-post-review-H-and-authorize-bounded-corrections.md",
         "docs/adr/0310-authorize-openbao-recognition-correction.md",
@@ -340,6 +576,10 @@
         "docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md",
         "docs/adr/0331-freeze-image-bound-H-and-authorize-control.md",
         "docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md",
+        "docs/adr/0333-authorize-controlled-product-test-corrections.md",
+        "docs/adr/0334-reallocate-measured-product-test-correction.md",
+        "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
+        "docs/adr/0336-converge-remaining-product-governance.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
@@ -350,6 +590,7 @@
         "docs/security-evidence/README.md",
         "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
         "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+        "docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json",
         "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
         "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
         "docs/security-evidence/stage4-offline-readiness-package.json",
@@ -388,6 +629,7 @@
         "scripts/stage4-offline-readiness-regenerate.ts",
         "scripts/stage4-offline-readiness.ts",
         "scripts/stage4-offline-source-inventory.ts",
+        "scripts/stage4-runtime-artifact-closure-regenerate.ts",
         "scripts/stage4-runtime-artifact-closure.ts",
         "scripts/validate-aws-stage2-completion-evidence-v3.ts",
         "scripts/validate-schemas.ts",
@@ -402,11 +644,13 @@
         "test/aws-stage2-completion-evidence-v2.test.ts",
         "test/aws-stage2-completion-evidence-v3.test.ts",
         "test/aws-stage2-completion-kata-runtime.py",
+        "test/aws-stage2-completion-kata-s5.py",
         "test/aws-stage2-completion-local-receipt.py",
         "test/aws-stage2-completion-local-result.py",
         "test/aws-stage2-completion-local-result.test.ts",
         "test/aws-stage2-completion-rootfs-prebuilt-acquisition.test.ts",
         "test/aws-stage2-completion-rootfs-prebuilt.test.ts",
+        "test/ci-infrastructure-boundary.test.ts",
         "test/fixtures/stage2-completion/approval-v5-test-only.json",
         "test/fixtures/stage2-completion/production-v3-test-only.json",
         "test/fixtures/stage2-completion/production-v3-test-only.md",

@@ -5,14 +5,23 @@ import type { CliRequest } from "./cli.ts";
 import { readPromptFile, writeSensitiveExport } from "./cli.ts";
 import { deepFreeze, type LauncherAuthority, type LauncherPhase, type LauncherProfile } from "./contract.ts";
 import { readApiToken, readReadyWorkerDescriptor } from "./control.ts";
-import { createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox } from "./core.ts";
+import { acquiredSandbox, createSandbox, destroySandbox, type LauncherCoreOptions, resetSandbox } from "./core.ts";
 import {
   LAUNCHER_DETERMINISTIC_ABORT_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_PROOF_PROMPT,
   LAUNCHER_DETERMINISTIC_S309_SETUP_PROMPT,
 } from "./deterministic-stream.ts";
-import { resolveLauncherState, withStateLock } from "./state.ts";
+import {
+  type Acquisition,
+  assertAcquisition,
+  assertAcquisitionUsable,
+  assertDriverAcquisition,
+  markAcquisitionUncertain,
+  readAcquisition,
+  resolveLauncherState,
+  withStateLock,
+} from "./state.ts";
 import { launcherInventory, startWorkerForState, stopWorkerForState } from "./supervisor.ts";
 
 export type LauncherOperationContext = Readonly<{
@@ -156,6 +165,8 @@ export async function runLauncherOperation(
   let done: (() => void) | undefined;
   try {
     const req = captureRequest(request);
+    if ((req.op === "smoke" || req.op === "s3-09") && req.profile === "macos-vm")
+      throw new Error("launcher profile prerequisite failed");
     const baseCtx = await captureContext(context);
     const scoped = deadline(baseCtx.signal, req.timeoutMs);
     done = scoped.done;
@@ -202,9 +213,15 @@ async function locked(
   op: (
     state: Awaited<ReturnType<typeof resolveLauncherState>>,
   ) => Promise<{ phase: LauncherPhase; profile: LauncherProfile; authority: LauncherAuthority; apiPort?: number }>,
+  acquisition?: Acquisition,
 ) {
   const state = await resolveLauncherState(stateInput(options));
-  return await withStateLock(state, async () => base("start", opMeta(await op(state))));
+  return await withStateLock(state, async () => {
+    const retained = acquisition ?? (await readAcquisition(state));
+    await assertDriverAcquisition(state, retained);
+    await assertAcquisitionUsable(state, retained);
+    return base("start", opMeta(await op(state)));
+  });
 }
 
 async function apiRun(
@@ -274,9 +291,11 @@ async function shutdown(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   s: LauncherOperationSeams,
+  acquisition?: Acquisition,
 ) {
   const state = await resolveLauncherState(stateInput(options));
   return await withStateLock(state, async () => {
+    if (acquisition) await assertAcquisition(state, acquisition);
     let gracefulFailed = false;
     let holder: Awaited<ReturnType<typeof readApiToken>> | undefined;
     try {
@@ -297,6 +316,7 @@ async function shutdown(
         gracefulFailed = true;
       }
     }
+    if (acquisition) await assertAcquisition(state, acquisition);
     const stopped = base("shutdown", opMeta(await s.stopWorkerForState(state, undefined)));
     if (gracefulFailed) throw new Error("launcher operation failed");
     return stopped;
@@ -312,6 +332,9 @@ async function withReadyClient<T>(
 ): Promise<T> {
   const state = await resolveLauncherState(stateInput(options));
   return await withStateLock(state, async () => {
+    const acquisition = await readAcquisition(state);
+    await assertDriverAcquisition(state, acquisition);
+    await assertAcquisitionUsable(state, acquisition);
     const ready = await readReadyWorkerDescriptor(state);
     if (ready.profile !== request.profile || ready.sourceRevision !== ctx.sourceRevision)
       throw new Error("launcher operation failed");
@@ -526,12 +549,17 @@ async function s309(
   s: LauncherOperationSeams,
 ) {
   if (request.profile !== "linux-kvm") throw new Error("launcher operation failed");
-  let started = false;
+  let started = false,
+    workerSafe = true;
+  let acquisition: Acquisition | undefined;
   let stage: S309FailureStage = "s3-create";
   try {
-    base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
+    const created = await s.createSandbox(options, ctx.signal);
+    acquisition = acquiredSandbox(created, options);
+    base("create", meta(result(created).manifest));
     stage = "s3-start";
-    await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
+    workerSafe = false;
+    await locked(options, (state) => s.startWorkerForState(state, ctx.signal), acquisition);
     started = true;
     const proof = await withReadyClient(options, request, ctx, s, async (client, signal) => {
       stage = "s3-setup-run";
@@ -592,20 +620,34 @@ async function s309(
       }
     });
     stage = "s3-shutdown";
-    await shutdown(options, ctx.signal, ctx.timeoutMs, s);
-    started = false;
+    started = false; // retirement is attempted once, not retried on lost response
+    await shutdown(options, ctx.signal, ctx.timeoutMs, s, acquisition);
+    workerSafe = true;
     stage = "s3-absence";
     const inv = stripInventory((await status(options, s)).inventory);
     if (inv.descriptor !== "none" || inv.workerLive !== false || inv.recovery !== "absent")
       throw new Error("launcher operation failed");
     stage = "s3-destroy";
-    if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
+    const retiring = acquisition;
+    acquisition = undefined;
+    if (bool(result(await s.destroySandbox(options, ctx.signal, retiring)).removed) !== true)
       throw new Error("launcher operation failed");
     return deepFreeze({ op: "s3-09", complete: true, ...proof, inventory: inv });
   } catch (error) {
     let failed: S309FailureStage = error instanceof Error ? (s309Failures.get(error) ?? stage) : stage;
-    if (started) await stopOnly(options, s).catch(() => (failed = "s3-cleanup"));
-    await s.destroySandbox(options, undefined).catch(() => (failed = "s3-cleanup"));
+    if (acquisition) await retainUncertainty(options, acquisition).catch(() => undefined);
+    if (started && acquisition) {
+      await stopOnly(options, s, acquisition)
+        .then(() => {
+          workerSafe = true;
+        })
+        .catch(() => (failed = "s3-cleanup"));
+    }
+    if (acquisition && workerSafe) {
+      const retiring = acquisition;
+      acquisition = undefined;
+      await s.destroySandbox(options, undefined, retiring).catch(() => (failed = "s3-cleanup"));
+    }
     throw s309Failure(failed);
   }
 }
@@ -616,10 +658,15 @@ async function smoke(
   options: LauncherCoreOptions,
   s: LauncherOperationSeams,
 ) {
-  let started = false;
+  let started = false,
+    workerSafe = true;
+  let acquisition: Acquisition | undefined;
   try {
-    base("create", meta(result(await s.createSandbox(options, ctx.signal)).manifest));
-    await locked(options, (state) => s.startWorkerForState(state, ctx.signal));
+    const created = await s.createSandbox(options, ctx.signal);
+    acquisition = acquiredSandbox(created, options);
+    base("create", meta(result(created).manifest));
+    workerSafe = false;
+    await locked(options, (state) => s.startWorkerForState(state, ctx.signal), acquisition);
     started = true;
     const first = await apiRun(
       Object.freeze({ ...request, op: "run", promptFile: "dev/launcher/smoke-prompt.txt" }),
@@ -640,8 +687,9 @@ async function smoke(
       if (terminal.terminal !== "run_aborted") throw new Error("launcher operation failed");
       return terminal;
     });
-    await shutdown(options, ctx.signal, ctx.timeoutMs, s);
     started = false;
+    await shutdown(options, ctx.signal, ctx.timeoutMs, s, acquisition);
+    workerSafe = true;
     const inv = stripInventory((await status(options, s)).inventory);
     if (
       inv.descriptor !== "none" ||
@@ -650,12 +698,25 @@ async function smoke(
       inv.cleanupRequired !== false
     )
       throw new Error("launcher operation failed");
-    if (bool(result(await s.destroySandbox(options, ctx.signal)).removed) !== true)
+    const retiring = acquisition;
+    acquisition = undefined;
+    if (bool(result(await s.destroySandbox(options, ctx.signal, retiring)).removed) !== true)
       throw new Error("launcher operation failed");
     return deepFreeze({ op: "smoke", complete: true, aborted, inventory: inv });
   } catch (error) {
-    if (started) await stopOnly(options, s).catch(() => undefined);
-    await s.destroySandbox(options, undefined).catch(() => undefined);
+    if (acquisition) await retainUncertainty(options, acquisition).catch(() => undefined);
+    if (started && acquisition) {
+      await stopOnly(options, s, acquisition)
+        .then(() => {
+          workerSafe = true;
+        })
+        .catch(() => undefined);
+    }
+    if (acquisition && workerSafe) {
+      const retiring = acquisition;
+      acquisition = undefined;
+      await s.destroySandbox(options, undefined, retiring).catch(() => undefined);
+    }
     throw error;
   }
 }
@@ -682,13 +743,25 @@ function stripInventory(value: unknown) {
     descriptor: enumValue(v.descriptor, new Set(["none", "starting", "ready", "malformed"])),
     workerLive: v.workerLive === "unknown" ? "unknown" : bool(v.workerLive),
     recovery: enumValue(v.recovery, new Set(["present", "absent", "unknown"])),
+    acquisitionUncertainty: enumValue(v.acquisitionUncertainty, new Set(["present", "absent", "unknown"])),
+    retirement: enumValue(v.retirement, new Set(["present", "absent", "unknown"])),
     cleanupRequired: bool(v.cleanupRequired),
     driverState: enumValue(v.driverState, new Set(["present", "absent", "unknown"])),
   });
 }
-async function stopOnly(options: LauncherCoreOptions, s: LauncherOperationSeams): Promise<void> {
+async function retainUncertainty(options: LauncherCoreOptions, acquisition: Acquisition): Promise<void> {
+  const state = await resolveLauncherState(stateInput(options));
+  await withStateLock(state, () => markAcquisitionUncertain(state, acquisition));
+}
+
+async function stopOnly(
+  options: LauncherCoreOptions,
+  s: LauncherOperationSeams,
+  acquisition: Acquisition,
+): Promise<void> {
   const state = await resolveLauncherState(stateInput(options));
   await withStateLock(state, async () => {
+    await assertAcquisition(state, acquisition);
     await s.stopWorkerForState(state, undefined);
   });
 }

@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { LauncherProfile } from "../dev/launcher/contract.ts";
-import { createState, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
+import { createState, readAcquisition, resolveLauncherState, writePhase } from "../dev/launcher/state.ts";
 import {
   createGuestProxyControls,
   GUEST_PROXY_CA,
@@ -201,10 +201,7 @@ async function setup(profile: "insecure-container" | "linux-kvm" = "insecure-con
   await mkdir(state.driverStateDir, { mode: 0o700 });
   await chmod(state.driverStateDir, 0o700);
   const sentinel = profile === "insecure-container" ? ".cogs-insecure-owner" : ".cogs-linux-kvm-v1";
-  const sentinelText =
-    profile === "insecure-container"
-      ? `${createHash("sha256").update(state.driverStateDir).digest("hex").slice(0, 12)}\n`
-      : "";
+  const sentinelText = `${(await readAcquisition(state)).generation}\n`;
   await writeFile(join(state.driverStateDir, sentinel), sentinelText, { mode: 0o600 });
   const control = join(state.driverStateDir, "control");
   await mkdir(control, { mode: 0o700 });
@@ -545,15 +542,31 @@ test("rejects missing mutated or replaced driver ownership sentinels", async () 
     }
   }
 
-  const kvm = await setup("linux-kvm");
-  try {
-    await writeFile(join(kvm.state.driverStateDir, ".cogs-linux-kvm-v1"), "not-empty", { mode: 0o600 });
-    await assert.rejects(
-      materializeTrustedSshControls(kvm.state, "linux-kvm", "authoritative-local", undefined, seams(kvm)),
-      /trusted controls/,
-    );
-  } finally {
-    await cleanup(kvm);
+  for (const kind of ["empty", "foreign", "no-lf", "extra-lf", "upper", "cr", "nul", "hardlink", "mode"]) {
+    const kvm = await setup("linux-kvm");
+    try {
+      const nonce = (await readAcquisition(kvm.state)).generation;
+      const path = join(kvm.state.driverStateDir, ".cogs-linux-kvm-v1");
+      const bytes = {
+        empty: "",
+        foreign: `${"b".repeat(32)}\n`,
+        "no-lf": nonce,
+        "extra-lf": `${nonce}\n\n`,
+        upper: `${nonce.toUpperCase()}\n`,
+        cr: `${nonce}\r\n`,
+        nul: `${nonce}\0\n`,
+      };
+      if (kind === "hardlink") await link(path, join(kvm.temp, "linked"));
+      else if (kind === "mode") await chmod(path, 0o644);
+      else await writeFile(path, bytes[kind as keyof typeof bytes]);
+      await assert.rejects(
+        materializeTrustedSshControls(kvm.state, "linux-kvm", "authoritative-local", undefined, seams(kvm)),
+        /trusted controls/,
+      );
+      assert.deepEqual(await readdir(kvm.sshRoot), []);
+    } finally {
+      await cleanup(kvm);
+    }
   }
 });
 

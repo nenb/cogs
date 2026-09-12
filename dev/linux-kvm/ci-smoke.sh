@@ -2,14 +2,23 @@
 set -euo pipefail
 umask 077
 report=${1:-docs/security-evidence/generated/kvm-driver-smoke.json}
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+script=${BASH_SOURCE[0]}
+repo=${script%/dev/linux-kvm/ci-smoke.sh}
+[[ "$repo" != "$script" ]] || repo=$PWD
+repo=$(builtin cd "$repo" && builtin pwd -P)
+# shellcheck source=dev/linux-kvm/git-tools.sh
+source "$repo/dev/linux-kvm/git-tools.sh"
+cogs_kvm_execution_gate
 driver="$repo/dev/linux-kvm/driver.sh"
-started=$(python3 -c 'import time; print(time.time_ns()//1000000)')
+started=$(/usr/bin/python3 -I -B -c 'import time; print(time.time_ns()//1000000)')
 passed=false
 acquired=false
 helper_safe=true
-export COGS_KVM_GENERATION
-COGS_KVM_GENERATION=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+boot_records=
+export COGS_KVM_GENERATION COGS_SOURCE_REVISION
+# The gate has already bound this generation to the workflow run/attempt/source;
+# a random smoke nonce would silently create an unreceipted execution path.
+[[ "${COGS_KVM_GENERATION:-}" =~ ^[a-f0-9]{32}$ && "${COGS_SOURCE_REVISION:-}" =~ ^[a-f0-9]{40}$ ]] || exit 1
 proxy_port=${COGS_KVM_PROXY_PORT:-18080}
 [[ "$proxy_port" =~ ^[1-9][0-9]{0,4}$ && "$proxy_port" -ge 1 && "$proxy_port" -le 65535 ]] || exit 1
 state=${COGS_KVM_STATE_DIR:-$repo/.cogs-dev/linux-kvm}
@@ -21,11 +30,23 @@ cleanup() {
   if [[ "$passed" != true ]]; then
     if [[ "$helper_safe" != true ]]; then
       echo 'FAIL: proxy helper retirement uncertain; retaining driver dependencies' >&2
-    elif [[ "$acquired" == true ]] && ! "$driver" destroy >/dev/null; then
-      echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
+    elif [[ "$acquired" == true ]]; then
+      local cleanup_receipt cleanup_status=0
+      cleanup_receipt=$(mktemp)
+      acquired=false # consume before invocation, including failure/lost response
+      "$driver" destroy >"$cleanup_receipt" || cleanup_status=$?
+      if [[ $cleanup_status -eq 0 ]]; then
+        exact_receipt "$cleanup_receipt" destroy || cleanup_status=$?
+      fi
+      rm -f "$cleanup_receipt"
+      [[ $cleanup_status -eq 0 ]] || echo 'FAIL: driver cleanup uncertain; retained recovery state' >&2
     fi
-    write_report fail 'Linux/KVM isolated driver setup or teardown failed.'
+    write_report fail 'Linux/KVM isolated driver setup or teardown failed.' || status=1
     status=1
+  fi
+  if [[ -n "$boot_records" ]]; then
+    rm -f -- "$boot_records/first" "$boot_records/second"
+    rmdir -- "$boot_records"
   fi
   exit "$status"
 }
@@ -56,29 +77,65 @@ report={
 with open(path,'w') as f: json.dump(report,f,indent=2,sort_keys=True);f.write('\n')
 PY
 }
+exact_receipt() {
+  python3 -I - "$1" "$COGS_KVM_GENERATION" "$2" "$proxy_port" <<'PY'
+import json,pathlib,re,sys
+path,generation,command,port=sys.argv[1:]
+raw=pathlib.Path(path).read_bytes()
+if len(raw)>8192 or not raw.endswith(b'\n') or raw.count(b'\n')!=1:
+    raise SystemExit('FAIL: driver receipt framing mismatch')
+def pairs(items):
+    value={}
+    for key,item in items:
+        if key in value: raise ValueError('duplicate receipt key')
+        value[key]=item
+    return value
+try: value=json.loads(raw,object_pairs_hook=pairs)
+except (UnicodeError,ValueError) as error: raise SystemExit(f'FAIL: malformed driver receipt: {error}')
+if raw!=(json.dumps(value,separators=(',',':'))+'\n').encode():
+    raise SystemExit('FAIL: noncanonical driver receipt')
+if command=='destroy':
+    expected={'profile':'linux-kvm','status':'destroyed','generation':generation,'command':'destroy'}
+else:
+    keys={'status','profile','guest_root','kvm_enabled','distinct_boot_ids','guest_kernel',
+          'guest_image_sha512','host_ip','guest_ip','proxy_port','generation','command'}
+    if set(value)!=keys or any(value.get(name) is not True for name in ('guest_root','kvm_enabled','distinct_boot_ids')) \
+       or value.get('status')!='ready' or value.get('profile')!='linux-kvm' \
+       or value.get('generation')!=generation or value.get('command')!=command \
+       or type(value.get('guest_kernel')) is not str or not re.fullmatch(r'[0-9A-Za-z._+-]{1,64}',value['guest_kernel']) \
+       or value.get('guest_image_sha512')!='78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667' \
+       or value.get('host_ip')!='192.0.2.1' or value.get('guest_ip')!='192.0.2.2' \
+       or type(value.get('proxy_port')) is not int or value['proxy_port']!=int(port):
+        raise SystemExit(f'FAIL: {command} generation receipt mismatch')
+    expected=value
+if value!=expected: raise SystemExit(f'FAIL: {command} generation receipt mismatch')
+PY
+}
+run_ready() {
+  local command=$1 file status=0
+  file=$(mktemp)
+  "$driver" "$command" >"$file" || status=$?
+  if [[ $status -eq 0 ]]; then exact_receipt "$file" "$command" || status=$?; fi
+  rm -f "$file"
+  return "$status"
+}
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 # Only a successful exact ready receipt confers cleanup authority. Lost receipt
 # or failed create retains driver custody; pathname existence grants nothing.
-receipt=$("$driver" create)
-python3 - "$receipt" "$COGS_KVM_GENERATION" <<'PY'
-import json,sys
-value=json.loads(sys.argv[1])
-if value.get('status')!='ready' or value.get('profile')!='linux-kvm' or value.get('generation')!=sys.argv[2]:
-    raise SystemExit('FAIL: create generation receipt mismatch')
-PY
+run_ready create
 acquired=true
-"$driver" verify >/dev/null
-host_boot=$(cat /proc/sys/kernel/random/boot_id)
-guest_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
-[[ -n "$guest_boot" && "$guest_boot" != "$host_boot" ]]
-"$driver" ssh 'iptables -F 2>/dev/null || true; ip6tables -F 2>/dev/null || true; nft flush ruleset 2>/dev/null || true'
+run_ready verify
+boot_records=$(mktemp -d)
+"$driver" probe boot-id >"$boot_records/first"
+"$driver" probe clear-firewall
 # These are bounded defense-in-depth diagnostics only. No listener/route control
 # makes either failure causal firewall evidence, so the report grants no such credit.
-! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/192.0.2.1/22"' >/dev/null 2>&1
-! "$driver" ssh 'timeout 2 bash -c "</dev/tcp/1.1.1.1/443"' >/dev/null 2>&1
-! "$driver" ssh 'ip route show default | grep -q .'
+# A helper/SSH timeout is failure, never a successful negative diagnostic.
+"$driver" probe deny-host-ssh
+"$driver" probe deny-public-https
+"$driver" probe no-default-route
 
 proxy_probe() {
   python3 - "$driver" "$proxy_port" <<'PY'
@@ -96,13 +153,11 @@ try:
     fd=os.pidfd_open(child.pid,0)
     poll=select.poll(); poll.register(fd,select.POLLIN)
     signal.pthread_sigmask(signal.SIG_SETMASK,previous)
-    for _ in range(20):
-        if poll.poll(0): raise RuntimeError('proxy helper exited before probe')
-        result=subprocess.run([sys.argv[1],'ssh',f'timeout 2 bash -c "</dev/tcp/192.0.2.1/{sys.argv[2]}"'],
-                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        if result.returncode==0: break
-        time.sleep(.1)
-    else: raise RuntimeError('proxy probe failed')
+    time.sleep(.1)
+    if poll.poll(0): raise RuntimeError('proxy helper exited before probe')
+    result=subprocess.run([sys.argv[1],'probe','proxy-connect'], timeout=45,
+                          stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if result.returncode!=0: raise RuntimeError('proxy probe failed; no remote retry')
 finally:
     # Defer handled signals during retirement; there is exactly one cleanup owner.
     for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP): signal.signal(sig,signal.SIG_IGN)
@@ -132,13 +187,39 @@ probe_receipt=$(proxy_probe) || probe_status=$?
 helper_safe=true
 [[ "$probe_status" == 0 ]] || exit 1
 
-first_boot=$guest_boot
-"$driver" reset >/dev/null
-second_boot=$("$driver" ssh cat /proc/sys/kernel/random/boot_id)
-[[ -n "$second_boot" && "$second_boot" != "$first_boot" && "$second_boot" != "$host_boot" ]]
-"$driver" ssh grep -qx reset-persistent /workspace/reset-marker
-"$driver" destroy >/dev/null
-acquired=false
+run_ready reset
+"$driver" probe boot-id >"$boot_records/second"
+python3 -I - "$boot_records" <<'PY'
+import json,pathlib,re,sys
+records=[]
+for name in ('first','second'):
+    with open(pathlib.Path(sys.argv[1])/name,'rb') as stream: raw=stream.read(129)
+    value=json.loads(raw)
+    if len(raw)>128 or type(value) is not dict or set(value)!={'boot-id'} \
+       or raw!=(json.dumps(value,separators=(',',':'))+'\n').encode() \
+       or type(value['boot-id']) is not str or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',value['boot-id']):
+        raise SystemExit('FAIL: invalid boot receipt')
+    records.append(value['boot-id'].encode()+b'\n')
+with open('/proc/sys/kernel/random/boot_id','rb') as stream: host=stream.read(38)
+if not re.fullmatch(rb'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\n',host) or len(set([host,*records]))!=3:
+    raise SystemExit('FAIL: boot identities not distinct')
+PY
+"$driver" probe reset-read
+destroy_receipt=$(mktemp)
+destroy_status=0
+acquired=false # consume before invocation; EXIT must never retry this destroy
+"$driver" destroy >"$destroy_receipt" || destroy_status=$?
+if [[ $destroy_status -eq 0 ]]; then
+  exact_receipt "$destroy_receipt" destroy || destroy_status=$?
+fi
+rm -f "$destroy_receipt"
+if [[ $destroy_status -ne 0 ]]; then
+  echo 'FAIL: driver destroy uncertain; retained recovery state' >&2
+  exit 1
+fi
+rm -f -- "$boot_records/first" "$boot_records/second"
+rmdir -- "$boot_records"
+boot_records=
 write_report pass 'Active KVM booted a distinct root guest, used the generation-bound proxy probe, and reset preserved the workspace on a fresh boot. Non-proxy connection failures are diagnostic only and grant no firewall-enforcement evidence.'
 passed=true
 printf 'PASS: authoritative Linux/KVM driver smoke wrote %s\n' "$report"
