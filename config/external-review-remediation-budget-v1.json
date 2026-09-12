@@ -67,6 +67,7 @@
         "gross_line_forecast": 12727,
         "gross_byte_forecast": 13100000,
         "existing_paths": [
+          ".github/workflows/ci.yml",
           ".github/workflows/insecure-container.yml",
           ".github/workflows/kvm-qualification.yml",
           ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -84,6 +85,7 @@
           "biome.json",
           "config/external-review-remediation-budget-v1.json",
           "config/stage2-retired-revisions-v1.json",
+          "deploy/aws-feasibility/apply.sh",
           "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
           "deploy/aws-feasibility/completion_campaign_aws_entry.py",
           "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -94,10 +96,32 @@
           "deploy/aws-feasibility/completion_campaign_production.py",
           "deploy/aws-feasibility/completion_campaign_receipts.py",
           "deploy/aws-feasibility/completion_campaign_state.py",
+          "deploy/aws-feasibility/destroy.sh",
+          "deploy/aws-feasibility/inventory.sh",
+          "deploy/aws-feasibility/plan.sh",
+          "deploy/aws-feasibility/recover-production-campaign-entry.sh",
+          "deploy/aws-feasibility/recover-production-campaign.sh",
           "deploy/aws-feasibility/remote/completion_formal_cycle_authority.py",
           "deploy/aws-feasibility/remote/completion_formal_cycle_full.py",
           "deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py",
           "deploy/aws-feasibility/remote/completion_kata_preparation.py",
+          "deploy/aws-feasibility/remote/measure-runtime.sh",
+          "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+          "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+          "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
+          "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
+          "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+          "deploy/aws-feasibility/remote/run-stage2-completion-remote.sh",
+          "deploy/aws-feasibility/remote/validate-runtime.sh",
+          "deploy/aws-feasibility/run-measurement-campaign.sh",
+          "deploy/aws-feasibility/run-measurement-validation.sh",
+          "deploy/aws-feasibility/run-production-campaign.sh",
+          "deploy/aws-feasibility/run-production-effect.sh",
+          "deploy/aws-feasibility/run-production-inventory.sh",
+          "deploy/aws-feasibility/run-production-remote.sh",
+          "deploy/aws-feasibility/run-runtime-validation.sh",
+          "deploy/aws-feasibility/validate.sh",
+          "deploy/aws-feasibility/versions.tf",
           "dev/product-test/host-custody.py",
           "dev/product-test/runner.ts",
           "dev/product-test/snapshot-owner.ts",
@@ -205,33 +229,38 @@
       "allocations": [
         {
           "name": "pre_h_final_governance",
-          "gross_lines": 1100,
-          "gross_bytes": 700000,
+          "gross_lines": 1400,
+          "gross_bytes": 1000000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 1100,
-              "gross_bytes": 700000
+              "gross_lines": 1400,
+              "gross_bytes": 1000000
             }
           ],
           "paths": [
+            ".github/workflows/ci.yml",
             "config/external-review-remediation-budget-v1.json",
             "docs/adr/0338-plan-pre-h-final-corrections.md",
-            "docs/adr/README.md"
-          ]
+            "docs/adr/README.md",
+            "test/ci-infrastructure-boundary.test.ts"
+          ],
+          "pre_h_gross_lines": 1400,
+          "pre_h_gross_bytes": 1000000
         },
         {
           "name": "aws_principal_denial_and_cycle_custody",
-          "gross_lines": 4600,
-          "gross_bytes": 5100000,
+          "gross_lines": 4300,
+          "gross_bytes": 4800000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 4600,
-              "gross_bytes": 5100000
+              "gross_lines": 4300,
+              "gross_bytes": 4800000
             }
           ],
           "paths": [
+            "deploy/aws-feasibility/apply.sh",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
             "deploy/aws-feasibility/completion_campaign_aws_entry.py",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -242,6 +271,28 @@
             "deploy/aws-feasibility/completion_campaign_production.py",
             "deploy/aws-feasibility/completion_campaign_receipts.py",
             "deploy/aws-feasibility/completion_campaign_state.py",
+            "deploy/aws-feasibility/destroy.sh",
+            "deploy/aws-feasibility/inventory.sh",
+            "deploy/aws-feasibility/plan.sh",
+            "deploy/aws-feasibility/recover-production-campaign-entry.sh",
+            "deploy/aws-feasibility/recover-production-campaign.sh",
+            "deploy/aws-feasibility/remote/measure-runtime.sh",
+            "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+            "deploy/aws-feasibility/remote/run-stage2-completion-remote.sh",
+            "deploy/aws-feasibility/remote/validate-runtime.sh",
+            "deploy/aws-feasibility/run-measurement-campaign.sh",
+            "deploy/aws-feasibility/run-measurement-validation.sh",
+            "deploy/aws-feasibility/run-production-campaign.sh",
+            "deploy/aws-feasibility/run-production-effect.sh",
+            "deploy/aws-feasibility/run-production-inventory.sh",
+            "deploy/aws-feasibility/run-production-remote.sh",
+            "deploy/aws-feasibility/run-runtime-validation.sh",
+            "deploy/aws-feasibility/validate.sh",
+            "deploy/aws-feasibility/versions.tf",
             "schemas/aws-stage2-completion-production-approval-v5.json",
             "schemas/aws-stage2-production-custody-v1.json",
             "schemas/aws-stage2-production-principal-contract-v1.json",
@@ -261,7 +312,9 @@
             "test/stage2-production-approval.test.ts",
             "test/stage2-production-planner.py",
             "test/stage2-production-planner.test.ts"
-          ]
+          ],
+          "pre_h_gross_lines": 4300,
+          "pre_h_gross_bytes": 4800000
         },
         {
           "name": "protected_product_and_kvm_contract",
@@ -296,11 +349,12 @@
             "dev/product-test/runner.ts",
             "dev/product-test/snapshot-owner.ts",
             "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
-            "test/ci-infrastructure-boundary.test.ts",
             "test/egress-conformance/stage3-real-runtime/harness.ts",
             "test/linux-kvm-git-tools.test.ts",
             "test/production-compose.test.ts"
-          ]
+          ],
+          "pre_h_gross_lines": 4000,
+          "pre_h_gross_bytes": 3200000
         },
         {
           "name": "generated_readiness_and_no_mint_authorization",
@@ -330,7 +384,9 @@
             "test/stage4-offline-readiness.test.ts",
             "test/stage4-runtime-artifact-closure.test.ts",
             "test/stage4-schema-registry.test.ts"
-          ]
+          ],
+          "pre_h_gross_lines": 1800,
+          "pre_h_gross_bytes": 2000000
         },
         {
           "name": "final_hgq_control_reserve",
@@ -406,7 +462,11 @@
             "test/stage2-prebuilt-static-control-runtime-boundary.py",
             "test/stage2-production-workflows.test.ts",
             "test/stage2-remediation-budget.test.ts"
-          ]
+          ],
+          "pre_h_gross_lines": 1127,
+          "pre_h_gross_bytes": 1000000,
+          "final_minimum_lines": 2500,
+          "final_minimum_bytes": 3000000
         }
       ]
     }
@@ -661,6 +721,7 @@
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
         "config/stage2-retired-revisions-v1.json",
+        "deploy/aws-feasibility/apply.sh",
         "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
         "deploy/aws-feasibility/completion_campaign_aws_entry.py",
         "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -673,6 +734,11 @@
         "deploy/aws-feasibility/completion_campaign_receipts.py",
         "deploy/aws-feasibility/completion_campaign_remote_adapter.py",
         "deploy/aws-feasibility/completion_campaign_state.py",
+        "deploy/aws-feasibility/destroy.sh",
+        "deploy/aws-feasibility/inventory.sh",
+        "deploy/aws-feasibility/plan.sh",
+        "deploy/aws-feasibility/recover-production-campaign-entry.sh",
+        "deploy/aws-feasibility/recover-production-campaign.sh",
         "deploy/aws-feasibility/remote/completion_cycle_evidence.py",
         "deploy/aws-feasibility/remote/completion_cycle_full.py",
         "deploy/aws-feasibility/remote/completion_cycle_readiness.py",
@@ -683,6 +749,13 @@
         "deploy/aws-feasibility/remote/completion_kata_preparation.py",
         "deploy/aws-feasibility/remote/completion_local_evidence.py",
         "deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py",
+        "deploy/aws-feasibility/remote/measure-runtime.sh",
+        "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
+        "deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh",
+        "deploy/aws-feasibility/remote/run-stage2-completion-full.sh",
+        "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
+        "deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh",
+        "deploy/aws-feasibility/remote/run-stage2-completion-remote.sh",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v5/contracts/00-ip.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v5/contracts/01-tc.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v5/contracts/02-nft.json",
@@ -735,6 +808,16 @@
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-execution-envelope-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-runtime-manifest-v3.json",
         "deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-static-control-v2.json",
+        "deploy/aws-feasibility/remote/validate-runtime.sh",
+        "deploy/aws-feasibility/run-measurement-campaign.sh",
+        "deploy/aws-feasibility/run-measurement-validation.sh",
+        "deploy/aws-feasibility/run-production-campaign.sh",
+        "deploy/aws-feasibility/run-production-effect.sh",
+        "deploy/aws-feasibility/run-production-inventory.sh",
+        "deploy/aws-feasibility/run-production-remote.sh",
+        "deploy/aws-feasibility/run-runtime-validation.sh",
+        "deploy/aws-feasibility/validate.sh",
+        "deploy/aws-feasibility/versions.tf",
         "dev/product-test/host-custody.py",
         "dev/product-test/runner.ts",
         "dev/product-test/snapshot-owner.ts",

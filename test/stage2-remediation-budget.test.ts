@@ -278,7 +278,7 @@ assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
 assert b['source_limits']==dict(tracked_files=1620,source_inventory_bytes=45000000,serialized_source_inventory_bytes=262144)
 adr0338=Path('docs/adr/0338-plan-pre-h-final-corrections.md').read_text()
-for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation is **unimplemented and blocking**', 'unconditional, pre-credential AWS', 'completion_campaign_aws_adapter.py', 'max_attempts=1', 'fencing epoch', 'dev/linux-kvm/git-tools.sh', 'sends **exactly once**', 'after the deadline is rejected.', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
+for phrase in ('Merging this plan **never authorizes dispatch**', 'Principal separation and external custody are **unimplemented and blocking**', 'unconditionally denied', 'completion_campaign_aws_adapter.py', 'max_attempts=1', 'NotAfter + configured skew', 'versioned S3 backend/object custody', 'DynamoDB conditional journal/lease', 'pause an old operation **after', 'admission**', 'dev/linux-kvm/git-tools.sh', 'exact-head Quality, secret, images', 'regeneration must refresh and pass', 'may not mint credentials/resources', 'OpenBao is deferred and nonblocking **only**', 'No product behavior, full/readiness'):
  assert phrase in adr0338,phrase
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
@@ -574,7 +574,9 @@ assert (p['retained_allocation'],p['remediation_retained_allocation'])==({'gross
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast'])==(33127,23000000)
 assert (t['gross_lines'],t['gross_bytes'])==(15127,15000000)
 assert [x['name'] for x in t['allocations']]==['pre_h_final_governance','aws_principal_denial_and_cycle_custody','protected_product_and_kvm_contract','generated_readiness_and_no_mint_authorization','final_hgq_control_reserve']
-assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(1100,700000),(4600,5100000),(4000,3200000),(1800,2000000),(3627,4000000)]
+assert [(x['gross_lines'],x['gross_bytes']) for x in t['allocations']]==[(1400,1000000),(4300,4800000),(4000,3200000),(1800,2000000),(3627,4000000)]
+assert [(x['pre_h_gross_lines'],x['pre_h_gross_bytes']) for x in t['allocations']]==[(1400,1000000),(4300,4800000),(4000,3200000),(1800,2000000),(1127,1000000)]
+assert t['allocations'][-1]['final_minimum_lines']==2500 and t['allocations'][-1]['final_minimum_bytes']==3000000
 planned={q:e['name'] for e in p['owners'] for q in e['existing_paths']+e['new_files']}
 task_paths={x['name']:set(x['paths']) for x in t['allocations']}
 assert set().union(*task_paths.values())==set(planned)
@@ -582,6 +584,10 @@ assert sum(map(len,task_paths.values()))==len(planned)
 aws=task_paths['aws_principal_denial_and_cycle_custody']
 assert {'deploy/aws-feasibility/completion_campaign_aws_adapter.py','test/aws-stage2-completion-campaign-aws-adapter.py','test/aws-stage2-completion-campaign-aws-adapter.test.ts','test/aws-stage2-completion-campaign-aws-provider.py'} <= aws
 assert 'dev/linux-kvm/git-tools.sh' in task_paths['protected_product_and_kvm_contract']
+assert {'.github/workflows/ci.yml','test/ci-infrastructure-boundary.test.ts'} <= task_paths['pre_h_final_governance']
+assert {'deploy/aws-feasibility/versions.tf','deploy/aws-feasibility/run-runtime-validation.sh','deploy/aws-feasibility/run-measurement-campaign.sh','deploy/aws-feasibility/run-measurement-validation.sh','deploy/aws-feasibility/remote/validate-runtime.sh'} <= aws
+legacy_shells={'deploy/aws-feasibility/'+path for path in ('apply.sh','destroy.sh','inventory.sh','plan.sh','recover-production-campaign-entry.sh','recover-production-campaign.sh','run-measurement-campaign.sh','run-measurement-validation.sh','run-production-campaign.sh','run-production-effect.sh','run-production-inventory.sh','run-production-remote.sh','run-runtime-validation.sh','validate.sh','remote/measure-runtime.sh','remote/recover-stage2-completion-remote.sh','remote/run-stage2-completion-full-rehearsal.sh','remote/run-stage2-completion-full.sh','remote/run-stage2-completion-readiness-rehearsal.sh','remote/run-stage2-completion-readiness.sh','remote/run-stage2-completion-remote.sh','remote/validate-runtime.sh')}
+assert {path for path in aws if path.startswith('deploy/aws-feasibility/') and path.endswith('.sh')}==legacy_shells
 assert 'scripts/stage4-offline-readiness-regenerate.ts' in task_paths['generated_readiness_and_no_mint_authorization']
 final=task_paths['final_hgq_control_reserve']
 mirrors={'.github/workflows/'+name+'.yml' for name in ('stage2-prebuilt-rootfs-producer','stage2-prebuilt-rootfs-diagnostic-producer','stage2-prebuilt-rootfs-publisher','stage2-prebuilt-rootfs-diagnostic-publisher','stage2-local-static-control-prebuilt-candidate','stage2-prebuilt-mixed-hg-preflight','stage2-prebuilt-local-kata-qualification','stage2-prebuilt-kvm-rehearsal','stage2-prebuilt-kvm-integration-diagnostic','stage2-production-plan','stage2-production-approval','stage2-production-campaign')}
@@ -605,11 +611,13 @@ with tempfile.TemporaryDirectory() as d:
    try: f()
    except m['LineBudgetError']: return
    raise AssertionError(kind+' mutation accepted')
-  for kind in ('path','owner','reserve','source'):
+  for kind in ('path','owner','reserve','pre_h','minimum','source'):
    bad=copy.deepcopy(b)
    if kind=='path': bad['product_test_correction']['remaining_tranche']['allocations'][1]['paths'].remove('deploy/aws-feasibility/completion_campaign_aws_adapter.py')
    elif kind=='owner': bad['product_test_correction']['owners'][5]['existing_paths'].remove('scripts/stage2-production-planner.py')
    elif kind=='reserve': bad['product_test_correction']['remaining_tranche']['allocations'][4]['gross_lines']+=1
+   elif kind=='pre_h': bad['product_test_correction']['remaining_tranche']['allocations'][4]['pre_h_gross_lines']+=1
+   elif kind=='minimum': bad['product_test_correction']['remaining_tranche']['allocations'][4]['final_minimum_lines']-=1
    else: bad['source_limits']['tracked_files']-=1
    veto(kind,bad); path.write_text(json.dumps(b)); f()
  finally:
@@ -629,18 +637,22 @@ def run(extra_lines=0,extra_bytes=0):
  def charge(names,field):
   names=tuple(names)
   for task in p['remaining_tranche']['allocations']:
-   if names==tasks[task['name']]: return task[field]+(extra_lines if field=='gross_lines' else extra_bytes)
+   limit=task['pre_h_'+field]
+   if names==tasks[task['name']]: return limit+(extra_lines if field=='gross_lines' else extra_bytes)
    for allocation in task['owner_allocations']:
     owner_names=tuple(path for path in tasks[task['name']] if planned[path]==allocation['name'])
-    if names==owner_names: return allocation[field]+(extra_lines if field=='gross_lines' else extra_bytes)
+    if names==owner_names: return limit if task['name']=='final_hgq_control_reserve' else allocation[field]
   for owner in p['owners']:
    owner_names=tuple(owner['existing_paths']+owner['new_files'])
-   if names==owner_names: return owner['gross_line_forecast'] if field=='gross_lines' else owner['gross_byte_forecast']
+   if names==owner_names:
+    return sum((task['pre_h_'+field] if task['name']=='final_hgq_control_reserve' else allocation[field])
+               for task in p['remaining_tranche']['allocations'] for allocation in task['owner_allocations']
+               if allocation['name']==owner['name'])
   return 0
  ns['_gross_slice']=lambda names,*ignored:charge(names,'gross_lines')
  ns['_gross_added_line_bytes']=lambda names,*ignored:charge(names,'gross_bytes')
  return f(b)
-assert run()[0]['integration']==12727 and run()[1]['integration']==13100000
+assert run()[0]['integration']==10227 and run()[1]['integration']==10100000
 for lines,raw in ((1,0),(0,1)):
  try: run(lines,raw)
  except m['LineBudgetError']: pass
@@ -688,6 +700,17 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   assert.ok(report.conservative_lines_no_deletion_credit >= 99_463);
   assert.ok(consumedProductLines <= 15_127);
   assert.ok(report.conservative_lines_no_deletion_credit + (15_127 - consumedProductLines) < report.hard_limit);
+  assert.deepEqual(report.product_test_final_hgq_minimum, { lines: 2500, bytes: 3000000 });
+  for (const kind of ["lines", "line_bytes"] as const) {
+    const consumed = report[`product_test_task_gross_added_${kind}`];
+    const maxima = report[`product_test_task_pre_h_${kind === "lines" ? "line" : "byte"}_maxima`];
+    const remaining = report[`product_test_task_remaining_${kind}`];
+    for (const task of Object.keys(maxima)) assert.ok(consumed[task] <= maxima[task], `${task}:${kind}`);
+    assert.ok(
+      remaining.final_hgq_control_reserve >=
+        report.product_test_final_hgq_minimum[kind === "lines" ? "lines" : "bytes"],
+    );
+  }
   for (const key of [
     "correction_slice_limits_satisfied",
     "post_h_reserve_limits_satisfied",

@@ -35,18 +35,27 @@ and 28 / 283,754 explicitly identified prior checkpoint work). Those charges
 remain charged. The checker now assigns every admitted path to one **named**
 task; it has no complement task. It preserves historical owners, including the
 integration-owned KVM workflow, and rejects every path not in the exact matrix.
+It reports each task's gross consumed and remaining lines/bytes. Every task has
+an explicit pre-H maximum; the final task's pre-H maximum is 1,127 / 1,000,000,
+which mechanically withholds at least 2,500 / 3,000,000 for H/G/Q. This is a
+capacity guarantee, not a claim that its paths are isolated: pre-H edits to a
+final-task path consume that task and its pre-H maximum. Current checker accounting
+(lines/bytes consumed → remaining) is governance 1,110/79,092 → 290/920,908;
+AWS 5/264 → 4,295/4,799,736; product 49/6,423 → 3,951/3,193,577; readiness
+6/281,045 → 1,794/1,718,955; final 392/58,478 → 3,235/3,941,522.
 
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
-| pre-H final governance | 1,100 / 700,000 | this ADR/index and allocation only |
-| AWS principal denial and cycle custody | 4,600 / 5,100,000 | actual adapter, planner, production model/provider/controller/state/receipts, custody schema, and fake adapter → provider → recovery tests |
-| protected product and KVM contract | 4,000 / 3,200,000 | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
-| generated readiness and no-mint authorization | 1,800 / 2,000,000 | readiness generators/artifacts/tests and separately reviewed no-mint grant |
-| final H/G/Q control reserve | 3,627 / 4,000,000 | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
+| pre-H final governance | 1,400 / 1,000,000 pre-H maximum | ADR/index/allocation plus exact-head CI workflow/topology tests |
+| AWS principal denial and cycle custody | 4,300 / 4,800,000 pre-H maximum | actual adapter, planner, production model/provider/controller/state/receipts, versioned backend config, every legacy shell denial, custody schema, and fake adapter → provider → recovery/effect-sentinel tests |
+| protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
+| generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
+| final H/G/Q control reserve | 3,627 / 4,000,000 total; **≤1,127 / 1,000,000 pre-H**, leaving **≥2,500 / 3,000,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
 
-The final H/G/Q reserve is deliberately distinct from product, AWS, readiness,
-and governance work. Its exact list includes all twelve mirrors exercised by
-the equality test: rootfs producer and diagnostic producer; rootfs publisher
+The final H/G/Q task is separately charged but shares its listed paths with the
+pre-H plan; it is not an isolated-path reserve. Its enforced pre-H maximum and
+final minimum above protect final-chain capacity. Its exact list includes all
+twelve mirrors exercised by the equality test: rootfs producer and diagnostic producer; rootfs publisher
 and diagnostic publisher; static-control candidate; mixed-H/G preflight;
 local-Kata qualification; KVM rehearsal and integration diagnostic; and
 production plan, approval, and campaign. It also separately funds retirement,
@@ -54,7 +63,21 @@ production plan, approval, and campaign. It also separately funds retirement,
 `stage2-stage-prebuilt-control.py`, the formal qualifier/preflight, all three
 formal v2 schemas, the pre-AWS package schema, their focused tests, the budget
 checker/equality test and formatter configuration, and the complete
-thirteen-member fresh v8 control package. It further enumerates the H-owned
+thirteen-member fresh v8 control package. The pre-H governance task also owns
+`.github/workflows/ci.yml` and `test/ci-infrastructure-boundary.test.ts`; the
+AWS task owns `deploy/aws-feasibility/versions.tf`, the provider tests, and the
+following complete legacy shell-entrypoint denial set:
+`apply.sh`, `destroy.sh`, `inventory.sh`, `plan.sh`,
+`recover-production-campaign-entry.sh`, `recover-production-campaign.sh`,
+`run-measurement-campaign.sh`, `run-measurement-validation.sh`,
+`run-production-campaign.sh`, `run-production-effect.sh`,
+`run-production-inventory.sh`, `run-production-remote.sh`, `run-runtime-validation.sh`,
+`validate.sh`, `remote/measure-runtime.sh`, `remote/recover-stage2-completion-remote.sh`,
+`remote/run-stage2-completion-full-rehearsal.sh`, `remote/run-stage2-completion-full.sh`,
+`remote/run-stage2-completion-readiness-rehearsal.sh`,
+`remote/run-stage2-completion-readiness.sh`,
+`remote/run-stage2-completion-remote.sh`, and `remote/validate-runtime.sh`.
+It further enumerates the H-owned
 consumer closure that the guard seals: fixed-source preparation, hosted mode,
 local/native settlement, diagnostic lock, producer, publisher and static-control
 boundary scripts; Kata preparation and all three formal-cycle adapters; and the
@@ -64,19 +87,21 @@ fake-only controller, plus the new Python fake end-to-end
 adapter → provider → recovery test and existing adapter/provider tests. Alongside
 the existing ADR documents, the only new non-control files are the immutable
 `schemas/aws-stage2-production-{principal-contract,custody}-v1.json` and that
-fake end-to-end test; no unlisted new file is allowed. Legacy measurement shell wrappers are **not**
-repair targets: they remain denied and non-authorizing unless a later exact
-mechanical-denial-only change is separately budgeted and reviewed.
+fake end-to-end test; no unlisted new file is allowed.
 
 ## Blocking AWS authority contract
 
-Principal separation is **unimplemented and blocking**, not a present mechanical
-veto. Until a later source implementation and separately authorized decision,
-every production entry point must make an unconditional, pre-credential AWS
-deny decision. It must run before reading credentials or package authority and
-before OIDC, STS, provider construction, OpenTofu, SSM, network, inventory, or
-remote-command code. Thus an old package cannot become executable merely
-because an old workflow or a domain-separated hash still parses.
+Principal separation and external custody are **unimplemented and blocking**.
+Until they exist under later source and AWS-planning authority, the campaign is
+unconditionally denied. Every listed legacy shell entrypoint and every Python
+production/recovery entrypoint must make the same literal, mechanical denial
+before `source`/`exec`, command substitution, file/package/credential reads,
+install/resolve work, OIDC, STS, provider construction, OpenTofu, SSM, network,
+inventory, or remote-command code. The future direct-entry tests invoke every
+listed shell route with credential/install/network/tofu/AWS/SSM effect sentinels
+and prove the denial occurs first; a wrapper's historic “measurement” label is
+not an exception. Thus an old package cannot become executable merely because
+an old workflow or a domain-separated hash still parses.
 
 The future immutable authority contract must bind authenticated, individually
 verifiable identities for operator, approver/budget/security reviewer, executor,
@@ -88,61 +113,72 @@ that each of those cases, and each stale package identity (H, G, Q, run,
 artifact, control, qualification), stops before OIDC/STS/provider/tofu/SSM or
 network. Documentation, hashes, and the allocation do not lift this denial.
 
-The future Python route, not the legacy shell route, must use the actual
-`completion_campaign_aws_adapter.py` as the sole production custody owner. Its
-present `/var/lib/cogs/...` files and flock are only a runner-local cache and
-are insufficient: **before any future AWS effect**, implementation must instead
-create a deterministic campaign namespace in a pre-existing, independently
-administered authenticated custody service. The namespace is the canonical hash
-of approval batch, candidate/tree, immutable principal-contract version and
-custody-schema version; it contains immutable generation-numbered
-`campaign`, `intent`, `receipt`, and hash-chained `journal` records, and one
-conditional current-generation pointer. Creation is `if-absent`; every pointer
-advance is compare-and-swap on the previous generation and a monotonically
-increasing fencing epoch. Local cache disagreement, absent custody, a failed
-conditional write, or an unreadable record is uncertainty and denies effects.
+The future Python route, not a legacy shell route, must use the actual
+`completion_campaign_aws_adapter.py` as the sole production custody owner.
+Runner-local `/var/lib/cogs/...` files and flock are only cache. Before any
+future AWS effect, a **pre-existing versioned S3 backend/object custody** and a
+DynamoDB conditional journal/lease must exist in a separately administered
+control account. That account, bucket, table, region, and namespace seed are
+provisioned only under later AWS-planning authority. The immutable, non-AWS
+preauthorization supplies those values plus expected workload account/region,
+package/candidate/tree, custody and principal-contract versions, and a distinct
+planning principal before workload credentials exist.
 
-The normal executor first authenticates as the contract's executor to acquire a
-short lease for the namespace and fencing epoch. A fresh, separately
-contract-authenticated recovery owner may acquire the next epoch only after the
-old lease expires; every provider/adapter operation carries that epoch and a
-deterministic `(campaign, cycle, verb, prior-state)` intent identifier. The old
-owner is fenced before its next operation. Recovery reads the external journal,
-never trusts runner disk, and may only reconcile each persisted intent by exact
-campaign tags/IDs and bounded observational queries. A lost response,
+The planner first authenticates only that planning principal, checks the
+preauthorization, and uses conditional DynamoDB writes to bind STS and AMI
+*discoveries* into the approval batch. It transitions the namespace **seed** to
+the discovered approval-batch namespace by CAS; discovered values never change
+the seed/key. The normal executor then uses the distinct executor principal and
+short bounded STS session. S3 versioned backend state, saved-plan bytes and
+immutable objects, plus DynamoDB generation-numbered `campaign`, `intent`,
+`receipt`, hash-chained `journal`, lease, and current-generation pointer,
+survive runner loss. Each pointer/lease/journal transition is conditional on
+prior generation and monotonically increasing epoch. Missing/replaced/foreign
+state or plan bytes, failed condition, local-cache disagreement, or unreadable
+custody is sticky uncertainty and denies effects.
+
+Lease expiry alone never permits takeover. Recovery records the old session's
+bounded STS `NotAfter`, waits through `NotAfter + configured skew`, then
+verifies that no old process or session can still effect before it CAS-advances
+the epoch. Until that proof, it reports uncertainty and opens no new cycle;
+there is no merely-expired-lease takeover. Every admitted operation carries its
+epoch and deterministic `(campaign, cycle, verb, prior-state)` intent ID.
+Recovery reads external custody, never runner disk, and reconciles persisted
+intent only by exact campaign tags/IDs and bounded observations. A lost response,
 cancellation, runner destruction, missing receipt, or ambiguous normal **or
-cleanup** intent is never resent: it remains sticky uncertainty until exact
-reconciliation proves its outcome. No new cycle may open while any intent,
-resource, cleanup, pointer, or inventory state is uncertain. Cleanup has the
-same intent-before-send rule and ends only with a fresh authenticated,
-account/region-wide zero-inventory receipt, immutable final settlement, and
-credential retirement; custody records remain as the recovery audit trail.
+cleanup** intent is never resent: it stays sticky uncertain until exact
+post-session reconciliation proves its outcome. Cleanup has the same
+intent-before-send rule and ends only with fresh authenticated account/region
+zero-inventory receipt, immutable final settlement, and credential retirement.
 
-Planner, adapter, and production provider/controller must share that
-campaign-bound authenticated handle plus explicit per-cycle `TF_DATA_DIR`,
-backend metadata, state path, saved-plan identity and custody. They initialize
-the backend cross-process before plan/apply compatibility is relied upon and
-reject stale, replaced, foreign, cross-cycle, or fenced state/plan metadata.
-Fake end-to-end tests must traverse planner → staging → **actual adapter** →
-provider → fresh recovery owner, including runner loss, lease fencing,
-generation conflicts, lost normal response, lost cleanup response, exact
-reconciliation, no new cycle under uncertainty, and final zero inventory. This
-ADR neither provisions the custody service nor invokes tofu/AWS.
+Planner, adapter, and provider/controller share the custody handle and explicit
+per-cycle `TF_DATA_DIR`, S3 backend metadata, versioned state/plan-object IDs,
+saved-plan bytes, and identity; they initialize/reopen that backend
+cross-process before plan/apply compatibility and reject stale, fenced,
+replaced, foreign, or cross-cycle metadata. Fake end-to-end tests traverse
+planner → staging → **actual adapter** → provider → fresh recovery owner and
+model runner loss, CAS conflicts, lost normal/cleanup responses, reconciliation,
+and final zero inventory. In particular they pause an old operation **after
+admission**, expire the lease, attempt takeover, wait through session expiry,
+advance only after the old-session proof, then resume the old operation and
+reject it. This ADR neither provisions that external service/principals nor
+invokes tofu/AWS.
 
-For remote validation the production provider first performs bounded SSM
-`Online` observation for the exact instance. Under one monotonic overall
-deadline it records a durable send intent, sends **exactly once**, durably binds
-the returned command/instance receipt, and polls only that pair. Effectful AWS
-CLI/SDK transport has `max_attempts=1` (and equivalent environment/configuration
-is authenticated); automatic retries are disabled for SSM send, normal effect,
-and cleanup effect calls. Observational describe/poll reads may retry only
-within the same monotonic deadline and never create/settle an effect intent. Each
-request is bounded within that deadline; known propagation observations are
-transient, terminal/mismatched/incomplete observations are fatal. A `Success`
-observed after the deadline is rejected. Lost-send response, crash/reentry,
-propagation, foreign IDs, response code/output completeness, timeout, and
-ambiguous normal/cleanup lost-response tests prove one send, no transport retry,
-no reissue, and no late-success acceptance.
+For remote validation the provider first observes exact-instance SSM `Online`
+within one monotonic deadline, records durable send intent, invokes AWS CLI SSM
+send with authenticated AWS CLI `max_attempts=1` (`AWS_MAX_ATTEMPTS=1`)/equivalent CLI max-attempts one,
+and binds the returned command/instance receipt before polling only that pair.
+Orchestration never reissues. There is one OpenTofu process per durable intent;
+where the provider supports them it supplies deterministic idempotency tokens.
+Terraform cannot promise one underlying HTTP request: provider-internal retry or
+lost response is sticky uncertainty until post-session reconciliation, never
+success proof or a second invocation. `versions.tf`, provider configuration and
+the provider/adapter tests must pin and verify this policy. Observational
+reads may retry only within the deadline and never create/settle an effect
+intent. The same no-second-invocation rule covers ambiguous cleanup. Terminal,
+mismatched, incomplete, or late `Success` is fatal; tests cover propagation,
+foreign IDs, response/output completeness, timeout, internal-retry/lost-response
+uncertainty, and no reissue.
 
 ## Product and KVM contract to be implemented later
 
@@ -178,36 +214,44 @@ cannot complete before disposal, the result is uncertain/failed and cannot pass.
 
 ## Later authorization and required order
 
-Merging this plan **never authorizes dispatch**. After reviewed implementation
-publication, the only presently permitted automation is the ordinary
-same-repository `pull_request` CI for that exact reviewed SHA into protected
-`main`: the existing `ci.yml` quality/full test, native, secret-scan, and
-current `images` build/scan/SBOM jobs may run and report their normal protected
-PR results. `push`, `workflow_dispatch`, product workflow, KVM workflow, and
-every Stage2/AWS workflow are not permitted by this plan; no AWS workflow is
-created or enabled. Those CI results are evidence only, not product/KVM
-execution authority. Product/KVM runs may be considered only in a later, exact
-protected-main implementation gate after focused validation; independent
-exact-tree implementation reviews; changed-since-review checks; and those
-permitted CI results. That later gate must
-mechanically admit the complete profile/probe matrix, sealed execution closure,
-limits, image provenance, failure handoff, and the shared `git-tools.sh` gate.
-It may authorize only the first-created attempt-one product/KVM runs for that
-exact commit. It grants no cancellation replacement, concurrency cancellation,
-rerun, retry, or redispatch authority.
+Merging this plan **never authorizes dispatch**. Before implementation PR
+publication, a separately authorized deterministic, non-AWS readiness
+regeneration must refresh and pass its freshness assertions for the candidate
+bytes; it is repeated after feedback/final validation and never relaxed. The
+future `.github/workflows/ci.yml` change must check out and verify the exact PR
+head SHA in **Quality**, **Secret scan**, **Images**, and every applicable root
+PR job. Required protected-PR evidence is exactly those successful exact-head
+jobs—not a synthetic merge ref and not a skipped native job. Native remains a
+later separately authorized gate; product and KVM remain later gates. Main-push
+CI may observe merged bytes, but grants no authority and is not PR-head
+substitute evidence. `workflow_dispatch`, product workflow, KVM workflow, and
+every Stage2/AWS workflow remain forbidden by this plan; no AWS workflow is
+created or enabled.
+
+Those CI results are evidence only, not product/KVM execution authority.
+Product/KVM runs may be considered only in a later exact protected-main
+implementation gate after focused validation, independent exact-tree reviews,
+changed-since-review checks, and the required exact-head PR checks. That gate
+must mechanically admit the complete profile/probe matrix, sealed execution
+closure, limits, image provenance, failure handoff, and shared `git-tools.sh`
+gate. It may authorize only first-created attempt-one product/KVM runs for that
+exact commit, never cancellation replacement, concurrency cancellation, rerun,
+retry, or redispatch.
 
 The required pre-H order is exact:
 
 1. corrected source;
 2. focused tests;
-3. the separately authorized protected product/KVM feedback runs;
-4. candidate publication and durable readback;
-5. separately reviewed no-mint full validation plus generated readiness;
-6. recovery/residue validation and two independent audits;
-7. final full validation and deterministic regeneration;
-8. exact-tree reviews and changed-since-review checks;
-9. retirement/freeze decision; then
-10. H.
+3. separately authorized deterministic readiness regeneration and freshness check;
+4. PR publication and required exact-head Quality, secret, images, and applicable root checks;
+5. separately authorized protected product/KVM feedback runs;
+6. candidate publication and durable readback;
+7. separately reviewed no-mint full validation plus regenerated readiness;
+8. recovery/residue validation and two independent audits;
+9. final full validation and deterministic regeneration;
+10. exact-tree reviews and changed-since-review checks;
+11. retirement/freeze decision; then
+12. H.
 
 The no-mint pre-H rehearsal binds its exact candidate publication/readback and
 may not mint credentials/resources or claim production. It does **not** require
