@@ -49,7 +49,7 @@ REMEDIATION_BYTE_HIGHS = {"route": 350_000, "revocation": 220_000, "relay": 1_00
                          "lifecycle": 1_200_000, "completion": 800_000, "integration": 5_630_000}
 PRODUCT_TEST_GLOBAL_BYTE_FORECAST, REMEDIATION_GLOBAL_BYTE_HIGH = 8_000_000, 11_000_000
 PRODUCT_TEST_PATH_OWNER_SHA256 = "f110c552c20a3c380b52acb2fb9284ee12461bc2fe2c22fb977fd8f85b32399c"
-PRODUCT_TEST_TASK_PATH_SHA256 = "18553a685d9b37c770dc6fd9b49207acd8f89db0a35346fc9a7d566a61500013"
+PRODUCT_TEST_TASK_PATH_SHA256 = "a15d79943be0631fb2ee2d689c06579804bac92486bc3138e19a7ae5ab9e388d"
 PRODUCT_TEST_NEW_FILES = {
     "docs/adr/0336-converge-remaining-product-governance.md": "integration",
 }
@@ -570,8 +570,8 @@ def _product_test_budget(data, allocations):
     required_tasks = (("helper", 452, 350_000, {"integration": (352, 250_000), "lifecycle": (100, 100_000)}),
                       ("docker_workflow_and_tests", 550, 650_000, {"integration": (550, 650_000)}),
                       ("kvm_gate_and_tests", 300, 300_000, {"relay": (300, 300_000)}),
-                      ("final_controls_and_evidence", 165, 550_000, {"integration": (165, 550_000)}),
-                      ("governance", 533, 150_000, {"integration": (533, 150_000)}))
+                      ("final_controls_and_evidence", 145, 600_000, {"integration": (145, 600_000)}),
+                      ("governance", 553, 100_000, {"integration": (553, 100_000)}))
     _require(len(tasks) == len(required_tasks))
     for task, expected_task in zip(tasks, required_tasks):
         name, lines, raw_bytes, expected_owners = expected_task

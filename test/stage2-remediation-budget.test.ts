@@ -567,12 +567,12 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_bu
 b,_,paths,_,_=f(); p=b['product_test_correction']; t=p['remaining_tranche']
 assert (p['checkpoint_revision'],p['retained_allocation'])==(m['PRODUCT_TEST_Q'],{'gross_lines':15537,'gross_bytes':5120000})
 assert (t['gross_lines'],t['gross_bytes'])==(2000,2000000)
-assert [(x['name'],x['gross_lines']) for x in t['allocations']]==[('helper',452),('docker_workflow_and_tests',550),('kvm_gate_and_tests',300),('final_controls_and_evidence',165),('governance',533)]
+assert [(x['name'],x['gross_lines']) for x in t['allocations']]==[('helper',452),('docker_workflow_and_tests',550),('kvm_gate_and_tests',300),('final_controls_and_evidence',145),('governance',553)]
 assert p['owners'][3]['gross_line_forecast']==4550 and p['owners'][5]['gross_line_forecast']==7732
 planned={q:e['name'] for e in p['owners'] for q in e['existing_paths']+e['new_files']}; assert set(m['PRODUCT_TEST_GOVERNANCE_PATHS'])=={'config/external-review-remediation-budget-v1.json','docs/adr/0336-converge-remaining-product-governance.md','docs/adr/README.md','scripts/check-stage2-retained-lines.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-remediation-budget.test.ts'}
 assert m['_product_test_task_paths']('governance',planned)==tuple(sorted(m['PRODUCT_TEST_GOVERNANCE_PATHS'])) and 'scripts/check-image-pins.ts' not in planned and paths['scripts/check-image-pins.ts']=='integration'
 assert hashlib.sha256(json.dumps(planned,sort_keys=True,separators=(',',':')).encode()).hexdigest()==m['PRODUCT_TEST_PATH_OWNER_SHA256']=='f110c552c20a3c380b52acb2fb9284ee12461bc2fe2c22fb977fd8f85b32399c'
-assert hashlib.sha256(json.dumps(t['allocations'],sort_keys=True,separators=(',',':')).encode()).hexdigest()==m['PRODUCT_TEST_TASK_PATH_SHA256']=='18553a685d9b37c770dc6fd9b49207acd8f89db0a35346fc9a7d566a61500013'
+assert hashlib.sha256(json.dumps(t['allocations'],sort_keys=True,separators=(',',':')).encode()).hexdigest()==m['PRODUCT_TEST_TASK_PATH_SHA256']=='a15d79943be0631fb2ee2d689c06579804bac92486bc3138e19a7ae5ab9e388d'
 assert m['_serialized_inventory_within_limit'](b'x'*262144)==b'x'*262144
 try: m['_serialized_inventory_within_limit'](b'x'*262145)
 except m['LineBudgetError']: pass
@@ -606,7 +606,7 @@ def veto(call):
  except m['LineBudgetError']: return
  raise AssertionError('unauthorized history accepted')
 with tempfile.TemporaryDirectory() as directory:
- root=Path(directory); git(root,'init','-q'); git(root,'config','user.email','test@example.invalid'); git(root,'config','user.name','test')
+ root=Path(directory); git(root,'init','-q','-b','main'); git(root,'config','user.email','test@example.invalid'); git(root,'config','user.name','test')
  (root/'governance.ts').write_text('base\n'); q=commit(root,'base'); (root/'governance.ts').write_text('one\n'); one=commit(root,'one'); (root/'governance.ts').write_text('two\n'); two=commit(root,'two'); (root/'governance.ts').unlink(); gone=commit(root,'delete')
  ns['ROOT']=root; ns['PRODUCT_TEST_Q']=q
  assert list(m['_product_test_linear_commits'](gone))==[(q,one),(one,two),(two,gone)]

@@ -216,26 +216,26 @@
         },
         {
           "name": "final_controls_and_evidence",
-          "gross_lines": 165,
-          "gross_bytes": 550000,
+          "gross_lines": 145,
+          "gross_bytes": 600000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 165,
-              "gross_bytes": 550000
+              "gross_lines": 145,
+              "gross_bytes": 600000
             }
           ],
           "path_gross_line_highs": []
         },
         {
           "name": "governance",
-          "gross_lines": 533,
-          "gross_bytes": 150000,
+          "gross_lines": 553,
+          "gross_bytes": 100000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 533,
-              "gross_bytes": 150000
+              "gross_lines": 553,
+              "gross_bytes": 100000
             }
           ],
           "path_gross_line_highs": []
