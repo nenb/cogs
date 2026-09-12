@@ -18,14 +18,14 @@ delete, rename, copy, compression, net-size, or prior-checkpoint credit.
 
 The historical product allocation is 18,000 lines / 8,000,000 bytes and the
 historical remediation allocation is 48,000 / 11,000,000. The separately
-allocated prospective matrix is exactly **21,357 / 20,200,000**, so cumulative
-product ceilings are **39,357 / 28,200,000** and remediation ceilings are
-**69,357 / 31,200,000**. The pre-H governance task rises honestly from its
-already consumed 1,799 lines to 2,700 lines; it is not presented as one-line
+allocated prospective matrix is exactly **21,557 / 20,200,000**, so cumulative
+product ceilings are **39,557 / 28,200,000** and remediation ceilings are
+**69,557 / 31,200,000**. The pre-H governance task rises honestly from its
+already consumed 1,799 lines to 2,900 lines; it is not presented as one-line
 headroom or funded from the AWS holdback. The source ceiling is
 `18,763,891 + 31,200,000 = 49,963,891 <= 50,000,000`; tracked files are
-`1,420 + 200 = 1,620 <= 1,620`. The measured current 99,955 plus the 21,357
-forward ceiling is **121,312 < 122,000**, the raised strict 122,000 hard limit; this is
+`1,420 + 200 = 1,620 <= 1,620`. The measured current 99,955 plus the 21,557
+forward ceiling is **121,512 < 122,000**, the raised strict 122,000 hard limit; this is
 exact additive no-deletion arithmetic, never deletion credit. Integration's new-file cap is 180
 (total 200); it specifically funds the custody schema, fake end-to-end adapter
 and direct-ingress tests, and thirteen fresh v8 control members. Each owner and task ceiling is
@@ -49,7 +49,7 @@ forecast until that replan; the 7,358 / 8,400,000 task ceiling cannot silently
 absorb holdback. The added 357 / 400,000 is funded by reducing only pre-H
 headroom in the final-control task, while retaining its exact 3,500 / 3,500,000
 H/G/Q reserve. The later review adds 1,330 / 1,100,000 to that final-control
-task and 100 / 100,000 to pre-H final governance, with matching integration/global/
+task and 300 / 100,000 to pre-H final governance, with matching integration/global/
 source/hard ceilings: both are new funded capacity, not a transfer, deletion credit,
 category release, or reduction of the reserve. The exact config maps these forecasts to the actual integration
 owner: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`,
@@ -63,7 +63,7 @@ consumer (`scripts/stage2-prebuilt-rehearsal-grant.py`) and its Python/TypeScrip
 focused grant tests, and their focused tests—to their named task and category. The three exact forecast categories and the 200/200,000 holdback are literal checker inputs: category totals remain exactly 7,157/8,200,000 and holdback exactly 200/200,000; no category may absorb it. A slice, task, or holdback overrun stops for a reviewed
 replan; no owner, forecast, category, or withheld room transfers.
 It reports each task's gross consumed and remaining lines/bytes. Every task has
-an explicit pre-H maximum; the final task's pre-H maximum is 2,000 / 2,000,000,
+an explicit pre-H maximum; the final-control task's pre-H maximum is 2,000 / 2,000,000,
 which mechanically withholds the separately unavailable exact 3,500 / 3,500,000
 post-H minimum for H/G/Q. This is a
 capacity guarantee, not a claim that its paths are isolated: pre-H edits to a
@@ -73,7 +73,7 @@ release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 
 | Named task                                    |                                                                                                               Ceiling (lines / bytes) | Exact responsibility                                                                                                                                                                                                                                                                                                                                      |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| pre-H final governance                        |                                                                                                       2,700 / 1,100,000 pre-H maximum | ADR/index/allocation plus required readiness-before-PR order and exact-head CI workflow/topology tests                                                                                                                                                                                                                                                    |
+| pre-H final governance                        |                                                                                                       2,900 / 1,100,000 pre-H maximum | ADR/index/allocation plus required readiness-before-PR order and exact-head CI workflow/topology tests                                                                                                                                                                                                                                                    |
 | AWS principal denial and cycle custody        |                                                                                                       7,357 / 8,400,000 pre-H maximum | 5,457 / 6,200,000 deployment/custody/direct-ingress + 1,200 / 1,500,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld and separately reported; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract            |                                                                                                       4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate                                                                                                                                                                                                       |
 | generated readiness and no-mint authorization |                                                                                                       1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant                                                                                                                                                                                                                                                                                |
@@ -498,12 +498,12 @@ only the explicit read-only broad permission above, never broad mutation.
 
 One normal-admission exposure forecast is 302 resource minutes: 120 normal,
 32 fence (including recorded `NotAfter + 120`), and 150 cleanup/reconciliation.
-At 118,000 microUSD/hour, `ceil(302 / 60 × 118,000) = **594,000 microUSD**` is
+At 118,000 microUSD/hour, `ceil(302 × 118,000 / 60) = **593,934 microUSD**` is
 an **admission exposure forecast, not an enforced campaign cap and not a claim
 that cleanup is cost-bounded**. Setup/final publication has no resource
 authority. The 330-minute workflow deadline is only an ordinary workflow
 boundary; sticky cleanup/manual intervention can exceed it and can exceed
-594,000, with **no normal authority**. It requires a separately approved incident budget before any continued
+593,934, with **no normal authority**. It requires a separately approved incident budget before any continued
 cleanup, plus a failure-independent budget alarm and terminator that persist
 and act even if executor reporting, success receipts, or cleanup logic fail.
 No completion or success claim is permitted merely because an alarm/terminator
@@ -609,6 +609,90 @@ prove that the independently armed alarm/terminator still fences the resulting
 or ambiguous resource; an alarm, terminator, or exhausted budget is not a
 success or settlement claim.
 
+### CFF P1 and mechanical P2 correction (authoritative and plan-only)
+
+This subsection supersedes any conflicting earlier ADR 0338 language. It is a
+future design/test contract only: it does not alter a role, IAM policy, trust
+policy, backend, source-inventory limit, OpenTofu installation, credential,
+AWS object, or cloud state.
+
+**Complete old-authority fence.** Recovery fences the normal-workload role and
+*every* backend issuance role/class (`planner`, `apply`, `show`, and `destroy`),
+not merely the normal session. For each exact role it persists the role ARN,
+trust-document hash/version, named deny-all policy hash/version, every recorded
+session ARN and `NotAfter`, and every conservative unknown-issuance expiry. It
+then disables that role's assume trust, attaches the named explicit deny-all,
+and observes the exact IAM readback for both mutations. No role is removed from
+the fence until terminal settlement.
+
+After propagation, cleanup may begin only after the maximum over all normal and
+backend issuance classes of `recorded NotAfter + recorded skew` or, for a lost/
+unknown issuance, `issuance_cutoff + maximum-duration + recorded skew`, plus the
+fixed 120-second fence skew. This is a maximum, never a per-role shortcut; a
+short normal session cannot shorten a later backend session. Bounded probes with
+the recorded old sessions must observe denial for one formerly allowed workload
+operation and one backend state/lock write. They diagnose failure but do not
+shorten that maximum wait. The fake recovery suite must leave a **paused backend**
+state/lock write after admission, lose its updater/lease, perform the complete
+role fence and maximum wait, and prove that resumed write is denied with no
+second write or cleanup admission before the wait.
+
+**Cleanup activation is a cross-service state machine.** DynamoDB CAS is used
+only to persist the immutable epoch issuance record and to elect one bounded
+trust updater (`prepared → updater-owned → IAM-update-observed → propagated →
+activation-receipt`). It is not, and must never be described as, an atomic CAS
+on IAM. The elected control-plane updater submits the exact pre-provisioned
+trust document, then reads IAM until the exact role and canonical policy hash
+are observed; its DynamoDB generation records that observation, not a fictional
+cross-service transaction. It waits bounded IAM propagation and performs
+bounded STS probes: the disabled/pre-activation assumption must deny and the
+single exact post-activation assumption may accept only with the persisted
+identity, external ID, tags, GitHub claims, epoch, and `DateLessThan` cutoff.
+The successful observation, policy hash/version, probe identities/outcomes, and
+generations form the durable activation receipt before any cleanup action.
+
+If the updater crashes, loses an IAM response, or its DDB lease expires, a
+successor CAS-elects only after reading both DDB and IAM. It may advance when
+it observes the exact intended document and records that fact; conflicting,
+missing, or ambiguous IAM state is sticky uncertainty, not an overwrite or
+blind retry. A stale updater cannot commit after losing the DDB generation.
+The cleanup issuer/executor never updates trust. The pre-provisioned trust has
+its exact server-enforced `DateLessThan: {"aws:CurrentTime": issuance_cutoff}`;
+a paused or late OIDC/STS issuance after that cutoff denies even if an old
+activation receipt exists.
+
+**Permission direction is fixed.** The observer is strictly read-only: it has
+only `GetCallerIdentity` and the enumerated describe/get/list calls, no
+`Tag*`/`Untag*`, delete, STS assumption, or custody mutation/request. A separate
+custody helper, not the observer, persists signed observer results. Normal
+creation uses exact required creation tags, including EC2 `CreateTags`, IAM
+`TagRole`, and `TagInstanceProfile`, only for the just-created recorded resource.
+Cleanup may remove only exact recorded campaign/intent tags when the declared
+resource deletion requires it (`DeleteTags`, `UntagRole`,
+`UntagInstanceProfile`); it has no generic retagging or create authority. The
+recovery/fence role may mutate only the exact normal/backend trust documents and
+the named deny-all policies needed to attach, read back, retain, and finally
+remove that fence. It has no tagging, graph, backend-data, or other IAM mutation.
+The generated permission closure must reject any contrary action in these rows.
+
+**Accounting and compatibility mechanics.** The three AWS categories are
+literal, disjoint path memberships in the budget file; there is no
+"all paths except" category. The checker reports measured category consumption,
+remaining category forecast, and the separately unconsumed 200-line/200,000-byte
+holdback. The pre-H final-governance allowance is 2,900 lines / 1,100,000 bytes, above
+its current measured consumption; the final-control pre-H allowance remains
+2,000 lines / 2,000,000 bytes, and the separately unavailable
+post-H minimum remains exactly 3,500 lines / 3,500,000 bytes.
+
+The explicit pre-H compatibility mode is only immutable, non-production
+preauthorization for the pinned backend/saved-plan compatibility design. It
+does not require, create, infer, or fabricate Q. Executing OpenTofu remains
+separately unauthorized now, including under that preauthorization. The later
+readiness source-file-cap synchronization is likewise source-only and must
+synchronize the source inventory's 1,620-file / 50,000,000-byte caps before a
+separately authorized regeneration; it authorizes neither regeneration nor any
+product, AWS, or OpenTofu effect.
+
 ## Host bootstrap contract to be implemented later
 
 A later separately reviewed gate must choose exactly one authenticated host
@@ -684,21 +768,26 @@ The required pre-H order is exact:
    control-account planning remains a later separately authorized gate;
 2. corrected source;
 3. focused tests;
-4. separately authorized deterministic readiness regeneration and freshness check;
-5. PR publication and required exact-head Quality, secret, images, and applicable root checks;
-6. separately authorized protected product/KVM feedback runs;
-7. candidate publication and durable readback;
-8. separately reviewed no-mint full validation plus regenerated readiness;
-9. recovery/residue validation and two independent audits;
-10. final full validation and deterministic regeneration;
-11. exact-tree reviews and changed-since-review checks;
-12. separately authorized authenticated control-account planning and native
+4. separately authorized readiness source-file-cap synchronization: update the
+   bounded source-inventory implementation from its historical 1,530-file /
+   34,000,000-byte limits to this plan's 1,620-file / 50,000,000-byte limits,
+   with its focused boundary assertions; this is source-only, non-production,
+   and neither regeneration nor a readiness result;
+5. separately authorized deterministic readiness regeneration and freshness check;
+6. PR publication and required exact-head Quality, secret, images, and applicable root checks;
+7. separately authorized protected product/KVM feedback runs;
+8. candidate publication and durable readback;
+9. separately reviewed no-mint full validation plus regenerated readiness;
+10. recovery/residue validation and two independent audits;
+11. final full validation and deterministic regeneration;
+12. exact-tree reviews and changed-since-review checks;
+13. separately authorized authenticated control-account planning and native
     backend compatibility gate, with no workload credential or resource effect;
-13. separately reviewed pre-dispatch review of the exact candidate, external
+14. separately reviewed pre-dispatch review of the exact candidate, external
     custody, normal/backend/cleanup role split, fence proof, v3 evidence
     boundaries, and unchanged denial inventory;
-14. retirement/freeze decision; then
-15. H.
+15. retirement/freeze decision; then
+16. H.
 
 The no-mint pre-H rehearsal binds its exact candidate publication/readback and
 may not mint credentials/resources or claim production. It does **not** require

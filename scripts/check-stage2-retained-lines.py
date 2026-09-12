@@ -42,11 +42,11 @@ PRODUCT_TEST_Q_TREE = "9ad48a2be811745f0d8032a0a9f52a33c4b2edec"
 # The protected squash consumes the entire prior allocation. It is never
 # recomputed from the candidate's net tree or released by a deletion.
 PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
-PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 21357, 20200000
-PRODUCT_TEST_FORECASTS = {'route': 0, 'revocation': 0, 'relay': 1400, 'lifecycle': 1000, 'completion': 0, 'integration': 18957}
+PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 21557, 20200000
+PRODUCT_TEST_FORECASTS = {'route': 0, 'revocation': 0, 'relay': 1400, 'lifecycle': 1000, 'completion': 0, 'integration': 19157}
 PRODUCT_TEST_REMAINING_FORECASTS = dict(PRODUCT_TEST_FORECASTS)
 PRODUCT_TEST_BYTE_FORECASTS = {'route': 0, 'revocation': 0, 'relay': 900000, 'lifecycle': 1000000, 'completion': 0, 'integration': 18300000}
-PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 39357, 28200000
+PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 39557, 28200000
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 21200000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 31200000
 SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
@@ -55,11 +55,11 @@ PRODUCT_TEST_NEW_FILES = {'deploy/aws-feasibility/remote/stage2-completion-local
 PRODUCT_TEST_EXCLUDED_PATHS = {"scripts/check-image-pins.ts"}
 PRODUCT_TEST_WORKFLOW_PATH = ".github/workflows/insecure-container.yml"
 PRODUCT_TEST_TASK_PATHS = {'pre_h_final_governance': ('.github/workflows/ci.yml', 'config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/README.md', 'test/ci-infrastructure-boundary.test.ts'), 'aws_principal_denial_and_cycle_custody': ('deploy/aws-feasibility/.terraform.lock.hcl', 'deploy/aws-feasibility/apply.sh', 'deploy/aws-feasibility/check-plan.py', 'deploy/aws-feasibility/completion_campaign_aws_adapter.py', 'deploy/aws-feasibility/completion_campaign_aws_entry.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py', 'deploy/aws-feasibility/completion_campaign_codec.py', 'deploy/aws-feasibility/completion_campaign_contracts.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_evidence_issuer.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/completion_campaign_receipts.py', 'deploy/aws-feasibility/completion_campaign_remote_adapter.py', 'deploy/aws-feasibility/completion_campaign_state.py', 'deploy/aws-feasibility/destroy.sh', 'deploy/aws-feasibility/inventory.sh', 'deploy/aws-feasibility/main.tf', 'deploy/aws-feasibility/outputs.tf', 'deploy/aws-feasibility/plan.sh', 'deploy/aws-feasibility/recover-production-campaign-entry.sh', 'deploy/aws-feasibility/recover-production-campaign.sh', 'deploy/aws-feasibility/remote/completion_cycle_authority.py', 'deploy/aws-feasibility/remote/completion_cycle_full.py', 'deploy/aws-feasibility/remote/completion_cycle_full_diagnostic.py', 'deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_diagnostic.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_authority.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_full.py', 'deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py', 'deploy/aws-feasibility/remote/completion_kata_coordinator.py', 'deploy/aws-feasibility/remote/completion_kata_diagnostic_control.py', 'deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py', 'deploy/aws-feasibility/remote/completion_kata_nft_owner.py', 'deploy/aws-feasibility/remote/completion_kata_preparation.py', 'deploy/aws-feasibility/remote/completion_kata_qualification.py', 'deploy/aws-feasibility/remote/completion_local_full.py', 'deploy/aws-feasibility/remote/completion_package_candidate.py', 'deploy/aws-feasibility/remote/completion_package_candidate_recovery.py', 'deploy/aws-feasibility/remote/completion_package_post_pin_recovery.py', 'deploy/aws-feasibility/remote/completion_rootfs_builder.py', 'deploy/aws-feasibility/remote/completion_rootfs_plan.py', 'deploy/aws-feasibility/remote/completion_trusted_runtime_launcher.py', 'deploy/aws-feasibility/remote/measure-runtime.sh', 'deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-full.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-remote.sh', 'deploy/aws-feasibility/remote/validate-runtime.sh', 'deploy/aws-feasibility/remote/verify-completion-artifacts.py', 'deploy/aws-feasibility/run-measurement-campaign.sh', 'deploy/aws-feasibility/run-measurement-validation.sh', 'deploy/aws-feasibility/run-production-campaign.sh', 'deploy/aws-feasibility/run-production-effect.sh', 'deploy/aws-feasibility/run-production-inventory.sh', 'deploy/aws-feasibility/run-production-remote.sh', 'deploy/aws-feasibility/run-runtime-validation.sh', 'deploy/aws-feasibility/validate.sh', 'deploy/aws-feasibility/variables.tf', 'deploy/aws-feasibility/versions.tf', 'schemas/aws-stage2-completion-evidence-v3.json', 'schemas/aws-stage2-completion-production-approval-v5.json', 'schemas/aws-stage2-production-custody-v1.json', 'schemas/aws-stage2-production-principal-contract-v1.json', 'scripts/provision-stage2-nft-owner.py', 'scripts/render-aws-stage2-completion-report-v3.ts', 'scripts/stage2-production-approval.py', 'scripts/stage2-production-planner.py', 'scripts/stage2-stage-production-approval.py', 'scripts/validate-aws-stage2-completion-evidence-v3.ts', 'test/aws-stage2-completion-campaign-aws-adapter.py', 'test/aws-stage2-completion-campaign-aws-adapter.test.ts', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/aws-stage2-completion-campaign-controller.py', 'test/aws-stage2-completion-campaign-controller.test.ts', 'test/aws-stage2-completion-campaign-ingress.py', 'test/aws-stage2-completion-campaign-production.py', 'test/aws-stage2-completion-campaign-production.test.ts', 'test/aws-stage2-completion-campaign-receipts.py', 'test/aws-stage2-completion-campaign-receipts.test.ts', 'test/aws-stage2-completion-campaign-remote-adapter.py', 'test/aws-stage2-completion-campaign-remote-adapter.test.ts', 'test/aws-stage2-completion-campaign-state.py', 'test/aws-stage2-completion-campaign-state.test.ts', 'test/aws-stage2-completion-cycle-authority.py', 'test/aws-stage2-completion-cycle-authority.test.ts', 'test/aws-stage2-completion-evidence-v3.test.ts', 'test/aws-stage2-completion-kata-coordinator.py', 'test/aws-stage2-completion-kata-coordinator.test.ts', 'test/aws-stage2-completion-kata-native-recover.py', 'test/aws-stage2-completion-kata-rehearsal.test.ts', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-production-approval.py', 'test/stage2-production-approval.test.ts', 'test/stage2-production-planner.py', 'test/stage2-production-planner.test.ts'), 'protected_product_and_kvm_contract': ('.github/workflows/insecure-container.yml', '.github/workflows/kvm-qualification.yml', 'dev/linux-kvm/bounded-command.py', 'dev/linux-kvm/ci-smoke.sh', 'dev/linux-kvm/driver.sh', 'dev/linux-kvm/git-tools.sh', 'dev/linux-kvm/qualify.sh', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/egress-conformance/stage3-real-runtime/harness.ts', 'test/linux-kvm-git-tools.test.ts', 'test/production-compose.test.ts'), 'generated_readiness_and_no_mint_authorization': ('docs/operations/stage-4-offline-readiness.md', 'docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'scripts/stage2-prebuilt-rehearsal-grant.py', 'scripts/stage4-offline-readiness-regenerate.ts', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'scripts/stage4-runtime-artifact-closure-regenerate.ts', 'scripts/stage4-runtime-artifact-closure.ts', 'test/stage2-prebuilt-rehearsal-grant.test.ts', 'test/stage4-offline-readiness.test.ts', 'test/stage4-runtime-artifact-closure.test.ts', 'test/stage4-schema-registry.test.ts'), 'final_hgq_control_reserve': ('.github/workflows/stage2-local-static-control-prebuilt-candidate.yml', '.github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml', '.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', '.github/workflows/stage2-prebuilt-local-kata-qualification.yml', '.github/workflows/stage2-prebuilt-mixed-hg-preflight.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml', '.github/workflows/stage2-prebuilt-rootfs-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-publisher.yml', '.github/workflows/stage2-production-approval.yml', '.github/workflows/stage2-production-campaign.yml', '.github/workflows/stage2-production-plan.yml', 'biome.json', 'config/stage2-retired-revisions-v1.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/00-ip.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/01-tc.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/02-nft.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/03-ssh.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/04-ssh-keygen.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/05-containerd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/06-ctr.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/07-shim.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/08-qemu.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/contracts/09-virtiofsd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-execution-envelope-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-runtime-manifest-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v8/stage2-local-static-control-v2.json', 'schemas/stage2-formal-local-artifact-custody-v2.json', 'schemas/stage2-formal-local-cycle-receipt-v2.json', 'schemas/stage2-formal-local-cycle-status-v2.json', 'schemas/stage2-pre-aws-qualification-package-v5.json', 'scripts/check-stage2-retained-lines.py', 'scripts/prepare-stage2-fixed-source.py', 'scripts/stage2-formal-local-qualification.py', 'scripts/stage2-hosted-opt-mode.py', 'scripts/stage2-local-settlement.py', 'scripts/stage2-native-settlement.py', 'scripts/stage2-prebuilt-kvm-diagnostic-lock.py', 'scripts/stage2-prebuilt-local-qualification-guard.py', 'scripts/stage2-prebuilt-mixed-hg-preflight.sh', 'scripts/stage2-prebuilt-rootfs-producer.py', 'scripts/stage2-prebuilt-rootfs-publisher.py', 'scripts/stage2-prebuilt-static-control-runtime-boundary.py', 'scripts/stage2-revision-retirement.py', 'scripts/stage2-stage-prebuilt-control.py', 'test/stage2-formal-local-qualification.py', 'test/stage2-formal-local-qualification.test.ts', 'test/stage2-local-workflow-scripts.py', 'test/stage2-prebuilt-kvm-integration-diagnostic.test.ts', 'test/stage2-prebuilt-local-kata-workflow.test.ts', 'test/stage2-prebuilt-local-static-control-workflow.test.ts', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-workflow.test.ts', 'test/stage2-prebuilt-rootfs-producer-workflow.test.ts', 'test/stage2-prebuilt-rootfs-publisher-workflow.test.ts', 'test/stage2-prebuilt-static-control-runtime-boundary.py', 'test/stage2-production-workflows.test.ts', 'test/stage2-remediation-budget.test.ts')}
-PRODUCT_TEST_TASK_SPECS = (('pre_h_final_governance', 2700, 1100000, {'integration': (2700, 1100000)}), ('aws_principal_denial_and_cycle_custody', 7357, 8400000, {'integration': (7357, 8400000)}), ('protected_product_and_kvm_contract', 4000, 3200000, {'integration': (1600, 1300000), 'lifecycle': (1000, 1000000), 'relay': (1400, 900000)}), ('generated_readiness_and_no_mint_authorization', 1800, 2000000, {'integration': (1800, 2000000)}), ('final_hgq_control_reserve', 5500, 5500000, {'integration': (5500, 5500000)}))
-PRODUCT_TEST_PRE_H_TASK_MAXIMA = {'pre_h_final_governance': (2700, 1100000), 'aws_principal_denial_and_cycle_custody': (7357, 8400000), 'protected_product_and_kvm_contract': (4000, 3200000), 'generated_readiness_and_no_mint_authorization': (1800, 2000000), 'final_hgq_control_reserve': (2000, 2000000)}
+PRODUCT_TEST_TASK_SPECS = (('pre_h_final_governance', 2900, 1100000, {'integration': (2900, 1100000)}), ('aws_principal_denial_and_cycle_custody', 7357, 8400000, {'integration': (7357, 8400000)}), ('protected_product_and_kvm_contract', 4000, 3200000, {'integration': (1600, 1300000), 'lifecycle': (1000, 1000000), 'relay': (1400, 900000)}), ('generated_readiness_and_no_mint_authorization', 1800, 2000000, {'integration': (1800, 2000000)}), ('final_hgq_control_reserve', 5500, 5500000, {'integration': (5500, 5500000)}))
+PRODUCT_TEST_PRE_H_TASK_MAXIMA = {'pre_h_final_governance': (2900, 1100000), 'aws_principal_denial_and_cycle_custody': (7357, 8400000), 'protected_product_and_kvm_contract': (4000, 3200000), 'generated_readiness_and_no_mint_authorization': (1800, 2000000), 'final_hgq_control_reserve': (2000, 2000000)}
 PRODUCT_TEST_FINAL_HGQ_MINIMUM = (3500, 3500000)
-REMEDIATION_BUDGET_LINE_LIMIT = 1_300
-PRE_H_REQUIRED_ORDER = ('reviewed_non_aws_design', 'corrected_source', 'focused_tests', 'readiness_regeneration_before_pr', 'pr_exact_head_ci', 'protected_product_kvm_feedback', 'candidate_publication_readback', 'no_mint_validation_and_readiness', 'recovery_residue_audits', 'final_validation_and_regeneration', 'exact_tree_reviews', 'authenticated_control_account_planning', 'pre_dispatch_review', 'retirement_freeze', 'H')
+REMEDIATION_BUDGET_LINE_LIMIT = 1_400
+PRE_H_REQUIRED_ORDER = ('reviewed_non_aws_design', 'corrected_source', 'focused_tests', 'readiness_source_file_cap_synchronization', 'readiness_regeneration_before_pr', 'pr_exact_head_ci', 'protected_product_kvm_feedback', 'candidate_publication_readback', 'no_mint_validation_and_readiness', 'recovery_residue_audits', 'final_validation_and_regeneration', 'exact_tree_reviews', 'authenticated_control_account_planning', 'pre_dispatch_review', 'retirement_freeze', 'H')
 AWS_TASK_FORECAST_SLICES = (('deployment_custody_and_direct_ingress', 'integration', 5457, 6200000), ('opentofu_backend_and_workflow_compatibility', 'integration', 1200, 1500000), ('approval_staging_and_focused_authority_tests', 'integration', 500, 500000))
 AWS_WITHHELD_FORECAST = (200, 200000, 'unallocated-enforceable-holdback-requires-reviewed-replan')
 NO_MINT_DOWNSTREAM_CONSUMERS = ('.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', 'deploy/aws-feasibility/remote/completion_cycle_full_rehearsal.py', 'deploy/aws-feasibility/remote/completion_cycle_readiness_rehearsal.py', 'deploy/aws-feasibility/remote/run-stage2-completion-full-rehearsal.sh', 'deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh', 'scripts/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-rehearsal-grant.test.ts', 'test/stage2-prebuilt-rehearsal-workflow.test.ts')
@@ -456,7 +456,7 @@ def _remediation_budget():
                            "source_limits", "product_test_correction", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
-             and data["global_gross_line_high"] == 69_357 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
+             and data["global_gross_line_high"] == 69_557 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
     _require(data["source_limits"] == {"tracked_files": 1620,
@@ -667,17 +667,12 @@ def _aws_enforced_category_paths(task):
     task_paths = set(task["paths"])
     resolved = {}
     for name, definition in categories.items():
-        _require(isinstance(definition, dict))
-        if name == "deployment_custody_and_direct_ingress":
-            _require(set(definition) == {"all_task_paths_except"})
-            excluded = definition["all_task_paths_except"]
-            _require(isinstance(excluded, list) and excluded == sorted(set(excluded)) and set(excluded) < task_paths)
-            resolved[name] = task_paths - set(excluded)
-        else:
-            _require(set(definition) == {"paths"})
-            paths = definition["paths"]
-            _require(isinstance(paths, list) and paths == sorted(set(paths)) and set(paths) <= task_paths)
-            resolved[name] = set(paths)
+        _require(isinstance(definition, dict) and set(definition) == {"paths"})
+        paths = definition["paths"]
+        # Each category is an immutable explicit membership list.  A complement
+        # would silently reclassify a future AWS path when the task list changes.
+        _require(isinstance(paths, list) and paths == sorted(set(paths)) and set(paths) <= task_paths)
+        resolved[name] = set(paths)
     return resolved
 
 
@@ -778,7 +773,10 @@ def _product_test_consumption(budget):
              and consumed_bytes <= PRODUCT_TEST_REMAINING_BYTES
              and PRODUCT_TEST_RETAINED_LINES + consumed_lines <= plan["global_gross_line_forecast"]
              and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes <= plan["global_gross_byte_forecast"])
-    return owner_lines, owner_bytes, task_lines, task_bytes, 0
+    return owner_lines, owner_bytes, task_lines, task_bytes, {
+        "lines": category_lines,
+        "bytes": category_bytes,
+    }
 
 def _product_test_gross(budget):
     return _product_test_consumption(budget)[0]
@@ -905,7 +903,18 @@ def measure():
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
-    product_test_gross, product_test_bytes, product_test_task_lines, product_test_task_bytes, _ = _product_test_consumption(remediation_budget)
+    product_test_gross, product_test_bytes, product_test_task_lines, product_test_task_bytes, category_consumption = _product_test_consumption(remediation_budget)
+    # Focused arithmetic tests may replace the measurement helper; retain a
+    # zero-shaped report in that isolated case while production measurement
+    # always carries the exact category counters above.
+    if not isinstance(category_consumption, dict):
+        category_consumption = {"lines": {name: 0 for name, *_ in AWS_TASK_FORECAST_SLICES},
+                                "bytes": {name: 0 for name, *_ in AWS_TASK_FORECAST_SLICES}}
+    _require(set(category_consumption) == {"lines", "bytes"}
+             and all(set(category_consumption[kind]) == {name for name, *_ in AWS_TASK_FORECAST_SLICES}
+                     for kind in ("lines", "bytes")))
+    category_forecasts = {name: {"lines": lines, "bytes": raw_bytes}
+                          for name, _, lines, raw_bytes in AWS_TASK_FORECAST_SLICES}
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -963,6 +972,17 @@ def measure():
                                               for task in remediation_budget["product_test_correction"]["remaining_tranche"]["allocations"]
                                               for name in (task["name"],)},
         "product_test_final_hgq_minimum": {"lines": PRODUCT_TEST_FINAL_HGQ_MINIMUM[0], "bytes": PRODUCT_TEST_FINAL_HGQ_MINIMUM[1]},
+        "product_test_aws_category_forecasts": category_forecasts,
+        "product_test_aws_category_gross_added": category_consumption,
+        "product_test_aws_category_remaining": {
+            kind: {name: category_forecasts[name][kind] - category_consumption[kind][name]
+                   for name in category_forecasts}
+            for kind in ("lines", "bytes")
+        },
+        "product_test_aws_holdback": {
+            "lines": AWS_WITHHELD_FORECAST[0], "bytes": AWS_WITHHELD_FORECAST[1],
+            "semantics": AWS_WITHHELD_FORECAST[2], "consumed": {"lines": 0, "bytes": 0},
+        },
         "product_test_workstream_gross_line_forecasts": PRODUCT_TEST_FORECASTS,
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_gross.values()),
         "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_gross.values()),
