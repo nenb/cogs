@@ -882,7 +882,7 @@ test("ADR0335 patch accounting cross-checks historical numstat selection, includ
 import runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_gross_added_line_bytes']; ns=f.__globals__
-name='src/api/server.ts'; q='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; head='252a72c323bad966a7f6a1a81364c379997c5181'
+name='src/api/server.ts'; q='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; head='eda2dc499153f3053772790c02ea6d332403742e'
 # Fixed historical blobs keep this regression stable through later source work.
 old=subprocess.check_output(['git','show',q+':'+name])
 new=subprocess.check_output(['git','show',head+':'+name])
@@ -891,21 +891,21 @@ with tempfile.TemporaryDirectory() as directory:
  def git(*args): return subprocess.check_output(['git',*args],cwd=root)
  git('init','-q'); path.write_bytes(old); git('add','.'); base=git('write-tree').decode().strip()
  path.write_bytes(new)
- assert git('diff','--numstat',base,'--',name)==b'560\t59\tsrc/api/server.ts\n'
- assert ns['_gross_slice']((name,),lambda p:p==name,base)==560
- assert f((name,),base)==21177
+ assert git('diff','--numstat',base,'--',name)==b'578\t69\tsrc/api/server.ts\n'
+ assert ns['_gross_slice']((name,),lambda p:p==name,base)==578
+ assert f((name,),base)==21883
  patch=git('diff','--unified=3',base,'--',name)
  added=[line for line in patch.split(b'\n') if line.startswith(b'+') and not line.startswith(b'+++')]
- assert (len(added),sum(map(len,added)))==(560,21177)
+ assert (len(added),sum(map(len,added)))==(578,21883)
  zero=git('diff','--unified=0',base,'--',name)
  added=[line for line in zero.split(b'\n') if line.startswith(b'+') and not line.startswith(b'+++')]
- assert (len(added),sum(map(len,added)))==(558,21174)  # the original undercharge
+ assert (len(added),sum(map(len,added)))==(576,21880)  # the original undercharge
  for key,value in (('diff.context','0'),('diff.algorithm','histogram'),('diff.indentHeuristic','false'),('diff.interHunkContext','999')):
   git('config',key,value)
- assert ns['_gross_slice']((name,),lambda p:p==name,base)==560 and f((name,),base)==21177
+ assert ns['_gross_slice']((name,),lambda p:p==name,base)==578 and f((name,),base)==21883
  # Production cross-check fails closed if patch additions and numstat diverge.
  original=ns['_git_raw']
- ns['_git_raw']=lambda args:original(args).replace(b'560\t59\t',b'559\t59\t',1)
+ ns['_git_raw']=lambda args:original(args).replace(b'578\t69\t',b'577\t69\t',1)
  try: f((name,),base)
  except m['LineBudgetError']: pass
  else: raise AssertionError('numstat/patch mismatch accepted')
