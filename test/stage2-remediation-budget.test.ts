@@ -596,6 +596,32 @@ for kind in ('owner','task','image','source'):
  veto(bad)
 `);
 });
+test("ADR0337 retained plus consumed tranche admits its exact line and byte boundary", () => {
+  assertBudgetProgram(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py'); b,_,_,_,_=m['_remediation_budget'](); f=m['_product_test_consumption']; ns=f.__globals__
+p=b['product_test_correction']; planned={path:entry['name'] for entry in p['owners'] for path in (*entry['existing_paths'],*entry['new_files'])}
+tasks={task['name']:m['_product_test_task_paths'](task['name'],planned) for task in p['remaining_tranche']['allocations']}
+integration=tuple(next(entry for entry in p['owners'] if entry['name']=='integration')['existing_paths']+next(entry for entry in p['owners'] if entry['name']=='integration')['new_files'])
+head='f'*40
+ns['_git']=lambda args: head if args==['rev-parse','HEAD'] else ''
+ns['_product_test_linear_commits']=lambda current: ()
+ns['_product_test_changes']=lambda revision,target=None:set(planned)
+def charge(names,total,parts):
+ if tuple(names)==integration: return total
+ return parts.get(tuple(names),0)
+def run(lines,raw_bytes):
+ ns['_gross_slice']=lambda names,*ignored:charge(names,lines,{tasks['runtime_correction_and_tests']:1000,tasks['future_hgq_control_and_evidence']:2000})
+ ns['_gross_added_line_bytes']=lambda names,*ignored:charge(names,raw_bytes,{tasks['runtime_correction_and_tests']:1000000,tasks['future_hgq_control_and_evidence']:2000000})
+ return f(b)
+report=run(3000,3000000)
+assert report[0]['integration']==3000 and report[1]['integration']==3000000
+for lines,raw_bytes in ((3001,3000000),(3000,3000001)):
+ try: run(lines,raw_bytes)
+ except m['LineBudgetError']: pass
+ else: raise AssertionError('retained-plus-consumed overage accepted')
+`);
+});
 test("ADR0337 protected-squash real-git lineage and gross-charge regressions fail closed", () => {
   assertBudgetProgram(String.raw`
 import runpy,subprocess,tempfile

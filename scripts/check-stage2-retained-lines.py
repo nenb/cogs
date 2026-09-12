@@ -670,8 +670,8 @@ def _product_test_consumption(budget):
     _require(all(owner_lines[owner] <= high for owner, high in PRODUCT_TEST_REMAINING_FORECASTS.items())
              and consumed_lines <= PRODUCT_TEST_REMAINING_LINES
              and consumed_bytes <= PRODUCT_TEST_REMAINING_BYTES
-             and PRODUCT_TEST_RETAINED_LINES + consumed_lines < plan["global_gross_line_forecast"]
-             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes < plan["global_gross_byte_forecast"])
+             and PRODUCT_TEST_RETAINED_LINES + consumed_lines <= plan["global_gross_line_forecast"]
+             and PRODUCT_TEST_RETAINED_BYTES + consumed_bytes <= plan["global_gross_byte_forecast"])
     return owner_lines, owner_bytes, task_lines, task_bytes, 0
 
 def _product_test_gross(budget):

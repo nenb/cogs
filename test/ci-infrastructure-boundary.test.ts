@@ -174,8 +174,11 @@ test("protected product workflow is manual, protected-main, credential-free and 
   assert.match(source, /os\.path\.basename\(protected\)=='protected-'\+candidate/u);
   assert.match(source, /\('\/var\/lib\/cogs-product-test',0o700\)/u);
   assert.doesNotMatch(source, /\/opt\/cogs-product-\$CANDIDATE/u);
-  assert.match(source, /source='protected-'\+value\['candidate'\]; evidence='build-receipt\.json'/u);
-  assert.match(source, /set\(names\)!==?\{source,evidence,value\['generation'\]\}/u);
+  assert.match(
+    source,
+    /source='protected-'\+value\['candidate'\]; evidence='build-receipt\.json'; lock=value\['generation'\]\+'\.lock'/u,
+  );
+  assert.match(source, /set\(names\)!==?\{source,evidence,lock,value\['generation'\]\}/u);
   assert.match(source, /source_inventory|npm_closure|ImageVersion/u);
   assert.match(source, /time\.time_ns\(\)\/\/1_000_000\+900_000/u);
   assert.match(source, /Root-inventory exactly one generation/u);
@@ -183,6 +186,71 @@ test("protected product workflow is manual, protected-main, credential-free and 
   const adr = await readFile(join(root, "docs/adr/0337-correct-protected-product-runtime-ancestry.md"), "utf8");
   assert.match(adr, /34688544414[\s\S]*attempt 1[\s\S]*before application execution/u);
   assert.match(adr, /never H, G, or Q/u);
+});
+
+test("protected product root inventory admits only the bounded generation lock", async () => {
+  const source = await readFile(join(workflowDirectory, "insecure-container.yml"), "utf8");
+  assert.match(source, /lock=value\['generation'\]\+'\.lock'/u);
+  assert.match(source, /set\(names\)!==?\{source,evidence,lock,value\['generation'\]\}/u);
+  assert.match(source, /os\.open\(lock,os\.O_RDONLY\|os\.O_NOFOLLOW,dir_fd=parent_fd\)/u);
+  assert.match(source, /not same\(lock_info,lock_path\).*lock_info\.st_nlink!=1.*0o600.*32768/u);
+  assert.match(source, /not same\(lock_info,os\.stat\(lock,dir_fd=parent_fd,follow_symlinks=False\)\)/u);
+  assert.match(source, /not \{'generation','seconds'\}<=set\(first\)<=allowed/u);
+  assert.match(source, /secret or invalid generation lock tail/u);
+  assert.match(source, /'generation_lock':lock_metadata/u);
+
+  const generation = "a".repeat(32);
+  const lock = `${generation}.lock`;
+  type LockStat = { dev: number; ino: number; uid: number; gid: number; nlink: number; mode: number; size: number };
+  const canonical = (value: unknown) => `${JSON.stringify(value, Object.keys(value as object).sort())}\n`;
+  const admit = (names: string[], descriptor: LockStat, path: LockStat, raw: string) => {
+    assert.deepEqual(new Set(names), new Set([`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock]));
+    assert.deepEqual([descriptor.dev, descriptor.ino], [path.dev, path.ino], "descriptor/path identity");
+    assert.deepEqual(
+      [descriptor.uid, descriptor.gid, descriptor.nlink, descriptor.mode, descriptor.size],
+      [0, 0, 1, 0o600, Buffer.byteLength(raw)],
+      "root-owned ordinary bounded lock",
+    );
+    assert.ok(descriptor.size > 0 && descriptor.size <= 32768);
+    const values = raw.split(/(?<=\n)/u);
+    assert.ok(values.length <= 2 && values.every((line) => line.endsWith("\n")));
+    const parsed = values.map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.ok(parsed.every((value, index) => canonical(value) === values[index]));
+    const first = parsed[0];
+    if (first === undefined) throw new Error("missing lock config");
+    assert.deepEqual(Object.keys(first).sort(), ["generation", "purpose", "seconds"]);
+    assert.deepEqual(first, { generation, purpose: "run", seconds: 60 });
+    assert.ok(
+      parsed.length === 1 ||
+        (parsed.length === 2 && JSON.stringify(parsed[1]) === JSON.stringify({ cleanup_required: true, generation })),
+    );
+    return { name: lock, size: descriptor.size, sha256: "sha256:bounded-digest" };
+  };
+  const raw = canonical({ generation, purpose: "run", seconds: 60 });
+  const stat = { dev: 1, ino: 2, uid: 0, gid: 0, nlink: 1, mode: 0o600, size: Buffer.byteLength(raw) };
+  assert.deepEqual(admit([`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock], stat, stat, raw), {
+    name: lock,
+    size: Buffer.byteLength(raw),
+    sha256: "sha256:bounded-digest",
+  });
+  for (const [names, descriptor, path, body] of [
+    [[`protected-${"b".repeat(40)}`, "build-receipt.json", generation], stat, stat, raw],
+    [[`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock, "extra.lock"], stat, stat, raw],
+    [[`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock], stat, { ...stat, ino: 3 }, raw],
+    [
+      [`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock],
+      { ...stat, nlink: 2 },
+      { ...stat, nlink: 2 },
+      raw,
+    ],
+    [
+      [`protected-${"b".repeat(40)}`, "build-receipt.json", generation, lock],
+      stat,
+      stat,
+      canonical({ generation, purpose: "run", secret: "no", seconds: 60 }),
+    ],
+  ] as const)
+    assert.throws(() => admit([...names], descriptor, path, body));
 });
 
 test("legacy package hooks, aliases and exports remain closed while the protected workflow is admitted", async () => {
