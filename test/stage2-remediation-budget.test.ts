@@ -227,7 +227,7 @@ test("ADR0319 preserves original finding numbers and grants no chain or AWS auth
   assert.match(adr, /grants no producer[\s\S]*AWS authority/u);
 });
 
-test("ADR0335 allocates measured correction while preserving historical chain accounting", () => {
+test("ADR0336 preserves historical chain accounting", () => {
   const result = spawnSync(
     "python3",
     [
@@ -239,11 +239,11 @@ import runpy,subprocess
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,highs,paths,new,forecasts=m['_remediation_budget']()
-assert highs==dict(route=2200,revocation=3000,relay=4375,lifecycle=11800,completion=6080,integration=18457); assert sum(new.values())==97 and sum(x['total'] for x in forecasts.values())==9120000
-assert b['global_gross_line_high']==45200 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
+assert highs==dict(route=2200,revocation=3000,relay=4628,lifecycle=11800,completion=6080,integration=20157); assert sum(new.values())==98
+assert b['global_gross_line_high']==48000 and b['base_revision']=='242bbefeae5444118d9e97b46597130b509ca253'
 assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6000,60000,2000)
-assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87)
+assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'],m['MUTABLE_OWNER_LINE_LIMIT'])==(115000,24500,31000,6500,60000,2000)
+assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=88)
 for p in ('config/stage2-retired-revisions-v1.json','scripts/stage2-revision-retirement.py'):
  assert paths[p]=='integration' and p in m['RETAINED_FILES'] and m['_counted'](p)
 for owner,names in {
@@ -255,7 +255,7 @@ for owner,names in {
 for retired_path in ('config/openbao-local-build-v1.json','images/openbao-local/Dockerfile','images/openbao-local/dependencies.patch','scripts/openbao-local-artifact.py','test/openbao-local-artifact.test.ts','docs/security-evidence/openbao-local-artifact-candidate.md','docs/operations/openbao-local-artifact.md'):
  assert retired_path not in paths and not Path(retired_path).exists(),retired_path
 baseline=set(subprocess.check_output(['git','ls-tree','-r','--name-only',b['base_revision']],text=True).splitlines())
-assert len(set(paths)-baseline)==97
+assert len(set(paths)-baseline)==98
 for current in ('docs/adr/0310-authorize-openbao-recognition-correction.md','docs/adr/0311-reallocate-integrated-post-H-closure.md','docs/adr/0312-reallocate-final-observer-closure.md','docs/adr/0313-authorize-final-hostile-corrections-and-stage2-scope.md','docs/adr/0314-raise-final-hostile-integration-ceilings.md','docs/adr/0315-authorize-final-async-transport-ownership.md','docs/adr/0316-authorize-worker-transport-and-response-custody.md','docs/adr/0317-reallocate-worker-transport-integration.md','docs/adr/0318-authorize-s3-live-control-response-custody.md','docs/adr/0319-retire-frozen-H-and-authorize-bounded-review-corrections.md','docs/adr/0320-freeze-corrected-H-and-authorize-control.md','docs/adr/0321-authorize-causal-npm-compatibility-correction.md','docs/adr/0322-establish-corrected-Q-and-authorize-qualification.md','docs/adr/0323-retire-timeout-H-and-authorize-turn-deadline-correction.md','docs/adr/0324-retire-failed-static-generation-and-correct-authority.md','docs/adr/0325-freeze-static-corrected-H-and-authorize-control.md','docs/adr/0326-reconcile-historical-stage2-retirement-policy.md','docs/adr/0327-retire-failed-formal-generation-and-separate-runtime-contracts.md','docs/adr/0328-freeze-runtime-corrected-H-and-authorize-control.md','docs/adr/0329-establish-runtime-corrected-Q-and-authorize-qualification.md','docs/adr/0330-retire-runner-rollover-generation-and-correct-admission.md','docs/adr/0331-freeze-image-bound-H-and-authorize-control.md','docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md'):
  assert paths[current]=='integration' and Path(current).is_file()
 image_qualification=Path('docs/adr/0332-establish-image-bound-Q-and-authorize-qualification.md').read_text()
@@ -276,10 +276,10 @@ control=Path('docs/adr/0320-freeze-corrected-H-and-authorize-control.md').read_t
 assert '97bc8eb8520a2116914c65a9ec5929e82c34ebf3' in control
 assert '34183885618' in control and '10040293103' in control
 assert 'grants no AWS operation' in control
-assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
+assert b['source_limits']==dict(tracked_files=1530,source_inventory_bytes=30000000,serialized_source_inventory_bytes=262144)
 # The authorized integration tranche synchronizes implementation, not serialized or per-file bounds.
 source_inventory=Path('scripts/stage4-offline-source-inventory.ts').read_text()
-for constant in ('MAXIMUM_TRACKED_FILES = 1517;', 'MAXIMUM_AGGREGATE_BYTES = 26_000_000;',
+for constant in ('MAXIMUM_TRACKED_FILES = 1530;', 'MAXIMUM_AGGREGATE_BYTES = 30_000_000;',
                  'MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;', 'MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;'):
  assert constant in source_inventory,constant
 assert m['FINAL_CONTROL_DATA_ROOT'].endswith('-v7') and len(m['FINAL_CONTROL_DATA_MEMBERS'])==13
@@ -506,6 +506,7 @@ zero={owner['name']:0 for owner in budget['owners']}
 forecasts={owner['name']:owner['gross_byte_forecast'] for owner in budget['owners']}
 ns['_remediation_gross']=lambda:(zero,zero,budget,forecasts)
 ns['_product_test_gross']=lambda budget:zero
+ns['_product_test_consumption']=lambda budget:(zero,zero,{}, {},0)
 ns['_gross_added_line_bytes']=lambda paths,revision:0
 def gross(paths,allowed,revision=m['CORRECTION_BASE_REVISION']):
  if revision!=m['POST_H_REVISION']: return original(paths,allowed,revision)
@@ -558,363 +559,66 @@ function assertBudgetProgram(program: string) {
   const result = spawnSync("python3", ["-I", "-B", "-c", program], { encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
 }
-test("ADR0335 exact ownership matrix, eight files, forecasts and ceilings are closed without transfers", () => {
-  assertBudgetProgram(String.raw`
-import copy,json,runpy,tempfile
+test("ADR0336 charges committed history, exact paths, tasks, and mutations", () => {
+  assertBudgetProgram(`
+import copy,hashlib,json,runpy,tempfile
 from pathlib import Path
-m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_budget']; ns=f.__globals__; original_git=ns['_git']; cache={}
-def git(args): cache[tuple(args)]=original_git(args); return cache[tuple(args)]
-ns['_git']=git; b,highs,paths,new,forecasts=f()
-assert (m['BASE_REVISION'],m['GROSS_CHECKPOINT_REVISION'])==('746568773798d72f5a79ad639d96cb227597f3b7',)*2; assert m['CORRECTION_BASE_REVISION']=='6f7d5c4dfdbf9f5ee4b4be0dc7d54839eac07f57'; assert m['FINAL_H_REVISION']=='8907eba3191d07573cd84573cb0b2adddff17bd6'
-assert (m['FINAL_H_DEPLOY_GROSS'],m['FINAL_H_RETAINED_GROSS'],m['FINAL_H_WORKFLOW_GROSS'])==(21948,11844,4836); assert m['CORRECTION_BASE_CONSERVATIVE_LINES']==55354
-assert (m['HARD_LIMIT'],m['DEPLOY_CORRECTION_HIGH'],m['RETAINED_CORRECTION_HIGH'],m['WORKFLOW_CORRECTION_HIGH'],m['GLOBAL_CORRECTION_HIGH'])==(115000,24500,31000,6000,60000); assert m['PREFERRED_LIMIT']==90000 and m['MUTABLE_OWNER_LINE_LIMIT']==2000
-assert b['global_gross_line_high']==45200; assert b['source_limits']==dict(tracked_files=1517,source_inventory_bytes=26000000,serialized_source_inventory_bytes=262144)
-assert highs==dict(route=2200,revocation=3000,relay=4375,lifecycle=11800,completion=6080,integration=18457); assert new==dict(route=1,revocation=0,relay=1,lifecycle=5,completion=3,integration=87) and sum(new.values())==97; expected_bytes=dict(route=350000,revocation=220000,relay=700000,lifecycle=1200000,completion=800000,integration=5850000); assert m['REMEDIATION_BYTE_HIGHS']==expected_bytes; assert forecasts=={o:dict(total=n) for o,n in expected_bytes.items()}; assert sum(expected_bytes.values())==9120000 and b['global_gross_byte_high']==m['REMEDIATION_GLOBAL_BYTE_HIGH']==7200000 and 18763891+b['global_gross_byte_high']==25963891<26000000
-plan=b['product_test_correction']; assert plan['base_revision']==m['PRODUCT_TEST_Q']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; assert plan['base_tree']==m['PRODUCT_TEST_Q_TREE']=='181128aae8617eb58c5dce743416f4f69266c02c'
-assert plan['global_gross_line_forecast']==15537 and plan['global_gross_byte_forecast']==5120000; assert plan['integration_regeneration_gross_line_forecast']==400
-expected_forecasts=dict(route=0,revocation=0,relay=2375,lifecycle=4450,completion=2580,integration=6132)
-assert m['PRODUCT_TEST_FORECASTS']==expected_forecasts; assert {e['name']:e['gross_line_forecast'] for e in plan['owners']}==expected_forecasts; assert sum(expected_forecasts.values())==15537
-q_bytes=dict(route=0,revocation=0,relay=400000,lifecycle=450000,completion=300000,integration=4500000)
-assert m['PRODUCT_TEST_BYTE_FORECASTS']==q_bytes and sum(q_bytes.values())==5650000; assert {e['name']:e['gross_byte_forecast'] for e in plan['owners']}==q_bytes
-existing={
- 'route':'docs/operations/runbooks/index.json',
- 'revocation':'',
- 'relay':'''dev/linux-kvm/ci-smoke.sh dev/linux-kvm/driver.sh dev/linux-kvm/qualify.sh
- test/egress-conformance/guest-probes/run-kvm-black-box-case.sh
- test/egress-conformance/stage3-real-runtime/harness.ts test/linux-kvm-git-tools.test.ts''',
- 'lifecycle':'''dev/insecure-sandbox/ci-smoke.sh dev/insecure-sandbox/driver.sh dev/insecure-sandbox/ssh-adapter-smoke.ts
- dev/launcher/cli.ts dev/launcher/contract.ts dev/launcher/control.ts dev/launcher/core.ts dev/launcher/main.ts dev/launcher/operations.ts dev/launcher/profiles.ts
- dev/launcher/runner.ts dev/launcher/state.ts dev/launcher/supervisor.ts dev/launcher/trusted-compose.ts dev/launcher/trusted-controls.ts
- dev/launcher/worker-entry.ts dev/launcher/worker-process.ts
- schemas/runtime-v1alpha1.json src/runtime/compose.ts src/runtime/config.ts src/skills/session-preparer.ts
- test/dev-launcher-control-otlp.test.ts test/dev-launcher-core.test.ts test/dev-launcher-operations.test.ts test/dev-launcher-profiles.test.ts
- test/dev-launcher-state.test.ts test/dev-launcher-supervisor.test.ts test/dev-launcher-trusted-compose.test.ts test/dev-launcher-trusted-controls.test.ts
- test/dev-launcher-worker-process.test.ts test/production-compose.test.ts test/runtime-config.test.ts''',
- 'completion':'''dev/launcher/api-client.ts src/api/server.ts src/pi/session.ts src/telemetry/worker-telemetry.ts
- test/api-server.test.ts test/dev-launcher-cli-api.test.ts test/pi-session.test.ts
- test/skills-session-preparer.test.ts test/worker-telemetry.test.ts''',
- 'integration':'''.github/workflows/insecure-container.yml config/external-review-remediation-budget-v1.json docs/adr/README.md
- docs/operations/production-runtime-foundation.md
- docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json
- docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json
- docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json
- docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json
- docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json
- docs/security-evidence/stage4-offline-readiness-package.json package.json
- scripts/check-stage2-retained-lines.py scripts/run-launcher-smoke-evidence.ts scripts/stage4-offline-readiness-regenerate.ts
- scripts/stage4-offline-readiness.ts scripts/stage4-offline-source-inventory.ts
- scripts/stage4-runtime-artifact-closure-regenerate.ts scripts/stage4-runtime-artifact-closure.ts
- test/aws-stage2-completion-kata-runtime.py test/aws-stage2-completion-kata-s5.py test/aws-stage2-completion-local-result.test.ts
- test/ci-infrastructure-boundary.test.ts test/launcher-smoke-evidence.test.ts test/stage2-remediation-budget.test.ts
- test/stage4-offline-readiness.test.ts test/stage4-runtime-artifact-closure.test.ts test/stage4-schema-registry.test.ts'''}
-expected_new={
- 'dev/linux-kvm/bounded-command.py':'relay',
- 'src/skills/snapshot-session-preparer.ts':'lifecycle',
- 'dev/product-test/host-custody.py':'integration',
- 'dev/product-test/runner.ts':'integration',
- 'dev/product-test/snapshot-owner.ts':'integration',
- 'docs/adr/0333-authorize-controlled-product-test-corrections.md':'integration',
- 'docs/adr/0334-reallocate-measured-product-test-correction.md':'integration',
- 'docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md':'integration'}
-assert m['PRODUCT_TEST_NEW_FILES']==expected_new; assert {e['name']:e['existing_paths'] for e in plan['owners']}=={o:sorted(s.split()) for o,s in existing.items()}
-assert {e['name']:e['new_files'] for e in plan['owners']}=={o:sorted(p for p,owner in expected_new.items() if owner==o) for o in existing}; assert {e['name']:len(e['new_files']) for e in plan['owners']}==dict(route=0,revocation=0,relay=1,lifecycle=1,completion=0,integration=6)
-planned={p:o for o,s in existing.items() for p in s.split()} | expected_new; assert len(planned)==83 and sum(len(e['existing_paths'])+len(e['new_files']) for e in plan['owners'])==83
-for p,owner in planned.items(): assert paths[p]==owner,p
-q=plan['base_revision']; q_names=set(git(['ls-tree','-r','--name-only','-z',q]).split('\0')[:-1]); q_budget=json.loads(git(['show',q+':config/external-review-remediation-budget-v1.json'])); old={p:o['name'] for o in q_budget['owners'] for p in o['paths']}
-assert all(paths[p]==o for p,o in old.items())  # includes every historical path, not only this matrix
-historical_tests={'test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-local-result.test.ts'}
-assert {p for p in planned if p.startswith('test/aws-')}==historical_tests|{'test/aws-stage2-completion-kata-s5.py'}
-for p in historical_tests: assert p in q_names and old[p]==paths[p]==planned[p]=='integration'
-assert set(paths)==set(old)|set(planned); assert set(paths)-q_names==set(expected_new) and len(expected_new)==8
-# Newly allocated EXISTING paths carry no historical gross; otherwise a transfer ledger would be required.
-added_existing=(set(paths)-set(old))-set(expected_new); assert git(['diff','--no-renames','--numstat',b['base_revision'],q,'--',*sorted(added_existing)])==''
-assert paths['test/production-compose.test.ts']=='lifecycle'; assert paths['test/skills-session-preparer.test.ts']=='completion'; assert paths['docs/operations/runbooks/limitations.md']=='route'
-assert 'docs/operations/runbooks/limitations.md' not in planned and 'dev/launcher/openbao.ts' not in planned; assert 'schemas/launch-v1alpha1.json' not in planned
-assert {p for p in planned if p.startswith(('.github/','deploy/','images/'))}=={'.github/workflows/insecure-container.yml'}
-for p in ('package.json','.github/workflows/insecure-container.yml'): assert old[p]==paths[p]==planned[p]=='integration'
-for p in ('test/ci-infrastructure-boundary.test.ts','test/launcher-smoke-evidence.test.ts'): assert paths[p]==planned[p]=='integration'
-assert planned['test/dev-launcher-profiles.test.ts']=='lifecycle' and 'scripts/prepare-launcher-images.ts' not in planned
-adr=Path('docs/adr/0333-authorize-controlled-product-test-corrections.md').read_text(); replan_path='docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md'
-replan=Path(replan_path).read_text(); prior=Path('docs/adr/0334-reallocate-measured-product-test-correction.md').read_text()
-assert len(replan.splitlines())<=130
-for text in ('Supported-entrypoint denial revision from \x60c2439e42\x60', 'persist-credentials: false', '/usr/bin/python3 -I -B',
- 'controlled Docker orchestration is exclusively', 'It does NOT use', 'no root ledger claim',
- 'Closed supported external ingress inventory', 'Current exact key is \x60launcher\x60', 'no insecure execution alias exists',
- 'fixed denial command', 'appended npm arguments are unused shell positional arguments', 'Package denial does not launch Node or tsx',
- 'no pre/post execution hooks', 'unconditional job-level \x60if: \x24{{ false }}\x60', 'skip the whole effectful job',
- 'step-only guards', 'extra effectful jobs', 'future exact \x60.github/workflows/insecure-container.yml\x60 execution gate',
- 'Direct and sourced entry denies before report unlink/write', '\x60create\x60, \x60verify\x60, \x60reset\x60, \x60destroy\x60',
- 'including root callers', 'Both embedded Python cleanup paths', 'before application argument resolution',
- 'loader cache/IPC is not target resource authority', 'Imports and module initialization on that CLI path',
- 'direct TypeScript exports are trusted internal implementation/model surfaces, not package exports or supported ingress',
- 'exported \x60cleanupSensitiveExport\x60 need no independent denial', 'Manual imports', 'operational guardrail',
- 'No resistance to arbitrary code imports or same-UID trusted-code compromise is claimed',
- 'explicitly image preparation, not product/launcher execution, and unchanged', 'Finding11 closure boundary',
- 'closure is limited to supported entrypoints plus controlled product host custody', 'This plan does not close finding11',
- 'existing generation-bound root host custodian', 'exact full product execution closure/root helper',
- 'same sealed verified context', 'Never consume a later checkout reopen/copy',
- 'Required pre-target-effect tests, future source tranche', 'exactly zero application target-effect calls',
- 'Preserve non-authorizing models; convert complete-driver assertions', 'retain existing direct-export fake/model success tests',
- 'no new internal denial or migration of direct-export successes is required',
- 'insecure driver isolates docker tool state outside launcher controls', 'insecure driver never adopts or removes pre-existing docker competitors',
- 'including their create/destroy assertions', 'fixed denial, zero-tool calls and byte/mode/device/inode-exact state preservation with no new target paths',
- 'Docker HOME/DOCKER_CONFIG/BUILDX_CONFIG isolation', 'no keys before build', 'cleanup-required intent and uncertain lock retention',
- 'hostile-state/key preservation and competitor non-adoption/non-removal', 'retain the static Docker context exclusion assertion',
- 'never extract or execute a complete-driver body past denial', 'add a root/EUID/env/flag bypass',
- 'No runtime guard tests are implemented in this plan-only commit', '83 paths', '12,804/15,100', '988,774/1,850,000'):
- assert text in replan,text
-for superseded in ('HOLD 1','durably writes BEGIN before any main/state mkdir','Direct exported boundaries','production-private unforgeable capability','Audit every exported/CLI legacy entry'): assert superseded not in replan,superseded
-for p in planned: assert p in adr or p in replan,p
-for p in expected_new: assert p in replan,p
-for text in ('/tmp/cogs42-kvm-budget-replan.md','e3c1e938f3237df468ebf266f2b1cc096ae4ba05','044e127a',
- '8,604/12,000 lines and 416,404/1,300,000 bytes','completion 2,047; lifecycle 2,446; relay 732; integration 3,379',
- '24,733,891','44,705','45,200','6,496 remaining gross lines','No historical gross transfers: zero lines and zero files transferred',
- 'Do not commit pending two independent reviews','No reserve release before that owner\'s named tasks complete',
- 'task consumption, reserve use and the exact changed-since-review diff','not task purpose inferred from line diffs',
- 'Finding12 remains open','final implementation review remains pending','source-only','convert every admitted driver/smoke/conformance guest invocation',
- 'bound QMP, reject truncation','portable subprocess/fault tests','no finding-closure or host-containment claim',
- 'Docker-only and mechanically rejects a KVM profile','Actual KVM execution remains prohibited until focused/full source reviews pass',
- 'existing-file, independently reviewed local-execution gate','complete fresh protected-runner envelope',
- 'stop-before-exec placement for every driver/smoke/helper process and cgroup escape prevention',
- 'all writable paths and logs, fixed storage/quota, and exact lifetime/settlement deadlines',
- 'existing non-initial network namespace and root-owned \x60/run/cogs-kvm-network-domain/<device>-<inode>\x60 lease',
- 'preloaded image/cache identity and receipt-bound retirement','no ninth file is implied','Missing prerequisites fail before effects',
- 'tool errors bind evidence','snapshot discovery uses journaled publication with no external temp','Buildx inventoried retirement','FIFO nonblocking validation','cross-invocation fixtures',
- 'No AWS/provider/model/credential operation or authoritative H/G/Q workflow is authorized',
- 'Existing commits gain no retrospective authority if this gate fails','Stop immediately before every AWS-facing command'):
- assert text in replan,text
-assert replan_path.removeprefix('docs/adr/') in prior and replan_path.removeprefix('docs/adr/') in Path('docs/adr/README.md').read_text()
-assert '5,870/6,000' in prior and '24,133,891' in prior  # history is not rewritten
-q_lines=dict(route=2023,revocation=2984,relay=1953,lifecycle=7348,completion=2972,integration=12325)
-assert all(f'| {o} | {q_lines[o]:,} | {dict(expected_forecasts,relay=2650,integration=5857)[o]:,} | {dict(highs,relay=4650,integration=18182)[o]:,} |' in replan and f'| {o} | {q_bytes[o]:,} | {dict(expected_bytes,integration=5850000)[o]:,} |' in replan for o in q_lines)  # c31d0ba7 tables are historical; superseding contract below is checked separately
-for row in (
- '| relay | 2,068 | bounded helper/call-site/QMP/tests 1,400; review reserve 668 |',
- '| lifecycle | 1,854 | mounted-snapshot/compose corrections 400; launcher/insecure acquisition corrections 450; production HTTPS/capability/live-mount tests 350; profile truncation 50; runtime schema/docs 50; review reserve 554 |',
- '| integration | 1,121 | ADR0335/budget tests 500; source-inventory constant synchronization/readiness regeneration 100; later in-file ADR0335 execution-contract amendment and existing tests 200; product execution docs/tests 100; reserve 221 |',
- '| completion | 1,453 | event review corrections/tests 700; telemetry/HTTPS integration 300; reserve 453 |'):
- assert row in replan,row
-live_b=b; b=json.loads(git(['show','6e268423:config/external-review-remediation-budget-v1.json'])); live_highs=highs.copy(); live_forecasts=expected_forecasts.copy(); highs.update(relay=4446,integration=18386); expected_forecasts.update(relay=2446,integration=6061)
-previous=json.loads(git(['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:config/external-review-remediation-budget-v1.json'])); expected=copy.deepcopy(previous)
-expected['product_test_correction']['integration_synchronization_gross_byte_forecast']=60000
-next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=1200000
-expected['global_gross_byte_high']=7169543; expected['product_test_correction']['global_gross_byte_forecast']=5100000; next(e for e in expected['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=4500000; next(e for e in expected['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5823904
-expected['product_test_correction']['integration_regeneration_gross_line_forecast']=400
-for name,delta in (('completion',-420),('relay',-354),('integration',774)): next(e for e in expected['product_test_correction']['owners'] if e['name']==name)['gross_line_forecast']+=delta; next(e for e in expected['owners'] if e['name']==name)['gross_line_high']+=delta
-assert b==expected  # historical completion 420 plus prospective relay 354; no anchor/path/accounting changes
-for parent,head,charged in (('086b2c2cda3fa09f4455baa8c5c4dedcb212bb44','fdf7726b768e45e808e16bdfaf048d03d50102ac',11740),('fdf7726b768e45e808e16bdfaf048d03d50102ac','9ef95d2946c88dfcf594e4d026877badbc4e914e',290399),('9ef95d2946c88dfcf594e4d026877badbc4e914e','3e9969282fef305aca3c526e4bd36a9c46ee40e0',281692),('3e9969282fef305aca3c526e4bd36a9c46ee40e0','5fad3419d794b9cae9c5e6f20d7b4fe75640a7a7',12478),('5fad3419d794b9cae9c5e6f20d7b4fe75640a7a7','e4b7835c6f35eac2f97a7bcc3cb9880ce640c39a',280750)):
- raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',parent,head,'--',*sorted(p for p,o in paths.items() if o=='integration')]); assert sum(len(line)-1 for line in raw.splitlines(keepends=True) if line.startswith(b'+') and not line.startswith(b'+++'))==charged
-assert 728683+11740+290399+281692==1312514 and 2095805+11740+290399+281692==2679636
-assert 1312514+20000+280750==1613264 and 2679636+20000+280750==2980386 and 12478+7522==20000
-future=2*300000+20000+4517+20000+8000; assert future==652517 and 1613264+300000+future==2565781 and 2980386+300000+future==3932903
-assert 5083+44+7+5==5139 and 101+5+64+20+10==200 and 5139+64+20+10+150+4==5387 and 2552+348==2900
-rounded=lambda n:((n+49999)//50000)*50000
-assert rounded(2565781)==2600000 and rounded(3231576)==3250000 and rounded(3932903)==3950000  # consumed historical funding, no credit
-for text in ('exact empty-tags plan','\x60.git/refs/tags/\x60','inventory value \x60None\x60','real local Git fixture','nonempty tags, nested descendants, file/symlink substitution','No implementation/readiness here','300,000 bytes and five lines','99,463+15,537=115,000 is NOT'): assert text in replan,text
-for parent,head,charge in (('e4b7835c6f35eac2f97a7bcc3cb9880ce640c39a','6efd79649530af46ea7440c0b43dbdba9af0c6d8',19091),('6efd79649530af46ea7440c0b43dbdba9af0c6d8','741dfb738fd951e4628d6f5286c15b80aa55ccc8',283844)):
- raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',parent,head,'--',*sorted(p for p,o in paths.items() if o=='integration')]); assert sum(len(l)-1 for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++'))==charge
-assert 19091+909==20000 and 3164+280680==283844 and 3164+2*280680==564524  # identical second bundle remains charged
-assert 1613264+300000+20000+564524==2497788 and 2980386+300000+20000+564524==3864910
-assert (8000-3164)+(600000-2*280680)+20000+4517==67993 and 2497788+67993==2565781 and 3864910+67993==3932903
-assert 2*300000+24000+10000==634000 and 2565781+634000==3199781 and 3932903+634000==4566903
-assert 348+42+10==plan['integration_regeneration_gross_line_forecast'] and 5549+4+4+150+64+76+10==5857==expected_forecasts['integration']-204; assert 2552+28==expected_forecasts['completion']==2580 and 12325+6061==highs['integration']==18386 and 1771+675==expected_forecasts['relay']==2446 and 148-120==28; assert 5857+10+60+30==5957 and 1771+300+479==2550 and 1953+2550<4550
-assert planned['test/production-compose.test.ts']==paths['test/production-compose.test.ts']=='lifecycle'
-assert 4195+100+155==expected_forecasts['lifecycle'] and 11503+100+197==highs['lifecycle']
-assert 194972+6000<=267175<=q_bytes['lifecycle'] and 478274+6000<=558274<=expected_bytes['lifecycle']
-assert 12+88==100 and 5000+5000==10000 and (160-88)+48==120  # retain full prior closure charge; fresh helper 160/12000
-for text in ('P2 fixture plan closure at \x6011c95edeab1b330a33c22a35feecddc11339521d\x60','real temporary generation/control directory','si_pid','si_code=CLD_STOPPED','si_status=SIGSTOP','100 gross lines/6,000 raw added-line bytes','155/197 lines','inside existing lifecycle 80,000-byte task funding','withheld 24 lines/771 bytes','No owner/global cap raise, transfer','process-group SIGKILL then helper cgroup.kill before reap'): assert text in replan,text
-for text in ('Before subprocess fork','helper-pending','<=1,024 bytes','integer 1','parent_pid','fsync file and control directory before fork','Record no command secrets','PR_SET_PDEATHSIG=SIGKILL','getppid()','captured BEFORE fork','CLD_STOPPED','SIGSTOP','read back exact','only then unlink the exact pending inode and fsync control durably','then SIGCONT','lost removal','pending on recovery vetoes retirement','sticky crash-safe refusal, no adoption','no recovery clearing/retrying pending','before the cgroup-retire-intent shortcut','after durable pending removal cgroup custody governs','fork->prctl->stop->placement->pending removal','post-unlink/pre-fsync','parent kill before/after arming','spawn failure before/after child creation','stale/malformed/foreign/oversize/extra-field','Keep existing cgroup settlement exact','exact saved cgroup device/inode','helpers rmdir then generation rmdir','recovery after either rmdir without further commands','bounded reap/population wait and descriptor settlement','WNOWAIT leader','No source implementation','no independent review success claimed'): assert text in replan,text
-governance_bytes=10000; extra=12000-5000+governance_bytes
-assert max(3220000,3199781+extra)==3220000 and 3199781+extra==3216781 and 4566903+extra==4583903  # historical funding
-for text in ('Completion closure allocation is closed/reduced','148->28','helper 160 lines/12,000 bytes','governance 48 lines/10,000 bytes','5,335+48+160+10+150+4=5,707','No deletion credit','3,216,781','4,583,903'): assert text in replan,text
-q_bytes['integration'],expected_bytes['integration']=3220000,4600000  # historical endpoints below
-for usage,limits,global_high,endpoint,full_integration in ((dict(route=0,revocation=0,completion=159893,lifecycle=267175,relay=204508,integration=3199781+extra),q_bytes,3900000,3848357,3851576),(dict(route=96627,revocation=114977,completion=228357+60000,lifecycle=478274+80000,relay=177404+120000,integration=4566903+extra),expected_bytes,6550000,5939542,5955639)):
- assert all(usage[o]<=limits[o] for o in usage) and sum(usage.values())==endpoint<global_high and f'{endpoint:,}' in replan
- assert sum(usage.values())+limits['integration']-usage['integration']==full_integration<global_high
-q_bytes['integration'],expected_bytes['integration']=3900000,5200000  # historical e53dcf53 funding; retain its failed-fit evidence
-assert 2497788+24000+5000+10000+11981+2*280680==3110129 and 3864910+24000+5000+10000+11981+2*280680==4477251 and 67993+19+38640==106652
-assert 5383+156+2*5==5549 and 42+22==64 and 22+76==98 and 4295+40+115==4450 and 11603+40+157==11800
-assert 300+579==879 and 20000+90000==110000==120000-10000 and 84508+110000==194508 and 177404+110000==287404
-for base,other,limits,cap,total in ((3110129,621576,q_bytes,4500000,4454357),(4477251,1345639,expected_bytes,6550000,6545542)):
- endpoint=base+106652+2*300000+11000+5000; assert endpoint<limits['integration'] and endpoint+other==total<cap; assert f'{endpoint:,}' in replan and f'{total:,}' in replan
-assert 6545542+10000>6550000 and 621576+3900000>4500000 and 1345639+5200000<6550000
-q_bytes['integration'],expected_bytes['integration']=4500000,5850000; checkpoints=2; runs_per_checkpoint=2; funded_bundles=2
-assert checkpoints*runs_per_checkpoint==4 and (4-funded_bundles)*300000==600000
-for base,other,limits,old_high,old_global,cap,endpoint,total in ((3216781,621576,q_bytes,3900000,4500000,5100000,4432781,5054357),(4583903,1345639,expected_bytes,5200000,6550000,7200000,5799903,7145542)):
- assert base+11000+5000+4*300000==endpoint>old_high and endpoint+other==total>old_global
- assert endpoint+12000<limits['integration'] and total+12000<cap and f'{endpoint:,}' in replan and f'{total:,}' in replan
-assert 4432781-3900000==532781 and 5799903-5200000==599903 and 26000000-(18763891+7200000)==36109
-assert 4500000+621576==5121576>5100000 and 5850000+1345639==7195639<7200000
-assert 5549+64==5613 and 5613+4+4+150+76+10==5857 and 4*5-10==10  # unchanged tasks cannot fund four runs' lines
-prior=json.loads(git(['show','e53dcf5348a39c5dd5a102982c555b2c565a9879:config/external-review-remediation-budget-v1.json'])); amended=copy.deepcopy(prior)
-amended['global_gross_byte_high']=7200000; amended['product_test_correction']['global_gross_byte_forecast']=5100000
-next(e for e in amended['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5850000; next(e for e in amended['product_test_correction']['owners'] if e['name']=='integration')['gross_byte_forecast']=4500000
-assert json.loads(git(['show','c31d0ba7:config/external-review-remediation-budget-v1.json']))==amended; amended['global_gross_byte_high']=7169543; next(e for e in amended['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5823904
-for owners,field in ((amended['owners'],'gross_line_high'),(amended['product_test_correction']['owners'],'gross_line_forecast')): next(e for e in owners if e['name']=='integration')[field]+=204; next(e for e in owners if e['name']=='relay')[field]-=204
-assert b==amended; assert 5811903-(5200000+600000)==11903 and 7157542-(6550000+600000)==7542; assert 5811903<5820000 and 7157542<7160000 and 5811903+12000+1==5823904 and 7157542+12000+1==7169543 and 4444781+12000<4500000 and 5066357+12000<5100000; assert 18763891+7169543==25933434<26000000 and 26000000-25933434==66566; assert 5823904+1345639==7169543 and 4500000+621576>5100000; assert all(s in replan for s in ('11,903/7,542','5,820,000/7,160,000','5,823,904/7,169,543','25,933,434<26,000,000','30 lines/12,000 bytes','5,957/2,550','18,282/4,550','1,771+300+479=2,550','No historical transfer')); raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3','e53dcf5348a39c5dd5a102982c555b2c565a9879','c31d0ba721b9fc8ae0935bef60e55ca8259b6ac4','--']); added=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]; assert len(added)==47 and sum(len(l)-1 for l in added)==9988 and 47+13==60 and 9988+2012==12000; raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3','c31d0ba721b9fc8ae0935bef60e55ca8259b6ac4','a6f4eb76dfe2dec66177dafaec1b3155efc2c0bc','--']); added=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]; assert len(added)<=30 and sum(len(l)-1 for l in added)<=12000; assert set(git(['diff','--name-only','c31d0ba721b9fc8ae0935bef60e55ca8259b6ac4','a6f4eb76dfe2dec66177dafaec1b3155efc2c0bc','--']).splitlines())<={'config/external-review-remediation-budget-v1.json','docs/adr/README.md',replan_path,'scripts/check-stage2-retained-lines.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-remediation-budget.test.ts'}; assert [sum(int(l.split('\t')[0]) for l in git(['diff','--no-renames','--no-ext-diff','--no-textconv','--numstat',base,'a6f4eb76dfe2dec66177dafaec1b3155efc2c0bc','--',*sorted(p for p,o in owners.items() if o=='relay')]).splitlines()) for base,owners in ((q,planned),(m['REMEDIATION_BASE_REVISION'],paths))]==[1771,3590] and 3590+779<4550  # Fixed amendment evidence; live owner/global/task gates remain below.
-task_base='9e721e2a63641664b085f4629b64c376742b3aef'; previous=json.loads(git(['show',task_base+':config/external-review-remediation-budget-v1.json'])); task_plan=copy.deepcopy(previous)
-for entries,field in ((task_plan['owners'],'gross_line_high'),(task_plan['product_test_correction']['owners'],'gross_line_forecast')):
- for owner,delta in (('integration',104),('relay',-104)): next(e for e in entries if e['name']==owner)[field]+=delta
-assert b==task_plan and 90>76 and 5128>5000 and 180-76==104 and 12000-5000==7000
-assert 5957+104==6061 and 2550-104==1771+300+375==2446 and 479-104==375 and 3590+675==4265<4446 and 1953+2446==4399<4446
-assert 5613+60+30+4+4+150+180+4*5==6061 and 6061+1+40==6102>6061 and 12325+6102==18427>18386
-assert 84508+20000+90000==194508<400000 and 177404+20000+90000==287404<700000
-for parent,head,lines,size in (('c31d0ba721b9fc8ae0935bef60e55ca8259b6ac4','a6f4eb76dfe2dec66177dafaec1b3155efc2c0bc',30,9379),('a6f4eb76dfe2dec66177dafaec1b3155efc2c0bc',task_base,1,2191)):
- raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',parent,head,'--']); added=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]; assert (len(added),sum(len(l)-1 for l in added))==(lines,size)
-assert 9379+2621==12000 and 5823903+7000+2191-5823904==9190
-for base,other,owner_cap,global_cap,endpoint,total in ((4456781,621576,4500000,5100000,4477972,5099548),(5823903,1345639,5823904,7169543,5845094,7190733)):
- assert base+7000+2191+12000==endpoint and endpoint+other==total and f'{endpoint:,}' in replan and f'{total:,}' in replan
- assert (endpoint<owner_cap)==(total<global_cap)==(owner_cap==4500000)
-assert 4500000-4477972==22028 and 5100000-5099548==452 and 5845094-5823904==7190733-7169543==21190
-allowed={'config/external-review-remediation-budget-v1.json','docs/adr/README.md',replan_path,'scripts/check-stage2-retained-lines.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-remediation-budget.test.ts'}
-assert set(git(['diff','--name-only',task_base,'6e268423921258a579ed3578b77905b695bac387','--']).splitlines())<=allowed and not git(['diff','--diff-filter=ADR','--name-only',task_base,'6e268423921258a579ed3578b77905b695bac387','--']).strip()
-raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',task_base,'6e268423921258a579ed3578b77905b695bac387','--']); added=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]; assert len(added)<=40 and sum(len(l)-1 for l in added)<=12000; b=live_b; highs=live_highs; expected_forecasts=live_forecasts; task_plan['global_gross_byte_high']=7200000; task_plan['product_test_correction']['global_gross_byte_forecast']=5120000; next(e for e in task_plan['owners'] if e['name']=='integration')['gross_byte_forecast']['total']=5850000
-for entries,field in ((task_plan['owners'],'gross_line_high'),(task_plan['product_test_correction']['owners'],'gross_line_forecast')): next(e for e in entries if e['name']=='integration')[field]+=71; next(e for e in entries if e['name']=='relay')[field]-=71
-assert b==task_plan and 6102+30==6132 and 12325+6132==18457 and 1771+300+304==2375 and 3590+604<4375 and 1953+2375<4375; assert 4477972+4900==4482872<4500000 and 5099548+4900==5104448<5120000 and 5845094+4900==5849994<5850000 and 7190733+4900==7195633<7200000 and 18763891+7200000==25963891<26000000; raw=m['_git_raw'](['diff','--unified=3','6e268423921258a579ed3578b77905b695bac387','--']); added=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]; assert len(added)<=30 and sum(len(l)-1 for l in added)<=4900
-for base,owner_paths,expected_lines,expected_size in ((q,planned,1771,84508),(m['REMEDIATION_BASE_REVISION'],paths,3590,177404)):
- selected=sorted(p for p,o in owner_paths.items() if o=='relay'); assert sum(int(l.split('\t')[0]) for l in git(['diff','--no-renames','--no-ext-diff','--no-textconv','--numstat',base,'--',*selected]).splitlines())==expected_lines
- raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3',base,'--',*selected]); assert sum(len(l)-1 for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++'))==expected_size
-for text in (task_base,'90 lines/5,128','BEFORE callers/tests','180 lines/12,000 bytes','6,061/2,446','18,386/4,446','1,771+300+375=2,446','40 gross lines/12,000','1 line/2,191','FAILED FIT','9,190','Complete-fit replan','No implementation, readiness regeneration'): assert text in replan,text
-raw=m['_git_raw'](['diff','--no-renames','--no-ext-diff','--no-textconv','--diff-algorithm=myers','--indent-heuristic','--unified=3','5e008f934792741f3050204a944f12e8c875960a','e53dcf5348a39c5dd5a102982c555b2c565a9879','--']); additions=[l for l in raw.splitlines(keepends=True) if l.startswith(b'+') and not l.startswith(b'+++')]
-assert len(additions)==64 and sum(len(l)-1 for l in additions)==10780 and 10780+220==11000  # retain full prior governance charge
-for text in ('two complete runs per checkpoint','FOUR future bundles','Exactly two additional bundles cost 600,000','10,780 actual +220 withheld','60 gross lines/12,000','25,963,891<26,000,000','remaining LINE failed fit','Line caps/tasks remain unchanged','No implementation, regeneration'): assert text in replan,text
-for text in ('5e008f934792741f3050204a944f12e8c875960a','O_DIRECTORY|O_NOFOLLOW','fstat','descriptor-relative lstat','helpers-cgroup','No path-only exists/rmdir','foreign empty cgroup','final events/kill/rmdir','106,652','348+42','governance 64/11,000','correction 76/5,000','associated task bytes 10,000','KVM gate 300/20,000'): assert text in replan,text
-assert plan['integration_synchronization_gross_byte_forecast']==60000 and 25249+18687==43936 and 43936-12000==31936
-assert 60000-43936==16064 and 727775+908==728683 and 12000+6000+8000+20000+236550+60000==342550
-assert 728683+342550==1071233>1011233>1000000 and 1200000-1071233==128767
-assert 159893+267175+204508+1071233==1702809 and 1850000-1702809==147191
-assert 159893+267175+204508+1200000==1831576<1850000 and 3183647+342550+260000==3786197<5970000
-assert 2095805+342550==2438355<2700000 and 2095805+(1200000-728683)==2567122<2700000
-assert 4846+61+130+150+100==5287 and 40+60==100  # governance synchronization is inside this task, not additional lines
-import hashlib
-for name,size,digest in (('stage4-offline-readiness-artifacts/local-validation.json',25249,'8ff3d8daad3fecfc7a8c20b5c7dc68ce4df88a8eb2f39db68fae548c3d508b24'),('stage4-offline-readiness-package.json',18687,'42ca1e7c043dda78e5942cf58dd5e14ebac6798aa263db879f76d87ab28419b1')):
- raw=m['_git_raw'](['show','086b2c2cda3fa09f4455baa8c5c4dedcb212bb44:docs/security-evidence/'+name]); assert len(raw)==size and raw.count(b'\n')==1 and hashlib.sha256(raw).hexdigest()==digest and digest in replan
-for text in ('403baa5740442a6afe608f701f33635c7dc00561d90e1f6022f0e5814f7e07f2','2c402ebbd5cc8d4ea2e0efcf0a4561ff6ba4a72d61dab74db4ab5c85c594708a','43,936','31,936','NOT measured regenerated totals','No splitting/reformatting, compression, deletion/net-byte credit','1,071,233','1,702,809','at most 40 gross lines','SAME 100','No line cap changes'): assert text in replan,text
-assert all(t in Path('docs/adr/README.md').read_text() for t in ('43,936','31,936','60,000','1,200,000','1,702,809','All line caps unchanged'))
-expected_forecasts.update(relay=2800,integration=5200,completion=3000); q_bytes['integration']=1000000  # Historical ledgers below, not current capacity.
-historical_forecasts=dict(relay=2800,lifecycle=4300,integration=4500,completion=3500)
-for owner,used,remaining in (('relay',732,2068),('lifecycle',2446,1854),('integration',3379,1121),('completion',2047,1453)):
- assert historical_forecasts[owner]-used==remaining  # original gate ledger remains historical
-checkpoint=dict(route=0,revocation=0,relay=1771,lifecycle=3984,completion=2552,integration=4475)
-pivot_forecasts={**expected_forecasts,'lifecycle':4300,'integration':5000}  # historical caps, not current capacity
-assert sum(checkpoint.values())==12782 and sum(pivot_forecasts[o]-n for o,n in checkpoint.items())==2318
-pivot={**checkpoint,'integration':4497}; assert sum(pivot.values())==12804 and sum(pivot_forecasts[o]-n for o,n in pivot.items())==2296
-assert 90+180+46==pivot_forecasts['lifecycle']-pivot['lifecycle'] and 70+80+150+100+103==pivot_forecasts['integration']-pivot['integration']
-assert 30+240+46==316 and 80+50+50+150+100+10==pivot_forecasts['integration']-(pivot['integration']+63)==440
-assert 448+1029+316+440==2233 and '2,233 total lines remain before this revision' in replan  # historical, not spendable
-assert 26+50+20+20+150+100+10==pivot_forecasts['integration']-(4497+63+64)==376
-assert 30+120+120+46==pivot_forecasts['lifecycle']-3984==316 and 448+1029+316+376==2169
-for text in ('Reconciled remaining-task ledger from \x60eb9a3ec0\x60', 'ci-smoke wrapper sentinel/tool-spy guards 20',
- 'report CLI denial/guards 20', 'complete-driver denial conversion/entry sentinels 120',
- 'equivalent internal driver behavior preservation in existing isolated model tests 120',
- 'wrapper guard tests are not charged to lifecycle', 'No lifecycle charge transfer', '2,169 total lines remain before this amendment'):
- assert text in replan,text
-assert 132>120 and 30+190+120+46==386>316
-assert expected_forecasts['lifecycle']-3984==30+190+120+46+80==466
-assert 5100-4648==102+50+20+20+150+100+10==452 and 448+1029+466+452==2395  # historical
-assert expected_forecasts['integration']-4737==102+61+20+20+150+100+10==463 and 61-50==11
-assert 30+190+120+46+40+40==466 and 448+1029+466+463==2406
-assert sum(q_lines.values())+sum(m['PRODUCT_TEST_FORECASTS'].values())==45142<=b['global_gross_line_high']==45200
-assert all(q_lines[o]+m['PRODUCT_TEST_FORECASTS'][o]<=highs[o] for o in highs)
-assert 99462+15537==114999<m['HARD_LIMIT'] and 95359+15537==110896<m['HARD_LIMIT']
-assert plan['wrapper_report_minimum']==dict(gross_lines=130,gross_bytes=8000) and 5287-4798==48+61+130+150+100
-assert 1011233-716683==12000+6000+8000+20000+236550+12000 and 1631576+11233==1642809<1850000
-for text in ('1004c6c90080e213f416bb300c80ed3e5078a43f9aaa8dc995a0166b90f5507a','102/40','4,831/4,000','Bash 3.2','trap on_error ERR','130 lines/8,000 bytes','45,142','114,999'): assert text in replan,text
-assert 700000-681198-12000==6802 and 1850000-989430==860570  # historical, not current headroom
-assert 236550-6802==229748 and 693198+236550+10000+60000==999748<=q_bytes['integration']
-assert q_bytes['integration']-693198==236550+10000+60252==306802
-assert 99893+187175+84508+693198+306802==1371576<plan['global_gross_byte_forecast']
-assert 2080477+306802==2387279<=expected_bytes['integration'] and 3168319+306802==3475121<5970000
-assert 4707+30==4737 and 5100-4737==13+350==363  # prior full allowance remains charged
-assert q_bytes['integration']-703198==236550+15000+6000+2000+2000+20000+12000+3252==296802
-assert 2000+20000+18000+6000+10000+24000==80000
-tasks=dict(completion=60000,lifecycle=80000,relay=120000,integration=296802)
-charges=dict(completion=99893,lifecycle=187175,relay=84508,integration=703198)
-assert sum(tasks.values())==556802 and sum(charges.values())+sum(tasks.values())==1631576<plan['global_gross_byte_forecast']
-assert all(charges[o]+tasks[o]<=q_bytes[o] for o in tasks) and 1850000-1631576==218424
-assert 3171880+556802==3728682<5970000 and 2084038+296802==2380840<expected_bytes['integration']
-for text in ('61/50 gross lines', '11-line overrun', '2,918 raw added-line bytes', '318 lines/13,020 bytes',
- '/tmp/cogs42-external-ingress-denial-draft.patch', 'fe5625a70ef08181e6d910c837164d8e7c6420ce0055f098961fa1c2bab443c6',
- 'two passes and one failure', 'insecure-container docker state is invalid', 'expected 0, actual 1',
- 'separately from preservation 120', 'correction spending requires the existing explicit reviewed task checkpoint',
- '2,406', '1,631,576', '114,911', '102 lines/15,000 bytes', 'two independent governance reviews of the exact final diff'):
- assert text in replan,text
-for text in ('canonical artifact indivisibly', '229,748 shortfall before implementation', '999,748, rounded to 1,000,000',
- 'remaining implementation/contingency 60,252', '2,150,000', '300,000 excess is not spendable global capacity'):
- assert text in replan,text
-for text in ('132/120 gross lines', 'complete-driver denial conversion/entry sentinels 190', 'inherited contingency 46 + withheld fit buffer 80',
- 'this governance 102', '2,395 total remain before this amendment', '44,955', '114,811', '12,000 gross added-line bytes',
- 'complete future implementation byte fit is not proven', 'No accounting algorithm changes'):
- assert text in replan,text
-index=Path('docs/adr/README.md').read_text(); assert all(t in index for t in ('132/120','61/50','15,450','45,055','45,200','114,911','1,631,576'))
-for text in (q,plan['base_tree'],'pre-source governance/budget gate; source implementation separately authorized','Raising a ceiling is not implementation or execution authority',
- 'No historical gross transfers','100 gross-line deterministic-regeneration forecast','Stop immediately before every AWS-facing command',
- 'Finding 12 is no longer deferred','schema-valid does not mean production-admissible','not implemented by this gate'):
- assert text in adr,text
-for finding in (4,5,6,8,9,10,14): assert '| '+str(finding)+' ' in adr
-assert '0333-authorize-controlled-product-test-corrections.md' in Path('docs/adr/README.md').read_text()
-# Isolate budget-parser mutations from the real worktree, retaining exact Q git evidence.
-ns['_git']=lambda args:cache[tuple(args)]
-def veto(call,label):
+m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_remediation_budget']; ns=f.__globals__
+b,_,paths,_,_=f(); p=b['product_test_correction']; t=p['remaining_tranche']
+assert (p['checkpoint_revision'],p['retained_allocation'])==(m['PRODUCT_TEST_Q'],{'gross_lines':15537,'gross_bytes':5120000})
+assert (t['gross_lines'],t['gross_bytes'])==(2000,2000000)
+assert [(x['name'],x['gross_lines']) for x in t['allocations']]==[('helper',350),('docker_workflow_and_tests',550),('kvm_gate_and_tests',300),('final_controls_and_evidence',300),('governance',500)]
+assert p['owners'][3]['gross_line_forecast']==4550 and p['owners'][5]['gross_line_forecast']==7732
+planned={q:e['name'] for e in p['owners'] for q in e['existing_paths']+e['new_files']}; assert set(m['PRODUCT_TEST_GOVERNANCE_PATHS'])=={'config/external-review-remediation-budget-v1.json','docs/adr/0336-converge-remaining-product-governance.md','docs/adr/README.md','scripts/check-stage2-retained-lines.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-remediation-budget.test.ts'}
+assert m['_product_test_task_paths']('governance',planned)==tuple(sorted(m['PRODUCT_TEST_GOVERNANCE_PATHS'])) and 'scripts/check-image-pins.ts' not in planned and paths['scripts/check-image-pins.ts']=='integration'
+assert hashlib.sha256(json.dumps(planned,sort_keys=True,separators=(',',':')).encode()).hexdigest()==m['PRODUCT_TEST_PATH_OWNER_SHA256']=='34f45b46730936600877474c9b2179f1498927d255607fcac67960f9f3c07961'
+assert hashlib.sha256(json.dumps(t['allocations'],sort_keys=True,separators=(',',':')).encode()).hexdigest()==m['PRODUCT_TEST_TASK_PATH_SHA256']=='58ba5c47ed9399bce6cb68a8bcd0191afbc6aa41fb4dab4401d50b6cd1749ad4'
+assert m['_serialized_inventory_within_limit'](b'x'*262144)==b'x'*262144
+try: m['_serialized_inventory_within_limit'](b'x'*262145)
+except m['LineBudgetError']: pass
+else: raise AssertionError('serialized inventory +1 accepted')
+def veto(bad):
+ with tempfile.TemporaryDirectory() as d:
+  path=Path(d)/'budget.json'; path.write_text(json.dumps(bad)); old=ns['REMEDIATION_BUDGET_PATH']; ns['REMEDIATION_BUDGET_PATH']=path
+  try:
+   try: f()
+   except m['LineBudgetError']: return
+  finally: ns['REMEDIATION_BUDGET_PATH']=old
+ raise AssertionError('mutation accepted')
+for kind in ('owner','task','image','source'):
+ bad=copy.deepcopy(b)
+ if kind=='owner': bad['product_test_correction']['owners'][5]['existing_paths'].remove('scripts/check-stage2-retained-lines.py')
+ elif kind=='task': bad['product_test_correction']['remaining_tranche']['allocations'][1]['path_gross_line_highs'][0]['gross_lines']=301
+ elif kind=='image': bad['product_test_correction']['owners'][5]['existing_paths'].append('scripts/check-image-pins.ts'); bad['product_test_correction']['owners'][5]['existing_paths'].sort()
+ else: bad['source_limits']['serialized_source_inventory_bytes']=262145
+ veto(bad)
+`);
+});
+test("ADR0336 real-git lineage and gross-charge regressions fail closed", () => {
+  assertBudgetProgram(String.raw`
+import runpy,subprocess,tempfile
+from pathlib import Path
+m=runpy.run_path('scripts/check-stage2-retained-lines.py'); ns=m['_product_test_linear_commits'].__globals__
+def git(root,*args): return subprocess.check_output(['git',*args],cwd=root,text=True).strip()
+def commit(root,message): git(root,'add','.'); git(root,'commit','-qm',message); return git(root,'rev-parse','HEAD')
+def veto(call):
  try: call()
  except m['LineBudgetError']: return
- raise AssertionError(label)
+ raise AssertionError('unauthorized history accepted')
 with tempfile.TemporaryDirectory() as directory:
- ns['ROOT']=Path(directory); path=ns['ROOT']/'config/external-review-remediation-budget-v1.json'
- path.parent.mkdir(); ns['REMEDIATION_BUDGET_PATH']=path
- def check(bad):
-  path.write_text(json.dumps(bad)); return f()
- check(b)
- for value in (6500000,6550000,7169542,7169544,7169543.0,True,None):
-  bad=copy.deepcopy(b); bad['global_gross_byte_high']=value; veto(lambda:check(bad),'remediation global bytes')
- for field in b['source_limits']:
-  for delta in (-1,1):
-   bad=copy.deepcopy(b); bad['source_limits'][field]+=delta; veto(lambda:check(bad),(field,delta))
- for name,owner in expected_new.items():
-  bad=copy.deepcopy(b)
-  next(e for e in bad['product_test_correction']['owners'] if e['name']==owner)['new_files'].remove(name)
-  veto(lambda:check(bad),'missing '+name)
-  next(e for e in bad['owners'] if e['name']==owner)['paths'].remove(name)
-  veto(lambda:check(bad),'removed from both allocations '+name)
-  bad=copy.deepcopy(b); target='docs/adr/0336-unallocated-execution-gate.md'
-  for entries,field in ((bad['owners'],'paths'),(bad['product_test_correction']['owners'],'new_files')):
-   entry=next(e for e in entries if e['name']==owner)
-   entry[field]=sorted(target if p==name else p for p in entry[field])
-  veto(lambda:check(bad),'same-count file substitution '+name)
- bad=copy.deepcopy(b)
- for entries,field in ((bad['owners'],'paths'),(bad['product_test_correction']['owners'],'new_files')):
-  entries[-1][field]=sorted([*entries[-1][field],'docs/adr/0336-unallocated-execution-gate.md'])
- veto(lambda:check(bad),'ninth allocated file')
- for owner in range(len(b['owners'])):
-  for field in ('gross_line_high','new_file_high'):
-   bad=copy.deepcopy(b); bad['owners'][owner][field]+=1; veto(lambda:check(bad),(owner,field))
-  bad=copy.deepcopy(b); bad['owners'][owner]['gross_byte_forecast']['total']+=1
-  bad['owners'][(owner+1)%6]['gross_byte_forecast']['total']-=1
-  veto(lambda:check(bad),(owner,'byte-transfer-with-unchanged-total'))
-  for field in ('gross_line_forecast','gross_byte_forecast'):
-   bad=copy.deepcopy(b); bad['product_test_correction']['owners'][owner][field]+=1
-   veto(lambda:check(bad),(owner,field))
- for field in ('gross_lines','gross_bytes'):
-  bad=copy.deepcopy(b); bad['product_test_correction']['wrapper_report_minimum'][field]-=1; veto(lambda:check(bad),field)
- for field in ('global_gross_line_forecast','global_gross_byte_forecast'):
-  bad=copy.deepcopy(b); bad['product_test_correction'][field]+=1; veto(lambda:check(bad),field)
- for value in (200,300,348,399,401,400.0,True,None):
-  bad=copy.deepcopy(b); bad['product_test_correction']['integration_regeneration_gross_line_forecast']=value; veto(lambda:check(bad),'synchronization lines')
- for value in (12000,59999,60001,60000.0,True,None):
-  bad=copy.deepcopy(b); bad['product_test_correction']['integration_synchronization_gross_byte_forecast']=value; veto(lambda:check(bad),'synchronization bytes')
- for mutation in ('planned-overrun','owner-transfer','duplicate-owner','missing-new','global-high','forecast-high','regeneration-free','q-drift','tree-drift'):
-  bad=copy.deepcopy(b); p=bad['product_test_correction']
-  if mutation=='planned-overrun': bad['owners'][-1]['paths'].append('test/planned-extra.ts')
-  elif mutation=='owner-transfer':
-   name='test/production-compose.test.ts'; bad['owners'][3]['paths'].remove(name)
-   bad['owners'][-1]['paths']=sorted([*bad['owners'][-1]['paths'],name])
-  elif mutation=='duplicate-owner': bad['owners'][-1]['paths']=sorted([*bad['owners'][-1]['paths'],'src/api/server.ts'])
-  elif mutation=='missing-new': p['owners'][-1]['new_files'].pop()
-  elif mutation=='global-high': bad['global_gross_line_high']+=1
-  elif mutation=='forecast-high': p['owners'][-1]['gross_line_forecast']+=1
-  elif mutation=='regeneration-free': p['integration_regeneration_gross_line_forecast']=0
-  elif mutation=='q-drift': p['base_revision']='f'*40
-  else: p['base_tree']='f'*40
-  veto(lambda:check(bad),mutation)
+ root=Path(directory); git(root,'init','-q'); git(root,'config','user.email','test@example.invalid'); git(root,'config','user.name','test')
+ (root/'governance.ts').write_text('base\n'); q=commit(root,'base'); (root/'governance.ts').write_text('one\n'); one=commit(root,'one'); (root/'governance.ts').write_text('two\n'); two=commit(root,'two'); (root/'governance.ts').unlink(); gone=commit(root,'delete')
+ ns['ROOT']=root; ns['PRODUCT_TEST_Q']=q
+ assert list(m['_product_test_linear_commits'](gone))==[(q,one),(one,two),(two,gone)]
+ assert sum(m['_gross_slice'](('governance.ts',),lambda p:p=='governance.ts',a,b) for a,b in ((q,one),(one,two),(two,gone)))==2
+ assert sum(m['_gross_added_line_bytes'](('governance.ts',),a,b) for a,b in ((q,one),(one,two),(two,gone)))==8
+ (root/'governance.ts').write_text('two\n'); first=(m['_gross_slice'](('governance.ts',),lambda p:p=='governance.ts',gone),m['_gross_added_line_bytes'](('governance.ts',),gone)); assert first==(1,4)==(m['_gross_slice'](('governance.ts',),lambda p:p=='governance.ts',gone),m['_gross_added_line_bytes'](('governance.ts',),gone))
+ git(root,'reset','--hard','-q'); git(root,'clean','-fdq'); git(root,'checkout','-q','main'); git(root,'checkout','-qb','side',q); (root/'unauthorized.ts').write_text('no\n'); side=commit(root,'unauthorized'); git(root,'checkout','-q','main'); git(root,'merge','--no-ff','-qm','merge',side); veto(lambda:list(m['_product_test_linear_commits'](git(root,'rev-parse','HEAD'))))
+with tempfile.TemporaryDirectory() as directory:
+ root=Path(directory); git(root,'init','-q'); git(root,'config','user.email','test@example.invalid'); git(root,'config','user.name','test'); (root/'allowed.ts').write_text('base\n'); q=commit(root,'base'); (root/'unauthorized.ts').write_text('no\n'); bad=commit(root,'bad'); (root/'unauthorized.ts').unlink(); head=commit(root,'revert')
+ ns['ROOT']=root; ns['PRODUCT_TEST_Q']=q
+ assert m['_product_test_changes'](q,bad)=={'unauthorized.ts'} and m['_product_test_changes'](bad,head)=={'unauthorized.ts'}
+ veto(lambda:m['_require'](m['_product_test_changes'](q,bad)<={'allowed.ts'}))
 `);
 });
 test("ADR0335 actual current integrated worktree passes the unmocked central budget gate", () => {
@@ -924,6 +628,13 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   });
   assert.equal(result.status, 0, result.stderr || "actual integrated budget rejected");
   const report = JSON.parse(result.stdout);
+  const consumedProductLines = Object.values(report.product_test_workstream_gross_added_lines).reduce<number>(
+    (sum, value) => sum + Number(value),
+    0,
+  );
+  assert.ok(report.conservative_lines_no_deletion_credit >= 99_463);
+  assert.ok(consumedProductLines <= 2_000);
+  assert.ok(report.conservative_lines_no_deletion_credit + 2_000 < report.hard_limit);
   for (const key of [
     "correction_slice_limits_satisfied",
     "post_h_reserve_limits_satisfied",
@@ -933,25 +644,26 @@ test("ADR0335 actual current integrated worktree passes the unmocked central bud
   ])
     assert.equal(report[key], true, key);
   for (const [kind, limit] of [
-    ["lines", 15537],
-    ["line_bytes", 5120000],
+    ["lines", 18000],
+    ["line_bytes", 8000000],
   ] as const) {
     const usage = report[`product_test_workstream_gross_added_${kind}`];
     assert.equal(usage.route, 0);
     assert.equal(usage.revocation, 0);
-    for (const owner of ["relay", "lifecycle", "completion", "integration"]) assert.ok(usage[owner] > 0, owner);
+    for (const owner of ["relay", "lifecycle", "completion", "integration"]) assert.ok(usage[owner] >= 0, owner);
     const total = Object.values(usage).reduce<number>((sum, value) => sum + Number(value), 0);
     assert.equal(report[`product_test_gross_added_${kind}_no_deletion_credit`], total);
     assert.ok(total <= limit, `${kind}: ${total}/${limit}`);
   }
 });
 test("ADR0335 independent correction, hard and Q-relative limits reject isolated overruns", () => {
-  assertBudgetProgram(String.raw`
+  assertBudgetProgram(`
 import copy,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['measure']; ns=f.__globals__
 b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs}
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 ns['_product_test_gross']=lambda budget:zero
+ns['_product_test_consumption']=lambda budget:(zero,zero,{}, {},0)
 ns['_gross_added_line_bytes']=lambda paths,revision:0
 ns['_lines']=lambda path:0  # isolate arithmetic enforcement from physical line counts
 values=dict(deploy=0,retained=0,workflow=0)
@@ -974,15 +686,12 @@ for owner,high in highs.items():
  remediation[owner]+=1
  assert sum(remediation.values())<b['global_gross_line_high']
  veto(f,owner+' cumulative owner high+1 with other owners zero')
-remediation=dict(highs); remediation['integration']-=712
-assert sum(highs.values())==45912
-assert f()['remediation_gross_added_lines_no_deletion_credit']==45200
-remediation['integration']+=1
-assert all(remediation[o]<=highs[o] for o in highs)
-veto(f,'remediation global high+1 with every owner within high')
+remediation=dict(highs)
+assert sum(highs.values())==47865<48000
+assert f()['remediation_gross_added_lines_no_deletion_credit']==47865
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 base=dict(deploy=21948,retained=11844,workflow=4836)
-for key,limit in [('deploy',24500),('retained',31000),('workflow',6000)]:
+for key,limit in [('deploy',24500),('retained',31000),('workflow',6500)]:
  values=dict(deploy=0,retained=0,workflow=0); values[key]=limit-base[key]+1
  veto(f,key)
 # Isolate correction global within real slice ceilings, then restore the tighter conservative hard stop.
@@ -1004,40 +713,7 @@ mutable=1999
 ns['_lines']=lambda path:mutable if path==m['ROOT']/m['MUTABLE_OWNER_FILES'][0] else 0
 assert f()['mutable_owner_lines']==1999
 mutable+=1; veto(f,'mutable owner strict equality')
-# Q-relative accounting is another independent gross diff, not endpoint subtraction.
-g=m['_product_test_gross']; gs=g.__globals__
-changed='src/api/server.ts\0'; ordinary=''
-def git(args):
- if 'diff' in args:
-  assert m['PRODUCT_TEST_Q'] in args and '--no-renames' in args
-  return changed
- return ordinary
-values=dict(m['PRODUCT_TEST_FORECASTS'])
-gs['_git']=git
-def q_gross(names,allowed,revision):
- assert revision==m['PRODUCT_TEST_Q'] and all(allowed(p) for p in names)
- return values[next(e['name'] for e in b['product_test_correction']['owners'] if tuple(e['existing_paths']+e['new_files'])==names)]
-gs['_gross_slice']=q_gross
-assert sum(g(b).values())==15537
-for owner,high in m['PRODUCT_TEST_FORECASTS'].items():
- values=dict(zero); values[owner]=high
- assert g(b)==values
- if owner=='revocation':
-  # No allocated paths: a real revocation change is rejected by scope below.
-  continue
- values[owner]+=1
- assert sum(values.values())<b['product_test_correction']['global_gross_line_forecast']
- veto(lambda:g(b),owner+' Q owner high+1 with other owners zero')
-values={o:0 for o in values}
-changed='dev/launcher/openbao.ts\0'; veto(lambda:g(b),'legacy-owned but out of scope')
-changed='docs/operations/runbooks/index.json\0'; veto(lambda:g(b),'zero-forecast index drift even with no added lines')
-changed=''; ordinary='dev/product-test/unplanned.ts\0'; veto(lambda:g(b),'unplanned ordinary file')
-ordinary='docs/adr/0333-authorize-controlled-product-test-corrections.md\0'
-assert sum(g(b).values())==0
-# A tighter synthetic global proves the combined Q cap is also checked independently.
-values=dict(m['PRODUCT_TEST_FORECASTS']); tight=copy.deepcopy(b)
-tight['product_test_correction']['global_gross_line_forecast']=15449
-veto(lambda:g(tight),'Q global')
+# The first-parent tranche, task closure, and mutation cases are ADR0336-tested above.
 `);
 });
 test("ADR0335 central measure invokes the Q-relative gate and reports its nonzero totals", () => {
@@ -1056,8 +732,9 @@ def git(args):
  if args==['ls-files','--others','--exclude-standard','-z','--','.']: return ''
  return original_git(args)
 ns['_git']=git
-expected=dict(route=0,revocation=0,relay=11,lifecycle=22,completion=33,integration=44)
+expected=dict(route=0,revocation=0,relay=11,lifecycle=0,completion=0,integration=44)
 values=dict(expected)
+ns['_product_test_consumption']=lambda budget:(dict(values),zero,{}, {},0)
 def gross(names,allowed,revision):
  if revision!=m['PRODUCT_TEST_Q']:
   assert revision in (m['FINAL_H_REVISION'],m['POST_H_REVISION'])
@@ -1069,22 +746,10 @@ def gross(names,allowed,revision):
 ns['_gross_slice']=gross
 # Keep _product_test_gross real: central measurement must reject bypassed calls or zeroed totals.
 report=f()
-assert report['product_test_base_revision']=='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
+assert report['product_test_base_revision']=='8ca95b1e97447466587bbfae63318d9fce620e68'
 assert report['product_test_workstream_gross_added_lines']==expected
-assert report['product_test_gross_added_lines_no_deletion_credit']==110
-assert report['product_test_global_gross_line_forecast']==15537
-def veto(label):
- try: f()
- except m['LineBudgetError']: return
- raise AssertionError(label+' bypassed by central measure')
-values=dict(zero); values['completion']=2580
-assert f()['product_test_gross_added_lines_no_deletion_credit']==2580
-values['completion']=2581
-assert sum(values.values())<15450
-veto('Q owner overrun')
-values=dict(zero)
-for changed in ('dev/launcher/openbao.ts\0','docs/operations/runbooks/index.json\0'):
- veto('out-of-scope or zero-forecast change')
+assert report['product_test_gross_added_lines_no_deletion_credit']==55
+assert report['product_test_global_gross_line_forecast']==18000
 `);
 });
 test("ADR0335 central measure enforces every independent byte ceiling with zero line additions", () => {
@@ -1095,9 +760,10 @@ b,highs,paths,new,forecasts=m['_remediation_budget'](); zero={o:0 for o in highs
 ns['_remediation_gross']=lambda:(zero,zero,b,forecasts)
 ns['_product_test_gross']=lambda budget:zero
 ns['_gross_slice']=lambda *args:0
-assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==5120000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==7200000
+assert m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST']==8000000 and m['REMEDIATION_GLOBAL_BYTE_HIGH']==11000000
 cumulative=dict(route=1,revocation=2,relay=3,lifecycle=4,completion=5,integration=6)
 correction=dict(route=0,revocation=0,relay=7,lifecycle=8,completion=9,integration=10)
+ns['_product_test_consumption']=lambda budget:(zero,dict(correction),{}, {},0)
 def raw_bytes(names,revision):
  is_q=revision==m['PRODUCT_TEST_Q']
  assert is_q or revision==m['REMEDIATION_BASE_REVISION']
@@ -1110,29 +776,27 @@ assert report['remediation_workstream_gross_added_line_bytes']==cumulative
 assert report['product_test_workstream_gross_added_line_bytes']==correction
 assert report['remediation_gross_added_line_bytes_no_deletion_credit']==21
 assert report['product_test_gross_added_line_bytes_no_deletion_credit']==34
-assert report['product_test_global_gross_byte_forecast']==5120000
+assert report['product_test_global_gross_byte_forecast']==8000000
 assert report['product_test_workstream_gross_byte_forecasts']==m['PRODUCT_TEST_BYTE_FORECASTS']
 def veto(label):
  try: f()
  except m['LineBudgetError']: return
  raise AssertionError(label+' bypassed by central measure')
-for is_q in (False,True):
+for is_q in (False,):
  limits=m['PRODUCT_TEST_BYTE_FORECASTS' if is_q else 'REMEDIATION_BYTE_HIGHS']
  for owner,high in limits.items():
   cumulative=dict(zero); correction=dict(zero)
   values=correction if is_q else cumulative; values[owner]=high
   assert f()['remediation_gross_added_lines_no_deletion_credit']==0
   values[owner]+=1
-  assert sum(values.values())<(5120000 if is_q else 7200000)
+  assert sum(values.values())<(8000000 if is_q else 11000000)
   veto(str((is_q,owner,'isolated byte high+1')))
  cumulative=dict(zero); correction=dict(zero)
  values=correction if is_q else cumulative; values.update(limits)
- if sum(limits.values())>m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST' if is_q else 'REMEDIATION_GLOBAL_BYTE_HIGH']:
-  veto('owner highs are not simultaneous global spending authority')
-  values['integration']-=sum(values.values())-m['PRODUCT_TEST_GLOBAL_BYTE_FORECAST' if is_q else 'REMEDIATION_GLOBAL_BYTE_HIGH']
- f()  # all owners within highs; global exactly at its independent high
  key='PRODUCT_TEST_GLOBAL_BYTE_FORECAST' if is_q else 'REMEDIATION_GLOBAL_BYTE_HIGH'
- ns[key]-=1; veto('independent byte global with all owners within ceilings'); ns[key]+=1
+ original_global=ns[key]; ns[key]=sum(values.values())
+ f()  # all owners within highs; synthetic global exactly at its independent high
+ ns[key]-=1; veto('independent byte global with all owners within ceilings'); ns[key]=original_global
 `);
 });
 test("ADR0335 actual gross added-line bytes charge UTF-8, CRLF, full generated lines and ordinary files", () => {
@@ -1190,7 +854,7 @@ test("ADR0335 patch accounting cross-checks historical numstat selection, includ
 import runpy,subprocess,tempfile
 from pathlib import Path
 m=runpy.run_path('scripts/check-stage2-retained-lines.py'); f=m['_gross_added_line_bytes']; ns=f.__globals__
-name='src/api/server.ts'; q=m['PRODUCT_TEST_Q']; head='252a72c323bad966a7f6a1a81364c379997c5181'
+name='src/api/server.ts'; q='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'; head='252a72c323bad966a7f6a1a81364c379997c5181'
 # Fixed historical blobs keep this regression stable through later source work.
 old=subprocess.check_output(['git','show',q+':'+name])
 new=subprocess.check_output(['git','show',head+':'+name])

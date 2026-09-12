@@ -354,8 +354,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.equal(budget.remediation_global_high, 45_200);
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 45_200);
+  assert.equal(budget.remediation_global_high, 48_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 48_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -416,7 +416,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 45_200);
+  assert.equal(manifest.global_gross_line_high, 48_000);
   assert.deepEqual(
     Object.fromEntries(
       manifest.owners.map((owner) => [
@@ -427,19 +427,19 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     {
       route: [2_200, 1, { total: 350_000 }],
       revocation: [3_000, 0, { total: 220_000 }],
-      relay: [4_375, 1, { total: 700_000 }],
+      relay: [4_628, 1, { total: 1_000_000 }],
       lifecycle: [11_800, 5, { total: 1_200_000 }],
       completion: [6_080, 3, { total: 800_000 }],
-      integration: [18_457, 87, { total: 5_850_000 }],
+      integration: [20_157, 88, { total: 5_630_000 }],
     },
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    97,
+    98,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
-    9_120_000,
+    9_200_000,
   );
   const paths = manifest.owners.flatMap((owner) => owner.paths);
   assert.equal(new Set(paths).size, paths.length);

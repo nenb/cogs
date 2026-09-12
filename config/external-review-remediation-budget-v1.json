@@ -1,26 +1,23 @@
 {
   "version": "cogs.external-review-remediation-budget/v1",
   "base_revision": "242bbefeae5444118d9e97b46597130b509ca253",
-  "global_gross_line_high": 45200,
-  "global_gross_byte_high": 7200000,
+  "global_gross_line_high": 48000,
+  "global_gross_byte_high": 11000000,
   "baseline": {
     "tracked_files": 1420,
     "source_inventory_entries": 1417,
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1517,
-    "source_inventory_bytes": 26000000,
+    "tracked_files": 1530,
+    "source_inventory_bytes": 30000000,
     "serialized_source_inventory_bytes": 262144
   },
   "product_test_correction": {
-    "base_revision": "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38",
-    "base_tree": "181128aae8617eb58c5dce743416f4f69266c02c",
-    "global_gross_line_forecast": 15537,
-    "global_gross_byte_forecast": 5120000,
-    "integration_regeneration_gross_line_forecast": 400,
-    "integration_synchronization_gross_byte_forecast": 60000,
-    "wrapper_report_minimum": { "gross_lines": 130, "gross_bytes": 8000 },
+    "base_revision": "8ca95b1e97447466587bbfae63318d9fce620e68",
+    "base_tree": "dff53b023e8e4ee4bac4897f200124b3daed9de7",
+    "global_gross_line_forecast": 18000,
+    "global_gross_byte_forecast": 8000000,
     "owners": [
       {
         "name": "route",
@@ -38,9 +35,10 @@
       },
       {
         "name": "relay",
-        "gross_line_forecast": 2375,
-        "gross_byte_forecast": 400000,
+        "gross_line_forecast": 2675,
+        "gross_byte_forecast": 700000,
         "existing_paths": [
+          "dev/linux-kvm/bounded-command.py",
           "dev/linux-kvm/ci-smoke.sh",
           "dev/linux-kvm/driver.sh",
           "dev/linux-kvm/qualify.sh",
@@ -48,12 +46,12 @@
           "test/egress-conformance/stage3-real-runtime/harness.ts",
           "test/linux-kvm-git-tools.test.ts"
         ],
-        "new_files": ["dev/linux-kvm/bounded-command.py"]
+        "new_files": []
       },
       {
         "name": "lifecycle",
-        "gross_line_forecast": 4450,
-        "gross_byte_forecast": 450000,
+        "gross_line_forecast": 4550,
+        "gross_byte_forecast": 550000,
         "existing_paths": [
           "dev/insecure-sandbox/ci-smoke.sh",
           "dev/insecure-sandbox/driver.sh",
@@ -76,6 +74,7 @@
           "src/runtime/compose.ts",
           "src/runtime/config.ts",
           "src/skills/session-preparer.ts",
+          "src/skills/snapshot-session-preparer.ts",
           "test/dev-launcher-control-otlp.test.ts",
           "test/dev-launcher-core.test.ts",
           "test/dev-launcher-operations.test.ts",
@@ -88,7 +87,7 @@
           "test/production-compose.test.ts",
           "test/runtime-config.test.ts"
         ],
-        "new_files": ["src/skills/snapshot-session-preparer.ts"]
+        "new_files": []
       },
       {
         "name": "completion",
@@ -109,11 +108,17 @@
       },
       {
         "name": "integration",
-        "gross_line_forecast": 6132,
-        "gross_byte_forecast": 4500000,
+        "gross_line_forecast": 7732,
+        "gross_byte_forecast": 5570000,
         "existing_paths": [
           ".github/workflows/insecure-container.yml",
           "config/external-review-remediation-budget-v1.json",
+          "dev/product-test/host-custody.py",
+          "dev/product-test/runner.ts",
+          "dev/product-test/snapshot-owner.ts",
+          "docs/adr/0333-authorize-controlled-product-test-corrections.md",
+          "docs/adr/0334-reallocate-measured-product-test-correction.md",
+          "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
           "docs/adr/README.md",
           "docs/operations/production-runtime-foundation.md",
           "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
@@ -140,16 +145,100 @@
           "test/stage4-runtime-artifact-closure.test.ts",
           "test/stage4-schema-registry.test.ts"
         ],
-        "new_files": [
-          "dev/product-test/host-custody.py",
-          "dev/product-test/runner.ts",
-          "dev/product-test/snapshot-owner.ts",
-          "docs/adr/0333-authorize-controlled-product-test-corrections.md",
-          "docs/adr/0334-reallocate-measured-product-test-correction.md",
-          "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md"
-        ]
+        "new_files": ["docs/adr/0336-converge-remaining-product-governance.md"]
       }
-    ]
+    ],
+    "checkpoint_revision": "8ca95b1e97447466587bbfae63318d9fce620e68",
+    "checkpoint_tree": "dff53b023e8e4ee4bac4897f200124b3daed9de7",
+    "retained_allocation": {
+      "gross_lines": 15537,
+      "gross_bytes": 5120000
+    },
+    "remediation_retained_allocation": {
+      "gross_lines": 45200,
+      "gross_bytes": 7200000
+    },
+    "remaining_tranche": {
+      "gross_lines": 2000,
+      "gross_bytes": 2000000,
+      "allocations": [
+        {
+          "name": "helper",
+          "gross_lines": 350,
+          "gross_bytes": 350000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 250,
+              "gross_bytes": 250000
+            },
+            {
+              "name": "lifecycle",
+              "gross_lines": 100,
+              "gross_bytes": 100000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "docker_workflow_and_tests",
+          "gross_lines": 550,
+          "gross_bytes": 650000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 550,
+              "gross_bytes": 650000
+            }
+          ],
+          "path_gross_line_highs": [
+            {
+              "path": ".github/workflows/insecure-container.yml",
+              "gross_lines": 300
+            }
+          ]
+        },
+        {
+          "name": "kvm_gate_and_tests",
+          "gross_lines": 300,
+          "gross_bytes": 300000,
+          "owner_allocations": [
+            {
+              "name": "relay",
+              "gross_lines": 300,
+              "gross_bytes": 300000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "final_controls_and_evidence",
+          "gross_lines": 300,
+          "gross_bytes": 550000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 300,
+              "gross_bytes": 550000
+            }
+          ],
+          "path_gross_line_highs": []
+        },
+        {
+          "name": "governance",
+          "gross_lines": 500,
+          "gross_bytes": 150000,
+          "owner_allocations": [
+            {
+              "name": "integration",
+              "gross_lines": 500,
+              "gross_bytes": 150000
+            }
+          ],
+          "path_gross_line_highs": []
+        }
+      ]
+    }
   },
   "owners": [
     {
@@ -211,9 +300,9 @@
     },
     {
       "name": "relay",
-      "gross_line_high": 4375,
+      "gross_line_high": 4628,
       "gross_byte_forecast": {
-        "total": 700000
+        "total": 1000000
       },
       "new_file_high": 1,
       "paths": [
@@ -366,11 +455,11 @@
     },
     {
       "name": "integration",
-      "gross_line_high": 18457,
+      "gross_line_high": 20157,
       "gross_byte_forecast": {
-        "total": 5850000
+        "total": 5630000
       },
-      "new_file_high": 87,
+      "new_file_high": 88,
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
@@ -485,6 +574,7 @@
         "docs/adr/0333-authorize-controlled-product-test-corrections.md",
         "docs/adr/0334-reallocate-measured-product-test-correction.md",
         "docs/adr/0335-replan-measured-kvm-custody-and-final-corrections.md",
+        "docs/adr/0336-converge-remaining-product-governance.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",

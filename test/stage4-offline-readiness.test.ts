@@ -31,8 +31,10 @@ import {
   stage4OfflineReadinessSha256,
 } from "../scripts/stage4-offline-readiness.ts";
 import {
+  assertStage4SerializedSourceInventory,
   generateStage4SourceInventory,
   readStage4SourceFile,
+  STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES,
   STAGE4_PINNED_GIT,
   STAGE4_SOURCE_INVENTORY_EXCLUSIONS,
   stage4TrackedWorktreeMerkle,
@@ -486,6 +488,16 @@ test("source reads reject final and component symlinks, hard links, and oversize
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+test("source inventory serialization is bounded at its exact consumer limit", () => {
+  assert.equal(STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES, 262_144);
+  const boundary = new Uint8Array(STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES);
+  assert.equal(assertStage4SerializedSourceInventory(boundary), boundary);
+  assert.throws(
+    () => assertStage4SerializedSourceInventory(new Uint8Array(STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES + 1)),
+    /STAGE4_SOURCE_INVENTORY_SERIALIZED_BOUND_INVALID/u,
+  );
 });
 
 test("source inventory ignores irrelevant untracked outputs but rejects untracked validation inputs", () => {

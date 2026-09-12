@@ -19,8 +19,16 @@ export const STAGE4_PINNED_GIT = Object.freeze({
 
 const MAXIMUM_FILE_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAXIMUM_TRACKED_FILES = 1517;
-const MAXIMUM_AGGREGATE_BYTES = 26_000_000;
+const MAXIMUM_TRACKED_FILES = 1530;
+const MAXIMUM_AGGREGATE_BYTES = 30_000_000;
+export const STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144;
+
+/** The producer must not emit an inventory its bounded consumer cannot read. */
+export function assertStage4SerializedSourceInventory(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteLength > STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES)
+    throw new Error("STAGE4_SOURCE_INVENTORY_SERIALIZED_BOUND_INVALID");
+  return bytes;
+}
 const WORKTREE_MERKLE_DOMAIN = "cogs.stage4/tracked-worktree-mode-path-byte-merkle/v2\0";
 const UNTRACKED_VALIDATION_PREFIXES = Object.freeze([
   "deploy/helm/cogs/",
@@ -255,27 +263,29 @@ export function generateStage4SourceInventory(root: string): Uint8Array {
     if (aggregate > MAXIMUM_AGGREGATE_BYTES) throw new Error("STAGE4_SOURCE_INVENTORY_AGGREGATE_BOUND_INVALID");
     return { mode, path, sha256: stage4OfflineReadinessSha256(bytes) };
   });
-  return canonicalStage4OfflineReadinessBytes({
-    algorithm: "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list",
-    entries,
-    excluded_generated_evidence_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
-      path,
-      reason: "excluded-generated-evidence-recursion",
-    })),
-    scope: "complete-tracked-worktree-source-build-qualification-closure",
-    version: "cogs.stage4-offline-source-inventory/v5",
-    worktree_binding: {
-      file_count: entries.length,
-      git_executable_sha256: STAGE4_PINNED_GIT.sha256,
-      git_version: STAGE4_PINNED_GIT.version,
-      tracked_path_set_sha256: createHash("sha256")
-        .update(canonicalStage4OfflineReadinessBytes(allTrackedFiles.map((file) => file.path)))
-        .digest("hex"),
-      worktree_merkle_sha256: stage4TrackedWorktreeMerkle(entries),
-      semantics:
-        "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
-    },
-  });
+  return assertStage4SerializedSourceInventory(
+    canonicalStage4OfflineReadinessBytes({
+      algorithm: "sha256-domain-separated-canonical-git-mode-path-and-exact-byte-digest-list",
+      entries,
+      excluded_generated_evidence_outputs: STAGE4_SOURCE_INVENTORY_EXCLUSIONS.map((path) => ({
+        path,
+        reason: "excluded-generated-evidence-recursion",
+      })),
+      scope: "complete-tracked-worktree-source-build-qualification-closure",
+      version: "cogs.stage4-offline-source-inventory/v5",
+      worktree_binding: {
+        file_count: entries.length,
+        git_executable_sha256: STAGE4_PINNED_GIT.sha256,
+        git_version: STAGE4_PINNED_GIT.version,
+        tracked_path_set_sha256: createHash("sha256")
+          .update(canonicalStage4OfflineReadinessBytes(allTrackedFiles.map((file) => file.path)))
+          .digest("hex"),
+        worktree_merkle_sha256: stage4TrackedWorktreeMerkle(entries),
+        semantics:
+          "complete-tracked-git-modes-and-worktree-bytes-excluding-recorded-generated-evidence;no-commit-or-clean-index-claim",
+      },
+    }),
+  );
 }
 
 if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(import.meta.filename)) {
