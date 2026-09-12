@@ -312,13 +312,13 @@
         },
         {
           "name": "aws_principal_denial_and_cycle_custody",
-          "gross_lines": 7000,
-          "gross_bytes": 8000000,
+          "gross_lines": 7357,
+          "gross_bytes": 8400000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 7000,
-              "gross_bytes": 8000000
+              "gross_lines": 7357,
+              "gross_bytes": 8400000
             }
           ],
           "paths": [
@@ -424,20 +424,20 @@
             "test/stage2-production-planner.py",
             "test/stage2-production-planner.test.ts"
           ],
-          "pre_h_gross_lines": 7000,
-          "pre_h_gross_bytes": 8000000,
+          "pre_h_gross_lines": 7357,
+          "pre_h_gross_bytes": 8400000,
           "forecast_slices": [
             {
               "name": "deployment_custody_and_direct_ingress",
               "owner": "integration",
-              "gross_lines": 5200,
-              "gross_bytes": 6000000
+              "gross_lines": 5457,
+              "gross_bytes": 6200000
             },
             {
               "name": "opentofu_backend_and_workflow_compatibility",
               "owner": "integration",
-              "gross_lines": 1100,
-              "gross_bytes": 1300000
+              "gross_lines": 1200,
+              "gross_bytes": 1500000
             },
             {
               "name": "approval_staging_and_focused_authority_tests",
@@ -611,13 +611,13 @@
         },
         {
           "name": "final_hgq_control_reserve",
-          "gross_lines": 4527,
-          "gross_bytes": 4800000,
+          "gross_lines": 4170,
+          "gross_bytes": 4400000,
           "owner_allocations": [
             {
               "name": "integration",
-              "gross_lines": 4527,
-              "gross_bytes": 4800000
+              "gross_lines": 4170,
+              "gross_bytes": 4400000
             }
           ],
           "paths": [
@@ -680,8 +680,8 @@
             "test/stage2-production-workflows.test.ts",
             "test/stage2-remediation-budget.test.ts"
           ],
-          "pre_h_gross_lines": 1027,
-          "pre_h_gross_bytes": 1300000,
+          "pre_h_gross_lines": 670,
+          "pre_h_gross_bytes": 900000,
           "final_minimum_lines": 3500,
           "final_minimum_bytes": 3500000
         }

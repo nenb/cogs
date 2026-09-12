@@ -37,28 +37,30 @@ and 28 / 283,754 explicitly identified prior checkpoint work). Those charges
 remain charged. The checker now assigns every admitted path to one **named**
 task; it has no complement task. It preserves historical owners, including the
 integration-owned KVM workflow, and rejects every path not in the exact matrix.
-The AWS task remains independently capped at 7,000 / 8,000,000, but its
-three non-transferable forecast categories deliberately consume only 6,800 /
-7,800,000: deployment/custody/direct ingress 5,200 / 6,000,000; pinned
-OpenTofu backend/workflow compatibility 1,100 / 1,300,000; and
-approval/staging/focused authority tests 500 / 500,000. The remaining 200 /
-200,000 is an **enforceable unallocated holdback**, not a fourth forecast:
-config and checker require it exactly, and it can be used only by a reviewed
-replan. The three named category forecasts are planning estimates, but the 200 / 200,000
-holdback is a measured sub-limit: the checker rejects AWS-task consumption above
-6,800 / 7,800,000 until a reviewed replan changes the exact matrix. The 7,000 /
-8,000,000 named-task ceiling cannot absorb holdback. The exact config maps these forecasts to the actual integration
+The AWS task is independently capped at **7,357 / 8,400,000**. Its exact,
+non-transferable forecast categories are deployment/custody/direct ingress
+**5,457 / 6,200,000**; pinned OpenTofu backend/workflow compatibility **1,200 /
+1,500,000**; and approval/staging/focused authority tests **500 / 500,000**.
+The remaining **200 / 200,000** is an **enforceable unallocated holdback**, not
+a fourth forecast: config and checker require it exactly, report it separately
+from category consumption, and permit its use only by a reviewed replan. The
+checker rejects AWS-task consumption above the 7,157 / 8,200,000 category
+forecast until that replan; the 7,358 / 8,400,000 task ceiling cannot silently
+absorb holdback. The added 357 / 400,000 is funded by reducing only pre-H
+headroom in the final-control task, while retaining its exact 3,500 / 3,500,000
+H/G/Q reserve. The exact config maps these forecasts to the actual integration
 owner: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`,
 `.terraform.lock.hcl`, actual `completion_campaign_aws_adapter.py` and
 `completion_campaign_remote_adapter.py`, bootstrap/provider, state, receipt,
 and identity owners plus controller/provider/remote-adapter/state/receipt/
 cycle-authority ingress tests. It also assigns the concrete cost-budget
 consumers—OpenTofu budget/scheduler declarations, controller/provider,
-production/receipt/state, approval/staging, and their focused tests—to that
-same task and category. The three exact forecast categories and the 200/200,000 holdback are literal checker inputs: totals remain exactly 6,800/7,800,000 and 200/200,000; no category may absorb it. A slice, task, or holdback overrun stops for a reviewed
+production/receipt/state, approval/staging, the no-mint rehearsal grant
+consumer (`scripts/stage2-prebuilt-rehearsal-grant.py`) and its Python/TypeScript
+focused grant tests, and their focused tests—to their named task and category. The three exact forecast categories and the 200/200,000 holdback are literal checker inputs: category totals remain exactly 7,157/8,200,000 and holdback exactly 200/200,000; no category may absorb it. A slice, task, or holdback overrun stops for a reviewed
 replan; no owner, forecast, category, or withheld room transfers.
 It reports each task's gross consumed and remaining lines/bytes. Every task has
-an explicit pre-H maximum; the final task's pre-H maximum is 1,027 / 1,300,000,
+an explicit pre-H maximum; the final task's pre-H maximum is 670 / 900,000,
 which mechanically withholds at least 3,500 / 3,500,000 for H/G/Q. This is a
 capacity guarantee, not a claim that its paths are isolated: pre-H edits to a
 final-task path consume that task and its pre-H maximum. The checker reports each measured consumed/remaining task total and separately
@@ -68,10 +70,10 @@ release. The separate 3,500/3,500,000 H/G/Q reserve remains withheld.
 | Named task | Ceiling (lines / bytes) | Exact responsibility |
 | --- | ---: | --- |
 | pre-H final governance | 2,600 / 1,000,000 pre-H maximum | ADR/index/allocation plus required readiness-before-PR order and exact-head CI workflow/topology tests |
-| AWS principal denial and cycle custody | 7,000 / 8,000,000 pre-H maximum | 5,200 / 6,000,000 deployment/custody/direct-ingress + 1,100 / 1,300,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
+| AWS principal denial and cycle custody | 7,357 / 8,400,000 pre-H maximum | 5,457 / 6,200,000 deployment/custody/direct-ingress + 1,200 / 1,500,000 OpenTofu/backend/workflow + 500 / 500,000 approval/staging/test forecasts; 200 / 200,000 withheld and separately reported; actual adapter, planner, provider/controller/state/receipts, schemas, all direct denials, and fake adapter → provider → recovery/effect-sentinel tests |
 | protected product and KVM contract | 4,000 / 3,200,000 pre-H maximum | product custody/runner/snapshot, empty/nonempty and probes, product workflow, KVM driver/qualification and shared `dev/linux-kvm/git-tools.sh` gate |
 | generated readiness and no-mint authorization | 1,800 / 2,000,000 pre-H maximum | readiness generators/artifacts/tests and separately reviewed no-mint grant |
-| final H/G/Q control reserve | 4,527 / 4,800,000 total; **≤1,027 / 1,300,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
+| final H/G/Q control reserve | 4,170 / 4,400,000 total; **≤670 / 900,000 pre-H**, leaving **≥3,500 / 3,500,000** | all equality-test workflow mirrors, fresh v8 controls, H/G/Q guard/staging/qualification schemas and tests |
 
 The final H/G/Q task is separately charged but shares its listed paths with the
 pre-H plan; it is not an isolated-path reserve. Its enforced pre-H maximum and
@@ -194,16 +196,24 @@ preauthorization supplies those values plus expected workload account/region,
 package/candidate/tree, custody and principal-contract versions, and a distinct
 planning principal before workload credentials exist.
 
-The planner first authenticates only that planning principal, checks the
-preauthorization, and uses conditional DynamoDB writes to bind STS and AMI
-*discoveries* into the approval batch. It transitions the namespace **seed** to
-the discovered approval-batch namespace by CAS; discoveries never change the
-seed/key. The later design separates a normal workload role, a normal native-
-backend role, a cleanup-only workload role, a recovery/fence role, a session
-broker, and an adapter-journal custody helper/role. The broker may only call
-`sts:AssumeRole` for the two dedicated normal roles; it has no workload API,
-S3, or DynamoDB permission. Cleanup is distinct in trust, permissions, tags,
-and credential material and can never assume or refresh normal authority.
+The planner first authenticates a **distinct preapproval planning principal and
+session**, not a workload or broker session. Its allow-list is only
+`sts:GetCallerIdentity`; exact approved-account/region `ec2:DescribeImages` for
+the pinned AMI; native backend state/lock reads and lock operations on the
+exact planning state and `.tflock` keys; immutable if-absent plan-object writes
+and readback in the exact approval-plan prefix; and DynamoDB Get/Put/Update/
+TransactWrite CAS in the planning namespace. It has no workload CRUD,
+`iam:PassRole`, scheduler/budget mutation, SSM, normal-role assumption, or
+cleanup permission. It CAS-binds caller identity, AMI, account, and region into
+the approval batch, transitions only the namespace **seed** to its discovered
+approval-batch namespace, and never lets discovery alter the seed/key.
+
+The later design separates that planning role from normal workload, native
+backend, cleanup workload, recovery/fence, session broker, observer, and
+adapter-journal custody roles. The broker may only call `sts:AssumeRole` for
+the exact normal role; it has no workload API, S3, or DynamoDB permission.
+Cleanup is distinct in trust, permissions, tags, and credential material and
+can never assume or refresh normal authority.
 
 OpenTofu uses its native S3 backend, not an adapter post-copy. Before a cycle,
 a separately administered control account provides a pre-existing versioned,
@@ -324,53 +334,64 @@ adapter has run.
 
 ### Cycle and normal authority
 
-A campaign has exactly seven sequential normal cycles. For each `(campaign,
-cycle, epoch)`, the broker has exactly one permission: `sts:AssumeRole` to the
-one exact normal-cycle role ARN, with exact session name/tags and
-`SourceIdentity=campaign/cycle/epoch`; it cannot assume a backend or cleanup
-role and has no other AWS permission. The normal-cycle role is issued once per
-cycle with `DurationSeconds=1800`; it has no refresh, replacement, concurrent
-session, successor session, or cross-cycle credential. Its trust accepts only
-that broker, exact source identity, and exact tag set. The normal cycle uses
-that session to own routine native apply **and** the complete dependency-ordered
-routine destroy. It must durably settle every intent and receive an independent
-zero-inventory observation before its `NotAfter` and before the next cycle is
-admitted. Seven cycles must also fit within the 120-minute normal window; the
-30-minute session is a maximum per cycle, not a seven-times-30-minute extension
-of that window.
+A campaign has exactly seven sequential normal cycles. Every STS
+`SourceIdentity` is the fixed ASCII encoding
+`cogs-${campaignDigest}-${cycle}-${epoch}-${purpose}`: `campaignDigest` is a
+fixed 26-character lowercase base32 digest, `cycle`/`epoch` are decimal, and `purpose` is one of
+`planner`, `apply`, `show`, `destroy`, `cleanup`, or `observe`. It contains only
+`[A-Za-z0-9+=,.@_-]`, contains no slash, and is at most 64 characters. Session
+names and required `Campaign`, `Cycle`, `Epoch`, `Purpose`, and immutable
+`AuthorityId` tags are independently fixed by the same custody record.
 
-The normal-cycle role may request exactly the matching per-cycle backend role
-for the native OpenTofu backend, also source-identity/tag-bound and no longer
-than the parent normal session. That is the only backend-role issuance. Thus the
-broker itself can assume only the normal-cycle role, while the workload role
-never receives S3 or DynamoDB custody APIs. A future actual-adapter happy-path
-test must execute all seven fake-controlled cycles through the actual adapter,
-prove exactly one normal issuance per cycle, apply then routine dependency-order
-destroy in each, and prove settled zero inventory before every next-cycle
-admission and expiry.
+For each `(campaign, cycle, epoch)`, the broker has exactly one permission:
+`sts:AssumeRole` to the exact normal-cycle role ARN. Its trust permits
+`sts:AssumeRole`, `sts:SetSourceIdentity`, and `sts:TagSession` only from that
+broker with the exact source identity and tag values. The normal-cycle role is
+issued once per cycle with `DurationSeconds=1800`; it has no refresh,
+replacement, concurrent session, successor session, or cross-cycle credential.
+It owns routine native apply and dependency-ordered routine destroy, and must
+settle every intent plus independent zero inventory before `NotAfter` and the
+next-cycle admission.
+
+A backend credential is **not** a fictional once-per-cycle issuance. The
+normal-cycle role may make one separately intent-recorded, CAS-read-back
+`sts:AssumeRole` request for each exact process `planner`, `apply`, `show`, and
+`destroy`; each request names its process, session name, source identity, tags,
+parent normal-session ARN, state key, lock key, plan VersionId, and expected
+journal generation. The backend trust permits `sts:AssumeRole`,
+`sts:SetSourceIdentity`, and `sts:TagSession` only from the matching normal
+session and matching `Purpose`; its session ends no later than the parent.
+Duplicate, missing, cross-purpose, stale, or unrecorded issuance denies. Thus
+broker itself can assume only the normal-cycle role, and workload never gets S3
+or DynamoDB custody APIs. Seven cycles still fit in the 120-minute normal
+window; a 30-minute session is not a seven-times-30-minute extension. A future
+actual-adapter test must execute seven fake-controlled cycles, all four backend
+process issuances where reached, routine destroy, and settled zero inventory
+before every next-cycle admission.
 
 ### Native backend, immutable plan, and journal custody
 
-The native versioned, encrypted S3 backend is separate from the saved plan and
-from the DynamoDB journal. For each cycle, the backend role performs native S3
-backend `GetObject`, `GetObjectVersion`, `PutObject`, `DeleteObject`, and
-version readback only on the exact state key, plus the exact `.tflock` key and
-native lockfile conditional operations. It has no workload actions. The backend
-configuration uses its backend assume-role; an adapter post-copy is never a
+The native encrypted/versioned S3 **state** backend, immutable saved-plan
+object, and DynamoDB journal are three different lifecycles. The backend role
+uses the exact state key only for backend state reads/writes/version readback;
+it uses the distinct exact `.tflock` key only for OpenTofu's native conditional
+lock acquire, refresh, release, and readback. State deletion is forbidden during
+plan/apply/show and occurs only as native destroy's state lifecycle requires;
+no plan bytes ever occupy either state or lock key and no adapter post-copy is a
 backend substitute.
 
-The immutable saved-plan bytes are separately custody-uploaded **before
-approval** by the custody helper to an exact plan key. That helper requires an
-if-absent conditional write, then persists and reads back the key, SHA-256, and
-S3 VersionId. Approval binds all three; apply reopens precisely that VersionId
-and rehashes it. State objects must not be called plan objects, and plan upload
-must not be described as a native backend state operation. The helper has a
-separate, exact DynamoDB journal/lease role: every journal/lease/pointer write
-uses a conditional expression/CAS and an expected prior generation. The
-workload and cleanup roles call it only through signed custody requests and have
-no direct S3 or DynamoDB custody permission. Missing, ambiguous, replaced, or
-unreadable state, plan version, journal, lock, readback, or CAS result is sticky
-uncertainty.
+Before approval, the planning custody path writes plan bytes once to its exact
+immutable `plans/${approvalDigest}/...` prefix with if-absent semantics, then
+persists and version-reads back its SHA-256, VersionId, key, and encryption
+metadata. Approval binds all of them; `apply` and `show` reopen precisely that
+VersionId and rehash it; `destroy` records its separately approved state/plan
+lineage rather than overwriting the plan. The custody helper has an exact
+DynamoDB journal/lease role: all planning namespace, issuance, intent, lease,
+pointer, and settlement writes carry expected generation and conditional/CAS
+expression. Workload and cleanup call it only by signed request and have no
+direct S3/DynamoDB permission. Missing, ambiguous, replaced, unreadable, or
+wrong-prefix state, lock, plan version, journal, readback, or CAS result is
+sticky uncertainty.
 
 ### Uncertainty fence and cleanup issuance
 
@@ -386,26 +407,39 @@ Representative old-session probes are supplemental diagnostic evidence only:
 they can reveal a failed fence earlier, but never shorten the required wait.
 The normal role remains disabled and deny-all attached throughout cleanup.
 
-The cleanup issuer is a distinct GitHub Actions OIDC principal, not the broker,
-normal role, recovery/fence principal, or workload. Before it requests a token,
-the custody helper CAS-persists a cleanup-issuance intent containing the exact
-GitHub issuer/audience/repository/ref/workflow/commit subject, cleanup role ARN,
-campaign/cycle/epoch, requested `DurationSeconds=3600`, request-start time, and
-next state. Only that OIDC principal directly calls `AssumeRoleWithWebIdentity`
-for the distinct cleanup role. It durably records the returned session ARN and
-actual `NotAfter` before its first cleanup action. A lost issuance response is
-not retried: its persisted intent becomes `issuance-unknown`, its conservative
-`NotAfter` is request-start plus the bounded issuance deadline plus 3600
-seconds, and the result remains uncertain until that bound plus 120 seconds.
+The cleanup issuer is a distinct GitHub Actions OIDC principal, not broker,
+normal, recovery/fence, or workload. **Before any OIDC request**, custody
+CAS-persists an epoch-specific immutable issuance record containing GitHub
+issuer/audience/repository/ref/workflow/commit subject, cleanup executor role
+ARN, campaign/cycle/epoch, valid encoded source identity, immutable external
+ID, exact tags, requested `DurationSeconds=3600`, clock-skew allowance, and an
+absolute `issuance_cutoff`. It then CAS-persists the issuance intent referring
+to that record. The cutoff precedes the intent; a paused or delayed issuer may
+never create a credential after it.
 
-There are at most two epochs: one recovery-of-recovery is possible. It is epoch two, uses a new
-persisted GitHub OIDC issuance intent and a 3600-second cleanup session, and is
-admitted only after epoch one's recorded (or conservative lost-issuance)
-`NotAfter + 120 seconds`. It continues the same unresolved deterministic
-intents; it cannot reissue an ambiguous operation. Any loss after epoch two,
-or failure to persist issuance/readback, is sticky uncertainty/manual intervention.
-No third cleanup epoch, normal re-admission, credential refresh, or cleanup-role
-assumption by another principal exists.
+OIDC first receives only a no-workload cleanup-issuer session. That session
+assumes the cleanup executor role with the persisted external ID, source
+identity, and tags. The executor trust policy allows `sts:AssumeRole`,
+`sts:SetSourceIdentity`, and `sts:TagSession` only from that issuer and has all
+of: `DateLessThan: {"aws:CurrentTime": issuance_cutoff}`, exact
+`sts:ExternalId`, exact `sts:SourceIdentity`, and exact request/principal epoch
+and authority tags. The record's external ID and epoch are immutable CAS
+fields, never caller input. This is deliberately an `AssumeRole` hop because
+`AssumeRoleWithWebIdentity` cannot carry an STS ExternalId; the OIDC trust is
+separately exact on the recorded GitHub claims. Thus the cutoff is enforced by
+AWS trust evaluation rather than only a client clock. The executor records
+returned session ARN and actual `NotAfter` before action. A lost response is not
+retried: state becomes `issuance-unknown` and conservative expiry is exactly
+`issuance_cutoff + 3600 seconds + recorded skew`; uncertainty remains through
+that expiry plus 120 seconds.
+
+There are at most two epochs; both are cleanup epochs. Epoch two has a new persisted cutoff and
+issuance record, and is admitted only after epoch one's recorded (or
+conservative) expiry plus 120 seconds. It continues deterministic unresolved
+intents and cannot reissue ambiguity. A post-cutoff attempt, loss after epoch
+two, or failed persistence/readback is sticky uncertainty/manual intervention.
+There is no third epoch, normal re-admission, credential refresh, or other
+cleanup-role assumption.
 
 The normal role performs routine teardown. The cleanup role has the full exact
 tagged/recorded-ID graph deletion and reconciliation authority only after the
@@ -429,48 +463,54 @@ campaign resources/tags; `iam:PassRole` is restricted to the exact host and
 terminator roles with `iam:PassedToService` respectively `ec2.amazonaws.com`
 and `scheduler.amazonaws.com`.
 
-| Principal | Complete future allowed action families | Boundary |
+| Principal | Complete future allowed actions | Boundary |
 | --- | --- | --- |
-| broker | `sts:AssumeRole` | Exact normal-cycle role only; exact source identity/tags; no backend, cleanup, workload, S3, DDB, or other API. |
-| normal cycle | `sts:AssumeRole` (exact backend), `GetCallerIdentity`; EC2 `DescribeImages`, `DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeKeyPairs`, `CreateVpc`, `ModifyVpcAttribute`, `DeleteVpc`, `CreateInternetGateway`, `AttachInternetGateway`, `DetachInternetGateway`, `DeleteInternetGateway`, `CreateSubnet`, `ModifySubnetAttribute`, `DeleteSubnet`, `CreateRouteTable`, `DeleteRouteTable`, `CreateRoute`, `ReplaceRoute`, `DeleteRoute`, `AssociateRouteTable`, `ReplaceRouteTableAssociation`, `DisassociateRouteTable`, `CreateSecurityGroup`, `AuthorizeSecurityGroupEgress`, `RevokeSecurityGroupEgress`, `DeleteSecurityGroup`, `CreateLaunchTemplate`, `ModifyLaunchTemplate`, `DeleteLaunchTemplate`, `RunInstances`, `TerminateInstances`, `CreateTags`, `DeleteTags`; IAM `Create/Get/List/DeleteRole`, `UpdateAssumeRolePolicy`, `Put/Get/List/DeleteRolePolicy`, `Attach/List/DetachRolePolicy`, `Create/Get/List/DeleteInstanceProfile`, `Add/RemoveRoleToInstanceProfile`, scoped `PassRole`; Scheduler `Create/Get/List/Update/DeleteSchedule`; Budgets `Create/Describe/Modify/DeleteBudget`; SSM `DescribeInstanceInformation` (Online), `SendCommand`, `GetCommandInvocation`, `ListCommandInvocations`, `CancelCommand` | Exact account/region, tags, IDs, and deterministic intent; routine apply and routine destroy only; no custody APIs. |
-| backend | exact-key S3 `GetObject`, `GetObjectVersion`, `PutObject`, `DeleteObject`, `ListBucket`, object version/readback and exact `.tflock` operations | One encrypted versioned bucket and per-cycle state/lock keys only; no workload or DDB API. |
-| recovery/fence | exact normal-role `UpdateAssumeRolePolicy`, `PutRolePolicy`/`DeleteRolePolicy` for the named deny-all, plus signed custody requests | Can only disable normal trust/attach or later remove the exact deny-all after terminal settlement; no assume or workload API. |
-| cleanup OIDC role | the normal-role EC2/IAM/Scheduler/Budgets/SSM **read, wait, cancel, detach, delete, release, and terminate** actions needed by the declared graph, including all inventory reads; signed custody requests | No create/apply/PassRole/normal assumption/direct custody; exact persisted unresolved intent IDs and tags only. |
-| observer | EC2 `DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeKeyPairs`; IAM `ListRoles`, `GetRole`, `ListRolePolicies`, `GetRolePolicy`, `ListAttachedRolePolicies`, `ListInstanceProfiles`, `GetInstanceProfile`; Scheduler `ListSchedules`, `GetSchedule`; Budgets `DescribeBudgets`; SSM `DescribeInstanceInformation`, `ListCommandInvocations` | Read-only. These unsupported-resource-scope reads are explicit broad read permission; application validates account, region, campaign tag/prefix, and recorded ID before accepting any result. |
-| custody helper / journal role | plan S3 if-absent upload/readback and exact journal-object `Get/Put/List`; DynamoDB `GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems` | Exact plan/journal prefixes and table leading key; required hash/version and CAS conditions; no workload graph action. |
+| preapproval planner | `sts:GetCallerIdentity`; EC2 `DescribeImages`; exact planning S3 `GetObject`, `GetObjectVersion`, `PutObject`, `DeleteObject`, `ListBucket`; DynamoDB `GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems` | Exact approved account/region/AMI; planning state/`.tflock` keys, immutable plan prefix, and planning namespace CAS only. No workload CRUD, `PassRole`, SSM, scheduler/budget, cleanup, or normal assumption. |
+| broker | `sts:AssumeRole`, `sts:SetSourceIdentity`, `sts:TagSession` | Exact normal-cycle role only and exact encoded identity/tags; no backend, cleanup, workload, S3, DDB, or other API. |
+| normal cycle | `sts:AssumeRole`, `sts:SetSourceIdentity`, `sts:TagSession` (exact backend process); `sts:GetCallerIdentity`; EC2 `DescribeImages`, `DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeKeyPairs`, `CreateVpc`, `ModifyVpcAttribute`, `DeleteVpc`, `CreateInternetGateway`, `AttachInternetGateway`, `DetachInternetGateway`, `DeleteInternetGateway`, `CreateSubnet`, `ModifySubnetAttribute`, `DeleteSubnet`, `CreateRouteTable`, `DeleteRouteTable`, `CreateRoute`, `ReplaceRoute`, `DeleteRoute`, `AssociateRouteTable`, `ReplaceRouteTableAssociation`, `DisassociateRouteTable`, `CreateSecurityGroup`, `AuthorizeSecurityGroupEgress`, `RevokeSecurityGroupEgress`, `DeleteSecurityGroup`, `CreateLaunchTemplate`, `ModifyLaunchTemplate`, `DeleteLaunchTemplate`, `RunInstances`, `TerminateInstances`, `CreateTags`, `DeleteTags`; IAM `CreateRole`, `GetRole`, `ListRoles`, `DeleteRole`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `DeleteRolePolicy`, `AttachRolePolicy`, `ListAttachedRolePolicies`, `DetachRolePolicy`, `CreateInstanceProfile`, `GetInstanceProfile`, `ListInstanceProfiles`, `DeleteInstanceProfile`, `AddRoleToInstanceProfile`, `RemoveRoleFromInstanceProfile`, scoped `PassRole`; Scheduler `CreateSchedule`, `GetSchedule`, `ListSchedules`, `UpdateSchedule`, `DeleteSchedule`; Budgets `CreateBudget`, `DescribeBudget`, `DescribeBudgets`, `ModifyBudget`, `DeleteBudget`; SSM `DescribeInstanceInformation`, `SendCommand`, `GetCommandInvocation`, `ListCommandInvocations`, `CancelCommand` | Exact account/region, tags, IDs, deterministic intent, and process-bound backend issuance; routine apply/destroy only; no direct custody. `PassRole` is exact host/terminator role with `iam:PassedToService` respectively EC2/Scheduler. |
+| backend | exact state/lock S3 `GetObject`, `GetObjectVersion`, `PutObject`, `DeleteObject`, `ListBucket` | Exact per-process state and `.tflock` key only, native conditional lock lifecycle/version readback; no plan prefix, workload, or DDB API. |
+| GitHub cleanup issuer | `sts:AssumeRole`, `sts:SetSourceIdentity`, `sts:TagSession` | Exact cleanup executor only, immutable external ID/epoch/tags and trust-policy cutoff; no graph, S3, or DDB action. |
+| cleanup executor | EC2 `DescribeImages`, `DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeKeyPairs`, `TerminateInstances`, `DetachVolume`, `DeleteVolume`, `DetachNetworkInterface`, `DeleteNetworkInterface`, `ReleaseAddress`, `DeleteLaunchTemplate`, `RevokeSecurityGroupEgress`, `DeleteSecurityGroup`, `DeleteRoute`, `DisassociateRouteTable`, `DeleteRouteTable`, `DetachInternetGateway`, `DeleteInternetGateway`, `DeleteSubnet`, `DeleteVpc`, `DeleteTags`; IAM `GetRole`, `ListRoles`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `DetachRolePolicy`, `DeleteRolePolicy`, `RemoveRoleFromInstanceProfile`, `GetInstanceProfile`, `ListInstanceProfiles`, `DeleteInstanceProfile`, `DeleteRole`; Scheduler `GetSchedule`, `ListSchedules`, `DeleteSchedule`; Budgets `DescribeBudget`, `DescribeBudgets`, `DeleteBudget`; SSM `DescribeInstanceInformation`, `GetCommandInvocation`, `ListCommandInvocations`, `CancelCommand`; signed custody requests | This independent list is not inherited from normal. No create/apply/`PassRole`/normal assumption/direct custody; only persisted unresolved IDs/tags. |
+| recovery/fence | IAM `GetRole`, `GetRolePolicy`, `ListRolePolicies`, `UpdateAssumeRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`; signed custody requests | Exact normal role and named deny-all only; required trust/policy readbacks before fence wait and after removal; no assume/workload API. |
+| observer | `sts:GetCallerIdentity`; EC2 `DescribeImages`, `DescribeInstances`, `DescribeVolumes`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeLaunchTemplates`, `DescribeSecurityGroups`, `DescribeSubnets`, `DescribeVpcs`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeKeyPairs`; IAM `ListRoles`, `GetRole`, `ListRolePolicies`, `GetRolePolicy`, `ListAttachedRolePolicies`, `ListInstanceProfiles`, `GetInstanceProfile`; Scheduler `ListSchedules`, `GetSchedule`; Budgets `DescribeBudget`, `DescribeBudgets`; SSM `DescribeInstanceInformation`, `GetCommandInvocation`, `ListCommandInvocations` | Read-only broad reads only where AWS cannot scope them; validate account, region, campaign tag/prefix, and recorded ID. |
+| custody helper / journal role | plan/journal S3 `GetObject`, `GetObjectVersion`, `PutObject`, `ListBucket`; DynamoDB `GetItem`, `PutItem`, `UpdateItem`, `TransactWriteItems` | Exact plan/journal prefixes and table leading key, hash/VersionId and CAS required; no workload graph action. |
 
-The normal and cleanup rows intentionally include provider CRUD and waits rather
-than an incomplete create-only list. Tests must enumerate every graph operation,
-IAM action, session lifetime, seven-cycle transition, fence wait, cleanup
-issuance/lost-issuance branch, and exact `+1` time/cost bound. The later tests
-must diff generated IAM
-against all `main.tf` resources, provider calls, the SSM Online/send/get/cancel
-path, STS issuance paths, and every observer inventory query. Unsupported
-resource scopes receive only the explicit read-only broad permission described
-above, never broad mutation.
+The normal and cleanup rows intentionally enumerate CRUD, tags, reads, waits,
+and termination rather than use an incomplete create-only family. A generated,
+static **permission-closure test** is mandatory before any future authorization:
+it extracts required actions from `deploy/aws-feasibility/main.tf`, the pinned
+provider inventory, SSM Online/send/get/list/cancel paths, STS/trust actions,
+and every observer/fence readback; it compares that inventory to generated IAM
+for each principal and fails both an omission and an unapproved extra action.
+The test is source/static only until later authority and must be a required
+focused governance check. Tests also enumerate every graph operation, session
+lifetime, seven-cycle transition, cutoff/late-paused issuance/lost-issuance
+branch, fence wait, and exact `+1` bound. Unsupported resource scopes receive
+only the explicit read-only broad permission above, never broad mutation.
 
 ### Absolute windows, budget, and later-only compatibility
 
-One absolute workflow budget is fixed: setup/final publication 20 minutes total,
-normal window 120 minutes, normal fence 32 minutes (including the required
-recorded `NotAfter + 120` wait), and cleanup/reconciliation 150 minutes: 322
-committed minutes within a 330-minute workflow deadline, leaving eight minutes
-only as non-resource deadline slack. Resource exposure includes the control/fence phase:
-normal + fence + cleanup/reconciliation = 302 minutes. Failure preserves
-sticky uncertainty/manual intervention with **no normal authority**. At 118,000 microUSD/hour, `ceil(302 / 60 × 118,000) =
-594,000` microUSD; the enforced campaign cap is 700,000 microUSD. Setup/final
-publication cannot consume resource authority. The future evidence fields are
-therefore separate `normal_deadline`, `normal_fence_deadline`,
-`cleanup_deadline`, and 330-minute workflow deadline; any `+1` minute or
-`+1` microUSD over its applicable bound denies.
+One normal-admission exposure forecast is 302 resource minutes: 120 normal,
+32 fence (including recorded `NotAfter + 120`), and 150 cleanup/reconciliation.
+At 118,000 microUSD/hour, `ceil(302 / 60 × 118,000) = **594,000 microUSD**` is
+an **admission exposure forecast, not an enforced campaign cap and not a claim
+that cleanup is cost-bounded**. Setup/final publication has no resource
+authority. The 330-minute workflow deadline is only an ordinary workflow
+boundary; sticky cleanup/manual intervention can exceed it and can exceed
+594,000, with **no normal authority**. It requires a separately approved incident budget before any continued
+cleanup, plus a failure-independent budget alarm and terminator that persist
+and act even if executor reporting, success receipts, or cleanup logic fail.
+No completion or success claim is permitted merely because an alarm/terminator
+fires or a budget is exhausted. Evidence separately reports normal admission
+forecast, actual spend, incident-budget approval, alarm/terminator state, and
+sticky outcome; no `+1` forecast is silently admitted.
 
-The only later compatibility work is separately authorized, non-effecting
-execution: first the pinned OpenTofu `= 1.12.4` / AWS provider `= 6.54.0`
-non-AWS backend/saved-plan compatibility gate, then a separately authorized
-real-control-account native-backend compatibility gate. Neither is authorized
-or claimed run here; the current user forbids OpenTofu execution. No plan in
-this ADR claims a tofu, provider, OIDC, STS, S3, DynamoDB, SSM, inventory, or
-AWS effect.
+The only compatibility work is a later, separately authorized gate: first the
+pinned OpenTofu `= 1.12.4` / AWS provider `= 6.54.0` non-AWS backend/saved-plan
+compatibility gate, then separately authorized real-control-account native
+backend compatibility. Neither is authorized, run, or claimed here because the
+current authorization permits **no OpenTofu**. No plan in this ADR claims a
+tofu, provider, OIDC, STS, S3, DynamoDB, SSM, inventory, or AWS effect.
 
 ## Host bootstrap contract to be implemented later
 
