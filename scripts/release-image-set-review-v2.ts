@@ -12,16 +12,16 @@ require("ajv-formats")(ajv);
 const validateReview = ajv.compile(reviewSchema) as ValidateFunction;
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
-export const RELEASE_IMAGE_SET_ASSERTION_SHA256 = "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4";
-export const RELEASE_IMAGE_SET_REVIEW_SHA256 = "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216";
-export const RELEASE_IMAGE_SOURCE_SHA = "cb9ec3958f6f2571c7c3f90e25b645e49e288a3f";
-export const RELEASE_IMAGE_SOURCE_TREE_SHA = "bf47273803ee54b5a2fd29d61224836e9f1bfd77";
-export const RELEASE_IMAGE_SOURCE_INVENTORY_SHA256 = "de0173b66335bbdfbc10968061fac058cfd5648d3a46beb5e537eefa8fa460b8";
-export const RELEASE_IMAGE_WORKFLOW_RUN_ID = 31856469035;
-export const RELEASE_IMAGE_ASSERTION_ARTIFACT_ID = 9239219656;
+export const RELEASE_IMAGE_SET_ASSERTION_SHA256 = "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332";
+export const RELEASE_IMAGE_SET_REVIEW_SHA256 = "f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4";
+export const RELEASE_IMAGE_SOURCE_SHA = "371cfa58a90888d12d6ae5a857275323ab3f43c4";
+export const RELEASE_IMAGE_SOURCE_TREE_SHA = "0280ec76da20db6f7059b97fffeaf31ac2a73845";
+export const RELEASE_IMAGE_SOURCE_INVENTORY_SHA256 = "16f7898e8515b0ff4911da896a158fd10d0158fc69215978b89fbd56bd97f670";
+export const RELEASE_IMAGE_WORKFLOW_RUN_ID = 34774398155;
+export const RELEASE_IMAGE_ASSERTION_ARTIFACT_ID = 10322284872;
 export const RELEASE_IMAGE_REFERENCES = Object.freeze({
-  worker: "ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535",
-  sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe",
+  worker: "ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e",
+  sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d",
 });
 
 export type ReleaseImageSetReviewReasonCode =
@@ -134,7 +134,7 @@ function reviewMatchesAssertion(review: JsonObject, assertion: JsonObject): bool
     reviewAssertion?.artifact_id !== RELEASE_IMAGE_ASSERTION_ARTIFACT_ID ||
     reviewAssertion.workflow_run_id !== RELEASE_IMAGE_WORKFLOW_RUN_ID ||
     reviewAssertion.workflow_run_attempt !== 1 ||
-    reviewAssertion.canonical_size !== 9092 ||
+    reviewAssertion.canonical_size !== 9097 ||
     reviewAssertion.sha256 !== RELEASE_IMAGE_SET_ASSERTION_SHA256 ||
     reviewSource?.image_source_sha !== RELEASE_IMAGE_SOURCE_SHA ||
     reviewSource.image_source_tree_sha !== RELEASE_IMAGE_SOURCE_TREE_SHA ||

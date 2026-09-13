@@ -23,6 +23,7 @@ import sys
 import time
 
 NONCE = re.compile(r"[0-9a-f]{32}\Z"); ID = re.compile(r"[0-9a-f]{64}\Z")
+IMAGE_SOURCE = "371cfa58a90888d12d6ae5a857275323ab3f43c4"
 OPERATIONS = frozenset(("authenticate", "capability-probe", "create", "evidence", "exec", "file", "image", "lease", "lease-directory", "mkdir", "pair", "provenance", "seal", "settle", "status", "storage"))
 PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment", "persistence"))
 AUTHENTICATE_SUBSTAGES = frozenset(("inspect", "image-running", "labels", "environment", "isolation", "cap-add", "limits", "mount-inventory", "bind-identity", "tmpfs-config", "mountinfo", "cgroup-membership", "cgroup-limits", "process-security", "namespace-pidfd"))
@@ -756,7 +757,10 @@ class Custody:
         # The root-created product context replaces this tracked file; every other
         # checkout mutation remains a refusal, so no writable checkout alias enters Docker.
         self.failure_substage = "status"; require(git("status", "--porcelain=v1", "--untracked-files=all") == b" M .dockerignore\n")
-        self.failure_substage = "baseline"; require(not git("diff", q["baseline"], "--", "images/sandbox", "images/worker", "package-lock.json")); source = {}
+        self.failure_substage = "baseline"
+        require(q["image_source"] == IMAGE_SOURCE)
+        require(not git("merge-base", "--is-ancestor", IMAGE_SOURCE, q["candidate"]))
+        require(not git("diff", IMAGE_SOURCE, "--", "images/sandbox", "images/worker", "package-lock.json")); source = {}
         paths = ("src", "schemas", "dev/product-test", "dev/launcher/api-client.ts", "third_party")
         self.failure_substage = "source"
         for raw in git("ls-tree", "-rz", "-r", "HEAD", "--", *paths).split(b"\0"):
@@ -775,7 +779,7 @@ class Custody:
         with closing_fd(os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             s = os.stat("build-receipt.json", dir_fd=fd, follow_symlinks=False); require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o400)
             receipt = json.loads(capture(fd, "build-receipt.json"))
-        expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe", "run_id", "run_attempt", "tree", "source_inventory", "dockerignore", "package_lock", "npm_closure", "image_os", "image_version", "skills")}
+        expected = {k: q[k] for k in ("candidate", "baseline", "image_source", "worker_image", "sandbox_image", "stock_worker_image", "recipe", "run_id", "run_attempt", "tree", "source_inventory", "dockerignore", "package_lock", "npm_closure", "image_os", "image_version", "skills")}
         expected["profile_case"] = "nonempty" if q["skills"] == "nonempty" else "empty"
         expected["authority"] = "probe-only" if self.probe else "candidate-pass"
         require(expected["tree"] == git("rev-parse", "HEAD^{tree}").decode().strip())

@@ -517,8 +517,8 @@ function rewriteClassifierAnchors(): void {
   const immutableInputs = {
     chartInventory: hash("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
     imageLock: hash("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
-    releaseImageAssertion: hash("docs/security-evidence/release-image-set-assertion-31856469035.canonical.json"),
-    releaseImageReview: hash("docs/security-evidence/release-image-set-review-31856469035.canonical.json"),
+    releaseImageAssertion: hash("docs/security-evidence/release-image-set-assertion-34774398155.canonical.json"),
+    releaseImageReview: hash("docs/security-evidence/release-image-set-review-34774398155.canonical.json"),
     nicContract: hash("deploy/nic/stage4-sandbox-node-group-contract.json"),
     render: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml"),
     repeatedRender: hash("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
@@ -620,9 +620,9 @@ function regeneratePackage(): void {
     chart_inventory_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json"),
     image_lock_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
     release_image_assertion_sha256: hash(
-      "docs/security-evidence/release-image-set-assertion-31856469035.canonical.json",
+      "docs/security-evidence/release-image-set-assertion-34774398155.canonical.json",
     ),
-    release_image_review_sha256: hash("docs/security-evidence/release-image-set-review-31856469035.canonical.json"),
+    release_image_review_sha256: hash("docs/security-evidence/release-image-set-review-34774398155.canonical.json"),
     local_validation_sha256: hash("docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json"),
     nic_contract_sha256: hash("deploy/nic/stage4-sandbox-node-group-contract.json"),
     render_preparation_receipt_sha256: hash(

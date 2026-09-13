@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const script = "test/aws-stage2-completion-immutable-preparation.py";
-const image = "ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe";
+const image = "ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d";
 
 test("fresh-root immutable preparation transaction is exact and rolls back every fault cut", () => {
   const result = spawnSync("python3", ["-B", script], {

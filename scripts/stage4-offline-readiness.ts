@@ -229,19 +229,19 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "daf3272a82879f8df79ba3ca412a330494af94cc7f162be45fdd67333f8215ed",
-  releaseImageAssertion: "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4",
-  releaseImageReview: "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216",
+  imageLock: "c3054cb35b9bc6a7d398fa614fdf3c4e978bb8c970fe6ab8824b5edf6304d7e1",
+  releaseImageAssertion: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
+  releaseImageReview: "f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
   render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "75e29863b916d31ee1796714c16b92349a102ea2ede3c10b9884195f81fd5075",
-  localValidationNormalized: "1da9aaf833eb92e615ca5d406c40a2392fd9dcdc68fa150392bfcbc161422f3c",
+  authenticatedRuntimeArtifacts: "ad724cdfe73835e8a71298a9b014646b156507585afae57681cf64fc90daf43f",
+  localValidationNormalized: "9cdd5b3075146f0ac434ca7e2a8f0c5b5a1ddb66a4970ad58fac73fb032bc03a",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "42cebd58b80993862c8eb44c490c2ef340db1251d1de6d9b47e148f4a020a3a1",
-  sourceInventoryNormalized: "169331b57d0a77d7ced351c16aa4cedd2ff46bb468cf8dc4f49f39f74c687345",
+  schemaInventory: "5296c486d0ba52731742cc2cb17f5129cf120079116eafc36f5701753822a5b4",
+  sourceInventoryNormalized: "38752a284d4f0124046c3129a9a69ad5f1c85a1e652b3059a4e5fcd83a502461",
 });
 /* stage4-readiness-anchor-end */
 
@@ -492,8 +492,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
     ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json", "imageLock"],
-    ["docs/security-evidence/release-image-set-assertion-31856469035.canonical.json", "releaseImageAssertion"],
-    ["docs/security-evidence/release-image-set-review-31856469035.canonical.json", "releaseImageReview"],
+    ["docs/security-evidence/release-image-set-assertion-34774398155.canonical.json", "releaseImageAssertion"],
+    ["docs/security-evidence/release-image-set-review-34774398155.canonical.json", "releaseImageReview"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml", "repeatedRender"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],

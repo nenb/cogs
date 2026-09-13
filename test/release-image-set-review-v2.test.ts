@@ -13,10 +13,10 @@ import {
 
 const root = resolve(import.meta.dirname, "..");
 const assertion = new Uint8Array(
-  readFileSync(resolve(root, "docs/security-evidence/release-image-set-assertion-31856469035.canonical.json")),
+  readFileSync(resolve(root, "docs/security-evidence/release-image-set-assertion-34774398155.canonical.json")),
 );
 const review = new Uint8Array(
-  readFileSync(resolve(root, "docs/security-evidence/release-image-set-review-31856469035.canonical.json")),
+  readFileSync(resolve(root, "docs/security-evidence/release-image-set-review-34774398155.canonical.json")),
 );
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };

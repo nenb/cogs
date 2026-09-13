@@ -134,12 +134,13 @@ jobs:
       cancel-in-progress: false
     env:
       CANDIDATE: ${{ needs.admission.outputs.candidate }}
+      IMAGE_SOURCE: 371cfa58a90888d12d6ae5a857275323ab3f43c4
       PRODUCT_PROFILE: ${{ matrix.profile }}
       PRODUCT_SKILLS: ${{ matrix.skills }}
       PRODUCT_AUTHORITY: ${{ matrix.authority }}
       PRODUCT_MODE: ${{ matrix.mode }}
-      STOCK_WORKER: ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535
-      SANDBOX: ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe
+      STOCK_WORKER: ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e
+      SANDBOX: ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d
     steps:
       - name: Check out exactly the admitted candidate without credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -152,6 +153,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE"
           git merge-base --is-ancestor 8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38 "$CANDIDATE"
+          git merge-base --is-ancestor "$IMAGE_SOURCE" "$CANDIDATE"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           env -i HOME="$HOME" PATH="$PATH" npm ci --ignore-scripts --no-bin-links
           env -i HOME="$HOME" PATH="$PATH" npm ls --all --ignore-scripts >/dev/null
@@ -279,13 +281,13 @@ jobs:
           # generation's own effect limit.
           lifetime_ms=900000
           if test "$PRODUCT_AUTHORITY" = probe-only; then lifetime_ms=5340000; fi
-          sudo -n env CANDIDATE="$CANDIDATE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_SKILLS="$PRODUCT_SKILLS" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" RESTRICTION_LIFETIME_MS="$lifetime_ms" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
+          sudo -n env CANDIDATE="$CANDIDATE" IMAGE_SOURCE="$IMAGE_SOURCE" PROTECTED="$PROTECTED" STOCK_WORKER_ID="$STOCK_WORKER_ID" SANDBOX_ID="$SANDBOX_ID" WORKER_ID="$WORKER_ID" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" IMAGE_OS="$ImageOS" IMAGE_VERSION="$ImageVersion" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_SKILLS="$PRODUCT_SKILLS" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" RESTRICTION_LIFETIME_MS="$lifetime_ms" RESTRICTIONS="$RUNNER_TEMP/cogs-product-restrictions.json" /usr/bin/python3 -I -B - <<'PY'
           import hashlib,json,os,time
           inv=json.load(open(os.environ['PROTECTED']+'/.cogs-product-inventory.json'))
           common={'candidate':os.environ['CANDIDATE'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'tree':inv['tree'],'source_inventory':inv['source_inventory'],'dockerignore':inv['dockerignore'],'package_lock':inv['package_lock'],'npm_closure':inv['npm_closure'],'image_os':os.environ['IMAGE_OS'],'image_version':os.environ['IMAGE_VERSION']}
-          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38',**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+int(os.environ['RESTRICTION_LIFETIME_MS']),'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':os.environ['PRODUCT_SKILLS'],'sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
+          value={'version':'cogs.product-restrictions/v1','baseline':'8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38','image_source':os.environ['IMAGE_SOURCE'],**common,'owner':'repository-owner','expires':time.time_ns()//1_000_000+int(os.environ['RESTRICTION_LIFETIME_MS']),'profile':'functional-only-protected-linux-docker/v1','breach':'fail-and-settle-exact','findings':[4,5,6,8,9,10,14],'seconds':600,'skills':os.environ['PRODUCT_SKILLS'],'sandbox_image':os.environ['SANDBOX_ID'],'worker_image':os.environ['WORKER_ID'],'stock_worker_image':os.environ['STOCK_WORKER_ID'],'fresh_protected_runner':True}
           recipe='sha256:'+hashlib.sha256(open(os.environ['PROTECTED']+'/Dockerfile','rb').read()).hexdigest()
-          build={'candidate':value['candidate'],'baseline':value['baseline'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'skills':value['skills'],'profile_case':os.environ['PRODUCT_PROFILE'],'authority':os.environ['PRODUCT_AUTHORITY'],'recipe':recipe,**common}
+          build={'candidate':value['candidate'],'baseline':value['baseline'],'image_source':value['image_source'],'worker_image':value['worker_image'],'sandbox_image':value['sandbox_image'],'stock_worker_image':value['stock_worker_image'],'skills':value['skills'],'profile_case':os.environ['PRODUCT_PROFILE'],'authority':os.environ['PRODUCT_AUTHORITY'],'recipe':recipe,**common}
           for path,body in [(os.environ['RESTRICTIONS'],value),('/var/lib/cogs-product-test/build-receipt.json',build)]:
               fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
               try: os.write(fd,(json.dumps(body,sort_keys=True,separators=(',',':'))+'\n').encode()); os.fsync(fd)

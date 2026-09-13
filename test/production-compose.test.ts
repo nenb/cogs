@@ -580,6 +580,7 @@ else: raise AssertionError('pipelined frame accepted')
 os.close(r);os.close(w)
 assert m.OPERATIONS==frozenset(('authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'))
 assert m.PROVENANCE_SUBSTAGES==frozenset(('final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment','persistence'))
+assert m.IMAGE_SOURCE=='371cfa58a90888d12d6ae5a857275323ab3f43c4'
 r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
 try: m.emit_diagnostic('a'*32,'provenance','layer-count',True)
 finally: os.dup2(old,1);os.close(old);os.close(w)

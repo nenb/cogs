@@ -69,7 +69,7 @@ The following remain deliberately absent:
 - a mutable release alias, production promotion, or executable provider route; and
 - Linux/Kata/KVM, Kubernetes, CNI, storage, network, and end-to-end runtime qualification.
 
-Protected-main run `31856469035` and its independent review bind the Pi 0.84.2 source to exact current worker/sandbox identities, so readiness v5 removes `RELEASE_IMAGE_SET_ABSENT`. The image-source revision remains separately bound from later readiness metadata, and the earlier run `30852317459` remains historical. OpenBao v2.6.1 remains retired, so `OPENBAO_FIXED_RELEASE_IMAGE_ABSENT`; `NO_EXECUTABLE_PROVIDER_ROUTE`; and every false runtime/provider/Kubernetes/cloud/Stage 4 exit/production/release claim remain unchanged.
+Protected-main run `34774398155` and its independent review bind the Pi 0.84.2 source to exact current worker/sandbox identities, so readiness v5 removes `RELEASE_IMAGE_SET_ABSENT`. The image-source revision remains separately bound from later readiness metadata, and runs `30852317459` and `31856469035` remain historical. OpenBao v2.6.1 remains retired, so `OPENBAO_FIXED_RELEASE_IMAGE_ABSENT`; `NO_EXECUTABLE_PROVIDER_ROUTE`; and every false runtime/provider/Kubernetes/cloud/Stage 4 exit/production/release claim remain unchanged.
 
 ## ADR0333/0334 functional product harness
 
