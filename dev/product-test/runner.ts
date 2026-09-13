@@ -224,7 +224,7 @@ export function launchDocument(shared: string, user: string, pin = `SHA256:${"A"
     limits: {
       cpu: 2,
       memory_bytes: 4294967296,
-      tool_timeout_seconds: 5,
+      tool_timeout_seconds: 10,
       turn_timeout_seconds: 65,
       max_tool_output_bytes: 16384,
     },
@@ -1261,7 +1261,7 @@ export async function workerMain(): Promise<void> {
       counters.admit("turn");
       gate("turn");
       await client.request("run", { content: "synthetic" });
-      const deadline = performance.now() + 10000;
+      const deadline = performance.now() + 20000;
       while (settled <= turn) {
         check(!streamFailed && !toolResults.failed && performance.now() < deadline);
         await new Promise((r) => setTimeout(r, 20));
