@@ -180,7 +180,9 @@ test("protected product workflow is manual, protected-main, credential-free and 
   );
   assert.match(source, /set\(names\)!==?\{source,evidence,lock,value\['generation'\]\}/u);
   assert.match(source, /source_inventory|npm_closure|ImageVersion/u);
-  assert.match(source, /time\.time_ns\(\)\/\/1_000_000\+900_000/u);
+  assert.match(source, /lifetime_ms=900000/u);
+  assert.match(source, /if test "\$PRODUCT_AUTHORITY" = probe-only; then lifetime_ms=5340000; fi/u);
+  assert.match(source, /time\.time_ns\(\)\/\/1_000_000\+int\(os\.environ\['RESTRICTION_LIFETIME_MS'\]\)/u);
   assert.match(source, /Root-inventory pass generation and create digest evidence/u);
   assert.match(source, /matrix\.authority == 'candidate-pass'/u);
   assert.doesNotMatch(source, /dev\/insecure-sandbox|envoy|run-launcher-smoke-evidence/u);
@@ -192,7 +194,10 @@ test("protected product workflow is manual, protected-main, credential-free and 
 test("workflow build receipt and Python custody admit the same closed profile contract", async () => {
   const workflow = await readFile(join(workflowDirectory, "insecure-container.yml"), "utf8");
   const custody = await readFile(join(root, "dev/product-test/host-custody.py"), "utf8");
-  assert.match(workflow, /'skills':value\['skills'\],'profile_case':os\.environ\['PRODUCT_PROFILE'\],'authority':os\.environ\['PRODUCT_AUTHORITY'\]/u);
+  assert.match(
+    workflow,
+    /'skills':value\['skills'\],'profile_case':os\.environ\['PRODUCT_PROFILE'\],'authority':os\.environ\['PRODUCT_AUTHORITY'\]/u,
+  );
   assert.match(custody, /"image_version", "skills"\)\}/u);
   assert.match(custody, /expected\["profile_case"\] = "nonempty" if q\["skills"\] == "nonempty" else "empty"/u);
   assert.match(custody, /expected\["authority"\] = "probe-only" if self\.probe else "candidate-pass"/u);
