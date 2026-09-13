@@ -29,6 +29,7 @@ jobs:
           CANDIDATE: ${{ inputs.candidate }}
           CONFIRMATION: ${{ inputs.confirmation }}
           REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch

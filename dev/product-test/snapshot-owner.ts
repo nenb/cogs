@@ -59,10 +59,16 @@ export class HostCustody implements CustodyPort {
   #readyResolve: (() => void) | undefined;
   #readyReject: ((error: Error) => void) | undefined;
   #ready: Promise<void>;
+  #readinessSettled = false;
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
   #diagnostic: ProductDiagnosticFrame | undefined;
+  #validatedDiagnostic: ProductDiagnosticFrame | undefined;
   #terminalDiagnostic = false;
+  #terminalFrames = 0;
+  #bytesAfterTerminal = false;
+  #failureLatched = false;
+  #protocolFailure = false;
   #lost = false;
   constructor(
     generation: string,
@@ -86,27 +92,45 @@ export class HostCustody implements CustodyPort {
     });
     this.closed = new Promise((resolve, reject) => {
       this.#child.once("error", () => {
-        this.#lose();
-        reject(new Error("custody unavailable"));
+        this.#latchProtocolFailure();
+        reject(new Error("custody unavailable; preserve receipts"));
       });
       this.#child.once("close", (code) => {
-        // A terminal frame is meaningful only when EOF immediately follows it.
-        // Never let a partial line or a later byte depend on pipe chunking.
-        if (this.#input.length !== 0) this.#invalidateDiagnostic();
-        this.#lose();
-        code === 0
-          ? resolve()
-          : reject(new Error(`custody cleanup required${this.#diagnostic ? `: ${this.#diagnosticSummary()}` : ""}`));
+        // A normal owner exit is transport closure, not protocol loss. Validate
+        // the complete stream before deciding whether its terminal status passes.
+        const readinessSettled = this.#readinessSettled;
+        if (
+          this.#input.length !== 0 ||
+          this.#pending ||
+          !readinessSettled ||
+          this.#terminalFrames > 1 ||
+          this.#bytesAfterTerminal
+        )
+          this.#latchProtocolFailure();
+        if (this.#diagnostic && !this.#protocolFailure && this.#terminalFrames === 1)
+          this.#validatedDiagnostic = this.#diagnostic;
+        this.#abortRequests();
+        if (this.#failureLatched || code !== 0)
+          reject(
+            new Error(
+              `custody cleanup required${this.#validatedDiagnostic ? `: ${this.#diagnosticSummary(this.#validatedDiagnostic)}` : "; preserve receipts"}`,
+            ),
+          );
+        else resolve();
       });
     });
     void this.closed.catch(() => undefined);
     this.#child.stderr.resume(); // Never relay subprocess diagnostics or material.
+    this.#child.stdout.on("error", () => this.#latchProtocolFailure());
+    this.#child.stdin.on("error", () => this.#latchProtocolFailure());
     this.#child.stdout.on("data", (chunk: Buffer) => {
       try {
         // A diagnostic is one terminal protocol record, not a prefix that may
         // be followed by an arbitrary response, duplicate, or malformed tail.
-        if (this.#terminalDiagnostic || chunk.length === 0) {
-          this.#invalidateDiagnostic();
+        if (chunk.length === 0 || this.#protocolFailure) return;
+        if (this.#terminalDiagnostic) {
+          this.#bytesAfterTerminal = true;
+          this.#latchProtocolFailure();
           return;
         }
         check(this.#input.length + chunk.length <= 2 * 1024 * 1024);
@@ -126,11 +150,9 @@ export class HostCustody implements CustodyPort {
             cleanup?: unknown;
           };
           check(Buffer.from(canonical(result)).equals(raw) && result.generation === this.generation);
-          if (
-            Object.keys(result).sort().join() === "generation,result" &&
-            result.result === "ready" &&
-            !this.#pending
-          ) {
+          if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready") {
+            check(!this.#pending && !this.#readinessSettled);
+            this.#readinessSettled = true;
             this.#readyResolve?.();
             this.#readyResolve = undefined;
             this.#readyReject = undefined;
@@ -195,32 +217,36 @@ export class HostCustody implements CustodyPort {
               ...(result.cleanup === undefined ? {} : { cleanup: "uncertain" as const }),
             });
             this.#terminalDiagnostic = true;
-            if (this.#input.length !== 0) this.#invalidateDiagnostic();
-            else this.#lose(`custody unavailable: ${this.#diagnosticSummary()}`);
+            this.#terminalFrames++;
+            this.#failureLatched = true;
+            if (this.#input.length !== 0) {
+              this.#bytesAfterTerminal = true;
+              this.#latchProtocolFailure();
+            } else this.#abortRequests();
             return;
           }
         }
       } catch {
-        this.#invalidateDiagnostic();
+        this.#latchProtocolFailure();
       }
     });
-    this.#child.stdin.on("error", () => this.#lose());
     this.#child.stdin.write(canonical({ generation, seconds, purpose }));
   }
-  /** A fresh frozen copy prevents callers from changing retained failure provenance. */
+  /** A fresh frozen copy prevents callers from changing validated failure provenance. */
   get failureDiagnostic(): ProductDiagnosticFrame | undefined {
-    return this.#diagnostic && Object.freeze({ ...this.#diagnostic });
+    return this.#validatedDiagnostic && Object.freeze({ ...this.#validatedDiagnostic });
   }
-  #invalidateDiagnostic(): void {
+  #latchProtocolFailure(): void {
+    this.#failureLatched = true;
+    this.#protocolFailure = true;
     this.#diagnostic = undefined;
-    this.#terminalDiagnostic = true;
+    this.#validatedDiagnostic = undefined;
     this.#input = Buffer.alloc(0);
-    this.#lose();
+    this.#abortRequests();
   }
-  #diagnosticSummary(): string {
-    if (!this.#diagnostic) return "preserve receipts";
-    const { diagnostic, substage, cleanup } = this.#diagnostic;
-    return `${diagnostic}${substage ? `/${substage}` : ""}${cleanup ? "; cleanup uncertain" : ""}`;
+  #diagnosticSummary(diagnostic: ProductDiagnosticFrame): string {
+    const { diagnostic: stage, substage, cleanup } = diagnostic;
+    return `${stage}${substage ? `/${substage}` : ""}${cleanup ? "; cleanup uncertain" : ""}`;
   }
   request<T = unknown>(op: string, fields: Record<string, unknown> = {}): Promise<T> {
     const result = this.#tail.then(
@@ -237,12 +263,15 @@ export class HostCustody implements CustodyPort {
     );
     return result;
   }
-  #lose(message = "custody unavailable; preserve receipts"): void {
+  #abortRequests(): void {
+    if (this.#lost) return;
     this.#lost = true;
-    this.#readyReject?.(new Error(message));
+    this.#readinessSettled = true;
+    const error = new Error("custody unavailable; preserve receipts");
+    this.#readyReject?.(error);
     this.#readyResolve = undefined;
     this.#readyReject = undefined;
-    this.#pending?.reject(new Error(message));
+    this.#pending?.reject(error);
     this.#pending = undefined;
     this.#child.stdin.end(); // EOF asks the independent owner to settle, never grants destroy authority here.
   }

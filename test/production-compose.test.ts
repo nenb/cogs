@@ -93,6 +93,10 @@ test("protected product and KVM admissions consume only a complete sole attempt-
     assert.match(workflow, /permissions:\n {2}actions: read\n {2}contents: read/u);
     assert.match(workflow, /admission:\n {4}if: github\.run_attempt == 1/u);
     assert.equal([...workflow.matchAll(/if: github\.run_attempt == 1/g)].length, 2);
+    const admissionStep = /- id: admit\n[\s\S]*?GITHUB_TOKEN: \$\{\{ github\.token \}\}[\s\S]*?node - <<'NODE'/u.exec(
+      workflow,
+    )?.[0];
+    assert.ok(admissionStep, `${path}: history admission must bind the Actions token in its real step environment`);
     const source = /node - <<'NODE'\n([\s\S]*?)\n {10}NODE/u.exec(workflow)?.[1];
     assert.ok(source, `${path}: missing read-only admission`);
     const root = await mkdtemp(resolve(tmpdir(), "cogs-admission-"));
@@ -503,9 +507,12 @@ for stage,substage in (('operation',None),('image','inventory'),('provenance','u
   assert.equal(runner.includes("args.split("), false);
 });
 
-test("host custody accepts one fragmented terminal diagnostic and clears hostile tails", async () => {
+test("host custody rejects pending diagnostics generically until terminal EOF validates attribution", async () => {
   const generation = "a".repeat(32);
-  const frame = Buffer.from(`{"diagnostic":"provenance","generation":"${generation}","substage":"persistence"}\n`);
+  const ready = Buffer.from(`{"generation":"${generation}","result":"ready"}\n`);
+  const frame = Buffer.from(
+    `{"cleanup":"uncertain","diagnostic":"provenance","generation":"${generation}","substage":"persistence"}\n`,
+  );
   const make = () => {
     class Pipe extends EventEmitter {
       write(): boolean {
@@ -521,28 +528,71 @@ test("host custody accepts one fragmented terminal diagnostic and clears hostile
     const child = new Child();
     return { child, host: new HostCustody(generation, 60, "run", () => child as never) };
   };
-  const accepted = make();
-  accepted.child.stdout.emit("data", frame.subarray(0, 19));
-  accepted.child.stdout.emit("data", frame.subarray(19));
-  accepted.child.emit("close", 1);
-  await assert.rejects(accepted.host.closed);
-  assert.deepEqual(accepted.host.failureDiagnostic, {
-    generation,
-    diagnostic: "provenance",
-    substage: "persistence",
-  });
-  for (const chunks of [
-    [frame, Buffer.from("x")], // later byte in a distinct pipe chunk
-    [frame, frame], // duplicate terminal frame in a distinct pipe chunk
-    [Buffer.concat([frame, Buffer.from('{"diagnostic":\n')])], // malformed same-chunk tail
-    [frame.subarray(0, -1)], // nonempty unterminated closure
-  ]) {
-    const hostile = make();
-    for (const chunk of chunks) hostile.child.stdout.emit("data", chunk);
-    hostile.child.emit("close", 1);
-    await assert.rejects(hostile.host.closed);
-    assert.equal(hostile.host.failureDiagnostic, undefined);
+  for (const split of [1, 19, frame.length - 1]) {
+    const pending = make();
+    pending.child.stdout.emit("data", ready);
+    const request = pending.host.request("create");
+    await Promise.resolve();
+    pending.child.stdout.emit("data", frame.subarray(0, split));
+    pending.child.stdout.emit("data", frame.subarray(split));
+    await assert.rejects(request, { message: "custody unavailable; preserve receipts" });
+    assert.equal(pending.host.failureDiagnostic, undefined, "attribution waits for terminal close");
+    pending.child.emit("close", 0);
+    await assert.rejects(pending.host.closed, /provenance\/persistence; cleanup uncertain/u);
+    assert.deepEqual(pending.host.failureDiagnostic, {
+      generation,
+      diagnostic: "provenance",
+      substage: "persistence",
+      cleanup: "uncertain",
+    });
   }
+});
+
+test("host custody latches terminal stream failures after a successful settle response", async () => {
+  const generation = "a".repeat(32);
+  const ready = Buffer.from(`{"generation":"${generation}","result":"ready"}\n`);
+  const frame = Buffer.from(`{"diagnostic":"provenance","generation":"${generation}","substage":"persistence"}\n`);
+  const make = (tail: readonly Buffer[], purpose: "run" | "capability-probe") => {
+    const settled = Buffer.from(
+      `{"generation":"${generation}","result":{"failed":${purpose === "capability-probe"},"retired":true}}\n`,
+    );
+    class Pipe extends EventEmitter {
+      write(value: string | Buffer): boolean {
+        const request = JSON.parse(value.toString()) as { op?: string };
+        if (request.op === "settle") {
+          child.stdout.emit("data", settled);
+          for (const chunk of tail) child.stdout.emit("data", chunk);
+          child.emit("close", 0);
+        }
+        return true;
+      }
+      end(): void {}
+    }
+    class Child extends EventEmitter {
+      stdin = new Pipe();
+      stdout = new EventEmitter();
+      stderr = Object.assign(new EventEmitter(), { resume() {} });
+    }
+    const child = new Child();
+    const host = new HostCustody(generation, 60, purpose, () => child as never);
+    child.stdout.emit("data", ready);
+    return host;
+  };
+  for (const [purpose, passed] of [
+    ["run", true],
+    ["capability-probe", false],
+  ] as const)
+    for (const tail of [
+      [frame, frame], // duplicate terminal frame
+      [frame, Buffer.from('{"diagnostic":\n')], // malformed tail
+      [frame, Buffer.from("x")], // arbitrary byte after terminal frame
+      [frame.subarray(0, -1)], // unterminated terminal stream
+    ]) {
+      const host = make(tail, purpose);
+      await assert.rejects(withProductCustody(host, async () => passed));
+      await assert.rejects(host.closed, { message: "custody cleanup required; preserve receipts" });
+      assert.equal(host.failureDiagnostic, undefined);
+    }
 });
 
 test("product custody diagnostics are closed, provenance-paired, and failure artifacts have no authority", async () => {
