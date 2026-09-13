@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0342 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0343 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -24,6 +24,7 @@ assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
 assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0342-row4-fourth-minimal-correction-batch.md' in tasks[0]['paths']
+assert 'docs/adr/0343-row4-fifth-minimal-correction-batch.md' in tasks[0]['paths']
 assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','test/linux-kvm-git-tools.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
@@ -139,6 +140,25 @@ test("ADR0342 records failed candidate-pass/KVM attempts and old-byte probes as 
   assert.ok(
     readFileSync("docs/adr/README.md", "utf8").includes("[0342](0342-row4-fourth-minimal-correction-batch.md)"),
   );
+});
+
+test("ADR0343 records failed old-byte probes as non-authorizing and retains execution stops", () => {
+  const adr = readFileSync("docs/adr/0343-row4-fifth-minimal-correction-batch.md", "utf8");
+  for (const phrase of [
+    "c92aaeaa",
+    "34756063319",
+    "34756064403",
+    "Both product probe suites succeeded only for old bytes, but the candidate profiles failed; KVM failed",
+    "non-authoritative and non-authorizing",
+    "normal source correction, review, validation, protected PR CI, and merge",
+    "No effects, full, or readiness execution occurs now",
+    "exactly one fresh first-created attempt-one replacement pair",
+    "Same-byte retry and H/G/Q remain denied",
+    "AWS, OpenTofu, SSM, Docker, KVM, network, and all other effects remain denied",
+    "All caps, allocations, source-inventory bounds, and the final-HGQ reserve are unchanged",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0343](0343-row4-fifth-minimal-correction-batch.md)"));
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

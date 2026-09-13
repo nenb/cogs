@@ -1594,11 +1594,11 @@ for program in (
     "import os; os.write(1,'é'.encode()*19)",
     "import os; os.write(1,b'x'*38); os.write(2,b'x'*4097)",
 ): rejects(lambda:run(program))
-for program in ("import os; os.write(1,b'\\xff')", "import os; os.write(2,b'\\xff')"):
+for program,phase in (("import os; os.write(1,b'\\xff')",'stdout-utf8'),("import os; os.write(2,b'\\xff')",'stderr-utf8'),("import os; os.write(1,b'\\0')",'stdout-nul-cr'),("import os; os.write(2,b'\\r')",'stderr-nul-cr')):
     try: run(program)
     except h.BoundedMalformed as error:
-        assert str(error)=="malformed command bytes" and "\\xff" not in str(error)
-    else: raise AssertionError("invalid UTF-8 was not classified as malformed command bytes")
+        assert error.phase==phase and str(error)==phase and "\\xff" not in str(error)
+    else: raise AssertionError("invalid bytes were not assigned a closed stream class")
 assert run('raise SystemExit(7)')==(7,b'')
 # A single ignored TERM and silent stream cannot evade the absolute deadline.
 started=time.monotonic()
@@ -1695,12 +1695,12 @@ assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/insta
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
-for code,phase in ((255,'authenticated-ssh-transport'),(41,'boot-finished'),(42,'setup-marker'),(43,'setup-mount'),(44,'setup-git'),(45,'setup-skills'),(46,'setup-sshd'),(47,'setup-completion'),(48,'setup-mount-check'),(49,'setup-git-check'),(50,'setup-skills-check'),(51,'setup-sshd-check'),(9,'malformed')):
+for code,phase in ((255,'authenticated-ssh-transport'),(41,'boot-finished'),(42,'setup-marker'),(43,'setup-mount'),(44,'setup-git'),(45,'setup-skills'),(46,'setup-sshd'),(47,'setup-completion'),(48,'setup-mount-check'),(49,'setup-git-check'),(50,'setup-skills-check'),(51,'setup-sshd-check'),(52,'setup-failure-marker'),(1,'remote-exit-1'),(2,'remote-exit-2'),(126,'remote-exit-126'),(127,'remote-exit-127'),(-9,'remote-exit-signal'),(9,'remote-exit-other')):
     with patch.object(h,'bounded',return_value=(code,b'')):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as error: assert error.phase==phase
         else: raise AssertionError('unclassified ready exit accepted')
-for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed')):
+for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed('stdout-utf8'),'stdout-utf8'),(h.BoundedMalformed('stderr-utf8'),'stderr-utf8'),(h.BoundedMalformed('stdout-nul-cr'),'stdout-nul-cr'),(h.BoundedMalformed('stderr-nul-cr'),'stderr-nul-cr')):
     with patch.object(h,'bounded',side_effect=error):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as observed: assert observed.phase==phase
@@ -1731,7 +1731,7 @@ with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
     assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
-for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed(),'host-key-mismatch')):
+for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed('stdout-utf8'),'host-key-mismatch')):
     with patch.object(h,'bounded',side_effect=error):
         try: h.host_key(state,5)
         except h.ReadyFailure as observed: assert observed.phase==phase
@@ -1762,7 +1762,7 @@ with patch.object(h,'host_key',side_effect=h.RetirementUncertain), patch.object(
 test("KVM readiness accepts only exact campaign setup evidence without guest output", async () => {
   await boundedTest(String.raw`
 with tempfile.TemporaryDirectory() as root:
-    root=pathlib.Path(root); bindir=root/'bin'; bindir.mkdir(); boot=root/'boot'; stage=root/'stage'; complete=root/'complete'; git=root/'git'; shared=root/'shared'; user=root/'user'
+    root=pathlib.Path(root); bindir=root/'bin'; bindir.mkdir(); boot=root/'boot'; stage=root/'stage'; complete=root/'complete'; pending=root/'pending'; failure=root/'failure'; git=root/'git'; shared=root/'shared'; user=root/'user'
     boot.write_text('done'); git.symlink_to('/opt/cogs-git/bin/git'); shared.mkdir(); user.mkdir()
     tools={
       'cloud-init':'#!/bin/sh\nexit 1\n', 'mountpoint':'#!/bin/sh\nexit 0\n',
@@ -1771,24 +1771,43 @@ with tempfile.TemporaryDirectory() as root:
       'stat':'#!/bin/sh\ncase "$*" in *stage*) printf "%s\\n" "'+'$'+'{STAGE_STAT:-0:0:600:regular file:1}";; *complete*) printf "%s\\n" "'+'$'+'{COMPLETE_STAT:-0:0:400:regular file:1}";; *git*) printf "0:0:symbolic link\\n";; *) printf "0:0:700:directory\\n";; esac\n'}
     for name,value in tools.items():
         path=bindir/name; path.write_text(value); path.chmod(0o700)
-    wrapper=h.READY_WRAPPER.replace('/var/lib/cloud/instance/boot-finished',str(boot)).replace('/var/lib/cogs/campaign-setup.stage',str(stage)).replace('/var/lib/cogs/campaign-setup.complete',str(complete)).replace('/usr/bin/git',str(git)).replace('/shared/skills',str(shared)).replace('/user/skills',str(user))
-    def run(stage_value=None,completion=True,env={}):
-        for path in (stage,complete):
-            if path.exists(): path.unlink()
+    wrapper=h.READY_WRAPPER.replace('export PATH=/usr/sbin:/usr/bin:/sbin:/bin','export PATH='+str(bindir)+':/usr/bin:/bin').replace('/var/lib/cloud/instance/boot-finished',str(boot)).replace('/var/lib/cogs/campaign-setup.stage',str(stage)).replace('/var/lib/cogs/campaign-setup.complete.pending',str(pending)).replace('/var/lib/cogs/campaign-setup.complete',str(complete)).replace('/var/lib/cogs/campaign-setup.failure',str(failure)).replace('/usr/bin/git',str(git)).replace('/shared/skills',str(shared)).replace('/user/skills',str(user))
+    def run(stage_value=None,completion=True,env={},failed=False,pending_marker=False):
+        for path in (stage,complete,pending,failure):
+            if path.exists() or path.is_symlink(): path.unlink()
         if stage_value is not None: stage.write_text(stage_value)
         if completion: complete.write_text('COMPLETE')
-        return subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH'],**env},capture_output=True)
-    accepted=run('SSHD',True)
+        if pending_marker: pending.write_text('COMPLETE')
+        if failed: failure.write_text('SSHD')
+        return subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,**env},capture_output=True)
+    accepted=run('COMPLETE',True)
     assert accepted.returncode==0 and accepted.stdout==accepted.stderr==b'' # degraded cloud-init has no veto
     for marker,code in (('MOUNT',43),('GIT',44),('SKILLS',45),('SSHD',46)):
         result=run(marker,False); assert result.returncode==code and result.stdout==result.stderr==b''
     for env in ({'STAGE_STAT':'foreign'},{'COMPLETE_STAT':'foreign'},{'COMPLETE_STAT':'0:1:400:regular file:1'},{'COMPLETE_STAT':'0:0:600:regular file:1'}):
-        result=run('SSHD',False if 'STAGE_STAT' in env else True,env); assert result.returncode in (42,47) and result.stdout==result.stderr==b''
+        result=run('COMPLETE',False if 'STAGE_STAT' in env else True,env); assert result.returncode in (42,47) and result.stdout==result.stderr==b''
     for value in ('FOREIGN',''):
-        result=run('SSHD',True); complete.write_text(value); result=subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH']},capture_output=True); assert result.returncode==47 and result.stdout==result.stderr==b''
+        result=run('COMPLETE',True); complete.write_text(value); result=subprocess.run(['/bin/bash','-c',wrapper],env=os.environ,capture_output=True); assert result.returncode==47 and result.stdout==result.stderr==b''
+    for kwargs in ({'failed':True},{'pending_marker':True}):
+        result=run('COMPLETE',True,**kwargs); assert result.returncode in (47,52) and result.stdout==result.stderr==b''
     for env,code in (({'SSHD':'1'},51),):
-        result=run('SSHD',True,env); assert result.returncode==code and result.stdout==result.stderr==b''
+        result=run('COMPLETE',True,env); assert result.returncode==code and result.stdout==result.stderr==b''
 `);
+});
+
+test("campaign setup guards every marker and publishes failure over completion", async () => {
+  const source = await readFile(driver, "utf8");
+  for (const marker of ["stage", "complete", "pending", "failure"])
+    assert.ok(source.includes(`if test -e "\\$${marker}" || test -L "\\$${marker}"; then exit 1; fi`));
+  assert.ok(source.indexOf("trap failed_setup ERR") < source.indexOf("mark MOUNT"));
+  assert.ok(source.includes('rm -f -- "\\$complete" "\\$pending" "\\$failure"'));
+  assert.ok(source.includes('printf \'%s\' "\\$current_stage" > "\\$failure"'));
+  assert.ok(source.includes('chown root:root "\\$failure"\n        chmod 0600 "\\$failure"'));
+  assert.ok(source.includes('sync -f "\\$failure" || :\n        sync -f /var/lib/cogs || :'));
+  assert.ok(source.indexOf("sync -f /var/lib/cogs") < source.indexOf("mark COMPLETE"));
+  const wrapper = await readFile(boundedHelper, "utf8");
+  assert.match(wrapper, /if test -e "\$failure" \|\| test -L "\$failure"; then exit 52; fi/u);
+  assert.match(wrapper, /test "\$\(cat "\$stage"\)" = COMPLETE \|\| exit 47/u);
 });
 
 test("network journal uses exclusive no-follow 0600 atomic producer writes", async () => {

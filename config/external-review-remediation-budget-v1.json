@@ -41,6 +41,7 @@
             "docs/adr/0340-row4-second-minimal-correction-batch.md",
             "docs/adr/0341-row4-third-minimal-correction-batch.md",
             "docs/adr/0342-row4-fourth-minimal-correction-batch.md",
+            "docs/adr/0343-row4-fifth-minimal-correction-batch.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -532,6 +533,7 @@
         "docs/adr/0340-row4-second-minimal-correction-batch.md",
         "docs/adr/0341-row4-third-minimal-correction-batch.md",
         "docs/adr/0342-row4-fourth-minimal-correction-batch.md",
+        "docs/adr/0343-row4-fifth-minimal-correction-batch.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",

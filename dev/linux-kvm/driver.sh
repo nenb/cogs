@@ -693,12 +693,40 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+      export LC_ALL=C
       umask 077
       install -d -o root -g root -m 0700 /var/lib/cogs
       stage=/var/lib/cogs/campaign-setup.stage
       complete=/var/lib/cogs/campaign-setup.complete
-      test ! -e "\$stage" && test ! -e "\$complete" && test ! -e "\$complete.pending"
-      mark() { printf '%s' "\$1" > "\$stage"; chown root:root "\$stage"; chmod 0600 "\$stage"; sync -f "\$stage"; }
+      pending=/var/lib/cogs/campaign-setup.complete.pending
+      failure=/var/lib/cogs/campaign-setup.failure
+      current_stage=INIT
+      if test -e "\$stage" || test -L "\$stage"; then exit 1; fi
+      if test -e "\$complete" || test -L "\$complete"; then exit 1; fi
+      if test -e "\$pending" || test -L "\$pending"; then exit 1; fi
+      if test -e "\$failure" || test -L "\$failure"; then exit 1; fi
+      failed_setup() {
+        status=\$?
+        trap - ERR
+        set +e
+        rm -f -- "\$complete" "\$pending" "\$failure"
+        case "\$current_stage" in INIT|MOUNT|GIT|SKILLS|SSHD|COMPLETE) : ;; *) current_stage=INIT ;; esac
+        printf '%s' "\$current_stage" > "\$failure"
+        chown root:root "\$failure"
+        chmod 0600 "\$failure"
+        sync -f "\$failure" || :
+        sync -f /var/lib/cogs || :
+        exit "\$status"
+      }
+      trap failed_setup ERR
+      mark() {
+        printf '%s' "\$1" > "\$stage"
+        chown root:root "\$stage"
+        chmod 0600 "\$stage"
+        sync -f "\$stage"
+        current_stage="\$1"
+      }
       mark MOUNT
       mountpoint -q /workspace
       findmnt -rn -o OPTIONS /workspace | grep -Eq "(^|,)nosuid(,|$)"
@@ -728,12 +756,13 @@ write_files:
       mark SSHD
       systemctl restart ssh
       systemctl is-active --quiet ssh
-      printf COMPLETE > "\$complete.pending"
-      chown root:root "\$complete.pending"
-      chmod 0400 "\$complete.pending"
-      sync -f "\$complete.pending"
-      mv "\$complete.pending" "\$complete"
+      printf COMPLETE > "\$pending"
+      chown root:root "\$pending"
+      chmod 0400 "\$pending"
+      sync -f "\$pending"
+      mv "\$pending" "\$complete"
       sync -f /var/lib/cogs
+      mark COMPLETE
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
   - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']

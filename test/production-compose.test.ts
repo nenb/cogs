@@ -86,6 +86,19 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
 });
 
+test("product worker owns partial startup, samples audit once, and cannot race shutdown evidence", async () => {
+  const runner = await readFile("dev/product-test/runner.ts", "utf8");
+  assert.ok(runner.indexOf("try {\n    // Own all partial startup") < runner.indexOf("heartbeat = setInterval"));
+  assert.doesNotMatch(runner, /auditRecords\?\.\(128\)|auditTimer|setInterval\([^\n]*audit/u);
+  assert.match(runner, /auditOwner\?\.ready === true && auditOwner\.auditRecords !== undefined/u);
+  assert.match(runner, /audit = auditOwner\.auditRecords\(64\)\.length;\n    check\(audit > 0\);/u);
+  assert.ok(runner.indexOf("auditOwner") > runner.lastIndexOf('await client.request("run", { content: "synthetic" })'));
+  assert.ok(runner.indexOf("auditOwner") < runner.indexOf('await client.request("shutdown")'));
+  assert.match(runner, /while \(!shutdown \|\| !workerSettled\) \{\n      check\(!streamFailed && !workerFailed/u);
+  assert.ok(runner.indexOf("if (worker) await worker.close()") < runner.indexOf("streamAbort?.abort()"));
+  assert.match(runner, /await closeServer\(server\)/u);
+});
+
 test("worker gate retries only the late lease socket and imports only after its exact lease", async () => {
   assert.ok(
     WORKER_GATE.indexOf("const timer=setTimeout") < WORKER_GATE.indexOf("net.createConnection(gatePath)"),

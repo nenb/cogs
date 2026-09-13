@@ -954,7 +954,21 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
 /** Candidate entry is callable only after the inert built-in gate authenticates this PID. */
 export async function workerMain(): Promise<void> {
   gate("ping");
-  const heartbeat = setInterval(() => {
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let upstreamServer: ReturnType<typeof httpsServer> | undefined;
+  let collector: ReturnType<typeof httpsServer> | undefined;
+  let worker: Awaited<ReturnType<typeof startProductionWorker>> | undefined;
+  let streamAbort: AbortController | undefined;
+  let stream: Promise<void> | undefined;
+  let completed = false;
+  const closeServer = async (server: ReturnType<typeof httpsServer> | undefined): Promise<void> => {
+    if (!server?.listening) return;
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  };
+  try {
+    // Own all partial startup acquisitions before arming timers or listeners.
+    heartbeat = setInterval(() => {
     try {
       gate("ping");
     } catch {
@@ -971,7 +985,7 @@ export async function workerMain(): Promise<void> {
     audit = 0;
   const exports: Array<{ path: string; body: unknown }> = [];
   const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
-  const upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
+  upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
     upstream++;
     upstreamRequests.push({
       method: req.method ?? "",
@@ -989,7 +1003,7 @@ export async function workerMain(): Promise<void> {
     }
     res.writeHead(200, { "content-type": "text/plain" }).end("cogs-local-upstream");
   });
-  const collector = httpsServer(
+  collector = httpsServer(
     { cert: await material("telemetry.crt"), key: await material("telemetry.key") },
     (req, res) => {
       if (req.method !== "POST" || !["/v1/traces", "/v1/metrics", "/v1/logs"].includes(req.url ?? "")) {
@@ -1033,15 +1047,16 @@ export async function workerMain(): Promise<void> {
   let omitted = false,
     settled = 0,
     shutdown = false,
-    streamFailed = false;
+    streamFailed = false,
+    workerSettled = false,
+    workerFailed = false;
   const counters = new RestrictionCounters();
   const toolResults = new ProductToolResults();
   const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
   let exported: unknown;
-  let auditTimer: ReturnType<typeof setInterval> | undefined;
   let egressHandle: CogsEgressRuntimeManager | undefined;
   let telemetry: CogsWorkerTelemetrySink | undefined;
-  const worker = await startProductionWorker({
+  worker = await startProductionWorker({
     seams: {
       createIdentity: () => synthetic.identity,
       createTelemetry: (config) =>
@@ -1057,11 +1072,7 @@ export async function workerMain(): Promise<void> {
           pkiSource: synthetic.pki,
           revocation: synthetic.revocation,
         });
-        const handle = egress;
-        egressHandle = handle;
-        auditTimer = setInterval(() => {
-          audit = Math.max(audit, handle.auditRecords?.(128).length ?? 0);
-        }, 50);
+        egressHandle = egress;
         return egress;
       },
       createPi: async (options) => {
@@ -1102,9 +1113,17 @@ export async function workerMain(): Promise<void> {
       },
     },
   });
+  void worker.closed.then(
+    () => {
+      workerSettled = true;
+    },
+    () => {
+      workerFailed = true;
+    },
+  );
   const bearer = await readFile(runtime.paths.api_bearer, "utf8");
   const headers = Promise.withResolvers<void>();
-  const streamAbort = new AbortController();
+  streamAbort = new AbortController();
   const client = createApiClient({
     port: 18081,
     token: bearer,
@@ -1125,7 +1144,7 @@ export async function workerMain(): Promise<void> {
       }),
     }),
   });
-  const stream = (async () => {
+  stream = (async () => {
     try {
       for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
         observedEvents.push({
@@ -1157,8 +1176,7 @@ export async function workerMain(): Promise<void> {
     }
   })();
   await headers.promise;
-  try {
-    for (let turn = 0; turn < 3; turn++) {
+  for (let turn = 0; turn < 3; turn++) {
       counters.admit("turn");
       gate("turn");
       await client.request("run", { content: "synthetic" });
@@ -1168,26 +1186,28 @@ export async function workerMain(): Promise<void> {
         await new Promise((r) => setTimeout(r, 20));
       }
     }
+    // Exactly one bounded snapshot is admitted while egress is still ready;
+    // no timer can sample a retired owner.
+    const auditOwner = egressHandle;
+    check(auditOwner?.ready === true && auditOwner.auditRecords !== undefined);
+    audit = auditOwner.auditRecords(64).length;
+    check(audit > 0);
     const successfulTools = toolResults.evidence();
     gate("history"); // host reads durable JSONL and reconciles its own pre-write admissions
     await client.request("entries", { limit: 25 });
     check(pi && upstream === 1 && omitted && !streamFailed);
     await verifyFragments(pi, bearer);
     await client.request("shutdown");
-    await worker.closed;
-    check(shutdown && !streamFailed);
+    const shutdownDeadline = performance.now() + 10000;
+    while (!shutdown || !workerSettled) {
+      check(!streamFailed && !workerFailed && performance.now() < shutdownDeadline);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    check(!streamFailed && !workerFailed);
     counters.shutdown = true;
     streamAbort.abort();
     await stream;
-    await Promise.all(
-      [upstreamServer, collector].map(
-        (server) =>
-          new Promise<void>((resolve, reject) => {
-            server.closeAllConnections();
-            server.close((e) => (e ? reject(e) : resolve()));
-          }),
-      ),
-    );
+    await Promise.all([closeServer(upstreamServer), closeServer(collector)]);
     check(traces > 0 && metrics > 0 && audit > 0);
     const state = (globalThis as typeof globalThis & { __cogsGate: GateState }).__cogsGate;
     const receipt = JSON.parse(await readFile(runtime.paths.skill_snapshot_receipt, "utf8"));
@@ -1223,17 +1243,32 @@ export async function workerMain(): Promise<void> {
     await evidence.close();
     gate("shutdown");
     gate("release");
+    completed = true;
   } finally {
-    clearInterval(heartbeat);
-    clearInterval(auditTimer);
-    await worker.close().catch(() => {
+    if (heartbeat) clearInterval(heartbeat);
+    let cleanupFailed = false;
+    try {
+      if (worker) await worker.close();
+    } catch {
+      cleanupFailed = true;
+    }
+    streamAbort?.abort();
+    try {
+      if (stream) await stream;
+    } catch {
+      cleanupFailed = true;
+    }
+    for (const server of [upstreamServer, collector]) {
+      try {
+        await closeServer(server);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (cleanupFailed) {
       process.exitCode = 1;
-    });
-    streamAbort.abort();
-    upstreamServer.closeAllConnections();
-    collector.closeAllConnections();
-    upstreamServer.close();
-    collector.close();
+      if (completed) throw new Error("product cleanup failed");
+    }
   }
 }
 
