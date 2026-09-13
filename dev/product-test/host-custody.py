@@ -249,7 +249,7 @@ def tool_result(entry):
     require(all(result[k] is False for k in flags) and all(type(result[k]) is int and result[k] == 0 for k in zeros))
     require(type(result["elapsedMs"]) is int and 0 <= result["elapsedMs"] <= 10000)
     require(result["stdout"] == "proxy-controls-passed\n" and result["stderr"] == "")
-    require(result["stdoutBytes"] == 22 and result["stderrBytes"] == 0)
+    require(type(result["stdoutBytes"]) is int and result["stdoutBytes"] == 22 and type(result["stderrBytes"]) is int and result["stderrBytes"] == 0)
     return digest(canonical(message))
 
 

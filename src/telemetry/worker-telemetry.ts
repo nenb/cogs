@@ -320,8 +320,11 @@ class OtlpWorkerSink {
       snapshot: () => sink.snapshot(),
       close: (signal) => {
         sink.closing = true;
-        // Publish before abort/fetch callbacks can reenter. Each caller observes afresh.
-        sink.closePromise ??= Promise.resolve().then(() => sink.close(signal));
+        if (sink.closePromise === undefined) {
+          const owner = Promise.withResolvers<void>();
+          sink.closePromise = owner.promise;
+          void sink.close(signal).then(owner.resolve, owner.reject);
+        }
         return sink.closePromise.then(() => undefined);
       },
     });

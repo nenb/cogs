@@ -5,6 +5,7 @@ import { chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/pro
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import ssh2 from "ssh2";
 import { validateLaunchConfig } from "../src/launch/config.ts";
@@ -1168,6 +1169,43 @@ test("ssh2 exec retains coalesced output and terminal facts until both consumers
   assert.equal(Buffer.concat(stdout).toString(), "out");
   assert.equal(Buffer.concat(stderr).toString(), "err");
   assert.deepEqual(await exec.port.terminal(), { code: 0, signal: null });
+});
+
+test("ssh2 terminal-only and close-only callers finalize absent sinks but await native EOF", async () => {
+  class Channel extends Readable {
+    public stderr = new Readable({ read() {} });
+    public signal(): void {}
+    public override _read(): void {}
+    public close(): void {}
+  }
+  class Client extends EventEmitter {
+    public channel = new Channel();
+    public exec(_c: string, _o: unknown, cb: (e: Error | undefined, c?: unknown) => void): void {
+      cb(undefined, this.channel);
+    }
+  }
+  const client = new Client();
+  const port = (await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal)).port;
+  const terminal = port.terminal();
+  client.channel.push(Buffer.from("discarded"));
+  client.channel.stderr.push(Buffer.from("discarded"));
+  client.channel.emit("exit", 0, undefined, false, "");
+  client.channel.emit("close");
+  await Promise.race([
+    terminal.then(() => assert.fail("native EOF required")),
+    new Promise((resolve) => setTimeout(resolve, 5)),
+  ]);
+  client.channel.push(null);
+  client.channel.stderr.push(null);
+  assert.deepEqual(await terminal, { code: 0, signal: null });
+  const closing = new Client();
+  const closeExec = await new Ssh2Connection(closing as never).openExec("fixed", new AbortController().signal);
+  const retired = closeExec.close();
+  closing.channel.emit("exit", 0, undefined, false, "");
+  closing.channel.emit("close");
+  closing.channel.push(null);
+  closing.channel.stderr.push(null);
+  await retired;
 });
 
 test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and keeps late error sinks", async () => {

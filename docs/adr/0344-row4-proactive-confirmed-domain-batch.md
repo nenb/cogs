@@ -14,4 +14,4 @@ Authorize only source changes, focused tests, source/focused reviews, focused va
 
 ## Accounting
 
-The `governance` allocation includes this ADR and the ADR index. The `product` task allowlist is extended only to this batch's modified source/tests and the fixed `dev/linux-kvm/qualification-owner.py`/`qualify.sh` ownership path. It remains within the existing product task's **1,146** remaining lines; there is no cap raise, reserve borrowing, transfer, deletion credit, or change to any allocation/source limit/final-HGQ reserve.
+The `governance` allocation includes this ADR and the ADR index. The `product` task allowlist is extended only to this batch's modified source/tests and the fixed `dev/linux-kvm/qualification-owner.py`/`qualify.sh` ownership path. It remains within the existing product task's **638** remaining lines; there is no cap raise, reserve borrowing, transfer, deletion credit, or change to any allocation/source limit/final-HGQ reserve.

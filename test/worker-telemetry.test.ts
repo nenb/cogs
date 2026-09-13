@@ -813,6 +813,29 @@ test("worker telemetry close drains an acknowledged active mixed batch within it
   assert.deepEqual(sink.snapshot(), { ready: false, queued: 0, exported: 2, dropped: 0, failed: 0, lag_ms: 0 });
 });
 
+test("worker telemetry publishes graceful ownership before a two-microtask active metric continuation", async () => {
+  const calls: string[] = [];
+  const sink = createCogsWorkerTelemetrySink({
+    mode: "otlp",
+    tracesEndpoint: "http://127.0.0.1:9/v1/traces",
+    metricsEndpoint: "http://127.0.0.1:9/v1/metrics",
+    allowLoopbackHttpDevelopment: true,
+    fetch: Object.freeze(async (url: string) => {
+      calls.push(url);
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch,
+    clock: Object.freeze({ nowMs: Object.freeze(() => 1) }),
+    random: Object.freeze({ bytes: Object.freeze((n: number) => new Uint8Array(n).fill(19)) }),
+    timeoutMs: 100,
+  });
+  assert.equal(sink.metric(goodMetric()), true);
+  await Promise.resolve();
+  await Promise.resolve();
+  await sink.close();
+  assert.deepEqual(calls, ["http://127.0.0.1:9/v1/metrics"]);
+  assert.deepEqual(sink.snapshot(), { ready: false, queued: 0, exported: 1, dropped: 0, failed: 0, lag_ms: 0 });
+});
+
 test("worker telemetry active mixed batch does not start metric after close timeout", async () => {
   const calls: string[] = [];
   const fetchFn = Object.freeze((url: string) => {

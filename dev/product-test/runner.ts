@@ -899,6 +899,19 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
     complete = 0;
   let oversizedFragmented = false;
   const keys = (value: object) => Object.keys(value).sort().join(",");
+  const validCursor = (value: unknown) =>
+    typeof value === "string" && value.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+  const verifyTail = async (tail: string, expected: Buffer): Promise<void> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`http://127.0.0.1:18081/v1/entry-fragments?cursor=${encodeURIComponent(tail)}`, {
+        headers: { authorization: `Bearer ${bearer}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(2000),
+      });
+      const body = Buffer.from(await response.arrayBuffer());
+      check(response.status === 200 && body.length <= 131072 && body.equals(expected));
+    }
+  };
   for (let pages = 0; pages < 128; pages++) {
     const path = `/v1/entry-fragments${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
     const response = await fetch(`http://127.0.0.1:18081${path}`, {
@@ -922,7 +935,8 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
       await reader.cancel();
       reader.releaseLock();
     }
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const body = Buffer.concat(chunks);
+    const value: unknown = JSON.parse(body.toString("utf8"));
     check(value !== null && typeof value === "object" && !Array.isArray(value));
     const envelope = value as Record<string, unknown>;
     check(
@@ -934,20 +948,24 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
     );
     if (envelope.snapshotFinal) {
       check(keys(envelope) === "fragments,projection,snapshotFinal,tail,version");
-      check(typeof envelope.tail === "string" && envelope.tail.length > 0 && envelope.tail.length <= 2048);
+      check(validCursor(envelope.tail));
     } else {
       check(keys(envelope) === "fragments,next,projection,snapshotFinal,version");
-      check(typeof envelope.next === "string" && envelope.next.length > 0 && envelope.next.length <= 2048);
+      check(validCursor(envelope.next));
     }
     // A nonempty history starts with an empty pin handshake; no entry may be
     // accepted before it. Empty histories have the corresponding terminal tail.
     if (pages === 0) {
       check(envelope.fragments.length === 0);
       check(envelope.snapshotFinal === (frontier.entries === 0));
-      if (frontier.entries === 0) return;
+      if (frontier.entries === 0) {
+        await verifyTail(envelope.tail as string, body);
+        throw new Error("expected nonempty product scenario");
+      }
       cursor = envelope.next as string;
       continue;
     }
+    check(envelope.fragments.length === 1);
     for (const rawFragment of envelope.fragments) {
       check(rawFragment !== null && typeof rawFragment === "object" && !Array.isArray(rawFragment));
       const fragment = rawFragment as Record<string, unknown>;
@@ -966,7 +984,7 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
       held ??= { ...(await pi.projectedEntry({ after })), fragments: 0 };
       const data = Buffer.from(fragment.data, "base64");
       total += data.length;
-      check(total <= 2 * 1024 * 1024 && data.length > 0);
+      check(total <= 2 * 1024 * 1024 && data.length > 0 && data.length <= 49_152);
       check(
         fragment.encoding === "base64" &&
           data.toString("base64") === fragment.data &&
@@ -977,6 +995,7 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
       check(data.equals(held.bytes.subarray(offset, offset + data.length)));
       held.fragments++;
       offset += data.length;
+      check(offset <= held.bytes.length && fragment.final === (offset === held.bytes.length));
       if (fragment.final) {
         check(offset === held.bytes.length);
         oversizedFragmented ||= held.bytes.length > 49_152 && held.fragments > 1;
@@ -989,6 +1008,7 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
     if (envelope.snapshotFinal) {
       check(!held && complete === frontier.entries && after === frontier.lastEntryId);
       check(oversizedFragmented);
+      await verifyTail(envelope.tail as string, body);
       return;
     }
     const next = envelope.next as string;

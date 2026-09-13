@@ -11,17 +11,26 @@ source "$repo/dev/linux-kvm/git-tools.sh"
 cogs_kvm_execution_gate
 
 report_path=${1:-kvm-qualification-report.json}
+report_dir=$(dirname "$report_path")
+[[ ! -e "$report_path" && ! -L "$report_path" ]] || { echo "FAIL: report destination exists" >&2; exit 1; }
+mkdir -p "$report_dir"
 started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')
 workdir=$(mktemp -d)
 umask 077
+cleaned=false
+report_tmp=
 cleanup() {
-  # The fixed Python owner alone signals/reaps its pidfd-bound child. Retain
-  # uncertain custody rather than deleting the only local recovery evidence.
-  [[ -e "$workdir/owner-uncertain" ]] || rm -rf "$workdir"
+  [[ $cleaned == true ]] && return 0
+  # Pending custody or a missing owner settlement marker is recovery evidence.
+  [[ ! -e "$workdir/qualification-pending" && -f "$workdir/owner-settled" && $(<"$workdir/owner-settled") == settled ]] || return 1
+  rm -rf -- "$workdir" || return 1
+  cleaned=true
 }
+stage_report() { report_tmp=$(mktemp "$report_dir/.kvm-qualification.XXXXXX"); }
+publish_report() { mv -n -- "$1" "$report_path" && [[ ! -e "$1" ]]; }
 write_failure_report() {
-  mkdir -p "$(dirname "$report_path")"
-  python3 - "$report_path" "$started_epoch_ms" <<'PY'
+  stage_report || return 1
+  python3 - "$report_tmp" "$started_epoch_ms" <<'PY' || { rm -f -- "$report_tmp"; return 1; }
 import datetime
 import json
 import os
@@ -82,12 +91,15 @@ with open(report_path, "w", encoding="utf-8") as output:
     json.dump(report, output, indent=2, sort_keys=True)
     output.write("\n")
 PY
+  publish_report "$report_tmp" || { rm -f -- "$report_tmp"; return 1; }
+  report_tmp=
 }
 finish() {
   status=$?
   trap - EXIT
-  cleanup
-  if [[ $status -ne 0 && ! -f "$report_path" ]]; then
+  cleanup || status=1
+  if [[ $status -ne 0 ]]; then
+    [[ -z $report_tmp ]] || rm -f -- "$report_tmp"
     write_failure_report || true
   fi
   exit "$status"
@@ -166,8 +178,8 @@ print(boot, kernel)
 PY
 )
 
-mkdir -p "$(dirname "$report_path")"
-python3 - "$report_path" "$host_boot_id" "$guest_boot_id" "$guest_kernel" "$kernel_sha256" "$started_epoch_ms" <<'PY'
+stage_report
+python3 - "$report_tmp" "$host_boot_id" "$guest_boot_id" "$guest_kernel" "$kernel_sha256" "$started_epoch_ms" <<'PY'
 import datetime
 import json
 import os
@@ -233,5 +245,7 @@ with open(report_path, "w", encoding="utf-8") as output:
     json.dump(report, output, indent=2, sort_keys=True)
     output.write("\n")
 PY
-
-printf 'PASS: KVM acceleration active; guest root booted with distinct boot ID. Report: %s\n' "$report_path"
+# Pass publication is the final operation: cleanup already proved custody settled.
+cleanup
+publish_report "$report_tmp"
+report_tmp=

@@ -1130,6 +1130,7 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   #pendingBytes = 0;
   #stdoutRegistered = false;
   #stderrRegistered = false;
+  #registrationFinalized = false;
   #consumersActive = false;
   #stdoutEnded = false;
   #stderrEnded = false;
@@ -1180,18 +1181,19 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
     }
   }
   public onStdout(listener: (chunk: Buffer) => void): void {
-    if (this.#settled) throw new Error("exec channel closed");
+    if (this.#settled || this.#registrationFinalized) throw new Error("exec channel closed");
     this.#stdout.add(listener);
     this.#stdoutRegistered = true;
     this.#activateConsumers();
   }
   public onStderr(listener: (chunk: Buffer) => void): void {
-    if (this.#settled) throw new Error("exec channel closed");
+    if (this.#settled || this.#registrationFinalized) throw new Error("exec channel closed");
     this.#stderr.add(listener);
     this.#stderrRegistered = true;
     this.#activateConsumers();
   }
   public terminal(): Promise<CogsExecTerminal> {
+    this.#finalizeConsumers();
     return this.#terminal;
   }
   public signal(name: "TERM" | "INT"): Promise<void> {
@@ -1206,6 +1208,7 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
     });
   }
   public close(): Promise<void> {
+    this.#finalizeConsumers();
     if (this.#closed) return this.#retirement;
     try {
       this.channel.close();
@@ -1244,6 +1247,12 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
         break;
       }
     }
+  }
+  #finalizeConsumers(): void {
+    this.#registrationFinalized = true;
+    this.#stdoutRegistered = true;
+    this.#stderrRegistered = true;
+    this.#activateConsumers();
   }
   #activateConsumers(): void {
     if (this.#consumersActive || !this.#stdoutRegistered || !this.#stderrRegistered) return;

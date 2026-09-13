@@ -637,11 +637,14 @@ test("driver UART is null on the shared create/reset launch; stage-zero marker c
   assert.ok(qualify.includes('echo "COGS_GUEST_READY=1"'));
   assert.ok(qualify.includes("qualification-owner.py"));
   const qualificationOwner = await readFile(join(root, "dev/linux-kvm/qualification-owner.py"), "utf8");
+  assert.match(qualificationOwner, /require_local_execution[\s\S]*qualification-pending/u);
+  assert.match(qualificationOwner, /load_qmp\(\)\(qmp, self\.work_end, self\.require_live\)/u);
+  assert.match(qualificationOwner, /owner-settled/u);
+  assert.match(qualificationOwner, /RLIMIT_FSIZE[\s\S]*SIGTERM[\s\S]*SIGKILL[\s\S]*child\.wait[\s\S]*UART marker cap/u);
   assert.match(
-    qualificationOwner,
-    /pidfd signals required[\s\S]*load_qmp\(\)\(qmp, self\.end\)[\s\S]*owner-uncertain/u,
+    qualify,
+    /report destination exists[\s\S]*qualification-pending[\s\S]*owner-settled[\s\S]*stage_report[\s\S]*publish_report/u,
   );
-  assert.match(qualificationOwner, /SIGTERM[\s\S]*SIGKILL[\s\S]*UART marker cap/u);
   for (const mutant of [
     '-serial file:"$state/serial.log"',
     "-serial file:/dev/null",
@@ -657,6 +660,47 @@ test("driver UART is null on the shared create/reset launch; stage-zero marker c
     "-serial null -debugcon file:debug.log",
   ])
     assert.throws(() => serialContract(text.replace("-serial null", mutant)), mutant);
+});
+
+test("qualification owner retires once after both group signals and retains failed custody", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import importlib.util,os,pathlib,signal,tempfile
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('owner',${JSON.stringify(join(root, "dev/linux-kvm/qualification-owner.py"))})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as tmp:
+ o=m.Owner(tmp,'k','i','host'); o._custody({'version':1,'state':'pending'},True); assert o.pending.exists()
+ events=[]
+ class Child:
+  pid=42
+  def wait(self,timeout): events.append('wait'); return 0
+ o.child=Child(); r,w=os.pipe(); o.pidfd=r; o.exited=lambda:True; o.signal_group=lambda child,sig:(events.append(sig) or True)
+ with patch.object(signal,'pidfd_send_signal',lambda *args:events.append('pidfd'),create=True):
+  assert o.retire()==(True,0) and o.retire()==(True,0)
+ assert events[:3]==[signal.SIGTERM,signal.SIGKILL,'pidfd'] and events.count('wait')==1 and o.child is None
+ o.settle_custody(); assert not o.pending.exists() and pathlib.Path(tmp,'owner-settled').is_file()
+ o=m.Owner(tmp,'k','i','host'); o.cancel();
+ try: o.require_live()
+ except RuntimeError: pass
+ else: raise AssertionError('cancel accepted')
+ o=m.Owner(tmp,'k','i','host'); o.child=Child(); o.pidfd=None; o.signal_group=lambda child,sig:(events.append(sig) or True)
+ assert o.retire()[0] is False and events[-1]=='wait'
+ pathlib.Path(tmp,'guest.log').write_bytes(b'x'*(m.LIMIT+1))
+ try: o.capture()
+ except RuntimeError: pass
+ else: raise AssertionError('UART overflow accepted')
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
 
 // Extract only the reviewed embedded owner program. Never source the driver:
@@ -1735,7 +1779,7 @@ with patch.object(h,'read_control',return_value=key):
 # with no output is retryable, and every other outcome retains the generation.
 with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
-    assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-q','-T','2','-t','ed25519','192.0.2.2']
+    assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
 for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed('stdout-utf8'),'host-key-mismatch')):
     with patch.object(h,'bounded',side_effect=error):

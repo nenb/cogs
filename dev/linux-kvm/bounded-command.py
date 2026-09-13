@@ -401,9 +401,7 @@ def host_key(state, deadline=None):
     # Keep two seconds inside the five-second outer bound: a keyscan timeout
     # cannot consume the retry scheduler's complete deadline.
     try:
-        # OpenSSH's pinned keyscan supports -q; suppress its local banner/progress
-        # without relaxing raw stderr validation in bounded().
-        code, raw = bounded(["/usr/bin/ssh-keyscan", "-q", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+        code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
     except RetirementUncertain:
         # Keyscan retirement is custody uncertainty, not a host-key mismatch.
         raise
@@ -426,7 +424,7 @@ def host_key(state, deadline=None):
     return True
 
 
-def query_kvm(path, deadline=None):
+def query_kvm(path, deadline=None, guard=check_cancelled):
     end = min(time.monotonic() + 5, deadline if deadline is not None else float("inf"))
     pending = bytearray()
     total = count = 0
@@ -437,7 +435,7 @@ def query_kvm(path, deadline=None):
             raise Rejected("QMP connect failed")
         selector.register(client, selectors.EVENT_WRITE)
         def wait(event):
-            check_cancelled()
+            guard()
             selector.modify(client, event)
             remaining = end - time.monotonic()
             if remaining <= 0 or not selector.select(remaining):
@@ -458,7 +456,7 @@ def query_kvm(path, deadline=None):
         def receive(identifier=None):
             nonlocal total, count
             while True:
-                check_cancelled()
+                guard()
                 if time.monotonic() >= end:
                     raise Rejected("QMP deadline")
                 while b"\n" not in pending:
@@ -479,7 +477,7 @@ def query_kvm(path, deadline=None):
                 if len(line) + 1 > 8192 or count > 32 or b"\0" in line:
                     raise Rejected("QMP record cap")
                 message = exact_json(line)
-                check_cancelled()
+                guard()
                 if time.monotonic() >= end:
                     raise Rejected("QMP deadline")
                 if type(message) is not dict:
