@@ -242,6 +242,7 @@ class Owner:
         self.settle_custody()
         self.require_commit()
         print(json.dumps({"guest_boot_id": values["COGS_GUEST_BOOT_ID="], "guest_kernel": values["COGS_GUEST_KERNEL="]}, separators=(",", ":")), flush=True)
+        self.require_commit()
 
 
 def main():
