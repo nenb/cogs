@@ -667,10 +667,13 @@ class Custody:
         with closing_fd(os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             s = os.stat("build-receipt.json", dir_fd=fd, follow_symlinks=False); require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o400)
             receipt = json.loads(capture(fd, "build-receipt.json"))
-        expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe", "run_id", "run_attempt", "tree", "source_inventory", "dockerignore", "package_lock", "npm_closure", "image_os", "image_version")}
+        expected = {k: q[k] for k in ("candidate", "baseline", "worker_image", "sandbox_image", "stock_worker_image", "recipe", "run_id", "run_attempt", "tree", "source_inventory", "dockerignore", "package_lock", "npm_closure", "image_os", "image_version", "skills")}
+        expected["profile_case"] = "nonempty" if q["skills"] == "nonempty" else "empty"
+        expected["authority"] = "probe-only" if self.probe else "candidate-pass"
         require(expected["tree"] == git("rev-parse", "HEAD^{tree}").decode().strip())
         require(expected["source_inventory"] == digest(canonical(source)))
         require(receipt == expected)  # independently retained protected-build output, not a CLI identity assertion
+        self.build = receipt
         stock = self.images[q["stock_worker_image"]]["RootFS"]["Layers"]; layers = self.images[q["worker_image"]]["RootFS"]["Layers"]
         require(layers[:len(stock)] == stock and len(layers) == len(stock) + 5)
         require(environment(self.images[q["worker_image"]]["Config"]) == environment(self.images[q["stock_worker_image"]]["Config"]))
@@ -806,7 +809,13 @@ class Custody:
 
     def capability_probe(self):
         held = self.ids["sandbox"]; v = self.inspect(held["id"])
-        result = dict(purpose="capability-probe", generation=self.generation, container_id=held["id"],
+        build = self.build
+        result = dict(purpose="capability-probe", generation=self.generation,
+                      retired_generation=self.generation, candidate=build["candidate"],
+                      tree=build["tree"], source_inventory=build["source_inventory"],
+                      run_id=build["run_id"], run_attempt=build["run_attempt"],
+                      skills=build["skills"], profile_case=build["profile_case"],
+                      build_receipt_sha256=digest(canonical(build)), container_id=held["id"],
                       removed=next(c for c in CAPABILITIES if c not in held["spec"]["caps"]),
                       start_code=held["start_code"], running=v["State"]["Running"], ssh=None, sftp=None)
         if result["running"]:

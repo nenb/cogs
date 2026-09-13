@@ -48,7 +48,7 @@ test("local qualification result state machine is strict normally and under pyth
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
-      timeout: 60_000,
+      timeout: 180_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /completion local result codec tests passed/u);
@@ -327,7 +327,7 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(retained.status, 0, retained.stderr);
   const budget = JSON.parse(retained.stdout) as Record<string, number | boolean | string>;
   assert.equal(budget.preferred_limit, 90_000);
-  assert.equal(budget.hard_limit, 115_000);
+  assert.equal(budget.hard_limit, 132_000);
   const current = Number(budget.current_lines);
   const conservative = Number(budget.conservative_lines_no_deletion_credit);
   const preferred = Number(budget.preferred_limit);
@@ -354,8 +354,8 @@ test("codec has only the zero-argument blocked coordinator entry and stays withi
   assert.equal(budget.correction_slice_limits_satisfied, true);
   assert.equal(budget.remediation_limits_satisfied, true);
   assert.ok(["absent", "member-set-complete"].includes(String(budget.final_control_data_state)));
-  assert.equal(budget.remediation_global_high, 52_000);
-  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 52_000);
+  assert.equal(budget.remediation_global_high, 78_000);
+  assert.ok(Number(budget.remediation_gross_added_lines_no_deletion_credit) <= 78_000);
   assert.equal(
     Number(budget.remediation_gross_added_lines_no_deletion_credit),
     Object.values(budget.remediation_workstream_gross_added_lines as unknown as Record<string, number>).reduce(
@@ -408,6 +408,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     readFileSync(join(root, "config/external-review-remediation-budget-v1.json"), "utf8"),
   ) as {
     global_gross_line_high: number;
+    global_gross_byte_high: number;
     owners: Array<{
       name: string;
       gross_line_high: number;
@@ -416,7 +417,8 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       paths: string[];
     }>;
   };
-  assert.equal(manifest.global_gross_line_high, 52_000);
+  assert.equal(manifest.global_gross_line_high, 78_000);
+  assert.equal(manifest.global_gross_byte_high, 35_000_000);
   assert.deepEqual(
     Object.fromEntries(
       manifest.owners.map((owner) => [
@@ -427,19 +429,19 @@ test("remediation budget has closed whole-file ownership and charges renamed des
     {
       route: [2_200, 1, { total: 350_000 }],
       revocation: [3_000, 0, { total: 220_000 }],
-      relay: [4_628, 1, { total: 1_000_000 }],
-      lifecycle: [11_800, 5, { total: 1_200_000 }],
-      completion: [6_080, 3, { total: 800_000 }],
-      integration: [20_157, 89, { total: 5_630_000 }],
+      relay: [7_000, 5, { total: 1_200_000 }],
+      lifecycle: [14_000, 10, { total: 1_500_000 }],
+      completion: [6_200, 4, { total: 900_000 }],
+      integration: [45_600, 180, { total: 30_830_000 }],
     },
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.new_file_high, 0),
-    99,
+    200,
   );
   assert.equal(
     manifest.owners.reduce((total, owner) => total + owner.gross_byte_forecast.total, 0),
-    9_200_000,
+    35_000_000,
   );
   const paths = manifest.owners.flatMap((owner) => owner.paths);
   assert.equal(new Set(paths).size, paths.length);

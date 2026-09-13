@@ -52,6 +52,10 @@ import {
 export const BASELINE = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38";
 export const PROFILE = "functional-only-protected-linux-docker/v1";
 export const FINDINGS = Object.freeze([4, 5, 6, 8, 9, 10, 14]);
+export const PROBE_GENERATIONS = 8;
+export const PROBE_GENERATION_SECONDS = 600;
+export const PROBE_CLEANUP_SECONDS = 60;
+export const PROBE_SUITE_SECONDS = PROBE_GENERATIONS * (PROBE_GENERATION_SECONDS + PROBE_CLEANUP_SECONDS);
 const admittedRestrictions = new WeakSet<object>();
 // In-memory build input only. No build, pull, registry, workflow, or image-definition mutation here.
 export const WORKER_DOCKERFILE = `ARG PINNED_WORKER
@@ -125,6 +129,15 @@ export function admitRestrictions(bytes: Buffer, candidate: string, now: number)
   admittedRestrictions.add(admitted);
   return admitted;
 }
+export function requireProbeSuiteWindow(restrictions: Restrictions, now: number, generation: number): void {
+  check(Number.isSafeInteger(now) && Number.isInteger(generation) && generation >= 0 && generation < PROBE_GENERATIONS);
+  // Every generation remains independently limited to 600 seconds. The fresh
+  // suite grant also reserves sequential cleanup for all eight generations.
+  check(restrictions.seconds === PROBE_GENERATION_SECONDS);
+  check(restrictions.expires > now + restrictions.seconds * 1000);
+  if (generation === 0) check(restrictions.expires > now + PROBE_SUITE_SECONDS * 1000);
+}
+
 export function runtimeDocument(): RuntimeConfig {
   return validateRuntimeConfig({
     version: "cogs.runtime/v1alpha1",
@@ -412,6 +425,7 @@ export type ProductPassReceipt = Readonly<{
   source_inventory: string;
   run_id: string;
   run_attempt: string;
+  skills: "empty" | "nonempty";
 }>;
 export async function productMain(
   restrictions: Restrictions,
@@ -570,6 +584,7 @@ export async function productMain(
     source_inventory: restrictions.source_inventory,
     run_id: restrictions.run_id,
     run_attempt: restrictions.run_attempt,
+    skills: restrictions.skills,
   });
 }
 
@@ -1139,7 +1154,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       async (b) => admitRestrictions(b, candidate, Date.now()),
     );
     if (process.argv[2] === "--capability-probes") {
-      for (const removed of SANDBOX_CAPABILITIES) await productMain(restrictions, removed);
+      check(SANDBOX_CAPABILITIES.length === PROBE_GENERATIONS);
+      for (const [generation, removed] of SANDBOX_CAPABILITIES.entries()) {
+        requireProbeSuiteWindow(restrictions, Date.now(), generation);
+        await productMain(restrictions, removed);
+      }
     } else {
       const receipt = await productMain(restrictions);
       check(receipt);

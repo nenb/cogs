@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tempfile
@@ -74,10 +75,27 @@ def grant(current, ordinal):
         b"cogs.stage2-cycle-launch-grant/v1", fields))
 
 
+class Clock:
+    def __init__(self): self.value = 0.0
+    def __call__(self): return self.value
+    def sleep(self, seconds): self.value += seconds
+
+
 class Fake:
-    def __init__(self, account): self.account = account; self.calls = []
-    def __call__(self, argv, timeout):
-        self.calls.append((argv, timeout))
+    def __init__(self, account):
+        self.account, self.calls, self.ssm_mode, self.ssm_reads = account, [], "missing-command", 0
+        self.ssm_rows = None
+    def __call__(self, argv, timeout, environment):
+        self.calls.append((argv, timeout, environment))
+        if argv[0] == str(provider.TOFU) and "init" in argv:
+            data = Path(environment["TF_DATA_DIR"])
+            assert data.is_dir() and Path(environment["TF_CLI_CONFIG_FILE"]).is_file()
+            mirror_root = data.parents[2] / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+            assert provider._package_binary() == mirror_root / "terraform-provider-aws_v6.54.0_x5"
+            assert (mirror_root / "LICENSE").read_bytes() == b"license\n"
+            assert (mirror_root / "terraform-provider-aws_v6.54.0_x5").read_bytes() == b"provider"
+            (data / "fake-init-cache").write_text("initialized")
+            return provider.Completed(b"initialized\n")
         if argv[0] == str(provider.TOFU) and "show" in argv:
             return provider.Completed(Path(argv[-1]).with_name("campaign.plan.json").read_bytes())
         if "get-caller-identity" in argv:
@@ -86,6 +104,26 @@ class Fake:
                 "Arn": f"arn:aws:iam::000000000000:role/{role}",
                 "UserId": "session:test"}))
         if argv[0] == str(provider.AWS):
+            if "describe-instance-information" in argv and any(
+                    item.startswith("Key=InstanceIds,Values=") for item in argv):
+                instance = next(item.removeprefix("Key=InstanceIds,Values=") for item in argv
+                                if item.startswith("Key=InstanceIds,Values="))
+                rows = self.ssm_rows.pop(0) if self.ssm_rows else [{
+                    "InstanceId": instance, "PingStatus": "Online"}]
+                return provider.Completed(raw({"InstanceInformationList": rows}))
+            if "send-command" in argv:
+                assert environment["AWS_MAX_ATTEMPTS"] == "1" and environment["AWS_RETRY_MODE"] == "standard"
+                return provider.Completed(raw({"Command": {"CommandId": "command-12345678"}})
+                                          if self.ssm_mode == "success" else raw({}))
+            if "get-command-invocation" in argv:
+                self.ssm_reads += 1
+                if self.ssm_reads == 1:
+                    return provider.Completed(b"", b"InvocationDoesNotExist", 255)
+                command, instance = argv[argv.index("--command-id") + 1], argv[argv.index("--instance-id") + 1]
+                observed_instance = "i-mismatch" if self.ssm_mode == "mismatch" else instance
+                return provider.Completed(raw({"CommandId": command, "InstanceId": observed_instance,
+                                                "Status": "Success", "StandardErrorContent": "",
+                                                "StandardOutputContent": "receipt\n"}))
             # Force a real two-page chain for EIP coverage. Both pages contain
             # unrelated account resources, which may not be relabelled campaign residue.
             if "describe-instances" in argv:
@@ -113,30 +151,65 @@ with tempfile.TemporaryDirectory() as temporary:
     provider.STATE_ROOT = root / "provider-state"
     provider.AWS = root / "aws"
     provider.TOFU = root / "tofu"
-    provider.TOFU_PROVIDER = root / "terraform-provider-aws_v6.54.0_x5"
+    provider.TOFU_CONFIG = root / "tofu-cli.tfrc"
     provider.TOFU_SHA256 = d("tofu")
     root.mkdir(exist_ok=True)
     account = "000000000000"
     provider.AWS.write_bytes(b"aws"); provider.AWS.chmod(0o700)
     provider.TOFU.write_bytes(b"tofu"); provider.TOFU.chmod(0o700)
-    provider.TOFU_PROVIDER.write_bytes(b"provider"); provider.TOFU_PROVIDER.chmod(0o700)
+    mirror_root = root / "provider-mirror/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+    mirror_root.mkdir(parents=True)
+    (mirror_root / "LICENSE").write_bytes(b"license\n"); (mirror_root / "LICENSE").chmod(0o444)
+    mirror = mirror_root / "terraform-provider-aws_v6.54.0_x5"
+    mirror.write_bytes(b"provider"); mirror.chmod(0o555)
+    manifest = {"version": "cogs.stage2-opentofu-provider-package/v1",
+                "prefix": provider.PROVIDER_PREFIX, "root_mode": stat.S_IMODE(mirror_root.stat().st_mode),
+                "file_count": 2, "total_bytes": 16,
+                "files": [{"name": "LICENSE", "mode": 0o444, "size": 8, "sha256": d("license\n")},
+                          {"name": mirror.name, "mode": 0o555, "size": 8, "sha256": d("provider")}],
+                "provider_path": mirror.name, "provider_binary_sha256": d("provider")}
+    (root / "provider-package.json").write_bytes(raw(manifest))
+    provider.TOFU_CONFIG.write_text('provider_installation {\n  filesystem_mirror {\n    path = "' + str(root / "provider-mirror") + '"\n  }\n}\n')
+    provider.ENV = {**provider.ENV, "TF_CLI_CONFIG_FILE": str(provider.TOFU_CONFIG)}
     plan_bytes = b"reviewed-plan-bytes"
     plans = [hashlib.sha256(plan_bytes if index == 1 else f"plan-{index}".encode()).hexdigest()
              for index in range(1, 8)]
     current = approval(plans, account)
     provider.APPROVAL.write_bytes(raw({**current.__dict__, "plan_sha256s": list(current.plan_sha256s)}))
     provider.BUDGET_EMAIL.write_text("owner@example.invalid\n")
-    fake = Fake(account)
+    fake, clock = Fake(account), Clock()
     approval_stat = provider.APPROVAL.stat()
     approval_identity = (stat.S_IMODE(approval_stat.st_mode), approval_stat.st_uid,
                          approval_stat.st_nlink, approval_stat.st_size)
     assert approval_identity == (0o600, os.geteuid(), 1,
                                  approval_stat.st_size), approval_identity
-    boundary = provider.FixedProvider(fake)
+    boundary = provider.FixedProvider(fake, clock=clock, sleeper=clock.sleep)
+    license_path = mirror_root / "LICENSE"; original_license = license_path.read_bytes()
+    def package_rejected(label, mutate, restore):
+        mutate()
+        try: provider._package_binary()
+        except (OSError, provider.ProviderBoundaryError): pass
+        else: raise AssertionError(label + " package closure was accepted")
+        restore()
+        assert provider._package_binary() == mirror
+    package_rejected("missing", license_path.unlink,
+                     lambda: (license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    extra = mirror_root / "unexpected"
+    package_rejected("extra", lambda: extra.write_bytes(b"extra"), extra.unlink)
+    package_rejected("replaced", lambda: (license_path.chmod(0o644), license_path.write_bytes(b"replaced")),
+                     lambda: (license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    package_rejected("hardlink", lambda: (license_path.unlink(), os.link(mirror, license_path)),
+                     lambda: (license_path.unlink(), license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    package_rejected("symlink", lambda: (license_path.unlink(), license_path.symlink_to(mirror.name)),
+                     lambda: (license_path.unlink(), license_path.write_bytes(original_license), license_path.chmod(0o444)))
+    # Package identity mutation, even when restored byte-for-byte, requires a
+    # fresh owner; the old owner intentionally retains its changed ctime guard.
+    boundary = provider.FixedProvider(fake, clock=clock, sleeper=clock.sleep)
 
     grants = {}
-    for ordinal in (1, 2, 7):
+    for ordinal in range(1, 8):
         cycle = provider.STATE_ROOT / f"cycle-{ordinal}"; cycle.mkdir(parents=True)
+        (cycle / "campaign.tfplan").write_bytes(plan_bytes)
         item = grant(current, ordinal); grants[ordinal] = item
         (cycle / "grant.json").write_bytes(raw({"version": "cogs.stage2-cycle-launch-grant/v1",
                                                 **item.__dict__}))
@@ -150,7 +223,6 @@ with tempfile.TemporaryDirectory() as temporary:
             "launch_template_id": f"lt-{ordinal:017x}", "launch_template_version": ordinal,
             "root_volume_id": f"vol-{ordinal:017x}", "primary_eni_id": f"eni-{ordinal:017x}"}))
     cycle1 = provider.STATE_ROOT / "cycle-1"
-    (cycle1 / "campaign.tfplan").write_bytes(plan_bytes)
     plan_variables = {
         key: {"value": value} for key, value in {
             "ami_id": current.ami_id, "ami_owner_id": current.ami_owner_id,
@@ -166,10 +238,53 @@ with tempfile.TemporaryDirectory() as temporary:
         "variables": plan_variables,
         "resource_changes": [{"address": "aws_launch_template.host",
                               "change": {"after": {"image_id": current.ami_id}}}]}))
+    cross_cycle_package = provider.STATE_ROOT / "cycle-3/tf-data/providers" / provider.PROVIDER_PREFIX
+    cross_cycle_package.mkdir(parents=True)
+    try: boundary._local_backend(provider.STATE_ROOT / "cycle-3", grants[3])
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("cross-cycle provider package was adopted")
+    shutil.rmtree(provider.STATE_ROOT / "cycle-3/tf-data")
 
+    fake.ssm_mode = "mismatch"
     try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
     except provider.ProviderBoundaryError: pass
-    else: raise AssertionError("missing SSM command identity accepted")
+    else: raise AssertionError("mismatched SSM command identity accepted")
+    sends = [call for call, _, _ in fake.calls if "send-command" in call]
+    assert len(sends) == 1 and (provider.STATE_ROOT / "cycle-7/remote-send.intent.json").is_file()
+    assert not (provider.STATE_ROOT / "cycle-7/remote-send.receipt.json").exists()
+    try: boundary.remote(7, grants[7].mode, grants[7].grant_commitment, 60)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("SSM send was retried after an identity mismatch")
+    assert len([call for call, _, _ in fake.calls if "send-command" in call]) == 1
+    fake.ssm_mode, fake.ssm_reads = "success", 0
+    fake.ssm_rows = [[{"InstanceId": f"i-{2:017x}", "PingStatus": "ConnectionLost"}],
+                     [{"InstanceId": f"i-{2:017x}", "PingStatus": "Online"}]]
+    remote = boundary.remote(2, grants[2].mode, grants[2].grant_commitment, 60)
+    assert remote == b"receipt\n" and clock.value == 10
+    send_calls = [call for call, _, _ in fake.calls if "send-command" in call]
+    poll_calls = [call for call, _, _ in fake.calls if "get-command-invocation" in call]
+    assert len(send_calls) == 2 and len(poll_calls) == 2
+    assert all(call[call.index("--command-id") + 1] == "command-12345678"
+               and call[call.index("--instance-id") + 1] == f"i-{2:017x}" for call in poll_calls)
+    assert (provider.STATE_ROOT / "cycle-2/remote-send.receipt.json").is_file()
+    # Exact-instance registrations may be offline, but foreign, duplicate, and
+    # malformed rows are never propagation candidates and no failure sends.
+    before_sends = len(send_calls)
+    for ordinal, rows in ((3, [{"InstanceId": "i-foreign", "PingStatus": "Online"}]),
+                          (4, [{"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}, {"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}]),
+                          (5, [{"InstanceId": f"i-{5:017x}"}])):
+        fake.ssm_rows = [rows]
+        try: boundary.remote(ordinal, grants[ordinal].mode, grants[ordinal].grant_commitment, 60)
+        except provider.ProviderBoundaryError: pass
+        else: raise AssertionError("invalid SSM registration accepted")
+    fake.ssm_rows = [[{"InstanceId": f"i-{6:017x}", "PingStatus": "Inactive"}]]
+    try: boundary.remote(6, grants[6].mode, grants[6].grant_commitment, 1)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("offline SSM registration exceeded deadline")
+    assert len([call for call, _, _ in fake.calls if "send-command" in call]) == before_sends
+    ssm_timeouts = [timeout for call, timeout, _ in fake.calls
+                    if call[0] == str(provider.AWS) and "ssm" in call]
+    assert ssm_timeouts and all(0 < timeout <= 60 for timeout in ssm_timeouts)
     shell = json.loads((provider.STATE_ROOT / "cycle-7/ssm-parameters.json").read_bytes())["commands"][0]
     assert f'origin {current.qualification_revision}' in shell and '$w/G' not in shell
     assert 'w=/root/cogs-stage2-bootstrap; owned=0' in shell
@@ -186,6 +301,12 @@ with tempfile.TemporaryDirectory() as temporary:
         tuple(row) for row in receipt_value["resource_commitments"])
     receipt = production.EffectReceipt(**receipt_value)
     assert receipt.kind == "plan" and receipt.identity_commitment == plans[0]
+    (cycle1 / "campaign.tfplan").write_bytes(b"plan-2")
+    before_apply = len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU) and "apply" in call])
+    try: boundary.effect("apply", 1, "full", grants[1].grant_commitment, d("hostile-replacement"))
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("cross-cycle approved plan replacement reached apply")
+    assert len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU) and "apply" in call]) == before_apply
     try:
         boundary.effect("plan", 1, "full", grants[1].grant_commitment, d("second"))
     except provider.ProviderBoundaryError: pass
@@ -204,7 +325,7 @@ with tempfile.TemporaryDirectory() as temporary:
     instance_rows = [resource for page in pages if page["category"] == "ec2_instances"
                      for resource in page["resources"]]
     assert len(instance_rows) == 1 and instance_rows[0]["disposition"] == "deleted"
-    inventory_aws_calls = [call for call, _ in fake.calls[inventory_call_start:]
+    inventory_aws_calls = [call for call, _, _ in fake.calls[inventory_call_start:]
                            if call[0] == str(provider.AWS)]
     assert inventory_aws_calls and all("observer" in call for call in inventory_aws_calls)
     calls_after_inventory = len(fake.calls)
@@ -215,19 +336,21 @@ with tempfile.TemporaryDirectory() as temporary:
     # A claimed normal destroy is uncertain and may never be reissued by cleanup.
     cycle2 = provider.STATE_ROOT / "cycle-2"
     (cycle2 / "destroy.intent.json").write_bytes(raw({"claimed": True}))
-    before = len([call for call, _ in fake.calls if call[0] == str(provider.TOFU)])
+    before = len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU)])
     cleanup = json.loads(boundary.recover(2, "readiness", grants[2].grant_commitment,
                                           d("state-2")))
-    after = len([call for call, _ in fake.calls if call[0] == str(provider.TOFU)])
+    after = len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU)])
     assert cleanup["normal_destroy_reissued"] is False and cleanup["certain_zero"] is True
-    assert after == before + 1
-    cleanup_commands = [call for call, _ in fake.calls if call[0] == str(provider.TOFU)
+    # Reconciliation reuses the same local backend and has one cleanup destroy;
+    # its explicit backend init is not a second normal destroy.
+    assert after == before + 2
+    cleanup_commands = [call for call, _, _ in fake.calls if call[0] == str(provider.TOFU)
                         and "destroy" in call]
     assert len(cleanup_commands) == 1
     second_cleanup = json.loads(boundary.recover(
         2, "readiness", grants[2].grant_commitment, d("state-2")))
     assert second_cleanup["certain_zero"] is True
-    assert len([call for call, _ in fake.calls if call[0] == str(provider.TOFU)
+    assert len([call for call, _, _ in fake.calls if call[0] == str(provider.TOFU)
                 and "destroy" in call]) == 1
 
     # Cross-cycle and caller-selected authority are rejected before a command.

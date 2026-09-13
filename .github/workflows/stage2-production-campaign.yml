@@ -4,11 +4,32 @@ run-name: Stage 2 production AWS campaign R=${{ github.sha }} G=${{ inputs.contr
 on:
   workflow_dispatch:
     inputs:
-      control_head: { description: Exact qualified control G, required: true, type: string }
-      authorization_phrase: { description: Fresh destructive AWS campaign authorization, required: true, type: string }
-      approval_run_id: { description: Exact authenticated approval run, required: true, type: string }
-      approval_artifact_id: { description: Exact authenticated approval artifact ID, required: true, type: string }
-      approval_artifact_digest: { description: Exact sha256-prefixed approval archive digest, required: true, type: string }
+      control_head:
+        { description: Exact qualified control G, required: true, type: string }
+      authorization_phrase:
+        {
+          description: Fresh destructive AWS campaign authorization,
+          required: true,
+          type: string,
+        }
+      approval_run_id:
+        {
+          description: Exact authenticated approval run,
+          required: true,
+          type: string,
+        }
+      approval_artifact_id:
+        {
+          description: Exact authenticated approval artifact ID,
+          required: true,
+          type: string,
+        }
+      approval_artifact_digest:
+        {
+          description: Exact sha256-prefixed approval archive digest,
+          required: true,
+          type: string,
+        }
 
 permissions:
   actions: read
@@ -105,6 +126,12 @@ jobs:
             e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88
           test "$(sha256sum "$out/sigstore-trusted-root.json" | cut -d' ' -f1)" = \
             844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e
+          test "$(cat "$out/provider-package.tar.sha256")" = \
+            "sha256:$(sha256sum "$out/provider-package.tar" | cut -d' ' -f1)"
+          # The stager extracts this archive without trusting artifact modes,
+          # and rejects every member outside the manifest before root staging.
+          /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
+            verify-provider-package "$out"
           chmod 0555 "$out/cosign"
           "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" \
             --bundle "$out/approval-authentication.bundle.json" \

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import stat
@@ -45,7 +46,9 @@ ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 TOFU = ROOT / "tofu"
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
-TOFU_PROVIDER = ROOT / "terraform-provider-aws_v6.54.0_x5"
+PROVIDER_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+PACKAGE_MAX_FILES = 64
+PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
 AWS = Path("/usr/local/bin/aws")
 PYTHON = Path("/usr/bin/python3")
 APPROVAL = ROOT / "approval.json"
@@ -136,6 +139,52 @@ def _write_once(path: Path, raw: bytes, mode: int = 0o600) -> None:
         os.close(directory)
 
 
+def _package_binary() -> Path:
+    """Recheck the exact staged unpacked package before every OpenTofu call."""
+    manifest = decode(_read(ROOT / "provider-package.json", 64 * 1024), 64 * 1024)
+    _require(set(manifest) == {"version", "prefix", "root_mode", "file_count", "total_bytes",
+             "files", "provider_path", "provider_binary_sha256"}
+             and manifest["version"] == "cogs.stage2-opentofu-provider-package/v1"
+             and manifest["prefix"] == PROVIDER_PREFIX and type(manifest["files"]) is list
+             and 1 <= manifest["file_count"] == len(manifest["files"]) <= PACKAGE_MAX_FILES
+             and type(manifest["total_bytes"]) is int and 0 < manifest["total_bytes"] <= PACKAGE_MAX_BYTES)
+    root = ROOT / "provider-mirror" / PROVIDER_PREFIX
+    root_info = root.lstat()
+    _require(stat.S_ISDIR(root_info.st_mode) and not root.is_symlink()
+             and stat.S_IMODE(root_info.st_mode) == manifest["root_mode"])
+    names, total = set(), 0
+    for row in manifest["files"]:
+        _require(type(row) is dict and set(row) == {"name", "mode", "size", "sha256"}
+                 and type(row["name"]) is str and re.fullmatch(r"[A-Za-z0-9._+-]+", row["name"]) is not None
+                 and row["name"] not in names and type(row["mode"]) is int and 0 <= row["mode"] <= 0o777
+                 and type(row["size"]) is int and 0 < row["size"] <= PACKAGE_MAX_BYTES
+                 and type(row["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is not None)
+        names.add(row["name"]); path = root / row["name"]
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                     and stat.S_IMODE(before.st_mode) == row["mode"] and before.st_size == row["size"])
+            digest = hashlib.sha256(); remaining = before.st_size
+            while remaining:
+                block = os.read(descriptor, min(1024 * 1024, remaining))
+                _require(block); digest.update(block); remaining -= len(block)
+            after = os.fstat(descriptor)
+            _require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                     and digest.hexdigest() == row["sha256"])
+        finally: os.close(descriptor)
+        total += row["size"]
+    entries = tuple(root.iterdir())
+    _require(all(path.is_file() and not path.is_symlink() for path in entries)
+             and {path.name for path in entries} == names and total == manifest["total_bytes"])
+    provider = manifest["provider_path"]
+    _require(type(provider) is str and provider in names and provider.startswith("terraform-provider-aws")
+             and manifest["provider_binary_sha256"] == next(row["sha256"] for row in manifest["files"]
+                                                              if row["name"] == provider))
+    return root / provider
+
+
 def _read(path: Path, maximum: int = MAX_OUTPUT) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -163,10 +212,11 @@ class Completed:
         self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
 
 
-Runner = Callable[[tuple[str, ...], int], Completed]
+Runner = Callable[[tuple[str, ...], int, dict[str, str]], Completed]
 
 
-def subprocess_runner(argv: tuple[str, ...], timeout: int) -> Completed:
+def subprocess_runner(argv: tuple[str, ...], timeout: int,
+                      environment: dict[str, str] | None = None) -> Completed:
     handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
     previous_handlers = {}
@@ -181,7 +231,8 @@ def subprocess_runner(argv: tuple[str, ...], timeout: int) -> Completed:
     try:
         for number in handled: previous_handlers[number] = signal.signal(number, interrupted)
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, cwd=SOURCE, env=ENV,
+                                   stderr=subprocess.PIPE, cwd=SOURCE,
+                                   env=(ENV if environment is None else environment),
                                    close_fds=True, start_new_session=True)
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask); unblocked = True
         selector = selectors.DefaultSelector()
@@ -259,9 +310,10 @@ assert tuple(row[0] for row in INVENTORY_QUERIES) == production.INVENTORY_CATEGO
 class FixedProvider:
     """Concrete command owner. Paths and command families are compile-time constants."""
 
-    def __init__(self, runner: Runner = subprocess_runner):
-        _require(callable(runner))
-        self.runner = runner
+    def __init__(self, runner: Runner = subprocess_runner, clock: Callable[[], float] = time.monotonic,
+                 sleeper: Callable[[float], None] = time.sleep):
+        _require(callable(runner) and callable(clock) and callable(sleeper))
+        self.runner, self.clock, self.sleeper = runner, clock, sleeper
         self.approval = self._approval()
 
     def _approval(self) -> production.ProductionApproval:
@@ -275,9 +327,10 @@ class FixedProvider:
                  "AWS CLI differs from authenticated planning bytes")
         self.aws_identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
                              seen.st_gid, seen.st_size, seen.st_mtime_ns, seen.st_ctime_ns)
+        self.provider_binary = _package_binary()
         self.tool_identities = {}
         for path, digest in ((TOFU, TOFU_SHA256),
-                             (TOFU_PROVIDER, approval.provider_binary_sha256)):
+                             (self.provider_binary, approval.provider_binary_sha256)):
             tool = path.stat()
             _require(stat.S_ISREG(tool.st_mode) and tool.st_uid == os.geteuid()
                      and (os.geteuid() != 0 or tool.st_gid == 0)
@@ -319,12 +372,18 @@ class FixedProvider:
                  and parsed.plan_sha256 == self.approval.plan_sha256s[ordinal - 1])
         return directory, parsed
 
-    def _run(self, argv: tuple[str, ...], timeout: int, json_output: bool = False):
+    def _run(self, argv: tuple[str, ...], timeout: int, json_output: bool = False,
+             environment: dict[str, str] | None = None, allow_initial_absence: bool = False):
         _require(type(argv) is tuple and argv and all(type(item) is str for item in argv)
                  and argv[0] in {str(TOFU), str(AWS), str(PYTHON)})
+        environment = dict(ENV if environment is None else environment)
+        _require(set(environment) >= set(ENV) and all(type(key) is str and type(value) is str
+                 for key, value in environment.items()), "invalid provider environment")
         if argv[0] == str(TOFU):
+            _require(_package_binary() == self.provider_binary,
+                     "OpenTofu provider package changed before invocation")
             for path, digest in ((TOFU, TOFU_SHA256),
-                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                                 (self.provider_binary, self.approval.provider_binary_sha256)):
                 tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
                     tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
                 _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
@@ -336,7 +395,7 @@ class FixedProvider:
             _require(identity == self.aws_identity
                      and _sha256_file(AWS.resolve()) == self.approval.aws_cli_sha256,
                      "AWS CLI changed before invocation")
-        result = self.runner(argv, timeout)
+        result = self.runner(argv, timeout, environment)
         if argv[0] == str(AWS):
             seen = AWS.resolve().stat()
             identity = (seen.st_dev, seen.st_ino, seen.st_mode, seen.st_uid,
@@ -345,15 +404,24 @@ class FixedProvider:
                      and _sha256_file(AWS.resolve()) == self.approval.aws_cli_sha256,
                      "AWS CLI changed during invocation")
         if argv[0] == str(TOFU):
+            _require(_package_binary() == self.provider_binary,
+                     "OpenTofu provider package changed during invocation")
             for path, digest in ((TOFU, TOFU_SHA256),
-                                 (TOFU_PROVIDER, self.approval.provider_binary_sha256)):
+                                 (self.provider_binary, self.approval.provider_binary_sha256)):
                 tool = path.stat(); identity = (tool.st_dev, tool.st_ino, tool.st_mode,
                     tool.st_uid, tool.st_gid, tool.st_size, tool.st_mtime_ns, tool.st_ctime_ns)
                 _require(identity == self.tool_identities[path] and _sha256_file(path) == digest,
                          "OpenTofu tool closure changed during invocation")
-        _require(type(result) is Completed and result.returncode == 0
-                 and len(result.stdout) <= MAX_OUTPUT and len(result.stderr) <= 64 * 1024,
-                 "fixed provider command failed")
+        _require(type(result) is Completed and len(result.stdout) <= MAX_OUTPUT
+                 and len(result.stderr) <= 64 * 1024, "fixed provider command failed")
+        if result.returncode != 0:
+            # SSM exposes this one documented, pre-observation propagation gap.
+            # No other command error and no later disappearance is tolerated.
+            absent = (allow_initial_absence and argv[0] == str(AWS)
+                      and "get-command-invocation" in argv and not result.stdout
+                      and b"InvocationDoesNotExist" in result.stderr)
+            _require(absent, "fixed provider command failed")
+            return None
         if json_output:
             try:
                 value = json.loads(result.stdout, object_pairs_hook=_pairs,
@@ -367,10 +435,13 @@ class FixedProvider:
     def _claim(self, directory: Path, name: str, intent: str) -> Path:
         production._digest(intent)
         claim = directory / f"{name}.intent.json"
-        _write_once(claim, canonical({
-            "version": "cogs.stage2-provider-invocation-intent/v1",
-            "operation": name, "intent_commitment": intent, "invocation_count": 1,
-        }))
+        try:
+            _write_once(claim, canonical({
+                "version": "cogs.stage2-provider-invocation-intent/v1",
+                "operation": name, "intent_commitment": intent, "invocation_count": 1,
+            }))
+        except FileExistsError as error:
+            raise ProviderBoundaryError("provider invocation replay") from error
         return claim
 
     def _common(self, directory: Path, grant, kind: str, intent: str,
@@ -431,6 +502,33 @@ class FixedProvider:
                  launch[0].get("change", {}).get("after", {}).get("image_id") ==
                  self.approval.ami_id, "approved plan AMI mismatch")
 
+    def _local_backend(self, directory: Path, grant) -> tuple[Path, Path, Path]:
+        """Initialize only this cycle's explicit local backend and cache."""
+        _require(directory.name == f"cycle-{grant.ordinal}" and directory.parent == STATE_ROOT)
+        data, state, plan = (directory / "tf-data", directory / "terraform.tfstate",
+                             directory / "campaign.tfplan")
+        receipt = directory / "local-backend.json"
+        fields = {"version": "cogs.stage2-local-backend/v1", "ordinal": grant.ordinal,
+                  "batch_commitment": grant.batch_commitment, "tf_data_dir": data.name,
+                  "state_path": state.name, "plan_path": plan.name}
+        fields["identity_commitment"] = _digest(b"cogs.stage2-local-backend-path/v1", fields)
+        raw = canonical(fields)
+        if receipt.exists():
+            _require(_read(receipt, 64 * 1024) == raw, "local backend path identity changed")
+            _require(data.is_dir() and not data.is_symlink(), "local backend cache missing")
+        else:
+            # The staged saved plan is the only preexisting lifecycle input.
+            _require(not data.exists() and not data.is_symlink() and not state.exists()
+                     and not state.is_symlink() and plan.is_file() and not plan.is_symlink(),
+                     "stale or cross-cycle local backend input")
+            data.mkdir(mode=0o700)
+            _write_once(receipt, raw)
+        environment = {**ENV, "TF_DATA_DIR": str(data)}
+        self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}", "init",
+                   "-input=false", "-lockfile=readonly", "-backend-config=path=" + str(state)),
+                  300, environment=environment)
+        return data, state, plan
+
     def _tfvars(self, directory: Path, grant) -> None:
         email = _read(BUDGET_EMAIL, 1024).decode("ascii").strip()
         _require(3 <= len(email) <= 254 and "@" in email and "\n" not in email)
@@ -466,14 +564,14 @@ class FixedProvider:
                            60, True)
         self._principal(caller, self.approval.executor_principal_commitment, "executor")
         self._claim(directory, kind, intent)
-        state = directory / "terraform.tfstate"
+        data, state, plan = self._local_backend(directory, grant)
+        environment = {**ENV, "TF_DATA_DIR": str(data)}
         if kind in {"running", "destroy"}:
             previous_kind = "apply" if kind == "running" else "running"
             previous_receipt = decode(_read(directory / f"{previous_kind}.receipt.json"))
             _require(state.is_file() and _sha256_file(state) ==
                      previous_receipt.get("state_bytes_sha256"),
                      "provider state bytes changed between effects")
-        plan = directory / "campaign.tfplan"
         plan_json = directory / "campaign.plan.json"
         started = time.time_ns()
         resources = ()
@@ -483,7 +581,7 @@ class FixedProvider:
                      "approved plan bytes missing or changed")
             rendered = self._run((str(TOFU),
                 f"-chdir={SOURCE / 'deploy/aws-feasibility'}", "show", "-json", str(plan)),
-                60, True)
+                60, True, environment)
             _require(rendered == decode(_read(plan_json)),
                      "approved plan JSON is not derived from approved binary")
             self._run((str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"),
@@ -491,13 +589,17 @@ class FixedProvider:
             self._validate_plan_bindings(plan_json, grant)
             identity = grant.plan_sha256
         elif kind == "apply":
-            _require((directory / "plan.receipt.json").is_file())
+            _require((directory / "plan.receipt.json").is_file()
+                     and plan.is_file() and not plan.is_symlink()
+                     and _sha256_file(plan) == grant.plan_sha256,
+                     "approved plan bytes changed before apply")
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "apply", "-input=false", "-lock-timeout=30s",
-                       "-state=" + str(state), "-auto-approve", str(plan)), 900)
+                       "-state=" + str(state), "-auto-approve", str(plan)), 900,
+                      environment=environment)
             output = self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                                 "output", "-state=" + str(state), "-json", "campaign"),
-                               60, True)
+                               60, True, environment)
             self._validate_campaign_output(output, grant)
             _write_once(directory / "campaign-output.json", canonical(output))
             identity = _digest(b"cogs.stage2-applied-graph/v1", output)
@@ -536,7 +638,8 @@ class FixedProvider:
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve",
                        "-input=false", "-lock-timeout=30s",
-                       "-var-file=" + str(directory / "campaign.auto.tfvars.json")), 900)
+                       "-var-file=" + str(directory / "campaign.auto.tfvars.json")), 900,
+                      environment=environment)
             identity = _digest(b"cogs.stage2-destroyed-state/v1", {
                 "state_sha256": _sha256_file(state), "ordinal": ordinal})
         ended = time.time_ns()
@@ -560,6 +663,11 @@ class FixedProvider:
                  and value["source_revision"] == self.approval.implementation_revision
                  and value["control_revision"] == self.approval.control_revision
                  and value["rootfs_descriptor_sha256"] == self.approval.rootfs_descriptor_sha256)
+
+    def _remaining_timeout(self, deadline: float, cap: float = 60) -> float:
+        remaining = deadline - self.clock()
+        _require(remaining > 0 and cap > 0, "SSM observation deadline elapsed")
+        return min(cap, remaining)
 
     def remote(self, ordinal: int, mode: str, grant_commitment: str,
                authorized_timeout: int) -> bytes:
@@ -600,26 +708,75 @@ class FixedProvider:
         parameters = directory / "ssm-parameters.json"
         _write_once(parameters, canonical({
             "commands": [remote_shell], "executionTimeout": [str(authorized_timeout)]}))
+        instance = output["instance_id"]
+        deadline = self.clock() + max(1, authorized_timeout - 10)
+        # A missing registration is tolerated only before the first SSM
+        # observation. A foreign, duplicate, or malformed row is never a
+        # propagation excuse, while an exact registered offline agent is polled
+        # through the fixed deadline rather than treated as a terminal failure.
+        while True:
+            _require(self.clock() < deadline, "SSM Online observation timed out")
+            online = self._run((str(AWS), "--region", self.approval.region, "ssm",
+                                "describe-instance-information", "--filters",
+                                "Key=InstanceIds,Values=" + instance, "--output", "json",
+                                "--no-cli-pager"), self._remaining_timeout(deadline), True)
+            rows = online.get("InstanceInformationList")
+            _require(type(rows) is list, "invalid SSM Online observation")
+            if not rows:
+                self.sleeper(min(5, max(0, deadline - self.clock())))
+                continue
+            _require(len(rows) == 1 and type(rows[0]) is dict
+                     and rows[0].get("InstanceId") == instance
+                     and rows[0].get("PingStatus") in {"Online", "ConnectionLost", "Inactive"},
+                     "invalid exact SSM instance observation")
+            if rows[0]["PingStatus"] == "Online": break
+            self.sleeper(min(5, max(0, deadline - self.clock())))
+        intent = directory / "remote-send.intent.json"
+        intent_value = {"version": "cogs.stage2-remote-send-intent/v1",
+                        "grant_commitment": grant.grant_commitment, "instance_id": instance,
+                        "parameters_sha256": _sha256_file(parameters), "invocation_count": 1}
+        # This durable source receipt is committed before the sole send.  If the
+        # send response is lost, it remains an uncertainty rather than a resend.
+        _require(not intent.exists(), "remote send already attempted")
+        _write_once(intent, canonical(intent_value), 0o400)
+        # The durable intent makes this the only allowed SendCommand request;
+        # AWS CLI retries would otherwise turn one subprocess into many sends.
+        send_environment = {**ENV, "AWS_MAX_ATTEMPTS": "1", "AWS_RETRY_MODE": "standard"}
         sent = self._run((str(AWS), "--region", self.approval.region, "ssm",
-                          "send-command", "--instance-ids", output["instance_id"],
+                          "send-command", "--instance-ids", instance,
                           "--document-name", "AWS-RunShellScript", "--timeout-seconds",
                           str(authorized_timeout),
                           "--parameters", "file://" + str(parameters), "--output", "json",
-                          "--no-cli-pager"), 60, True)
+                          "--no-cli-pager"), self._remaining_timeout(deadline), True,
+                         environment=send_environment)
         command_id = sent.get("Command", {}).get("CommandId")
         _require(type(command_id) is str and 8 <= len(command_id) <= 128)
-        deadline = time.monotonic() + max(1, authorized_timeout - 10)
+        sent_receipt = {**intent_value, "command_id": command_id}
+        _write_once(directory / "remote-send.receipt.json", canonical(sent_receipt), 0o400)
+        seen_invocation = False
         while True:
+            _require(self.clock() < deadline, "remote SSM command exceeded deadline")
             observed = self._run((str(AWS), "--region", self.approval.region, "ssm",
                                   "get-command-invocation", "--command-id", command_id,
-                                  "--instance-id", output["instance_id"], "--output", "json",
-                                  "--no-cli-pager"), 60, True)
+                                  "--instance-id", instance, "--output", "json",
+                                  "--no-cli-pager"), self._remaining_timeout(deadline), True,
+                                 allow_initial_absence=not seen_invocation)
+            if observed is None:
+                _require(not seen_invocation and self.clock() < deadline,
+                         "late SSM command propagation absence")
+                self.sleeper(min(5, max(0, deadline - self.clock())))
+                continue
+            seen_invocation = True
+            _require(observed.get("CommandId") == command_id and observed.get("InstanceId") == instance,
+                     "SSM command or instance identity mismatch")
             status = observed.get("Status")
-            if status == "Success": break
+            if status == "Success":
+                _require(self.clock() < deadline, "late SSM success")
+                break
             _require(status in {"Pending", "InProgress", "Delayed"}
-                     and time.monotonic() < deadline,
+                     and self.clock() < deadline,
                      "remote SSM command failed or exceeded its fixed observation deadline")
-            time.sleep(5)
+            self.sleeper(min(5, max(0, deadline - self.clock())))
         _require(not observed.get("StandardErrorContent"))
         raw = observed.get("StandardOutputContent", "").encode("ascii")
         _require(raw.endswith(b"\n") and len(raw) <= remote_adapter.MAX_RECEIPT_BYTES)
@@ -851,11 +1008,12 @@ class FixedProvider:
             _write_once(cleanup_claim, cleanup_raw)
         cleanup_settled = directory / "cleanup-destroy.settlement.json"
         if not cleanup_settled.exists():
-            state = directory / "terraform.tfstate"
+            data, state, _plan = self._local_backend(directory, grant)
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve", "-input=false",
                        "-lock-timeout=30s", "-var-file=" +
-                       str(directory / "campaign.auto.tfvars.json")), 1200)
+                       str(directory / "campaign.auto.tfvars.json")), 1200,
+                      environment={**ENV, "TF_DATA_DIR": str(data)})
             _write_once(cleanup_settled, canonical({
                 "version": "cogs.stage2-cleanup-destroy-settlement/v1",
                 "grant_commitment": grant.grant_commitment, "certain": True}))

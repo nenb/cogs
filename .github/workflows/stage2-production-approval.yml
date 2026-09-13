@@ -4,10 +4,26 @@ run-name: Stage 2 production approval R=${{ github.sha }} G=${{ inputs.control_h
 on:
   workflow_dispatch:
     inputs:
-      control_head: { description: Exact qualified control G, required: true, type: string }
-      planning_run_id: { description: Exact separately authorized planning run, required: true, type: string }
-      planning_artifact_id: { description: Exact planning package artifact ID, required: true, type: string }
-      planning_artifact_digest: { description: Exact sha256-prefixed planning archive digest, required: true, type: string }
+      control_head:
+        { description: Exact qualified control G, required: true, type: string }
+      planning_run_id:
+        {
+          description: Exact separately authorized planning run,
+          required: true,
+          type: string,
+        }
+      planning_artifact_id:
+        {
+          description: Exact planning package artifact ID,
+          required: true,
+          type: string,
+        }
+      planning_artifact_digest:
+        {
+          description: Exact sha256-prefixed planning archive digest,
+          required: true,
+          type: string,
+        }
 
 permissions:
   actions: read
@@ -110,9 +126,18 @@ jobs:
             "$(jq -er '.pre_aws_package_sha256' "$out/approval.json")"
           cp -R "$RUNNER_TEMP/planning/plans" "$out/plans"
           install -m 0555 "$RUNNER_TEMP/planning/tofu" "$out/tofu"
-          test "$(sha256sum "$RUNNER_TEMP/planning/tofu-provider-aws" | cut -d' ' -f1)" = \
+          test -f "$RUNNER_TEMP/planning/provider-package.json"
+          test -f "$RUNNER_TEMP/planning/provider-package.tar"
+          test -f "$RUNNER_TEMP/planning/provider-package.tar.sha256"
+          test "$(cat "$RUNNER_TEMP/planning/provider-package.tar.sha256")" = \
+            "sha256:$(sha256sum "$RUNNER_TEMP/planning/provider-package.tar" | cut -d' ' -f1)"
+          test "$(jq -er '.provider_binary_sha256' "$RUNNER_TEMP/planning/provider-package.json")" = \
             "$(jq -er '.provider_binary_sha256' "$out/approval.json")"
-          install -m 0555 "$RUNNER_TEMP/planning/tofu-provider-aws" "$out/tofu-provider-aws"
+          # Preserve the archive, manifest, and digest verbatim.  Downloaded
+          # artifact files have no executable-mode authority.
+          install -m 0600 "$RUNNER_TEMP/planning/provider-package.json" "$out/provider-package.json"
+          install -m 0600 "$RUNNER_TEMP/planning/provider-package.tar" "$out/provider-package.tar"
+          install -m 0600 "$RUNNER_TEMP/planning/provider-package.tar.sha256" "$out/provider-package.tar.sha256"
 
       - name: Bind authentication, signer, principals, and first-created run
         run: |

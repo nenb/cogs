@@ -9,7 +9,13 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { capabilityRemovalScenario, withProductCustody } from "../dev/product-test/runner.ts";
+import {
+  capabilityRemovalScenario,
+  PROBE_GENERATION_SECONDS,
+  PROBE_SUITE_SECONDS,
+  requireProbeSuiteWindow,
+  withProductCustody,
+} from "../dev/product-test/runner.ts";
 import {
   type ContainerSpec,
   type CustodyPort,
@@ -56,6 +62,42 @@ import type { CogsPrivateSkillStore } from "../src/skills/local-private-store.ts
 import type { CogsSharedSkillOciResolver } from "../src/skills/oci-layout.ts";
 import type { CogsExecPort, SshConnectionManager, SshConnectionManagerOptions } from "../src/ssh/connection.ts";
 import { type CogsWorkerTelemetrySink, createCogsWorkerTelemetrySink } from "../src/telemetry/worker-telemetry.ts";
+
+test("protected workflow separates profile jobs and preserves probe-only no-pass inventory", async () => {
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  for (const profile of ["profile: empty", "profile: nonempty"])
+    assert.equal(workflow.split(profile).length - 1, 2, `missing independent ${profile} jobs`);
+  assert.match(workflow, /mode: --protected-linux/u);
+  assert.match(workflow, /mode: --capability-probes/u);
+  assert.match(workflow, /authority: candidate-pass/u);
+  assert.match(workflow, /authority: probe-only/u);
+  assert.match(workflow, /cogs\.product-probe-inventory\/v1/u);
+  assert.match(workflow, /cogs\.product-failure-receipt\/v1/u);
+  assert.match(workflow, /probe capability coverage or retired generation mismatch/u);
+  assert.match(workflow, /build_receipt_sha256/u);
+  assert.match(workflow, /capability_coverage/u);
+  assert.match(workflow, /AUTHORITY'\]!='probe-only'/u);
+  assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
+});
+
+test("probe suites reserve eight sequential 600-second generations and cleanup", async () => {
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  assert.match(workflow, /timeout_minutes: 100/u);
+  assert.match(workflow, /lifetime_ms=5340000/u);
+  assert.match(workflow, /eight independent\n {10}# 600-second effects/u);
+  assert.equal(PROBE_GENERATION_SECONDS, 600);
+  assert.equal(PROBE_SUITE_SECONDS, 5280);
+  // A fake clock crosses the old five-minute expiry boundary while every
+  // sequential generation still has its independent 600-second reservation.
+  let now = 0;
+  const restrictions = { seconds: 600, expires: PROBE_SUITE_SECONDS * 1000 + 1 } as never;
+  for (let generation = 0; generation < 8; generation++) {
+    requireProbeSuiteWindow(restrictions, now, generation);
+    now += 660_000;
+  }
+  assert.ok(now > 300_000);
+  assert.throws(() => requireProbeSuiteWindow(restrictions, now, 7));
+});
 
 test("product helper identity is unreaped through final signals and directory modes defeat ambient umask", () => {
   const result = spawnSync(
@@ -350,6 +392,7 @@ for plan in scenarios:
   owner=m.Custody.__new__(m.Custody);owner.generation=plan[0]['generation'];owner.root='/var/lib/cogs-product-test/'+owner.generation
   owner.probe=True;owner.recovery=False;owner.failed=False;owner.cg='/fake-cgroup';owner.disk=None
   owner.ids={};owner.peers={};owner.sealed=[];owner.mounts=[];owner.fd=8;owner.control=9;owner.selector=selectors.DefaultSelector()
+  owner.build={'candidate':'a'*40,'tree':'b'*40,'source_inventory':'sha256:'+'c'*64,'run_id':'1','run_attempt':'1','skills':'empty','profile_case':'empty'}
   journal={};calls=[];alive=False;auth=0;cid='b'*64;spec=plan[0]['spec']
   owner.records=set()
   owner.images={spec['image']:{'Config':{'Env':[],'Labels':{}}}}

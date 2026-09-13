@@ -57,4 +57,7 @@ test("adapter commands and custody paths are fixed rather than caller-selected",
   assert.match(source, /stage2-production-approval\.yml@refs\/heads\/main/u);
   assert.match(source, /first_apply_started/u);
   assert.match(source, /maximum_cycle_duration_ns/u);
+  assert.match(source, /def _provider_package\(/u);
+  assert.match(source, /PROVIDER_MIRROR/u);
+  assert.doesNotMatch(source, /TOFU_PROVIDER/u);
 });

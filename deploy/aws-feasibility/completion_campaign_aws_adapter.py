@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import time
@@ -30,7 +31,11 @@ AWS_CONFIG = ROOT / "aws-config"
 AWS_CREDENTIALS = ROOT / "aws-credentials"
 TOFU = ROOT / "tofu"
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
-TOFU_PROVIDER = ROOT / "terraform-provider-aws_v6.54.0_x5"
+PROVIDER_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+PACKAGE_MAX_FILES = 64
+PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
+PROVIDER_MANIFEST = ROOT / "provider-package.json"
+PROVIDER_MIRROR = ROOT / "provider-mirror" / PROVIDER_PREFIX
 TOFU_CONFIG = ROOT / "tofu-cli.tfrc"
 CONSUMED = ROOT / "approval-consumed.json"
 JOURNAL = ROOT / "campaign-journal.jsonl"
@@ -122,6 +127,60 @@ def _read_fixed(path, maximum, modes=(0o400,)):
         os.close(descriptor)
 
 
+def _provider_package():
+    """Authenticate the exact staged mirror closure, including file modes."""
+    manifest = _decode(_read_fixed(PROVIDER_MANIFEST, 64 * 1024), 64 * 1024)
+    _require(set(manifest) == {"version", "prefix", "root_mode", "file_count", "total_bytes",
+             "files", "provider_path", "provider_binary_sha256"}
+             and manifest["version"] == "cogs.stage2-opentofu-provider-package/v1"
+             and manifest["prefix"] == PROVIDER_PREFIX and type(manifest["root_mode"]) is int
+             and 0 <= manifest["root_mode"] <= 0o777 and type(manifest["files"]) is list
+             and 1 <= manifest["file_count"] == len(manifest["files"]) <= PACKAGE_MAX_FILES
+             and type(manifest["total_bytes"]) is int and 0 < manifest["total_bytes"] <= PACKAGE_MAX_BYTES)
+    root_info = PROVIDER_MIRROR.lstat()
+    _require(stat.S_ISDIR(root_info.st_mode) and not PROVIDER_MIRROR.is_symlink()
+             and root_info.st_uid == root_info.st_gid == 0
+             and stat.S_IMODE(root_info.st_mode) == manifest["root_mode"])
+    names, total, binary = set(), 0, None
+    for row in manifest["files"]:
+        _require(type(row) is dict and set(row) == {"name", "mode", "size", "sha256"}
+                 and type(row["name"]) is str
+                 and re.fullmatch(r"[A-Za-z0-9._+-]+", row["name"]) is not None
+                 and row["name"] not in names and type(row["mode"]) is int
+                 and 0 <= row["mode"] <= 0o777 and type(row["size"]) is int
+                 and 0 < row["size"] <= PACKAGE_MAX_BYTES and type(row["sha256"]) is str
+                 and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is not None)
+        names.add(row["name"])
+        path = PROVIDER_MIRROR / row["name"]
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
+                     and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == row["mode"]
+                     and before.st_size == row["size"])
+            raw = os.read(descriptor, row["size"] + 1); after = os.fstat(descriptor)
+            _require(len(raw) == row["size"]
+                     and (before.st_dev, before.st_ino, before.st_mode, before.st_uid,
+                          before.st_gid, before.st_nlink, before.st_size, before.st_mtime_ns,
+                          before.st_ctime_ns) ==
+                         (after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+                          after.st_gid, after.st_nlink, after.st_size, after.st_mtime_ns,
+                          after.st_ctime_ns)
+                     and hashlib.sha256(raw).hexdigest() == row["sha256"])
+        finally:
+            os.close(descriptor)
+        total += row["size"]
+        if row["name"] == manifest["provider_path"]: binary = raw
+    entries = tuple(PROVIDER_MIRROR.iterdir())
+    _require(all(path.is_file() and not path.is_symlink() for path in entries)
+             and {path.name for path in entries} == names and total == manifest["total_bytes"]
+             and type(manifest["provider_path"]) is str and manifest["provider_path"] in names
+             and manifest["provider_path"].startswith("terraform-provider-aws")
+             and type(binary) is bytes
+             and manifest["provider_binary_sha256"] == hashlib.sha256(binary).hexdigest())
+    return binary
+
+
 def _write_once(path, raw, mode=0o600):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                          os.O_NOFOLLOW | os.O_CLOEXEC, mode)
@@ -161,7 +220,7 @@ def _approval():
     bundle_raw = _read_fixed(AUTHENTICATION_BUNDLE, 1024 * 1024)
     cosign_raw = _read_fixed(COSIGN, 160 * 1024 * 1024, (0o555,))
     tofu_raw = _read_fixed(TOFU, 140 * 1024 * 1024, (0o555,))
-    provider_raw = _read_fixed(TOFU_PROVIDER, 1024 * 1024 * 1024, (0o555,))
+    provider_raw = _provider_package()
     _read_fixed(TOFU_CONFIG, 4096)
     trusted_root_raw = _read_fixed(TRUSTED_ROOT, 64 * 1024)
     _require(hashlib.sha256(cosign_raw).hexdigest() == COSIGN_SHA256

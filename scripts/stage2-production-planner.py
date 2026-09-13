@@ -15,6 +15,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 
 _DIAGNOSTIC = b"stage2-production-planner: owner.failed\n"
@@ -38,6 +39,12 @@ except BaseException:
 AWS = Path("/usr/local/bin/aws")
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
 MAX = 32 * 1024 * 1024
+PACKAGE_MAX_FILES = 64
+PACKAGE_MAX_BYTES = 1024 * 1024 * 1024
+PACKAGE_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+PACKAGE_MANIFEST = "provider-package.json"
+PACKAGE_ARCHIVE = "provider-package.tar"
+PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 
 
 class PlanningError(Exception): pass
@@ -109,6 +116,51 @@ def eligibility(path, expected=()):
     package_eligible(package, expected)
 
 
+def provider_package(root):
+    """Return the complete, ordinary provider package as a bounded manifest."""
+    root = Path(root)
+    seen, files, total = set(), [], 0
+    def visit(directory, prefix=""):
+        nonlocal total
+        info = directory.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not directory.is_symlink()
+                and stat.S_IMODE(info.st_mode) <= 0o755)
+        for entry in sorted(directory.iterdir(), key=lambda path: path.name):
+            name = prefix + entry.name
+            require(name not in seen and "/" not in entry.name and entry.name not in {"", ".", ".."})
+            seen.add(name); info = entry.lstat()
+            require(info.st_nlink == 1 and not entry.is_symlink())
+            require(not stat.S_ISDIR(info.st_mode))
+            require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= PACKAGE_MAX_BYTES)
+            raw = _read_regular(entry, PACKAGE_MAX_BYTES)
+            total += len(raw); require(len(files) < PACKAGE_MAX_FILES and total <= PACKAGE_MAX_BYTES)
+            files.append({"name": name, "mode": stat.S_IMODE(info.st_mode),
+                          "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    visit(root)
+    executable = [row for row in files if row["name"].startswith("terraform-provider-aws")
+                  and row["mode"] & 0o111]
+    require(len(executable) == 1 and len(files) >= 2)
+    return {"version": "cogs.stage2-opentofu-provider-package/v1",
+            "prefix": PACKAGE_PREFIX, "root_mode": stat.S_IMODE(root.lstat().st_mode),
+            "file_count": len(files), "total_bytes": total, "files": files,
+            "provider_path": executable[0]["name"], "provider_binary_sha256": executable[0]["sha256"]}
+
+
+def copy_provider_package(source, destination, manifest):
+    require(provider_package(source) == manifest and not destination.exists())
+    destination.mkdir(mode=manifest["root_mode"])
+    for row in manifest["files"]:
+        target = destination / row["name"]
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        raw = _read_regular(source / row["name"], PACKAGE_MAX_BYTES)
+        require(len(raw) == row["size"] and hashlib.sha256(raw).hexdigest() == row["sha256"])
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, row["mode"])
+        try: require(os.write(fd, raw) == len(raw)); os.fsync(fd)
+        finally: os.close(fd)
+        os.chmod(target, row["mode"])
+    require(provider_package(destination) == manifest)
+
+
 def _bounded_process(arguments, timeout, environment):
     handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
@@ -178,6 +230,48 @@ def run(arguments, timeout, environment, parse=False):
     except (UnicodeError, ValueError, TypeError, RecursionError) as error:
         raise PlanningError() from error
     require(type(value) is dict); return value
+
+
+def cycle_paths(plans, ordinal):
+    """Allocate one non-reusable local-backend namespace for a staged cycle."""
+    require(type(ordinal) is int and 1 <= ordinal <= 7)
+    prefix = f"{ordinal:02d}"
+    paths = {
+        "tf_data_dir": plans / f"{prefix}.tf-data",
+        "state_path": plans / f"{prefix}.terraform.tfstate",
+        "plan_path": plans / f"{prefix}.tfplan",
+        "plan_json_path": plans / f"{prefix}.plan.json",
+        "stage_path": plans / f"{prefix}.staged-plan.json",
+        "variables_path": plans / f"{prefix}.tfvars.json",
+    }
+    # A planning output is single-attempt custody.  No old local cache, state,
+    # plan, or path-binding receipt can be adopted by a different cycle.
+    require(all(not path.exists() and not path.is_symlink() for path in paths.values()))
+    paths["tf_data_dir"].mkdir(mode=0o700)
+    return paths
+
+
+def stage_plan(paths, ordinal, batch, plan, shown):
+    require(plan == paths["plan_path"] and paths["tf_data_dir"].is_dir()
+            and paths["state_path"].parent == plan.parent
+            and plan.is_file() and paths["plan_json_path"].is_file())
+    value = {
+        "version": "cogs.stage2-local-staged-plan/v1",
+        "ordinal": ordinal, "batch_commitment": batch,
+        "tf_data_dir": paths["tf_data_dir"].name,
+        "state_path": paths["state_path"].name,
+        "plan_path": plan.name, "plan_json_path": paths["plan_json_path"].name,
+        "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "plan_json_sha256": hashlib.sha256(canonical(shown)).hexdigest(),
+    }
+    value["path_identity"] = hashlib.sha256(
+        b"cogs.stage2-local-plan-path/v1\0" + canonical(value)[:-1]).hexdigest()
+    raw = canonical(value)
+    fd = os.open(paths["stage_path"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try: require(os.write(fd, raw) == len(raw)); os.fsync(fd)
+    finally: os.close(fd)
+    require(read(paths["stage_path"])[1] == value)
+    return value
 
 
 def main(arguments):
@@ -300,6 +394,7 @@ def main(arguments):
     draft["ami_commitment"] = production.resolved_ami_commitment(draft)
     email = os.environ.get("COGS_STAGE2_BUDGET_ALERT_EMAIL", "")
     require(3 <= len(email) <= 254 and "@" in email and "\n" not in email)
+    require(not output.exists() and not output.is_symlink())
     output.mkdir(mode=0o700); plans = output / "plans"; plans.mkdir(mode=0o700)
     package_output = output / production.QUALIFICATION_PACKAGE_NAME
     fd = os.open(package_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -314,18 +409,24 @@ def main(arguments):
                         "AWS_CONFIG_FILE": str(config), "AWS_PROFILE": "nebula"})
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
         environment.pop(name)
-    run((str(tofu), "init", "-backend=false", "-input=false", "-lockfile=readonly"),
-        300, environment)
-    provider_root = ROOT / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
-    providers = [path for path in provider_root.iterdir()
-                 if path.is_file() and "provider-aws" in path.name]
-    require(len(providers) == 1)
-    provider_raw = providers[0].read_bytes()
-    draft["provider_binary_sha256"] = hashlib.sha256(provider_raw).hexdigest()
+    # Provider installation is local-only.  It has an explicit disposable local
+    # backend too; no plan cycle can inherit this bootstrap cache.
+    bootstrap_data, bootstrap_state = plans / ".provider-tf-data", plans / ".provider.tfstate"
+    require(not bootstrap_data.exists() and not bootstrap_state.exists())
+    bootstrap_data.mkdir(mode=0o700)
+    run((str(tofu), "init", "-input=false", "-lockfile=readonly",
+         "-backend-config=path=" + str(bootstrap_state)), 300,
+        {**environment, "TF_DATA_DIR": str(bootstrap_data)})
+    provider_root = bootstrap_data / "providers" / PACKAGE_PREFIX
+    provider_manifest = provider_package(provider_root)
+    provider_raw = _read_regular(provider_root / provider_manifest["provider_path"], PACKAGE_MAX_BYTES)
+    require(hashlib.sha256(provider_raw).hexdigest() == provider_manifest["provider_binary_sha256"])
+    draft["provider_binary_sha256"] = provider_manifest["provider_binary_sha256"]
     draft["aws_cli_sha256"] = aws_sha256
     batch = production.approval_batch_commitment(draft)
     hashes = []
     for ordinal in range(1, 8):
+        paths = cycle_paths(plans, ordinal)
         variables = {"aws_profile": "nebula", "aws_region": "us-east-1",
             "ami_id": image["ImageId"], "ami_owner_id": image["OwnerId"],
             "ami_commitment": draft["ami_commitment"], "batch_commitment": batch,
@@ -334,22 +435,47 @@ def main(arguments):
             "rootfs_descriptor_sha256": bindings["rootfs_descriptor_sha256"],
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(draft["expires_unix_ns"] // 10**9)),
             "budget_alert_email": email, "account_id_sha256": draft["account_commitment"]}
-        varfile = plans / f"{ordinal:02d}.tfvars.json"; varfile.write_bytes(canonical(variables))
-        plan = plans / f"{ordinal:02d}.tfplan"
+        paths["variables_path"].write_bytes(canonical(variables))
+        local_environment = {**environment, "TF_DATA_DIR": str(paths["tf_data_dir"])}
+        run((str(tofu), "init", "-input=false", "-lockfile=readonly",
+             "-backend-config=path=" + str(paths["state_path"])), 300, local_environment)
+        # The exact state path is passed to plan as well as the explicit local
+        # backend, so a changed backend configuration cannot silently redirect it.
         run((str(tofu), "plan", "-input=false", "-lock=false", "-refresh=true",
-            "-var-file=" + str(varfile), "-out=" + str(plan)), 900, environment)
-        shown = run((str(tofu), "show", "-json", str(plan)), 120, environment, True)
-        plan_json = plans / f"{ordinal:02d}.plan.json"
-        plan_json.write_bytes(canonical(shown)); varfile.unlink()
+            "-state=" + str(paths["state_path"]), "-var-file=" + str(paths["variables_path"]),
+            "-out=" + str(paths["plan_path"])), 900, local_environment)
+        shown = run((str(tofu), "show", "-json", str(paths["plan_path"])), 120, local_environment, True)
+        fd = os.open(paths["plan_json_path"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            rendered = canonical(shown); require(os.write(fd, rendered) == len(rendered)); os.fsync(fd)
+        finally: os.close(fd)
+        paths["variables_path"].unlink()
         run(("/usr/bin/python3", str(ROOT / "deploy/aws-feasibility/check-plan.py"),
-             str(plan_json)), 30, environment)
-        hashes.append(hashlib.sha256(plan.read_bytes()).hexdigest())
+             str(paths["plan_json_path"])), 30, local_environment)
+        staged = stage_plan(paths, ordinal, batch, paths["plan_path"], shown)
+        require(staged["plan_sha256"] == hashlib.sha256(paths["plan_path"].read_bytes()).hexdigest())
+        hashes.append(staged["plan_sha256"])
     credentials.unlink(); config.unlink()
     draft["plan_sha256s"] = hashes
+    # The bootstrap cache and its local state are never staged as plan inputs.
+    require(not bootstrap_state.exists())
     (output / "approval-draft.json").write_bytes(canonical(draft))
     (output / "tofu").write_bytes(tofu.read_bytes()); os.chmod(output / "tofu", 0o555)
-    (output / "tofu-provider-aws").write_bytes(provider_raw)
-    os.chmod(output / "tofu-provider-aws", 0o555)
+    (output / PACKAGE_MANIFEST).write_bytes(canonical(provider_manifest))
+    # Artifact services do not preserve executable modes for unpacked files.  The
+    # ordinary provider closure therefore crosses every workflow boundary only
+    # in this mode-bearing archive, accompanied by its exact byte digest.
+    package_output = output / "provider-package"
+    copy_provider_package(provider_root, package_output, provider_manifest)
+    archive_path = output / PACKAGE_ARCHIVE
+    with tarfile.open(archive_path, "x") as archive:
+        archive.add(package_output, arcname="provider-package", recursive=False)
+        for row in provider_manifest["files"]:
+            archive.add(package_output / row["name"], arcname="provider-package/" + row["name"], recursive=False)
+    archive_digest = "sha256:" + hashlib.sha256(_read_regular(archive_path, PACKAGE_MAX_BYTES)).hexdigest()
+    (output / PACKAGE_ARCHIVE_DIGEST).write_text(archive_digest + "\n", encoding="ascii")
+    for path in package_output.iterdir(): path.unlink()
+    package_output.rmdir()
 
 
 if __name__ == "__main__":

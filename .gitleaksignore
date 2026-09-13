@@ -5,3 +5,5 @@
 7377a8bf73dc181827bf61a8a1edee8c31cf9b96:test/aws-stage2-completion-kata-inputs.py:private-key:54
 # Intentionally fake AWS access-key shape used only to prove evidence rejects secrets.
 9104d5ddbaa7a70c97ac05a897c28a7b68187333:test/aws-stage2-completion-evidence-v2.test.ts:aws-access-token:191
+# DurationSeconds=900 is superseded test prose, not a secret.
+dc763035389dc01e3bb77c91e35851c94a38b5df:test/stage2-remediation-budget.test.ts:generic-api-key:281

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import sys
+import tarfile
 
 
 def forbidden_audit(event, _args):
@@ -19,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
     "stage2_production_planner_test", ROOT / "scripts/stage2-production-planner.py")
 planner = importlib.util.module_from_spec(spec); spec.loader.exec_module(planner)
+stager_spec = importlib.util.spec_from_file_location(
+    "stage2_stage_production_approval_test", ROOT / "scripts/stage2-stage-production-approval.py")
+stager = importlib.util.module_from_spec(stager_spec); stager_spec.loader.exec_module(stager)
 
 # Exercise post-spawn cancellation and selector-construction cuts only with a
 # local sleeping Python child, before the rest of this test forbids subprocesses.
@@ -171,9 +175,13 @@ with tempfile.TemporaryDirectory() as temporary:
                 "Architecture": "x86_64", "VirtualizationType": "hvm",
                 "RootDeviceType": "ebs", "State": "available"}]}
         if "init" in arguments:
-            provider_root = root / "deploy/aws-feasibility/.terraform/providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
-            provider_root.mkdir(parents=True)
-            (provider_root / "tofu-provider-aws_v6.54.0_x5").write_bytes(b"provider")
+            data = Path(environment["TF_DATA_DIR"])
+            assert data.is_dir() and data.parent == root / "output" / "plans"
+            provider_root = data / "providers/registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
+            provider_root.mkdir(parents=True, exist_ok=True)
+            (provider_root / "LICENSE").write_bytes(b"license\n")
+            (provider_root / "terraform-provider-aws_v6.54.0_x5").write_bytes(b"provider")
+            (provider_root / "terraform-provider-aws_v6.54.0_x5").chmod(0o755)
             return b"initialized\n"
         output_path = next((item[5:] for item in arguments if item.startswith("-out=")), None)
         if output_path is not None:
@@ -234,7 +242,54 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "runtime_commitment" not in draft
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).read_bytes() == package_path.read_bytes()
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).stat().st_mode & 0o777 == 0o600
+    provider_manifest = json.loads((output / planner.PACKAGE_MANIFEST).read_bytes())
+    assert not (output / "provider-package").exists()
+    archive = output / planner.PACKAGE_ARCHIVE
+    assert archive.is_file()
+    assert (output / planner.PACKAGE_ARCHIVE_DIGEST).read_text() == "sha256:" + \
+        hashlib.sha256(archive.read_bytes()).hexdigest() + "\n"
+    with tarfile.open(archive) as provider_archive:
+        provider_archive.extractall(output / "archive-check")
+    assert planner.provider_package(output / "archive-check" / "provider-package") == provider_manifest
+    staged_files = stager.provider_package_archive(output, provider_manifest)
+    assert staged_files == stager.provider_package(
+        output / "archive-check" / "provider-package", provider_manifest)
+    # The campaign-side adapter reopens the stager's mirror closure rather than
+    # accepting the obsolete root-level provider binary.  Root ownership is
+    # modeled only for this provider-free transfer test.
+    adapter, custody = stager.adapter, output / "adapter-custody"
+    mirror = custody / "provider-mirror" / provider_manifest["prefix"]
+    mirror.mkdir(parents=True); os.chmod(mirror, provider_manifest["root_mode"])
+    for name, (body, mode) in staged_files.items():
+        target = mirror / name; target.write_bytes(body); target.chmod(mode)
+    manifest_path = custody / "provider-package.json"
+    manifest_path.write_bytes(planner.canonical(provider_manifest)); manifest_path.chmod(0o400)
+    original = adapter.ROOT, adapter.PROVIDER_MANIFEST, adapter.PROVIDER_MIRROR
+    original_fstat, original_lstat = adapter.os.fstat, Path.lstat
+    def rooted(info):
+        return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink,
+                               0, 0, info.st_size, info.st_atime, info.st_mtime, info.st_ctime))
+    adapter.ROOT, adapter.PROVIDER_MANIFEST, adapter.PROVIDER_MIRROR = custody, manifest_path, mirror
+    adapter.os.fstat = lambda descriptor: rooted(original_fstat(descriptor))
+    Path.lstat = lambda path: rooted(original_lstat(path))
+    try: assert adapter._provider_package() == b"provider"
+    finally:
+        Path.lstat, adapter.os.fstat = original_lstat, original_fstat
+        adapter.ROOT, adapter.PROVIDER_MANIFEST, adapter.PROVIDER_MIRROR = original
+    assert {row["name"] for row in provider_manifest["files"]} == {
+        "LICENSE", "terraform-provider-aws_v6.54.0_x5"}
+    assert provider_manifest["provider_binary_sha256"] == d("provider")
     assert len(draft["plan_sha256s"]) == len(set(draft["plan_sha256s"])) == 7
+    for ordinal in range(1, 8):
+        staged = json.loads((output / "plans" / f"{ordinal:02d}.staged-plan.json").read_bytes())
+        assert staged["ordinal"] == ordinal and staged["tf_data_dir"] == f"{ordinal:02d}.tf-data"
+        assert staged["state_path"] == f"{ordinal:02d}.terraform.tfstate"
+        assert staged["plan_path"] == f"{ordinal:02d}.tfplan"
+        assert staged["plan_sha256"] == hashlib.sha256(
+            (output / "plans" / f"{ordinal:02d}.tfplan").read_bytes()).hexdigest()
+    try: planner.cycle_paths(output / "plans", 1)
+    except planner.PlanningError: pass
+    else: raise AssertionError("stale cycle paths were adopted")
     assert draft["executor_principal_commitment"] == planner.production.executor_principal_commitment(
         "aws", "000000000000", "executor")
     assert draft["inventory_observer_principal_commitment"] == \
@@ -245,6 +300,45 @@ with tempfile.TemporaryDirectory() as temporary:
         "rate_source_commitment": planner.production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": d("issuer"), "one_attempt": True}
     assert planner.production.approval_batch_commitment(issued_shape) == planned_batch
+    issued_shape["batch_commitment"] = planned_batch
+    # Reopen the approval through the adapter against the mirror staged from the
+    # archive; no obsolete root-level provider path participates in admission.
+    approval_raw = planner.canonical({**issued_shape, "plan_sha256s": list(issued_shape["plan_sha256s"])})
+    approval_value = planner.production.ProductionApproval(**{
+        **issued_shape, "plan_sha256s": tuple(issued_shape["plan_sha256s"])})
+    authentication = {"version": "cogs.stage2-production-approval-authentication/v1", "result": "pass",
+        "approval_sha256": hashlib.sha256(approval_raw).hexdigest(),
+        "issuer_commitment": approval_value.issuer_commitment, "workflow_sha256": d("workflow"),
+        "workflow_run_id": 1, "workflow_run_attempt": 1, "control_revision": approval_value.control_revision,
+        "approver_principal_commitment": d("approver"),
+        "executor_principal_commitment": approval_value.executor_principal_commitment,
+        "inventory_observer_principal_commitment": approval_value.inventory_observer_principal_commitment,
+        "first_created": True}
+    paths = {"APPROVAL": ("approval.json", approval_raw, 0o400),
+             "AUTHENTICATION": ("approval-authentication.json", planner.canonical(authentication), 0o400),
+             "AUTHENTICATION_BUNDLE": ("approval-authentication.bundle.json", b"bundle", 0o400),
+             "COSIGN": ("cosign", b"cosign", 0o555), "TOFU": ("tofu", b"tofu", 0o555),
+             "TRUSTED_ROOT": ("sigstore-trusted-root.json", b"root", 0o400),
+             "AWS_CONFIG": ("aws-config", b"config", 0o400),
+             "AWS_CREDENTIALS": ("aws-credentials", b"credentials", 0o400),
+             "TOFU_CONFIG": ("tofu-cli.tfrc", b"config", 0o400)}
+    saved = {name: getattr(adapter, name) for name in paths}
+    for name, (filename, body, mode) in paths.items():
+        path = custody / filename; path.write_bytes(body); path.chmod(mode); setattr(adapter, name, path)
+    saved_hashes, saved_run = (adapter.COSIGN_SHA256, adapter.TOFU_SHA256,
+                               adapter.TRUSTED_ROOT_SHA256), adapter.subprocess.run
+    adapter.COSIGN_SHA256, adapter.TOFU_SHA256, adapter.TRUSTED_ROOT_SHA256 = (
+        hashlib.sha256(b"cosign").hexdigest(), hashlib.sha256(b"tofu").hexdigest(),
+        hashlib.sha256(b"root").hexdigest())
+    adapter.subprocess.run = lambda *_args, **_kwargs: type("Result", (), {"returncode": 0})()
+    adapter.ROOT, adapter.PROVIDER_MANIFEST, adapter.PROVIDER_MIRROR = custody, manifest_path, mirror
+    adapter.os.fstat = lambda descriptor: rooted(original_fstat(descriptor)); Path.lstat = lambda path: rooted(original_lstat(path))
+    try: assert adapter._approval()[0] == approval_value
+    finally:
+        Path.lstat, adapter.os.fstat, adapter.subprocess.run = original_lstat, original_fstat, saved_run
+        for name, path in saved.items(): setattr(adapter, name, path)
+        adapter.COSIGN_SHA256, adapter.TOFU_SHA256, adapter.TRUSTED_ROOT_SHA256 = saved_hashes
+        adapter.ROOT, adapter.PROVIDER_MANIFEST, adapter.PROVIDER_MIRROR = original
     assert not (output / ".aws-credentials").exists()
     assert not (output / ".aws-config").exists()
 
