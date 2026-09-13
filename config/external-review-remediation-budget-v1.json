@@ -25,10 +25,10 @@
       "gross_bytes": 11000000
     },
     "global_gross_line_forecast": 40157,
-    "global_gross_byte_forecast": 28800000,
+    "global_gross_byte_forecast": 29500000,
     "remaining_tranche": {
       "gross_lines": 22157,
-      "gross_bytes": 20800000,
+      "gross_bytes": 21500000,
       "allocations": [
         {
           "name": "governance",
@@ -124,7 +124,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 2600000,
+          "gross_bytes": 3300000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -134,6 +134,7 @@
             "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
             "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
             "docs/security-evidence/stage4-offline-readiness-package.json",
+            "docs/security-evidence/stage5-destructive-harness-report.canonical-json",
             "scripts/stage4-offline-readiness.ts",
             "scripts/stage4-offline-source-inventory.ts",
             "scripts/stage4-runtime-artifact-closure.ts",

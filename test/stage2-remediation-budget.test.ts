@@ -15,11 +15,11 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(4600,3200000),(4457,8400000),(1800,2600000),(5300,5500000)]
-assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,20800000)
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,28800000)
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(4600,3200000),(4457,8400000),(1800,3300000),(5300,5500000)]
+assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
-assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
+assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
 assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths']
