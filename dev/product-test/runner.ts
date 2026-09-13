@@ -225,7 +225,7 @@ export function launchDocument(shared: string, user: string, pin = `SHA256:${"A"
       cpu: 2,
       memory_bytes: 4294967296,
       tool_timeout_seconds: 10,
-      turn_timeout_seconds: 65,
+      turn_timeout_seconds: 70,
       max_tool_output_bytes: 16384,
     },
   });
