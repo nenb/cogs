@@ -84,36 +84,63 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
 });
 
-test("protected product and KVM admissions consume only a complete sole attempt-one history", async () => {
+test("protected product and KVM admissions settle complete validated history before enabling exact effects", async () => {
   const candidate = "a".repeat(40);
   const current = { id: 41, head_sha: candidate, head_branch: "main", event: "workflow_dispatch", run_attempt: 1 };
   const prior = { ...current, id: 40, conclusion: "failure" };
-  const admission = async (path: string, pages: unknown[], attempt = "1", run = "41") => {
+  type Fault = "aborted" | "close" | "error" | "oversized" | "request-error" | "truncated" | "unresolved" | "valid";
+  const admission = async (
+    path: string,
+    pages: unknown[],
+    attempt = "1",
+    run = "41",
+    fault: Fault = "valid",
+    outputFailure = false,
+  ) => {
     const workflow = await readFile(path, "utf8");
     assert.match(workflow, /permissions:\n {2}actions: read\n {2}contents: read/u);
     assert.match(workflow, /admission:\n {4}if: github\.run_attempt == 1/u);
     assert.equal([...workflow.matchAll(/if: github\.run_attempt == 1/g)].length, 2);
+    assert.match(
+      workflow,
+      /if: github\.run_attempt == 1 && needs\.admission\.result == 'success' && needs\.admission\.outputs\.candidate == github\.sha/u,
+      `${path}: effect job must bind its candidate output to the exact trigger SHA`,
+    );
     const admissionStep = /- id: admit\n[\s\S]*?GITHUB_TOKEN: \$\{\{ github\.token \}\}[\s\S]*?node - <<'NODE'/u.exec(
       workflow,
     )?.[0];
     assert.ok(admissionStep, `${path}: history admission must bind the Actions token in its real step environment`);
     const source = /node - <<'NODE'\n([\s\S]*?)\n {10}NODE/u.exec(workflow)?.[1];
     assert.ok(source, `${path}: missing read-only admission`);
+    assert.ok(source.indexOf("process.exitCode = 1;") < source.indexOf("https.request"));
+    assert.ok(source.indexOf("fs.appendFileSync") < source.lastIndexOf("process.exitCode = 0;"));
     const root = await mkdtemp(resolve(tmpdir(), "cogs-admission-"));
-    const output = resolve(root, "output");
-    await writeFile(output, "");
+    const output = outputFailure ? root : resolve(root, "output");
+    if (!outputFailure) await writeFile(output, "");
     const harness = `
 const { EventEmitter } = require("node:events"), Module = require("node:module");
-const pages = ${JSON.stringify(pages)};
+const pages = ${JSON.stringify(pages)}, fault = ${JSON.stringify(fault)};
+let requests = 0, destroyed = false;
+process.on("exit", () => process.stderr.write("requests=" + requests + ";destroyed=" + destroyed + "\\n"));
 const request = (options, callback) => {
+  requests++;
   const response = new EventEmitter(), page = Number(new URL("https://x" + options.path).searchParams.get("page"));
   response.statusCode = pages[page - 1] === undefined ? 500 : 200;
-  response.setEncoding = () => {}; response.destroy = () => {};
-  process.nextTick(() => { callback(response); if (response.statusCode === 200) {
+  response.setEncoding = () => {}; response.destroy = () => { destroyed = true; response.emit("close"); };
+  const client = new EventEmitter(); client.end = () => {};
+  process.nextTick(() => {
+    callback(response);
+    if (fault === "request-error") return client.emit("error", new Error("request"));
+    if (fault === "unresolved") return;
+    if (fault === "aborted") return response.emit("aborted");
+    if (fault === "close") return response.emit("close");
+    if (fault === "error") response.emit("error", new Error("response")); // A late complete response must not settle success.
+    if (fault === "oversized") return response.emit("data", "x".repeat(2 * 1024 * 1024 + 1));
     const raw = JSON.stringify(pages[page - 1]); const cut = Math.floor(raw.length / 2);
-    response.emit("data", raw.slice(0, cut)); response.emit("data", raw.slice(cut)); response.emit("end");
-  } else response.emit("end"); });
-  const client = new EventEmitter(); client.end = () => {}; return client;
+    response.emit("data", raw.slice(0, cut)); response.emit("data", raw.slice(cut));
+    response.complete = fault !== "truncated"; response.emit("end");
+  });
+  return client;
 };
 const load = Module._load; Module._load = (name, parent, main) => name === "node:https" ? { request } : load(name, parent, main);
 ${source}
@@ -131,25 +158,65 @@ ${source}
         GITHUB_OUTPUT: output,
       },
     });
-    const receipt = await readFile(output, "utf8");
+    const receipt = outputFailure ? "" : await readFile(output, "utf8");
     await rm(root, { recursive: true, force: true });
     return { result, receipt };
   };
+  const effectsRun = (attempt: string, result: string, output: string, sha: string) =>
+    attempt === "1" && result === "success" && output === sha;
   for (const path of [".github/workflows/insecure-container.yml", ".github/workflows/kvm-qualification.yml"]) {
     const valid = await admission(path, [{ total_count: 1, workflow_runs: [current] }]);
     assert.equal(valid.result.status, 0, `${path}: ${valid.result.stderr}`);
     assert.equal(valid.receipt, `candidate=${candidate}\n`);
+    assert.equal(effectsRun("1", "success", candidate, candidate), true);
+    for (const output of ["", "b".repeat(40)])
+      assert.equal(effectsRun("1", "success", output, candidate), false, `${path}: reused output granted effects`);
     for (const pages of [
       [{ total_count: 2, workflow_runs: [current, prior] }], // prior failed candidate consumes it
       [{ total_count: 2, workflow_runs: [current, { ...prior, conclusion: "cancelled" }] }],
       [{ total_count: 1, workflow_runs: [{ ...current, id: 40 }] }], // reused admission
       [{ total_count: 1, workflow_runs: [{ ...current, id: "41" }] }], // malformed API row
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, head_sha: "A".repeat(40) }] }],
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, head_branch: "release" }] }],
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, event: "push" }] }],
       [{ total_count: 101, workflow_runs: Array.from({ length: 100 }, () => current) }], // incomplete pagination
     ]) {
       const rejected = await admission(path, pages);
       assert.notEqual(rejected.result.status, 0, `${path}: duplicate, malformed, or incomplete history admitted`);
       assert.equal(rejected.receipt, "");
     }
+    for (const fault of [
+      "truncated",
+      "aborted",
+      "close",
+      "error",
+      "oversized",
+      "request-error",
+      "unresolved",
+    ] as const) {
+      const rejected = await admission(path, [{ total_count: 1, workflow_runs: [current] }], "1", "41", fault);
+      assert.notEqual(rejected.result.status, 0, `${path}: ${fault} response admitted`);
+      assert.equal(rejected.receipt, "");
+      if (fault === "oversized") assert.match(rejected.result.stderr, /destroyed=true/u);
+    }
+    const appendFailure = await admission(
+      path,
+      [{ total_count: 1, workflow_runs: [current] }],
+      "1",
+      "41",
+      "valid",
+      true,
+    );
+    assert.notEqual(appendFailure.result.status, 0, `${path}: output append failure admitted`);
+    const unsafeRun = await admission(
+      path,
+      [{ total_count: 1, workflow_runs: [current] }],
+      "1",
+      "9007199254740992",
+      "unresolved",
+    );
+    assert.notEqual(unsafeRun.result.status, 0, `${path}: unsafe run ID admitted`);
+    assert.match(unsafeRun.result.stderr, /requests=0/u, `${path}: invalid run ID made a history request`);
     const rerun = await admission(path, [{ total_count: 1, workflow_runs: [{ ...current, run_attempt: 2 }] }], "2");
     assert.notEqual(rerun.result.status, 0, `${path}: attempt-two rerun admitted`);
   }

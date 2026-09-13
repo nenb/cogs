@@ -41,43 +41,66 @@ jobs:
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
           test "$CANDIDATE" = "$GITHUB_SHA"
           node - <<'NODE'
-          const https = require("node:https"), fs = require("node:fs");
-          const fail = () => process.exit(1), env = process.env;
-          const candidate = env.CANDIDATE, run = env.GITHUB_RUN_ID;
-          if (!/^[a-f0-9]{40}$/.test(candidate) || !/^[1-9][0-9]*$/.test(run) || env.GITHUB_RUN_ATTEMPT !== "1") fail();
-          const pageSize = 100, maximumPages = 20, rows = [];
+          process.exitCode = 1;
+          const https = require("node:https"), fs = require("node:fs"), env = process.env;
+          const fail = (message) => { throw new Error(message); };
+          const candidate = env.CANDIDATE, runText = env.GITHUB_RUN_ID ?? "", run = Number(runText);
+          const pageSize = 100, maximumPages = 20, maximumBodyBytes = 2 * 1024 * 1024, rows = [];
           const get = (page) => new Promise((resolve, reject) => {
+            let settled = false;
+            const settle = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+            const rejectOnce = (message) => settle(reject, new Error(message));
             const request = https.request({ hostname: "api.github.com", path: `/repos/${env.GITHUB_REPOSITORY}/actions/workflows/insecure-container.yml/runs?event=workflow_dispatch&branch=main&per_page=${pageSize}&page=${page}`, headers: { accept: "application/vnd.github+json", authorization: `Bearer ${env.GITHUB_TOKEN}`, "user-agent": "cogs-protected-product-admission" } }, (response) => {
-              let body = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { if ((body += chunk).length > 2 * 1024 * 1024) response.destroy(); });
-              response.on("end", () => response.statusCode === 200 ? resolve(body) : reject(new Error("actions history unavailable")));
+              let body = "", bytes = 0, ended = false;
+              response.setEncoding("utf8");
+              response.once("error", () => rejectOnce("actions history response error"));
+              response.once("aborted", () => rejectOnce("actions history response aborted"));
+              response.once("close", () => { if (!ended || response.complete !== true) rejectOnce("actions history response closed early"); });
+              response.on("data", (chunk) => {
+                if (settled) return;
+                bytes += Buffer.byteLength(chunk, "utf8");
+                if (bytes > maximumBodyBytes) {
+                  rejectOnce("actions history response too large");
+                  try { response.destroy(); } catch { /* rejection is already latched */ }
+                  return;
+                }
+                body += chunk;
+              });
+              response.once("end", () => {
+                ended = true;
+                if (response.complete !== true) rejectOnce("actions history response incomplete");
+                else if (response.statusCode !== 200) rejectOnce("actions history unavailable");
+                else settle(resolve, body);
+              });
             });
-            request.on("error", reject); request.end();
+            request.once("error", () => rejectOnce("actions history request error"));
+            request.end();
           });
           (async () => {
+            if (!/^[a-f0-9]{40}$/.test(candidate) || !/^[1-9][0-9]*$/.test(runText) || !Number.isSafeInteger(run) || run < 1 || env.GITHUB_RUN_ATTEMPT !== "1") fail("invalid admission inputs");
             let total;
             for (let page = 1; page <= maximumPages; page++) {
-              let value; try { value = JSON.parse(await get(page)); } catch { fail(); return; }
-              if (!value || Object.getPrototypeOf(value) !== Object.prototype || !Number.isSafeInteger(value.total_count) || value.total_count < 0 || !Array.isArray(value.workflow_runs) || value.workflow_runs.length > pageSize || (total !== undefined && total !== value.total_count)) fail();
+              const value = JSON.parse(await get(page));
+              if (!value || Object.getPrototypeOf(value) !== Object.prototype || !Number.isSafeInteger(value.total_count) || value.total_count < 0 || !Array.isArray(value.workflow_runs) || value.workflow_runs.length > pageSize || (total !== undefined && total !== value.total_count)) fail("invalid actions history page");
               total = value.total_count; rows.push(...value.workflow_runs);
               if (rows.length === total) break;
-              if (value.workflow_runs.length !== pageSize || page === maximumPages) fail();
+              if (value.workflow_runs.length !== pageSize || page === maximumPages) fail("incomplete actions history");
             }
-            if (rows.length !== total || total > pageSize * maximumPages) fail();
+            if (rows.length !== total || total > pageSize * maximumPages) fail("incomplete actions history");
             const ids = new Set();
             for (const row of rows) {
-              if (!row || !Number.isSafeInteger(row.id) || ids.has(row.id)) fail();
+              if (!row || Object.getPrototypeOf(row) !== Object.prototype || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) || typeof row.head_sha !== "string" || !/^[a-f0-9]{40}$/.test(row.head_sha) || row.head_branch !== "main" || row.event !== "workflow_dispatch" || !Number.isSafeInteger(row.run_attempt) || row.run_attempt < 1) fail("malformed actions history row");
               ids.add(row.id);
             }
-            for (const row of rows)
-              if (!row || Object.getPrototypeOf(row) !== Object.prototype || !Number.isSafeInteger(row.id) || row.id < 1 || typeof row.head_sha !== "string" || typeof row.head_branch !== "string" || typeof row.event !== "string" || !Number.isSafeInteger(row.run_attempt) || row.run_attempt < 1) fail();
-            const exact = rows.filter((row) => row.head_sha === candidate && row.head_branch === "main" && row.event === "workflow_dispatch");
-            if (exact.length !== 1 || exact[0].id !== Number(run) || exact[0].run_attempt !== 1) fail();
+            const exact = rows.filter((row) => row.head_sha === candidate);
+            if (exact.length !== 1 || exact[0].id !== run || exact[0].run_attempt !== 1) fail("admission is not the sole first attempt");
             fs.appendFileSync(env.GITHUB_OUTPUT, `candidate=${candidate}\n`, { encoding: "utf8", mode: 0o600 });
-          })().catch(fail);
+            process.exitCode = 0;
+          })().catch(() => {});
           NODE
 
   protected-product:
-    if: github.run_attempt == 1 && needs.admission.result == 'success'
+    if: github.run_attempt == 1 && needs.admission.result == 'success' && needs.admission.outputs.candidate == github.sha
     needs: admission
     name: protected-${{ matrix.profile }}-${{ matrix.authority }}
     runs-on: ubuntu-24.04
