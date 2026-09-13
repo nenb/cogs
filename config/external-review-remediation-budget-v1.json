@@ -63,6 +63,7 @@
             "dev/product-test/runner.ts",
             "dev/product-test/snapshot-owner.ts",
             "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
+            "images/sandbox/entrypoint.sh",
             "src/egress/otlp-telemetry.ts",
             "src/ssh/connection.ts",
             "src/telemetry/worker-telemetry.ts",
@@ -71,7 +72,8 @@
             "test/ssh-connection.test.ts",
             "test/worker-telemetry.test.ts",
             "test/dev-launcher-profiles.test.ts",
-            "test/production-compose.test.ts"
+            "test/production-compose.test.ts",
+            "test/production-sandbox-image.test.ts"
           ]
         },
         {
@@ -270,6 +272,7 @@
         "dev/launcher/trusted-controls.ts",
         "dev/launcher/worker-entry.ts",
         "dev/launcher/worker-process.ts",
+        "images/sandbox/entrypoint.sh",
         "schemas/launcher-cleanup-receipt-v1.json",
         "schemas/runtime-v1alpha1.json",
         "src/egress/audit-wal.ts",
@@ -308,6 +311,7 @@
         "test/launch-lifecycle.test.ts",
         "test/pi-native-persistence.test.ts",
         "test/production-compose.test.ts",
+        "test/production-sandbox-image.test.ts",
         "test/runtime-config.test.ts",
         "test/ssh-connection.test.ts",
         "test/stage3-s309-exit-evidence.test.ts"
