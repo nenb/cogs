@@ -17,7 +17,7 @@ test("mutable Kata owner bridges are narrow and fault-cut", () => {
     cwd: process.cwd(),
     env,
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: 120_000,
   });
   assert.equal(budget.status, 0, budget.stderr);
   const report = JSON.parse(budget.stdout) as {

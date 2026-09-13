@@ -18,7 +18,7 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(4000,3200000),(4457,8400000),(1800,2000000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (21557,20200000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (39557,28200000)
-assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-runtime.py','test/stage2-prebuilt-local-kata-workflow.test.ts']
+assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-workflows.test.ts' in local
@@ -52,6 +52,12 @@ test("ADR0338 records temporary runner-loss handling without effect authority", 
     "strict hard cap is **132,000 lines**",
   ])
     assert.ok(compact.includes(phrase), phrase);
+  for (const path of [
+    "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
+    "test/aws-stage2-completion-kata-runtime.test.ts",
+    "test/aws-stage2-completion-local-result.test.ts",
+  ])
+    assert.ok(compact.includes(path), path);
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

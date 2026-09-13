@@ -88,7 +88,6 @@
             "docs/security-evidence/stage4-offline-readiness-package.json",
             "scripts/stage4-offline-readiness.ts",
             "scripts/stage4-offline-source-inventory.ts",
-            "test/aws-stage2-completion-local-result.test.ts",
             "test/ci-infrastructure-boundary.test.ts"
           ]
         },
@@ -96,7 +95,13 @@
           "name": "final-HGQ",
           "gross_lines": 5300,
           "gross_bytes": 5500000,
-          "paths": ["test/aws-stage2-completion-kata-runtime.py", "test/stage2-prebuilt-local-kata-workflow.test.ts"],
+          "paths": [
+            "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
+            "test/aws-stage2-completion-kata-runtime.py",
+            "test/aws-stage2-completion-kata-runtime.test.ts",
+            "test/aws-stage2-completion-local-result.test.ts",
+            "test/stage2-prebuilt-local-kata-workflow.test.ts"
+          ],
           "pre_h_cap": {
             "gross_lines": 1800,
             "gross_bytes": 2000000
@@ -595,9 +600,11 @@
         "test/aws-stage2-completion-evidence-v3.test.ts",
         "test/aws-stage2-completion-kata-coordinator.py",
         "test/aws-stage2-completion-kata-coordinator.test.ts",
+        "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
         "test/aws-stage2-completion-kata-native-recover.py",
         "test/aws-stage2-completion-kata-rehearsal.test.ts",
         "test/aws-stage2-completion-kata-runtime.py",
+        "test/aws-stage2-completion-kata-runtime.test.ts",
         "test/aws-stage2-completion-kata-s5.py",
         "test/aws-stage2-completion-local-receipt.py",
         "test/aws-stage2-completion-local-result.py",

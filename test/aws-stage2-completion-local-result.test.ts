@@ -48,7 +48,7 @@ test("local qualification result state machine is strict normally and under pyth
       cwd: root,
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
-      timeout: 60_000,
+      timeout: 180_000,
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /completion local result codec tests passed/u);

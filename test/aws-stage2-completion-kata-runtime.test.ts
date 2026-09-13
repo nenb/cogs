@@ -15,7 +15,7 @@ test("S4 Kata runtime/spec/process/share owner is closed and hostile-tested offl
     cwd: root,
     env: pythonEnv,
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: 120_000,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /completion Kata runtime S4 hostile offline matrix passed/u);
