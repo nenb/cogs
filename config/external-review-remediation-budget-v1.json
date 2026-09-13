@@ -82,6 +82,7 @@
           "gross_lines": 1800,
           "gross_bytes": 2000000,
           "paths": [
+            ".gitleaksignore",
             ".github/workflows/ci.yml",
             "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
             "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
@@ -360,6 +361,7 @@
         ".github/workflows/stage2-production-plan.yml",
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
+        ".gitleaksignore",
         "README.md",
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
