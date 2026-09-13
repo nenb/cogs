@@ -342,11 +342,16 @@ try: m.line(r,1024)
 except RuntimeError: pass
 else: raise AssertionError('pipelined frame accepted')
 os.close(r);os.close(w)
-assert m.DIAGNOSTICS==frozenset(('constructor','operation','helper'))
+assert m.OPERATIONS==frozenset(('authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'))
+assert m.PROVENANCE_SUBSTAGES==frozenset(('final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment'))
 r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
-try: m.emit_diagnostic('a'*32,'helper')
+try: m.emit_diagnostic('a'*32,'provenance','layer-count',True)
 finally: os.dup2(old,1);os.close(old);os.close(w)
-assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';os.close(r)
+assert os.read(r,256)==b'{"cleanup":"uncertain","diagnostic":"provenance","generation":"'+b'a'*32+b'","substage":"layer-count"}\n';os.close(r)
+for stage,substage in (('operation',None),('image','inventory'),('provenance','unknown')):
+ try: m.emit_diagnostic('a'*32,stage,substage)
+ except RuntimeError: pass
+ else: raise AssertionError('unknown diagnostic admitted')
 `,
     ],
     { encoding: "utf8", timeout: 10_000 },
@@ -412,6 +417,31 @@ assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';
   const runner = await readFile("dev/product-test/runner.ts", "utf8");
   assert.ok(runner.includes('for (const args of syntheticPkiArgv(root, name)) await run("openssl", [...args]);'));
   assert.equal(runner.includes("args.split("), false);
+});
+
+test("product custody diagnostics are closed, provenance-paired, and failure artifacts have no authority", async () => {
+  const owner = await readFile("dev/product-test/snapshot-owner.ts", "utf8");
+  const custody = await readFile("dev/product-test/host-custody.py", "utf8");
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  assert.match(owner, /diagnostics\.has\(result\.diagnostic as string\)[\s\S]*paired[\s\S]*cleanup/u);
+  assert.doesNotMatch(owner, /result\.diagnostic === "operation"/u);
+  assert.match(custody, /self\.failure_stage = "helper-finalize"/u);
+  assert.match(custody, /stage, substage = self\.failure_stage, self\.failure_substage/u);
+  for (const stage of [
+    "final-head",
+    "status",
+    "baseline",
+    "source",
+    "inventory",
+    "build-receipt",
+    "layer-prefix",
+    "layer-count",
+    "environment",
+  ])
+    assert.ok(custody.includes(`self.failure_substage = "${stage}"`), stage);
+  assert.match(workflow, /'pass_authority':False,'probe_authority':False/u);
+  assert.doesNotMatch(workflow, /partial_output_sha256/u);
+  assert.match(workflow, /'run_id':build\['run_id'\],'run_attempt':build\['run_attempt'\]/u);
 });
 
 test("product custody aggregates operation, settlement, and closure failures", async () => {

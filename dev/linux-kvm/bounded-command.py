@@ -313,7 +313,9 @@ def guest(state, name, port, deadline=None):
 
 
 def host_key(state, deadline=None):
-    code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+    # Keep two seconds inside the five-second outer bound: a keyscan timeout
+    # cannot consume the retry scheduler's complete deadline.
+    code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
     if code == 1 and not raw:
         return False  # key exchange only: no guest command was dispatched
     expected = read_control(state / "known_hosts", 4096)
@@ -467,6 +469,7 @@ def require_local_execution(generation):
 
 
 def main():
+    name = None
     def cancel(signum, frame):
         # Latch, do not throw inside Popen/pidfd capture: that would lose custody.
         global cancelled
@@ -486,8 +489,13 @@ def main():
             sys.stdout.buffer.flush()
         return 0
     except (Exception, KeyboardInterrupt) as error:
-        # Never reflect guest output, paths, argv, or credentials in diagnostics.
-        print("FAIL: bounded KVM command; generation must not be reused", file=sys.stderr)
+        # Fixed command/reason grammar only: never reflect output, paths, argv,
+        # keys, or exception text. Nonzero and uncertain outcomes retain custody.
+        command = name if name in IDS else "admission"
+        reason = "local-retirement-uncertain" if isinstance(error, RetirementUncertain) else (
+            "readiness-host-key" if command == "readiness" else "host-key" if command == "host-key" else "fixed-command"
+        )
+        print(f"FAIL: kvm-{command}-{reason}; generation must not be reused", file=sys.stderr)
         return 2 if isinstance(error, RetirementUncertain) else 1
 
 

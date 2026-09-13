@@ -23,7 +23,9 @@ import sys
 import time
 
 NONCE = re.compile(r"[0-9a-f]{32}\Z"); ID = re.compile(r"[0-9a-f]{64}\Z")
-DIAGNOSTICS = frozenset(("constructor", "operation", "helper"))
+OPERATIONS = frozenset(("authenticate", "capability-probe", "create", "evidence", "exec", "file", "image", "lease", "lease-directory", "mkdir", "pair", "provenance", "seal", "settle", "status", "storage"))
+PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment"))
+DIAGNOSTICS = frozenset(("constructor", "helper", "helper-finalize", *OPERATIONS))
 CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent",
@@ -70,9 +72,14 @@ def emit(value):
         data = data[os.write(sys.stdout.fileno(), data):]
 
 
-def emit_diagnostic(generation, stage):
+def emit_diagnostic(generation, stage, substage=None, cleanup_uncertain=False):
     require(NONCE.fullmatch(generation) and stage in DIAGNOSTICS)
-    emit({"diagnostic": stage, "generation": generation})
+    require((stage == "provenance" and substage in PROVENANCE_SUBSTAGES) or (stage != "provenance" and substage is None))
+    require(type(cleanup_uncertain) is bool)
+    value = {"diagnostic": stage, "generation": generation}
+    if substage is not None: value["substage"] = substage
+    if cleanup_uncertain: value["cleanup"] = "uncertain"
+    emit(value)
 
 
 def directory(parent, name, mode=None):
@@ -254,8 +261,8 @@ class Custody:
         self.ids, self.peers, self.mounts, self.images, self.sealed = {}, {}, [], {}, []; self.fd = self.control = self.lock = self.disk = None
         self.cgroup_parent = self.cgroup_fd = self.helpers_fd = None; self.cgroup_veto = False
         self.publication, self.history, self.shutdown = None, None, False; self.admissions, self.nodes, self.publications, self.records = [], 0, [], set()
-        self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True; self.failure_stage = "constructor"
-        self.failed, self.released = False, False; self.used, self.events, self.turns, self.headers = set(), 0, 0, False
+        self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True; self.failure_stage = "constructor"; self.failure_substage = None
+        self.cleanup_uncertain = False; self.failed, self.released = False, False; self.used, self.events, self.turns, self.headers = set(), 0, 0, False
         self.root = "/var/lib/cogs-product-test/" + self.generation
         parent = os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); s = os.fstat(parent)
         require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o700); self.cg = "/sys/fs/cgroup/cogs-product-" + self.generation
@@ -483,8 +490,9 @@ class Custody:
             pass  # Failed persistence never clears the live veto.
 
     def command(self, argv, cap=1048576, status=False, pass_fds=()):
-        helper_stage = getattr(self, "failure_stage", "constructor") != "constructor"
-        if helper_stage: self.failure_stage = "helper"
+        prior_stage, prior_substage = getattr(self, "failure_stage", "constructor"), getattr(self, "failure_substage", None)
+        helper_stage = prior_stage != "constructor"
+        if helper_stage: self.failure_stage, self.failure_substage = "helper", None
         parent_pid = os.getpid(); held = None; continued = completed = False
         def arm_parent_death():
             if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent_pid:
@@ -555,6 +563,10 @@ class Custody:
                 self.refuse_helper()
             raise
         finally:
+            # A completed helper still owns its finalization. If that tail fails,
+            # retain helper-finalize rather than incorrectly restoring its op.
+            if completed and helper_stage:
+                self.failure_stage = "helper-finalize"
             try:
                 # WNOWAIT retains the leader's numeric PID/PGID until BOTH final signals, even on early exit.
                 try:
@@ -583,7 +595,7 @@ class Custody:
                 p.stdout.close(); p.stderr.close()
                 os.close(held)
                 if completed and helper_stage:
-                    self.failure_stage = "operation"
+                    self.failure_stage, self.failure_substage = prior_stage, prior_substage
 
     def docker(self, *args, **options):
         return self.command(["docker", "--host=unix:///var/run/docker.sock", *args], 8 * 1048576, **options)
@@ -672,12 +684,13 @@ class Custody:
 
     def provenance(self, q):
         root = os.path.realpath(os.path.join(os.path.dirname(__file__), "../..")); git = lambda *a: self.command(["git", "-C", root, *a])
-        require(git("rev-parse", "HEAD").decode().strip() == q["candidate"])
+        self.failure_substage = "final-head"; require(git("rev-parse", "HEAD").decode().strip() == q["candidate"])
         # The root-created product context replaces this tracked file; every other
         # checkout mutation remains a refusal, so no writable checkout alias enters Docker.
-        require(git("status", "--porcelain=v1", "--untracked-files=all") == b" M .dockerignore\n")
-        require(not git("diff", q["baseline"], "--", "images/sandbox", "images/worker", "package-lock.json")); source = {}
+        self.failure_substage = "status"; require(git("status", "--porcelain=v1", "--untracked-files=all") == b" M .dockerignore\n")
+        self.failure_substage = "baseline"; require(not git("diff", q["baseline"], "--", "images/sandbox", "images/worker", "package-lock.json")); source = {}
         paths = ("src", "schemas", "dev/product-test", "dev/launcher/api-client.ts", "third_party")
+        self.failure_substage = "source"
         for raw in git("ls-tree", "-rz", "-r", "HEAD", "--", *paths).split(b"\0"):
             if not raw:
                 continue
@@ -687,8 +700,10 @@ class Custody:
                 require(capture(fd, os.path.basename(path)) == data)
                 require(stat.S_IMODE(os.stat(os.path.basename(path), dir_fd=fd, follow_symlinks=False).st_mode) == int(mode, 8) & 0o777)
             source[path] = {"digest": digest(data), "mode": int(mode, 8) & 0o777}
+        self.failure_substage = "inventory"
         with closing_fd(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             require(digest(capture(fd, ".dockerignore", 1024)) == q["dockerignore"])
+        self.failure_substage = "build-receipt"
         with closing_fd(os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
             s = os.stat("build-receipt.json", dir_fd=fd, follow_symlinks=False); require(s.st_uid == 0 and stat.S_IMODE(s.st_mode) == 0o400)
             receipt = json.loads(capture(fd, "build-receipt.json"))
@@ -700,9 +715,10 @@ class Custody:
         require(receipt == expected)  # independently retained protected-build output, not a CLI identity assertion
         self.build = receipt
         stock = self.images[q["stock_worker_image"]]["RootFS"]["Layers"]; layers = self.images[q["worker_image"]]["RootFS"]["Layers"]
-        require(layers[:len(stock)] == stock and len(layers) == len(stock) + 5)
-        require(environment(self.images[q["worker_image"]]["Config"]) == environment(self.images[q["stock_worker_image"]]["Config"]))
-        self.record("provenance", receipt); self.source = source
+        self.failure_substage = "layer-prefix"; require(layers[:len(stock)] == stock)
+        self.failure_substage = "layer-count"; require(len(layers) == len(stock) + 5)
+        self.failure_substage = "environment"; require(environment(self.images[q["worker_image"]]["Config"]) == environment(self.images[q["stock_worker_image"]]["Config"]))
+        self.failure_substage = None; self.record("provenance", receipt); self.source = source
         return receipt
 
     def verify_candidate(self, cid):
@@ -866,6 +882,7 @@ class Custody:
 
     def dispatch(self, q):
         require(not self.recovery and q.pop("generation") == self.generation); op = q.pop("op")
+        require(op in OPERATIONS); self.failure_stage = op; self.failure_substage = None
         require(not self.probe or op not in ("lease", "evidence", "status", "authenticate"))
         if op == "capability-probe":
             require(self.probe)
@@ -1162,7 +1179,6 @@ class Custody:
                 require(all(time.monotonic() - h["last"] < 5 for h in self.peers.values()))
                 for key, _ in self.selector.select(0.1):
                     if key.data == "supervisor":
-                        self.failure_stage = "operation"
                         raw = line(sys.stdin.fileno(), 4 * 1048576, self.deadline)
                         require(raw.endswith(b"\n"))
                         q = json.loads(raw)
@@ -1181,9 +1197,14 @@ class Custody:
                     else:
                         self.failure_stage = "helper"; self.peer(key.fileobj, key.data)
         except BaseException:
-            stage = self.failure_stage
-            self.rollback()
-            self.failure_stage = stage
+            stage, substage = self.failure_stage, self.failure_substage
+            try:
+                self.rollback()
+            except BaseException:
+                self.cleanup_uncertain = True
+            finally:
+                # Rollback failure cannot erase the original closed operation.
+                self.failure_stage, self.failure_substage = stage, substage
             raise
 
 
@@ -1199,7 +1220,10 @@ if __name__ == "__main__":
         # This is the entire parent-visible failure grammar: it deliberately
         # excludes exception text, stderr, argv, paths, and custody material.
         if isinstance(generation, str) and NONCE.fullmatch(generation):
-            try: emit_diagnostic(generation, owner.failure_stage if owner is not None else "constructor")
+            try:
+                emit_diagnostic(generation, owner.failure_stage if owner is not None else "constructor",
+                                owner.failure_substage if owner is not None else None,
+                                owner.cleanup_uncertain if owner is not None else False)
             except BaseException: pass
         sys.stderr.write("product custody failed; preserve generation control\n")
         sys.exit(1)

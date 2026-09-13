@@ -239,12 +239,26 @@ jobs:
           sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" "$PRODUCT_MODE" "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json" || status=$?
           if (( status != 0 )); then
             sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" STATUS="$status" RECEIPT="$RUNNER_TEMP/product-receipt.json" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" /usr/bin/python3 -I -B - <<'PY' || :
-          import hashlib,json,os,stat
-          build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read()
+          import json,os,re,stat
+          build=json.load(open('/var/lib/cogs-product-test/build-receipt.json'))
           receipt=os.environ['RECEIPT']; info=os.lstat(receipt)
           if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>32768: raise SystemExit('unsafe partial receipt')
-          partial=open(receipt,'rb').read()
-          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'diagnostic':'protected runner failed','partial_output_sha256':'sha256:'+hashlib.sha256(partial).hexdigest()}
+          raw=open(receipt,'rb').read(); diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=False
+          operations={'authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'}
+          diagnostics={'constructor','helper','helper-finalize'}|operations
+          provenance={'final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment'}
+          try:
+              partial=json.loads(raw)
+              if (json.dumps(partial,sort_keys=True,separators=(',',':'))+'\n').encode()!=raw or partial.get('generation') is None or not re.fullmatch(r'[a-f0-9]{32}',partial['generation']): raise ValueError()
+              keys=set(partial); diagnostic=partial.get('diagnostic'); substage=partial.get('substage'); cleanup_uncertain=partial.get('cleanup')=='uncertain'
+              expected={'generation','diagnostic'}|({'substage'} if substage is not None else set())|({'cleanup'} if cleanup_uncertain else set())
+              if keys!=expected or diagnostic not in diagnostics or (diagnostic=='provenance' and substage not in provenance) or (diagnostic!='provenance' and substage is not None): raise ValueError()
+              generation=partial['generation']
+          except (AttributeError,ValueError,TypeError,json.JSONDecodeError):
+              diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=True
+          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'run_id':build['run_id'],'run_attempt':build['run_attempt'],'diagnostic':diagnostic,'cleanup_uncertain':cleanup_uncertain,'pass_authority':False,'probe_authority':False}
+          if generation is not None: value['generation']=generation
+          if substage is not None: value['substage']=substage
           data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
           if len(data)>2048: raise SystemExit('oversized failure receipt')
           fd=os.open(receipt,os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW)

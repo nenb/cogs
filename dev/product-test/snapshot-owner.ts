@@ -55,7 +55,7 @@ export class HostCustody implements CustodyPort {
   #ready: Promise<void>;
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
-  #diagnostic: "constructor" | "operation" | "helper" | undefined;
+  #diagnostic: string | undefined;
   #lost = false;
   constructor(
     generation: string,
@@ -96,7 +96,13 @@ export class HostCustody implements CustodyPort {
         this.#input = Buffer.concat([this.#input, chunk]);
         if (!this.#input.includes(10)) return;
         const raw = this.#input.toString("utf8");
-        const result = JSON.parse(raw) as { generation?: unknown; result?: unknown; diagnostic?: unknown };
+        const result = JSON.parse(raw) as {
+          generation?: unknown;
+          result?: unknown;
+          diagnostic?: unknown;
+          substage?: unknown;
+          cleanup?: unknown;
+        };
         check(canonical(result) === raw && result.generation === this.generation);
         this.#input = Buffer.alloc(0);
         if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready" && !this.#pending) {
@@ -106,14 +112,58 @@ export class HostCustody implements CustodyPort {
         } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
           this.#pending.resolve(result.result);
           this.#pending = undefined;
-        } else if (
-          Object.keys(result).sort().join() === "diagnostic,generation" &&
-          (result.diagnostic === "constructor" || result.diagnostic === "operation" || result.diagnostic === "helper")
-        ) {
-          this.#diagnostic = result.diagnostic;
-          this.#lose(`custody unavailable: ${result.diagnostic}`);
         } else {
-          throw new Error("invalid custody response");
+          const operations = new Set([
+            "authenticate",
+            "capability-probe",
+            "create",
+            "evidence",
+            "exec",
+            "file",
+            "image",
+            "lease",
+            "lease-directory",
+            "mkdir",
+            "pair",
+            "provenance",
+            "seal",
+            "settle",
+            "status",
+            "storage",
+          ]);
+          const diagnostics = new Set(["constructor", "helper", "helper-finalize", ...operations]);
+          const provenance = new Set([
+            "final-head",
+            "status",
+            "baseline",
+            "source",
+            "inventory",
+            "build-receipt",
+            "layer-prefix",
+            "layer-count",
+            "environment",
+          ]);
+          const keys = Object.keys(result).sort().join();
+          const paired =
+            result.diagnostic === "provenance"
+              ? provenance.has(result.substage as string)
+              : result.substage === undefined;
+          const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
+          check(
+            diagnostics.has(result.diagnostic as string) &&
+              paired &&
+              cleanup &&
+              keys ===
+                (result.cleanup === undefined
+                  ? result.substage === undefined
+                    ? "diagnostic,generation"
+                    : "diagnostic,generation,substage"
+                  : result.substage === undefined
+                    ? "cleanup,diagnostic,generation"
+                    : "cleanup,diagnostic,generation,substage"),
+          );
+          this.#diagnostic = result.diagnostic as string;
+          this.#lose(`custody unavailable: ${this.#diagnostic}`);
         }
       } catch {
         this.#lose();

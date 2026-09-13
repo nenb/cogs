@@ -38,6 +38,7 @@
             "config/external-review-remediation-budget-v1.json",
             "docs/adr/0338-plan-pre-h-final-corrections.md",
             "docs/adr/0339-row4-first-attempt-corrections.md",
+            "docs/adr/0340-row4-second-minimal-correction-batch.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -51,6 +52,7 @@
             ".github/workflows/insecure-container.yml",
             ".github/workflows/kvm-qualification.yml",
             "dev/linux-kvm/driver.sh",
+            "dev/linux-kvm/bounded-command.py",
             "dev/product-test/host-custody.py",
             "dev/product-test/runner.ts",
             "dev/product-test/snapshot-owner.ts",
@@ -524,6 +526,7 @@
         "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
         "docs/adr/0338-plan-pre-h-final-corrections.md",
         "docs/adr/0339-row4-first-attempt-corrections.md",
+        "docs/adr/0340-row4-second-minimal-correction-batch.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/runbooks/cve-response.md",
