@@ -42,6 +42,12 @@ export type CustodyPort = Readonly<{
   closed?: Promise<void>;
   request<T = unknown>(op: string, fields?: Record<string, unknown>): Promise<T>;
 }>;
+export type ProductDiagnosticFrame = Readonly<{
+  generation: string;
+  diagnostic: string;
+  substage?: string;
+  cleanup?: "uncertain";
+}>;
 
 /** Independent process owns partial acquisitions even if the TypeScript caller disappears. */
 export class HostCustody implements CustodyPort {
@@ -55,7 +61,7 @@ export class HostCustody implements CustodyPort {
   #ready: Promise<void>;
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
-  #diagnostic: string | undefined;
+  #diagnostic: ProductDiagnosticFrame | undefined;
   #lost = false;
   constructor(
     generation: string,
@@ -85,7 +91,7 @@ export class HostCustody implements CustodyPort {
         this.#lose();
         code === 0
           ? resolve()
-          : reject(new Error(`custody cleanup required${this.#diagnostic ? `: ${this.#diagnostic}` : ""}`));
+          : reject(new Error(`custody cleanup required${this.#diagnostic ? `: ${this.#diagnosticSummary()}` : ""}`));
       });
     });
     void this.closed.catch(() => undefined);
@@ -162,8 +168,13 @@ export class HostCustody implements CustodyPort {
                     ? "cleanup,diagnostic,generation"
                     : "cleanup,diagnostic,generation,substage"),
           );
-          this.#diagnostic = result.diagnostic as string;
-          this.#lose(`custody unavailable: ${this.#diagnostic}`);
+          this.#diagnostic = Object.freeze({
+            generation: this.generation,
+            diagnostic: result.diagnostic as string,
+            ...(result.substage === undefined ? {} : { substage: result.substage as string }),
+            ...(result.cleanup === undefined ? {} : { cleanup: "uncertain" as const }),
+          });
+          this.#lose(`custody unavailable: ${this.#diagnosticSummary()}`);
         }
       } catch {
         this.#lose();
@@ -171,6 +182,15 @@ export class HostCustody implements CustodyPort {
     });
     this.#child.stdin.on("error", () => this.#lose());
     this.#child.stdin.write(canonical({ generation, seconds, purpose }));
+  }
+  /** A fresh frozen copy prevents callers from changing retained failure provenance. */
+  get failureDiagnostic(): ProductDiagnosticFrame | undefined {
+    return this.#diagnostic && Object.freeze({ ...this.#diagnostic });
+  }
+  #diagnosticSummary(): string {
+    if (!this.#diagnostic) return "preserve receipts";
+    const { diagnostic, substage, cleanup } = this.#diagnostic;
+    return `${diagnostic}${substage ? `/${substage}` : ""}${cleanup ? "; cleanup uncertain" : ""}`;
   }
   request<T = unknown>(op: string, fields: Record<string, unknown> = {}): Promise<T> {
     const result = this.#tail.then(

@@ -13,6 +13,7 @@ import {
   capabilityRemovalScenario,
   PROBE_GENERATION_SECONDS,
   PROBE_SUITE_SECONDS,
+  productFailureDiagnostic,
   requireProbeSuiteWindow,
   syntheticPkiArgv,
   withProductCustody,
@@ -131,7 +132,8 @@ with tempfile.TemporaryDirectory() as root:
  finally: os.umask(previous);os.close(parent)
 class Stream:
  def fileno(self): return 20
- def close(self): pass
+ def close(self):
+  if mode=='finalize-close': raise OSError('descriptor close refused')
 class Poll:
  def __enter__(self): self.entries={};return self
  def __exit__(self,*a): pass
@@ -139,7 +141,7 @@ class Poll:
  def unregister(self,stream): del self.entries[stream]
  def get_map(self): return self.entries
  def select(self,*a): return [(key,1) for key in self.entries.values()]
-for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal'):
+for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal','finalize-close'):
  events=[];reaped=False
  class Process:
   pid=12345;stdout=Stream();stderr=Stream()
@@ -192,9 +194,9 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
     try:
      measured=mode=='nonzero-measurement'
      assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
-    except RuntimeError: assert mode not in ('success','nonzero-measurement')
+    except Exception: assert mode not in ('success','nonzero-measurement')
     else: assert mode in ('success','nonzero-measurement')
-   assert owner.failure_stage==('operation' if mode in ('success','nonzero-measurement') else 'helper')
+   assert owner.failure_stage==('operation' if mode in ('success','nonzero-measurement') else 'helper-finalize' if mode=='finalize-close' else 'helper')
    assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
    assert ('helper-pending' in os.listdir(owner.control))==(mode in ('early-exit','timeout') or mode.startswith('restop-'))
    if mode=='success':
@@ -357,6 +359,18 @@ for stage,substage in (('operation',None),('image','inventory'),('provenance','u
     { encoding: "utf8", timeout: 10_000 },
   );
   assert.equal(result.status, 0, result.stderr);
+  // A constructor that cannot acquire an owner has no closure proof, so its
+  // sole public frame is conservatively cleanup-uncertain.
+  const unavailable = spawnSync("python3", ["-I", "-B", "dev/product-test/host-custody.py"], {
+    input: `{"generation":"${"a".repeat(32)}","seconds":60}\n`,
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(unavailable.status, 1, unavailable.stderr);
+  assert.equal(
+    unavailable.stdout,
+    `{"cleanup":"uncertain","diagnostic":"constructor","generation":"${"a".repeat(32)}"}\n`,
+  );
   const root = "/custody/authority";
   for (const [name, leafSubject] of [
     ["envoy", "/CN=fixture.cogs.test"],
@@ -425,7 +439,7 @@ test("product custody diagnostics are closed, provenance-paired, and failure art
   const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
   assert.match(owner, /diagnostics\.has\(result\.diagnostic as string\)[\s\S]*paired[\s\S]*cleanup/u);
   assert.doesNotMatch(owner, /result\.diagnostic === "operation"/u);
-  assert.match(custody, /self\.failure_stage = "helper-finalize"/u);
+  assert.match(custody, /self\.failure_stage, self\.failure_substage = "helper-finalize", None/u);
   assert.match(custody, /stage, substage = self\.failure_stage, self\.failure_substage/u);
   for (const stage of [
     "final-head",
@@ -442,6 +456,74 @@ test("product custody diagnostics are closed, provenance-paired, and failure art
   assert.match(workflow, /'pass_authority':False,'probe_authority':False/u);
   assert.doesNotMatch(workflow, /partial_output_sha256/u);
   assert.match(workflow, /'run_id':build\['run_id'\],'run_attempt':build\['run_attempt'\]/u);
+});
+
+test("workflow failure conversion accepts only closed fake diagnostics and prior exact probes", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import hashlib,json,os,re,subprocess,tempfile
+from pathlib import Path
+from textwrap import dedent
+text=Path('.github/workflows/insecure-container.yml').read_text()
+source=dedent(re.search(r"<<'PY' \|\| :\n(.*?)\n          PY",text,re.S).group(1))
+with tempfile.TemporaryDirectory() as root:
+ build=Path(root)/'build.json'; receipt=Path(root)/'receipt'
+ bound={'candidate':'a'*40,'tree':'b'*40,'source_inventory':'sha256:'+'c'*64,'run_id':'1','run_attempt':'1','skills':'empty'}
+ build.write_text(json.dumps(bound,sort_keys=True,separators=(',',':'))+'\n')
+ source=source.replace("'/var/lib/cogs-product-test/build-receipt.json'", "os.environ['BUILD']")
+ def convert(rows,authority='probe-only',trailing=b''):
+  if receipt.exists(): receipt.chmod(0o600)
+  receipt.write_bytes(b''.join(json.dumps(row,sort_keys=True,separators=(',',':')).encode()+b'\n' for row in rows)+trailing)
+  env={**os.environ,'BUILD':str(build),'RECEIPT':str(receipt),'CANDIDATE':'a'*40,'PROFILE':'empty','AUTHORITY':authority,'STATUS':'1','RUNNER_UID':str(os.getuid()),'RUNNER_GID':str(os.getgid())}
+  subprocess.run(['python3','-I','-B','-c',source],env=env,check=True)
+  return json.loads(receipt.read_bytes())
+ probe={'purpose':'capability-probe','generation':'d'*32,'retired_generation':'d'*32,**bound,'profile_case':'empty','build_receipt_sha256':'sha256:'+hashlib.sha256((json.dumps(bound,sort_keys=True,separators=(',',':'))+'\n').encode()).hexdigest(),'container_id':'e'*64,'removed':'KILL','start_code':0,'running':True,'ssh':True,'sftp':True}
+ failure={'version':'cogs.product-failure-diagnostic/v1','generation':'f'*32,'diagnostic':'provenance','substage':'layer-count','cleanup':'uncertain','pass_authority':False,'probe_authority':False}
+ accepted=convert([probe,failure])
+ assert accepted['generation']=='f'*32 and accepted['diagnostic']=='provenance' and accepted['substage']=='layer-count' and accepted['cleanup_uncertain'] is True
+ for hostile in ([probe,failure,{'unknown':True}], [probe,failure]):
+  result=convert(hostile,trailing=(b'unknown\n' if len(hostile)==2 else b''))
+  assert result['diagnostic']=='constructor' and result['cleanup_uncertain'] is True and 'generation' not in result
+ assert convert([], 'candidate-pass')['diagnostic']=='constructor'
+ assert convert([probe,failure], 'candidate-pass')['diagnostic']=='constructor'
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("product failure diagnostics retain only a closed provenance frame or conservative constructor uncertainty", () => {
+  const frame = Object.freeze({
+    generation: "a".repeat(32),
+    diagnostic: "provenance",
+    substage: "layer-count",
+    cleanup: "uncertain" as const,
+  });
+  const line = productFailureDiagnostic("a".repeat(32), frame);
+  assert.deepEqual(line, {
+    version: "cogs.product-failure-diagnostic/v1",
+    generation: "a".repeat(32),
+    diagnostic: "provenance",
+    substage: "layer-count",
+    cleanup: "uncertain",
+    pass_authority: false,
+    probe_authority: false,
+  });
+  assert.ok(Object.isFrozen(line));
+  assert.deepEqual(productFailureDiagnostic("b".repeat(32), frame), {
+    version: "cogs.product-failure-diagnostic/v1",
+    generation: "b".repeat(32),
+    diagnostic: "constructor",
+    cleanup: "uncertain",
+    pass_authority: false,
+    probe_authority: false,
+  });
 });
 
 test("product custody aggregates operation, settlement, and closure failures", async () => {

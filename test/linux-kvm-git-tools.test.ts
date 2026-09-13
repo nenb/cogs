@@ -1669,6 +1669,13 @@ with patch.object(h,'bounded',bounded), patch.object(h,'read_control',lambda *ar
         rejects(lambda:h.execute(name,state,token,port))
     assert len(calls)==before
 assert any(cap==37 for _,cap,_,_ in calls) and any(cap==65 for _,cap,_,_ in calls)
+# The sole authenticated readiness command gets the remaining absolute 120s
+# window, rather than a second ordinary 15s command budget.
+ready_calls=[]
+with patch.object(h.time,'monotonic',lambda:10), patch.object(h,'bounded',lambda *args: (ready_calls.append(args) or (0,b''))):
+    h.guest(state,'ready','18080',120)
+assert ready_calls[0][0][-1]==h.PROBES['ready'] and ready_calls[0][2:]==(110,120)
+assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/instance/boot-finished' in h.PROBES['ready']
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))

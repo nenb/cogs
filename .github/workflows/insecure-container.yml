@@ -243,23 +243,45 @@ jobs:
           build=json.load(open('/var/lib/cogs-product-test/build-receipt.json'))
           receipt=os.environ['RECEIPT']; info=os.lstat(receipt)
           if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>32768: raise SystemExit('unsafe partial receipt')
-          raw=open(receipt,'rb').read(); diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=False
+          raw=open(receipt,'rb').read()
           operations={'authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'}
           diagnostics={'constructor','helper','helper-finalize'}|operations
           provenance={'final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment'}
+          probe_keys={'purpose','generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed','start_code','running','ssh','sftp'}
+          failure_keys={'version','generation','diagnostic','pass_authority','probe_authority'}
+          canonical=lambda value:(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          def object_line(line):
+              value=json.loads(line,object_pairs_hook=lambda pairs: pairs if len({k for k,_ in pairs})==len(pairs) else (_ for _ in ()).throw(ValueError()))
+              if type(value) is not list: raise ValueError()
+              value=dict(value)
+              if canonical(value)!=line+b'\n': raise ValueError()
+              return value
+          def probe(value):
+              if set(value)!=probe_keys or value['purpose']!='capability-probe': raise ValueError()
+              if not all(isinstance(value[k],str) for k in ('generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed')): raise ValueError()
+              if not re.fullmatch(r'[a-f0-9]{32}',value['generation']) or value['retired_generation']!=value['generation'] or not re.fullmatch(r'[a-f0-9]{64}',value['container_id']): raise ValueError()
+              if value['removed'] not in {'CHOWN','DAC_OVERRIDE','FOWNER','SETGID','SETUID','KILL','NET_BIND_SERVICE','SYS_CHROOT'} or type(value['start_code']) is not int or type(value['running']) is not bool or (value['ssh'] is not None and type(value['ssh']) is not bool) or (value['sftp'] is not None and type(value['sftp']) is not bool): raise ValueError()
+              if any(value[k]!=build[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt','skills')) or value['candidate']!=os.environ['CANDIDATE'] or value['profile_case']!=os.environ['PROFILE']: raise ValueError()
+              if value['build_receipt_sha256']!='sha256:'+__import__('hashlib').sha256(canonical(build)).hexdigest(): raise ValueError()
+          diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=True
           try:
-              partial=json.loads(raw)
-              if (json.dumps(partial,sort_keys=True,separators=(',',':'))+'\n').encode()!=raw or partial.get('generation') is None or not re.fullmatch(r'[a-f0-9]{32}',partial['generation']): raise ValueError()
-              keys=set(partial); diagnostic=partial.get('diagnostic'); substage=partial.get('substage'); cleanup_uncertain=partial.get('cleanup')=='uncertain'
-              expected={'generation','diagnostic'}|({'substage'} if substage is not None else set())|({'cleanup'} if cleanup_uncertain else set())
-              if keys!=expected or diagnostic not in diagnostics or (diagnostic=='provenance' and substage not in provenance) or (diagnostic!='provenance' and substage is not None): raise ValueError()
-              generation=partial['generation']
-          except (AttributeError,ValueError,TypeError,json.JSONDecodeError):
+              if not raw.endswith(b'\n') or not raw or any(not line for line in raw.splitlines()): raise ValueError()
+              rows=[object_line(line) for line in raw.splitlines()]
+              final=rows[-1]
+              if set(final)-{'substage','cleanup'}!=failure_keys or final.get('version')!='cogs.product-failure-diagnostic/v1' or final.get('diagnostic') not in diagnostics or final.get('pass_authority') is not False or final.get('probe_authority') is not False or not re.fullmatch(r'[a-f0-9]{32}',final.get('generation','')): raise ValueError()
+              if ('cleanup' in final and final['cleanup']!='uncertain') or (final.get('diagnostic')=='provenance' and final.get('substage') not in provenance) or (final.get('diagnostic')!='provenance' and 'substage' in final): raise ValueError()
+              if os.environ['AUTHORITY']=='candidate-pass' and len(rows)!=1: raise ValueError()
+              if os.environ['AUTHORITY']=='probe-only':
+                  for row in rows[:-1]: probe(row)
+              elif os.environ['AUTHORITY']!='candidate-pass': raise ValueError()
+              diagnostic=final['diagnostic']; generation=final['generation']; substage=final.get('substage'); cleanup_uncertain=final.get('cleanup')=='uncertain'
+          except (AttributeError,KeyError,TypeError,ValueError,json.JSONDecodeError):
+              # Hostile, trailing, duplicate, or mixed output is never partial success.
               diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=True
           value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'run_id':build['run_id'],'run_attempt':build['run_attempt'],'diagnostic':diagnostic,'cleanup_uncertain':cleanup_uncertain,'pass_authority':False,'probe_authority':False}
           if generation is not None: value['generation']=generation
           if substage is not None: value['substage']=substage
-          data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          data=canonical(value)
           if len(data)>2048: raise SystemExit('oversized failure receipt')
           fd=os.open(receipt,os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW)
           try:
@@ -275,9 +297,16 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env CANDIDATE="$CANDIDATE" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
-          import hashlib,json,os,re,stat
+          import hashlib,json,os,re,stat,sys
           raw=open(os.environ['RECEIPT'],'rb').read(); value=json.loads(raw)
-          if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt','skills'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
+          canonical=lambda item:(json.dumps(item,sort_keys=True,separators=(',',':'))+'\n').encode()
+          if value.get('version')=='cogs.product-failure-receipt/v1':
+              allowed={'version','candidate','profile','authority','status','run_id','run_attempt','diagnostic','cleanup_uncertain','pass_authority','probe_authority','generation','substage'}
+              required=allowed-{'generation','substage'}
+              if len(raw)>2048 or raw!=canonical(value) or not required<=set(value)<=allowed or value['candidate']!=os.environ['CANDIDATE'] or value['profile']!=os.environ['PRODUCT_PROFILE'] or value['authority']!='candidate-pass' or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or value['pass_authority'] is not False or value['probe_authority'] is not False or type(value['cleanup_uncertain']) is not bool: raise SystemExit('FAIL: invalid product failure receipt')
+              evidence={'version':'cogs.product-failure-inventory/v1','candidate':value['candidate'],'profile':value['profile'],'authority':value['authority'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'generation':value.get('generation'),'diagnostic':value['diagnostic'],'cleanup_uncertain':value['cleanup_uncertain'],'pass_authority':False,'probe_authority':False,'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+              open(os.environ['EVIDENCE'],'xb').write(canonical(evidence)); sys.exit(0)
+          if len(raw)>2048 or raw!=canonical(value) or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt','skills'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
           parent='/var/lib/cogs-product-test'; source='protected-'+value['candidate']; evidence='build-receipt.json'; lock=value['generation']+'.lock'
           source_info=os.stat(parent+'/'+source,follow_symlinks=False)
           if not stat.S_ISDIR(source_info.st_mode) or source_info.st_uid!=0 or stat.S_IMODE(source_info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe protected source')
@@ -332,9 +361,17 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
-          import hashlib,json,os,re
-          raw=open(os.environ['RECEIPT'],'rb').read(); rows=[json.loads(line) for line in raw.splitlines()]
+          import hashlib,json,os,re,sys
+          raw=open(os.environ['RECEIPT'],'rb').read()
+          canonical=lambda item:(json.dumps(item,sort_keys=True,separators=(',',':'))+'\n').encode()
+          try: rows=[json.loads(line) for line in raw.splitlines()]
+          except json.JSONDecodeError: rows=[]
           build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read(); bound=json.loads(build)
+          if len(rows)==1 and rows[0].get('version')=='cogs.product-failure-receipt/v1':
+              value=rows[0]; allowed={'version','candidate','profile','authority','status','run_id','run_attempt','diagnostic','cleanup_uncertain','pass_authority','probe_authority','generation','substage'}; required=allowed-{'generation','substage'}
+              if len(raw)>2048 or raw!=canonical(value) or not required<=set(value)<=allowed or value['candidate']!=os.environ['CANDIDATE'] or value['profile']!=os.environ['PROFILE'] or value['authority']!='probe-only' or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or value['pass_authority'] is not False or value['probe_authority'] is not False or type(value['cleanup_uncertain']) is not bool: raise SystemExit('FAIL: invalid product failure receipt')
+              evidence={'version':'cogs.product-failure-inventory/v1','candidate':value['candidate'],'profile':value['profile'],'authority':value['authority'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'generation':value.get('generation'),'diagnostic':value['diagnostic'],'cleanup_uncertain':value['cleanup_uncertain'],'pass_authority':False,'probe_authority':False,'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+              open(os.environ['EVIDENCE'],'xb').write(canonical(evidence)); sys.exit(0)
           profile=os.environ['PROFILE']; skills='nonempty' if profile=='nonempty' else 'empty'
           required={'purpose','generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed','start_code','running','ssh','sftp'}
           capabilities={'CHOWN','DAC_OVERRIDE','FOWNER','SETGID','SETUID','KILL','NET_BIND_SERVICE','SYS_CHROOT'}

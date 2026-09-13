@@ -42,6 +42,7 @@ import {
   hash,
   LocalSkillSnapshotOwner,
   type Mount,
+  type ProductDiagnosticFrame,
   pinnedTrust,
   put,
   SANDBOX_CAPABILITIES,
@@ -472,6 +473,32 @@ export type ProductPassReceipt = Readonly<{
   run_attempt: string;
   skills: "empty" | "nonempty";
 }>;
+export type ProductFailureDiagnostic = Readonly<{
+  version: "cogs.product-failure-diagnostic/v1";
+  generation: string;
+  diagnostic: string;
+  substage?: string;
+  cleanup?: "uncertain";
+  pass_authority: false;
+  probe_authority: false;
+}>;
+
+/** The only runner-visible failure record; it carries no exception or process material. */
+export function productFailureDiagnostic(
+  generation: string,
+  frame: ProductDiagnosticFrame | undefined,
+): ProductFailureDiagnostic {
+  const diagnostic = frame?.generation === generation ? frame : undefined;
+  return Object.freeze({
+    version: "cogs.product-failure-diagnostic/v1",
+    generation,
+    diagnostic: diagnostic?.diagnostic ?? "constructor",
+    ...(diagnostic?.substage === undefined ? {} : { substage: diagnostic.substage }),
+    ...(diagnostic?.cleanup === undefined ? { cleanup: "uncertain" as const } : { cleanup: diagnostic.cleanup }),
+    pass_authority: false,
+    probe_authority: false,
+  });
+}
 export async function productMain(
   restrictions: Restrictions,
   removed?: string,
@@ -498,123 +525,133 @@ export async function productMain(
         key,
       ),
     );
-  const host = new HostCustody(generation, restrictions.seconds, removed === undefined ? "run" : "capability-probe");
+  let custody: HostCustody | undefined;
   let measurement: unknown;
-  await withProductCustody(host, async () => {
-    for (const id of [restrictions.sandbox_image, restrictions.worker_image, restrictions.stock_worker_image])
-      await host.request("image", { id });
-    const provenance = await host.request("provenance", { ...restrictions, recipe: hash(WORKER_DOCKERFILE) });
-    const stockTrust = await pinnedTrust(host, restrictions.stock_worker_image);
-    await host.request("storage", { name: "state" });
-    await host.request("storage", { name: "workspace" });
-    for (const name of ["host-private", "session", "private-store"])
-      await dir(host, `state/${name}`, 0o700, name === "host-private" ? 0 : 65532);
-    for (const name of ["agent", "sessions"]) await dir(host, `state/session/${name}`, 0o700, 65532);
-    const skills = new LocalSkillSnapshotOwner(host, restrictions.skills === "nonempty");
-    await skills.publish(launchDocument(skills.sharedRevision, skills.user.digest));
-    const pin = await new SyntheticAuthorityOwner(host).create();
-    const launch = launchDocument(skills.sharedRevision, skills.user.digest, pin);
-    admitProfile(runtime, launch);
-    await dir(host, "documents", 0o755);
-    await dir(host, "lease", 0o750);
-    await host.request("lease-directory");
-    for (const [name, text] of [
-      ["runtime.json", canonical(runtime)],
-      ["launch.json", canonical(launch)],
-    ] as const)
-      await put(host, `documents/${name}`, text, 0o400, 65532);
-    await put(
-      host,
-      "documents/envoy-trust.crt",
-      Buffer.concat([stockTrust, Buffer.from("\n"), await readFile(`${host.root}/authority/envoy-ca.crt`)]),
-      0o444,
-    );
-    await put(host, "documents/hosts", "127.0.0.1 localhost fixture.cogs.test\n::1 localhost\n", 0o444);
-    await put(host, "documents/resolv.conf", "nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", 0o444);
-    await put(host, "documents/hostname", "cogs-product\n", 0o444);
-    await put(host, "documents/provenance.json", canonical(provenance), 0o444);
-    const mount = (source: string, target: string, ro = true): Mount => ({
-      source: `${host.root}/${source}`,
-      target,
-      ro,
-    });
-    const networkFiles = [
-      mount("documents/hosts", "/etc/hosts"),
-      mount("documents/resolv.conf", "/etc/resolv.conf"),
-      mount("documents/hostname", "/etc/hostname"),
-    ];
-    const sandboxSpec: ContainerSpec = {
-      image: restrictions.sandbox_image,
-      network: "none",
-      caps: SANDBOX_CAPABILITIES,
-      mask: SANDBOX_CAPABILITY_MASK,
-      mounts: [
-        ...networkFiles,
-        ...skills.mounts(),
-        mount("sandbox-input", "/run/cogs-input"),
-        mount("workspace", "/workspace", false),
-      ],
-      tmpfs: {
-        "/run/cogs-runtime": "rw,nosuid,nodev,noexec,size=4m,mode=0700",
-        "/run/sshd": "rw,nosuid,nodev,noexec,size=1m,mode=0755",
-        "/tmp": "rw,nosuid,nodev,noexec,size=16m,mode=1777",
-      },
-    };
-    await host.request("seal");
-    if (removed !== undefined) {
-      measurement = await capabilityRemovalScenario(host, sandboxSpec, removed);
-      return false; // no worker, lease, evidence admission or pass authority
-    }
-    const sandboxId = await createSandbox(host, sandboxSpec);
-    const workerSpec: ContainerSpec = {
-      image: restrictions.worker_image,
-      network: `container:${sandboxId}`,
-      caps: [],
-      mask: 0,
-      mounts: [
-        ...networkFiles,
-        mount("documents/runtime.json", "/etc/cogs/runtime.json"),
-        mount("documents/launch.json", "/etc/cogs/launch.json"),
-        mount("documents/provenance.json", "/etc/cogs/provenance.json"),
-        ...["api", "proxy", "ssh", "pki"].map((n) => mount(`inputs/${n}`, `/run/cogs/${n}`)),
-        mount("lease", "/run/cogs/skills"),
-        mount("inputs/shared-oci", runtime.paths.shared_skill_oci),
-        mount("inputs/private-source", runtime.paths.private_skill_source),
-        mount("state/private-store", runtime.paths.private_skill_store, false),
-        mount("state/session", "/var/lib/cogs/session", false),
-        mount("workspace", "/workspace"),
-        mount("documents/envoy-trust.crt", "/etc/ssl/certs/ca-certificates.crt"),
-      ],
-      tmpfs: {
-        "/tmp": "rw,nosuid,nodev,noexec,size=32m,mode=1777",
-        "/run/cogs/egress": "rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532",
-      },
-    };
-    const argv = containerArguments(
-      host,
-      workerSpec,
-      ["--env", "NODE_EXTRA_CA_CERTS=/run/cogs/pki/telemetry-ca.crt", "--entrypoint", "/nodejs/bin/node"],
-      "65532:65532",
-    );
-    argv.push("--experimental-transform-types", "--input-type=module", "--eval", WORKER_GATE);
-    await host.request("create", { role: "worker", spec: workerSpec, argv });
-    const sandbox = await host.request<ContainerReceipt>("authenticate", { role: "sandbox" });
-    const worker = await host.request<ContainerReceipt>("authenticate", { role: "worker" });
-    await skills.lease(launch, worker, sandbox);
-    for (;;) {
-      const status = await host.request<{ running: boolean; code: number }>("status");
-      if (!status.running) {
-        check(status.code === 0);
-        break;
+  try {
+    const host = new HostCustody(generation, restrictions.seconds, removed === undefined ? "run" : "capability-probe");
+    custody = host;
+    await withProductCustody(host, async () => {
+      for (const id of [restrictions.sandbox_image, restrictions.worker_image, restrictions.stock_worker_image])
+        await host.request("image", { id });
+      const provenance = await host.request("provenance", { ...restrictions, recipe: hash(WORKER_DOCKERFILE) });
+      const stockTrust = await pinnedTrust(host, restrictions.stock_worker_image);
+      await host.request("storage", { name: "state" });
+      await host.request("storage", { name: "workspace" });
+      for (const name of ["host-private", "session", "private-store"])
+        await dir(host, `state/${name}`, 0o700, name === "host-private" ? 0 : 65532);
+      for (const name of ["agent", "sessions"]) await dir(host, `state/session/${name}`, 0o700, 65532);
+      const skills = new LocalSkillSnapshotOwner(host, restrictions.skills === "nonempty");
+      await skills.publish(launchDocument(skills.sharedRevision, skills.user.digest));
+      const pin = await new SyntheticAuthorityOwner(host).create();
+      const launch = launchDocument(skills.sharedRevision, skills.user.digest, pin);
+      admitProfile(runtime, launch);
+      await dir(host, "documents", 0o755);
+      await dir(host, "lease", 0o750);
+      await host.request("lease-directory");
+      for (const [name, text] of [
+        ["runtime.json", canonical(runtime)],
+        ["launch.json", canonical(launch)],
+      ] as const)
+        await put(host, `documents/${name}`, text, 0o400, 65532);
+      await put(
+        host,
+        "documents/envoy-trust.crt",
+        Buffer.concat([stockTrust, Buffer.from("\n"), await readFile(`${host.root}/authority/envoy-ca.crt`)]),
+        0o444,
+      );
+      await put(host, "documents/hosts", "127.0.0.1 localhost fixture.cogs.test\n::1 localhost\n", 0o444);
+      await put(host, "documents/resolv.conf", "nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", 0o444);
+      await put(host, "documents/hostname", "cogs-product\n", 0o444);
+      await put(host, "documents/provenance.json", canonical(provenance), 0o444);
+      const mount = (source: string, target: string, ro = true): Mount => ({
+        source: `${host.root}/${source}`,
+        target,
+        ro,
+      });
+      const networkFiles = [
+        mount("documents/hosts", "/etc/hosts"),
+        mount("documents/resolv.conf", "/etc/resolv.conf"),
+        mount("documents/hostname", "/etc/hostname"),
+      ];
+      const sandboxSpec: ContainerSpec = {
+        image: restrictions.sandbox_image,
+        network: "none",
+        caps: SANDBOX_CAPABILITIES,
+        mask: SANDBOX_CAPABILITY_MASK,
+        mounts: [
+          ...networkFiles,
+          ...skills.mounts(),
+          mount("sandbox-input", "/run/cogs-input"),
+          mount("workspace", "/workspace", false),
+        ],
+        tmpfs: {
+          "/run/cogs-runtime": "rw,nosuid,nodev,noexec,size=4m,mode=0700",
+          "/run/sshd": "rw,nosuid,nodev,noexec,size=1m,mode=0755",
+          "/tmp": "rw,nosuid,nodev,noexec,size=16m,mode=1777",
+        },
+      };
+      await host.request("seal");
+      if (removed !== undefined) {
+        measurement = await capabilityRemovalScenario(host, sandboxSpec, removed);
+        return false; // no worker, lease, evidence admission or pass authority
       }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    const evidence = JSON.parse(await host.request<string>("evidence"));
-    check(evidence.outcome === "pass" && evidence.generation === generation && evidence.upstream === 1);
-    check(canonical(evidence.provenance) === canonical(provenance));
-    check(evidence.traces > 0 && evidence.metrics > 0 && evidence.audit > 0 && evidence.omitted === true);
-    return true;
-  });
+      const sandboxId = await createSandbox(host, sandboxSpec);
+      const workerSpec: ContainerSpec = {
+        image: restrictions.worker_image,
+        network: `container:${sandboxId}`,
+        caps: [],
+        mask: 0,
+        mounts: [
+          ...networkFiles,
+          mount("documents/runtime.json", "/etc/cogs/runtime.json"),
+          mount("documents/launch.json", "/etc/cogs/launch.json"),
+          mount("documents/provenance.json", "/etc/cogs/provenance.json"),
+          ...["api", "proxy", "ssh", "pki"].map((n) => mount(`inputs/${n}`, `/run/cogs/${n}`)),
+          mount("lease", "/run/cogs/skills"),
+          mount("inputs/shared-oci", runtime.paths.shared_skill_oci),
+          mount("inputs/private-source", runtime.paths.private_skill_source),
+          mount("state/private-store", runtime.paths.private_skill_store, false),
+          mount("state/session", "/var/lib/cogs/session", false),
+          mount("workspace", "/workspace"),
+          mount("documents/envoy-trust.crt", "/etc/ssl/certs/ca-certificates.crt"),
+        ],
+        tmpfs: {
+          "/tmp": "rw,nosuid,nodev,noexec,size=32m,mode=1777",
+          "/run/cogs/egress": "rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532",
+        },
+      };
+      const argv = containerArguments(
+        host,
+        workerSpec,
+        ["--env", "NODE_EXTRA_CA_CERTS=/run/cogs/pki/telemetry-ca.crt", "--entrypoint", "/nodejs/bin/node"],
+        "65532:65532",
+      );
+      argv.push("--experimental-transform-types", "--input-type=module", "--eval", WORKER_GATE);
+      await host.request("create", { role: "worker", spec: workerSpec, argv });
+      const sandbox = await host.request<ContainerReceipt>("authenticate", { role: "sandbox" });
+      const worker = await host.request<ContainerReceipt>("authenticate", { role: "worker" });
+      await skills.lease(launch, worker, sandbox);
+      for (;;) {
+        const status = await host.request<{ running: boolean; code: number }>("status");
+        if (!status.running) {
+          check(status.code === 0);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const evidence = JSON.parse(await host.request<string>("evidence"));
+      check(evidence.outcome === "pass" && evidence.generation === generation && evidence.upstream === 1);
+      check(canonical(evidence.provenance) === canonical(provenance));
+      check(evidence.traces > 0 && evidence.metrics > 0 && evidence.audit > 0 && evidence.omitted === true);
+      return true;
+    });
+  } catch (error) {
+    // Construction, spawn, and any lost owner frame are intentionally the same
+    // conservative diagnosis. withProductCustody has already settled/closed a
+    // constructed owner before this branch can publish.
+    process.stdout.write(canonical(productFailureDiagnostic(generation, custody?.failureDiagnostic)));
+    throw error;
+  }
   if (measurement) {
     process.stdout.write(canonical(measurement)); // only after receipt-bound settlement
     return undefined;

@@ -563,10 +563,11 @@ class Custody:
                 self.refuse_helper()
             raise
         finally:
-            # A completed helper still owns its finalization. If that tail fails,
-            # retain helper-finalize rather than incorrectly restoring its op.
+            # Do not attribute a completed helper back to its prior operation
+            # until every retirement and descriptor close has succeeded.
+            finalization_success = False
             if completed and helper_stage:
-                self.failure_stage = "helper-finalize"
+                self.failure_stage, self.failure_substage = "helper-finalize", None
             try:
                 # WNOWAIT retains the leader's numeric PID/PGID until BOTH final signals, even on early exit.
                 try:
@@ -589,12 +590,24 @@ class Custody:
                             break
                         require(time.monotonic() < until); time.sleep(0.01)
                     self.verify_cgroups()
-            finally:
                 if pidfd is not None:
-                    os.close(pidfd)
+                    os.close(pidfd); pidfd = None
                 p.stdout.close(); p.stderr.close()
-                os.close(held)
-                if completed and helper_stage:
+                os.close(held); held = None
+                finalization_success = True
+            finally:
+                # Best effort here is resource hygiene only, never proof that a
+                # failed finalization became safe after the fact.
+                if pidfd is not None:
+                    try: os.close(pidfd)
+                    except BaseException: pass
+                for stream in (p.stdout, p.stderr):
+                    try: stream.close()
+                    except BaseException: pass
+                if held is not None:
+                    try: os.close(held)
+                    except BaseException: pass
+                if completed and helper_stage and finalization_success:
                     self.failure_stage, self.failure_substage = prior_stage, prior_substage
 
     def docker(self, *args, **options):
@@ -1223,7 +1236,7 @@ if __name__ == "__main__":
             try:
                 emit_diagnostic(generation, owner.failure_stage if owner is not None else "constructor",
                                 owner.failure_substage if owner is not None else None,
-                                owner.cleanup_uncertain if owner is not None else False)
+                                owner.cleanup_uncertain if owner is not None else True)
             except BaseException: pass
         sys.stderr.write("product custody failed; preserve generation control\n")
         sys.exit(1)

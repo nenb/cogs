@@ -269,7 +269,9 @@ GIT_PROBE = r'''set -euo pipefail
     git notes --ref=cogs show "$commit" >/dev/null
     git fsck --no-progress >/dev/null'''
 PROBES = {
-    "ready": "true",
+    # SSH authentication alone races cloud-init. This single command waits for
+    # cloud-init's final state and the durable boot-finished marker.
+    "ready": "cloud-init status --wait >/dev/null && test -f /var/lib/cloud/instance/boot-finished",
     "boot-id": "cat /proc/sys/kernel/random/boot_id",
     "kernel": "uname -r",
     "root": 'test "$(id -u)" = 0',
@@ -302,7 +304,11 @@ def ssh_argv(state, command):
 def guest(state, name, port, deadline=None):
     command = f'timeout 2 bash -c "</dev/tcp/192.0.2.1/{port}"' if name == "proxy-connect" else PROBES[name]
     cap = 37 if name == "boot-id" else 65 if name == "kernel" else 16384
-    code, raw = bounded(ssh_argv(state, command), cap, 15, deadline)
+    # Readiness has one dispatched authenticated guest command. It alone gets
+    # the remaining absolute readiness window; all other guest commands retain
+    # the ordinary 15-second cap.
+    seconds = max(0, deadline - time.monotonic()) if name == "ready" and deadline is not None else 15
+    code, raw = bounded(ssh_argv(state, command), cap, seconds, deadline)
     if code != 0:
         # 255, signals, missing remote exit, even normal failed verification:
         # never retry/reuse a possibly still-running remote invocation.
