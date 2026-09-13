@@ -14,6 +14,7 @@ import {
   PROBE_GENERATION_SECONDS,
   PROBE_SUITE_SECONDS,
   requireProbeSuiteWindow,
+  syntheticPkiArgv,
   withProductCustody,
 } from "../dev/product-test/runner.ts";
 import {
@@ -157,7 +158,7 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
   assert pid==12345 and sig==signal.SIGKILL and not reaped,'numeric PGID was reused by an unrelated group'
   events.append('killpg')
  with tempfile.TemporaryDirectory() as root:
-  owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.records=set();owner.failed=False
+  owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.records=set();owner.failed=False;owner.failure_stage='operation'
   owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);owner.control=m.directory(owner.fd,'control',0o700)
   owner.cg=root+'/cgroup';os.mkdir(owner.cg);os.mkdir(owner.cg+'/helpers');open(owner.cg+'/helpers/cgroup.procs','w').close()
   owner.deadline=time.monotonic()+.03;owner.cwrite=lambda path,name,value:events.append(name)
@@ -193,6 +194,7 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
      assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
     except RuntimeError: assert mode not in ('success','nonzero-measurement')
     else: assert mode in ('success','nonzero-measurement')
+   assert owner.failure_stage==('operation' if mode in ('success','nonzero-measurement') else 'helper')
    assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
    assert ('helper-pending' in os.listdir(owner.control))==(mode in ('early-exit','timeout') or mode.startswith('restop-'))
    if mode=='success':
@@ -315,6 +317,134 @@ for failed in (False,True):
     { encoding: "utf8", timeout: 10000 },
   );
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("host custody line framing accepts bounded chunks and refuses a pipelined frame", async () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import importlib.util,os,threading
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+r,w=os.pipe(); payload=b'x'*100000+b'\n'
+def write_all():
+ view=memoryview(payload)
+ while view: view=view[os.write(w,view):]
+ os.close(w)
+t=threading.Thread(target=write_all);t.start()
+assert m.line(r,len(payload))==payload; os.close(r);t.join()
+r,w=os.pipe();os.write(w,b'{"one":1}\n{"two":2}\n')
+try: m.line(r,1024)
+except RuntimeError: pass
+else: raise AssertionError('pipelined frame accepted')
+os.close(r);os.close(w)
+assert m.DIAGNOSTICS==frozenset(('constructor','operation','helper'))
+r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
+try: m.emit_diagnostic('a'*32,'helper')
+finally: os.dup2(old,1);os.close(old);os.close(w)
+assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';os.close(r)
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const root = "/custody/authority";
+  for (const [name, leafSubject] of [
+    ["envoy", "/CN=fixture.cogs.test"],
+    ["telemetry", "/CN=127.0.0.1"],
+  ] as const) {
+    const argv = syntheticPkiArgv(root, name);
+    assert.deepEqual(argv, [
+      ["genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", `${root}/${name}-ca.key`],
+      [
+        "req",
+        "-x509",
+        "-key",
+        `${root}/${name}-ca.key`,
+        "-sha256",
+        "-days",
+        "1",
+        "-subj",
+        `/CN=synthetic-${name}-CA`,
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+        "-out",
+        `${root}/${name}-ca.crt`,
+      ],
+      ["genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", `${root}/${name}.key`],
+      ["req", "-new", "-key", `${root}/${name}.key`, "-subj", leafSubject, "-out", `${root}/${name}.csr`],
+      [
+        "x509",
+        "-req",
+        "-in",
+        `${root}/${name}.csr`,
+        "-CA",
+        `${root}/${name}-ca.crt`,
+        "-CAkey",
+        `${root}/${name}-ca.key`,
+        "-set_serial",
+        "1",
+        "-days",
+        "1",
+        "-extfile",
+        `${root}/${name}.ext`,
+        "-out",
+        `${root}/${name}.crt`,
+      ],
+    ]);
+    assert.equal(
+      argv.filter(([command]) => command === "req").every((command) => command.includes("-key")),
+      true,
+    );
+    assert.equal(argv.flat().includes("-newkey"), false);
+    assert.equal(
+      argv
+        .filter(([command]) => command === "req")
+        .flat()
+        .includes("-quiet"),
+      false,
+    );
+  }
+  const runner = await readFile("dev/product-test/runner.ts", "utf8");
+  assert.ok(runner.includes('for (const args of syntheticPkiArgv(root, name)) await run("openssl", [...args]);'));
+  assert.equal(runner.includes("args.split("), false);
+});
+
+test("product custody aggregates operation, settlement, and closure failures", async () => {
+  const operation = new Error("operation"),
+    settlement = new Error("settlement"),
+    closure = new Error("closure");
+  const calls: string[] = [];
+  const host: CustodyPort = {
+    root: "/custody",
+    generation: "a".repeat(32),
+    request: async (op) => {
+      calls.push(op);
+      throw settlement;
+    },
+    closed: new Promise((_, reject) => setTimeout(() => reject(closure), 0)),
+  };
+  await assert.rejects(
+    withProductCustody(host, async () => {
+      throw operation;
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [operation, settlement, closure]);
+      return true;
+    },
+  );
+  assert.deepEqual(calls, ["settle"]);
+  const uncertain: CustodyPort = {
+    ...host,
+    request: async <T>() => ({ retired: true, failed: true }) as T,
+    closed: Promise.resolve(),
+  };
+  await assert.rejects(withProductCustody(uncertain, async () => true));
 });
 
 test("every capability-removal scenario executes create/start/pinned SSH/SFTP/probe/receipt cleanup without worker authority", async () => {

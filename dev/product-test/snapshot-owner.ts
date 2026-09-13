@@ -49,9 +49,13 @@ export class HostCustody implements CustodyPort {
   readonly generation: string;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly closed: Promise<void>;
-  #tail = Promise.resolve();
+  #tail: Promise<void>;
+  #readyResolve: (() => void) | undefined;
+  #readyReject: ((error: Error) => void) | undefined;
+  #ready: Promise<void>;
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
+  #diagnostic: "constructor" | "operation" | "helper" | undefined;
   #lost = false;
   constructor(
     generation: string,
@@ -61,6 +65,12 @@ export class HostCustody implements CustodyPort {
     check(/^[a-f0-9]{32}$/.test(generation) && seconds >= 60 && seconds <= 600);
     this.generation = generation;
     this.root = `/var/lib/cogs-product-test/${generation}`;
+    this.#ready = new Promise((resolve, reject) => {
+      this.#readyResolve = resolve;
+      this.#readyReject = reject;
+    });
+    this.#tail = this.#ready;
+    void this.#ready.catch(() => undefined);
     this.#child = spawn("/usr/bin/python3", ["-I", fileURLToPath(new URL("host-custody.py", import.meta.url))], {
       env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C", HOME: "/nonexistent" },
       stdio: ["pipe", "pipe", "pipe"],
@@ -73,22 +83,38 @@ export class HostCustody implements CustodyPort {
       });
       this.#child.once("close", (code) => {
         this.#lose();
-        code === 0 ? resolve() : reject(new Error("custody cleanup required"));
+        code === 0
+          ? resolve()
+          : reject(new Error(`custody cleanup required${this.#diagnostic ? `: ${this.#diagnostic}` : ""}`));
       });
     });
     void this.closed.catch(() => undefined);
     this.#child.stderr.resume(); // Never relay subprocess diagnostics or material.
     this.#child.stdout.on("data", (chunk: Buffer) => {
       try {
-        check(this.#pending && this.#input.length + chunk.length <= 2 * 1024 * 1024);
+        check(this.#input.length + chunk.length <= 2 * 1024 * 1024);
         this.#input = Buffer.concat([this.#input, chunk]);
         if (!this.#input.includes(10)) return;
-        const result = JSON.parse(this.#input.toString("utf8"));
-        check(canonical(result) === this.#input.toString("utf8") && result.generation === this.generation);
-        check(Object.keys(result).sort().join() === "generation,result");
+        const raw = this.#input.toString("utf8");
+        const result = JSON.parse(raw) as { generation?: unknown; result?: unknown; diagnostic?: unknown };
+        check(canonical(result) === raw && result.generation === this.generation);
         this.#input = Buffer.alloc(0);
-        this.#pending.resolve(result.result);
-        this.#pending = undefined;
+        if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready" && !this.#pending) {
+          this.#readyResolve?.();
+          this.#readyResolve = undefined;
+          this.#readyReject = undefined;
+        } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
+          this.#pending.resolve(result.result);
+          this.#pending = undefined;
+        } else if (
+          Object.keys(result).sort().join() === "diagnostic,generation" &&
+          (result.diagnostic === "constructor" || result.diagnostic === "operation" || result.diagnostic === "helper")
+        ) {
+          this.#diagnostic = result.diagnostic;
+          this.#lose(`custody unavailable: ${result.diagnostic}`);
+        } else {
+          throw new Error("invalid custody response");
+        }
       } catch {
         this.#lose();
       }
@@ -111,9 +137,12 @@ export class HostCustody implements CustodyPort {
     );
     return result;
   }
-  #lose(): void {
+  #lose(message = "custody unavailable; preserve receipts"): void {
     this.#lost = true;
-    this.#pending?.reject(new Error("custody unavailable; preserve receipts"));
+    this.#readyReject?.(new Error(message));
+    this.#readyResolve = undefined;
+    this.#readyReject = undefined;
+    this.#pending?.reject(new Error(message));
     this.#pending = undefined;
     this.#child.stdin.end(); // EOF asks the independent owner to settle, never grants destroy authority here.
   }

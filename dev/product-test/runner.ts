@@ -330,6 +330,48 @@ function gate(op: string, counts: Record<string, unknown> = {}): void {
   check(bytes.subarray(0, length).equals(Buffer.from(canonical({ ...q, op: reply }))));
 }
 
+export function syntheticPkiArgv(root: string, name: "envoy" | "telemetry"): readonly (readonly string[])[] {
+  const leafSubject = name === "envoy" ? "/CN=fixture.cogs.test" : "/CN=127.0.0.1";
+  return [
+    ["genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", `${root}/${name}-ca.key`],
+    [
+      "req",
+      "-x509",
+      "-key",
+      `${root}/${name}-ca.key`,
+      "-sha256",
+      "-days",
+      "1",
+      "-subj",
+      `/CN=synthetic-${name}-CA`,
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
+      "-out",
+      `${root}/${name}-ca.crt`,
+    ],
+    ["genpkey", "-quiet", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", `${root}/${name}.key`],
+    ["req", "-new", "-key", `${root}/${name}.key`, "-subj", leafSubject, "-out", `${root}/${name}.csr`],
+    [
+      "x509",
+      "-req",
+      "-in",
+      `${root}/${name}.csr`,
+      "-CA",
+      `${root}/${name}-ca.crt`,
+      "-CAkey",
+      `${root}/${name}-ca.key`,
+      "-set_serial",
+      "1",
+      "-days",
+      "1",
+      "-extfile",
+      `${root}/${name}.ext`,
+      "-out",
+      `${root}/${name}.crt`,
+    ],
+  ];
+}
+
 class SyntheticAuthorityOwner {
   constructor(readonly host: CustodyPort) {}
   async create(): Promise<string> {
@@ -338,23 +380,14 @@ class SyntheticAuthorityOwner {
     const root = `${this.host.root}/authority`;
     for (const name of ["host", "client"])
       await run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "synthetic-product", "-f", `${root}/${name}`]);
-    // Fixed generated paths/subjects only; split argv, never a shell or caller-supplied command.
-    const openssl = (args: string) => run("openssl", args.split(" "));
-    for (const name of ["envoy", "telemetry"]) {
-      await openssl(
-        `req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=synthetic-${name}-CA -addext basicConstraints=critical,CA:TRUE -keyout ${root}/${name}-ca.key -out ${root}/${name}-ca.crt`,
-      );
-      await openssl(
-        `req -new -newkey rsa:2048 -nodes -subj /CN=${name === "envoy" ? "fixture.cogs.test" : "127.0.0.1"} -keyout ${root}/${name}.key -out ${root}/${name}.csr`,
-      );
+    // Fixed argv and paths only; custody retains nonzero and stderr-cap checks.
+    for (const name of ["envoy", "telemetry"] as const) {
       await put(
         this.host,
         `authority/${name}.ext`,
         `subjectAltName=${name === "envoy" ? "DNS:fixture.cogs.test" : "IP:127.0.0.1"}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
       );
-      await openssl(
-        `x509 -req -in ${root}/${name}.csr -CA ${root}/${name}-ca.crt -CAkey ${root}/${name}-ca.key -set_serial 1 -days 1 -extfile ${root}/${name}.ext -out ${root}/${name}.crt`,
-      );
+      for (const args of syntheticPkiArgv(root, name)) await run("openssl", [...args]);
     }
     await dir(this.host, "sandbox-input", 0o500);
     for (const [source, target] of [
@@ -390,15 +423,27 @@ class SyntheticAuthorityOwner {
 
 export async function withProductCustody(host: CustodyPort, operation: () => Promise<boolean>): Promise<void> {
   let passed = false;
+  const failures: unknown[] = [];
   try {
     passed = await operation();
-  } finally {
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
     const result = await host.request<{ retired: boolean; failed: boolean }>("settle", { passed });
-    await host.closed;
     check(
       result.retired && (host.purpose === "capability-probe" ? result.failed && !passed : !result.failed && passed),
     );
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    await host.closed;
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "product custody failed");
 }
 export async function capabilityRemovalScenario(host: CustodyPort, full: ContainerSpec, removed: string) {
   check(

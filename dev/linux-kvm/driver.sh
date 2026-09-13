@@ -200,20 +200,24 @@ def finish(value,key,success):
     allowed=set(final[key])
     for path in set(before)|set(after):
         if path not in allowed and before.get(path)!=after.get(path):
-            raise RuntimeError('unapproved state inventory change')
+            raise RuntimeError('unexpected stage output path')
     for path,required in final[key].items():
         item=after.get(path)
         if required is None:
             if item is not None and item!=before.get(path): raise RuntimeError('invalid stage output')
         elif item is not None and item['kind']!=required[0]:
-            raise RuntimeError('invalid stage output')
+            raise RuntimeError(f'wrong stage output kind: {path}')
     if success:
         for path,required in final[key].items():
             item=after.get(path)
             if required is None:
-                if item is not None: raise RuntimeError('retired output remained')
-            elif item is None or (item['kind'],item['mode'])!=required:
-                raise RuntimeError('required stage output missing')
+                if item is not None: raise RuntimeError(f'retired stage output remained: {path}')
+            elif item is None:
+                raise RuntimeError(f'missing stage output: {path}')
+            elif item['kind']!=required[0]:
+                raise RuntimeError(f'wrong stage output kind: {path}')
+            elif item['mode']!=required[1]:
+                raise RuntimeError(f'wrong stage output mode: {path}')
     value['inventory']=observed
     value['pending']=None
     if key not in value['keys']: value['keys'].append(key)
@@ -622,7 +626,7 @@ prepare_keys() {
   mkdir -p "$state/control"
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-client -f "$state/control/client_ed25519_key"
   ssh-keygen -q -t ed25519 -N '' -C cogs-kvm-host -f "$state/control/host_ed25519_key"
-  chmod 0600 "$state/control/"*_ed25519_key
+  chmod 0600 "$state/control/"*_ed25519_key "$state/control/"*_ed25519_key.pub
   local host_key_type host_key_data ignored
   read -r host_key_type host_key_data ignored < "$state/control/host_ed25519_key.pub"
   [[ "$host_key_type" == ssh-ed25519 && "$host_key_data" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {

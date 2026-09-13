@@ -49,8 +49,8 @@ REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
 SERIALIZED_SOURCE_INVENTORY_LIMIT = 262_144
 SOURCE_INVENTORY_PRODUCER = ROOT / "scripts/stage4-offline-source-inventory.ts"
 PRODUCT_TEST_TASK_SPECS = (
-    ('governance', 6000, 1100000, ('config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/README.md', 'scripts/check-stage2-retained-lines.py', 'test/stage2-remediation-budget.test.ts')),
-    ('product', 4000, 3200000, ('.github/workflows/insecure-container.yml', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/production-compose.test.ts')),
+    ('governance', 6000, 1100000, ('config/external-review-remediation-budget-v1.json', 'docs/adr/0338-plan-pre-h-final-corrections.md', 'docs/adr/0339-row4-first-attempt-corrections.md', 'docs/adr/README.md', 'scripts/check-stage2-retained-lines.py', 'test/stage2-remediation-budget.test.ts')),
+    ('product', 4000, 3200000, ('.github/workflows/insecure-container.yml', '.github/workflows/kvm-qualification.yml', 'dev/linux-kvm/driver.sh', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'test/linux-kvm-git-tools.test.ts', 'test/production-compose.test.ts')),
     ('local-tofu-ssm', 4457, 8400000, ('.github/workflows/stage2-production-approval.yml', '.github/workflows/stage2-production-campaign.yml', 'deploy/aws-feasibility/completion_campaign_aws_adapter.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/destroy.sh', 'scripts/stage2-production-planner.py', 'scripts/stage2-stage-production-approval.py', 'test/aws-stage2-completion-campaign-aws-adapter.test.ts', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/stage2-production-planner.py', 'test/stage2-production-planner.test.ts', 'test/stage2-production-workflows.test.ts')),
     ('readiness-ci', 1800, 2000000, ('.gitleaksignore', '.github/workflows/ci.yml', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'test/ci-infrastructure-boundary.test.ts')),
     ('final-HGQ', 5300, 5500000, ('test/aws-stage2-completion-kata-mutable-bridges.test.ts', 'test/aws-stage2-completion-kata-runtime.py', 'test/aws-stage2-completion-kata-runtime.test.ts', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-prebuilt-local-kata-workflow.test.ts')),
@@ -489,7 +489,7 @@ def _remediation_budget():
 
 
 def _product_test_budget(data, _allocations):
-    """Validate the deliberately small ADR0338 task matrix.
+    """Validate the deliberately small ADR0338/ADR0339 task matrix.
 
     The task lists are literal rather than prefix/category rules: a future path
     needs a reviewed replan.  This checker charges every direct child from the
