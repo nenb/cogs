@@ -25,10 +25,10 @@
       "gross_bytes": 11000000
     },
     "global_gross_line_forecast": 39557,
-    "global_gross_byte_forecast": 28200000,
+    "global_gross_byte_forecast": 28800000,
     "remaining_tranche": {
       "gross_lines": 21557,
-      "gross_bytes": 20200000,
+      "gross_bytes": 20800000,
       "allocations": [
         {
           "name": "governance",
@@ -107,15 +107,18 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 2000000,
+          "gross_bytes": 2600000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
+            "docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json",
             "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+            "docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json",
             "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
             "docs/security-evidence/stage4-offline-readiness-package.json",
             "scripts/stage4-offline-readiness.ts",
             "scripts/stage4-offline-source-inventory.ts",
+            "scripts/stage4-runtime-artifact-closure.ts",
             "test/ci-infrastructure-boundary.test.ts"
           ]
         },
