@@ -287,16 +287,24 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
   assert.match(text, /\[LABEL=COGS_GITTOOLS, \/opt\/cogs-git, auto, 'ro,nosuid,nodev'/u);
   assert.match(
     text,
-    /test ! -e \/usr\/bin\/git && test ! -L \/usr\/bin\/git && ln -s \/opt\/cogs-git\/bin\/git \/usr\/bin\/git/u,
+    /test ! -e \/usr\/bin\/git\n {6}test ! -L \/usr\/bin\/git[\s\S]*ln -s \/opt\/cogs-git\/bin\/git \/usr\/bin\/git/u,
   );
   assert.doesNotMatch(text, /ln, -sfn/u);
   assert.match(text, /readonly=on,file=\$state\/git-tools\.img/u);
   assert.match(text, /blkid -s LABEL -o value/u);
   assert.match(text, /blockdev --getro "\$source"/u);
   assert.match(text, /findmnt -rn -o OPTIONS \/opt\/cogs-git/u);
-  assert.match(text, /! find \/opt\/cogs-git -xdev .* ! -type l -a -perm \/0022/u);
+  assert.match(text, /unsafe=\$\(find \/opt\/cogs-git -xdev .* -print -quit\)/u);
+  assert.match(text, /test -z "\$unsafe"/u);
+  assert.doesNotMatch(text, /! find [^\n]*\| grep -q|! ldd [^\n]*\| grep -q/u);
   assert.match(text, /git --version\)" = "git version 2\.47\.3"/u);
-  assert.match(text, /ldd \/opt\/cogs-git\/usr\/bin\/git/u);
+  assert.match(
+    text,
+    /LD_LIBRARY_PATH=\/opt\/cogs-git\/usr\/lib\/x86_64-linux-gnu \/usr\/bin\/ldd \/opt\/cogs-git\/usr\/bin\/git/u,
+  );
+  assert.match(text, /case "\$ldd_output" in \*"not found"\*\) exit 1/u);
+  assert.match(text, /READY_WRAPPER = "set -euo pipefail; cloud-init status --wait/u);
+  assert.match(text, /ReadyFailure\("cloud-init-nonzero-degraded"\)|ReadyFailure\("marker-missing"\)/u);
   assert.match(text, /git init -q/u);
   assert.match(text, /git notes --ref=cogs add/u);
   assert.match(text, /git fsck --no-progress/u);
@@ -609,6 +617,10 @@ function serialContract(text: string) {
   assert.match(text, /test "\\\$\(stat -c/u);
   assert.match(text, /grep -F '\$\(readlink \/usr\/bin\/git\)' "\$state\/user-data"/u);
   assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
+  assert.match(
+    text,
+    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -euo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+  );
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
   assert.doesNotMatch(routes, /if ! owner_stage|owner_stage [^;\n]+ [a-z_]+/u);
@@ -1577,12 +1589,16 @@ assert run("import os; os.write(2,b'x'*4096)")== (0,b'')
 for program in (
     "import os; os.write(1,b'x'*38)",
     "import os; os.write(2,b'x'*4097)",
-    "import os; os.write(1,b'\\xff')",
     "import os; os.write(2,b'\\x00')",
     "import os; os.write(1,b'valid\\r\\n')",
     "import os; os.write(1,'é'.encode()*19)",
     "import os; os.write(1,b'x'*38); os.write(2,b'x'*4097)",
 ): rejects(lambda:run(program))
+for program in ("import os; os.write(1,b'\\xff')", "import os; os.write(2,b'\\xff')"):
+    try: run(program)
+    except h.BoundedMalformed as error:
+        assert str(error)=="malformed command bytes" and "\\xff" not in str(error)
+    else: raise AssertionError("invalid UTF-8 was not classified as malformed command bytes")
 assert run('raise SystemExit(7)')==(7,b'')
 # A single ignored TERM and silent stream cannot evade the absolute deadline.
 started=time.monotonic()
@@ -1679,6 +1695,21 @@ assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/insta
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
+for code,phase in ((255,'authenticated-ssh-transport'),(41,'cloud-init-nonzero-degraded'),(42,'marker-missing'),(9,'malformed')):
+    with patch.object(h,'bounded',return_value=(code,b'')):
+        try: h.guest(state,'ready','18080',120)
+        except h.ReadyFailure as error: assert error.phase==phase
+        else: raise AssertionError('unclassified ready exit accepted')
+for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed')):
+    with patch.object(h,'bounded',side_effect=error):
+        try: h.guest(state,'ready','18080',120)
+        except h.ReadyFailure as observed: assert observed.phase==phase
+        else: raise AssertionError('unclassified local readiness failure accepted')
+for command in ('ready','boot-id'):
+    with patch.object(h,'bounded',side_effect=h.RetirementUncertain):
+        try: h.guest(state,command,'18080',120)
+        except h.RetirementUncertain: pass
+        else: raise AssertionError('guest wrapper downgraded retirement uncertainty')
 # Readiness retries ONLY key exchange without a remote command, under one bound.
 scans=[]; guests=[]; clock=[0.0]
 def scan(state,end): scans.append(end); clock[0]+=4; return len(scans)==3
@@ -1700,8 +1731,31 @@ with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
     assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
+for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed(),'host-key-mismatch')):
+    with patch.object(h,'bounded',side_effect=error):
+        try: h.host_key(state,5)
+        except h.ReadyFailure as observed: assert observed.phase==phase
+        else: raise AssertionError('unclassified host-key scan failure accepted')
 for code,raw in ((1,b'x'),(2,b''),(-1,b'')):
     with patch.object(h,'bounded',return_value=(code,raw)): rejects(lambda:h.host_key(state,5))
+# A deadline in the shared readiness key scan is terminal: it neither retries
+# the scan nor dispatches the authenticated guest readiness command.
+scans=[]; guests=[]
+def expired_scan(state,end): scans.append((state,end)); raise h.BoundedDeadline()
+with patch.object(h,'host_key',expired_scan), patch.object(h,'guest',lambda *args:guests.append(args)), \
+     patch.object(h,'read_control',return_value=(nonce+'\n').encode()):
+    try: h.execute('readiness',state,nonce,'18080')
+    except h.ReadyFailure as observed: assert observed.phase=='host-key-unavailable-deadline'
+    else: raise AssertionError('host-key scan deadline was retried or accepted')
+assert len(scans)==1 and guests==[]
+with patch.object(h,'bounded',side_effect=h.RetirementUncertain):
+    try: h.host_key(state,5)
+    except h.RetirementUncertain: pass
+    else: raise AssertionError('keyscan wrapper downgraded retirement uncertainty')
+with patch.object(h,'host_key',side_effect=h.RetirementUncertain), patch.object(h,'read_control',return_value=(nonce+'\n').encode()):
+    try: h.execute('readiness',state,nonce,'18080')
+    except h.RetirementUncertain: pass
+    else: raise AssertionError('readiness retry wrapper downgraded retirement uncertainty')
 `);
 });
 
@@ -1796,10 +1850,12 @@ with patch.object(h,'require_driver',side_effect=AssertionError('custody reached
 with patch.object(h.os,'fstat',side_effect=OSError), patch.object(h.subprocess,'Popen',side_effect=AssertionError), \
      patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
     assert h.main()==1
-# Primitive local retirement failures become exit 2, not settled guest failure.
-with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
-     patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
-    assert h.main()==2
+# CLI preserves retirement uncertainty from both readiness/keyscan phases as
+# reserved exit 2; it must not emit their ordinary fixed-phase failure status.
+for command in ('readiness','host-key','root'):
+    with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
+         patch.object(sys,'argv',['bounded',command,'/safe','a'*32,'18080']):
+        assert h.main()==2
 native_retire=h.retire
 children=[]; original=h.subprocess.Popen
 def spawn(*args,**kwargs):
@@ -1857,6 +1913,21 @@ ${mode === "lost" ? "generation_owner guest-start root" : mode === "foreign" ? `
         { encoding: "utf8" },
       );
       assert.equal(check.status === 0, mode === "success" || mode === "foreign");
+      if (["uncertain", "killed", "lost"].includes(mode)) {
+        // Exit 2/lost helper completion preserves the exact guest intent: no
+        // rollback acquisition or state removal can turn it into cleanup proof.
+        const retained = spawnSync(
+          "bash",
+          [
+            "-c",
+            `${program.slice(0, program.indexOf("generation_owner init"))}! generation_owner intent reset; ! generation_owner remove; generation_owner check destroy`,
+          ],
+          { encoding: "utf8" },
+        );
+        assert.notEqual(retained.status, 0, retained.stderr);
+        const afterRefusal = JSON.parse(await readFile(join(state, ".generation.owner"), "utf8"));
+        assert.equal(afterRefusal.guest, "root");
+      }
       if (mode === "failure") {
         const cleanup = spawnSync(
           "bash",

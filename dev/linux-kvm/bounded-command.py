@@ -28,6 +28,23 @@ class RetirementUncertain(Rejected):
     pass
 
 
+class ReadyFailure(Rejected):
+    def __init__(self, phase):
+        super().__init__(phase); self.phase = phase
+
+
+class BoundedDeadline(Rejected):
+    pass
+
+
+class BoundedBytes(Rejected):
+    pass
+
+
+class BoundedMalformed(Rejected):
+    pass
+
+
 cancelled = False
 
 
@@ -54,9 +71,12 @@ def exact_json(raw):
 
 
 def text(raw):
-    value = raw.decode("utf-8", "strict")
+    try:
+        value = raw.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        raise BoundedMalformed("malformed command bytes") from None
     if "\0" in value or "\r" in value:
-        raise Rejected("malformed command bytes")
+        raise BoundedMalformed("malformed command bytes")
     return value
 
 
@@ -163,7 +183,7 @@ def bounded(argv, cap=16384, seconds=15, deadline=None):
     Pidfd.preflight()
     end = min(time.monotonic() + seconds, deadline if deadline is not None else float("inf"))
     if time.monotonic() >= end:
-        raise Rejected("command deadline")
+        raise BoundedDeadline("command deadline")
     child = None
     held = None
     output = [bytearray(), bytearray()]
@@ -181,7 +201,7 @@ def bounded(argv, cap=16384, seconds=15, deadline=None):
                 check_cancelled()
                 remaining = end - time.monotonic()
                 if remaining <= 0:
-                    raise Rejected("command deadline or incomplete EOF")
+                    raise BoundedDeadline("command deadline or incomplete EOF")
                 for key, _ in selector.select(min(remaining, .05)):
                     index = key.data
                     limit = cap if index == 0 else 4096
@@ -194,9 +214,9 @@ def bounded(argv, cap=16384, seconds=15, deadline=None):
                     else:
                         output[index].extend(chunk)
                         if len(output[index]) > limit:
-                            raise Rejected("command byte cap")
+                            raise BoundedBytes("command byte cap")
             if time.monotonic() >= end:
-                raise Rejected("command deadline")
+                raise BoundedDeadline("command deadline")
     finally:
         # Handled cancellation cannot interrupt the sole local retirement owner.
         handled = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -247,13 +267,15 @@ GIT_PROBE = r'''set -euo pipefail
     test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
     test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
     test "$(stat -c "%u:%g:%a:%F" /opt/cogs-git/bin/git)" = "0:0:755:regular file"
-    ! find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o \( ! -type l -a -perm /0022 \) -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .
+    unsafe=$(find /opt/cogs-git -xdev \( ! -uid 0 -o ! -gid 0 -o \( ! -type l -a -perm /0022 \) -o -type b -o -type c -o -type p -o -type s \) -print -quit)
+    test -z "$unsafe"
     grep -qx $'git\t1:2.47.3-0+deb13u1\tamd64' /opt/cogs-git/cogs-git-tools-manifest.tsv
     grep -qx $'libcurl3t64-gnutls\t8.14.1-2+deb13u4\tamd64' /opt/cogs-git/cogs-git-tools-manifest.tsv
     grep -qx $'libngtcp2-16\t1.11.0-1+deb13u1\tamd64' /opt/cogs-git/cogs-git-tools-manifest.tsv
     grep -qx $'libngtcp2-crypto-gnutls8\t1.11.0-1+deb13u1\tamd64' /opt/cogs-git/cogs-git-tools-manifest.tsv
     test "$(git --version)" = "git version 2.47.3"
-    ! ldd /opt/cogs-git/usr/bin/git 2>/dev/null | grep -q "not found"
+    ldd_output=$(LD_LIBRARY_PATH=/opt/cogs-git/usr/lib/x86_64-linux-gnu /usr/bin/ldd /opt/cogs-git/usr/bin/git)
+    case "$ldd_output" in *"not found"*) exit 1 ;; esac
     work=$(mktemp -d /tmp/cogs-git-verify.XXXXXX)
     trap 'rm -rf "$work"' EXIT
     cd "$work"
@@ -268,10 +290,11 @@ GIT_PROBE = r'''set -euo pipefail
     git notes --ref=cogs add -m note "$commit"
     git notes --ref=cogs show "$commit" >/dev/null
     git fsck --no-progress >/dev/null'''
+READY_WRAPPER = "set -euo pipefail; cloud-init status --wait >/dev/null 2>&1 || exit 41; test -f /var/lib/cloud/instance/boot-finished || exit 42"
 PROBES = {
-    # SSH authentication alone races cloud-init. This single command waits for
-    # cloud-init's final state and the durable boot-finished marker.
-    "ready": "cloud-init status --wait >/dev/null && test -f /var/lib/cloud/instance/boot-finished",
+    # SSH authentication alone races cloud-init. One dispatched wrapper maps
+    # only fixed remote exits and never emits guest output.
+    "ready": READY_WRAPPER,
     "boot-id": "cat /proc/sys/kernel/random/boot_id",
     "kernel": "uname -r",
     "root": 'test "$(id -u)" = 0',
@@ -308,7 +331,31 @@ def guest(state, name, port, deadline=None):
     # the remaining absolute readiness window; all other guest commands retain
     # the ordinary 15-second cap.
     seconds = max(0, deadline - time.monotonic()) if name == "ready" and deadline is not None else 15
-    code, raw = bounded(ssh_argv(state, command), cap, seconds, deadline)
+    try:
+        code, raw = bounded(ssh_argv(state, command), cap, seconds, deadline)
+    except RetirementUncertain:
+        # Local retirement uncertainty is never a readiness-phase outcome.
+        # Preserve it to main so the locked driver retains guest intent.
+        raise
+    except BoundedDeadline:
+        if name == "ready": raise ReadyFailure("deadline") from None
+        raise
+    except BoundedBytes:
+        if name == "ready": raise ReadyFailure("byte") from None
+        raise
+    except BoundedMalformed:
+        if name == "ready": raise ReadyFailure("malformed") from None
+        raise
+    except Rejected:
+        if name == "ready": raise ReadyFailure("malformed") from None
+        raise
+    if name == "ready":
+        if raw: raise ReadyFailure("byte")
+        if code == 0: return None
+        if code == 41: raise ReadyFailure("cloud-init-nonzero-degraded")
+        if code == 42: raise ReadyFailure("marker-missing")
+        if code == 255: raise ReadyFailure("authenticated-ssh-transport")
+        raise ReadyFailure("malformed")
     if code != 0:
         # 255, signals, missing remote exit, even normal failed verification:
         # never retry/reuse a possibly still-running remote invocation.
@@ -321,13 +368,27 @@ def guest(state, name, port, deadline=None):
 def host_key(state, deadline=None):
     # Keep two seconds inside the five-second outer bound: a keyscan timeout
     # cannot consume the retry scheduler's complete deadline.
-    code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+    try:
+        code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+    except RetirementUncertain:
+        # Keyscan retirement is custody uncertainty, not a host-key mismatch.
+        raise
+    except BoundedDeadline:
+        raise ReadyFailure("host-key-unavailable-deadline") from None
+    except (BoundedBytes, BoundedMalformed):
+        raise ReadyFailure("host-key-mismatch") from None
     if code == 1 and not raw:
         return False  # key exchange only: no guest command was dispatched
-    expected = read_control(state / "known_hosts", 4096)
+    try:
+        expected = read_control(state / "known_hosts", 4096)
+    except (Rejected, OSError):
+        raise ReadyFailure("host-key-mismatch") from None
     if code != 0 or raw != expected or not re.fullmatch(rb"192\.0\.2\.2 ssh-ed25519 [A-Za-z0-9+/]+={0,2}\n", raw):
-        raise Rejected("host key mismatch")
-    base64.b64decode(raw.split()[2], validate=True)
+        raise ReadyFailure("host-key-mismatch")
+    try:
+        base64.b64decode(raw.split()[2], validate=True)
+    except ValueError:
+        raise ReadyFailure("host-key-mismatch") from None
     return True
 
 
@@ -418,10 +479,13 @@ def execute(name, state, generation, port):
         query_kvm(state / "qmp.sock")
     elif name in ("readiness", "host-key"):
         end = time.monotonic() + (120 if name == "readiness" else 5)
-        while not host_key(state, end):
-            if name != "readiness" or time.monotonic() + .2 >= end:
-                raise Rejected("readiness deadline")
-            time.sleep(.2)
+        try:
+            while not host_key(state, end):
+                if name != "readiness" or time.monotonic() + .2 >= end:
+                    raise ReadyFailure("host-key-unavailable-deadline")
+                time.sleep(.2)
+        except BoundedDeadline:
+            raise ReadyFailure("host-key-unavailable-deadline") from None
         if name == "readiness":
             guest(state, "ready", port, end)
     elif name.startswith("receipt-"):
@@ -498,8 +562,8 @@ def main():
         # Fixed command/reason grammar only: never reflect output, paths, argv,
         # keys, or exception text. Nonzero and uncertain outcomes retain custody.
         command = name if name in IDS else "admission"
-        reason = "local-retirement-uncertain" if isinstance(error, RetirementUncertain) else (
-            "readiness-host-key" if command == "readiness" else "host-key" if command == "host-key" else "fixed-command"
+        reason = error.phase if isinstance(error, ReadyFailure) else "local-retirement-uncertain" if isinstance(error, RetirementUncertain) else (
+            "host-key-mismatch" if command == "host-key" else "fixed-command"
         )
         print(f"FAIL: kvm-{command}-{reason}; generation must not be reused", file=sys.stderr)
         return 2 if isinstance(error, RetirementUncertain) else 1

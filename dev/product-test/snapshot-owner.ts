@@ -191,11 +191,33 @@ export class HostCustody implements CustodyPort {
               "environment",
               "persistence",
             ]);
+            const authenticate = new Set([
+              "inspect",
+              "image-running",
+              "labels",
+              "environment",
+              "isolation",
+              "cap-add",
+              "limits",
+              "mount-inventory",
+              "bind-identity",
+              "tmpfs-config",
+              "mountinfo",
+              "cgroup-membership",
+              "cgroup-limits",
+              "process-security",
+              "namespace-pidfd",
+            ]);
+            const probe = new Set(["inspect", "result", "namespace", "ssh", "sftp", "persistence"]);
             const keys = Object.keys(result).sort().join();
             const paired =
               result.diagnostic === "provenance"
                 ? provenance.has(result.substage as string)
-                : result.substage === undefined;
+                : result.diagnostic === "authenticate"
+                  ? authenticate.has(result.substage as string)
+                  : result.diagnostic === "capability-probe"
+                    ? authenticate.has(result.substage as string) || probe.has(result.substage as string)
+                    : result.substage === undefined;
             const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
             check(
               diagnostics.has(result.diagnostic as string) &&

@@ -25,6 +25,8 @@ import time
 NONCE = re.compile(r"[0-9a-f]{32}\Z"); ID = re.compile(r"[0-9a-f]{64}\Z")
 OPERATIONS = frozenset(("authenticate", "capability-probe", "create", "evidence", "exec", "file", "image", "lease", "lease-directory", "mkdir", "pair", "provenance", "seal", "settle", "status", "storage"))
 PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment", "persistence"))
+AUTHENTICATE_SUBSTAGES = frozenset(("inspect", "image-running", "labels", "environment", "isolation", "cap-add", "limits", "mount-inventory", "bind-identity", "tmpfs-config", "mountinfo", "cgroup-membership", "cgroup-limits", "process-security", "namespace-pidfd"))
+CAPABILITY_PROBE_SUBSTAGES = frozenset(("inspect", "result", "namespace", "ssh", "sftp", "persistence"))
 DIAGNOSTICS = frozenset(("constructor", "helper", "helper-finalize", *OPERATIONS))
 CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
@@ -74,7 +76,8 @@ def emit(value):
 
 def emit_diagnostic(generation, stage, substage=None, cleanup_uncertain=False):
     require(NONCE.fullmatch(generation) and stage in DIAGNOSTICS)
-    require((stage == "provenance" and substage in PROVENANCE_SUBSTAGES) or (stage != "provenance" and substage is None))
+    allowed = PROVENANCE_SUBSTAGES if stage == "provenance" else AUTHENTICATE_SUBSTAGES if stage == "authenticate" else AUTHENTICATE_SUBSTAGES | CAPABILITY_PROBE_SUBSTAGES if stage == "capability-probe" else frozenset()
+    require((substage in allowed) if allowed else substage is None)
     require(type(cleanup_uncertain) is bool)
     value = {"diagnostic": stage, "generation": generation}
     if substage is not None: value["substage"] = substage
@@ -625,43 +628,90 @@ class Custody:
         return values[0]
 
     def authenticate(self, role):
-        held = self.ids[role]; v = self.inspect(held["id"])
-        p, spec = v["State"]["Pid"], held["spec"]; require(v["State"]["Running"] and v["Image"] == spec["image"])
-        require(v["Config"]["Labels"] == {**(self.images[spec["image"]]["Config"]["Labels"] or {}), "cogs.product.generation": self.generation})
-        require(environment(v["Config"], role) == held["environment"]); h = v["HostConfig"]
-        require(h["ReadonlyRootfs"] and not h["Privileged"] and h["PidMode"] == ""); require(h["LogConfig"]["Type"] == "none" and h["CapDrop"] == ["ALL"])
-        require(sorted(h["CapAdd"] or []) == sorted(spec["caps"])); require(h["SecurityOpt"] == ["no-new-privileges"] and h["CgroupParent"] == self.cg[14:])
+        def stage(value):
+            if self.failure_stage in ("authenticate", "capability-probe"):
+                self.failure_substage = value
+        stage("inspect"); held = self.ids[role]; v = self.inspect(held["id"])
+        stage("image-running"); p, spec = v["State"]["Pid"], held["spec"]; require(v["State"]["Running"] and v["Image"] == spec["image"])
+        stage("labels"); require(v["Config"]["Labels"] == {**(self.images[spec["image"]]["Config"]["Labels"] or {}), "cogs.product.generation": self.generation})
+        stage("environment"); require(environment(v["Config"], role) == held["environment"]); h = v["HostConfig"]
+        stage("isolation"); require(h["ReadonlyRootfs"] and not h["Privileged"] and h["PidMode"] == ""); require(h["LogConfig"]["Type"] == "none" and h["CapDrop"] == ["ALL"])
+        # --mount must not be weakened by a legacy network, device, or bind field.
+        require(h["NetworkMode"] == spec["network"] and h["Devices"] in (None, []) and h["Binds"] in (None, []))
+        stage("cap-add"); actual_caps = h["CapAdd"] or []; expected_caps = {"CAP_" + cap for cap in spec["caps"]}
+        require(isinstance(actual_caps, list) and len(actual_caps) == len(expected_caps) and len(actual_caps) == len(set(actual_caps)) and set(actual_caps) == expected_caps)
+        stage("limits"); require(h["SecurityOpt"] == ["no-new-privileges"] and h["CgroupParent"] == self.cg[14:])
         require(h["Memory"] == 4294967296 and h["MemorySwap"] == 4294967296 and (h["MemorySwappiness"] is None or type(h["MemorySwappiness"]) is int and h["MemorySwappiness"] == 0))
         require(h["PidsLimit"] == 128 and h["NanoCpus"] == 2000000000 and not h["PortBindings"]); require(h["ShmSize"] == 16777216)
-        require(h["NetworkMode"] == spec["network"] and not h["Devices"] and not h["Binds"]); require(len(v["Mounts"]) == len(spec["mounts"]))
-        for m in v["Mounts"]:
-            expected = next(x for x in spec["mounts"] if x["target"] == m["Destination"])
-            require(m["Type"] == "bind" and m["Source"] == expected["source"] and m["RW"] == (not expected["ro"])); require(m["Propagation"] == "rprivate")
-            a, b = os.stat(m["Source"]), os.stat(f"/proc/{p}/root" + m["Destination"])
-            require((a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) == tuple(held["sources"][m["Destination"]]))
-        require((h["Tmpfs"] or {}) == spec["tmpfs"])
+        stage("mount-inventory"); expected_binds = {m["target"]: m for m in spec["mounts"]}; expected_tmpfs = spec["tmpfs"]
+        require(len(expected_binds) == len(spec["mounts"]) and not (set(expected_binds) & set(expected_tmpfs)))
+        observed = {}
+        for mount in v["Mounts"]:
+            destination = mount.get("Destination"); require(isinstance(destination, str) and destination not in observed); observed[destination] = mount
+        require(set(expected_binds) <= set(observed) <= set(expected_binds) | set(expected_tmpfs))
+        # Docker's legacy --tmpfs API either reports every tmpfs Mount or none;
+        # a partial inventory, unknown mount, or bind/tmpfs substitution is unsafe.
+        reported_tmpfs = set(observed) & set(expected_tmpfs)
+        require(reported_tmpfs in (set(), set(expected_tmpfs)))
+        for destination in reported_tmpfs:
+            mount = observed[destination]; require(mount.get("Type") == "tmpfs" and mount.get("Source", "") == "" and mount.get("RW") is True and mount.get("Propagation", "") == "")
+        stage("bind-identity")
+        for destination, expected in expected_binds.items():
+            mount = observed[destination]; require(mount.get("Type") == "bind" and mount.get("Source") == expected["source"] and mount.get("RW") == (not expected["ro"]) and mount.get("Propagation") == "rprivate")
+            a, b = os.stat(mount["Source"]), os.stat(f"/proc/{p}/root" + destination)
+            require((a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) == tuple(held["sources"][destination]))
+        stage("tmpfs-config"); require(h["Tmpfs"] == expected_tmpfs)
+        def tmpfs_expected(options):
+            values = options.split(","); require(values and len(values) == len(set(values)))
+            required = {"rw", "nosuid", "nodev", "noexec"}; keyed = {}
+            for value in values:
+                if "=" in value:
+                    key, item = value.split("=", 1); require(key in ("size", "mode", "uid", "gid") and key not in keyed and item); keyed[key] = item
+                else: require(value in required)
+            require(required <= set(values) and "size" in keyed)
+            size = re.fullmatch(r"([1-9][0-9]*)([kKmMgGtT]?)", keyed["size"]); require(size is not None)
+            bytes_ = int(size.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}[size.group(2).lower()]
+            mode = keyed.get("mode", "1777"); require(re.fullmatch(r"[0-7]{3,4}", mode))
+            uid, gid = keyed.get("uid", "0"), keyed.get("gid", "0"); require(uid.isdecimal() and gid.isdecimal())
+            return bytes_, int(mode, 8), int(uid), int(gid)
+        def mountinfo(row):
+            fields = row.split(); require(len(fields) >= 10 and fields[0].isdecimal() and fields[1].isdecimal() and re.fullmatch(r"[0-9]+:[0-9]+", fields[2]))
+            require(re.fullmatch(r"(?:[^\\]|\\[0-7]{3})+", fields[3]) and re.fullmatch(r"(?:[^\\]|\\[0-7]{3})+", fields[4]))
+            require(fields.count("-") == 1); dash = fields.index("-"); require(dash >= 6 and len(fields) == dash + 4)
+            decode = lambda value: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+            return fields, dash, decode(fields[4])
+        stage("mountinfo")
         with open(f"/proc/{p}/mountinfo", encoding="ascii") as f:
-            mounts = [row.split() for row in f]
-        for expected in spec["mounts"]:
-            live = [m for m in mounts if m[4] == expected["target"]]; require(len(live) == 1 and ("ro" in live[0][5].split(",")) == expected["ro"])
-            require(not any(x.startswith(("shared:", "master:")) for x in live[0][6:]))
+            mounts = [mountinfo(row) for row in f]
+        for destination, expected in expected_binds.items():
+            live = [mount for mount in mounts if mount[2] == destination]; require(len(live) == 1 and ("ro" in live[0][0][5].split(",")) == expected["ro"])
+            require(not any(value.startswith(("shared:", "master:")) for value in live[0][0][6:live[0][1]]))
+        for destination, options in expected_tmpfs.items():
+            live = [mount for mount in mounts if mount[2] == destination]; require(len(live) == 1)
+            fields, dash, _ = live[0]; require(fields[dash + 1:dash + 3] == ["tmpfs", "tmpfs"] and "rw" in fields[5].split(","))
+            require({"nosuid", "nodev", "noexec"} <= set(fields[5].split(",")) and not any(value.startswith(("shared:", "master:")) for value in fields[6:dash]))
+            target = f"/proc/{p}/root" + destination; target_stat, target_vfs = os.stat(target), os.statvfs(target)
+            expected_size, expected_mode, expected_uid, expected_gid = tmpfs_expected(options)
+            require(stat.S_ISDIR(target_stat.st_mode) and (os.major(target_stat.st_dev), os.minor(target_stat.st_dev)) == tuple(map(int, fields[2].split(":"))))
+            require(stat.S_IMODE(target_stat.st_mode) == expected_mode and target_stat.st_uid == expected_uid and target_stat.st_gid == expected_gid)
+            require(target_vfs.f_frsize > 0 and target_vfs.f_blocks * target_vfs.f_frsize == ((expected_size + target_vfs.f_frsize - 1) // target_vfs.f_frsize) * target_vfs.f_frsize)
+        stage("cgroup-membership")
         with open(f"/proc/{p}/cgroup", encoding="ascii") as f:
             cg = f.read().strip().removeprefix("0::")
         require(cg == self.cg[14:] + "/" + held["id"])
+        stage("cgroup-limits")
         for name, value in LIMITS.items():
             with open("/sys/fs/cgroup" + cg + "/" + name, encoding="ascii") as f:
                 actual = f.read().strip()
             require(actual == value or (name == "cpu.max" and actual == "200000 100000"))
+        stage("process-security")
         with open(f"/proc/{p}/status", encoding="ascii") as f:
             status = dict(line.split(":", 1) for line in f if ":" in line)
-        require(all(int(status[k].strip(), 16) == spec["mask"] for k in ("CapEff", "CapPrm", "CapBnd"))); require(status["NoNewPrivs"].strip() == "1")
-        require(status["Seccomp"].strip() == "2"); namespace = os.readlink(f"/proc/{p}/ns/mnt")
-        if role == "worker":
-            require(os.readlink(f"/proc/{p}/ns/net") == os.readlink(f"/proc/{self.ids['sandbox']['pid']}/ns/net"))
-        if "pid" in held:
-            require(held["pid"] == p and held["namespace"] == namespace)
-        else:
-            held["pidfd"] = os.pidfd_open(p)
+        require(all(int(status[k].strip(), 16) == spec["mask"] for k in ("CapEff", "CapPrm", "CapBnd"))); require(status["NoNewPrivs"].strip() == "1" and status["Seccomp"].strip() == "2")
+        stage("namespace-pidfd"); namespace = os.readlink(f"/proc/{p}/ns/mnt")
+        if role == "worker": require(os.readlink(f"/proc/{p}/ns/net") == os.readlink(f"/proc/{self.ids['sandbox']['pid']}/ns/net"))
+        if "pid" in held: require(held["pid"] == p and held["namespace"] == namespace)
+        else: held["pidfd"] = os.pidfd_open(p)
         require(not select.select([held["pidfd"]], [], [], 0)[0]); held.update(pid=p, namespace=namespace)
         return held
 
@@ -871,8 +921,8 @@ class Custody:
         return canonical(e).decode()
 
     def capability_probe(self):
-        held = self.ids["sandbox"]; v = self.inspect(held["id"])
-        build = self.build
+        self.failure_substage = "inspect"; held = self.ids["sandbox"]; v = self.inspect(held["id"])
+        self.failure_substage = "result"; build = self.build
         result = dict(purpose="capability-probe", generation=self.generation,
                       retired_generation=self.generation, candidate=build["candidate"],
                       tree=build["tree"], source_inventory=build["source_inventory"],
@@ -882,10 +932,10 @@ class Custody:
                       removed=next(c for c in CAPABILITIES if c not in held["spec"]["caps"]),
                       start_code=held["start_code"], running=v["State"]["Running"], ssh=None, sftp=None)
         if result["running"]:
-            self.authenticate("sandbox"); net = os.open(f"/proc/{held['pid']}/ns/net", os.O_RDONLY)
+            self.authenticate("sandbox"); self.failure_substage = "namespace"; net = os.open(f"/proc/{held['pid']}/ns/net", os.O_RDONLY)
             try:
                 self.authenticate("sandbox")  # reject death/reuse across namespace acquisition
-                prefix = ["nsenter", "--net=/proc/self/fd/" + str(net), "--"]; options = ["-F", "/dev/null", "-i", self.root + "/authority/client"]
+                self.failure_substage = "ssh"; prefix = ["nsenter", "--net=/proc/self/fd/" + str(net), "--"]; options = ["-F", "/dev/null", "-i", self.root + "/authority/client"]
                 for option in ("BatchMode=yes", "IdentitiesOnly=yes", "IdentityAgent=none", "StrictHostKeyChecking=yes",
                                "GlobalKnownHostsFile=/dev/null", "UserKnownHostsFile=" + self.root + "/authority/known_hosts",
                                "ConnectTimeout=2", "ConnectionAttempts=3"):
@@ -893,13 +943,13 @@ class Custody:
                 code, out = self.command(prefix + ["ssh", *options, "root@127.0.0.1", "printf cogs-capability-probe"], status=True, pass_fds=(net,))
                 result["ssh"] = code == 0 and out == b"cogs-capability-probe"
                 if result["ssh"]:
-                    self.authenticate("sandbox")
+                    self.authenticate("sandbox"); self.failure_substage = "sftp"
                     code, _ = self.command(prefix + ["sftp", *options, "-b", self.root + "/authority/sftp-batch", "root@127.0.0.1"], status=True, pass_fds=(net,))
                     result["sftp"] = code == 0
                 self.authenticate("sandbox")
             finally:
                 os.close(net)
-        self.record("capability-measurement", result)
+        self.failure_substage = "persistence"; self.record("capability-measurement", result)
         return result  # measurements are never evidence/pass admission
 
     def dispatch(self, q):
