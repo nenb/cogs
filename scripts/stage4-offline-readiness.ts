@@ -12,7 +12,7 @@ import {
   RELEASE_IMAGE_SOURCE_SHA,
   RELEASE_IMAGE_SOURCE_TREE_SHA,
   RELEASE_IMAGE_WORKFLOW_RUN_ID,
-} from "./release-image-set-review-v2.ts";
+} from "./release-image-set-review-v3.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -229,19 +229,19 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "daf3272a82879f8df79ba3ca412a330494af94cc7f162be45fdd67333f8215ed",
-  releaseImageAssertion: "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4",
-  releaseImageReview: "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216",
+  imageLock: "665646976cca0da15f07af60479cccaf1152919c56a508924adb3e28144fe7a8",
+  releaseImageAssertion: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
+  releaseImageReview: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
   render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "75e29863b916d31ee1796714c16b92349a102ea2ede3c10b9884195f81fd5075",
-  localValidationNormalized: "1da9aaf833eb92e615ca5d406c40a2392fd9dcdc68fa150392bfcbc161422f3c",
+  authenticatedRuntimeArtifacts: "fed63c892b8458efc1165f67fd9f73ced21b30c586afb2f458666f8cd393c237",
+  localValidationNormalized: "05bb52465125f1fc36a4fa51517b0dc5e0701e97d0dfdc9b806d55ab36471ae3",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "42cebd58b80993862c8eb44c490c2ef340db1251d1de6d9b47e148f4a020a3a1",
-  sourceInventoryNormalized: "169331b57d0a77d7ced351c16aa4cedd2ff46bb468cf8dc4f49f39f74c687345",
+  schemaInventory: "022c53fe7ab3e11c2004a96c29ace00b715d55cf7e83b4743094e811394b01bd",
+  sourceInventoryNormalized: "380b246b7fc2c2160f87b943a6a63fe3edb49cf5317b1f724c30fc074f92824b",
 });
 /* stage4-readiness-anchor-end */
 
@@ -492,8 +492,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
   const sourceArtifactPaths: ReadonlyArray<readonly [string, Stage4ReadinessArtifactKey]> = [
     ["docs/security-evidence/stage4-offline-readiness-artifacts/chart-inventory.json", "chartInventory"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json", "imageLock"],
-    ["docs/security-evidence/release-image-set-assertion-31856469035.canonical.json", "releaseImageAssertion"],
-    ["docs/security-evidence/release-image-set-review-31856469035.canonical.json", "releaseImageReview"],
+    ["docs/security-evidence/release-image-set-assertion-34774398155.canonical.json", "releaseImageAssertion"],
+    ["docs/security-evidence/release-image-set-review-34774398155.canonical.json", "releaseImageReview"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml", "repeatedRender"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/notes-render.yaml", "render"],
     ["docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json", "renderReceipt"],

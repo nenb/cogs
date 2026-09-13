@@ -51,6 +51,7 @@ import {
 } from "./snapshot-owner.ts";
 
 export const BASELINE = "8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38";
+export const IMAGE_SOURCE = "371cfa58a90888d12d6ae5a857275323ab3f43c4";
 export const PROFILE = "functional-only-protected-linux-docker/v1";
 export const FINDINGS = Object.freeze([4, 5, 6, 8, 9, 10, 14]);
 export const PROBE_GENERATIONS = 8;
@@ -73,6 +74,7 @@ ENTRYPOINT ["/nodejs/bin/node"]
 export type Restrictions = Readonly<{
   version: "cogs.product-restrictions/v1";
   baseline: string;
+  image_source: string;
   candidate: string;
   owner: string;
   expires: number;
@@ -102,12 +104,16 @@ export function admitRestrictions(bytes: Buffer, candidate: string, now: number)
   check(canonical(value) === text);
   check(
     Object.keys(value).sort().join() ===
-      "version baseline candidate owner expires run_id run_attempt tree source_inventory dockerignore package_lock npm_closure image_os image_version profile breach findings seconds skills sandbox_image worker_image stock_worker_image fresh_protected_runner"
+      "version baseline image_source candidate owner expires run_id run_attempt tree source_inventory dockerignore package_lock npm_closure image_os image_version profile breach findings seconds skills sandbox_image worker_image stock_worker_image fresh_protected_runner"
         .split(" ")
         .sort()
         .join(),
   );
-  check(value.version === "cogs.product-restrictions/v1" && value.baseline === BASELINE);
+  check(
+    value.version === "cogs.product-restrictions/v1" &&
+      value.baseline === BASELINE &&
+      value.image_source === IMAGE_SOURCE,
+  );
   check(/^[a-f0-9]{40}$/.test(candidate) && value.candidate === candidate && value.owner === "repository-owner");
   check(/^[1-9][0-9]{0,19}$/.test(value.run_id) && /^[1-9][0-9]{0,9}$/.test(value.run_attempt));
   check(/^[a-f0-9]{40}$/.test(value.tree) && /^sha256:[a-f0-9]{64}$/.test(value.source_inventory));

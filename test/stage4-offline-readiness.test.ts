@@ -55,8 +55,8 @@ function artifacts(): Record<string, Uint8Array> {
     repeatedRender: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/notes-render-repeat.yaml"),
     renderReceipt: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/render-preparation-receipt.json"),
     imageLock: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json"),
-    releaseImageAssertion: bytes("docs/security-evidence/release-image-set-assertion-31856469035.canonical.json"),
-    releaseImageReview: bytes("docs/security-evidence/release-image-set-review-31856469035.canonical.json"),
+    releaseImageAssertion: bytes("docs/security-evidence/release-image-set-assertion-34774398155.canonical.json"),
+    releaseImageReview: bytes("docs/security-evidence/release-image-set-review-34774398155.canonical.json"),
     nicContract: bytes("deploy/nic/stage4-sandbox-node-group-contract.json"),
     runtimePins: bytes("docs/security-evidence/stage4-offline-readiness-artifacts/runtime-pins.json"),
     authenticatedRuntimeArtifacts: bytes(
@@ -221,6 +221,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     "schemas/release-image-set-assertion-v1.json",
     "schemas/release-image-set-review-v1.json",
     "schemas/release-image-set-review-v2.json",
+    "schemas/release-image-set-review-v3.json",
     "schemas/runtime-v1alpha1.json",
     "third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb",
     "third_party/envoy-ext-authz-v1.38.3/manifest.json",
@@ -228,10 +229,11 @@ test("committed inventories are canonical, complete for their scopes, and bind e
     "scripts/release-image-set-assertion.ts",
     "scripts/release-image-set-review.ts",
     "scripts/release-image-set-review-v2.ts",
+    "scripts/release-image-set-review-v3.ts",
     "docs/security-evidence/release-image-set-assertion-30852317459.canonical.json",
     "docs/security-evidence/release-image-set-review-30852317459.canonical.json",
-    "docs/security-evidence/release-image-set-assertion-31856469035.canonical.json",
-    "docs/security-evidence/release-image-set-review-31856469035.canonical.json",
+    "docs/security-evidence/release-image-set-assertion-34774398155.canonical.json",
+    "docs/security-evidence/release-image-set-review-34774398155.canonical.json",
     "scripts/validate-trivy-image-report.jq",
     "test/production-compose.test.ts",
     "test/production-sandbox-image.test.ts",
@@ -239,7 +241,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   ]) {
     assert.ok(sourcePaths.includes(required), required);
   }
-  assert.ok(source.entries.length + STAGE4_SOURCE_INVENTORY_EXCLUSIONS.length <= 1530);
+  assert.ok(source.entries.length + STAGE4_SOURCE_INVENTORY_EXCLUSIONS.length <= 1540);
   assert.ok(
     source.entries.reduce(
       (total: number, entry: { path: string }) => total + readFileSync(join(root, entry.path)).byteLength,
@@ -282,6 +284,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
             "release-image-set-assertion-v1.json",
             "release-image-set-review-v1.json",
             "release-image-set-review-v2.json",
+            "release-image-set-review-v3.json",
             "runtime-v1alpha1.json",
           ].includes(name),
       )
@@ -378,6 +381,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "schemas/release-image-set-assertion-v1.json",
       "schemas/release-image-set-review-v1.json",
       "schemas/release-image-set-review-v2.json",
+      "schemas/release-image-set-review-v3.json",
       "schemas/runtime-v1alpha1.json",
       "scripts/private-bytes.ts",
       "scripts/check-lock-integrity.ts",
@@ -385,6 +389,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "scripts/release-image-set-pins.ts",
       "scripts/release-image-set-review.ts",
       "scripts/release-image-set-review-v2.ts",
+      "scripts/release-image-set-review-v3.ts",
       "scripts/release-local-preflight-cli.ts",
       "scripts/release-local-preflight.ts",
       "scripts/release-trivy-database-metadata-cli.ts",
@@ -397,6 +402,7 @@ test("committed inventories are canonical, complete for their scopes, and bind e
       "scripts/validate-schemas.ts",
       "test/release-image-set-review.test.ts",
       "test/release-image-set-review-v2.test.ts",
+      "test/release-image-set-review-v3.test.ts",
       "test/release-local-preflight.test.ts",
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-offline-render-preparation.test.ts",

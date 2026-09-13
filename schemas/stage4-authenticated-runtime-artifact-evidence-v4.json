@@ -776,28 +776,28 @@
           "const": "reviewed-current-source-image-set"
         },
         "assertion_sha256": {
-          "const": "2368b09be02dc6e21debd8f047e58400173d62ff13edc27398ddbfe1708474d4"
+          "const": "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332"
         },
         "review_sha256": {
-          "const": "9e3f9ababef58e8b4cc90e9f007251c05a2065eb2ff2e25f928e7c8b4d61e216"
+          "const": "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4"
         },
         "workflow_run_id": {
-          "const": 31856469035
+          "const": 34774398155
         },
         "image_source_sha": {
-          "const": "cb9ec3958f6f2571c7c3f90e25b645e49e288a3f"
+          "const": "371cfa58a90888d12d6ae5a857275323ab3f43c4"
         },
         "image_source_tree_sha": {
-          "const": "bf47273803ee54b5a2fd29d61224836e9f1bfd77"
+          "const": "0280ec76da20db6f7059b97fffeaf31ac2a73845"
         },
         "image_source_inventory_sha256": {
-          "const": "de0173b66335bbdfbc10968061fac058cfd5648d3a46beb5e537eefa8fa460b8"
+          "const": "16f7898e8515b0ff4911da896a158fd10d0158fc69215978b89fbd56bd97f670"
         },
         "worker": {
-          "const": "ghcr.io/nenb/cogs/worker@sha256:1e71b2d0cd65f16c9633e092311b885ff03f43f4036195326e1a9fc91ea57535"
+          "const": "ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e"
         },
         "sandbox": {
-          "const": "ghcr.io/nenb/cogs/sandbox@sha256:db475ee1d01d446fe79cc9efdad40c9589cefe60eb69bce2f35108ea44eb94fe"
+          "const": "ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d"
         }
       }
     }

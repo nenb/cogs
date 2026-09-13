@@ -12,6 +12,7 @@ import {
   BASELINE,
   deterministicStream,
   FINDINGS,
+  IMAGE_SOURCE,
   launchDocument,
   PROFILE,
   PROXY_CLIENT,
@@ -152,6 +153,8 @@ test("protected product workflow is manual, protected-main, credential-free and 
   assert.match(source, /\[\[ "\$CANDIDATE" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u);
   assert.match(source, /persist-credentials: false\n {10}fetch-depth: 0/u);
   assert.match(source, /git merge-base --is-ancestor 8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38/u);
+  assert.match(source, /IMAGE_SOURCE: 371cfa58a90888d12d6ae5a857275323ab3f43c4/u);
+  assert.match(source, /git merge-base --is-ancestor "\$IMAGE_SOURCE" "\$CANDIDATE"/u);
   assert.match(source, /npm ci --ignore-scripts --no-bin-links/u);
   assert.match(source, /npm ls --all --ignore-scripts/u);
   assert.match(source, /e\.optional|matches\(e\.os,'linux'\).*matches\(e\.cpu,'x64'\)/u);
@@ -199,6 +202,11 @@ test("workflow build receipt and Python custody admit the same closed profile co
     /'skills':value\['skills'\],'profile_case':os\.environ\['PRODUCT_PROFILE'\],'authority':os\.environ\['PRODUCT_AUTHORITY'\]/u,
   );
   assert.match(custody, /"image_version", "skills"\)\}/u);
+  assert.match(custody, /q\["image_source"\] == IMAGE_SOURCE/u);
+  assert.match(
+    custody,
+    /git\("diff", IMAGE_SOURCE, "--", "images\/sandbox", "images\/worker", "package-lock\.json"\)/u,
+  );
   assert.match(custody, /expected\["profile_case"\] = "nonempty" if q\["skills"\] == "nonempty" else "empty"/u);
   assert.match(custody, /expected\["authority"\] = "probe-only" if self\.probe else "candidate-pass"/u);
   assert.match(custody, /require\(receipt == expected\)/u);
@@ -307,6 +315,7 @@ const image = (letter: string) => `sha256:${letter.repeat(64)}`;
 const restrictions = () => ({
   version: "cogs.product-restrictions/v1",
   baseline: BASELINE,
+  image_source: IMAGE_SOURCE,
   candidate: "a".repeat(40),
   owner: "repository-owner",
   expires: 200000,
@@ -372,6 +381,7 @@ test("product restrictions are canonical, closed, expiring and identity/profile-
     { expires: 0 },
     { expires: 61000 }, // seconds-based expiry is not a millisecond lease beyond 60 seconds
     { baseline: "b".repeat(40) },
+    { image_source: "b".repeat(40) },
     { candidate: "b".repeat(40) },
     { profile: "production" },
     { owner: "developer" },
