@@ -62,11 +62,13 @@ export class HostCustody implements CustodyPort {
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
   #diagnostic: ProductDiagnosticFrame | undefined;
+  #terminalDiagnostic = false;
   #lost = false;
   constructor(
     generation: string,
     seconds: number,
     readonly purpose: "run" | "capability-probe" = "run",
+    spawnChild: typeof spawn = spawn,
   ) {
     check(/^[a-f0-9]{32}$/.test(generation) && seconds >= 60 && seconds <= 600);
     this.generation = generation;
@@ -77,7 +79,7 @@ export class HostCustody implements CustodyPort {
     });
     this.#tail = this.#ready;
     void this.#ready.catch(() => undefined);
-    this.#child = spawn("/usr/bin/python3", ["-I", fileURLToPath(new URL("host-custody.py", import.meta.url))], {
+    this.#child = spawnChild("/usr/bin/python3", ["-I", fileURLToPath(new URL("host-custody.py", import.meta.url))], {
       env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C", HOME: "/nonexistent" },
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
@@ -88,6 +90,9 @@ export class HostCustody implements CustodyPort {
         reject(new Error("custody unavailable"));
       });
       this.#child.once("close", (code) => {
+        // A terminal frame is meaningful only when EOF immediately follows it.
+        // Never let a partial line or a later byte depend on pipe chunking.
+        if (this.#input.length !== 0) this.#invalidateDiagnostic();
         this.#lose();
         code === 0
           ? resolve()
@@ -98,86 +103,105 @@ export class HostCustody implements CustodyPort {
     this.#child.stderr.resume(); // Never relay subprocess diagnostics or material.
     this.#child.stdout.on("data", (chunk: Buffer) => {
       try {
+        // A diagnostic is one terminal protocol record, not a prefix that may
+        // be followed by an arbitrary response, duplicate, or malformed tail.
+        if (this.#terminalDiagnostic || chunk.length === 0) {
+          this.#invalidateDiagnostic();
+          return;
+        }
         check(this.#input.length + chunk.length <= 2 * 1024 * 1024);
         this.#input = Buffer.concat([this.#input, chunk]);
-        if (!this.#input.includes(10)) return;
-        const raw = this.#input.toString("utf8");
-        const result = JSON.parse(raw) as {
-          generation?: unknown;
-          result?: unknown;
-          diagnostic?: unknown;
-          substage?: unknown;
-          cleanup?: unknown;
-        };
-        check(canonical(result) === raw && result.generation === this.generation);
-        this.#input = Buffer.alloc(0);
-        if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready" && !this.#pending) {
-          this.#readyResolve?.();
-          this.#readyResolve = undefined;
-          this.#readyReject = undefined;
-        } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
-          this.#pending.resolve(result.result);
-          this.#pending = undefined;
-        } else {
-          const operations = new Set([
-            "authenticate",
-            "capability-probe",
-            "create",
-            "evidence",
-            "exec",
-            "file",
-            "image",
-            "lease",
-            "lease-directory",
-            "mkdir",
-            "pair",
-            "provenance",
-            "seal",
-            "settle",
-            "status",
-            "storage",
-          ]);
-          const diagnostics = new Set(["constructor", "helper", "helper-finalize", ...operations]);
-          const provenance = new Set([
-            "final-head",
-            "status",
-            "baseline",
-            "source",
-            "inventory",
-            "build-receipt",
-            "layer-prefix",
-            "layer-count",
-            "environment",
-          ]);
-          const keys = Object.keys(result).sort().join();
-          const paired =
-            result.diagnostic === "provenance"
-              ? provenance.has(result.substage as string)
-              : result.substage === undefined;
-          const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
-          check(
-            diagnostics.has(result.diagnostic as string) &&
-              paired &&
-              cleanup &&
-              keys ===
-                (result.cleanup === undefined
-                  ? result.substage === undefined
-                    ? "diagnostic,generation"
-                    : "diagnostic,generation,substage"
-                  : result.substage === undefined
-                    ? "cleanup,diagnostic,generation"
-                    : "cleanup,diagnostic,generation,substage"),
-          );
-          this.#diagnostic = Object.freeze({
-            generation: this.generation,
-            diagnostic: result.diagnostic as string,
-            ...(result.substage === undefined ? {} : { substage: result.substage as string }),
-            ...(result.cleanup === undefined ? {} : { cleanup: "uncertain" as const }),
-          });
-          this.#lose(`custody unavailable: ${this.#diagnosticSummary()}`);
+        for (;;) {
+          const newline = this.#input.indexOf(10);
+          if (newline < 0) return;
+          const line = this.#input.subarray(0, newline);
+          this.#input = this.#input.subarray(newline + 1);
+          check(line.length > 0);
+          const raw = Buffer.concat([line, Buffer.from("\n")]);
+          const result = JSON.parse(raw.toString("utf8")) as {
+            generation?: unknown;
+            result?: unknown;
+            diagnostic?: unknown;
+            substage?: unknown;
+            cleanup?: unknown;
+          };
+          check(Buffer.from(canonical(result)).equals(raw) && result.generation === this.generation);
+          if (
+            Object.keys(result).sort().join() === "generation,result" &&
+            result.result === "ready" &&
+            !this.#pending
+          ) {
+            this.#readyResolve?.();
+            this.#readyResolve = undefined;
+            this.#readyReject = undefined;
+          } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
+            this.#pending.resolve(result.result);
+            this.#pending = undefined;
+          } else {
+            const operations = new Set([
+              "authenticate",
+              "capability-probe",
+              "create",
+              "evidence",
+              "exec",
+              "file",
+              "image",
+              "lease",
+              "lease-directory",
+              "mkdir",
+              "pair",
+              "provenance",
+              "seal",
+              "settle",
+              "status",
+              "storage",
+            ]);
+            const diagnostics = new Set(["constructor", "helper", "helper-finalize", ...operations]);
+            const provenance = new Set([
+              "final-head",
+              "status",
+              "baseline",
+              "source",
+              "inventory",
+              "build-receipt",
+              "layer-prefix",
+              "layer-count",
+              "environment",
+              "persistence",
+            ]);
+            const keys = Object.keys(result).sort().join();
+            const paired =
+              result.diagnostic === "provenance"
+                ? provenance.has(result.substage as string)
+                : result.substage === undefined;
+            const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
+            check(
+              diagnostics.has(result.diagnostic as string) &&
+                paired &&
+                cleanup &&
+                keys ===
+                  (result.cleanup === undefined
+                    ? result.substage === undefined
+                      ? "diagnostic,generation"
+                      : "diagnostic,generation,substage"
+                    : result.substage === undefined
+                      ? "cleanup,diagnostic,generation"
+                      : "cleanup,diagnostic,generation,substage"),
+            );
+            this.#diagnostic = Object.freeze({
+              generation: this.generation,
+              diagnostic: result.diagnostic as string,
+              ...(result.substage === undefined ? {} : { substage: result.substage as string }),
+              ...(result.cleanup === undefined ? {} : { cleanup: "uncertain" as const }),
+            });
+            this.#terminalDiagnostic = true;
+            if (this.#input.length !== 0) this.#invalidateDiagnostic();
+            else this.#lose(`custody unavailable: ${this.#diagnosticSummary()}`);
+            return;
+          }
         }
       } catch {
-        this.#lose();
+        this.#invalidateDiagnostic();
       }
     });
     this.#child.stdin.on("error", () => this.#lose());
@@ -186,6 +210,12 @@ export class HostCustody implements CustodyPort {
   /** A fresh frozen copy prevents callers from changing retained failure provenance. */
   get failureDiagnostic(): ProductDiagnosticFrame | undefined {
     return this.#diagnostic && Object.freeze({ ...this.#diagnostic });
+  }
+  #invalidateDiagnostic(): void {
+    this.#diagnostic = undefined;
+    this.#terminalDiagnostic = true;
+    this.#input = Buffer.alloc(0);
+    this.#lose();
   }
   #diagnosticSummary(): string {
     if (!this.#diagnostic) return "preserve receipts";

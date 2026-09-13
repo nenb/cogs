@@ -13,16 +13,18 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   admission:
+    if: github.run_attempt == 1
     runs-on: ubuntu-24.04
     outputs:
       candidate: ${{ steps.admit.outputs.candidate }}
     steps:
       - id: admit
-        name: Refuse invalid dispatch before qualification effects
+        name: Admit only the sole first-created attempt-one dispatch before qualification effects
         env:
           CANDIDATE: ${{ inputs.candidate }}
           CONFIRMATION: ${{ inputs.confirmation }}
@@ -37,9 +39,44 @@ jobs:
           test "$CONFIRMATION" = EXECUTE_PROTECTED_KVM
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
           test "$CANDIDATE" = "$GITHUB_SHA"
-          printf 'candidate=%s\n' "$CANDIDATE" >>"$GITHUB_OUTPUT"
+          node - <<'NODE'
+          const https = require("node:https"), fs = require("node:fs");
+          const fail = () => process.exit(1), env = process.env;
+          const candidate = env.CANDIDATE, run = env.GITHUB_RUN_ID;
+          if (!/^[a-f0-9]{40}$/.test(candidate) || !/^[1-9][0-9]*$/.test(run) || env.GITHUB_RUN_ATTEMPT !== "1") fail();
+          const pageSize = 100, maximumPages = 20, rows = [];
+          const get = (page) => new Promise((resolve, reject) => {
+            const request = https.request({ hostname: "api.github.com", path: `/repos/${env.GITHUB_REPOSITORY}/actions/workflows/kvm-qualification.yml/runs?event=workflow_dispatch&branch=main&per_page=${pageSize}&page=${page}`, headers: { accept: "application/vnd.github+json", authorization: `Bearer ${env.GITHUB_TOKEN}`, "user-agent": "cogs-kvm-qualification-admission" } }, (response) => {
+              let body = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { if ((body += chunk).length > 2 * 1024 * 1024) response.destroy(); });
+              response.on("end", () => response.statusCode === 200 ? resolve(body) : reject(new Error("actions history unavailable")));
+            });
+            request.on("error", reject); request.end();
+          });
+          (async () => {
+            let total;
+            for (let page = 1; page <= maximumPages; page++) {
+              let value; try { value = JSON.parse(await get(page)); } catch { fail(); return; }
+              if (!value || Object.getPrototypeOf(value) !== Object.prototype || !Number.isSafeInteger(value.total_count) || value.total_count < 0 || !Array.isArray(value.workflow_runs) || value.workflow_runs.length > pageSize || (total !== undefined && total !== value.total_count)) fail();
+              total = value.total_count; rows.push(...value.workflow_runs);
+              if (rows.length === total) break;
+              if (value.workflow_runs.length !== pageSize || page === maximumPages) fail();
+            }
+            if (rows.length !== total || total > pageSize * maximumPages) fail();
+            const ids = new Set();
+            for (const row of rows) {
+              if (!row || !Number.isSafeInteger(row.id) || ids.has(row.id)) fail();
+              ids.add(row.id);
+            }
+            for (const row of rows)
+              if (!row || Object.getPrototypeOf(row) !== Object.prototype || !Number.isSafeInteger(row.id) || row.id < 1 || typeof row.head_sha !== "string" || typeof row.head_branch !== "string" || typeof row.event !== "string" || !Number.isSafeInteger(row.run_attempt) || row.run_attempt < 1) fail();
+            const exact = rows.filter((row) => row.head_sha === candidate && row.head_branch === "main" && row.event === "workflow_dispatch");
+            if (exact.length !== 1 || exact[0].id !== Number(run) || exact[0].run_attempt !== 1) fail();
+            fs.appendFileSync(env.GITHUB_OUTPUT, `candidate=${candidate}\n`, { encoding: "utf8", mode: 0o600 });
+          })().catch(fail);
+          NODE
 
   linux-kvm:
+    if: github.run_attempt == 1 && needs.admission.result == 'success'
     needs: admission
     runs-on: ubuntu-24.04
     env:
@@ -47,7 +84,7 @@ jobs:
       COGS_KVM_EXECUTION_RECEIPT: /run/cogs-kvm-execution-receipt.json
     concurrency:
       group: kvm-qualification-${{ needs.admission.outputs.candidate }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     timeout-minutes: 55
     steps:
       - name: Root-create immutable KVM execution receipt before checkout

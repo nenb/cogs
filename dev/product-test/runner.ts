@@ -494,7 +494,12 @@ export function productFailureDiagnostic(
     generation,
     diagnostic: diagnostic?.diagnostic ?? "constructor",
     ...(diagnostic?.substage === undefined ? {} : { substage: diagnostic.substage }),
-    ...(diagnostic?.cleanup === undefined ? { cleanup: "uncertain" as const } : { cleanup: diagnostic.cleanup }),
+    // Omission is a validated owner statement that rollback cleanup was certain.
+    ...(diagnostic === undefined
+      ? { cleanup: "uncertain" as const }
+      : diagnostic.cleanup === undefined
+        ? {}
+        : { cleanup: diagnostic.cleanup }),
     pass_authority: false,
     probe_authority: false,
   });

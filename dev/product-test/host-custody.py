@@ -24,7 +24,7 @@ import time
 
 NONCE = re.compile(r"[0-9a-f]{32}\Z"); ID = re.compile(r"[0-9a-f]{64}\Z")
 OPERATIONS = frozenset(("authenticate", "capability-probe", "create", "evidence", "exec", "file", "image", "lease", "lease-directory", "mkdir", "pair", "provenance", "seal", "settle", "status", "storage"))
-PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment"))
+PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment", "persistence"))
 DIAGNOSTICS = frozenset(("constructor", "helper", "helper-finalize", *OPERATIONS))
 CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
@@ -595,6 +595,12 @@ class Custody:
                 p.stdout.close(); p.stderr.close()
                 os.close(held); held = None
                 finalization_success = True
+            except BaseException:
+                # Every retirement/reverification/descriptor failure leaves the
+                # helper refused; cleanup cannot become certain during hygiene.
+                self.refuse_helper(); self.cleanup_uncertain = True
+                self.failure_stage, self.failure_substage = "helper-finalize", None
+                raise
             finally:
                 # Best effort here is resource hygiene only, never proof that a
                 # failed finalization became safe after the fact.
@@ -731,7 +737,10 @@ class Custody:
         self.failure_substage = "layer-prefix"; require(layers[:len(stock)] == stock)
         self.failure_substage = "layer-count"; require(len(layers) == len(stock) + 5)
         self.failure_substage = "environment"; require(environment(self.images[q["worker_image"]]["Config"]) == environment(self.images[q["stock_worker_image"]]["Config"]))
-        self.failure_substage = None; self.record("provenance", receipt); self.source = source
+        # Keep a closed provenance substage until durable persistence and its
+        # descriptor-relative canonical readback both complete.
+        self.failure_substage = "persistence"; self.record("provenance", receipt)
+        require(self.saved("provenance") == receipt); self.source = source
         return receipt
 
     def verify_candidate(self, cid):
