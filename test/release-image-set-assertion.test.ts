@@ -580,7 +580,7 @@ test("readiness selects the independently reviewed current-source digest set wit
   );
   assert.equal(
     imageLock.release_image_set.review_sha256,
-    "f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4",
+    "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
   );
   assert.equal(imageLock.release_image_set.state, "reviewed-current-source-image-set");
   for (const role of ["worker", "sandbox"]) {

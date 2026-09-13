@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1530,
+    "tracked_files": 1540,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -24,10 +24,10 @@
       "gross_lines": 48000,
       "gross_bytes": 11000000
     },
-    "global_gross_line_forecast": 39557,
+    "global_gross_line_forecast": 40157,
     "global_gross_byte_forecast": 28800000,
     "remaining_tranche": {
-      "gross_lines": 21557,
+      "gross_lines": 22157,
       "gross_bytes": 20800000,
       "allocations": [
         {
@@ -50,7 +50,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 4000,
+          "gross_lines": 4600,
           "gross_bytes": 3200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -74,9 +74,11 @@
             "docs/test-reports/stage-4-offline-readiness.md",
             "images/sandbox/entrypoint.sh",
             "schemas/release-image-set-assertion-v1.json",
+            "schemas/release-image-set-review-v3.json",
             "schemas/stage4-authenticated-runtime-artifact-evidence-v4.json",
             "schemas/stage4-offline-readiness-package-v5.json",
             "scripts/release-image-set-review-v2.ts",
+            "scripts/release-image-set-review-v3.ts",
             "scripts/stage4-offline-readiness-regenerate.ts",
             "src/egress/otlp-telemetry.ts",
             "src/ssh/connection.ts",
@@ -92,6 +94,7 @@
             "test/aws-stage2-completion-final-integration-linux.test.ts",
             "test/aws-stage2-completion-immutable-preparation.test.ts",
             "test/release-image-set-review-v2.test.ts",
+            "test/release-image-set-review-v3.test.ts",
             "test/stage4-offline-readiness.test.ts",
             "test/stage4-runtime-artifact-closure.test.ts"
           ]
@@ -605,6 +608,7 @@
         "schemas/launch-v1alpha1.json",
         "schemas/native-qualification-report-v1alpha1.json",
         "schemas/release-image-set-assertion-v1.json",
+        "schemas/release-image-set-review-v3.json",
         "schemas/stage2-formal-local-artifact-custody-v2.json",
         "schemas/stage2-formal-local-cycle-receipt-v2.json",
         "schemas/stage2-formal-local-cycle-status-v2.json",
@@ -619,6 +623,7 @@
         "scripts/prepare-stage2-fixed-source.py",
         "scripts/provision-stage2-nft-owner.py",
         "scripts/release-image-set-review-v2.ts",
+        "scripts/release-image-set-review-v3.ts",
         "scripts/render-aws-stage2-completion-report-v3.ts",
         "scripts/run-launcher-smoke-evidence.ts",
         "scripts/stage2-formal-local-qualification.py",
@@ -690,6 +695,7 @@
         "test/outcome-two-trusted-launcher-portable.py",
         "test/release-image-set-assertion.test.ts",
         "test/release-image-set-review-v2.test.ts",
+        "test/release-image-set-review-v3.test.ts",
         "test/stage2-formal-local-qualification.py",
         "test/stage2-formal-local-qualification.test.ts",
         "test/stage2-local-static-control-candidate-workflow.test.ts",

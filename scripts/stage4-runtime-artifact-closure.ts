@@ -57,7 +57,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "5296c486d0ba52731742cc2cb17f5129cf120079116eafc36f5701753822a5b4";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "022c53fe7ab3e11c2004a96c29ace00b715d55cf7e83b4743094e811394b01bd";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -279,7 +279,7 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
       release_images: {
         state: "reviewed-current-source-image-set",
         assertion_sha256: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
-        review_sha256: "f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4",
+        review_sha256: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
         workflow_run_id: 34774398155,
         image_source_sha: "371cfa58a90888d12d6ae5a857275323ab3f43c4",
         image_source_tree_sha: "0280ec76da20db6f7059b97fffeaf31ac2a73845",

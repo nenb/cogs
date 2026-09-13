@@ -47,7 +47,7 @@ Database-pin rotation changes the schema used to finalize future publication ass
 
 ### Current Pi 0.84.2 publication and independent review
 
-Protected-main run `34774398155`, attempt one, published source `371cfa58a90888d12d6ae5a857275323ab3f43c4`. Artifact `10322284872` contains the 9,097-byte canonical assertion with SHA-256 `ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332`. The independently reproduced review has SHA-256 `f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4` and selects only:
+Protected-main run `34774398155`, attempt one, published source `371cfa58a90888d12d6ae5a857275323ab3f43c4`. Artifact `10322284872` contains the 9,097-byte canonical assertion with SHA-256 `ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332`. The independently reproduced review has SHA-256 `37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4` and selects only:
 
 - `ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e`;
 - `ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d`.

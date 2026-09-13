@@ -12,7 +12,7 @@ import {
   RELEASE_IMAGE_SOURCE_SHA,
   RELEASE_IMAGE_SOURCE_TREE_SHA,
   RELEASE_IMAGE_WORKFLOW_RUN_ID,
-} from "./release-image-set-review-v2.ts";
+} from "./release-image-set-review-v3.ts";
 
 const require = createRequire(import.meta.url);
 const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
@@ -229,19 +229,19 @@ const EXPECTED_IMAGE_REFERENCES = Object.freeze({
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "c3054cb35b9bc6a7d398fa614fdf3c4e978bb8c970fe6ab8824b5edf6304d7e1",
+  imageLock: "665646976cca0da15f07af60479cccaf1152919c56a508924adb3e28144fe7a8",
   releaseImageAssertion: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
-  releaseImageReview: "f4a6f55642c9ed035d77ca409a2e823e5dcce14bdc35050b8459c384e7b381d4",
+  releaseImageReview: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
   render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "ad724cdfe73835e8a71298a9b014646b156507585afae57681cf64fc90daf43f",
-  localValidationNormalized: "9cdd5b3075146f0ac434ca7e2a8f0c5b5a1ddb66a4970ad58fac73fb032bc03a",
+  authenticatedRuntimeArtifacts: "fed63c892b8458efc1165f67fd9f73ced21b30c586afb2f458666f8cd393c237",
+  localValidationNormalized: "775155a102bfe5ebb8fccb2eb765eee2a3b0b55fbd5748647feb7894eb51190f",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "5296c486d0ba52731742cc2cb17f5129cf120079116eafc36f5701753822a5b4",
-  sourceInventoryNormalized: "38752a284d4f0124046c3129a9a69ad5f1c85a1e652b3059a4e5fcd83a502461",
+  schemaInventory: "022c53fe7ab3e11c2004a96c29ace00b715d55cf7e83b4743094e811394b01bd",
+  sourceInventoryNormalized: "744059a63f19ea7439d4257709beca8705132e3b2e26a6f58eb368c4ff122c64",
 });
 /* stage4-readiness-anchor-end */
 

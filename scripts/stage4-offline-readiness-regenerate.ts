@@ -6,7 +6,7 @@ import {
   RELEASE_IMAGE_SOURCE_INVENTORY_SHA256,
   RELEASE_IMAGE_SOURCE_SHA,
   RELEASE_IMAGE_SOURCE_TREE_SHA,
-} from "./release-image-set-review-v2.ts";
+} from "./release-image-set-review-v3.ts";
 import {
   canonicalStage4OfflineReadinessBytes,
   STAGE4_INDEPENDENT_INVENTORY_SCOPES,
@@ -84,6 +84,7 @@ const PRODUCTION_CONTRACT_TESTS = Object.freeze([
   "test/release-image-set-assertion.test.ts",
   "test/release-image-set-review.test.ts",
   "test/release-image-set-review-v2.test.ts",
+  "test/release-image-set-review-v3.test.ts",
   "test/release-local-preflight.test.ts",
   "test/runtime-config.test.ts",
   "test/runtime-trusted-files.test.ts",
@@ -97,11 +98,13 @@ const PRODUCTION_SCHEMA_NAMES = Object.freeze([
   "release-image-set-assertion-v1.json",
   "release-image-set-review-v1.json",
   "release-image-set-review-v2.json",
+  "release-image-set-review-v3.json",
   "runtime-v1alpha1.json",
 ]);
 const FORMAT_PATHS = Object.freeze([
   "scripts/release-image-set-review.ts",
   "scripts/release-image-set-review-v2.ts",
+  "scripts/release-image-set-review-v3.ts",
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
   "scripts/release-trivy-database-metadata-cli.ts",
@@ -113,6 +116,7 @@ const FORMAT_PATHS = Object.freeze([
   "scripts/stage4-runtime-artifact-closure.ts",
   "test/release-image-set-review.test.ts",
   "test/release-image-set-review-v2.test.ts",
+  "test/release-image-set-review-v3.test.ts",
   "test/release-local-preflight.test.ts",
   "test/stage4-offline-readiness.test.ts",
   "test/stage4-runtime-artifact-closure.test.ts",
@@ -148,6 +152,7 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "scripts/release-image-set-pins.ts",
   "scripts/release-image-set-review.ts",
   "scripts/release-image-set-review-v2.ts",
+  "scripts/release-image-set-review-v3.ts",
   "scripts/release-local-preflight-cli.ts",
   "scripts/release-local-preflight.ts",
   "scripts/release-trivy-database-metadata-cli.ts",
@@ -160,6 +165,7 @@ const LOCAL_VALIDATION_PATHS = Object.freeze([
   "scripts/validate-schemas.ts",
   "test/release-image-set-review.test.ts",
   "test/release-image-set-review-v2.test.ts",
+  "test/release-image-set-review-v3.test.ts",
   "test/release-local-preflight.test.ts",
   "test/stage4-offline-readiness.test.ts",
   "test/stage4-offline-render-preparation.test.ts",

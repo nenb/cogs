@@ -9,14 +9,14 @@ import {
   RELEASE_IMAGE_SET_ASSERTION_SHA256,
   RELEASE_IMAGE_SET_REVIEW_SHA256,
   RELEASE_IMAGE_SOURCE_SHA,
-} from "../scripts/release-image-set-review-v2.ts";
+} from "../scripts/release-image-set-review-v3.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const assertion = new Uint8Array(
-  readFileSync(resolve(root, "docs/security-evidence/release-image-set-assertion-31856469035.canonical.json")),
+  readFileSync(resolve(root, "docs/security-evidence/release-image-set-assertion-34774398155.canonical.json")),
 );
 const review = new Uint8Array(
-  readFileSync(resolve(root, "docs/security-evidence/release-image-set-review-31856469035.canonical.json")),
+  readFileSync(resolve(root, "docs/security-evidence/release-image-set-review-34774398155.canonical.json")),
 );
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -44,7 +44,7 @@ function mutateReview(change: (value: Record<string, any>) => void): Uint8Array 
 test("review binds the exact independently reviewed assertion without promoting runtime or release authority", () => {
   const verdict = classifyReleaseImageSetReview(assertion, review);
   assert.deepEqual(verdict, {
-    version: "cogs.release-image-set-review-verdict/v2",
+    version: "cogs.release-image-set-review-verdict/v3",
     authority: "static-release-image-set-review-record-classifier",
     record_valid: true,
     reason_code: "VALID_REVIEWED_RELEASE_IMAGE_SET_RECORD",
