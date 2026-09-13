@@ -145,7 +145,7 @@ const request = (options, callback) => {
 const load = Module._load; Module._load = (name, parent, main) => name === "node:https" ? { request } : load(name, parent, main);
 ${source}
 `;
-    const result = spawnSync("node", ["-e", harness], {
+    const result = spawnSync(process.execPath, ["-e", harness], {
       encoding: "utf8",
       timeout: 10_000,
       env: {
