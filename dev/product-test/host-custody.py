@@ -483,8 +483,9 @@ class Custody:
             pass  # Failed persistence never clears the live veto.
 
     def command(self, argv, cap=1048576, status=False, pass_fds=()):
-        if getattr(self, "failure_stage", "constructor") != "constructor": self.failure_stage = "helper"
-        parent_pid = os.getpid(); held = None; continued = False
+        helper_stage = getattr(self, "failure_stage", "constructor") != "constructor"
+        if helper_stage: self.failure_stage = "helper"
+        parent_pid = os.getpid(); held = None; continued = completed = False
         def arm_parent_death():
             if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent_pid:
                 os._exit(127)
@@ -547,6 +548,7 @@ class Custody:
                         break
                     time.sleep(0.01)
                 require(child.si_code == os.CLD_EXITED and (status or child.si_status == 0))
+            completed = True
             return (child.si_status, bytes(out)) if status else bytes(out)
         except BaseException:
             if not continued:
@@ -580,6 +582,8 @@ class Custody:
                     os.close(pidfd)
                 p.stdout.close(); p.stderr.close()
                 os.close(held)
+                if completed and helper_stage:
+                    self.failure_stage = "operation"
 
     def docker(self, *args, **options):
         return self.command(["docker", "--host=unix:///var/run/docker.sock", *args], 8 * 1048576, **options)

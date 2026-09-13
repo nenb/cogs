@@ -64,7 +64,7 @@ test("ADR0338 records temporary runner-loss handling without effect authority", 
     assert.ok(compact.includes(path), path);
 });
 
-test("ADR0339 records failed first attempts and the correction-only stop", () => {
+test("ADR0339 records failed first attempts and its exact post-merge authority", () => {
   const adr = readFileSync("docs/adr/0339-row4-first-attempt-corrections.md", "utf8");
   for (const phrase of [
     "34736648989",
@@ -72,9 +72,9 @@ test("ADR0339 records failed first attempts and the correction-only stop", () =>
     "09e586c2377738fabeee9d6900bf4b3f89c94372",
     "non-authoritative",
     "continue Rows 4–10 while\nstopping before AWS",
-    "one\nfresh replacement candidate",
-    "same-byte retry, H/G/Q",
-    "Docker or KVM execution, or AWS, OpenTofu, SSM, or network effects",
+    "exact-tree\nreview, readiness and full checks, protected PR CI, and merge",
+    "exactly one first-created\nattempt-one **Protected** product run and exactly one KVM qualification run for\nthe fresh replacement protected-main candidate",
+    "same-byte retry, H/G/Q, AWS, OpenTofu, SSM, or network\neffects, or any other Docker or KVM execution",
   ])
     assert.ok(adr.includes(phrase), phrase);
 });

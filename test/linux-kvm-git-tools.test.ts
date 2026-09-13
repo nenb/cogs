@@ -808,19 +808,13 @@ ssh-keygen() {
   printf private > "$target"; printf 'ssh-ed25519 AAAA generated\\n' > "$target.pub"; chmod 0600 "$target"; chmod 0644 "$target.pub"
 }
 ${source}
-prepare_keys
-stat -f '%Lp %N' "$state/control/"*_ed25519_key "$state/control/"*_ed25519_key.pub`,
+prepare_keys`,
       ],
       { encoding: "utf8", timeout: 5_000 },
     );
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(
-      result.stdout
-        .trim()
-        .split("\n")
-        .map((line) => line.split(" ")[0]),
-      ["600", "600", "600", "600"],
-    );
+    for (const name of ["client_ed25519_key", "client_ed25519_key.pub", "host_ed25519_key", "host_ed25519_key.pub"])
+      assert.equal((await lstat(join(state, "control", name))).mode & 0o777, 0o600, name);
   } finally {
     await rm(state, { recursive: true, force: true });
   }
