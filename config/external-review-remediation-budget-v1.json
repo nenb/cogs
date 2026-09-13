@@ -55,6 +55,8 @@
           "paths": [
             ".github/workflows/insecure-container.yml",
             ".github/workflows/kvm-qualification.yml",
+            ".github/workflows/release-images.yml",
+            "config/release-image-set-pins-v1.json",
             "dev/linux-kvm/driver.sh",
             "dev/linux-kvm/bounded-command.py",
             "dev/linux-kvm/qualification-owner.py",
@@ -63,7 +65,9 @@
             "dev/product-test/runner.ts",
             "dev/product-test/snapshot-owner.ts",
             "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
+            "docs/operations/release-image-publication.md",
             "images/sandbox/entrypoint.sh",
+            "schemas/release-image-set-assertion-v1.json",
             "src/egress/otlp-telemetry.ts",
             "src/ssh/connection.ts",
             "src/telemetry/worker-telemetry.ts",
@@ -73,7 +77,8 @@
             "test/worker-telemetry.test.ts",
             "test/dev-launcher-profiles.test.ts",
             "test/production-compose.test.ts",
-            "test/production-sandbox-image.test.ts"
+            "test/production-sandbox-image.test.ts",
+            "test/release-image-set-assertion.test.ts"
           ]
         },
         {
@@ -365,6 +370,7 @@
         ".github/workflows/insecure-container.yml",
         ".github/workflows/kvm-qualification.yml",
         ".github/workflows/production-turn-timeout-composed.yml",
+        ".github/workflows/release-images.yml",
         ".github/workflows/stage2-local-kata-qualification.yml",
         ".github/workflows/stage2-local-static-admission-diagnostic.yml",
         ".github/workflows/stage2-local-static-control-candidate.yml",
@@ -389,6 +395,7 @@
         "README.md",
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
+        "config/release-image-set-pins-v1.json",
         "config/stage2-retired-revisions-v1.json",
         "deploy/aws-feasibility/.terraform.lock.hcl",
         "deploy/aws-feasibility/apply.sh",
@@ -551,6 +558,7 @@
         "docs/adr/0344-row4-proactive-confirmed-domain-batch.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
+        "docs/operations/release-image-publication.md",
         "docs/operations/runbooks/cve-response.md",
         "docs/operations/runbooks/openbao.md",
         "docs/operations/runbooks/upgrade.md",
@@ -574,6 +582,7 @@
         "schemas/aws-stage2-production-principal-contract-v1.json",
         "schemas/launch-v1alpha1.json",
         "schemas/native-qualification-report-v1alpha1.json",
+        "schemas/release-image-set-assertion-v1.json",
         "schemas/stage2-formal-local-artifact-custody-v2.json",
         "schemas/stage2-formal-local-cycle-receipt-v2.json",
         "schemas/stage2-formal-local-cycle-status-v2.json",
@@ -652,6 +661,7 @@
         "test/outcome-two-portable.test.ts",
         "test/outcome-two-runtime-report-portable.py",
         "test/outcome-two-trusted-launcher-portable.py",
+        "test/release-image-set-assertion.test.ts",
         "test/stage2-formal-local-qualification.py",
         "test/stage2-formal-local-qualification.test.ts",
         "test/stage2-local-static-control-candidate-workflow.test.ts",

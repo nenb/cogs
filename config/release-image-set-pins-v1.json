@@ -8,8 +8,8 @@
     "buildkit_image": "docker.io/moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e",
     "syft_image": "docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e",
     "trivy_image": "docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436",
-    "trivy_database": "ghcr.io/aquasecurity/trivy-db:2@sha256:6c572fd3cd13d8a53dd77769bae83f0e3d01845478d39ce2bf8c163bf01ec5f6",
-    "trivy_java_database": "ghcr.io/aquasecurity/trivy-java-db:1@sha256:d0aedabd2fc7075e2c03c7db43f4932b8da08d51c6ed5c360b79966fe6e1930b",
+    "trivy_database": "ghcr.io/aquasecurity/trivy-db:2@sha256:bf4e0ac6ba84af6985086f394f50849a0d59b52110706b1d4ba946df91e433d7",
+    "trivy_java_database": "ghcr.io/aquasecurity/trivy-java-db:1@sha256:b19c281ec798816f854d5f875a132563117c5c5dd905be42ca3600aa8a6d1dc3",
     "cosign_image": "ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb"
   }
 }

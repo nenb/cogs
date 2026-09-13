@@ -287,9 +287,9 @@ test("release tool manifest generates the exact schema and rejects every indepen
 
 test("reviewed Aqua DB observations bind exact local digests, OCI types, metadata, and exclusive expiry", () => {
   const osReference =
-    "ghcr.io/aquasecurity/trivy-db:2@sha256:6c572fd3cd13d8a53dd77769bae83f0e3d01845478d39ce2bf8c163bf01ec5f6";
+    "ghcr.io/aquasecurity/trivy-db:2@sha256:bf4e0ac6ba84af6985086f394f50849a0d59b52110706b1d4ba946df91e433d7";
   const javaReference =
-    "ghcr.io/aquasecurity/trivy-java-db:1@sha256:d0aedabd2fc7075e2c03c7db43f4932b8da08d51c6ed5c360b79966fe6e1930b";
+    "ghcr.io/aquasecurity/trivy-java-db:1@sha256:b19c281ec798816f854d5f875a132563117c5c5dd905be42ca3600aa8a6d1dc3";
   assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_database, osReference);
   assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_java_database, javaReference);
   const publication = readFileSync(resolve(root, "docs/operations/release-image-publication.md"), "utf8");
@@ -305,6 +305,10 @@ test("reviewed Aqua DB observations bind exact local digests, OCI types, metadat
     "2026-08-15T19:04:21.476441957Z",
     "2026-08-14T01:11:46.85061936Z",
     "2026-08-17T01:11:46.85061906Z",
+    "2026-09-13T13:10:01.590129293Z",
+    "2026-09-14T13:10:01.590129203Z",
+    "2026-09-13T01:12:19.368599386Z",
+    "2026-09-16T01:12:19.368599236Z",
   ]) {
     assert.ok(publication.includes(reviewedValue), reviewedValue);
   }
