@@ -901,7 +901,8 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
   const keys = (value: object) => Object.keys(value).sort().join(",");
   const validCursor = (value: unknown) =>
     typeof value === "string" && value.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
-  const verifyTail = async (tail: string, expected: Buffer): Promise<void> => {
+  const verifyTail = async (tail: string, initial?: Buffer): Promise<void> => {
+    let expected = initial;
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await fetch(`http://127.0.0.1:18081/v1/entry-fragments?cursor=${encodeURIComponent(tail)}`, {
         headers: { authorization: `Bearer ${bearer}` },
@@ -909,7 +910,19 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
         signal: AbortSignal.timeout(2000),
       });
       const body = Buffer.from(await response.arrayBuffer());
-      check(response.status === 200 && body.length <= 131072 && body.equals(expected));
+      check(response.status === 200 && body.length <= 131072);
+      const replay = JSON.parse(body.toString("utf8"));
+      check(
+        keys(replay) === "fragments,projection,snapshotFinal,tail,version" &&
+          replay.version === "cogs.entry-fragments/v1" &&
+          replay.projection === "cogs.permitted-json/v1" &&
+          Array.isArray(replay.fragments) &&
+          replay.fragments.length === 0 &&
+          replay.snapshotFinal === true &&
+          replay.tail === tail,
+      );
+      if (expected) check(body.equals(expected));
+      expected = body;
     }
   };
   for (let pages = 0; pages < 128; pages++) {
@@ -1008,7 +1021,7 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
     if (envelope.snapshotFinal) {
       check(!held && complete === frontier.entries && after === frontier.lastEntryId);
       check(oversizedFragmented);
-      await verifyTail(envelope.tail as string, body);
+      await verifyTail(envelope.tail as string);
       return;
     }
     const next = envelope.next as string;

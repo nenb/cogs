@@ -240,7 +240,8 @@ class Owner:
         if not settled or code != 0:
             fail("local retirement uncertain")
         self.settle_custody()
-        print(json.dumps({"guest_boot_id": values["COGS_GUEST_BOOT_ID="], "guest_kernel": values["COGS_GUEST_KERNEL="]}, separators=(",", ":")))
+        self.require_commit()
+        print(json.dumps({"guest_boot_id": values["COGS_GUEST_BOOT_ID="], "guest_kernel": values["COGS_GUEST_KERNEL="]}, separators=(",", ":")), flush=True)
 
 
 def main():

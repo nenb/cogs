@@ -18,11 +18,14 @@ started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')
 workdir=$(mktemp -d)
 umask 077
 cleaned=false
+owner_started=false
 report_tmp=
 cleanup() {
   [[ $cleaned == true ]] && return 0
-  # Pending custody or a missing owner settlement marker is recovery evidence.
-  [[ ! -e "$workdir/qualification-pending" && -f "$workdir/owner-settled" && $(<"$workdir/owner-settled") == settled ]] || return 1
+  # Before owner entry there is no VM custody. Afterwards, pending custody or a
+  # missing settlement marker is recovery evidence and must retain the workdir.
+  [[ $owner_started == false ]] ||
+    [[ ! -e "$workdir/qualification-pending" && -f "$workdir/owner-settled" && $(<"$workdir/owner-settled") == settled ]] || return 1
   rm -rf -- "$workdir" || return 1
   cleaned=true
 }
@@ -165,6 +168,7 @@ host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
 # One fixed owner covers acquisition through QMP, UART capture, exit and
 # pidfd-bound retirement. It has no driver state and cannot fabricate one.
 owner_result="$workdir/owner-result.json"
+owner_started=true
 python3 -I -B "$repo/dev/linux-kvm/qualification-owner.py" \
   "$workdir" "$kernel" "$workdir/initramfs.cpio.gz" "$host_boot_id" >"$owner_result"
 read -r guest_boot_id guest_kernel < <(python3 -I -B - "$owner_result" <<'PY'
