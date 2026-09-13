@@ -687,9 +687,75 @@ test("product custody diagnostics are closed, provenance-paired, and failure art
     custody,
     /self\.failure_substage = "persistence"; self\.record\("provenance", receipt\)[\s\S]*self\.saved\("provenance"\)/u,
   );
+  for (const stage of [
+    "inspect",
+    "image-running",
+    "labels",
+    "environment",
+    "isolation",
+    "cap-add",
+    "limits",
+    "mount-inventory",
+    "bind-identity",
+    "tmpfs-config",
+    "mountinfo",
+    "cgroup-membership",
+    "cgroup-limits",
+    "process-security",
+    "namespace-pidfd",
+    "result",
+    "namespace",
+    "ssh",
+    "sftp",
+  ]) {
+    assert.ok(custody.includes(`"${stage}"`), stage);
+    assert.ok(owner.includes(`"${stage}"`), stage);
+  }
+  assert.match(workflow, /if 'substage' in value: evidence\['substage'\]=value\['substage'\]/u);
   assert.match(workflow, /'pass_authority':False,'probe_authority':False/u);
   assert.doesNotMatch(workflow, /partial_output_sha256/u);
   assert.match(workflow, /'run_id':build\['run_id'\],'run_attempt':build\['run_attempt'\]/u);
+});
+
+test("product authenticate requires canonical nonempty CAP_ additions and complete bind/tmpfs inventory", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import importlib.util,io,os,types
+from unittest.mock import patch
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+generation='a'*32; cid='b'*64
+class Stat:
+ def __init__(self,dev=1,ino=2): self.st_dev=dev;self.st_ino=ino
+def make(capadd=['CAP_CHOWN','CAP_KILL'],mounts=None):
+ owner=m.Custody.__new__(m.Custody);owner.generation=generation;owner.cg='/sys/fs/cgroup/cogs-product-'+generation;owner.failure_stage='authenticate';owner.failure_substage=None
+ owner.ids={'sandbox':{'id':cid,'spec':{'image':'sha256:'+'c'*64,'caps':['CHOWN','KILL'],'mask':(1<<0)+(1<<5),'network':'none','mounts':[{'source':'/source','target':'/bind','ro':True}],'tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}},'environment':[],'sources':{'/bind':(1,2)}}};owner.images={'sha256:'+'c'*64:{'Config':{'Labels':{}}}}
+ host={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':capadd,'SecurityOpt':['no-new-privileges'],'CgroupParent':'/cogs-product-'+generation,'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}}
+ owner.inspect=lambda _: {'State':{'Pid':42,'Running':True},'Image':'sha256:'+'c'*64,'Config':{'Labels':{'cogs.product.generation':generation},'Env':[]},'HostConfig':host,'Mounts':mounts if mounts is not None else [{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'','Destination':'/tmp','RW':True,'Propagation':''}]}
+ return owner
+def run(owner):
+ def opened(path,*args,**kwargs):
+  if path=='/proc/42/mountinfo': return io.StringIO('1 0 0:1 / /bind ro - ext4 /dev/x ro\n2 0 0:2 / /tmp rw - tmpfs tmpfs rw\n')
+  if path=='/proc/42/cgroup': return io.StringIO('0::/cogs-product-'+generation+'/'+cid+'\n')
+  if path=='/proc/42/status': return io.StringIO('CapEff:\t0000000000000021\nCapPrm:\t0000000000000021\nCapBnd:\t0000000000000021\nNoNewPrivs:\t1\nSeccomp:\t2\n')
+  if path.startswith('/sys/fs/cgroup'): return io.StringIO({'memory.max':'4294967296','memory.swap.max':'0','pids.max':'128','cpu.max':'200000 100000'}[path.rsplit('/',1)[1]]+'\n')
+  raise AssertionError(path)
+ with patch('builtins.open',opened),patch.object(m.os,'stat',lambda _:Stat()),patch.object(m.os,'readlink',lambda _:'mnt:[1]'),patch.object(m.os,'pidfd_open',lambda _:9,create=True),patch.object(m.select,'select',lambda *_:([],[],[])):
+  return owner.authenticate('sandbox')
+assert run(make())['pid']==42
+for caps,mounts in ((['CHOWN','KILL'],None),(['CAP_CHOWN','CAP_CHOWN'],None),(['CAP_CHOWN','CAP_KILL'],[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'}]),(['CAP_CHOWN','CAP_KILL'],[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'/unexpected','Destination':'/tmp','RW':True,'Propagation':''}])):
+ try: run(make(caps,mounts))
+ except RuntimeError: pass
+ else: raise AssertionError('noncanonical capability or incomplete tmpfs inventory accepted')
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("workflow failure conversion accepts only closed fake diagnostics and prior exact probes", () => {

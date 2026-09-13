@@ -687,19 +687,38 @@ write_files:
       AllowTcpForwarding no
       X11Forwarding no
       PermitTunnel no
+  - path: /usr/local/sbin/cogs-cloud-init-setup
+    owner: root:root
+    permissions: '0700'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      mountpoint -q /opt/cogs-git
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)"
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)"
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"
+      test ! -e /usr/bin/git
+      test ! -L /usr/bin/git
+      ln -s /opt/cogs-git/bin/git /usr/bin/git
+      chown -h root:root /usr/bin/git
+      test -L /usr/bin/git
+      test "\$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
+      test "\$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
+      mkdir -p /shared/skills /user/skills
+      chown root:root /shared/skills /user/skills
+      chmod 0700 /shared/skills /user/skills
+      for skill_root in /shared/skills /user/skills; do
+        test -d "\$skill_root"
+        test ! -L "\$skill_root"
+        test "\$(realpath -e "\$skill_root")" = "\$skill_root"
+        test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"
+      done
+      systemctl restart ssh
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
   - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']
 runcmd:
-  - [bash, -lc, 'mountpoint -q /opt/cogs-git && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"']
-  - [bash, -lc, 'test ! -e /usr/bin/git && test ! -L /usr/bin/git && ln -s /opt/cogs-git/bin/git /usr/bin/git']
-  - [chown, -h, root:root, /usr/bin/git]
-  - [bash, -lc, 'test -L /usr/bin/git && test "\$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "\$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"']
-  - [mkdir, -p, /shared/skills, /user/skills]
-  - [chown, root:root, /shared/skills, /user/skills]
-  - [chmod, '0700', /shared/skills, /user/skills]
-  - [bash, -lc, 'for skill_root in /shared/skills /user/skills; do test -d "\$skill_root" && test ! -L "\$skill_root" && test "\$(realpath -e "\$skill_root")" = "\$skill_root" && test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"; done']
-  - [systemctl, restart, ssh]
+  - [bash, /usr/local/sbin/cogs-cloud-init-setup]
 EOF
   # These substitutions are guest checks, not host-time heredoc expansion.
   grep -F '$(readlink /usr/bin/git)' "$state/user-data" >/dev/null

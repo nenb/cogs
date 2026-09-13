@@ -287,16 +287,24 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
   assert.match(text, /\[LABEL=COGS_GITTOOLS, \/opt\/cogs-git, auto, 'ro,nosuid,nodev'/u);
   assert.match(
     text,
-    /test ! -e \/usr\/bin\/git && test ! -L \/usr\/bin\/git && ln -s \/opt\/cogs-git\/bin\/git \/usr\/bin\/git/u,
+    /test ! -e \/usr\/bin\/git\n {6}test ! -L \/usr\/bin\/git[\s\S]*ln -s \/opt\/cogs-git\/bin\/git \/usr\/bin\/git/u,
   );
   assert.doesNotMatch(text, /ln, -sfn/u);
   assert.match(text, /readonly=on,file=\$state\/git-tools\.img/u);
   assert.match(text, /blkid -s LABEL -o value/u);
   assert.match(text, /blockdev --getro "\$source"/u);
   assert.match(text, /findmnt -rn -o OPTIONS \/opt\/cogs-git/u);
-  assert.match(text, /! find \/opt\/cogs-git -xdev .* ! -type l -a -perm \/0022/u);
+  assert.match(text, /unsafe=\$\(find \/opt\/cogs-git -xdev .* -print -quit\)/u);
+  assert.match(text, /test -z "\$unsafe"/u);
+  assert.doesNotMatch(text, /! find [^\n]*\| grep -q|! ldd [^\n]*\| grep -q/u);
   assert.match(text, /git --version\)" = "git version 2\.47\.3"/u);
-  assert.match(text, /ldd \/opt\/cogs-git\/usr\/bin\/git/u);
+  assert.match(
+    text,
+    /LD_LIBRARY_PATH=\/opt\/cogs-git\/usr\/lib\/x86_64-linux-gnu \/usr\/bin\/ldd \/opt\/cogs-git\/usr\/bin\/git/u,
+  );
+  assert.match(text, /case "\$ldd_output" in \*"not found"\*\) exit 1/u);
+  assert.match(text, /READY_WRAPPER = "set -euo pipefail; cloud-init status --wait/u);
+  assert.match(text, /ReadyFailure\("cloud-init-nonzero-degraded"\)|ReadyFailure\("marker-missing"\)/u);
   assert.match(text, /git init -q/u);
   assert.match(text, /git notes --ref=cogs add/u);
   assert.match(text, /git fsck --no-progress/u);
@@ -609,6 +617,10 @@ function serialContract(text: string) {
   assert.match(text, /test "\\\$\(stat -c/u);
   assert.match(text, /grep -F '\$\(readlink \/usr\/bin\/git\)' "\$state\/user-data"/u);
   assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
+  assert.match(
+    text,
+    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -euo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+  );
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
   assert.doesNotMatch(routes, /if ! owner_stage|owner_stage [^;\n]+ [a-z_]+/u);
@@ -1679,6 +1691,16 @@ assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/insta
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
+for code,phase in ((255,'authenticated-ssh-transport'),(41,'cloud-init-nonzero-degraded'),(42,'marker-missing'),(9,'malformed')):
+    with patch.object(h,'bounded',return_value=(code,b'')):
+        try: h.guest(state,'ready','18080',120)
+        except h.ReadyFailure as error: assert error.phase==phase
+        else: raise AssertionError('unclassified ready exit accepted')
+for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed'),(h.RetirementUncertain(),'local-retirement-uncertain')):
+    with patch.object(h,'bounded',side_effect=error):
+        try: h.guest(state,'ready','18080',120)
+        except h.ReadyFailure as observed: assert observed.phase==phase
+        else: raise AssertionError('unclassified local readiness failure accepted')
 # Readiness retries ONLY key exchange without a remote command, under one bound.
 scans=[]; guests=[]; clock=[0.0]
 def scan(state,end): scans.append(end); clock[0]+=4; return len(scans)==3
