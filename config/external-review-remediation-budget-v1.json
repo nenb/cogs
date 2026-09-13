@@ -96,7 +96,7 @@
           "name": "final-HGQ",
           "gross_lines": 5300,
           "gross_bytes": 5500000,
-          "paths": [],
+          "paths": ["test/aws-stage2-completion-kata-runtime.py", "test/stage2-prebuilt-local-kata-workflow.test.ts"],
           "pre_h_cap": {
             "gross_lines": 1800,
             "gross_bytes": 2000000

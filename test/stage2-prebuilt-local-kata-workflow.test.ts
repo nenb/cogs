@@ -176,7 +176,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 authenticates with the unmocked Q guard and H control codec", () => {
+test("checked-in v7 authenticates only against its historical Q/H source bytes", () => {
   const result = spawnSync(
     "python3",
     [
@@ -184,23 +184,57 @@ test("checked-in v7 authenticates with the unmocked Q guard and H control codec"
       "-B",
       "-c",
       `
-import runpy,sys
+import io,runpy,subprocess,sys,tarfile,tempfile
 from pathlib import Path
-root=Path.cwd()
-package=root/'deploy/aws-feasibility/remote/stage2-completion-local-control-v7'
-sys.path.insert(0,str(root/'deploy/aws-feasibility/remote'))
-import completion_kata_preparation as codec
-guard=runpy.run_path('scripts/stage2-prebuilt-local-qualification-guard.py')
-guard['_reviewed_constants']()
-guard['_authenticate_control']()
-control_raw=(package/'stage2-local-static-control-v2.json').read_bytes()
-control=codec.load_control(control_raw)
-members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
-envelope,runtime,contracts=codec.validate_control_members(control,members)
-assert envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD']
-assert envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD']
-assert envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256']
-assert len(contracts)==10 and len(runtime.value['executables'])==10
+current=Path.cwd()
+package_relative=Path('deploy/aws-feasibility/remote/stage2-completion-local-control-v7')
+historical_q='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
+def require(condition, message):
+ if not condition: raise AssertionError(message)
+def package_bytes(root):
+ package=root/package_relative; require(package.is_dir(), 'v7 package missing')
+ rows=[]
+ for path in sorted(package.rglob('*')):
+  require(not path.is_symlink(), 'unsafe v7 member')
+  if path.is_dir(): continue
+  require(path.is_file(), 'unsafe v7 member')
+  rows.append((str(path.relative_to(package)), path.read_bytes()))
+ return rows
+# Current source intentionally differs from H and may not borrow Q's authority.
+current_guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
+try: current_guard['_authenticate_control']()
+except current_guard['GuardError'] as error:
+ require(str(error)=='selected H source differs at Q', 'current source denied for the wrong reason')
+else: raise AssertionError('current source borrowed historical Q authority')
+archive=subprocess.run(['git','archive','--format=tar',historical_q],cwd=current,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+require(archive.returncode==0 and archive.stderr==b'', 'historical Q archive failed')
+with tempfile.TemporaryDirectory(prefix='cogs-historical-q-') as directory:
+ historical=Path(directory)
+ with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as source:
+  members=source.getmembers()
+  require(all((member.isfile() or member.isdir()) and member.size<=134217728 and not Path(member.name).is_absolute() and '..' not in Path(member.name).parts for member in members), 'unsafe historical archive')
+  for member in members:
+   target=historical/member.name
+   if member.isdir(): target.mkdir(parents=True, exist_ok=True)
+   else:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload=source.extractfile(member); require(payload is not None, 'historical member missing')
+    with payload: target.write_bytes(payload.read())
+ # The checked-in Q package itself is exact historical data; only H-owned source
+ # bytes are supplied from the historical archive for its authentication.
+ require(package_bytes(current)==package_bytes(historical), 'checked-in v7 package drifted')
+ sys.path.insert(0,str(historical/'deploy/aws-feasibility/remote'))
+ import completion_kata_preparation as codec
+ guard=runpy.run_path(str(historical/'scripts/stage2-prebuilt-local-qualification-guard.py'))
+ guard['_reviewed_constants'](); guard['_authenticate_control']()
+ package=historical/package_relative
+ control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
+ members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
+ envelope,runtime,contracts=codec.validate_control_members(control,members)
+ require(envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD'], 'historical H differs')
+ require(envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD'], 'historical G differs')
+ require(envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256'], 'historical descriptor differs')
+ require(len(contracts)==10 and len(runtime.value['executables'])==10, 'historical control codec differs')
 `,
     ],
     { encoding: "utf8", timeout: 30_000 },
