@@ -1589,12 +1589,16 @@ assert run("import os; os.write(2,b'x'*4096)")== (0,b'')
 for program in (
     "import os; os.write(1,b'x'*38)",
     "import os; os.write(2,b'x'*4097)",
-    "import os; os.write(1,b'\\xff')",
     "import os; os.write(2,b'\\x00')",
     "import os; os.write(1,b'valid\\r\\n')",
     "import os; os.write(1,'é'.encode()*19)",
     "import os; os.write(1,b'x'*38); os.write(2,b'x'*4097)",
 ): rejects(lambda:run(program))
+for program in ("import os; os.write(1,b'\\xff')", "import os; os.write(2,b'\\xff')"):
+    try: run(program)
+    except h.BoundedMalformed as error:
+        assert str(error)=="malformed command bytes" and "\\xff" not in str(error)
+    else: raise AssertionError("invalid UTF-8 was not classified as malformed command bytes")
 assert run('raise SystemExit(7)')==(7,b'')
 # A single ignored TERM and silent stream cannot evade the absolute deadline.
 started=time.monotonic()
@@ -1727,8 +1731,23 @@ with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
     assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
+for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed(),'host-key-mismatch')):
+    with patch.object(h,'bounded',side_effect=error):
+        try: h.host_key(state,5)
+        except h.ReadyFailure as observed: assert observed.phase==phase
+        else: raise AssertionError('unclassified host-key scan failure accepted')
 for code,raw in ((1,b'x'),(2,b''),(-1,b'')):
     with patch.object(h,'bounded',return_value=(code,raw)): rejects(lambda:h.host_key(state,5))
+# A deadline in the shared readiness key scan is terminal: it neither retries
+# the scan nor dispatches the authenticated guest readiness command.
+scans=[]; guests=[]
+def expired_scan(state,end): scans.append((state,end)); raise h.BoundedDeadline()
+with patch.object(h,'host_key',expired_scan), patch.object(h,'guest',lambda *args:guests.append(args)), \
+     patch.object(h,'read_control',return_value=(nonce+'\n').encode()):
+    try: h.execute('readiness',state,nonce,'18080')
+    except h.ReadyFailure as observed: assert observed.phase=='host-key-unavailable-deadline'
+    else: raise AssertionError('host-key scan deadline was retried or accepted')
+assert len(scans)==1 and guests==[]
 with patch.object(h,'bounded',side_effect=h.RetirementUncertain):
     try: h.host_key(state,5)
     except h.RetirementUncertain: pass

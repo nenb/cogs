@@ -71,7 +71,10 @@ def exact_json(raw):
 
 
 def text(raw):
-    value = raw.decode("utf-8", "strict")
+    try:
+        value = raw.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        raise BoundedMalformed("malformed command bytes") from None
     if "\0" in value or "\r" in value:
         raise BoundedMalformed("malformed command bytes")
     return value
@@ -370,7 +373,9 @@ def host_key(state, deadline=None):
     except RetirementUncertain:
         # Keyscan retirement is custody uncertainty, not a host-key mismatch.
         raise
-    except (BoundedDeadline, BoundedBytes, BoundedMalformed):
+    except BoundedDeadline:
+        raise ReadyFailure("host-key-unavailable-deadline") from None
+    except (BoundedBytes, BoundedMalformed):
         raise ReadyFailure("host-key-mismatch") from None
     if code == 1 and not raw:
         return False  # key exchange only: no guest command was dispatched
@@ -474,10 +479,13 @@ def execute(name, state, generation, port):
         query_kvm(state / "qmp.sock")
     elif name in ("readiness", "host-key"):
         end = time.monotonic() + (120 if name == "readiness" else 5)
-        while not host_key(state, end):
-            if name != "readiness" or time.monotonic() + .2 >= end:
-                raise ReadyFailure("host-key-unavailable-deadline")
-            time.sleep(.2)
+        try:
+            while not host_key(state, end):
+                if name != "readiness" or time.monotonic() + .2 >= end:
+                    raise ReadyFailure("host-key-unavailable-deadline")
+                time.sleep(.2)
+        except BoundedDeadline:
+            raise ReadyFailure("host-key-unavailable-deadline") from None
         if name == "readiness":
             guest(state, "ready", port, end)
     elif name.startswith("receipt-"):

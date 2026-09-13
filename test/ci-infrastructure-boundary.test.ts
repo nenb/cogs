@@ -945,7 +945,7 @@ with tempfile.TemporaryDirectory() as root:
  assert 'retired' not in journal
  os.close(owner.control);os.close(owner.fd);owner.selector.close()
 # Full authenticate() consumes live proc/mount/cgroup observations, not an authentication stub.
-owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.cg='/sys/fs/cgroup/cogs-product-'+owner.generation
+owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.cg='/sys/fs/cgroup/cogs-product-'+owner.generation;owner.failure_stage='authenticate';owner.failure_substage=None
 spec={'image':'sha256:'+'c'*64,'caps':[],'mask':0,'network':'none','tmpfs':{},'mounts':[{'source':'/source','target':'/skills','ro':True}]}
 held={'id':'b'*64,'spec':spec,'environment':[],'sources':{'/skills':(7,8)}};owner.ids={'sandbox':held};owner.images={spec['image']:{'Config':{'Labels':{}}}}
 h={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':[], 'SecurityOpt':['no-new-privileges'],'CgroupParent':owner.cg[14:],'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{}}
