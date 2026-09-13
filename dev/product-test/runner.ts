@@ -961,6 +961,7 @@ export async function workerMain(): Promise<void> {
   let streamAbort: AbortController | undefined;
   let stream: Promise<void> | undefined;
   let completed = false;
+  let cleanupFailed = false;
   const closeServer = async (server: ReturnType<typeof httpsServer> | undefined): Promise<void> => {
     if (!server?.listening) return;
     server.closeAllConnections();
@@ -969,214 +970,214 @@ export async function workerMain(): Promise<void> {
   try {
     // Own all partial startup acquisitions before arming timers or listeners.
     heartbeat = setInterval(() => {
-    try {
-      gate("ping");
-    } catch {
-      process.exit(74);
-    }
-  }, 1000);
-  const runtime = parseRuntimeConfigBytes(await readFile("/etc/cogs/runtime.json"));
-  const launch = validateLaunchConfig(JSON.parse(await readFile("/etc/cogs/launch.json", "utf8")));
-  admitProfile(runtime, launch);
-  const synthetic = await syntheticPorts(launch);
-  let upstream = 0,
-    traces = 0,
-    metrics = 0,
-    audit = 0;
-  const exports: Array<{ path: string; body: unknown }> = [];
-  const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
-  upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
-    upstream++;
-    upstreamRequests.push({
-      method: req.method ?? "",
-      path: req.url ?? "",
-      credential: req.headers.authorization === "Bearer synthetic-upstream-credential",
-    });
-    if (
-      req.method !== "GET" ||
-      req.url !== "/credential" ||
-      req.headers.authorization !== "Bearer synthetic-upstream-credential" ||
-      upstream > 1
-    ) {
-      res.writeHead(403).end();
-      return;
-    }
-    res.writeHead(200, { "content-type": "text/plain" }).end("cogs-local-upstream");
-  });
-  collector = httpsServer(
-    { cert: await material("telemetry.crt"), key: await material("telemetry.key") },
-    (req, res) => {
-      if (req.method !== "POST" || !["/v1/traces", "/v1/metrics", "/v1/logs"].includes(req.url ?? "")) {
-        res.writeHead(404).end();
+      try {
+        gate("ping");
+      } catch {
+        process.exit(74);
+      }
+    }, 1000);
+    const runtime = parseRuntimeConfigBytes(await readFile("/etc/cogs/runtime.json"));
+    const launch = validateLaunchConfig(JSON.parse(await readFile("/etc/cogs/launch.json", "utf8")));
+    admitProfile(runtime, launch);
+    const synthetic = await syntheticPorts(launch);
+    let upstream = 0,
+      traces = 0,
+      metrics = 0,
+      audit = 0;
+    const exports: Array<{ path: string; body: unknown }> = [];
+    const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
+    upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
+      upstream++;
+      upstreamRequests.push({
+        method: req.method ?? "",
+        path: req.url ?? "",
+        credential: req.headers.authorization === "Bearer synthetic-upstream-credential",
+      });
+      if (
+        req.method !== "GET" ||
+        req.url !== "/credential" ||
+        req.headers.authorization !== "Bearer synthetic-upstream-credential" ||
+        upstream > 1
+      ) {
+        res.writeHead(403).end();
         return;
       }
-      let bytes = 0;
-      const chunks: Buffer[] = [];
-      req.on("data", (b: Buffer) => {
-        bytes += b.length;
-        if (bytes <= 1024 * 1024) chunks.push(b);
-        if (bytes > 1024 * 1024) req.destroy();
-      });
-      req.on("end", () => {
-        try {
-          check(bytes > 0 && bytes <= 1024 * 1024 && exports.length < 128);
-          exports.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch {
-          res.writeHead(400).end();
+      res.writeHead(200, { "content-type": "text/plain" }).end("cogs-local-upstream");
+    });
+    collector = httpsServer(
+      { cert: await material("telemetry.crt"), key: await material("telemetry.key") },
+      (req, res) => {
+        if (req.method !== "POST" || !["/v1/traces", "/v1/metrics", "/v1/logs"].includes(req.url ?? "")) {
+          res.writeHead(404).end();
           return;
         }
-        if (req.url === "/v1/traces") traces++;
-        if (req.url === "/v1/metrics") metrics++;
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+        let bytes = 0;
+        const chunks: Buffer[] = [];
+        req.on("data", (b: Buffer) => {
+          bytes += b.length;
+          if (bytes <= 1024 * 1024) chunks.push(b);
+          if (bytes > 1024 * 1024) req.destroy();
+        });
+        req.on("end", () => {
+          try {
+            check(bytes > 0 && bytes <= 1024 * 1024 && exports.length < 128);
+            exports.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+          } catch {
+            res.writeHead(400).end();
+            return;
+          }
+          if (req.url === "/v1/traces") traces++;
+          if (req.url === "/v1/metrics") metrics++;
+          res.writeHead(200, { "content-type": "application/json" }).end("{}");
+        });
+      },
+    );
+    for (const [server, port] of [
+      [upstreamServer, 18443],
+      [collector, 18444],
+    ] as const) {
+      server.requestTimeout = 2000;
+      server.headersTimeout = 2000;
+      server.maxConnections = 8;
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", resolve);
       });
-    },
-  );
-  for (const [server, port] of [
-    [upstreamServer, 18443],
-    [collector, 18444],
-  ] as const) {
-    server.requestTimeout = 2000;
-    server.headersTimeout = 2000;
-    server.maxConnections = 8;
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, "127.0.0.1", resolve);
-    });
-  }
-  let pi: CogsPiSessionPorts | undefined, api: ApiServer | undefined;
-  let omitted = false,
-    settled = 0,
-    shutdown = false,
-    streamFailed = false,
-    workerSettled = false,
-    workerFailed = false;
-  const counters = new RestrictionCounters();
-  const toolResults = new ProductToolResults();
-  const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
-  let exported: unknown;
-  let egressHandle: CogsEgressRuntimeManager | undefined;
-  let telemetry: CogsWorkerTelemetrySink | undefined;
-  worker = await startProductionWorker({
-    seams: {
-      createIdentity: () => synthetic.identity,
-      createTelemetry: (config) =>
-        (telemetry = createCogsWorkerTelemetrySink({
-          mode: "otlp",
-          tracesEndpoint: config.otlp.traces_endpoint,
-          metricsEndpoint: config.otlp.metrics_endpoint,
-        })),
-      createModelStore: () => synthetic.model,
-      createEgress: async (options) => {
-        const egress = await startCogsEgressRuntimeManager({
-          ...options,
-          pkiSource: synthetic.pki,
-          revocation: synthetic.revocation,
-        });
-        egressHandle = egress;
-        return egress;
-      },
-      createPi: async (options) => {
-        pi = await createAuthenticatedCogsPiSession({
-          ...options,
-          streamFn: deterministicStream(),
-          historyAdmission: (entry) => {
-            gate("persist", { entry: toolResults.admit(entry) });
-          },
-        });
-        return pi;
-      },
-      createApi: (options) => {
-        const created = createApiServer(options);
-        api = registerCloseOwner(
-          Object.freeze({
-            ...created,
-            publish: (event: Parameters<ApiServer["publish"]>[0]) => {
-              try {
-                counters.admit("event");
-                gate("event", {
-                  event: {
-                    kind: event.kind,
-                    correlation_id: event.correlation_id,
-                    request_id: event.request_id ?? null,
-                  },
-                });
-                return created.publish(event);
-              } catch {
-                streamFailed = true;
-                return false;
-              }
-            },
-          }),
-          () => beginRegisteredClose(created),
-        );
-        return api;
-      },
-    },
-  });
-  void worker.closed.then(
-    () => {
-      workerSettled = true;
-    },
-    () => {
-      workerFailed = true;
-    },
-  );
-  const bearer = await readFile(runtime.paths.api_bearer, "utf8");
-  const headers = Promise.withResolvers<void>();
-  streamAbort = new AbortController();
-  const client = createApiClient({
-    port: 18081,
-    token: bearer,
-    timeoutMs: 30000,
-    maxBytes: 1024 * 1024,
-    seams: Object.freeze({
-      randomBytes: Object.freeze(randomBytes.bind(undefined)),
-      fetch: Object.freeze<typeof fetch>(async (input, init) => {
-        check(String(input).startsWith("http://127.0.0.1:18081/"));
-        const response = await fetch(input, init);
-        if (new URL(String(input)).pathname === "/v1/events") {
-          check(response.status === 200);
-          counters.headers = true;
-          gate("headers");
-          headers.resolve();
-        }
-        return response;
-      }),
-    }),
-  });
-  stream = (async () => {
-    try {
-      for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
-        observedEvents.push({
-          kind: event.kind,
-          correlation_id: event.correlation_id,
-          request_id: event.request_id ?? null,
-        });
-        if (event.kind === "run_settled") settled++;
-        if (event.kind === "shutdown_ready") {
-          shutdown = true;
-          const payload = event.payload as Record<string, unknown>;
-          exported = {
-            sensitive: true,
-            bundle: Object.fromEntries(
-              ["bundle", "manifest_sha256", "mode", "file_count", "total_bytes"].map((key) => [key, payload[key]]),
-            ),
-          };
-        }
-        const payload = event.payload as { cogs_transport?: { status?: string } };
-        if (payload?.cogs_transport?.status === "omitted") omitted = true;
-      }
-    } catch {
-      if (!shutdown) streamFailed = true;
-    } finally {
-      if (!shutdown) {
-        streamFailed = true;
-        headers.reject(new Error("SSE failed"));
-      }
     }
-  })();
-  await headers.promise;
-  for (let turn = 0; turn < 3; turn++) {
+    let pi: CogsPiSessionPorts | undefined, api: ApiServer | undefined;
+    let omitted = false,
+      settled = 0,
+      shutdown = false,
+      streamFailed = false,
+      workerSettled = false,
+      workerFailed = false;
+    const counters = new RestrictionCounters();
+    const toolResults = new ProductToolResults();
+    const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
+    let exported: unknown;
+    let egressHandle: CogsEgressRuntimeManager | undefined;
+    let telemetry: CogsWorkerTelemetrySink | undefined;
+    worker = await startProductionWorker({
+      seams: {
+        createIdentity: () => synthetic.identity,
+        createTelemetry: (config) =>
+          (telemetry = createCogsWorkerTelemetrySink({
+            mode: "otlp",
+            tracesEndpoint: config.otlp.traces_endpoint,
+            metricsEndpoint: config.otlp.metrics_endpoint,
+          })),
+        createModelStore: () => synthetic.model,
+        createEgress: async (options) => {
+          const egress = await startCogsEgressRuntimeManager({
+            ...options,
+            pkiSource: synthetic.pki,
+            revocation: synthetic.revocation,
+          });
+          egressHandle = egress;
+          return egress;
+        },
+        createPi: async (options) => {
+          pi = await createAuthenticatedCogsPiSession({
+            ...options,
+            streamFn: deterministicStream(),
+            historyAdmission: (entry) => {
+              gate("persist", { entry: toolResults.admit(entry) });
+            },
+          });
+          return pi;
+        },
+        createApi: (options) => {
+          const created = createApiServer(options);
+          api = registerCloseOwner(
+            Object.freeze({
+              ...created,
+              publish: (event: Parameters<ApiServer["publish"]>[0]) => {
+                try {
+                  counters.admit("event");
+                  gate("event", {
+                    event: {
+                      kind: event.kind,
+                      correlation_id: event.correlation_id,
+                      request_id: event.request_id ?? null,
+                    },
+                  });
+                  return created.publish(event);
+                } catch {
+                  streamFailed = true;
+                  return false;
+                }
+              },
+            }),
+            () => beginRegisteredClose(created),
+          );
+          return api;
+        },
+      },
+    });
+    void worker.closed.then(
+      () => {
+        workerSettled = true;
+      },
+      () => {
+        workerFailed = true;
+      },
+    );
+    const bearer = await readFile(runtime.paths.api_bearer, "utf8");
+    const headers = Promise.withResolvers<void>();
+    streamAbort = new AbortController();
+    const client = createApiClient({
+      port: 18081,
+      token: bearer,
+      timeoutMs: 30000,
+      maxBytes: 1024 * 1024,
+      seams: Object.freeze({
+        randomBytes: Object.freeze(randomBytes.bind(undefined)),
+        fetch: Object.freeze<typeof fetch>(async (input, init) => {
+          check(String(input).startsWith("http://127.0.0.1:18081/"));
+          const response = await fetch(input, init);
+          if (new URL(String(input)).pathname === "/v1/events") {
+            check(response.status === 200);
+            counters.headers = true;
+            gate("headers");
+            headers.resolve();
+          }
+          return response;
+        }),
+      }),
+    });
+    stream = (async () => {
+      try {
+        for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
+          observedEvents.push({
+            kind: event.kind,
+            correlation_id: event.correlation_id,
+            request_id: event.request_id ?? null,
+          });
+          if (event.kind === "run_settled") settled++;
+          if (event.kind === "shutdown_ready") {
+            shutdown = true;
+            const payload = event.payload as Record<string, unknown>;
+            exported = {
+              sensitive: true,
+              bundle: Object.fromEntries(
+                ["bundle", "manifest_sha256", "mode", "file_count", "total_bytes"].map((key) => [key, payload[key]]),
+              ),
+            };
+          }
+          const payload = event.payload as { cogs_transport?: { status?: string } };
+          if (payload?.cogs_transport?.status === "omitted") omitted = true;
+        }
+      } catch {
+        if (!shutdown) streamFailed = true;
+      } finally {
+        if (!shutdown) {
+          streamFailed = true;
+          headers.reject(new Error("SSE failed"));
+        }
+      }
+    })();
+    await headers.promise;
+    for (let turn = 0; turn < 3; turn++) {
       counters.admit("turn");
       gate("turn");
       await client.request("run", { content: "synthetic" });
@@ -1246,7 +1247,6 @@ export async function workerMain(): Promise<void> {
     completed = true;
   } finally {
     if (heartbeat) clearInterval(heartbeat);
-    let cleanupFailed = false;
     try {
       if (worker) await worker.close();
     } catch {
@@ -1265,11 +1265,9 @@ export async function workerMain(): Promise<void> {
         cleanupFailed = true;
       }
     }
-    if (cleanupFailed) {
-      process.exitCode = 1;
-      if (completed) throw new Error("product cleanup failed");
-    }
+    if (cleanupFailed) process.exitCode = 1;
   }
+  if (cleanupFailed && completed) throw new Error("product cleanup failed");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

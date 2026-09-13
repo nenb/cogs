@@ -692,7 +692,7 @@ write_files:
     permissions: '0700'
     content: |
       #!/usr/bin/env bash
-      set -euo pipefail
+      set -Eeuo pipefail
       export PATH=/usr/sbin:/usr/bin:/sbin:/bin
       export LC_ALL=C
       umask 077
@@ -756,13 +756,13 @@ write_files:
       mark SSHD
       systemctl restart ssh
       systemctl is-active --quiet ssh
+      mark COMPLETE
       printf COMPLETE > "\$pending"
       chown root:root "\$pending"
       chmod 0400 "\$pending"
       sync -f "\$pending"
       mv "\$pending" "\$complete"
       sync -f /var/lib/cogs
-      mark COMPLETE
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
   - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']

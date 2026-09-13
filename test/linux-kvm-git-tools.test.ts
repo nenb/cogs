@@ -619,7 +619,7 @@ function serialContract(text: string) {
   assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
   assert.match(
     text,
-    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -euo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -Eeuo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
   );
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
@@ -1804,10 +1804,97 @@ test("campaign setup guards every marker and publishes failure over completion",
   assert.ok(source.includes('printf \'%s\' "\\$current_stage" > "\\$failure"'));
   assert.ok(source.includes('chown root:root "\\$failure"\n        chmod 0600 "\\$failure"'));
   assert.ok(source.includes('sync -f "\\$failure" || :\n        sync -f /var/lib/cogs || :'));
-  assert.ok(source.indexOf("sync -f /var/lib/cogs") < source.indexOf("mark COMPLETE"));
+  assert.ok(source.indexOf("mark COMPLETE") < source.indexOf('printf COMPLETE > "\\$pending"'));
+  assert.ok(source.indexOf('mv "\\$pending" "\\$complete"') < source.lastIndexOf("sync -f /var/lib/cogs"));
   const wrapper = await readFile(boundedHelper, "utf8");
   assert.match(wrapper, /if test -e "\$failure" \|\| test -L "\$failure"; then exit 52; fi/u);
   assert.match(wrapper, /test "\$\(cat "\$stage"\)" = COMPLETE \|\| exit 47/u);
+});
+
+test("campaign setup final stage sync failure removes completion and fails readiness", async () => {
+  const source = await readFile(driver, "utf8");
+  const captured = source.match(
+    / {2}- path: \/usr\/local\/sbin\/cogs-cloud-init-setup\n {4}owner: root:root\n {4}permissions: '0700'\n {4}content: \|\n(?<script>[\s\S]*?)\nmounts:/u,
+  );
+  assert(captured?.groups?.script);
+  const setup = captured.groups.script.replace(/^ {6}/gmu, "").replaceAll("\\$", "$");
+  const temp = await mkdtemp(join(tmpdir(), "cogs-kvm-final-mark-"));
+  const state = join(temp, "state");
+  const bin = join(temp, "bin");
+  const workspace = join(temp, "workspace");
+  const gitToolsRoot = join(temp, "git-tools");
+  const git = join(temp, "git");
+  const shared = join(temp, "shared", "skills");
+  const user = join(temp, "user", "skills");
+  const setupPath = join(temp, "setup");
+  try {
+    await mkdir(bin, { recursive: true });
+    await Promise.all([
+      mkdir(workspace),
+      mkdir(join(gitToolsRoot, "bin"), { recursive: true }),
+      mkdir(shared, { recursive: true }),
+      mkdir(user, { recursive: true }),
+    ]);
+    await writeFile(join(gitToolsRoot, "bin", "git"), "");
+    const tools: Record<string, string> = {
+      chown: "#!/bin/sh\nexit 0\n",
+      chmod: "#!/bin/sh\nexit 0\n",
+      findmnt: "#!/bin/sh\nprintf 'ro,nosuid,nodev\\n'\n",
+      install: '#!/bin/sh\nfor target; do :; done\nmkdir -p "$target"\n',
+      mountpoint: "#!/bin/sh\nexit 0\n",
+      realpath: "#!/bin/sh\nprintf '%s\\n' \"$2\"\n",
+      stat: `#!/bin/sh
+case "$*" in
+  *${git}*) printf '0:0:symbolic link\\n' ;;
+  *) printf '0:0:700:directory\\n' ;;
+esac
+`,
+      sync: `#!/bin/sh
+if test "\${2:-}" = "${state}/campaign-setup.stage" && test "$(cat "$2")" = COMPLETE; then exit 97; fi
+exit 0
+`,
+      systemctl: "#!/bin/sh\nexit 0\n",
+    };
+    await Promise.all(
+      Object.entries(tools).map(async ([name, body]) => {
+        const path = join(bin, name);
+        await writeFile(path, body, { mode: 0o700 });
+      }),
+    );
+    const injected = setup
+      .replaceAll("/var/lib/cogs", state)
+      .replaceAll("/workspace", workspace)
+      .replaceAll("/opt/cogs-git", gitToolsRoot)
+      .replaceAll("/usr/bin/git", git)
+      .replaceAll("/shared/skills", shared)
+      .replaceAll("/user/skills", user)
+      .replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin", `export PATH=${bin}:/usr/bin:/bin`);
+    await writeFile(setupPath, injected, { mode: 0o700 });
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("bash", [setupPath], { encoding: "utf8", env: { ...process.env } });
+    assert.equal(result.status, 97, result.stderr);
+    await assert.rejects(lstat(join(state, "campaign-setup.complete")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(state, "campaign-setup.complete.pending")), { code: "ENOENT" });
+    assert.equal(await readFile(join(state, "campaign-setup.failure"), "utf8"), "SSHD");
+    const boot = join(temp, "boot-finished");
+    await writeFile(boot, "");
+    const readiness = spawnSync(
+      "python3",
+      [
+        "-I",
+        "-c",
+        `import importlib.util,subprocess,sys
+spec=importlib.util.spec_from_file_location("bounded",${JSON.stringify(boundedHelper)})
+h=importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+wrapper=h.READY_WRAPPER.replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin",${JSON.stringify(`export PATH=${bin}:/usr/bin:/bin`)}).replace("/var/lib/cloud/instance/boot-finished",${JSON.stringify(boot)}).replace("/var/lib/cogs",${JSON.stringify(state)}).replace("/usr/bin/git",${JSON.stringify(git)}).replace("/shared/skills",${JSON.stringify(shared)}).replace("/user/skills",${JSON.stringify(user)})
+sys.exit(subprocess.run(["/bin/bash","-c",wrapper],capture_output=True).returncode)`,
+      ],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    assert.equal(readiness.status, 52, readiness.stderr);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("network journal uses exclusive no-follow 0600 atomic producer writes", async () => {
