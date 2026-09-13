@@ -299,13 +299,13 @@ while(!receipt){
 const encode=v=>typeof v==='object'&&v!==null?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+encode(v[k])).join(',')+'}':JSON.stringify(v);
 const q={version:'cogs.skill-snapshot-control/v1',op:'acquire',nonce:crypto.randomBytes(16).toString('hex'),sequence:1,receipt_digest:'sha256:'+crypto.createHash('sha256').update(raw).digest('hex'),consumer_id:receipt.consumer_id,pid:process.pid};
 const gatePath='/run/cogs/skills/gate.sock',gateDeadline=performance.now()+5000;let socket;
+const timer=setTimeout(()=>process.exit(71),Math.max(0,gateDeadline-performance.now()));
 while(!socket){
  if(performance.now()>=gateDeadline)process.exit(71);
  const next=net.createConnection(gatePath);
  const connected=await new Promise(resolve=>{const fail=e=>{next.destroy();if((e?.code==='ENOENT'||e?.code==='ECONNREFUSED')&&performance.now()<gateDeadline)resolve(false);else process.exit(72)};next.once('error',fail);next.once('connect',()=>{next.off('error',fail);resolve(true)});});
  if(connected)socket=next;else await new Promise(r=>setTimeout(r,Math.min(20,Math.max(0,gateDeadline-performance.now()))));
 }
-const timer=setTimeout(()=>process.exit(71),Math.max(0,gateDeadline-performance.now()));
 socket.on('error',()=>process.exit(72));socket.on('end',()=>process.exit(73));socket.on('close',()=>process.exit(73));
 await new Promise((resolve,reject)=>{let data='';socket.on('data',function onData(b){data+=b;if(data.length>1024)reject(Error());if(!data.includes('\\n'))return;
  if(data!==encode({...q,op:'leased'})+'\\n')reject(Error());else{socket.off('data',onData);resolve();}});socket.write(encode(q)+'\\n');}).catch(()=>process.exit(74));

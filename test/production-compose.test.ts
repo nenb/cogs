@@ -87,6 +87,10 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
 });
 
 test("worker gate retries only the late lease socket and imports only after its exact lease", async () => {
+  assert.ok(
+    WORKER_GATE.indexOf("const timer=setTimeout") < WORKER_GATE.indexOf("net.createConnection(gatePath)"),
+    "gate deadline must be armed before a connection can remain pending",
+  );
   const root = await mkdtemp(resolve(tmpdir(), "cogs-worker-gate-"));
   const receipt = resolve(tmpdir(), `cogs-worker-gate-receipt-${process.pid}-${Date.now()}`);
   const socketPath = resolve(root, "gate.sock");
