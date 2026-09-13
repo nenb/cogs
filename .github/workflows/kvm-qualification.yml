@@ -13,20 +13,23 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   admission:
+    if: github.run_attempt == 1
     runs-on: ubuntu-24.04
     outputs:
       candidate: ${{ steps.admit.outputs.candidate }}
     steps:
       - id: admit
-        name: Refuse invalid dispatch before qualification effects
+        name: Admit only the sole first-created attempt-one dispatch before qualification effects
         env:
           CANDIDATE: ${{ inputs.candidate }}
           CONFIRMATION: ${{ inputs.confirmation }}
           REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
@@ -37,9 +40,67 @@ jobs:
           test "$CONFIRMATION" = EXECUTE_PROTECTED_KVM
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
           test "$CANDIDATE" = "$GITHUB_SHA"
-          printf 'candidate=%s\n' "$CANDIDATE" >>"$GITHUB_OUTPUT"
+          node - <<'NODE'
+          process.exitCode = 1;
+          const https = require("node:https"), fs = require("node:fs"), env = process.env;
+          const fail = (message) => { throw new Error(message); };
+          const candidate = env.CANDIDATE, runText = env.GITHUB_RUN_ID ?? "", run = Number(runText);
+          const pageSize = 100, maximumPages = 20, maximumBodyBytes = 2 * 1024 * 1024, rows = [];
+          const get = (page) => new Promise((resolve, reject) => {
+            let settled = false;
+            const settle = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+            const rejectOnce = (message) => settle(reject, new Error(message));
+            const request = https.request({ hostname: "api.github.com", path: `/repos/${env.GITHUB_REPOSITORY}/actions/workflows/kvm-qualification.yml/runs?event=workflow_dispatch&branch=main&per_page=${pageSize}&page=${page}`, headers: { accept: "application/vnd.github+json", authorization: `Bearer ${env.GITHUB_TOKEN}`, "user-agent": "cogs-kvm-qualification-admission" } }, (response) => {
+              let body = "", bytes = 0, ended = false;
+              response.setEncoding("utf8");
+              response.once("error", () => rejectOnce("actions history response error"));
+              response.once("aborted", () => rejectOnce("actions history response aborted"));
+              response.once("close", () => { if (!ended || response.complete !== true) rejectOnce("actions history response closed early"); });
+              response.on("data", (chunk) => {
+                if (settled) return;
+                bytes += Buffer.byteLength(chunk, "utf8");
+                if (bytes > maximumBodyBytes) {
+                  rejectOnce("actions history response too large");
+                  try { response.destroy(); } catch { /* rejection is already latched */ }
+                  return;
+                }
+                body += chunk;
+              });
+              response.once("end", () => {
+                ended = true;
+                if (response.complete !== true) rejectOnce("actions history response incomplete");
+                else if (response.statusCode !== 200) rejectOnce("actions history unavailable");
+                else settle(resolve, body);
+              });
+            });
+            request.once("error", () => rejectOnce("actions history request error"));
+            request.end();
+          });
+          (async () => {
+            if (!/^[a-f0-9]{40}$/.test(candidate) || !/^[1-9][0-9]*$/.test(runText) || !Number.isSafeInteger(run) || run < 1 || env.GITHUB_RUN_ATTEMPT !== "1") fail("invalid admission inputs");
+            let total;
+            for (let page = 1; page <= maximumPages; page++) {
+              const value = JSON.parse(await get(page));
+              if (!value || Object.getPrototypeOf(value) !== Object.prototype || !Number.isSafeInteger(value.total_count) || value.total_count < 0 || !Array.isArray(value.workflow_runs) || value.workflow_runs.length > pageSize || (total !== undefined && total !== value.total_count)) fail("invalid actions history page");
+              total = value.total_count; rows.push(...value.workflow_runs);
+              if (rows.length === total) break;
+              if (value.workflow_runs.length !== pageSize || page === maximumPages) fail("incomplete actions history");
+            }
+            if (rows.length !== total || total > pageSize * maximumPages) fail("incomplete actions history");
+            const ids = new Set();
+            for (const row of rows) {
+              if (!row || Object.getPrototypeOf(row) !== Object.prototype || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) || typeof row.head_sha !== "string" || !/^[a-f0-9]{40}$/.test(row.head_sha) || row.head_branch !== "main" || row.event !== "workflow_dispatch" || !Number.isSafeInteger(row.run_attempt) || row.run_attempt < 1) fail("malformed actions history row");
+              ids.add(row.id);
+            }
+            const exact = rows.filter((row) => row.head_sha === candidate);
+            if (exact.length !== 1 || exact[0].id !== run || exact[0].run_attempt !== 1) fail("admission is not the sole first attempt");
+            fs.appendFileSync(env.GITHUB_OUTPUT, `candidate=${candidate}\n`, { encoding: "utf8", mode: 0o600 });
+            process.exitCode = 0;
+          })().catch(() => {});
+          NODE
 
   linux-kvm:
+    if: github.run_attempt == 1 && needs.admission.result == 'success' && needs.admission.outputs.candidate == github.sha
     needs: admission
     runs-on: ubuntu-24.04
     env:
@@ -47,7 +108,7 @@ jobs:
       COGS_KVM_EXECUTION_RECEIPT: /run/cogs-kvm-execution-receipt.json
     concurrency:
       group: kvm-qualification-${{ needs.admission.outputs.candidate }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     timeout-minutes: 55
     steps:
       - name: Root-create immutable KVM execution receipt before checkout

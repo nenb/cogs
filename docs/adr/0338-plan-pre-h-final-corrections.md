@@ -25,8 +25,8 @@ unavailable before a later review.
 
 | Exact named task | Gross cap (lines / bytes) | Exact paths / purpose |
 | --- | ---: | --- |
-| governance | 6,000 / 1,100,000 | ADR0338/ADR0339, index, budget, central checker, focused budget test |
-| product | 4,000 / 3,200,000 | protected product workflow and ancestry record; `.github/workflows/kvm-qualification.yml`, `dev/linux-kvm/driver.sh`, `test/linux-kvm-git-tools.test.ts`, and current separate empty/nonempty runners and existing capability probes with profile-bound receipts/tests |
+| governance | 6,000 / 1,100,000 | ADR0338/ADR0339/ADR0340, index, budget, central checker, focused budget test |
+| product | 4,000 / 3,200,000 | protected product workflow and ancestry record; `.github/workflows/kvm-qualification.yml`, `dev/linux-kvm/driver.sh`, `dev/linux-kvm/bounded-command.py`, `test/linux-kvm-git-tools.test.ts`, and current separate empty/nonempty runners and existing capability probes with profile-bound receipts/tests |
 | local-tofu-ssm | 4,457 / 8,400,000 | Production plan/approval/campaign workflows; Python planner, approval stager, adapter, provider/controller, normal cleanup shell entry; and their fake planner/provider/adapter/workflow tests |
 | readiness-ci | 1,800 / 2,000,000 | `.gitleaksignore`, protected-main CI, and source-inventory/readiness files and tests |
 | final-HGQ | 5,300 / 5,500,000 | no Row 1 implementation paths; exact hosted full-check wrappers are `test/aws-stage2-completion-kata-mutable-bridges.test.ts`, `test/aws-stage2-completion-kata-runtime.py`, `test/aws-stage2-completion-kata-runtime.test.ts`, `test/aws-stage2-completion-local-result.test.ts`, and `test/stage2-prebuilt-local-kata-workflow.test.ts`; at most 1,800 / 2,000,000 pre-H, retaining the unavailable 3,500 / 3,500,000 reserve |

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -13,6 +14,7 @@ import {
   capabilityRemovalScenario,
   PROBE_GENERATION_SECONDS,
   PROBE_SUITE_SECONDS,
+  productFailureDiagnostic,
   requireProbeSuiteWindow,
   syntheticPkiArgv,
   withProductCustody,
@@ -21,6 +23,7 @@ import {
   type ContainerSpec,
   type CustodyPort,
   containerArguments,
+  HostCustody,
   SANDBOX_CAPABILITIES,
   SANDBOX_CAPABILITY_MASK,
   sandboxCapabilities,
@@ -81,6 +84,144 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
 });
 
+test("protected product and KVM admissions settle complete validated history before enabling exact effects", async () => {
+  const candidate = "a".repeat(40);
+  const current = { id: 41, head_sha: candidate, head_branch: "main", event: "workflow_dispatch", run_attempt: 1 };
+  const prior = { ...current, id: 40, conclusion: "failure" };
+  type Fault = "aborted" | "close" | "error" | "oversized" | "request-error" | "truncated" | "unresolved" | "valid";
+  const admission = async (
+    path: string,
+    pages: unknown[],
+    attempt = "1",
+    run = "41",
+    fault: Fault = "valid",
+    outputFailure = false,
+  ) => {
+    const workflow = await readFile(path, "utf8");
+    assert.match(workflow, /permissions:\n {2}actions: read\n {2}contents: read/u);
+    assert.match(workflow, /admission:\n {4}if: github\.run_attempt == 1/u);
+    assert.equal([...workflow.matchAll(/if: github\.run_attempt == 1/g)].length, 2);
+    assert.match(
+      workflow,
+      /if: github\.run_attempt == 1 && needs\.admission\.result == 'success' && needs\.admission\.outputs\.candidate == github\.sha/u,
+      `${path}: effect job must bind its candidate output to the exact trigger SHA`,
+    );
+    const admissionStep = /- id: admit\n[\s\S]*?GITHUB_TOKEN: \$\{\{ github\.token \}\}[\s\S]*?node - <<'NODE'/u.exec(
+      workflow,
+    )?.[0];
+    assert.ok(admissionStep, `${path}: history admission must bind the Actions token in its real step environment`);
+    const source = /node - <<'NODE'\n([\s\S]*?)\n {10}NODE/u.exec(workflow)?.[1];
+    assert.ok(source, `${path}: missing read-only admission`);
+    assert.ok(source.indexOf("process.exitCode = 1;") < source.indexOf("https.request"));
+    assert.ok(source.indexOf("fs.appendFileSync") < source.lastIndexOf("process.exitCode = 0;"));
+    const root = await mkdtemp(resolve(tmpdir(), "cogs-admission-"));
+    const output = outputFailure ? root : resolve(root, "output");
+    if (!outputFailure) await writeFile(output, "");
+    const harness = `
+const { EventEmitter } = require("node:events"), Module = require("node:module");
+const pages = ${JSON.stringify(pages)}, fault = ${JSON.stringify(fault)};
+let requests = 0, destroyed = false;
+process.on("exit", () => process.stderr.write("requests=" + requests + ";destroyed=" + destroyed + "\\n"));
+const request = (options, callback) => {
+  requests++;
+  const response = new EventEmitter(), page = Number(new URL("https://x" + options.path).searchParams.get("page"));
+  response.statusCode = pages[page - 1] === undefined ? 500 : 200;
+  response.setEncoding = () => {}; response.destroy = () => { destroyed = true; response.emit("close"); };
+  const client = new EventEmitter(); client.end = () => {};
+  process.nextTick(() => {
+    callback(response);
+    if (fault === "request-error") return client.emit("error", new Error("request"));
+    if (fault === "unresolved") return;
+    if (fault === "aborted") return response.emit("aborted");
+    if (fault === "close") return response.emit("close");
+    if (fault === "error") response.emit("error", new Error("response")); // A late complete response must not settle success.
+    if (fault === "oversized") return response.emit("data", "x".repeat(2 * 1024 * 1024 + 1));
+    const raw = JSON.stringify(pages[page - 1]); const cut = Math.floor(raw.length / 2);
+    response.emit("data", raw.slice(0, cut)); response.emit("data", raw.slice(cut));
+    response.complete = fault !== "truncated"; response.emit("end");
+  });
+  return client;
+};
+const load = Module._load; Module._load = (name, parent, main) => name === "node:https" ? { request } : load(name, parent, main);
+${source}
+`;
+    const result = spawnSync(process.execPath, ["-e", harness], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        CANDIDATE: candidate,
+        GITHUB_RUN_ID: run,
+        GITHUB_RUN_ATTEMPT: attempt,
+        GITHUB_REPOSITORY: "nenb/cogs",
+        GITHUB_TOKEN: "ephemeral-test-token",
+        GITHUB_OUTPUT: output,
+      },
+    });
+    const receipt = outputFailure ? "" : await readFile(output, "utf8");
+    await rm(root, { recursive: true, force: true });
+    return { result, receipt };
+  };
+  const effectsRun = (attempt: string, result: string, output: string, sha: string) =>
+    attempt === "1" && result === "success" && output === sha;
+  for (const path of [".github/workflows/insecure-container.yml", ".github/workflows/kvm-qualification.yml"]) {
+    const valid = await admission(path, [{ total_count: 1, workflow_runs: [current] }]);
+    assert.equal(valid.result.status, 0, `${path}: ${valid.result.stderr}`);
+    assert.equal(valid.receipt, `candidate=${candidate}\n`);
+    assert.equal(effectsRun("1", "success", candidate, candidate), true);
+    for (const output of ["", "b".repeat(40)])
+      assert.equal(effectsRun("1", "success", output, candidate), false, `${path}: reused output granted effects`);
+    for (const pages of [
+      [{ total_count: 2, workflow_runs: [current, prior] }], // prior failed candidate consumes it
+      [{ total_count: 2, workflow_runs: [current, { ...prior, conclusion: "cancelled" }] }],
+      [{ total_count: 1, workflow_runs: [{ ...current, id: 40 }] }], // reused admission
+      [{ total_count: 1, workflow_runs: [{ ...current, id: "41" }] }], // malformed API row
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, head_sha: "A".repeat(40) }] }],
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, head_branch: "release" }] }],
+      [{ total_count: 2, workflow_runs: [current, { ...prior, id: 42, event: "push" }] }],
+      [{ total_count: 101, workflow_runs: Array.from({ length: 100 }, () => current) }], // incomplete pagination
+    ]) {
+      const rejected = await admission(path, pages);
+      assert.notEqual(rejected.result.status, 0, `${path}: duplicate, malformed, or incomplete history admitted`);
+      assert.equal(rejected.receipt, "");
+    }
+    for (const fault of [
+      "truncated",
+      "aborted",
+      "close",
+      "error",
+      "oversized",
+      "request-error",
+      "unresolved",
+    ] as const) {
+      const rejected = await admission(path, [{ total_count: 1, workflow_runs: [current] }], "1", "41", fault);
+      assert.notEqual(rejected.result.status, 0, `${path}: ${fault} response admitted`);
+      assert.equal(rejected.receipt, "");
+      if (fault === "oversized") assert.match(rejected.result.stderr, /destroyed=true/u);
+    }
+    const appendFailure = await admission(
+      path,
+      [{ total_count: 1, workflow_runs: [current] }],
+      "1",
+      "41",
+      "valid",
+      true,
+    );
+    assert.notEqual(appendFailure.result.status, 0, `${path}: output append failure admitted`);
+    const unsafeRun = await admission(
+      path,
+      [{ total_count: 1, workflow_runs: [current] }],
+      "1",
+      "9007199254740992",
+      "unresolved",
+    );
+    assert.notEqual(unsafeRun.result.status, 0, `${path}: unsafe run ID admitted`);
+    assert.match(unsafeRun.result.stderr, /requests=0/u, `${path}: invalid run ID made a history request`);
+    const rerun = await admission(path, [{ total_count: 1, workflow_runs: [{ ...current, run_attempt: 2 }] }], "2");
+    assert.notEqual(rerun.result.status, 0, `${path}: attempt-two rerun admitted`);
+  }
+});
+
 test("probe suites reserve eight sequential 600-second generations and cleanup", async () => {
   const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
   assert.match(workflow, /timeout_minutes: 100/u);
@@ -131,7 +272,8 @@ with tempfile.TemporaryDirectory() as root:
  finally: os.umask(previous);os.close(parent)
 class Stream:
  def fileno(self): return 20
- def close(self): pass
+ def close(self):
+  if mode=='finalize-close': raise OSError('descriptor close refused')
 class Poll:
  def __enter__(self): self.entries={};return self
  def __exit__(self,*a): pass
@@ -139,7 +281,7 @@ class Poll:
  def unregister(self,stream): del self.entries[stream]
  def get_map(self): return self.entries
  def select(self,*a): return [(key,1) for key in self.entries.values()]
-for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal'):
+for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','overflow','restop-pid','restop-code','restop-signal','finalize-close'):
  events=[];reaped=False
  class Process:
   pid=12345;stdout=Stream();stderr=Stream()
@@ -192,10 +334,11 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
     try:
      measured=mode=='nonzero-measurement'
      assert owner.command(['never-executed'],cap=1,status=measured)==((7,b'') if measured else b'')
-    except RuntimeError: assert mode not in ('success','nonzero-measurement')
+    except Exception: assert mode not in ('success','nonzero-measurement')
     else: assert mode in ('success','nonzero-measurement')
-   assert owner.failure_stage==('operation' if mode in ('success','nonzero-measurement') else 'helper')
-   assert events[-3:]==['killpg','cgroup.kill','reap-and-reuse'],events
+   assert owner.failure_stage==('operation' if mode in ('success','nonzero-measurement') else 'helper-finalize' if mode=='finalize-close' else 'helper')
+   if mode=='finalize-close': assert owner.cleanup_uncertain is True and 'helper-uncertain' in owner.records
+   at=events.index('killpg');assert events[at:at+3]==['killpg','cgroup.kill','reap-and-reuse'],events
    assert ('helper-pending' in os.listdir(owner.control))==(mode in ('early-exit','timeout') or mode.startswith('restop-'))
    if mode=='success':
     assert events.index('cgroup.procs')<events.index('continue')<events.index('killpg')
@@ -342,16 +485,33 @@ try: m.line(r,1024)
 except RuntimeError: pass
 else: raise AssertionError('pipelined frame accepted')
 os.close(r);os.close(w)
-assert m.DIAGNOSTICS==frozenset(('constructor','operation','helper'))
+assert m.OPERATIONS==frozenset(('authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'))
+assert m.PROVENANCE_SUBSTAGES==frozenset(('final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment','persistence'))
 r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
-try: m.emit_diagnostic('a'*32,'helper')
+try: m.emit_diagnostic('a'*32,'provenance','layer-count',True)
 finally: os.dup2(old,1);os.close(old);os.close(w)
-assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';os.close(r)
+assert os.read(r,256)==b'{"cleanup":"uncertain","diagnostic":"provenance","generation":"'+b'a'*32+b'","substage":"layer-count"}\n';os.close(r)
+for stage,substage in (('operation',None),('image','inventory'),('provenance','unknown')):
+ try: m.emit_diagnostic('a'*32,stage,substage)
+ except RuntimeError: pass
+ else: raise AssertionError('unknown diagnostic admitted')
 `,
     ],
     { encoding: "utf8", timeout: 10_000 },
   );
   assert.equal(result.status, 0, result.stderr);
+  // A constructor that cannot acquire an owner has no closure proof, so its
+  // sole public frame is conservatively cleanup-uncertain.
+  const unavailable = spawnSync("python3", ["-I", "-B", "dev/product-test/host-custody.py"], {
+    input: `{"generation":"${"a".repeat(32)}","seconds":60}\n`,
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(unavailable.status, 1, unavailable.stderr);
+  assert.equal(
+    unavailable.stdout,
+    `{"cleanup":"uncertain","diagnostic":"constructor","generation":"${"a".repeat(32)}"}\n`,
+  );
   const root = "/custody/authority";
   for (const [name, leafSubject] of [
     ["envoy", "/CN=fixture.cogs.test"],
@@ -412,6 +572,209 @@ assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';
   const runner = await readFile("dev/product-test/runner.ts", "utf8");
   assert.ok(runner.includes('for (const args of syntheticPkiArgv(root, name)) await run("openssl", [...args]);'));
   assert.equal(runner.includes("args.split("), false);
+});
+
+test("host custody rejects pending diagnostics generically until terminal EOF validates attribution", async () => {
+  const generation = "a".repeat(32);
+  const ready = Buffer.from(`{"generation":"${generation}","result":"ready"}\n`);
+  const frame = Buffer.from(
+    `{"cleanup":"uncertain","diagnostic":"provenance","generation":"${generation}","substage":"persistence"}\n`,
+  );
+  const make = () => {
+    class Pipe extends EventEmitter {
+      write(): boolean {
+        return true;
+      }
+      end(): void {}
+    }
+    class Child extends EventEmitter {
+      stdin = new Pipe();
+      stdout = new EventEmitter();
+      stderr = Object.assign(new EventEmitter(), { resume() {} });
+    }
+    const child = new Child();
+    return { child, host: new HostCustody(generation, 60, "run", () => child as never) };
+  };
+  for (const split of [1, 19, frame.length - 1]) {
+    const pending = make();
+    pending.child.stdout.emit("data", ready);
+    const request = pending.host.request("create");
+    await Promise.resolve();
+    pending.child.stdout.emit("data", frame.subarray(0, split));
+    pending.child.stdout.emit("data", frame.subarray(split));
+    await assert.rejects(request, { message: "custody unavailable; preserve receipts" });
+    assert.equal(pending.host.failureDiagnostic, undefined, "attribution waits for terminal close");
+    pending.child.emit("close", 0);
+    await assert.rejects(pending.host.closed, /provenance\/persistence; cleanup uncertain/u);
+    assert.deepEqual(pending.host.failureDiagnostic, {
+      generation,
+      diagnostic: "provenance",
+      substage: "persistence",
+      cleanup: "uncertain",
+    });
+  }
+});
+
+test("host custody latches terminal stream failures after a successful settle response", async () => {
+  const generation = "a".repeat(32);
+  const ready = Buffer.from(`{"generation":"${generation}","result":"ready"}\n`);
+  const frame = Buffer.from(`{"diagnostic":"provenance","generation":"${generation}","substage":"persistence"}\n`);
+  const make = (tail: readonly Buffer[], purpose: "run" | "capability-probe") => {
+    const settled = Buffer.from(
+      `{"generation":"${generation}","result":{"failed":${purpose === "capability-probe"},"retired":true}}\n`,
+    );
+    class Pipe extends EventEmitter {
+      write(value: string | Buffer): boolean {
+        const request = JSON.parse(value.toString()) as { op?: string };
+        if (request.op === "settle") {
+          child.stdout.emit("data", settled);
+          for (const chunk of tail) child.stdout.emit("data", chunk);
+          child.emit("close", 0);
+        }
+        return true;
+      }
+      end(): void {}
+    }
+    class Child extends EventEmitter {
+      stdin = new Pipe();
+      stdout = new EventEmitter();
+      stderr = Object.assign(new EventEmitter(), { resume() {} });
+    }
+    const child = new Child();
+    const host = new HostCustody(generation, 60, purpose, () => child as never);
+    child.stdout.emit("data", ready);
+    return host;
+  };
+  for (const [purpose, passed] of [
+    ["run", true],
+    ["capability-probe", false],
+  ] as const)
+    for (const tail of [
+      [frame, frame], // duplicate terminal frame
+      [frame, Buffer.from('{"diagnostic":\n')], // malformed tail
+      [frame, Buffer.from("x")], // arbitrary byte after terminal frame
+      [frame.subarray(0, -1)], // unterminated terminal stream
+    ]) {
+      const host = make(tail, purpose);
+      await assert.rejects(withProductCustody(host, async () => passed));
+      await assert.rejects(host.closed, { message: "custody cleanup required; preserve receipts" });
+      assert.equal(host.failureDiagnostic, undefined);
+    }
+});
+
+test("product custody diagnostics are closed, provenance-paired, and failure artifacts have no authority", async () => {
+  const owner = await readFile("dev/product-test/snapshot-owner.ts", "utf8");
+  const custody = await readFile("dev/product-test/host-custody.py", "utf8");
+  const workflow = await readFile(".github/workflows/insecure-container.yml", "utf8");
+  assert.match(owner, /diagnostics\.has\(result\.diagnostic as string\)[\s\S]*paired[\s\S]*cleanup/u);
+  assert.doesNotMatch(owner, /result\.diagnostic === "operation"/u);
+  assert.match(custody, /self\.failure_stage, self\.failure_substage = "helper-finalize", None/u);
+  assert.match(custody, /stage, substage = self\.failure_stage, self\.failure_substage/u);
+  for (const stage of [
+    "final-head",
+    "status",
+    "baseline",
+    "source",
+    "inventory",
+    "build-receipt",
+    "layer-prefix",
+    "layer-count",
+    "environment",
+    "persistence",
+  ])
+    assert.ok(custody.includes(`self.failure_substage = "${stage}"`), stage);
+  assert.match(
+    custody,
+    /self\.failure_substage = "persistence"; self\.record\("provenance", receipt\)[\s\S]*self\.saved\("provenance"\)/u,
+  );
+  assert.match(workflow, /'pass_authority':False,'probe_authority':False/u);
+  assert.doesNotMatch(workflow, /partial_output_sha256/u);
+  assert.match(workflow, /'run_id':build\['run_id'\],'run_attempt':build\['run_attempt'\]/u);
+});
+
+test("workflow failure conversion accepts only closed fake diagnostics and prior exact probes", () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import hashlib,json,os,re,subprocess,tempfile
+from pathlib import Path
+from textwrap import dedent
+text=Path('.github/workflows/insecure-container.yml').read_text()
+source=dedent(re.search(r"<<'PY' \|\| :\n(.*?)\n          PY",text,re.S).group(1))
+with tempfile.TemporaryDirectory() as root:
+ build=Path(root)/'build.json'; receipt=Path(root)/'receipt'
+ bound={'candidate':'a'*40,'tree':'b'*40,'source_inventory':'sha256:'+'c'*64,'run_id':'1','run_attempt':'1','skills':'empty'}
+ build.write_text(json.dumps(bound,sort_keys=True,separators=(',',':'))+'\n')
+ source=source.replace("'/var/lib/cogs-product-test/build-receipt.json'", "os.environ['BUILD']")
+ def convert(rows,authority='probe-only',trailing=b''):
+  if receipt.exists(): receipt.chmod(0o600)
+  receipt.write_bytes(b''.join(json.dumps(row,sort_keys=True,separators=(',',':')).encode()+b'\n' for row in rows)+trailing)
+  env={**os.environ,'BUILD':str(build),'RECEIPT':str(receipt),'CANDIDATE':'a'*40,'PROFILE':'empty','AUTHORITY':authority,'STATUS':'1','RUNNER_UID':str(os.getuid()),'RUNNER_GID':str(os.getgid())}
+  subprocess.run(['python3','-I','-B','-c',source],env=env,check=True)
+  return json.loads(receipt.read_bytes())
+ probe={'purpose':'capability-probe','generation':'d'*32,'retired_generation':'d'*32,**bound,'profile_case':'empty','build_receipt_sha256':'sha256:'+hashlib.sha256((json.dumps(bound,sort_keys=True,separators=(',',':'))+'\n').encode()).hexdigest(),'container_id':'e'*64,'removed':'KILL','start_code':0,'running':True,'ssh':True,'sftp':True}
+ failure={'version':'cogs.product-failure-diagnostic/v1','generation':'f'*32,'diagnostic':'provenance','substage':'layer-count','cleanup':'uncertain','pass_authority':False,'probe_authority':False}
+ accepted=convert([probe,failure])
+ assert accepted['generation']=='f'*32 and accepted['diagnostic']=='provenance' and accepted['substage']=='layer-count' and accepted['cleanup_uncertain'] is True
+ certain={k:v for k,v in failure.items() if k!='cleanup'}
+ accepted=convert([probe,certain])
+ assert accepted['generation']=='f'*32 and accepted['cleanup_uncertain'] is False
+ for hostile in ([probe,failure,{'unknown':True}], [probe,failure,failure], [probe,failure]):
+  result=convert(hostile,trailing=(b'unknown\n' if len(hostile)==2 else b''))
+  assert result['diagnostic']=='constructor' and result['cleanup_uncertain'] is True and 'generation' not in result
+ assert convert([], 'candidate-pass')['diagnostic']=='constructor'
+ assert convert([probe,failure], 'candidate-pass')['diagnostic']=='constructor'
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("product failure diagnostics retain only a closed provenance frame or conservative constructor uncertainty", () => {
+  const frame = Object.freeze({
+    generation: "a".repeat(32),
+    diagnostic: "provenance",
+    substage: "layer-count",
+    cleanup: "uncertain" as const,
+  });
+  const line = productFailureDiagnostic("a".repeat(32), frame);
+  assert.deepEqual(line, {
+    version: "cogs.product-failure-diagnostic/v1",
+    generation: "a".repeat(32),
+    diagnostic: "provenance",
+    substage: "layer-count",
+    cleanup: "uncertain",
+    pass_authority: false,
+    probe_authority: false,
+  });
+  assert.ok(Object.isFrozen(line));
+  assert.deepEqual(
+    productFailureDiagnostic(
+      "a".repeat(32),
+      Object.freeze({ generation: "a".repeat(32), diagnostic: "provenance", substage: "layer-count" }),
+    ),
+    {
+      version: "cogs.product-failure-diagnostic/v1",
+      generation: "a".repeat(32),
+      diagnostic: "provenance",
+      substage: "layer-count",
+      pass_authority: false,
+      probe_authority: false,
+    },
+  );
+  assert.deepEqual(productFailureDiagnostic("b".repeat(32), frame), {
+    version: "cogs.product-failure-diagnostic/v1",
+    generation: "b".repeat(32),
+    diagnostic: "constructor",
+    cleanup: "uncertain",
+    pass_authority: false,
+    probe_authority: false,
+  });
 });
 
 test("product custody aggregates operation, settlement, and closure failures", async () => {

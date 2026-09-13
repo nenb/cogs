@@ -42,6 +42,12 @@ export type CustodyPort = Readonly<{
   closed?: Promise<void>;
   request<T = unknown>(op: string, fields?: Record<string, unknown>): Promise<T>;
 }>;
+export type ProductDiagnosticFrame = Readonly<{
+  generation: string;
+  diagnostic: string;
+  substage?: string;
+  cleanup?: "uncertain";
+}>;
 
 /** Independent process owns partial acquisitions even if the TypeScript caller disappears. */
 export class HostCustody implements CustodyPort {
@@ -53,14 +59,22 @@ export class HostCustody implements CustodyPort {
   #readyResolve: (() => void) | undefined;
   #readyReject: ((error: Error) => void) | undefined;
   #ready: Promise<void>;
+  #readinessSettled = false;
   #input = Buffer.alloc(0);
   #pending: { resolve(value: unknown): void; reject(error: Error): void } | undefined;
-  #diagnostic: "constructor" | "operation" | "helper" | undefined;
+  #diagnostic: ProductDiagnosticFrame | undefined;
+  #validatedDiagnostic: ProductDiagnosticFrame | undefined;
+  #terminalDiagnostic = false;
+  #terminalFrames = 0;
+  #bytesAfterTerminal = false;
+  #failureLatched = false;
+  #protocolFailure = false;
   #lost = false;
   constructor(
     generation: string,
     seconds: number,
     readonly purpose: "run" | "capability-probe" = "run",
+    spawnChild: typeof spawn = spawn,
   ) {
     check(/^[a-f0-9]{32}$/.test(generation) && seconds >= 60 && seconds <= 600);
     this.generation = generation;
@@ -71,56 +85,168 @@ export class HostCustody implements CustodyPort {
     });
     this.#tail = this.#ready;
     void this.#ready.catch(() => undefined);
-    this.#child = spawn("/usr/bin/python3", ["-I", fileURLToPath(new URL("host-custody.py", import.meta.url))], {
+    this.#child = spawnChild("/usr/bin/python3", ["-I", fileURLToPath(new URL("host-custody.py", import.meta.url))], {
       env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C", HOME: "/nonexistent" },
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
     this.closed = new Promise((resolve, reject) => {
       this.#child.once("error", () => {
-        this.#lose();
-        reject(new Error("custody unavailable"));
+        this.#latchProtocolFailure();
+        reject(new Error("custody unavailable; preserve receipts"));
       });
       this.#child.once("close", (code) => {
-        this.#lose();
-        code === 0
-          ? resolve()
-          : reject(new Error(`custody cleanup required${this.#diagnostic ? `: ${this.#diagnostic}` : ""}`));
+        // A normal owner exit is transport closure, not protocol loss. Validate
+        // the complete stream before deciding whether its terminal status passes.
+        const readinessSettled = this.#readinessSettled;
+        if (
+          this.#input.length !== 0 ||
+          this.#pending ||
+          !readinessSettled ||
+          this.#terminalFrames > 1 ||
+          this.#bytesAfterTerminal
+        )
+          this.#latchProtocolFailure();
+        if (this.#diagnostic && !this.#protocolFailure && this.#terminalFrames === 1)
+          this.#validatedDiagnostic = this.#diagnostic;
+        this.#abortRequests();
+        if (this.#failureLatched || code !== 0)
+          reject(
+            new Error(
+              `custody cleanup required${this.#validatedDiagnostic ? `: ${this.#diagnosticSummary(this.#validatedDiagnostic)}` : "; preserve receipts"}`,
+            ),
+          );
+        else resolve();
       });
     });
     void this.closed.catch(() => undefined);
     this.#child.stderr.resume(); // Never relay subprocess diagnostics or material.
+    this.#child.stdout.on("error", () => this.#latchProtocolFailure());
+    this.#child.stdin.on("error", () => this.#latchProtocolFailure());
     this.#child.stdout.on("data", (chunk: Buffer) => {
       try {
+        // A diagnostic is one terminal protocol record, not a prefix that may
+        // be followed by an arbitrary response, duplicate, or malformed tail.
+        if (chunk.length === 0 || this.#protocolFailure) return;
+        if (this.#terminalDiagnostic) {
+          this.#bytesAfterTerminal = true;
+          this.#latchProtocolFailure();
+          return;
+        }
         check(this.#input.length + chunk.length <= 2 * 1024 * 1024);
         this.#input = Buffer.concat([this.#input, chunk]);
-        if (!this.#input.includes(10)) return;
-        const raw = this.#input.toString("utf8");
-        const result = JSON.parse(raw) as { generation?: unknown; result?: unknown; diagnostic?: unknown };
-        check(canonical(result) === raw && result.generation === this.generation);
-        this.#input = Buffer.alloc(0);
-        if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready" && !this.#pending) {
-          this.#readyResolve?.();
-          this.#readyResolve = undefined;
-          this.#readyReject = undefined;
-        } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
-          this.#pending.resolve(result.result);
-          this.#pending = undefined;
-        } else if (
-          Object.keys(result).sort().join() === "diagnostic,generation" &&
-          (result.diagnostic === "constructor" || result.diagnostic === "operation" || result.diagnostic === "helper")
-        ) {
-          this.#diagnostic = result.diagnostic;
-          this.#lose(`custody unavailable: ${result.diagnostic}`);
-        } else {
-          throw new Error("invalid custody response");
+        for (;;) {
+          const newline = this.#input.indexOf(10);
+          if (newline < 0) return;
+          const line = this.#input.subarray(0, newline);
+          this.#input = this.#input.subarray(newline + 1);
+          check(line.length > 0);
+          const raw = Buffer.concat([line, Buffer.from("\n")]);
+          const result = JSON.parse(raw.toString("utf8")) as {
+            generation?: unknown;
+            result?: unknown;
+            diagnostic?: unknown;
+            substage?: unknown;
+            cleanup?: unknown;
+          };
+          check(Buffer.from(canonical(result)).equals(raw) && result.generation === this.generation);
+          if (Object.keys(result).sort().join() === "generation,result" && result.result === "ready") {
+            check(!this.#pending && !this.#readinessSettled);
+            this.#readinessSettled = true;
+            this.#readyResolve?.();
+            this.#readyResolve = undefined;
+            this.#readyReject = undefined;
+          } else if (Object.keys(result).sort().join() === "generation,result" && this.#pending) {
+            this.#pending.resolve(result.result);
+            this.#pending = undefined;
+          } else {
+            const operations = new Set([
+              "authenticate",
+              "capability-probe",
+              "create",
+              "evidence",
+              "exec",
+              "file",
+              "image",
+              "lease",
+              "lease-directory",
+              "mkdir",
+              "pair",
+              "provenance",
+              "seal",
+              "settle",
+              "status",
+              "storage",
+            ]);
+            const diagnostics = new Set(["constructor", "helper", "helper-finalize", ...operations]);
+            const provenance = new Set([
+              "final-head",
+              "status",
+              "baseline",
+              "source",
+              "inventory",
+              "build-receipt",
+              "layer-prefix",
+              "layer-count",
+              "environment",
+              "persistence",
+            ]);
+            const keys = Object.keys(result).sort().join();
+            const paired =
+              result.diagnostic === "provenance"
+                ? provenance.has(result.substage as string)
+                : result.substage === undefined;
+            const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
+            check(
+              diagnostics.has(result.diagnostic as string) &&
+                paired &&
+                cleanup &&
+                keys ===
+                  (result.cleanup === undefined
+                    ? result.substage === undefined
+                      ? "diagnostic,generation"
+                      : "diagnostic,generation,substage"
+                    : result.substage === undefined
+                      ? "cleanup,diagnostic,generation"
+                      : "cleanup,diagnostic,generation,substage"),
+            );
+            this.#diagnostic = Object.freeze({
+              generation: this.generation,
+              diagnostic: result.diagnostic as string,
+              ...(result.substage === undefined ? {} : { substage: result.substage as string }),
+              ...(result.cleanup === undefined ? {} : { cleanup: "uncertain" as const }),
+            });
+            this.#terminalDiagnostic = true;
+            this.#terminalFrames++;
+            this.#failureLatched = true;
+            if (this.#input.length !== 0) {
+              this.#bytesAfterTerminal = true;
+              this.#latchProtocolFailure();
+            } else this.#abortRequests();
+            return;
+          }
         }
       } catch {
-        this.#lose();
+        this.#latchProtocolFailure();
       }
     });
-    this.#child.stdin.on("error", () => this.#lose());
     this.#child.stdin.write(canonical({ generation, seconds, purpose }));
+  }
+  /** A fresh frozen copy prevents callers from changing validated failure provenance. */
+  get failureDiagnostic(): ProductDiagnosticFrame | undefined {
+    return this.#validatedDiagnostic && Object.freeze({ ...this.#validatedDiagnostic });
+  }
+  #latchProtocolFailure(): void {
+    this.#failureLatched = true;
+    this.#protocolFailure = true;
+    this.#diagnostic = undefined;
+    this.#validatedDiagnostic = undefined;
+    this.#input = Buffer.alloc(0);
+    this.#abortRequests();
+  }
+  #diagnosticSummary(diagnostic: ProductDiagnosticFrame): string {
+    const { diagnostic: stage, substage, cleanup } = diagnostic;
+    return `${stage}${substage ? `/${substage}` : ""}${cleanup ? "; cleanup uncertain" : ""}`;
   }
   request<T = unknown>(op: string, fields: Record<string, unknown> = {}): Promise<T> {
     const result = this.#tail.then(
@@ -137,12 +263,15 @@ export class HostCustody implements CustodyPort {
     );
     return result;
   }
-  #lose(message = "custody unavailable; preserve receipts"): void {
+  #abortRequests(): void {
+    if (this.#lost) return;
     this.#lost = true;
-    this.#readyReject?.(new Error(message));
+    this.#readinessSettled = true;
+    const error = new Error("custody unavailable; preserve receipts");
+    this.#readyReject?.(error);
     this.#readyResolve = undefined;
     this.#readyReject = undefined;
-    this.#pending?.reject(new Error(message));
+    this.#pending?.reject(error);
     this.#pending = undefined;
     this.#child.stdin.end(); // EOF asks the independent owner to settle, never grants destroy authority here.
   }

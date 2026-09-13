@@ -13,20 +13,23 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   admission:
+    if: github.run_attempt == 1
     runs-on: ubuntu-24.04
     outputs:
       candidate: ${{ steps.admit.outputs.candidate }}
     steps:
       - id: admit
-        name: Refuse an invalid dispatch before application effects
+        name: Admit only the sole first-created attempt-one dispatch before application effects
         env:
           CANDIDATE: ${{ inputs.candidate }}
           CONFIRMATION: ${{ inputs.confirmation }}
           REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
@@ -37,9 +40,67 @@ jobs:
           test "$CONFIRMATION" = EXECUTE_PROTECTED_PRODUCT
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
           test "$CANDIDATE" = "$GITHUB_SHA"
-          printf 'candidate=%s\n' "$CANDIDATE" >>"$GITHUB_OUTPUT"
+          node - <<'NODE'
+          process.exitCode = 1;
+          const https = require("node:https"), fs = require("node:fs"), env = process.env;
+          const fail = (message) => { throw new Error(message); };
+          const candidate = env.CANDIDATE, runText = env.GITHUB_RUN_ID ?? "", run = Number(runText);
+          const pageSize = 100, maximumPages = 20, maximumBodyBytes = 2 * 1024 * 1024, rows = [];
+          const get = (page) => new Promise((resolve, reject) => {
+            let settled = false;
+            const settle = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+            const rejectOnce = (message) => settle(reject, new Error(message));
+            const request = https.request({ hostname: "api.github.com", path: `/repos/${env.GITHUB_REPOSITORY}/actions/workflows/insecure-container.yml/runs?event=workflow_dispatch&branch=main&per_page=${pageSize}&page=${page}`, headers: { accept: "application/vnd.github+json", authorization: `Bearer ${env.GITHUB_TOKEN}`, "user-agent": "cogs-protected-product-admission" } }, (response) => {
+              let body = "", bytes = 0, ended = false;
+              response.setEncoding("utf8");
+              response.once("error", () => rejectOnce("actions history response error"));
+              response.once("aborted", () => rejectOnce("actions history response aborted"));
+              response.once("close", () => { if (!ended || response.complete !== true) rejectOnce("actions history response closed early"); });
+              response.on("data", (chunk) => {
+                if (settled) return;
+                bytes += Buffer.byteLength(chunk, "utf8");
+                if (bytes > maximumBodyBytes) {
+                  rejectOnce("actions history response too large");
+                  try { response.destroy(); } catch { /* rejection is already latched */ }
+                  return;
+                }
+                body += chunk;
+              });
+              response.once("end", () => {
+                ended = true;
+                if (response.complete !== true) rejectOnce("actions history response incomplete");
+                else if (response.statusCode !== 200) rejectOnce("actions history unavailable");
+                else settle(resolve, body);
+              });
+            });
+            request.once("error", () => rejectOnce("actions history request error"));
+            request.end();
+          });
+          (async () => {
+            if (!/^[a-f0-9]{40}$/.test(candidate) || !/^[1-9][0-9]*$/.test(runText) || !Number.isSafeInteger(run) || run < 1 || env.GITHUB_RUN_ATTEMPT !== "1") fail("invalid admission inputs");
+            let total;
+            for (let page = 1; page <= maximumPages; page++) {
+              const value = JSON.parse(await get(page));
+              if (!value || Object.getPrototypeOf(value) !== Object.prototype || !Number.isSafeInteger(value.total_count) || value.total_count < 0 || !Array.isArray(value.workflow_runs) || value.workflow_runs.length > pageSize || (total !== undefined && total !== value.total_count)) fail("invalid actions history page");
+              total = value.total_count; rows.push(...value.workflow_runs);
+              if (rows.length === total) break;
+              if (value.workflow_runs.length !== pageSize || page === maximumPages) fail("incomplete actions history");
+            }
+            if (rows.length !== total || total > pageSize * maximumPages) fail("incomplete actions history");
+            const ids = new Set();
+            for (const row of rows) {
+              if (!row || Object.getPrototypeOf(row) !== Object.prototype || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) || typeof row.head_sha !== "string" || !/^[a-f0-9]{40}$/.test(row.head_sha) || row.head_branch !== "main" || row.event !== "workflow_dispatch" || !Number.isSafeInteger(row.run_attempt) || row.run_attempt < 1) fail("malformed actions history row");
+              ids.add(row.id);
+            }
+            const exact = rows.filter((row) => row.head_sha === candidate);
+            if (exact.length !== 1 || exact[0].id !== run || exact[0].run_attempt !== 1) fail("admission is not the sole first attempt");
+            fs.appendFileSync(env.GITHUB_OUTPUT, `candidate=${candidate}\n`, { encoding: "utf8", mode: 0o600 });
+            process.exitCode = 0;
+          })().catch(() => {});
+          NODE
 
   protected-product:
+    if: github.run_attempt == 1 && needs.admission.result == 'success' && needs.admission.outputs.candidate == github.sha
     needs: admission
     name: protected-${{ matrix.profile }}-${{ matrix.authority }}
     runs-on: ubuntu-24.04
@@ -239,13 +300,49 @@ jobs:
           sudo -n env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent "$NODE" --import "$PROTECTED/node_modules/tsx/dist/loader.mjs" "$PROTECTED/dev/product-test/runner.ts" "$PRODUCT_MODE" "$RUNNER_TEMP/cogs-product-restrictions.json" "$CANDIDATE" >"$RUNNER_TEMP/product-receipt.json" || status=$?
           if (( status != 0 )); then
             sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" STATUS="$status" RECEIPT="$RUNNER_TEMP/product-receipt.json" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" /usr/bin/python3 -I -B - <<'PY' || :
-          import hashlib,json,os,stat
-          build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read()
+          import json,os,re,stat
+          build=json.load(open('/var/lib/cogs-product-test/build-receipt.json'))
           receipt=os.environ['RECEIPT']; info=os.lstat(receipt)
           if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>32768: raise SystemExit('unsafe partial receipt')
-          partial=open(receipt,'rb').read()
-          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'build_receipt_sha256':'sha256:'+hashlib.sha256(build).hexdigest(),'diagnostic':'protected runner failed','partial_output_sha256':'sha256:'+hashlib.sha256(partial).hexdigest()}
-          data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          raw=open(receipt,'rb').read()
+          operations={'authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'}
+          diagnostics={'constructor','helper','helper-finalize'}|operations
+          provenance={'final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment','persistence'}
+          probe_keys={'purpose','generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed','start_code','running','ssh','sftp'}
+          failure_keys={'version','generation','diagnostic','pass_authority','probe_authority'}
+          canonical=lambda value:(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()
+          def object_line(line):
+              value=json.loads(line,object_pairs_hook=lambda pairs: pairs if len({k for k,_ in pairs})==len(pairs) else (_ for _ in ()).throw(ValueError()))
+              if type(value) is not list: raise ValueError()
+              value=dict(value)
+              if canonical(value)!=line+b'\n': raise ValueError()
+              return value
+          def probe(value):
+              if set(value)!=probe_keys or value['purpose']!='capability-probe': raise ValueError()
+              if not all(isinstance(value[k],str) for k in ('generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed')): raise ValueError()
+              if not re.fullmatch(r'[a-f0-9]{32}',value['generation']) or value['retired_generation']!=value['generation'] or not re.fullmatch(r'[a-f0-9]{64}',value['container_id']): raise ValueError()
+              if value['removed'] not in {'CHOWN','DAC_OVERRIDE','FOWNER','SETGID','SETUID','KILL','NET_BIND_SERVICE','SYS_CHROOT'} or type(value['start_code']) is not int or type(value['running']) is not bool or (value['ssh'] is not None and type(value['ssh']) is not bool) or (value['sftp'] is not None and type(value['sftp']) is not bool): raise ValueError()
+              if any(value[k]!=build[k] for k in ('candidate','tree','source_inventory','run_id','run_attempt','skills')) or value['candidate']!=os.environ['CANDIDATE'] or value['profile_case']!=os.environ['PROFILE']: raise ValueError()
+              if value['build_receipt_sha256']!='sha256:'+__import__('hashlib').sha256(canonical(build)).hexdigest(): raise ValueError()
+          diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=True
+          try:
+              if not raw.endswith(b'\n') or not raw or any(not line for line in raw.splitlines()): raise ValueError()
+              rows=[object_line(line) for line in raw.splitlines()]
+              final=rows[-1]
+              if set(final)-{'substage','cleanup'}!=failure_keys or final.get('version')!='cogs.product-failure-diagnostic/v1' or final.get('diagnostic') not in diagnostics or final.get('pass_authority') is not False or final.get('probe_authority') is not False or not re.fullmatch(r'[a-f0-9]{32}',final.get('generation','')): raise ValueError()
+              if ('cleanup' in final and final['cleanup']!='uncertain') or (final.get('diagnostic')=='provenance' and final.get('substage') not in provenance) or (final.get('diagnostic')!='provenance' and 'substage' in final): raise ValueError()
+              if os.environ['AUTHORITY']=='candidate-pass' and len(rows)!=1: raise ValueError()
+              if os.environ['AUTHORITY']=='probe-only':
+                  for row in rows[:-1]: probe(row)
+              elif os.environ['AUTHORITY']!='candidate-pass': raise ValueError()
+              diagnostic=final['diagnostic']; generation=final['generation']; substage=final.get('substage'); cleanup_uncertain=final.get('cleanup')=='uncertain'
+          except (AttributeError,KeyError,TypeError,ValueError,json.JSONDecodeError):
+              # Hostile, trailing, duplicate, or mixed output is never partial success.
+              diagnostic='constructor'; generation=None; substage=None; cleanup_uncertain=True
+          value={'version':'cogs.product-failure-receipt/v1','candidate':os.environ['CANDIDATE'],'profile':os.environ['PROFILE'],'authority':os.environ['AUTHORITY'],'status':int(os.environ['STATUS']),'run_id':build['run_id'],'run_attempt':build['run_attempt'],'diagnostic':diagnostic,'cleanup_uncertain':cleanup_uncertain,'pass_authority':False,'probe_authority':False}
+          if generation is not None: value['generation']=generation
+          if substage is not None: value['substage']=substage
+          data=canonical(value)
           if len(data)>2048: raise SystemExit('oversized failure receipt')
           fd=os.open(receipt,os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW)
           try:
@@ -261,9 +358,16 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env CANDIDATE="$CANDIDATE" PRODUCT_PROFILE="$PRODUCT_PROFILE" PRODUCT_AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RUNNER_UID="$(id -u)" RUNNER_GID="$(id -g)" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
-          import hashlib,json,os,re,stat
+          import hashlib,json,os,re,stat,sys
           raw=open(os.environ['RECEIPT'],'rb').read(); value=json.loads(raw)
-          if len(raw)>2048 or raw!=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode() or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt','skills'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
+          canonical=lambda item:(json.dumps(item,sort_keys=True,separators=(',',':'))+'\n').encode()
+          if value.get('version')=='cogs.product-failure-receipt/v1':
+              allowed={'version','candidate','profile','authority','status','run_id','run_attempt','diagnostic','cleanup_uncertain','pass_authority','probe_authority','generation','substage'}
+              required=allowed-{'generation','substage'}
+              if len(raw)>2048 or raw!=canonical(value) or not required<=set(value)<=allowed or value['candidate']!=os.environ['CANDIDATE'] or value['profile']!=os.environ['PRODUCT_PROFILE'] or value['authority']!='candidate-pass' or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or value['pass_authority'] is not False or value['probe_authority'] is not False or type(value['cleanup_uncertain']) is not bool: raise SystemExit('FAIL: invalid product failure receipt')
+              evidence={'version':'cogs.product-failure-inventory/v1','candidate':value['candidate'],'profile':value['profile'],'authority':value['authority'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'generation':value.get('generation'),'diagnostic':value['diagnostic'],'cleanup_uncertain':value['cleanup_uncertain'],'pass_authority':False,'probe_authority':False,'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+              open(os.environ['EVIDENCE'],'xb').write(canonical(evidence)); sys.exit(0)
+          if len(raw)>2048 or raw!=canonical(value) or set(value)!={'version','generation','candidate','tree','source_inventory','run_id','run_attempt','skills'} or value['version']!='cogs.product-pass-receipt/v1' or value['candidate']!=os.environ['CANDIDATE'] or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or not re.fullmatch(r'[a-f0-9]{32}',value['generation']): raise SystemExit('FAIL: invalid product pass receipt')
           parent='/var/lib/cogs-product-test'; source='protected-'+value['candidate']; evidence='build-receipt.json'; lock=value['generation']+'.lock'
           source_info=os.stat(parent+'/'+source,follow_symlinks=False)
           if not stat.S_ISDIR(source_info.st_mode) or source_info.st_uid!=0 or stat.S_IMODE(source_info.st_mode)!=0o700: raise SystemExit('FAIL: unsafe protected source')
@@ -318,9 +422,17 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env CANDIDATE="$CANDIDATE" PROFILE="$PRODUCT_PROFILE" AUTHORITY="$PRODUCT_AUTHORITY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RECEIPT="$RUNNER_TEMP/product-receipt.json" EVIDENCE="$RUNNER_TEMP/product-evidence.json" /usr/bin/python3 -I -B - <<'PY'
-          import hashlib,json,os,re
-          raw=open(os.environ['RECEIPT'],'rb').read(); rows=[json.loads(line) for line in raw.splitlines()]
+          import hashlib,json,os,re,sys
+          raw=open(os.environ['RECEIPT'],'rb').read()
+          canonical=lambda item:(json.dumps(item,sort_keys=True,separators=(',',':'))+'\n').encode()
+          try: rows=[json.loads(line) for line in raw.splitlines()]
+          except json.JSONDecodeError: rows=[]
           build=open('/var/lib/cogs-product-test/build-receipt.json','rb').read(); bound=json.loads(build)
+          if len(rows)==1 and rows[0].get('version')=='cogs.product-failure-receipt/v1':
+              value=rows[0]; allowed={'version','candidate','profile','authority','status','run_id','run_attempt','diagnostic','cleanup_uncertain','pass_authority','probe_authority','generation','substage'}; required=allowed-{'generation','substage'}
+              if len(raw)>2048 or raw!=canonical(value) or not required<=set(value)<=allowed or value['candidate']!=os.environ['CANDIDATE'] or value['profile']!=os.environ['PROFILE'] or value['authority']!='probe-only' or value['run_id']!=os.environ['GITHUB_RUN_ID'] or value['run_attempt']!=os.environ['GITHUB_RUN_ATTEMPT'] or value['pass_authority'] is not False or value['probe_authority'] is not False or type(value['cleanup_uncertain']) is not bool: raise SystemExit('FAIL: invalid product failure receipt')
+              evidence={'version':'cogs.product-failure-inventory/v1','candidate':value['candidate'],'profile':value['profile'],'authority':value['authority'],'run_id':value['run_id'],'run_attempt':value['run_attempt'],'generation':value.get('generation'),'diagnostic':value['diagnostic'],'cleanup_uncertain':value['cleanup_uncertain'],'pass_authority':False,'probe_authority':False,'receipt_digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+              open(os.environ['EVIDENCE'],'xb').write(canonical(evidence)); sys.exit(0)
           profile=os.environ['PROFILE']; skills='nonempty' if profile=='nonempty' else 'empty'
           required={'purpose','generation','retired_generation','candidate','tree','source_inventory','run_id','run_attempt','skills','profile_case','build_receipt_sha256','container_id','removed','start_code','running','ssh','sftp'}
           capabilities={'CHOWN','DAC_OVERRIDE','FOWNER','SETGID','SETUID','KILL','NET_BIND_SERVICE','SYS_CHROOT'}

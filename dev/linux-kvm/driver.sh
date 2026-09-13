@@ -494,10 +494,23 @@ def snapshot():
           for item in addresses if item['ifname']==tap]
     return [rules,link,addr]
 def save(value):
-    temporary=record.with_suffix('.pending')
-    temporary.write_text(json.dumps(value))
-    custody=state.stat(); os.chown(temporary,custody.st_uid,custody.st_gid)
-    temporary.replace(record)
+    # sudo is an effect adapter, not the journal producer: preserve the exact
+    # state owner and mode regardless of root's or a caller's umask.
+    custody=state.stat(); parent=os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    temporary='.network.owner.pending'; data=json.dumps(value,separators=(',',':')).encode()
+    try:
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
+        try:
+            os.fchown(fd,custody.st_uid,custody.st_gid); os.fchmod(fd,0o600)
+            view=memoryview(data)
+            while view:
+                written=os.write(fd,view)
+                if written<=0: raise RuntimeError('short network journal write')
+                view=view[written:]
+            os.fsync(fd)
+        finally: os.close(fd)
+        os.replace(temporary,record.name,src_dir_fd=parent,dst_dir_fd=parent); os.fsync(parent)
+    finally: os.close(parent)
 def effect(value,do,undo):
     before=snapshot()
     if before != value['current']: raise RuntimeError('network changed before effect')
@@ -681,13 +694,16 @@ runcmd:
   - [bash, -lc, 'mountpoint -q /opt/cogs-git && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)" && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"']
   - [bash, -lc, 'test ! -e /usr/bin/git && test ! -L /usr/bin/git && ln -s /opt/cogs-git/bin/git /usr/bin/git']
   - [chown, -h, root:root, /usr/bin/git]
-  - [bash, -lc, 'test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"']
+  - [bash, -lc, 'test -L /usr/bin/git && test "\$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "\$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"']
   - [mkdir, -p, /shared/skills, /user/skills]
   - [chown, root:root, /shared/skills, /user/skills]
   - [chmod, '0700', /shared/skills, /user/skills]
   - [bash, -lc, 'for skill_root in /shared/skills /user/skills; do test -d "\$skill_root" && test ! -L "\$skill_root" && test "\$(realpath -e "\$skill_root")" = "\$skill_root" && test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"; done']
   - [systemctl, restart, ssh]
 EOF
+  # These substitutions are guest checks, not host-time heredoc expansion.
+  grep -F '$(readlink /usr/bin/git)' "$state/user-data" >/dev/null
+  grep -F '$(stat -c "%u:%g:%F" /usr/bin/git)' "$state/user-data" >/dev/null
   cat > "$state/meta-data" <<EOF
 instance-id: cogs-kvm-$(sha256sum "$state/control/host_ed25519_key.pub" | cut -c1-16)
 local-hostname: cogs-kvm-guest

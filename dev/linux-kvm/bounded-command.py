@@ -269,7 +269,9 @@ GIT_PROBE = r'''set -euo pipefail
     git notes --ref=cogs show "$commit" >/dev/null
     git fsck --no-progress >/dev/null'''
 PROBES = {
-    "ready": "true",
+    # SSH authentication alone races cloud-init. This single command waits for
+    # cloud-init's final state and the durable boot-finished marker.
+    "ready": "cloud-init status --wait >/dev/null && test -f /var/lib/cloud/instance/boot-finished",
     "boot-id": "cat /proc/sys/kernel/random/boot_id",
     "kernel": "uname -r",
     "root": 'test "$(id -u)" = 0',
@@ -302,7 +304,11 @@ def ssh_argv(state, command):
 def guest(state, name, port, deadline=None):
     command = f'timeout 2 bash -c "</dev/tcp/192.0.2.1/{port}"' if name == "proxy-connect" else PROBES[name]
     cap = 37 if name == "boot-id" else 65 if name == "kernel" else 16384
-    code, raw = bounded(ssh_argv(state, command), cap, 15, deadline)
+    # Readiness has one dispatched authenticated guest command. It alone gets
+    # the remaining absolute readiness window; all other guest commands retain
+    # the ordinary 15-second cap.
+    seconds = max(0, deadline - time.monotonic()) if name == "ready" and deadline is not None else 15
+    code, raw = bounded(ssh_argv(state, command), cap, seconds, deadline)
     if code != 0:
         # 255, signals, missing remote exit, even normal failed verification:
         # never retry/reuse a possibly still-running remote invocation.
@@ -313,7 +319,9 @@ def guest(state, name, port, deadline=None):
 
 
 def host_key(state, deadline=None):
-    code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+    # Keep two seconds inside the five-second outer bound: a keyscan timeout
+    # cannot consume the retry scheduler's complete deadline.
+    code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
     if code == 1 and not raw:
         return False  # key exchange only: no guest command was dispatched
     expected = read_control(state / "known_hosts", 4096)
@@ -467,6 +475,7 @@ def require_local_execution(generation):
 
 
 def main():
+    name = None
     def cancel(signum, frame):
         # Latch, do not throw inside Popen/pidfd capture: that would lose custody.
         global cancelled
@@ -486,8 +495,13 @@ def main():
             sys.stdout.buffer.flush()
         return 0
     except (Exception, KeyboardInterrupt) as error:
-        # Never reflect guest output, paths, argv, or credentials in diagnostics.
-        print("FAIL: bounded KVM command; generation must not be reused", file=sys.stderr)
+        # Fixed command/reason grammar only: never reflect output, paths, argv,
+        # keys, or exception text. Nonzero and uncertain outcomes retain custody.
+        command = name if name in IDS else "admission"
+        reason = "local-retirement-uncertain" if isinstance(error, RetirementUncertain) else (
+            "readiness-host-key" if command == "readiness" else "host-key" if command == "host-key" else "fixed-command"
+        )
+        print(f"FAIL: kvm-{command}-{reason}; generation must not be reused", file=sys.stderr)
         return 2 if isinstance(error, RetirementUncertain) else 1
 
 

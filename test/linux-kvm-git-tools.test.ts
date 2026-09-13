@@ -605,6 +605,10 @@ function serialContract(text: string) {
   assert.equal(text.match(/serial\.log/gu)?.length ?? 0, 0);
   assert.ok(start.indexOf('rm -f "$state/qmp.sock"') < start.indexOf("  nohup "));
   assert.match(start, /qemu_owner capture[\s\S]*bounded_guest readiness/u);
+  assert.match(text, /test "\\\$\(readlink \/usr\/bin\/git\)"/u);
+  assert.match(text, /test "\\\$\(stat -c/u);
+  assert.match(text, /grep -F '\$\(readlink \/usr\/bin\/git\)' "\$state\/user-data"/u);
+  assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
   assert.doesNotMatch(routes, /if ! owner_stage|owner_stage [^;\n]+ [a-z_]+/u);
@@ -776,6 +780,22 @@ reset(); invoke(); action='remove'; no_effect=True; fails()
 assert json.loads(record.read_text())['failed'] # command success without inverse is not cleanup
 reset(); world.append(['cgtap']); fails(); assert not calls # colliding names are never adopted
 record.unlink(); action='remove'; fails(); assert not calls
+`,
+  );
+});
+
+test("network journal remains generation-owner 0600 under umask 022 and commits atomically", async () => {
+  await ownerTest(
+    "network",
+    `
+old=os.umask(0o022)
+try:
+    save({'phase':'never','steps':[]})
+finally:
+    os.umask(old)
+info=record.stat()
+assert stat.S_IMODE(info.st_mode)==0o600 and info.st_uid==state.stat().st_uid
+assert '.network.owner.pending' not in os.listdir(state)
 `,
   );
 });
@@ -1649,6 +1669,13 @@ with patch.object(h,'bounded',bounded), patch.object(h,'read_control',lambda *ar
         rejects(lambda:h.execute(name,state,token,port))
     assert len(calls)==before
 assert any(cap==37 for _,cap,_,_ in calls) and any(cap==65 for _,cap,_,_ in calls)
+# The sole authenticated readiness command gets the remaining absolute 120s
+# window, rather than a second ordinary 15s command budget.
+ready_calls=[]
+with patch.object(h.time,'monotonic',lambda:10), patch.object(h,'bounded',lambda *args: (ready_calls.append(args) or (0,b''))):
+    h.guest(state,'ready','18080',120)
+assert ready_calls[0][0][-1]==h.PROBES['ready'] and ready_calls[0][2:]==(110,120)
+assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/instance/boot-finished' in h.PROBES['ready']
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
@@ -1667,7 +1694,25 @@ with patch.object(h,'read_control',return_value=key):
             if raw==key: assert h.host_key(state)
             elif code==1: assert h.host_key(state) is False
             else: rejects(lambda:h.host_key(state))
+# The inner scan cannot consume the outer retry deadline; only clean exit 1
+# with no output is retryable, and every other outcome retains the generation.
+with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
+    assert h.host_key(state,5) is False
+    assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
+    assert bounded.call_args.args[2:]==(5,5)
+for code,raw in ((1,b'x'),(2,b''),(-1,b'')):
+    with patch.object(h,'bounded',return_value=(code,raw)): rejects(lambda:h.host_key(state,5))
 `);
+});
+
+test("network journal uses exclusive no-follow 0600 atomic producer writes", async () => {
+  const owner = shellFunction(await readFile(driver, "utf8"), "network_owner");
+  assert.match(owner, /os\.O_CREAT\|os\.O_EXCL\|os\.O_NOFOLLOW/u);
+  assert.match(owner, /os\.fchown\(fd,/u);
+  assert.match(owner, /os\.fchmod\(fd,0o600\)/u);
+  assert.match(owner, /while view:/u);
+  assert.match(owner, /os\.fsync\(fd\)/u);
+  assert.match(owner, /os\.replace\([^\n]+src_dir_fd=parent,dst_dir_fd=parent\); os\.fsync\(parent\)/u);
 });
 
 test("QMP bounds raw line/aggregate/message count, trickle deadlines, malformed responses and short writes", async () => {

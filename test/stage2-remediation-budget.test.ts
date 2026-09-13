@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338/ADR0339 retain the five literal tasks and final reserve", () => {
+test("ADR0338/ADR0339/ADR0340 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -21,7 +21,8 @@ assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (395
 assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
 assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
-assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','test/linux-kvm-git-tools.test.ts','test/production-compose.test.ts']
+assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
+assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','test/linux-kvm-git-tools.test.ts','test/production-compose.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
@@ -79,6 +80,25 @@ test("ADR0339 records failed first attempts and its exact post-merge authority",
     "literal product task includes `.github/workflows/kvm-qualification.yml`",
   ])
     assert.ok(adr.includes(phrase), phrase);
+});
+
+test("ADR0340 records the second failed attempts and preserves all execution stops", () => {
+  const adr = readFileSync("docs/adr/0340-row4-second-minimal-correction-batch.md", "utf8");
+  for (const phrase of [
+    "de0c4ba3fec6f7caf51f198f3f5cea22c31f3d50",
+    "34741154464",
+    "34741155639",
+    "non-authoritative",
+    "source and focused review, full and readiness validation, protected PR CI, and merge",
+    "Only after merge it authorizes exactly one fresh, first-created, attempt-one Protected product run and exactly one KVM qualification run",
+    "No effect, full, or readiness execution occurs now",
+    "Same-byte retry and H/G/Q remain denied",
+    "AWS, OpenTofu, SSM, Docker/KVM/network effects remain denied",
+    "caps, all other task caps, source-inventory bounds, and the final-HGQ reserve are unchanged",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  const index = readFileSync("docs/adr/README.md", "utf8");
+  assert.ok(index.includes("[0340](0340-row4-second-minimal-correction-batch.md)"));
 });
 
 test("central checker accepts the current cumulative linear plan", () => {
