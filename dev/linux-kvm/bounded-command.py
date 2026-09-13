@@ -290,7 +290,24 @@ GIT_PROBE = r'''set -euo pipefail
     git notes --ref=cogs add -m note "$commit"
     git notes --ref=cogs show "$commit" >/dev/null
     git fsck --no-progress >/dev/null'''
-READY_WRAPPER = "set -euo pipefail; cloud-init status --wait >/dev/null 2>&1 || exit 41; test -f /var/lib/cloud/instance/boot-finished || exit 42"
+READY_WRAPPER = r'''set -euo pipefail
+exec >/dev/null 2>&1
+cloud-init status --wait || :
+test -f /var/lib/cloud/instance/boot-finished || exit 41
+stage=/var/lib/cogs/campaign-setup.stage
+complete=/var/lib/cogs/campaign-setup.complete
+stage_failure() {
+  test "$(stat -c '%u:%g:%a:%F:%h' "$stage")" = '0:0:600:regular file:1' || exit 42
+  case "$(cat "$stage")" in MOUNT) exit 43;; GIT) exit 44;; SKILLS) exit 45;; SSHD) exit 46;; *) exit 42;; esac
+}
+test -e "$complete" || stage_failure
+test "$(stat -c '%u:%g:%a:%F:%h' "$complete")" = '0:0:400:regular file:1' || exit 47
+test "$(cat "$complete")" = COMPLETE || exit 47
+mountpoint -q /workspace && findmnt -rn -o OPTIONS /workspace | grep -Eq '(^|,)nosuid(,|$)' && findmnt -rn -o OPTIONS /workspace | grep -Eq '(^|,)nodev(,|$)' || exit 48
+mountpoint -q /opt/cogs-git && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)ro(,|$)' && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)nosuid(,|$)' && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)nodev(,|$)' || exit 48
+test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "$(stat -c '%u:%g:%F' /usr/bin/git)" = '0:0:symbolic link' || exit 49
+for skill_root in /shared/skills /user/skills; do test -d "$skill_root" && test ! -L "$skill_root" && test "$(realpath -e "$skill_root")" = "$skill_root" && test "$(stat -c '%u:%g:%a:%F' "$skill_root")" = '0:0:700:directory' || exit 50; done
+systemctl is-active --quiet ssh || exit 51'''
 PROBES = {
     # SSH authentication alone races cloud-init. One dispatched wrapper maps
     # only fixed remote exits and never emits guest output.
@@ -352,8 +369,8 @@ def guest(state, name, port, deadline=None):
     if name == "ready":
         if raw: raise ReadyFailure("byte")
         if code == 0: return None
-        if code == 41: raise ReadyFailure("cloud-init-nonzero-degraded")
-        if code == 42: raise ReadyFailure("marker-missing")
+        phases = {41: "boot-finished", 42: "setup-marker", 43: "setup-mount", 44: "setup-git", 45: "setup-skills", 46: "setup-sshd", 47: "setup-completion", 48: "setup-mount-check", 49: "setup-git-check", 50: "setup-skills-check", 51: "setup-sshd-check"}
+        if code in phases: raise ReadyFailure(phases[code])
         if code == 255: raise ReadyFailure("authenticated-ssh-transport")
         raise ReadyFailure("malformed")
     if code != 0:
