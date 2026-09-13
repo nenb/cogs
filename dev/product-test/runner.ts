@@ -224,8 +224,8 @@ export function launchDocument(shared: string, user: string, pin = `SHA256:${"A"
     limits: {
       cpu: 2,
       memory_bytes: 4294967296,
-      tool_timeout_seconds: 5,
-      turn_timeout_seconds: 65,
+      tool_timeout_seconds: 10,
+      turn_timeout_seconds: 70,
       max_tool_output_bytes: 16384,
     },
   });
@@ -815,10 +815,8 @@ export class ProductToolResults {
       );
       check(flags.every((key) => result[key] === false) && zeros.every((key) => result[key] === 0));
       check(Number.isSafeInteger(result.elapsedMs) && result.elapsedMs >= 0 && result.elapsedMs <= 10000);
-      for (const key of ["stdout", "stderr"]) {
-        check(typeof result[key] === "string" && Buffer.byteLength(result[key]) <= 4096);
-        check(result[`${key}Bytes`] === Buffer.byteLength(result[key]));
-      }
+      check(result.stdout === "proxy-controls-passed\n" && result.stderr === "");
+      check(result.stdoutBytes === 22 && result.stderrBytes === 0);
       check(this.results.length === 0);
       this.results.push(hash(canonical(message)));
       return projected;
@@ -886,11 +884,47 @@ export function admitScenarioValue(value: unknown): void {
 }
 
 async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<void> {
-  check(pi.projectedEntry);
+  check(pi.projectedEntry && pi.frontier);
+  // This pin is independent of the fragment endpoint and excludes the JSONL header.
+  const frontier = await pi.frontier();
+  check(
+    Number.isSafeInteger(frontier.entries) &&
+      frontier.entries >= 0 &&
+      (frontier.entries === 0 ? frontier.lastEntryId === null : typeof frontier.lastEntryId === "string"),
+  );
   let cursor: string | undefined, after: string | undefined;
-  let held: { entryId: string; bytes: Buffer } | undefined;
+  let held: { entryId: string; bytes: Buffer; fragments: number } | undefined;
   let offset = 0,
-    total = 0;
+    total = 0,
+    complete = 0;
+  let oversizedFragmented = false;
+  const keys = (value: object) => Object.keys(value).sort().join(",");
+  const validCursor = (value: unknown) =>
+    typeof value === "string" && value.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+  const verifyTail = async (tail: string, initial?: Buffer): Promise<void> => {
+    let expected = initial;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`http://127.0.0.1:18081/v1/entry-fragments?cursor=${encodeURIComponent(tail)}`, {
+        headers: { authorization: `Bearer ${bearer}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(2000),
+      });
+      const body = Buffer.from(await response.arrayBuffer());
+      check(response.status === 200 && body.length <= 131072);
+      const replay = JSON.parse(body.toString("utf8"));
+      check(
+        keys(replay) === "fragments,projection,snapshotFinal,tail,version" &&
+          replay.version === "cogs.entry-fragments/v1" &&
+          replay.projection === "cogs.permitted-json/v1" &&
+          Array.isArray(replay.fragments) &&
+          replay.fragments.length === 0 &&
+          replay.snapshotFinal === true &&
+          replay.tail === tail,
+      );
+      if (expected) check(body.equals(expected));
+      expected = body;
+    }
+  };
   for (let pages = 0; pages < 128; pages++) {
     const path = `/v1/entry-fragments${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
     const response = await fetch(`http://127.0.0.1:18081${path}`, {
@@ -914,17 +948,56 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
       await reader.cancel();
       reader.releaseLock();
     }
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const body = Buffer.concat(chunks);
+    const value: unknown = JSON.parse(body.toString("utf8"));
+    check(value !== null && typeof value === "object" && !Array.isArray(value));
+    const envelope = value as Record<string, unknown>;
     check(
-      value.version === "cogs.entry-fragments/v1" &&
-        value.projection === "cogs.permitted-json/v1" &&
-        value.fragments.length <= 1,
+      envelope.version === "cogs.entry-fragments/v1" &&
+        envelope.projection === "cogs.permitted-json/v1" &&
+        Array.isArray(envelope.fragments) &&
+        envelope.fragments.length <= 1 &&
+        typeof envelope.snapshotFinal === "boolean",
     );
-    for (const fragment of value.fragments) {
-      held ??= await pi.projectedEntry({ after });
+    if (envelope.snapshotFinal) {
+      check(keys(envelope) === "fragments,projection,snapshotFinal,tail,version");
+      check(validCursor(envelope.tail));
+    } else {
+      check(keys(envelope) === "fragments,next,projection,snapshotFinal,version");
+      check(validCursor(envelope.next));
+    }
+    // A nonempty history starts with an empty pin handshake; no entry may be
+    // accepted before it. Empty histories have the corresponding terminal tail.
+    if (pages === 0) {
+      check(envelope.fragments.length === 0);
+      check(envelope.snapshotFinal === (frontier.entries === 0));
+      if (frontier.entries === 0) {
+        await verifyTail(envelope.tail as string, body);
+        throw new Error("expected nonempty product scenario");
+      }
+      cursor = envelope.next as string;
+      continue;
+    }
+    check(envelope.fragments.length === 1);
+    for (const rawFragment of envelope.fragments) {
+      check(rawFragment !== null && typeof rawFragment === "object" && !Array.isArray(rawFragment));
+      const fragment = rawFragment as Record<string, unknown>;
+      check(keys(fragment) === "data,encoding,entryId,final,offset,totalBytes");
+      check(
+        typeof fragment.entryId === "string" &&
+          typeof fragment.offset === "number" &&
+          Number.isSafeInteger(fragment.offset) &&
+          fragment.offset >= 0 &&
+          typeof fragment.totalBytes === "number" &&
+          Number.isSafeInteger(fragment.totalBytes) &&
+          fragment.totalBytes > 0 &&
+          typeof fragment.data === "string" &&
+          typeof fragment.final === "boolean",
+      );
+      held ??= { ...(await pi.projectedEntry({ after })), fragments: 0 };
       const data = Buffer.from(fragment.data, "base64");
       total += data.length;
-      check(total <= 2 * 1024 * 1024 && data.length > 0);
+      check(total <= 2 * 1024 * 1024 && data.length > 0 && data.length <= 49_152);
       check(
         fragment.encoding === "base64" &&
           data.toString("base64") === fragment.data &&
@@ -933,20 +1006,27 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
           fragment.totalBytes === held.bytes.length,
       );
       check(data.equals(held.bytes.subarray(offset, offset + data.length)));
+      held.fragments++;
       offset += data.length;
+      check(offset <= held.bytes.length && fragment.final === (offset === held.bytes.length));
       if (fragment.final) {
         check(offset === held.bytes.length);
+        oversizedFragmented ||= held.bytes.length > 49_152 && held.fragments > 1;
         after = held.entryId;
+        complete++;
         held = undefined;
         offset = 0;
       }
     }
-    if (value.snapshotFinal) {
-      check(!held && after !== undefined);
+    if (envelope.snapshotFinal) {
+      check(!held && complete === frontier.entries && after === frontier.lastEntryId);
+      check(oversizedFragmented);
+      await verifyTail(envelope.tail as string);
       return;
     }
-    check(typeof value.next === "string" && value.next.length <= 2048 && value.next !== cursor);
-    cursor = value.next;
+    const next = envelope.next as string;
+    check(next !== cursor);
+    cursor = next;
   }
   throw new Error("fragment bound crossed");
 }
@@ -954,240 +1034,261 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
 /** Candidate entry is callable only after the inert built-in gate authenticates this PID. */
 export async function workerMain(): Promise<void> {
   gate("ping");
-  const heartbeat = setInterval(() => {
-    try {
-      gate("ping");
-    } catch {
-      process.exit(74);
-    }
-  }, 1000);
-  const runtime = parseRuntimeConfigBytes(await readFile("/etc/cogs/runtime.json"));
-  const launch = validateLaunchConfig(JSON.parse(await readFile("/etc/cogs/launch.json", "utf8")));
-  admitProfile(runtime, launch);
-  const synthetic = await syntheticPorts(launch);
-  let upstream = 0,
-    traces = 0,
-    metrics = 0,
-    audit = 0;
-  const exports: Array<{ path: string; body: unknown }> = [];
-  const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
-  const upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
-    upstream++;
-    upstreamRequests.push({
-      method: req.method ?? "",
-      path: req.url ?? "",
-      credential: req.headers.authorization === "Bearer synthetic-upstream-credential",
-    });
-    if (
-      req.method !== "GET" ||
-      req.url !== "/credential" ||
-      req.headers.authorization !== "Bearer synthetic-upstream-credential" ||
-      upstream > 1
-    ) {
-      res.writeHead(403).end();
-      return;
-    }
-    res.writeHead(200, { "content-type": "text/plain" }).end("cogs-local-upstream");
-  });
-  const collector = httpsServer(
-    { cert: await material("telemetry.crt"), key: await material("telemetry.key") },
-    (req, res) => {
-      if (req.method !== "POST" || !["/v1/traces", "/v1/metrics", "/v1/logs"].includes(req.url ?? "")) {
-        res.writeHead(404).end();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let upstreamServer: ReturnType<typeof httpsServer> | undefined;
+  let collector: ReturnType<typeof httpsServer> | undefined;
+  let worker: Awaited<ReturnType<typeof startProductionWorker>> | undefined;
+  let streamAbort: AbortController | undefined;
+  let stream: Promise<void> | undefined;
+  let completed = false;
+  let cleanupFailed = false;
+  const closeServer = async (server: ReturnType<typeof httpsServer> | undefined): Promise<void> => {
+    if (!server?.listening) return;
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  };
+  try {
+    // Own all partial startup acquisitions before arming timers or listeners.
+    heartbeat = setInterval(() => {
+      try {
+        gate("ping");
+      } catch {
+        process.exit(74);
+      }
+    }, 1000);
+    const runtime = parseRuntimeConfigBytes(await readFile("/etc/cogs/runtime.json"));
+    const launch = validateLaunchConfig(JSON.parse(await readFile("/etc/cogs/launch.json", "utf8")));
+    admitProfile(runtime, launch);
+    const synthetic = await syntheticPorts(launch);
+    let upstream = 0,
+      traces = 0,
+      metrics = 0,
+      audit = 0;
+    const exports: Array<{ path: string; body: unknown }> = [];
+    const upstreamRequests: Array<{ method: string; path: string; credential: boolean }> = [];
+    upstreamServer = httpsServer({ cert: synthetic.certificate, key: synthetic.privateKey }, (req, res) => {
+      upstream++;
+      upstreamRequests.push({
+        method: req.method ?? "",
+        path: req.url ?? "",
+        credential: req.headers.authorization === "Bearer synthetic-upstream-credential",
+      });
+      if (
+        req.method !== "GET" ||
+        req.url !== "/credential" ||
+        req.headers.authorization !== "Bearer synthetic-upstream-credential" ||
+        upstream > 1
+      ) {
+        res.writeHead(403).end();
         return;
       }
-      let bytes = 0;
-      const chunks: Buffer[] = [];
-      req.on("data", (b: Buffer) => {
-        bytes += b.length;
-        if (bytes <= 1024 * 1024) chunks.push(b);
-        if (bytes > 1024 * 1024) req.destroy();
-      });
-      req.on("end", () => {
-        try {
-          check(bytes > 0 && bytes <= 1024 * 1024 && exports.length < 128);
-          exports.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch {
-          res.writeHead(400).end();
+      res.writeHead(200, { "content-type": "text/plain" }).end("cogs-local-upstream");
+    });
+    collector = httpsServer(
+      { cert: await material("telemetry.crt"), key: await material("telemetry.key") },
+      (req, res) => {
+        if (req.method !== "POST" || !["/v1/traces", "/v1/metrics", "/v1/logs"].includes(req.url ?? "")) {
+          res.writeHead(404).end();
           return;
         }
-        if (req.url === "/v1/traces") traces++;
-        if (req.url === "/v1/metrics") metrics++;
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+        let bytes = 0;
+        const chunks: Buffer[] = [];
+        req.on("data", (b: Buffer) => {
+          bytes += b.length;
+          if (bytes <= 1024 * 1024) chunks.push(b);
+          if (bytes > 1024 * 1024) req.destroy();
+        });
+        req.on("end", () => {
+          try {
+            check(bytes > 0 && bytes <= 1024 * 1024 && exports.length < 128);
+            exports.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+          } catch {
+            res.writeHead(400).end();
+            return;
+          }
+          if (req.url === "/v1/traces") traces++;
+          if (req.url === "/v1/metrics") metrics++;
+          res.writeHead(200, { "content-type": "application/json" }).end("{}");
+        });
+      },
+    );
+    for (const [server, port] of [
+      [upstreamServer, 18443],
+      [collector, 18444],
+    ] as const) {
+      server.requestTimeout = 2000;
+      server.headersTimeout = 2000;
+      server.maxConnections = 8;
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", resolve);
       });
-    },
-  );
-  for (const [server, port] of [
-    [upstreamServer, 18443],
-    [collector, 18444],
-  ] as const) {
-    server.requestTimeout = 2000;
-    server.headersTimeout = 2000;
-    server.maxConnections = 8;
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, "127.0.0.1", resolve);
-    });
-  }
-  let pi: CogsPiSessionPorts | undefined, api: ApiServer | undefined;
-  let omitted = false,
-    settled = 0,
-    shutdown = false,
-    streamFailed = false;
-  const counters = new RestrictionCounters();
-  const toolResults = new ProductToolResults();
-  const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
-  let exported: unknown;
-  let auditTimer: ReturnType<typeof setInterval> | undefined;
-  let egressHandle: CogsEgressRuntimeManager | undefined;
-  let telemetry: CogsWorkerTelemetrySink | undefined;
-  const worker = await startProductionWorker({
-    seams: {
-      createIdentity: () => synthetic.identity,
-      createTelemetry: (config) =>
-        (telemetry = createCogsWorkerTelemetrySink({
-          mode: "otlp",
-          tracesEndpoint: config.otlp.traces_endpoint,
-          metricsEndpoint: config.otlp.metrics_endpoint,
-        })),
-      createModelStore: () => synthetic.model,
-      createEgress: async (options) => {
-        const egress = await startCogsEgressRuntimeManager({
-          ...options,
-          pkiSource: synthetic.pki,
-          revocation: synthetic.revocation,
-        });
-        const handle = egress;
-        egressHandle = handle;
-        auditTimer = setInterval(() => {
-          audit = Math.max(audit, handle.auditRecords?.(128).length ?? 0);
-        }, 50);
-        return egress;
-      },
-      createPi: async (options) => {
-        pi = await createAuthenticatedCogsPiSession({
-          ...options,
-          streamFn: deterministicStream(),
-          historyAdmission: (entry) => {
-            gate("persist", { entry: toolResults.admit(entry) });
-          },
-        });
-        return pi;
-      },
-      createApi: (options) => {
-        const created = createApiServer(options);
-        api = registerCloseOwner(
-          Object.freeze({
-            ...created,
-            publish: (event: Parameters<ApiServer["publish"]>[0]) => {
-              try {
-                counters.admit("event");
-                gate("event", {
-                  event: {
-                    kind: event.kind,
-                    correlation_id: event.correlation_id,
-                    request_id: event.request_id ?? null,
-                  },
-                });
-                return created.publish(event);
-              } catch {
-                streamFailed = true;
-                return false;
-              }
-            },
-          }),
-          () => beginRegisteredClose(created),
-        );
-        return api;
-      },
-    },
-  });
-  const bearer = await readFile(runtime.paths.api_bearer, "utf8");
-  const headers = Promise.withResolvers<void>();
-  const streamAbort = new AbortController();
-  const client = createApiClient({
-    port: 18081,
-    token: bearer,
-    timeoutMs: 30000,
-    maxBytes: 1024 * 1024,
-    seams: Object.freeze({
-      randomBytes: Object.freeze(randomBytes.bind(undefined)),
-      fetch: Object.freeze<typeof fetch>(async (input, init) => {
-        check(String(input).startsWith("http://127.0.0.1:18081/"));
-        const response = await fetch(input, init);
-        if (new URL(String(input)).pathname === "/v1/events") {
-          check(response.status === 200);
-          counters.headers = true;
-          gate("headers");
-          headers.resolve();
-        }
-        return response;
-      }),
-    }),
-  });
-  const stream = (async () => {
-    try {
-      for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
-        observedEvents.push({
-          kind: event.kind,
-          correlation_id: event.correlation_id,
-          request_id: event.request_id ?? null,
-        });
-        if (event.kind === "run_settled") settled++;
-        if (event.kind === "shutdown_ready") {
-          shutdown = true;
-          const payload = event.payload as Record<string, unknown>;
-          exported = {
-            sensitive: true,
-            bundle: Object.fromEntries(
-              ["bundle", "manifest_sha256", "mode", "file_count", "total_bytes"].map((key) => [key, payload[key]]),
-            ),
-          };
-        }
-        const payload = event.payload as { cogs_transport?: { status?: string } };
-        if (payload?.cogs_transport?.status === "omitted") omitted = true;
-      }
-    } catch {
-      if (!shutdown) streamFailed = true;
-    } finally {
-      if (!shutdown) {
-        streamFailed = true;
-        headers.reject(new Error("SSE failed"));
-      }
     }
-  })();
-  await headers.promise;
-  try {
+    let pi: CogsPiSessionPorts | undefined, api: ApiServer | undefined;
+    let omitted = false,
+      settled = 0,
+      shutdown = false,
+      streamFailed = false,
+      workerSettled = false,
+      workerFailed = false;
+    const counters = new RestrictionCounters();
+    const toolResults = new ProductToolResults();
+    const observedEvents: Array<{ kind: unknown; correlation_id: unknown; request_id: unknown }> = [];
+    let exported: unknown;
+    let egressHandle: CogsEgressRuntimeManager | undefined;
+    let telemetry: CogsWorkerTelemetrySink | undefined;
+    worker = await startProductionWorker({
+      seams: {
+        createIdentity: () => synthetic.identity,
+        createTelemetry: (config) =>
+          (telemetry = createCogsWorkerTelemetrySink({
+            mode: "otlp",
+            tracesEndpoint: config.otlp.traces_endpoint,
+            metricsEndpoint: config.otlp.metrics_endpoint,
+          })),
+        createModelStore: () => synthetic.model,
+        createEgress: async (options) => {
+          const egress = await startCogsEgressRuntimeManager({
+            ...options,
+            pkiSource: synthetic.pki,
+            revocation: synthetic.revocation,
+          });
+          egressHandle = egress;
+          return egress;
+        },
+        createPi: async (options) => {
+          pi = await createAuthenticatedCogsPiSession({
+            ...options,
+            streamFn: deterministicStream(),
+            historyAdmission: (entry) => {
+              gate("persist", { entry: toolResults.admit(entry) });
+            },
+          });
+          return pi;
+        },
+        createApi: (options) => {
+          const created = createApiServer(options);
+          api = registerCloseOwner(
+            Object.freeze({
+              ...created,
+              publish: (event: Parameters<ApiServer["publish"]>[0]) => {
+                try {
+                  counters.admit("event");
+                  gate("event", {
+                    event: {
+                      kind: event.kind,
+                      correlation_id: event.correlation_id,
+                      request_id: event.request_id ?? null,
+                    },
+                  });
+                  return created.publish(event);
+                } catch {
+                  streamFailed = true;
+                  return false;
+                }
+              },
+            }),
+            () => beginRegisteredClose(created),
+          );
+          return api;
+        },
+      },
+    });
+    void worker.closed.then(
+      () => {
+        workerSettled = true;
+      },
+      () => {
+        workerFailed = true;
+      },
+    );
+    const bearer = await readFile(runtime.paths.api_bearer, "utf8");
+    const headers = Promise.withResolvers<void>();
+    streamAbort = new AbortController();
+    const client = createApiClient({
+      port: 18081,
+      token: bearer,
+      timeoutMs: 30000,
+      maxBytes: 1024 * 1024,
+      seams: Object.freeze({
+        randomBytes: Object.freeze(randomBytes.bind(undefined)),
+        fetch: Object.freeze<typeof fetch>(async (input, init) => {
+          check(String(input).startsWith("http://127.0.0.1:18081/"));
+          const response = await fetch(input, init);
+          if (new URL(String(input)).pathname === "/v1/events") {
+            check(response.status === 200);
+            counters.headers = true;
+            gate("headers");
+            headers.resolve();
+          }
+          return response;
+        }),
+      }),
+    });
+    stream = (async () => {
+      try {
+        for await (const { data: event } of client.events(0, 48, streamAbort.signal)) {
+          observedEvents.push({
+            kind: event.kind,
+            correlation_id: event.correlation_id,
+            request_id: event.request_id ?? null,
+          });
+          if (event.kind === "run_settled") settled++;
+          if (event.kind === "shutdown_ready") {
+            shutdown = true;
+            const payload = event.payload as Record<string, unknown>;
+            exported = {
+              sensitive: true,
+              bundle: Object.fromEntries(
+                ["bundle", "manifest_sha256", "mode", "file_count", "total_bytes"].map((key) => [key, payload[key]]),
+              ),
+            };
+          }
+          const payload = event.payload as { cogs_transport?: { status?: string } };
+          if (payload?.cogs_transport?.status === "omitted") omitted = true;
+        }
+      } catch {
+        if (!shutdown) streamFailed = true;
+      } finally {
+        if (!shutdown) {
+          streamFailed = true;
+          headers.reject(new Error("SSE failed"));
+        }
+      }
+    })();
+    await headers.promise;
     for (let turn = 0; turn < 3; turn++) {
       counters.admit("turn");
       gate("turn");
       await client.request("run", { content: "synthetic" });
-      const deadline = performance.now() + 10000;
+      const deadline = performance.now() + 20000;
       while (settled <= turn) {
         check(!streamFailed && !toolResults.failed && performance.now() < deadline);
         await new Promise((r) => setTimeout(r, 20));
       }
     }
+    // Exactly one bounded snapshot is admitted while egress is still ready;
+    // no timer can sample a retired owner.
+    const auditOwner = egressHandle;
+    check(auditOwner?.ready === true && auditOwner.auditRecords !== undefined);
+    audit = auditOwner.auditRecords(64).length;
+    check(audit > 0);
     const successfulTools = toolResults.evidence();
     gate("history"); // host reads durable JSONL and reconciles its own pre-write admissions
     await client.request("entries", { limit: 25 });
     check(pi && upstream === 1 && omitted && !streamFailed);
     await verifyFragments(pi, bearer);
     await client.request("shutdown");
-    await worker.closed;
-    check(shutdown && !streamFailed);
+    const shutdownDeadline = performance.now() + 10000;
+    while (!shutdown || !workerSettled) {
+      check(!streamFailed && !workerFailed && performance.now() < shutdownDeadline);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    check(!streamFailed && !workerFailed);
     counters.shutdown = true;
     streamAbort.abort();
     await stream;
-    await Promise.all(
-      [upstreamServer, collector].map(
-        (server) =>
-          new Promise<void>((resolve, reject) => {
-            server.closeAllConnections();
-            server.close((e) => (e ? reject(e) : resolve()));
-          }),
-      ),
-    );
+    await Promise.all([closeServer(upstreamServer), closeServer(collector)]);
     check(traces > 0 && metrics > 0 && audit > 0);
     const state = (globalThis as typeof globalThis & { __cogsGate: GateState }).__cogsGate;
     const receipt = JSON.parse(await readFile(runtime.paths.skill_snapshot_receipt, "utf8"));
@@ -1223,18 +1324,30 @@ export async function workerMain(): Promise<void> {
     await evidence.close();
     gate("shutdown");
     gate("release");
+    completed = true;
   } finally {
-    clearInterval(heartbeat);
-    clearInterval(auditTimer);
-    await worker.close().catch(() => {
-      process.exitCode = 1;
-    });
-    streamAbort.abort();
-    upstreamServer.closeAllConnections();
-    collector.closeAllConnections();
-    upstreamServer.close();
-    collector.close();
+    if (heartbeat) clearInterval(heartbeat);
+    try {
+      if (worker) await worker.close();
+    } catch {
+      cleanupFailed = true;
+    }
+    streamAbort?.abort();
+    try {
+      if (stream) await stream;
+    } catch {
+      cleanupFailed = true;
+    }
+    for (const server of [upstreamServer, collector]) {
+      try {
+        await closeServer(server);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (cleanupFailed) process.exitCode = 1;
   }
+  if (cleanupFailed && completed) throw new Error("product cleanup failed");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

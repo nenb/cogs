@@ -203,6 +203,34 @@ test("OTLP telemetry recovers preserved full-queue head after dropped enqueue ac
   await close(server);
 });
 
+test("OTLP close waits for an active accepted request acknowledgement without replay", async () => {
+  const original = globalThis.fetch;
+  const entered = Promise.withResolvers<void>();
+  const acknowledged = Promise.withResolvers<Response>();
+  let calls = 0;
+  const sink = createCogsEgressTelemetrySink({
+    mode: "otlp",
+    endpoint: "https://synthetic.invalid/v1/logs",
+    timeoutMs: 100,
+  });
+  globalThis.fetch = async () => {
+    calls++;
+    entered.resolve();
+    return acknowledged.promise;
+  };
+  try {
+    sink.enqueue(event());
+    await entered.promise;
+    const close = sink.close();
+    acknowledged.resolve(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    await close;
+    assert.equal(calls, 1);
+    assert.deepEqual(sink.snapshot(), { queued: 0, exported: 1, dropped: 0, failed: 0, depth: 0 });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("OTLP telemetry close aborts hanging response and is idempotent", async () => {
   let closed = false;
   const sockets = new Set<unknown>();

@@ -619,7 +619,7 @@ function serialContract(text: string) {
   assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
   assert.match(
     text,
-    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -euo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -Eeuo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
   );
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
@@ -633,9 +633,18 @@ test("driver UART is null on the shared create/reset launch; stage-zero marker c
   const text = await readFile(driver, "utf8");
   serialContract(text);
   const qualify = await readFile(join(root, "dev/linux-kvm/qualify.sh"), "utf8");
-  assert.ok(qualify.includes('-serial file:"$guest_log"'));
+  assert.ok(qualify.includes("qualification-owner.py"));
   assert.ok(qualify.includes('echo "COGS_GUEST_READY=1"'));
-  assert.ok(qualify.includes("grep -q '^COGS_GUEST_READY=1' \"$guest_log\""));
+  assert.ok(qualify.includes("qualification-owner.py"));
+  const qualificationOwner = await readFile(join(root, "dev/linux-kvm/qualification-owner.py"), "utf8");
+  assert.match(qualificationOwner, /require_local_execution[\s\S]*qualification-pending/u);
+  assert.match(qualificationOwner, /load_qmp\(\)\(qmp, self\.work_end, self\.require_live\)/u);
+  assert.match(qualificationOwner, /owner-settled/u);
+  assert.match(qualificationOwner, /RLIMIT_FSIZE[\s\S]*SIGTERM[\s\S]*SIGKILL[\s\S]*child\.wait[\s\S]*UART marker cap/u);
+  assert.match(
+    qualify,
+    /report destination exists[\s\S]*qualification-pending[\s\S]*owner-settled[\s\S]*stage_report[\s\S]*publish_report/u,
+  );
   for (const mutant of [
     '-serial file:"$state/serial.log"',
     "-serial file:/dev/null",
@@ -651,6 +660,47 @@ test("driver UART is null on the shared create/reset launch; stage-zero marker c
     "-serial null -debugcon file:debug.log",
   ])
     assert.throws(() => serialContract(text.replace("-serial null", mutant)), mutant);
+});
+
+test("qualification owner retires once after both group signals and retains failed custody", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      `
+import importlib.util,os,pathlib,signal,tempfile
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('owner',${JSON.stringify(join(root, "dev/linux-kvm/qualification-owner.py"))})
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as tmp:
+ o=m.Owner(tmp,'k','i','host'); o._custody({'version':1,'state':'pending'},True); assert o.pending.exists()
+ events=[]
+ class Child:
+  pid=42
+  def wait(self,timeout): events.append('wait'); return 0
+ o.child=Child(); r,w=os.pipe(); o.pidfd=r; o.exited=lambda:True; o.signal_group=lambda child,sig:(events.append(sig) or True)
+ with patch.object(signal,'pidfd_send_signal',lambda *args:events.append('pidfd'),create=True):
+  assert o.retire()==(True,0) and o.retire()==(True,0)
+ assert events[:3]==[signal.SIGTERM,signal.SIGKILL,'pidfd'] and events.count('wait')==1 and o.child is None
+ o.settle_custody(); assert not o.pending.exists() and pathlib.Path(tmp,'owner-settled').is_file()
+ o=m.Owner(tmp,'k','i','host'); o.cancel();
+ try: o.require_live()
+ except RuntimeError: pass
+ else: raise AssertionError('cancel accepted')
+ o=m.Owner(tmp,'k','i','host'); o.child=Child(); o.pidfd=None; o.signal_group=lambda child,sig:(events.append(sig) or True)
+ assert o.retire()[0] is False and events[-1]=='wait'
+ pathlib.Path(tmp,'guest.log').write_bytes(b'x'*(m.LIMIT+1))
+ try: o.capture()
+ except RuntimeError: pass
+ else: raise AssertionError('UART overflow accepted')
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
 
 // Extract only the reviewed embedded owner program. Never source the driver:
@@ -1594,11 +1644,11 @@ for program in (
     "import os; os.write(1,'é'.encode()*19)",
     "import os; os.write(1,b'x'*38); os.write(2,b'x'*4097)",
 ): rejects(lambda:run(program))
-for program in ("import os; os.write(1,b'\\xff')", "import os; os.write(2,b'\\xff')"):
+for program,phase in (("import os; os.write(1,b'\\xff')",'stdout-utf8'),("import os; os.write(2,b'\\xff')",'stderr-utf8'),("import os; os.write(1,b'\\0')",'stdout-nul-cr'),("import os; os.write(2,b'\\r')",'stderr-nul-cr')):
     try: run(program)
     except h.BoundedMalformed as error:
-        assert str(error)=="malformed command bytes" and "\\xff" not in str(error)
-    else: raise AssertionError("invalid UTF-8 was not classified as malformed command bytes")
+        assert error.phase==phase and str(error)==phase and "\\xff" not in str(error)
+    else: raise AssertionError("invalid bytes were not assigned a closed stream class")
 assert run('raise SystemExit(7)')==(7,b'')
 # A single ignored TERM and silent stream cannot evade the absolute deadline.
 started=time.monotonic()
@@ -1670,7 +1720,7 @@ for raw in (b'{"a":1,"a":2}',b'{"a":NaN}',b'{"a":Infinity}',b'\xff'):
 state=pathlib.Path('/safe'); nonce='a'*32; calls=[]
 def bounded(argv,cap=16384,seconds=15,deadline=None):
     calls.append((argv,cap,seconds,deadline)); assert argv[0]=='/usr/bin/ssh'
-    assert argv[-2]=='root@192.0.2.2' and 'IdentityAgent=none' in argv
+    assert argv[-2]=='root@192.0.2.2' and 'IdentityAgent=none' in argv and 'LogLevel=ERROR' in argv
     return 0,boot if argv[-1]==h.PROBES['boot-id'] else b'6.12.95-amd64\n' if argv[-1]=='uname -r' else b''
 with patch.object(h,'bounded',bounded), patch.object(h,'read_control',lambda *args:(nonce+'\n').encode()), \
      patch('builtins.open',lambda *args:io.BytesIO(boot.replace(b'001',b'002'))):
@@ -1695,12 +1745,12 @@ assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/insta
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
-for code,phase in ((255,'authenticated-ssh-transport'),(41,'boot-finished'),(42,'setup-marker'),(43,'setup-mount'),(44,'setup-git'),(45,'setup-skills'),(46,'setup-sshd'),(47,'setup-completion'),(48,'setup-mount-check'),(49,'setup-git-check'),(50,'setup-skills-check'),(51,'setup-sshd-check'),(9,'malformed')):
+for code,phase in ((255,'authenticated-ssh-transport'),(41,'boot-finished'),(42,'setup-marker'),(43,'setup-mount'),(44,'setup-git'),(45,'setup-skills'),(46,'setup-sshd'),(47,'setup-completion'),(48,'setup-mount-check'),(49,'setup-git-check'),(50,'setup-skills-check'),(51,'setup-sshd-check'),(52,'setup-failure-marker'),(1,'remote-exit-1'),(2,'remote-exit-2'),(126,'remote-exit-126'),(127,'remote-exit-127'),(-9,'remote-exit-signal'),(9,'remote-exit-other')):
     with patch.object(h,'bounded',return_value=(code,b'')):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as error: assert error.phase==phase
         else: raise AssertionError('unclassified ready exit accepted')
-for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed')):
+for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed('stdout-utf8'),'stdout-utf8'),(h.BoundedMalformed('stderr-utf8'),'stderr-utf8'),(h.BoundedMalformed('stdout-nul-cr'),'stdout-nul-cr'),(h.BoundedMalformed('stderr-nul-cr'),'stderr-nul-cr')):
     with patch.object(h,'bounded',side_effect=error):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as observed: assert observed.phase==phase
@@ -1731,7 +1781,7 @@ with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
     assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
-for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed(),'host-key-mismatch')):
+for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed('stdout-utf8'),'host-key-mismatch')):
     with patch.object(h,'bounded',side_effect=error):
         try: h.host_key(state,5)
         except h.ReadyFailure as observed: assert observed.phase==phase
@@ -1762,7 +1812,7 @@ with patch.object(h,'host_key',side_effect=h.RetirementUncertain), patch.object(
 test("KVM readiness accepts only exact campaign setup evidence without guest output", async () => {
   await boundedTest(String.raw`
 with tempfile.TemporaryDirectory() as root:
-    root=pathlib.Path(root); bindir=root/'bin'; bindir.mkdir(); boot=root/'boot'; stage=root/'stage'; complete=root/'complete'; git=root/'git'; shared=root/'shared'; user=root/'user'
+    root=pathlib.Path(root); bindir=root/'bin'; bindir.mkdir(); boot=root/'boot'; stage=root/'stage'; complete=root/'complete'; pending=root/'pending'; failure=root/'failure'; git=root/'git'; shared=root/'shared'; user=root/'user'
     boot.write_text('done'); git.symlink_to('/opt/cogs-git/bin/git'); shared.mkdir(); user.mkdir()
     tools={
       'cloud-init':'#!/bin/sh\nexit 1\n', 'mountpoint':'#!/bin/sh\nexit 0\n',
@@ -1771,24 +1821,130 @@ with tempfile.TemporaryDirectory() as root:
       'stat':'#!/bin/sh\ncase "$*" in *stage*) printf "%s\\n" "'+'$'+'{STAGE_STAT:-0:0:600:regular file:1}";; *complete*) printf "%s\\n" "'+'$'+'{COMPLETE_STAT:-0:0:400:regular file:1}";; *git*) printf "0:0:symbolic link\\n";; *) printf "0:0:700:directory\\n";; esac\n'}
     for name,value in tools.items():
         path=bindir/name; path.write_text(value); path.chmod(0o700)
-    wrapper=h.READY_WRAPPER.replace('/var/lib/cloud/instance/boot-finished',str(boot)).replace('/var/lib/cogs/campaign-setup.stage',str(stage)).replace('/var/lib/cogs/campaign-setup.complete',str(complete)).replace('/usr/bin/git',str(git)).replace('/shared/skills',str(shared)).replace('/user/skills',str(user))
-    def run(stage_value=None,completion=True,env={}):
-        for path in (stage,complete):
-            if path.exists(): path.unlink()
+    wrapper=h.READY_WRAPPER.replace('export PATH=/usr/sbin:/usr/bin:/sbin:/bin','export PATH='+str(bindir)+':/usr/bin:/bin').replace('/var/lib/cloud/instance/boot-finished',str(boot)).replace('/var/lib/cogs/campaign-setup.stage',str(stage)).replace('/var/lib/cogs/campaign-setup.complete.pending',str(pending)).replace('/var/lib/cogs/campaign-setup.complete',str(complete)).replace('/var/lib/cogs/campaign-setup.failure',str(failure)).replace('/usr/bin/git',str(git)).replace('/shared/skills',str(shared)).replace('/user/skills',str(user))
+    def run(stage_value=None,completion=True,env={},failed=False,pending_marker=False):
+        for path in (stage,complete,pending,failure):
+            if path.exists() or path.is_symlink(): path.unlink()
         if stage_value is not None: stage.write_text(stage_value)
         if completion: complete.write_text('COMPLETE')
-        return subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH'],**env},capture_output=True)
-    accepted=run('SSHD',True)
+        if pending_marker: pending.write_text('COMPLETE')
+        if failed: failure.write_text('SSHD')
+        return subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,**env},capture_output=True)
+    accepted=run('COMPLETE',True)
     assert accepted.returncode==0 and accepted.stdout==accepted.stderr==b'' # degraded cloud-init has no veto
     for marker,code in (('MOUNT',43),('GIT',44),('SKILLS',45),('SSHD',46)):
         result=run(marker,False); assert result.returncode==code and result.stdout==result.stderr==b''
     for env in ({'STAGE_STAT':'foreign'},{'COMPLETE_STAT':'foreign'},{'COMPLETE_STAT':'0:1:400:regular file:1'},{'COMPLETE_STAT':'0:0:600:regular file:1'}):
-        result=run('SSHD',False if 'STAGE_STAT' in env else True,env); assert result.returncode in (42,47) and result.stdout==result.stderr==b''
+        result=run('COMPLETE',False if 'STAGE_STAT' in env else True,env); assert result.returncode in (42,47) and result.stdout==result.stderr==b''
     for value in ('FOREIGN',''):
-        result=run('SSHD',True); complete.write_text(value); result=subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH']},capture_output=True); assert result.returncode==47 and result.stdout==result.stderr==b''
+        result=run('COMPLETE',True); complete.write_text(value); result=subprocess.run(['/bin/bash','-c',wrapper],env=os.environ,capture_output=True); assert result.returncode==47 and result.stdout==result.stderr==b''
+    for kwargs in ({'failed':True},{'pending_marker':True}):
+        result=run('COMPLETE',True,**kwargs); assert result.returncode in (47,52) and result.stdout==result.stderr==b''
     for env,code in (({'SSHD':'1'},51),):
-        result=run('SSHD',True,env); assert result.returncode==code and result.stdout==result.stderr==b''
+        result=run('COMPLETE',True,env); assert result.returncode==code and result.stdout==result.stderr==b''
 `);
+});
+
+test("campaign setup guards every marker and publishes failure over completion", async () => {
+  const source = await readFile(driver, "utf8");
+  for (const marker of ["stage", "complete", "pending", "failure"])
+    assert.ok(source.includes(`if test -e "\\$${marker}" || test -L "\\$${marker}"; then exit 1; fi`));
+  assert.ok(source.indexOf("trap failed_setup ERR") < source.indexOf("mark MOUNT"));
+  assert.ok(source.includes('rm -f -- "\\$complete" "\\$pending" "\\$failure"'));
+  assert.ok(source.includes('printf \'%s\' "\\$current_stage" > "\\$failure"'));
+  assert.ok(source.includes('chown root:root "\\$failure"\n        chmod 0600 "\\$failure"'));
+  assert.ok(source.includes('sync -f "\\$failure" || :\n        sync -f /var/lib/cogs || :'));
+  assert.ok(source.indexOf("mark COMPLETE") < source.indexOf('printf COMPLETE > "\\$pending"'));
+  assert.ok(source.indexOf('mv "\\$pending" "\\$complete"') < source.lastIndexOf("sync -f /var/lib/cogs"));
+  const wrapper = await readFile(boundedHelper, "utf8");
+  assert.match(wrapper, /if test -e "\$failure" \|\| test -L "\$failure"; then exit 52; fi/u);
+  assert.match(wrapper, /test "\$\(cat "\$stage"\)" = COMPLETE \|\| exit 47/u);
+});
+
+test("campaign setup final stage sync failure removes completion and fails readiness", async () => {
+  const source = await readFile(driver, "utf8");
+  const captured = source.match(
+    / {2}- path: \/usr\/local\/sbin\/cogs-cloud-init-setup\n {4}owner: root:root\n {4}permissions: '0700'\n {4}content: \|\n(?<script>[\s\S]*?)\nmounts:/u,
+  );
+  assert(captured?.groups?.script);
+  const setup = captured.groups.script.replace(/^ {6}/gmu, "").replaceAll("\\$", "$");
+  const temp = await mkdtemp(join(tmpdir(), "cogs-kvm-final-mark-"));
+  const state = join(temp, "state");
+  const bin = join(temp, "bin");
+  const workspace = join(temp, "workspace");
+  const gitToolsRoot = join(temp, "git-tools");
+  const git = join(temp, "git");
+  const shared = join(temp, "shared", "skills");
+  const user = join(temp, "user", "skills");
+  const setupPath = join(temp, "setup");
+  try {
+    await mkdir(bin, { recursive: true });
+    await Promise.all([
+      mkdir(workspace),
+      mkdir(join(gitToolsRoot, "bin"), { recursive: true }),
+      mkdir(shared, { recursive: true }),
+      mkdir(user, { recursive: true }),
+    ]);
+    await writeFile(join(gitToolsRoot, "bin", "git"), "");
+    const tools: Record<string, string> = {
+      chown: "#!/bin/sh\nexit 0\n",
+      chmod: "#!/bin/sh\nexit 0\n",
+      findmnt: "#!/bin/sh\nprintf 'ro,nosuid,nodev\\n'\n",
+      install: '#!/bin/sh\nfor target; do :; done\nmkdir -p "$target"\n',
+      mountpoint: "#!/bin/sh\nexit 0\n",
+      realpath: "#!/bin/sh\nprintf '%s\\n' \"$2\"\n",
+      stat: `#!/bin/sh
+case "$*" in
+  *${git}*) printf '0:0:symbolic link\\n' ;;
+  *) printf '0:0:700:directory\\n' ;;
+esac
+`,
+      sync: `#!/bin/sh
+if test "\${2:-}" = "${state}/campaign-setup.stage" && test "$(cat "$2")" = COMPLETE; then exit 97; fi
+exit 0
+`,
+      systemctl: "#!/bin/sh\nexit 0\n",
+    };
+    await Promise.all(
+      Object.entries(tools).map(async ([name, body]) => {
+        const path = join(bin, name);
+        await writeFile(path, body, { mode: 0o700 });
+      }),
+    );
+    const injected = setup
+      .replaceAll("/var/lib/cogs", state)
+      .replaceAll("/workspace", workspace)
+      .replaceAll("/opt/cogs-git", gitToolsRoot)
+      .replaceAll("/usr/bin/git", git)
+      .replaceAll("/shared/skills", shared)
+      .replaceAll("/user/skills", user)
+      .replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin", `export PATH=${bin}:/usr/bin:/bin`);
+    await writeFile(setupPath, injected, { mode: 0o700 });
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("bash", [setupPath], { encoding: "utf8", env: { ...process.env } });
+    assert.equal(result.status, 97, result.stderr);
+    await assert.rejects(lstat(join(state, "campaign-setup.complete")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(state, "campaign-setup.complete.pending")), { code: "ENOENT" });
+    assert.equal(await readFile(join(state, "campaign-setup.failure"), "utf8"), "SSHD");
+    const boot = join(temp, "boot-finished");
+    await writeFile(boot, "");
+    const readiness = spawnSync(
+      "python3",
+      [
+        "-I",
+        "-c",
+        `import importlib.util,subprocess,sys
+spec=importlib.util.spec_from_file_location("bounded",${JSON.stringify(boundedHelper)})
+h=importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+wrapper=h.READY_WRAPPER.replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin",${JSON.stringify(`export PATH=${bin}:/usr/bin:/bin`)}).replace("/var/lib/cloud/instance/boot-finished",${JSON.stringify(boot)}).replace("/var/lib/cogs",${JSON.stringify(state)}).replace("/usr/bin/git",${JSON.stringify(git)}).replace("/shared/skills",${JSON.stringify(shared)}).replace("/user/skills",${JSON.stringify(user)})
+sys.exit(subprocess.run(["/bin/bash","-c",wrapper],capture_output=True).returncode)`,
+      ],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    assert.equal(readiness.status, 52, readiness.stderr);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("network journal uses exclusive no-follow 0600 atomic producer writes", async () => {

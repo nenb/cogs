@@ -8,23 +8,25 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0342 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0344 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(4000,3200000),(4457,8400000),(1800,2000000),(5300,5500000)]
-assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (21557,20200000)
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (39557,28200000)
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(6000,1100000),(4000,3200000),(4457,8400000),(1800,2600000),(5300,5500000)]
+assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (21557,20800000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (39557,28800000)
 assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
-assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','test/ci-infrastructure-boundary.test.ts']
+assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
 assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0342-row4-fourth-minimal-correction-batch.md' in tasks[0]['paths']
-assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','test/linux-kvm-git-tools.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts']
+assert 'docs/adr/0343-row4-fifth-minimal-correction-batch.md' in tasks[0]['paths']
+assert 'docs/adr/0344-row4-proactive-confirmed-domain-batch.md' in tasks[0]['paths']
+assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','scripts/release-image-set-review-v2.ts','src/egress/otlp-telemetry.ts','src/ssh/connection.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/linux-kvm-git-tools.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
@@ -139,6 +141,25 @@ test("ADR0342 records failed candidate-pass/KVM attempts and old-byte probes as 
   assert.ok(
     readFileSync("docs/adr/README.md", "utf8").includes("[0342](0342-row4-fourth-minimal-correction-batch.md)"),
   );
+});
+
+test("ADR0343 records failed old-byte probes as non-authorizing and retains execution stops", () => {
+  const adr = readFileSync("docs/adr/0343-row4-fifth-minimal-correction-batch.md", "utf8");
+  for (const phrase of [
+    "c92aaeaa",
+    "34756063319",
+    "34756064403",
+    "Both product probe suites succeeded only for old bytes, but the candidate profiles failed; KVM failed",
+    "non-authoritative and non-authorizing",
+    "normal source correction, review, validation, protected PR CI, and merge",
+    "No effects, full, or readiness execution occurs now",
+    "exactly one fresh first-created attempt-one replacement pair",
+    "Same-byte retry and H/G/Q remain denied",
+    "AWS, OpenTofu, SSM, Docker, KVM, network, and all other effects remain denied",
+    "All caps, allocations, source-inventory bounds, and the final-HGQ reserve are unchanged",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0343](0343-row4-fifth-minimal-correction-batch.md)"));
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

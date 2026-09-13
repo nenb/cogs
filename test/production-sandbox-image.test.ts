@@ -334,6 +334,7 @@ test("input capturer uses retained directory descriptors, openat no-follow reads
 });
 
 test("SSH sessions receive uppercase and lowercase proxy/trust compatibility variables", () => {
+  assert.equal((entrypoint.match(/printf 'SetEnv/gu) ?? []).length, 1);
   for (const name of [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -360,7 +361,7 @@ test("SSH sessions receive uppercase and lowercase proxy/trust compatibility var
     "git_ssl_cainfo",
     "pip_cert",
   ]) {
-    assert.match(entrypoint, new RegExp(`SetEnv [^\\n]*\\b${name}=`, "u"), name);
+    assert.ok(entrypoint.includes(`${name}=`), name);
   }
   assert.match(entrypoint, /SetEnv COGS_PROFILE=kata-sandbox-guest/u);
 });

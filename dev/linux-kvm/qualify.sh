@@ -11,20 +11,29 @@ source "$repo/dev/linux-kvm/git-tools.sh"
 cogs_kvm_execution_gate
 
 report_path=${1:-kvm-qualification-report.json}
+report_dir=$(dirname "$report_path")
+[[ ! -e "$report_path" && ! -L "$report_path" ]] || { echo "FAIL: report destination exists" >&2; exit 1; }
+mkdir -p "$report_dir"
 started_epoch_ms=$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')
 workdir=$(mktemp -d)
 umask 077
-qemu_pid=""
+cleaned=false
+owner_started=false
+report_tmp=
 cleanup() {
-  if [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null; then
-    kill "$qemu_pid" 2>/dev/null || true
-    wait "$qemu_pid" 2>/dev/null || true
-  fi
-  rm -rf "$workdir"
+  [[ $cleaned == true ]] && return 0
+  # Before owner entry there is no VM custody. Afterwards, pending custody or a
+  # missing settlement marker is recovery evidence and must retain the workdir.
+  [[ $owner_started == false ]] ||
+    [[ ! -e "$workdir/qualification-pending" && -f "$workdir/owner-settled" && $(<"$workdir/owner-settled") == settled ]] || return 1
+  rm -rf -- "$workdir" || return 1
+  cleaned=true
 }
+stage_report() { report_tmp=$(mktemp "$report_dir/.kvm-qualification.XXXXXX"); }
+publish_report() { mv -n -- "$1" "$report_path" && [[ ! -e "$1" ]]; }
 write_failure_report() {
-  mkdir -p "$(dirname "$report_path")"
-  python3 - "$report_path" "$started_epoch_ms" <<'PY'
+  stage_report || return 1
+  python3 - "$report_tmp" "$started_epoch_ms" <<'PY' || { rm -f -- "$report_tmp"; return 1; }
 import datetime
 import json
 import os
@@ -39,7 +48,10 @@ completed_epoch_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp(
 format_time = lambda value: datetime.datetime.fromtimestamp(value / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 revision = os.environ.get("COGS_SOURCE_REVISION") or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 qemu = shutil.which("qemu-system-x86_64")
-qemu_version = subprocess.check_output([qemu, "--version"], text=True).splitlines()[0] if qemu else "unavailable"
+try:
+    qemu_version = subprocess.run([qemu, "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=True).stdout.splitlines()[0] if qemu else "unavailable"
+except (subprocess.SubprocessError, IndexError):
+    qemu_version = "unavailable"
 dependency_names = ["authorization", "audit", "revocation", "identity", "network_enforcement"]
 report = {
     "version": "cogs.security-report/v1alpha1",
@@ -82,12 +94,15 @@ with open(report_path, "w", encoding="utf-8") as output:
     json.dump(report, output, indent=2, sort_keys=True)
     output.write("\n")
 PY
+  publish_report "$report_tmp" || { rm -f -- "$report_tmp"; return 1; }
+  report_tmp=
 }
 finish() {
   status=$?
   trap - EXIT
-  cleanup
-  if [[ $status -ne 0 && ! -f "$report_path" ]]; then
+  cleanup || status=1
+  if [[ $status -ne 0 ]]; then
+    [[ -z $report_tmp ]] || rm -f -- "$report_tmp"
     write_failure_report || true
   fi
   exit "$status"
@@ -149,100 +164,26 @@ chmod 0755 "$rootfs/init"
 )
 
 host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
-qmp_socket="$workdir/qmp.sock"
-guest_log="$workdir/guest.log"
 
-# -accel kvm forbids silent TCG fallback. query-kvm below independently proves
-# that KVM is present and enabled in the running VM.
-qemu-system-x86_64 \
-  -name cogs-stage0-kvm-qualification \
-  -machine q35 \
-  -accel kvm \
-  -cpu host \
-  -smp 1 \
-  -m 256M \
-  -kernel "$kernel" \
-  -initrd "$workdir/initramfs.cpio.gz" \
-  -append "console=ttyS0 panic=-1" \
-  -display none \
-  -serial file:"$guest_log" \
-  -monitor none \
-  -nic none \
-  -qmp unix:"$qmp_socket",server=on,wait=off \
-  -no-reboot &
-qemu_pid=$!
-
-for _ in $(seq 1 100); do
-  [[ -S "$qmp_socket" ]] && break
-  kill -0 "$qemu_pid" 2>/dev/null || { echo "FAIL: QEMU exited before QMP qualification" >&2; exit 1; }
-  sleep 0.1
-done
-[[ -S "$qmp_socket" ]] || { echo "FAIL: QMP socket did not appear" >&2; exit 1; }
-
-python3 - "$qmp_socket" "$workdir/query-kvm.json" <<'PY'
+# One fixed owner covers acquisition through QMP, UART capture, exit and
+# pidfd-bound retirement. It has no driver state and cannot fabricate one.
+owner_result="$workdir/owner-result.json"
+owner_started=true
+python3 -I -B "$repo/dev/linux-kvm/qualification-owner.py" \
+  "$workdir" "$kernel" "$workdir/initramfs.cpio.gz" "$host_boot_id" >"$owner_result"
+read -r guest_boot_id guest_kernel < <(python3 -I -B - "$owner_result" <<'PY'
 import json
-import socket
 import sys
-
-socket_path, output_path = sys.argv[1:]
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-    client.settimeout(10)
-    client.connect(socket_path)
-    stream = client.makefile("rwb", buffering=0)
-
-    def receive(expected_id=None):
-        while True:
-            line = stream.readline()
-            if not line:
-                raise RuntimeError("QMP closed unexpectedly")
-            message = json.loads(line)
-            if expected_id is None or message.get("id") == expected_id:
-                return message
-
-    greeting = receive()
-    if "QMP" not in greeting:
-        raise RuntimeError(f"unexpected QMP greeting: {greeting}")
-    stream.write(b'{"execute":"qmp_capabilities","id":"capabilities"}\n')
-    capabilities = receive("capabilities")
-    if "error" in capabilities:
-        raise RuntimeError(f"QMP capabilities failed: {capabilities}")
-    stream.write(b'{"execute":"query-kvm","id":"query-kvm"}\n')
-    result = receive("query-kvm")
-
-status = result.get("return", {})
-if status.get("present") is not True or status.get("enabled") is not True:
-    raise RuntimeError(f"KVM is not actively enabled: {result}")
-with open(output_path, "w", encoding="utf-8") as output:
-    json.dump(result, output, sort_keys=True)
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+boot, kernel = value.get("guest_boot_id"), value.get("guest_kernel")
+if not isinstance(boot, str) or not isinstance(kernel, str) or not boot or not kernel:
+    raise SystemExit(1)
+print(boot, kernel)
 PY
+)
 
-(
-  sleep 30
-  if kill -0 "$qemu_pid" 2>/dev/null; then
-    echo "FAIL: guest did not shut down within 30 seconds" >&2
-    kill -TERM "$qemu_pid" 2>/dev/null || true
-  fi
-) &
-watchdog_pid=$!
-if ! wait "$qemu_pid"; then
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
-  qemu_pid=""
-  echo "FAIL: QEMU did not complete cleanly" >&2
-  exit 1
-fi
-qemu_pid=""
-kill "$watchdog_pid" 2>/dev/null || true
-wait "$watchdog_pid" 2>/dev/null || true
-grep -q '^COGS_GUEST_READY=1' "$guest_log"
-grep -q '^COGS_GUEST_UID=0' "$guest_log"
-guest_boot_id=$(sed -n 's/^COGS_GUEST_BOOT_ID=//p' "$guest_log" | tr -d '\r' | tail -1)
-guest_kernel=$(sed -n 's/^COGS_GUEST_KERNEL=//p' "$guest_log" | tr -d '\r' | tail -1)
-[[ -n "$guest_boot_id" ]] || { echo "FAIL: guest boot ID was not recorded" >&2; exit 1; }
-[[ "$guest_boot_id" != "$host_boot_id" ]] || { echo "FAIL: host and guest boot IDs are identical" >&2; exit 1; }
-
-mkdir -p "$(dirname "$report_path")"
-python3 - "$report_path" "$host_boot_id" "$guest_boot_id" "$guest_kernel" "$kernel_sha256" "$started_epoch_ms" <<'PY'
+stage_report
+python3 - "$report_tmp" "$host_boot_id" "$guest_boot_id" "$guest_kernel" "$kernel_sha256" "$started_epoch_ms" <<'PY'
 import datetime
 import json
 import os
@@ -256,7 +197,10 @@ completed_epoch_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp(
 started_at = datetime.datetime.fromtimestamp(started_epoch_ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 completed_at = datetime.datetime.fromtimestamp(completed_epoch_ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 revision = os.environ.get("COGS_SOURCE_REVISION") or subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-qemu_version = subprocess.check_output(["qemu-system-x86_64", "--version"], text=True).splitlines()[0]
+try:
+    qemu_version = subprocess.run(["qemu-system-x86_64", "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=True).stdout.splitlines()[0]
+except (subprocess.SubprocessError, IndexError):
+    raise SystemExit("qemu version unavailable")
 report = {
     "version": "cogs.security-report/v1alpha1",
     "report_id": f"kvm-qualification-{os.environ.get('GITHUB_RUN_ID', 'local')}",
@@ -305,5 +249,7 @@ with open(report_path, "w", encoding="utf-8") as output:
     json.dump(report, output, indent=2, sort_keys=True)
     output.write("\n")
 PY
-
-printf 'PASS: KVM acceleration active; guest root booted with distinct boot ID. Report: %s\n' "$report_path"
+# Pass publication is the final operation: cleanup already proved custody settled.
+cleanup
+publish_report "$report_tmp"
+report_tmp=

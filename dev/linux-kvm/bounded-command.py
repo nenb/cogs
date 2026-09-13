@@ -42,7 +42,9 @@ class BoundedBytes(Rejected):
 
 
 class BoundedMalformed(Rejected):
-    pass
+    # Fixed stream/grammar classes are safe to publish in readiness diagnostics.
+    def __init__(self, phase):
+        super().__init__(phase); self.phase = phase
 
 
 cancelled = False
@@ -70,13 +72,16 @@ def exact_json(raw):
     return json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=pairs, parse_constant=invalid)
 
 
-def text(raw):
+def text(raw, stream):
+    phases = {"stdout": ("stdout-utf8", "stdout-nul-cr"), "stderr": ("stderr-utf8", "stderr-nul-cr")}
+    if stream not in phases:
+        raise Rejected("invalid bounded stream")
     try:
         value = raw.decode("utf-8", "strict")
     except UnicodeDecodeError:
-        raise BoundedMalformed("malformed command bytes") from None
+        raise BoundedMalformed(phases[stream][0]) from None
     if "\0" in value or "\r" in value:
-        raise BoundedMalformed("malformed command bytes")
+        raise BoundedMalformed(phases[stream][1])
     return value
 
 
@@ -237,8 +242,8 @@ def bounded(argv, cap=16384, seconds=15, deadline=None):
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
     check_cancelled()
     raw, errors = map(bytes, output)
-    text(raw)
-    text(errors)
+    text(raw, "stdout")
+    text(errors, "stderr")
     return code, raw
 
 
@@ -291,18 +296,26 @@ GIT_PROBE = r'''set -euo pipefail
     git notes --ref=cogs show "$commit" >/dev/null
     git fsck --no-progress >/dev/null'''
 READY_WRAPPER = r'''set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
 exec >/dev/null 2>&1
 cloud-init status --wait || :
 test -f /var/lib/cloud/instance/boot-finished || exit 41
 stage=/var/lib/cogs/campaign-setup.stage
 complete=/var/lib/cogs/campaign-setup.complete
+pending=/var/lib/cogs/campaign-setup.complete.pending
+failure=/var/lib/cogs/campaign-setup.failure
+if test -e "$failure" || test -L "$failure"; then exit 52; fi
 stage_failure() {
   test "$(stat -c '%u:%g:%a:%F:%h' "$stage")" = '0:0:600:regular file:1' || exit 42
   case "$(cat "$stage")" in MOUNT) exit 43;; GIT) exit 44;; SKILLS) exit 45;; SSHD) exit 46;; *) exit 42;; esac
 }
-test -e "$complete" || stage_failure
+if ! test -e "$complete" || test -L "$complete"; then stage_failure; fi
+if test -e "$pending" || test -L "$pending"; then exit 47; fi
 test "$(stat -c '%u:%g:%a:%F:%h' "$complete")" = '0:0:400:regular file:1' || exit 47
 test "$(cat "$complete")" = COMPLETE || exit 47
+test "$(stat -c '%u:%g:%a:%F:%h' "$stage")" = '0:0:600:regular file:1' || exit 47
+test "$(cat "$stage")" = COMPLETE || exit 47
 mountpoint -q /workspace && findmnt -rn -o OPTIONS /workspace | grep -Eq '(^|,)nosuid(,|$)' && findmnt -rn -o OPTIONS /workspace | grep -Eq '(^|,)nodev(,|$)' || exit 48
 mountpoint -q /opt/cogs-git && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)ro(,|$)' && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)nosuid(,|$)' && findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq '(^|,)nodev(,|$)' || exit 48
 test -L /usr/bin/git && test "$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git && test "$(stat -c '%u:%g:%F' /usr/bin/git)" = '0:0:symbolic link' || exit 49
@@ -331,7 +344,7 @@ IDS = frozenset(PROBES) | {"readiness", "host-key", "qmp", "receipt-create", "re
 
 
 def ssh_argv(state, command):
-    return ["/usr/bin/ssh", "-F", "/dev/null", "-n", "-T", "-o", "BatchMode=yes",
+    return ["/usr/bin/ssh", "-F", "/dev/null", "-n", "-T", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
             "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
             "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={state}/known_hosts",
@@ -360,8 +373,8 @@ def guest(state, name, port, deadline=None):
     except BoundedBytes:
         if name == "ready": raise ReadyFailure("byte") from None
         raise
-    except BoundedMalformed:
-        if name == "ready": raise ReadyFailure("malformed") from None
+    except BoundedMalformed as error:
+        if name == "ready": raise ReadyFailure(error.phase) from None
         raise
     except Rejected:
         if name == "ready": raise ReadyFailure("malformed") from None
@@ -369,10 +382,12 @@ def guest(state, name, port, deadline=None):
     if name == "ready":
         if raw: raise ReadyFailure("byte")
         if code == 0: return None
-        phases = {41: "boot-finished", 42: "setup-marker", 43: "setup-mount", 44: "setup-git", 45: "setup-skills", 46: "setup-sshd", 47: "setup-completion", 48: "setup-mount-check", 49: "setup-git-check", 50: "setup-skills-check", 51: "setup-sshd-check"}
+        phases = {41: "boot-finished", 42: "setup-marker", 43: "setup-mount", 44: "setup-git", 45: "setup-skills", 46: "setup-sshd", 47: "setup-completion", 48: "setup-mount-check", 49: "setup-git-check", 50: "setup-skills-check", 51: "setup-sshd-check", 52: "setup-failure-marker"}
         if code in phases: raise ReadyFailure(phases[code])
         if code == 255: raise ReadyFailure("authenticated-ssh-transport")
-        raise ReadyFailure("malformed")
+        if code in (1, 2, 126, 127): raise ReadyFailure(f"remote-exit-{code}")
+        if code < 0: raise ReadyFailure("remote-exit-signal")
+        raise ReadyFailure("remote-exit-other")
     if code != 0:
         # 255, signals, missing remote exit, even normal failed verification:
         # never retry/reuse a possibly still-running remote invocation.
@@ -409,8 +424,8 @@ def host_key(state, deadline=None):
     return True
 
 
-def query_kvm(path):
-    end = time.monotonic() + 5
+def query_kvm(path, deadline=None, guard=check_cancelled):
+    end = min(time.monotonic() + 5, deadline if deadline is not None else float("inf"))
     pending = bytearray()
     total = count = 0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client, selectors.DefaultSelector() as selector:
@@ -420,7 +435,7 @@ def query_kvm(path):
             raise Rejected("QMP connect failed")
         selector.register(client, selectors.EVENT_WRITE)
         def wait(event):
-            check_cancelled()
+            guard()
             selector.modify(client, event)
             remaining = end - time.monotonic()
             if remaining <= 0 or not selector.select(remaining):
@@ -441,7 +456,7 @@ def query_kvm(path):
         def receive(identifier=None):
             nonlocal total, count
             while True:
-                check_cancelled()
+                guard()
                 if time.monotonic() >= end:
                     raise Rejected("QMP deadline")
                 while b"\n" not in pending:
@@ -462,7 +477,7 @@ def query_kvm(path):
                 if len(line) + 1 > 8192 or count > 32 or b"\0" in line:
                     raise Rejected("QMP record cap")
                 message = exact_json(line)
-                check_cancelled()
+                guard()
                 if time.monotonic() >= end:
                     raise Rejected("QMP deadline")
                 if type(message) is not dict:

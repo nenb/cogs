@@ -293,6 +293,8 @@ class OtlpWorkerSink {
   private nextBatchId = 0;
   private pumping: Promise<void> | undefined;
   private controller: AbortController | undefined;
+  /** Close transfers already accepted work to this one bounded drain owner. */
+  private gracefulSignal: AbortSignal | undefined;
   private closePromise: Promise<void> | undefined;
   private scheduled = false;
   private closing = false;
@@ -318,8 +320,11 @@ class OtlpWorkerSink {
       snapshot: () => sink.snapshot(),
       close: (signal) => {
         sink.closing = true;
-        // Publish before abort/fetch callbacks can reenter. Each caller observes afresh.
-        sink.closePromise ??= Promise.resolve().then(() => sink.close(signal));
+        if (sink.closePromise === undefined) {
+          const owner = Promise.withResolvers<void>();
+          sink.closePromise = owner.promise;
+          void sink.close(signal).then(owner.resolve, owner.reject);
+        }
         return sink.closePromise.then(() => undefined);
       },
     });
@@ -389,7 +394,7 @@ class OtlpWorkerSink {
       });
   }
   private async pump(): Promise<void> {
-    while (!this.closing && !this.closed && this.queue.length > 0) {
+    while ((!this.closing || this.gracefulSignal !== undefined) && !this.closed && this.queue.length > 0) {
       const batch = this.takeBatch();
       try {
         await this.postBatch(batch);
@@ -401,17 +406,22 @@ class OtlpWorkerSink {
   private async close(signal?: AbortSignal): Promise<void> {
     this.closing = true;
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    // Do not abort an accepted post merely because close began. Expiry/cancellation
+    // is the sole transition that interrupts it and every later close-owned group.
+    const abort = () => {
+      controller.abort();
+      this.controller?.abort();
+    };
     const timer = setTimeout(abort, this.config.timeoutMs);
     try {
+      this.gracefulSignal = controller.signal;
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      this.controller?.abort();
       if (this.pumping !== undefined)
         await raceTimeout(
           this.pumping.catch(() => undefined),
           this.config.timeoutMs,
-          () => this.controller?.abort(),
+          abort,
           controller.signal,
         ).catch(() => undefined);
       while (!controller.signal.aborted && this.queue.length > 0) {
@@ -433,6 +443,7 @@ class OtlpWorkerSink {
       this.inFlight = 0;
       this.inFlightOldestAt = 0;
       this.inFlightId = 0;
+      this.gracefulSignal = undefined;
       this.closed = true;
     }
   }
@@ -457,18 +468,19 @@ class OtlpWorkerSink {
     batch: Readonly<{ id: number; items: readonly Item[] }>,
     parent?: AbortSignal,
   ): Promise<void> {
+    const closeParent = () => parent ?? this.gracefulSignal;
     const traces = batch.items.filter((item) => item.kind === "span");
     const metrics = batch.items.filter((item) => item.kind === "metric");
-    if (!this.canPost(parent)) {
+    if (!this.canPost(closeParent())) {
       this.accountFailed(batch.id, traces.length + metrics.length);
       return;
     }
-    const tracesOk = await this.postGroup(batch.id, this.config.tracesEndpoint, traces, tracesEnvelope, parent);
-    if (!tracesOk || !this.canPost(parent) || this.inCooldown()) {
+    const tracesOk = await this.postGroup(batch.id, this.config.tracesEndpoint, traces, tracesEnvelope, closeParent());
+    if (!tracesOk || !this.canPost(closeParent()) || this.inCooldown()) {
       this.accountFailed(batch.id, metrics.length);
       return;
     }
-    await this.postGroup(batch.id, this.config.metricsEndpoint, metrics, metricsEnvelope, parent);
+    await this.postGroup(batch.id, this.config.metricsEndpoint, metrics, metricsEnvelope, closeParent());
   }
   private nowMs(): number {
     return safeInteger(this.config.clock.nowMs(), 0, Number.MAX_SAFE_INTEGER);

@@ -197,14 +197,16 @@ write_sshd_environment() {
   local proxy_url=$1 trust=$TRUST_FILE config="$RUNTIME_ROOT/sshd_config"
   copy_image_config "$config"
   {
-    printf 'SetEnv COGS_PROFILE=kata-sandbox-guest\n'
-    printf 'SetEnv HTTP_PROXY=%s HTTPS_PROXY=%s ALL_PROXY=%s\n' "$proxy_url" "$proxy_url" "$proxy_url"
-    printf 'SetEnv http_proxy=%s https_proxy=%s all_proxy=%s\n' "$proxy_url" "$proxy_url" "$proxy_url"
-    printf 'SetEnv NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1\n'
-    printf 'SetEnv SSL_CERT_FILE=%s REQUESTS_CA_BUNDLE=%s CURL_CA_BUNDLE=%s NODE_EXTRA_CA_CERTS=%s\n' "$trust" "$trust" "$trust" "$trust"
-    printf 'SetEnv AWS_CA_BUNDLE=%s GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=%s GIT_SSL_CAINFO=%s PIP_CERT=%s\n' "$trust" "$trust" "$trust" "$trust"
-    printf 'SetEnv ssl_cert_file=%s requests_ca_bundle=%s curl_ca_bundle=%s node_extra_ca_certs=%s\n' "$trust" "$trust" "$trust" "$trust"
-    printf 'SetEnv aws_ca_bundle=%s grpc_default_ssl_roots_file_path=%s git_ssl_cainfo=%s pip_cert=%s\n' "$trust" "$trust" "$trust" "$trust"
+    # sshd uses the first obtained SetEnv value. Emit one directive so every
+    # trusted proxy/CA compatibility variable reaches each SSH session.
+    printf 'SetEnv COGS_PROFILE=kata-sandbox-guest'
+    printf ' HTTP_PROXY=%s HTTPS_PROXY=%s ALL_PROXY=%s' "$proxy_url" "$proxy_url" "$proxy_url"
+    printf ' http_proxy=%s https_proxy=%s all_proxy=%s' "$proxy_url" "$proxy_url" "$proxy_url"
+    printf ' NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1'
+    printf ' SSL_CERT_FILE=%s REQUESTS_CA_BUNDLE=%s CURL_CA_BUNDLE=%s NODE_EXTRA_CA_CERTS=%s' "$trust" "$trust" "$trust" "$trust"
+    printf ' AWS_CA_BUNDLE=%s GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=%s GIT_SSL_CAINFO=%s PIP_CERT=%s' "$trust" "$trust" "$trust" "$trust"
+    printf ' ssl_cert_file=%s requests_ca_bundle=%s curl_ca_bundle=%s node_extra_ca_certs=%s' "$trust" "$trust" "$trust" "$trust"
+    printf ' aws_ca_bundle=%s grpc_default_ssl_roots_file_path=%s git_ssl_cainfo=%s pip_cert=%s\n' "$trust" "$trust" "$trust" "$trust"
   } >> "$config"
   chmod 0600 "$config"
 }

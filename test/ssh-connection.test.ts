@@ -5,6 +5,7 @@ import { chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/pro
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import ssh2 from "ssh2";
 import { validateLaunchConfig } from "../src/launch/config.ts";
@@ -1107,6 +1108,7 @@ test("ssh2 exec wrapper waits for exit plus close and rejects malformed events",
   const exec = await connection.openExec("fixed", new AbortController().signal);
   const stdout: Buffer[] = [];
   exec.port.onStdout((chunk) => stdout.push(chunk));
+  exec.port.onStderr(() => undefined);
   client.channel.emit("data", Buffer.from("ok"));
   const terminal = exec.port.terminal();
   client.channel.emit("exit", 0, undefined, false, "");
@@ -1134,6 +1136,76 @@ test("ssh2 exec wrapper waits for exit plus close and rejects malformed events",
   const noExit = await new Ssh2Connection(noExitClient as never).openExec("fixed", new AbortController().signal);
   noExitClient.channel.emit("close");
   await assert.rejects(noExit.port.terminal(), /exec channel failed/);
+});
+
+test("ssh2 exec retains coalesced output and terminal facts until both consumers register", async () => {
+  class Channel extends EventEmitter {
+    public stderr = new EventEmitter();
+    public signal(_name: string): void {}
+    public close(): void {
+      this.emit("close");
+    }
+  }
+  class Client extends EventEmitter {
+    public channel = new Channel();
+    public exec(
+      _command: string,
+      _options: unknown,
+      callback: (error: Error | undefined, channel?: unknown) => void,
+    ): void {
+      callback(undefined, this.channel);
+    }
+  }
+  const client = new Client();
+  const exec = await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal);
+  client.channel.emit("data", Buffer.from("out"));
+  client.channel.stderr.emit("data", Buffer.from("err"));
+  client.channel.emit("exit", 0, undefined, false, "");
+  client.channel.emit("close");
+  const stdout: Buffer[] = [],
+    stderr: Buffer[] = [];
+  exec.port.onStdout((chunk) => stdout.push(chunk));
+  exec.port.onStderr((chunk) => stderr.push(chunk));
+  assert.equal(Buffer.concat(stdout).toString(), "out");
+  assert.equal(Buffer.concat(stderr).toString(), "err");
+  assert.deepEqual(await exec.port.terminal(), { code: 0, signal: null });
+});
+
+test("ssh2 terminal-only and close-only callers finalize absent sinks but await native EOF", async () => {
+  class Channel extends Readable {
+    public stderr = new Readable({ read() {} });
+    public signal(): void {}
+    public override _read(): void {}
+    public close(): void {}
+  }
+  class Client extends EventEmitter {
+    public channel = new Channel();
+    public exec(_c: string, _o: unknown, cb: (e: Error | undefined, c?: unknown) => void): void {
+      cb(undefined, this.channel);
+    }
+  }
+  const client = new Client();
+  const port = (await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal)).port;
+  const terminal = port.terminal();
+  client.channel.push(Buffer.from("discarded"));
+  client.channel.stderr.push(Buffer.from("discarded"));
+  client.channel.emit("exit", 0, undefined, false, "");
+  client.channel.emit("close");
+  await Promise.race([
+    terminal.then(() => assert.fail("native EOF required")),
+    new Promise((resolve) => setTimeout(resolve, 5)),
+  ]);
+  client.channel.push(null);
+  client.channel.stderr.push(null);
+  assert.deepEqual(await terminal, { code: 0, signal: null });
+  const closing = new Client();
+  const closeExec = await new Ssh2Connection(closing as never).openExec("fixed", new AbortController().signal);
+  const retired = closeExec.close();
+  closing.channel.emit("exit", 0, undefined, false, "");
+  closing.channel.emit("close");
+  closing.channel.push(null);
+  closing.channel.stderr.push(null);
+  await retired;
 });
 
 test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and keeps late error sinks", async () => {
@@ -1165,6 +1237,8 @@ test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and k
   const twice = new TwiceClient();
   const opened = await new Ssh2Connection(twice as never).openExec("fixed", new AbortController().signal);
   assert.equal(twice.late.destroyCalls, 1);
+  opened.port.onStdout(() => undefined);
+  opened.port.onStderr(() => undefined);
   twice.first.emit("exit", 0, undefined, false, "");
   twice.first.emit("close");
   assert.deepEqual(await opened.port.terminal(), { code: 0, signal: null });
@@ -1184,6 +1258,8 @@ test("ssh2 exec wrapper rejects malformed terminal tuples, late callbacks, and k
     }
     const signalClient = new SignalClient();
     const signalExec = await new Ssh2Connection(signalClient as never).openExec("fixed", new AbortController().signal);
+    signalExec.port.onStdout(() => undefined);
+    signalExec.port.onStderr(() => undefined);
     signalClient.channel.emit("exit", null, allowedSignal, false, "");
     signalClient.channel.emit("close");
     assert.deepEqual(await signalExec.port.terminal(), { code: null, signal: allowedSignal });
@@ -1273,6 +1349,8 @@ test("ssh2 exec wrapper guards hostile stderr/off/destroy during attach cleanup 
   }
   const client = new Client();
   const exec = await new Ssh2Connection(client as never).openExec("fixed", new AbortController().signal);
+  exec.port.onStdout(() => undefined);
+  exec.port.onStderr(() => undefined);
   client.channel.emit("exit", 0, undefined, false, "");
   client.channel.emit("close");
   assert.deepEqual(await exec.port.terminal(), { code: 0, signal: null });
