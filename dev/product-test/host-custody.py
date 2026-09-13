@@ -636,34 +636,65 @@ class Custody:
         stage("labels"); require(v["Config"]["Labels"] == {**(self.images[spec["image"]]["Config"]["Labels"] or {}), "cogs.product.generation": self.generation})
         stage("environment"); require(environment(v["Config"], role) == held["environment"]); h = v["HostConfig"]
         stage("isolation"); require(h["ReadonlyRootfs"] and not h["Privileged"] and h["PidMode"] == ""); require(h["LogConfig"]["Type"] == "none" and h["CapDrop"] == ["ALL"])
+        # --mount must not be weakened by a legacy network, device, or bind field.
+        require(h["NetworkMode"] == spec["network"] and h["Devices"] in (None, []) and h["Binds"] in (None, []))
         stage("cap-add"); actual_caps = h["CapAdd"] or []; expected_caps = {"CAP_" + cap for cap in spec["caps"]}
         require(isinstance(actual_caps, list) and len(actual_caps) == len(expected_caps) and len(actual_caps) == len(set(actual_caps)) and set(actual_caps) == expected_caps)
         stage("limits"); require(h["SecurityOpt"] == ["no-new-privileges"] and h["CgroupParent"] == self.cg[14:])
         require(h["Memory"] == 4294967296 and h["MemorySwap"] == 4294967296 and (h["MemorySwappiness"] is None or type(h["MemorySwappiness"]) is int and h["MemorySwappiness"] == 0))
         require(h["PidsLimit"] == 128 and h["NanoCpus"] == 2000000000 and not h["PortBindings"]); require(h["ShmSize"] == 16777216)
         stage("mount-inventory"); expected_binds = {m["target"]: m for m in spec["mounts"]}; expected_tmpfs = spec["tmpfs"]
-        require(len(expected_binds) == len(spec["mounts"]) and not (set(expected_binds) & set(expected_tmpfs)) and len(v["Mounts"]) == len(expected_binds) + len(expected_tmpfs))
+        require(len(expected_binds) == len(spec["mounts"]) and not (set(expected_binds) & set(expected_tmpfs)))
         observed = {}
         for mount in v["Mounts"]:
             destination = mount.get("Destination"); require(isinstance(destination, str) and destination not in observed); observed[destination] = mount
-        require(set(observed) == set(expected_binds) | set(expected_tmpfs))
+        require(set(expected_binds) <= set(observed) <= set(expected_binds) | set(expected_tmpfs))
+        # Docker's legacy --tmpfs API either reports every tmpfs Mount or none;
+        # a partial inventory, unknown mount, or bind/tmpfs substitution is unsafe.
+        reported_tmpfs = set(observed) & set(expected_tmpfs)
+        require(reported_tmpfs in (set(), set(expected_tmpfs)))
+        for destination in reported_tmpfs:
+            mount = observed[destination]; require(mount.get("Type") == "tmpfs" and mount.get("Source", "") == "" and mount.get("RW") is True and mount.get("Propagation", "") == "")
         stage("bind-identity")
         for destination, expected in expected_binds.items():
             mount = observed[destination]; require(mount.get("Type") == "bind" and mount.get("Source") == expected["source"] and mount.get("RW") == (not expected["ro"]) and mount.get("Propagation") == "rprivate")
             a, b = os.stat(mount["Source"]), os.stat(f"/proc/{p}/root" + destination)
             require((a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) == tuple(held["sources"][destination]))
-        stage("tmpfs-config"); require((h["Tmpfs"] or {}) == expected_tmpfs)
-        for destination in expected_tmpfs:
-            mount = observed[destination]; require(mount.get("Type") == "tmpfs" and mount.get("Source", "") == "" and mount.get("RW") is True and mount.get("Propagation", "") == "")
+        stage("tmpfs-config"); require(h["Tmpfs"] == expected_tmpfs)
+        def tmpfs_expected(options):
+            values = options.split(","); require(values and len(values) == len(set(values)))
+            required = {"rw", "nosuid", "nodev", "noexec"}; keyed = {}
+            for value in values:
+                if "=" in value:
+                    key, item = value.split("=", 1); require(key in ("size", "mode", "uid", "gid") and key not in keyed and item); keyed[key] = item
+                else: require(value in required)
+            require(required <= set(values) and "size" in keyed)
+            size = re.fullmatch(r"([1-9][0-9]*)([kKmMgGtT]?)", keyed["size"]); require(size is not None)
+            bytes_ = int(size.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}[size.group(2).lower()]
+            mode = keyed.get("mode", "1777"); require(re.fullmatch(r"[0-7]{3,4}", mode))
+            uid, gid = keyed.get("uid", "0"), keyed.get("gid", "0"); require(uid.isdecimal() and gid.isdecimal())
+            return bytes_, int(mode, 8), int(uid), int(gid)
+        def mountinfo(row):
+            fields = row.split(); require(len(fields) >= 10 and fields[0].isdecimal() and fields[1].isdecimal() and re.fullmatch(r"[0-9]+:[0-9]+", fields[2]))
+            require(re.fullmatch(r"(?:[^\\]|\\[0-7]{3})+", fields[3]) and re.fullmatch(r"(?:[^\\]|\\[0-7]{3})+", fields[4]))
+            require(fields.count("-") == 1); dash = fields.index("-"); require(dash >= 6 and len(fields) == dash + 4)
+            decode = lambda value: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+            return fields, dash, decode(fields[4])
         stage("mountinfo")
         with open(f"/proc/{p}/mountinfo", encoding="ascii") as f:
-            mounts = [row.split() for row in f]
+            mounts = [mountinfo(row) for row in f]
         for destination, expected in expected_binds.items():
-            live = [mount for mount in mounts if len(mount) > 6 and mount[4] == destination]; require(len(live) == 1 and ("ro" in live[0][5].split(",")) == expected["ro"])
-            require(not any(value.startswith(("shared:", "master:")) for value in live[0][6:]))
+            live = [mount for mount in mounts if mount[2] == destination]; require(len(live) == 1 and ("ro" in live[0][0][5].split(",")) == expected["ro"])
+            require(not any(value.startswith(("shared:", "master:")) for value in live[0][0][6:live[0][1]]))
         for destination, options in expected_tmpfs.items():
-            live = [mount for mount in mounts if len(mount) > 6 and mount[4] == destination]; require(len(live) == 1 and "-" in live[0] and live[0][live[0].index("-") + 1] == "tmpfs")
-            require(("rw" in live[0][5].split(",")) == (options.split(",")[0] == "rw"))
+            live = [mount for mount in mounts if mount[2] == destination]; require(len(live) == 1)
+            fields, dash, _ = live[0]; require(fields[dash + 1:dash + 3] == ["tmpfs", "tmpfs"] and "rw" in fields[5].split(","))
+            require({"nosuid", "nodev", "noexec"} <= set(fields[5].split(",")) and not any(value.startswith(("shared:", "master:")) for value in fields[6:dash]))
+            target = f"/proc/{p}/root" + destination; target_stat, target_vfs = os.stat(target), os.statvfs(target)
+            expected_size, expected_mode, expected_uid, expected_gid = tmpfs_expected(options)
+            require(stat.S_ISDIR(target_stat.st_mode) and (os.major(target_stat.st_dev), os.minor(target_stat.st_dev)) == tuple(map(int, fields[2].split(":"))))
+            require(stat.S_IMODE(target_stat.st_mode) == expected_mode and target_stat.st_uid == expected_uid and target_stat.st_gid == expected_gid)
+            require(target_vfs.f_frsize > 0 and target_vfs.f_blocks * target_vfs.f_frsize == ((expected_size + target_vfs.f_frsize - 1) // target_vfs.f_frsize) * target_vfs.f_frsize)
         stage("cgroup-membership")
         with open(f"/proc/{p}/cgroup", encoding="ascii") as f:
             cg = f.read().strip().removeprefix("0::")

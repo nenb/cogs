@@ -331,7 +331,8 @@ def guest(state, name, port, deadline=None):
     try:
         code, raw = bounded(ssh_argv(state, command), cap, seconds, deadline)
     except RetirementUncertain:
-        if name == "ready": raise ReadyFailure("local-retirement-uncertain") from None
+        # Local retirement uncertainty is never a readiness-phase outcome.
+        # Preserve it to main so the locked driver retains guest intent.
         raise
     except BoundedDeadline:
         if name == "ready": raise ReadyFailure("deadline") from None
@@ -366,7 +367,10 @@ def host_key(state, deadline=None):
     # cannot consume the retry scheduler's complete deadline.
     try:
         code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
-    except (RetirementUncertain, BoundedDeadline, BoundedBytes, BoundedMalformed):
+    except RetirementUncertain:
+        # Keyscan retirement is custody uncertainty, not a host-key mismatch.
+        raise
+    except (BoundedDeadline, BoundedBytes, BoundedMalformed):
         raise ReadyFailure("host-key-mismatch") from None
     if code == 1 and not raw:
         return False  # key exchange only: no guest command was dispatched

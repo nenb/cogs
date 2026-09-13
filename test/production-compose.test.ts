@@ -730,27 +730,58 @@ from unittest.mock import patch
 s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 generation='a'*32; cid='b'*64
 class Stat:
- def __init__(self,dev=1,ino=2): self.st_dev=dev;self.st_ino=ino
+ def __init__(self,dev=1,ino=2,mode=0o40755,uid=0,gid=0): self.st_dev=dev;self.st_ino=ino;self.st_mode=mode;self.st_uid=uid;self.st_gid=gid
+class Vfs:
+ def __init__(self,blocks=256): self.f_frsize=4096; self.f_blocks=blocks
 def make(capadd=['CAP_CHOWN','CAP_KILL'],mounts=None):
  owner=m.Custody.__new__(m.Custody);owner.generation=generation;owner.cg='/sys/fs/cgroup/cogs-product-'+generation;owner.failure_stage='authenticate';owner.failure_substage=None
  owner.ids={'sandbox':{'id':cid,'spec':{'image':'sha256:'+'c'*64,'caps':['CHOWN','KILL'],'mask':(1<<0)+(1<<5),'network':'none','mounts':[{'source':'/source','target':'/bind','ro':True}],'tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}},'environment':[],'sources':{'/bind':(1,2)}}};owner.images={'sha256:'+'c'*64:{'Config':{'Labels':{}}}}
  host={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':capadd,'SecurityOpt':['no-new-privileges'],'CgroupParent':'/cogs-product-'+generation,'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}}
- owner.inspect=lambda _: {'State':{'Pid':42,'Running':True},'Image':'sha256:'+'c'*64,'Config':{'Labels':{'cogs.product.generation':generation},'Env':[]},'HostConfig':host,'Mounts':mounts if mounts is not None else [{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'','Destination':'/tmp','RW':True,'Propagation':''}]}
+ owner.host=host; owner.mounts=mounts if mounts is not None else [{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'','Destination':'/tmp','RW':True,'Propagation':''}]
+ owner.mountinfo='1 0 0:1 / /bind ro - ext4 /dev/x ro\n2 0 0:2 / /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw\n'; owner.tmpfs_stat=Stat(2,3,0o41777); owner.tmpfs_vfs=Vfs()
+ owner.inspect=lambda _: {'State':{'Pid':42,'Running':True},'Image':'sha256:'+'c'*64,'Config':{'Labels':{'cogs.product.generation':generation},'Env':[]},'HostConfig':owner.host,'Mounts':owner.mounts}
  return owner
 def run(owner):
  def opened(path,*args,**kwargs):
-  if path=='/proc/42/mountinfo': return io.StringIO('1 0 0:1 / /bind ro - ext4 /dev/x ro\n2 0 0:2 / /tmp rw - tmpfs tmpfs rw\n')
+  if path=='/proc/42/mountinfo': return io.StringIO(owner.mountinfo)
   if path=='/proc/42/cgroup': return io.StringIO('0::/cogs-product-'+generation+'/'+cid+'\n')
   if path=='/proc/42/status': return io.StringIO('CapEff:\t0000000000000021\nCapPrm:\t0000000000000021\nCapBnd:\t0000000000000021\nNoNewPrivs:\t1\nSeccomp:\t2\n')
   if path.startswith('/sys/fs/cgroup'): return io.StringIO({'memory.max':'4294967296','memory.swap.max':'0','pids.max':'128','cpu.max':'200000 100000'}[path.rsplit('/',1)[1]]+'\n')
   raise AssertionError(path)
- with patch('builtins.open',opened),patch.object(m.os,'stat',lambda _:Stat()),patch.object(m.os,'readlink',lambda _:'mnt:[1]'),patch.object(m.os,'pidfd_open',lambda _:9,create=True),patch.object(m.select,'select',lambda *_:([],[],[])):
+ def stated(path): return owner.tmpfs_stat if path.endswith('/tmp') else Stat()
+ with patch('builtins.open',opened),patch.object(m.os,'stat',stated),patch.object(m.os,'statvfs',lambda _:owner.tmpfs_vfs),patch.object(m.os,'readlink',lambda _:'mnt:[1]'),patch.object(m.os,'pidfd_open',lambda _:9,create=True),patch.object(m.select,'select',lambda *_:([],[],[])):
   return owner.authenticate('sandbox')
-assert run(make())['pid']==42
-for caps,mounts in ((['CHOWN','KILL'],None),(['CAP_CHOWN','CAP_CHOWN'],None),(['CAP_CHOWN','CAP_KILL'],[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'}]),(['CAP_CHOWN','CAP_KILL'],[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'/unexpected','Destination':'/tmp','RW':True,'Propagation':''}])):
+assert run(make())['pid']==42 # Docker reports every tmpfs Mount
+assert run(make(mounts=[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'}]))['pid']==42 # legacy Docker omits all --tmpfs Mounts
+owned=make(); owned.ids['sandbox']['spec']['tmpfs']['/tmp']='rw,nosuid,nodev,noexec,size=1m,mode=1777,uid=7,gid=8'; owned.host['Tmpfs']['/tmp']=owned.ids['sandbox']['spec']['tmpfs']['/tmp']; owned.tmpfs_stat=Stat(2,3,0o41777,7,8); assert run(owned)['pid']==42
+partial=make(); partial.ids['sandbox']['spec']['tmpfs']['/run']='rw,nosuid,nodev,noexec,size=1m,mode=0700'; partial.host['Tmpfs']['/run']='rw,nosuid,nodev,noexec,size=1m,mode=0700'
+try: run(partial)
+except RuntimeError: pass
+else: raise AssertionError('partial tmpfs inventory accepted')
+for caps,mounts in ((['CHOWN','KILL'],None),(['CAP_CHOWN','CAP_CHOWN'],None),(['CAP_CHOWN','CAP_KILL'],[]),(['CAP_CHOWN','CAP_KILL'],[{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'/unexpected','Destination':'/tmp','RW':True,'Propagation':''}])):
  try: run(make(caps,mounts))
  except RuntimeError: pass
  else: raise AssertionError('noncanonical capability or incomplete tmpfs inventory accepted')
+for field,value in (('NetworkMode','container:'+'d'*64),('Devices',[{'PathOnHost':'/dev/null'}]),('Binds',['/host:/container'])):
+ owner=make(); owner.host[field]=value
+ try: run(owner)
+ except RuntimeError: pass
+ else: raise AssertionError('hostile HostConfig isolation accepted')
+owner=make(); owner.host['Tmpfs']={}
+try: run(owner)
+except RuntimeError: pass
+else: raise AssertionError('HostConfig tmpfs substitution accepted')
+for kind in ('options','mode','uid','gid','size','propagation'):
+ owner=make()
+ if kind=='options': owner.mountinfo=owner.mountinfo.replace('nosuid,nodev,noexec','nosuid,noexec')
+ if kind=='mode': owner.tmpfs_stat=Stat(2,3,0o41755)
+ if kind=='uid': owner.tmpfs_stat=Stat(2,3,0o41777,1,0)
+ if kind=='gid': owner.tmpfs_stat=Stat(2,3,0o41777,0,1)
+ if kind=='size': owner.tmpfs_vfs=Vfs(257)
+ if kind=='propagation': owner.mountinfo=owner.mountinfo.replace(' /tmp rw,nosuid',' /tmp rw,nosuid').replace(' - tmpfs',' shared:7 - tmpfs')
+ try: run(owner)
+ except RuntimeError: pass
+ else: raise AssertionError('hostile live tmpfs '+kind+' accepted')
 `,
     ],
     { encoding: "utf8", timeout: 10_000 },

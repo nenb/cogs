@@ -1696,11 +1696,16 @@ for code,phase in ((255,'authenticated-ssh-transport'),(41,'cloud-init-nonzero-d
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as error: assert error.phase==phase
         else: raise AssertionError('unclassified ready exit accepted')
-for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed'),(h.RetirementUncertain(),'local-retirement-uncertain')):
+for error,phase in ((h.BoundedDeadline(),'deadline'),(h.BoundedBytes(),'byte'),(h.BoundedMalformed(),'malformed')):
     with patch.object(h,'bounded',side_effect=error):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as observed: assert observed.phase==phase
         else: raise AssertionError('unclassified local readiness failure accepted')
+for command in ('ready','boot-id'):
+    with patch.object(h,'bounded',side_effect=h.RetirementUncertain):
+        try: h.guest(state,command,'18080',120)
+        except h.RetirementUncertain: pass
+        else: raise AssertionError('guest wrapper downgraded retirement uncertainty')
 # Readiness retries ONLY key exchange without a remote command, under one bound.
 scans=[]; guests=[]; clock=[0.0]
 def scan(state,end): scans.append(end); clock[0]+=4; return len(scans)==3
@@ -1724,6 +1729,14 @@ with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert bounded.call_args.args[2:]==(5,5)
 for code,raw in ((1,b'x'),(2,b''),(-1,b'')):
     with patch.object(h,'bounded',return_value=(code,raw)): rejects(lambda:h.host_key(state,5))
+with patch.object(h,'bounded',side_effect=h.RetirementUncertain):
+    try: h.host_key(state,5)
+    except h.RetirementUncertain: pass
+    else: raise AssertionError('keyscan wrapper downgraded retirement uncertainty')
+with patch.object(h,'host_key',side_effect=h.RetirementUncertain), patch.object(h,'read_control',return_value=(nonce+'\n').encode()):
+    try: h.execute('readiness',state,nonce,'18080')
+    except h.RetirementUncertain: pass
+    else: raise AssertionError('readiness retry wrapper downgraded retirement uncertainty')
 `);
 });
 
@@ -1818,10 +1831,12 @@ with patch.object(h,'require_driver',side_effect=AssertionError('custody reached
 with patch.object(h.os,'fstat',side_effect=OSError), patch.object(h.subprocess,'Popen',side_effect=AssertionError), \
      patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
     assert h.main()==1
-# Primitive local retirement failures become exit 2, not settled guest failure.
-with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
-     patch.object(sys,'argv',['bounded','root','/safe','a'*32,'18080']):
-    assert h.main()==2
+# CLI preserves retirement uncertainty from both readiness/keyscan phases as
+# reserved exit 2; it must not emit their ordinary fixed-phase failure status.
+for command in ('readiness','host-key','root'):
+    with patch.object(h,'require_local_execution'), patch.object(h,'require_driver'), patch.object(h,'execute',side_effect=h.RetirementUncertain), \
+         patch.object(sys,'argv',['bounded',command,'/safe','a'*32,'18080']):
+        assert h.main()==2
 native_retire=h.retire
 children=[]; original=h.subprocess.Popen
 def spawn(*args,**kwargs):
@@ -1879,6 +1894,21 @@ ${mode === "lost" ? "generation_owner guest-start root" : mode === "foreign" ? `
         { encoding: "utf8" },
       );
       assert.equal(check.status === 0, mode === "success" || mode === "foreign");
+      if (["uncertain", "killed", "lost"].includes(mode)) {
+        // Exit 2/lost helper completion preserves the exact guest intent: no
+        // rollback acquisition or state removal can turn it into cleanup proof.
+        const retained = spawnSync(
+          "bash",
+          [
+            "-c",
+            `${program.slice(0, program.indexOf("generation_owner init"))}! generation_owner intent reset; ! generation_owner remove; generation_owner check destroy`,
+          ],
+          { encoding: "utf8" },
+        );
+        assert.notEqual(retained.status, 0, retained.stderr);
+        const afterRefusal = JSON.parse(await readFile(join(state, ".generation.owner"), "utf8"));
+        assert.equal(afterRefusal.guest, "root");
+      }
       if (mode === "failure") {
         const cleanup = spawnSync(
           "bash",
