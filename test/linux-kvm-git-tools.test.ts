@@ -303,8 +303,8 @@ test("Linux/KVM driver wires Git tools as read-only guest disk with fixed verifi
     /LD_LIBRARY_PATH=\/opt\/cogs-git\/usr\/lib\/x86_64-linux-gnu \/usr\/bin\/ldd \/opt\/cogs-git\/usr\/bin\/git/u,
   );
   assert.match(text, /case "\$ldd_output" in \*"not found"\*\) exit 1/u);
-  assert.match(text, /READY_WRAPPER = "set -euo pipefail; cloud-init status --wait/u);
-  assert.match(text, /ReadyFailure\("cloud-init-nonzero-degraded"\)|ReadyFailure\("marker-missing"\)/u);
+  assert.match(text, /READY_WRAPPER = r'''set -euo pipefail[\s\S]*cloud-init status --wait \|\| :/u);
+  assert.match(text, /campaign-setup\.complete[\s\S]*setup-completion/u);
   assert.match(text, /git init -q/u);
   assert.match(text, /git notes --ref=cogs add/u);
   assert.match(text, /git fsck --no-progress/u);
@@ -1695,7 +1695,7 @@ assert 'cloud-init status --wait' in h.PROBES['ready'] and '/var/lib/cloud/insta
 for code,raw in ((255,b''),(1,b''),(-15,b''),(0,boot+b'\n')):
     with patch.object(h,'bounded',return_value=(code,raw)):
         rejects(lambda:h.guest(state,'boot-id','18080'))
-for code,phase in ((255,'authenticated-ssh-transport'),(41,'cloud-init-nonzero-degraded'),(42,'marker-missing'),(9,'malformed')):
+for code,phase in ((255,'authenticated-ssh-transport'),(41,'boot-finished'),(42,'setup-marker'),(43,'setup-mount'),(44,'setup-git'),(45,'setup-skills'),(46,'setup-sshd'),(47,'setup-completion'),(48,'setup-mount-check'),(49,'setup-git-check'),(50,'setup-skills-check'),(51,'setup-sshd-check'),(9,'malformed')):
     with patch.object(h,'bounded',return_value=(code,b'')):
         try: h.guest(state,'ready','18080',120)
         except h.ReadyFailure as error: assert error.phase==phase
@@ -1756,6 +1756,38 @@ with patch.object(h,'host_key',side_effect=h.RetirementUncertain), patch.object(
     try: h.execute('readiness',state,nonce,'18080')
     except h.RetirementUncertain: pass
     else: raise AssertionError('readiness retry wrapper downgraded retirement uncertainty')
+`);
+});
+
+test("KVM readiness accepts only exact campaign setup evidence without guest output", async () => {
+  await boundedTest(String.raw`
+with tempfile.TemporaryDirectory() as root:
+    root=pathlib.Path(root); bindir=root/'bin'; bindir.mkdir(); boot=root/'boot'; stage=root/'stage'; complete=root/'complete'; git=root/'git'; shared=root/'shared'; user=root/'user'
+    boot.write_text('done'); git.symlink_to('/opt/cogs-git/bin/git'); shared.mkdir(); user.mkdir()
+    tools={
+      'cloud-init':'#!/bin/sh\nexit 1\n', 'mountpoint':'#!/bin/sh\nexit 0\n',
+      'findmnt':'#!/bin/sh\nprintf "ro,nosuid,nodev\\n"\n', 'readlink':'#!/bin/sh\nprintf "/opt/cogs-git/bin/git\\n"\n',
+      'realpath':'#!/bin/sh\nprintf "%s\\n" "$2"\n', 'systemctl':'#!/bin/sh\nexit "'+'$'+'{SSHD:-0}"\n',
+      'stat':'#!/bin/sh\ncase "$*" in *stage*) printf "%s\\n" "'+'$'+'{STAGE_STAT:-0:0:600:regular file:1}";; *complete*) printf "%s\\n" "'+'$'+'{COMPLETE_STAT:-0:0:400:regular file:1}";; *git*) printf "0:0:symbolic link\\n";; *) printf "0:0:700:directory\\n";; esac\n'}
+    for name,value in tools.items():
+        path=bindir/name; path.write_text(value); path.chmod(0o700)
+    wrapper=h.READY_WRAPPER.replace('/var/lib/cloud/instance/boot-finished',str(boot)).replace('/var/lib/cogs/campaign-setup.stage',str(stage)).replace('/var/lib/cogs/campaign-setup.complete',str(complete)).replace('/usr/bin/git',str(git)).replace('/shared/skills',str(shared)).replace('/user/skills',str(user))
+    def run(stage_value=None,completion=True,env={}):
+        for path in (stage,complete):
+            if path.exists(): path.unlink()
+        if stage_value is not None: stage.write_text(stage_value)
+        if completion: complete.write_text('COMPLETE')
+        return subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH'],**env},capture_output=True)
+    accepted=run('SSHD',True)
+    assert accepted.returncode==0 and accepted.stdout==accepted.stderr==b'' # degraded cloud-init has no veto
+    for marker,code in (('MOUNT',43),('GIT',44),('SKILLS',45),('SSHD',46)):
+        result=run(marker,False); assert result.returncode==code and result.stdout==result.stderr==b''
+    for env in ({'STAGE_STAT':'foreign'},{'COMPLETE_STAT':'foreign'},{'COMPLETE_STAT':'0:1:400:regular file:1'},{'COMPLETE_STAT':'0:0:600:regular file:1'}):
+        result=run('SSHD',False if 'STAGE_STAT' in env else True,env); assert result.returncode in (42,47) and result.stdout==result.stderr==b''
+    for value in ('FOREIGN',''):
+        result=run('SSHD',True); complete.write_text(value); result=subprocess.run(['/bin/bash','-c',wrapper],env={**os.environ,'PATH':str(bindir)+':'+os.environ['PATH']},capture_output=True); assert result.returncode==47 and result.stdout==result.stderr==b''
+    for env,code in (({'SSHD':'1'},51),):
+        result=run('SSHD',True,env); assert result.returncode==code and result.stdout==result.stderr==b''
 `);
 });
 

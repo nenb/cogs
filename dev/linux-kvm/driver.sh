@@ -693,10 +693,21 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      umask 077
+      install -d -o root -g root -m 0700 /var/lib/cogs
+      stage=/var/lib/cogs/campaign-setup.stage
+      complete=/var/lib/cogs/campaign-setup.complete
+      test ! -e "\$stage" && test ! -e "\$complete" && test ! -e "\$complete.pending"
+      mark() { printf '%s' "\$1" > "\$stage"; chown root:root "\$stage"; chmod 0600 "\$stage"; sync -f "\$stage"; }
+      mark MOUNT
+      mountpoint -q /workspace
+      findmnt -rn -o OPTIONS /workspace | grep -Eq "(^|,)nosuid(,|$)"
+      findmnt -rn -o OPTIONS /workspace | grep -Eq "(^|,)nodev(,|$)"
       mountpoint -q /opt/cogs-git
       findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)"
       findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)"
       findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"
+      mark GIT
       test ! -e /usr/bin/git
       test ! -L /usr/bin/git
       ln -s /opt/cogs-git/bin/git /usr/bin/git
@@ -704,6 +715,7 @@ write_files:
       test -L /usr/bin/git
       test "\$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
       test "\$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
+      mark SKILLS
       mkdir -p /shared/skills /user/skills
       chown root:root /shared/skills /user/skills
       chmod 0700 /shared/skills /user/skills
@@ -713,7 +725,15 @@ write_files:
         test "\$(realpath -e "\$skill_root")" = "\$skill_root"
         test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"
       done
+      mark SSHD
       systemctl restart ssh
+      systemctl is-active --quiet ssh
+      printf COMPLETE > "\$complete.pending"
+      chown root:root "\$complete.pending"
+      chmod 0400 "\$complete.pending"
+      sync -f "\$complete.pending"
+      mv "\$complete.pending" "\$complete"
+      sync -f /var/lib/cogs
 mounts:
   - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
   - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']

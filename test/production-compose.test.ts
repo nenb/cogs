@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -17,6 +18,7 @@ import {
   productFailureDiagnostic,
   requireProbeSuiteWindow,
   syntheticPkiArgv,
+  WORKER_GATE,
   withProductCustody,
 } from "../dev/product-test/runner.ts";
 import {
@@ -82,6 +84,80 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
   assert.match(workflow, /capability_coverage/u);
   assert.match(workflow, /AUTHORITY'\]!='probe-only'/u);
   assert.match(workflow, /matrix\.authority == 'candidate-pass'/u);
+});
+
+test("worker gate retries only the late lease socket and imports only after its exact lease", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "cogs-worker-gate-"));
+  const receipt = resolve(tmpdir(), `cogs-worker-gate-receipt-${process.pid}-${Date.now()}`);
+  const socketPath = resolve(root, "gate.sock");
+  await writeFile(receipt, '{"consumer_id":"a"}\n', { mode: 0o400 });
+  const source = WORKER_GATE.replaceAll("/run/cogs/skills/snapshot-receipt.json", receipt)
+    .replaceAll("/run/cogs/skills/gate.sock", socketPath)
+    .replace("s.uid!==0||", "")
+    .replace("performance.now()+5000", "performance.now()+120")
+    .replace(
+      "await (await import('/opt/cogs/dev/product-test/runner.ts')).workerMain();",
+      "process.stdout.write('IMPORTED');",
+    );
+  const run = () => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "",
+      stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (data) => (stdout += data));
+    child.stderr.setEncoding("utf8").on("data", (data) => (stderr += data));
+    return {
+      child,
+      result: new Promise<{ code: number | null; stdout: string; stderr: string }>((done) =>
+        child.on("exit", (code) => done({ code, stdout, stderr })),
+      ),
+    };
+  };
+  try {
+    const delayed = run();
+    const server = createServer((peer) =>
+      peer.once("data", (data) => {
+        assert.equal((delayed.child.stdout.read() ?? "").toString(), "", "candidate imported before lease");
+        const request = JSON.parse(data.toString()) as Record<string, unknown>;
+        peer.write(`${JSON.stringify({ ...request, op: "leased" })}\n`);
+      }),
+    );
+    await new Promise<void>((done) => setTimeout(done, 25));
+    await new Promise<void>((done, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, done);
+    });
+    assert.deepEqual(await delayed.result, { code: 0, stdout: "IMPORTED", stderr: "" });
+    server.close();
+    await rm(socketPath, { force: true });
+
+    const malformed = run();
+    const foreign = createServer((peer) => peer.end('{"op":"foreign"}\n'));
+    await new Promise<void>((done, reject) => {
+      foreign.once("error", reject);
+      foreign.listen(socketPath, done);
+    });
+    const malformedResult = await malformed.result;
+    assert.notEqual(malformedResult.code, 0);
+    assert.equal(malformedResult.stdout, "");
+    foreign.close();
+    await rm(socketPath, { force: true });
+
+    const timedOut = await run().result;
+    assert.notEqual(timedOut.code, 0);
+    assert.equal(timedOut.stdout, "");
+
+    await chmod(root, 0o000);
+    const denied = await run().result;
+    assert.notEqual(denied.code, 0);
+    assert.equal(denied.stdout, "");
+    await chmod(root, 0o700);
+  } finally {
+    await chmod(root, 0o700).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+    await rm(receipt, { force: true });
+  }
 });
 
 test("protected product and KVM admissions settle complete validated history before enabling exact effects", async () => {
