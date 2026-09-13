@@ -317,6 +317,77 @@ for failed in (False,True):
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("host custody line framing accepts bounded chunks and refuses a pipelined frame", async () => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      String.raw`
+import importlib.util,os,threading
+s=importlib.util.spec_from_file_location('custody','dev/product-test/host-custody.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+r,w=os.pipe(); payload=b'x'*100000+b'\n'
+def write_all():
+ view=memoryview(payload)
+ while view: view=view[os.write(w,view):]
+ os.close(w)
+t=threading.Thread(target=write_all);t.start()
+assert m.line(r,len(payload))==payload; os.close(r);t.join()
+r,w=os.pipe();os.write(w,b'{"one":1}\n{"two":2}\n')
+try: m.line(r,1024)
+except RuntimeError: pass
+else: raise AssertionError('pipelined frame accepted')
+os.close(r);os.close(w)
+assert m.DIAGNOSTICS==frozenset(('constructor','operation','helper'))
+r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
+try: m.emit_diagnostic('a'*32,'helper')
+finally: os.dup2(old,1);os.close(old);os.close(w)
+assert os.read(r,128)==b'{"diagnostic":"helper","generation":"'+b'a'*32+b'"}\n';os.close(r)
+`,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const runner = await readFile("dev/product-test/runner.ts", "utf8");
+  assert.match(runner, /req -quiet -x509 -newkey rsa:2048/u);
+  assert.match(runner, /req -quiet -new -newkey rsa:2048/u);
+});
+
+test("product custody aggregates operation, settlement, and closure failures", async () => {
+  const operation = new Error("operation"),
+    settlement = new Error("settlement"),
+    closure = new Error("closure");
+  const calls: string[] = [];
+  const host: CustodyPort = {
+    root: "/custody",
+    generation: "a".repeat(32),
+    request: async (op) => {
+      calls.push(op);
+      throw settlement;
+    },
+    closed: new Promise((_, reject) => setTimeout(() => reject(closure), 0)),
+  };
+  await assert.rejects(
+    withProductCustody(host, async () => {
+      throw operation;
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [operation, settlement, closure]);
+      return true;
+    },
+  );
+  assert.deepEqual(calls, ["settle"]);
+  const uncertain: CustodyPort = {
+    ...host,
+    request: async <T>() => ({ retired: true, failed: true }) as T,
+    closed: Promise.resolve(),
+  };
+  await assert.rejects(withProductCustody(uncertain, async () => true));
+});
+
 test("every capability-removal scenario executes create/start/pinned SSH/SFTP/probe/receipt cleanup without worker authority", async () => {
   const generation = "a".repeat(32);
   const full: ContainerSpec = {

@@ -342,10 +342,10 @@ class SyntheticAuthorityOwner {
     const openssl = (args: string) => run("openssl", args.split(" "));
     for (const name of ["envoy", "telemetry"]) {
       await openssl(
-        `req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=synthetic-${name}-CA -addext basicConstraints=critical,CA:TRUE -keyout ${root}/${name}-ca.key -out ${root}/${name}-ca.crt`,
+        `req -quiet -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=synthetic-${name}-CA -addext basicConstraints=critical,CA:TRUE -keyout ${root}/${name}-ca.key -out ${root}/${name}-ca.crt`,
       );
       await openssl(
-        `req -new -newkey rsa:2048 -nodes -subj /CN=${name === "envoy" ? "fixture.cogs.test" : "127.0.0.1"} -keyout ${root}/${name}.key -out ${root}/${name}.csr`,
+        `req -quiet -new -newkey rsa:2048 -nodes -subj /CN=${name === "envoy" ? "fixture.cogs.test" : "127.0.0.1"} -keyout ${root}/${name}.key -out ${root}/${name}.csr`,
       );
       await put(
         this.host,
@@ -390,15 +390,27 @@ class SyntheticAuthorityOwner {
 
 export async function withProductCustody(host: CustodyPort, operation: () => Promise<boolean>): Promise<void> {
   let passed = false;
+  const failures: unknown[] = [];
   try {
     passed = await operation();
-  } finally {
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
     const result = await host.request<{ retired: boolean; failed: boolean }>("settle", { passed });
-    await host.closed;
     check(
       result.retired && (host.purpose === "capability-probe" ? result.failed && !passed : !result.failed && passed),
     );
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    await host.closed;
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "product custody failed");
 }
 export async function capabilityRemovalScenario(host: CustodyPort, full: ContainerSpec, removed: string) {
   check(

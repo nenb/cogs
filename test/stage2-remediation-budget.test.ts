@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 has the five literal Row 1 tasks and preserves its final reserve", () => {
+test("ADR0338/ADR0339 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -20,6 +20,8 @@ assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_byte
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (39557,28200000)
 assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
 assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','test/ci-infrastructure-boundary.test.ts']
+assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
+assert {'dev/linux-kvm/driver.sh','test/linux-kvm-git-tools.test.ts','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','test/production-compose.test.ts'} <= set(tasks[1]['paths'])
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
@@ -60,6 +62,21 @@ test("ADR0338 records temporary runner-loss handling without effect authority", 
     "test/aws-stage2-completion-local-result.test.ts",
   ])
     assert.ok(compact.includes(path), path);
+});
+
+test("ADR0339 records failed first attempts and the correction-only stop", () => {
+  const adr = readFileSync("docs/adr/0339-row4-first-attempt-corrections.md", "utf8");
+  for (const phrase of [
+    "34736648989",
+    "34736650134",
+    "09e586c2377738fabeee9d6900bf4b3f89c94372",
+    "non-authoritative",
+    "continue Rows 4–10 while\nstopping before AWS",
+    "one\nfresh replacement candidate",
+    "same-byte retry, H/G/Q",
+    "Docker or KVM execution, or AWS, OpenTofu, SSM, or network effects",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

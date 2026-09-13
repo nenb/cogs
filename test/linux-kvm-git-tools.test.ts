@@ -792,6 +792,40 @@ printf ready >> "$CALLS"`,
   }
 });
 
+test("prepare_keys makes generated private and public keys generation-owner mode 0600", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const source = shellFunction(await readFile(driver, "utf8"), "prepare_keys");
+  const state = await mkdtemp(join(tmpdir(), "cogs-kvm-keys-"));
+  try {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+state=${JSON.stringify(state)}; guest_ip=192.0.2.2
+ssh-keygen() {
+  local target=; while [[ $# -gt 0 ]]; do [[ $1 == -f ]] && { target=$2; shift 2; continue; }; shift; done
+  printf private > "$target"; printf 'ssh-ed25519 AAAA generated\\n' > "$target.pub"; chmod 0600 "$target"; chmod 0644 "$target.pub"
+}
+${source}
+prepare_keys
+stat -f '%Lp %N' "$state/control/"*_ed25519_key "$state/control/"*_ed25519_key.pub`,
+      ],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      result.stdout
+        .trim()
+        .split("\n")
+        .map((line) => line.split(" ")[0]),
+      ["600", "600", "600", "600"],
+    );
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("cleanup wiring retains uncertainty, has no PID-number signaling or suppressed network failures", async () => {
   const text = await readFile(driver, "utf8");
   assert.doesNotMatch(text, /\bkill\b|remove_firewall|iptables -F/u);
@@ -1064,6 +1098,58 @@ test("KVM generation owner binds exact private state and never adopts replacemen
     await assert.rejects(lstat(partial), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("KVM generation owner names missing, unexpected, wrong-kind, and wrong-mode fixed outputs", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const source = shellFunction(await readFile(driver, "utf8"), "generation_owner");
+  const program = source.split("<<'PY'\n")[1]?.split("\nPY\n")[0];
+  assert.ok(program);
+  const root = await mkdtemp(join(tmpdir(), "cogs-kvm-stage-output-"));
+  const generation = "a".repeat(32),
+    revision = "b".repeat(40);
+  const invoke = (state: string, action: string, key = "") =>
+    spawnSync("python3", ["-I", "-c", program, root, state, action, generation, key, revision, "linux-kvm", state], {
+      encoding: "utf8",
+    });
+  try {
+    for (const [name, mutate, diagnostic] of [
+      ["missing", async (state: string) => rm(join(state, "known_hosts")), "missing stage output: known_hosts"],
+      [
+        "unexpected",
+        async (state: string) => writeFile(join(state, "foreign"), "x", { mode: 0o600 }),
+        "unexpected stage output path",
+      ],
+      [
+        "kind",
+        async (state: string) => {
+          await rm(join(state, "known_hosts"));
+          await mkdir(join(state, "known_hosts"), { mode: 0o700 });
+        },
+        "wrong stage output kind: known_hosts",
+      ],
+      [
+        "mode",
+        async (state: string) => chmod(join(state, "control", "host_ed25519_key.pub"), 0o644),
+        "wrong stage output mode: control/host_ed25519_key.pub",
+      ],
+    ] as const) {
+      const state = join(root, name);
+      assert.equal(invoke(state, "init").status, 0);
+      assert.equal(invoke(state, "intent", "keys").status, 0);
+      await mkdir(join(state, "control"), { mode: 0o700 });
+      for (const file of ["client_ed25519_key", "client_ed25519_key.pub", "host_ed25519_key", "host_ed25519_key.pub"])
+        await writeFile(join(state, "control", file), "key", { mode: 0o600 });
+      await writeFile(join(state, "known_hosts"), "host", { mode: 0o600 });
+      await mutate(state);
+      const result = invoke(state, "commit", "keys");
+      assert.notEqual(result.status, 0, name);
+      assert.match(result.stderr, new RegExp(diagnostic.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+      assert.equal(JSON.parse(await readFile(join(state, ".generation.owner"), "utf8")).uncertain, true);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

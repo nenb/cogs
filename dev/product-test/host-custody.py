@@ -23,6 +23,7 @@ import sys
 import time
 
 NONCE = re.compile(r"[0-9a-f]{32}\Z"); ID = re.compile(r"[0-9a-f]{64}\Z")
+DIAGNOSTICS = frozenset(("constructor", "operation", "helper"))
 CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent",
@@ -48,11 +49,30 @@ def identity(s):
 
 def line(fd, maximum, deadline=float("inf")):
     data = bytearray(); end = min(deadline, time.monotonic() + 2)
-    while not data.endswith(b"\n"):
-        require(len(data) < maximum and time.monotonic() < end); require(select.select([fd], [], [], max(0, end - time.monotonic()))[0])
-        chunk = os.read(fd, 1); require(chunk)
+    while True:
+        require(len(data) < maximum and time.monotonic() < end)
+        require(select.select([fd], [], [], max(0, end - time.monotonic()))[0])
+        chunk = os.read(fd, min(32768, maximum - len(data))); require(chunk)
         data.extend(chunk)
-    return bytes(data)
+        newline = data.find(b"\n")
+        if newline >= 0:
+            require(newline == len(data) - 1)
+            # A queued second frame is an ambiguous pipelined request, never a
+            # subsequent request that this reader may consume.
+            if select.select([fd], [], [], 0)[0]:
+                require(not os.read(fd, 1))
+            return bytes(data)
+
+
+def emit(value):
+    data = memoryview(canonical(value))
+    while data:
+        data = data[os.write(sys.stdout.fileno(), data):]
+
+
+def emit_diagnostic(generation, stage):
+    require(NONCE.fullmatch(generation) and stage in DIAGNOSTICS)
+    emit({"diagnostic": stage, "generation": generation})
 
 
 def directory(parent, name, mode=None):
@@ -234,7 +254,7 @@ class Custody:
         self.ids, self.peers, self.mounts, self.images, self.sealed = {}, {}, [], {}, []; self.fd = self.control = self.lock = self.disk = None
         self.cgroup_parent = self.cgroup_fd = self.helpers_fd = None; self.cgroup_veto = False
         self.publication, self.history, self.shutdown = None, None, False; self.admissions, self.nodes, self.publications, self.records = [], 0, [], set()
-        self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True
+        self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True; self.failure_stage = "constructor"
         self.failed, self.released = False, False; self.used, self.events, self.turns, self.headers = set(), 0, 0, False
         self.root = "/var/lib/cogs-product-test/" + self.generation
         parent = os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); s = os.fstat(parent)
@@ -463,6 +483,7 @@ class Custody:
             pass  # Failed persistence never clears the live veto.
 
     def command(self, argv, cap=1048576, status=False, pass_fds=()):
+        if getattr(self, "failure_stage", "constructor") != "constructor": self.failure_stage = "helper"
         parent_pid = os.getpid(); held = None; continued = False
         def arm_parent_death():
             if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent_pid:
@@ -1137,6 +1158,7 @@ class Custody:
                 require(all(time.monotonic() - h["last"] < 5 for h in self.peers.values()))
                 for key, _ in self.selector.select(0.1):
                     if key.data == "supervisor":
+                        self.failure_stage = "operation"
                         raw = line(sys.stdin.fileno(), 4 * 1048576, self.deadline)
                         require(raw.endswith(b"\n"))
                         q = json.loads(raw)
@@ -1151,20 +1173,29 @@ class Custody:
                         if final:
                             return
                     elif key.data == "peer":
-                        self.message(key.fileobj)
+                        self.failure_stage = "helper"; self.message(key.fileobj)
                     else:
-                        self.peer(key.fileobj, key.data)
+                        self.failure_stage = "helper"; self.peer(key.fileobj, key.data)
         except BaseException:
+            stage = self.failure_stage
             self.rollback()
+            self.failure_stage = stage
             raise
 
 
 if __name__ == "__main__":
+    owner = None; generation = None
     try:
-        config = json.loads(line(sys.stdin.fileno(), 32768))
+        config = json.loads(line(sys.stdin.fileno(), 32768)); generation = config.get("generation")
         owner = Custody(config)
         if not owner.recovery:
+            emit({"generation": owner.generation, "result": "ready"})
             owner.run()
     except BaseException:
+        # This is the entire parent-visible failure grammar: it deliberately
+        # excludes exception text, stderr, argv, paths, and custody material.
+        if isinstance(generation, str) and NONCE.fullmatch(generation):
+            try: emit_diagnostic(generation, owner.failure_stage if owner is not None else "constructor")
+            except BaseException: pass
         sys.stderr.write("product custody failed; preserve generation control\n")
         sys.exit(1)
