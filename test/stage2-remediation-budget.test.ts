@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0343 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0344 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -25,7 +25,8 @@ assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['path
 assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0342-row4-fourth-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0343-row4-fifth-minimal-correction-batch.md' in tasks[0]['paths']
-assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','test/linux-kvm-git-tools.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts']
+assert 'docs/adr/0344-row4-proactive-confirmed-domain-batch.md' in tasks[0]['paths']
+assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','src/egress/otlp-telemetry.ts','src/ssh/connection.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/linux-kvm-git-tools.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local

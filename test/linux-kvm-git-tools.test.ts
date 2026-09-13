@@ -633,9 +633,15 @@ test("driver UART is null on the shared create/reset launch; stage-zero marker c
   const text = await readFile(driver, "utf8");
   serialContract(text);
   const qualify = await readFile(join(root, "dev/linux-kvm/qualify.sh"), "utf8");
-  assert.ok(qualify.includes('-serial file:"$guest_log"'));
+  assert.ok(qualify.includes("qualification-owner.py"));
   assert.ok(qualify.includes('echo "COGS_GUEST_READY=1"'));
-  assert.ok(qualify.includes("grep -q '^COGS_GUEST_READY=1' \"$guest_log\""));
+  assert.ok(qualify.includes("qualification-owner.py"));
+  const qualificationOwner = await readFile(join(root, "dev/linux-kvm/qualification-owner.py"), "utf8");
+  assert.match(
+    qualificationOwner,
+    /pidfd signals required[\s\S]*load_qmp\(\)\(qmp, self\.end\)[\s\S]*owner-uncertain/u,
+  );
+  assert.match(qualificationOwner, /SIGTERM[\s\S]*SIGKILL[\s\S]*UART marker cap/u);
   for (const mutant of [
     '-serial file:"$state/serial.log"',
     "-serial file:/dev/null",
@@ -1670,7 +1676,7 @@ for raw in (b'{"a":1,"a":2}',b'{"a":NaN}',b'{"a":Infinity}',b'\xff'):
 state=pathlib.Path('/safe'); nonce='a'*32; calls=[]
 def bounded(argv,cap=16384,seconds=15,deadline=None):
     calls.append((argv,cap,seconds,deadline)); assert argv[0]=='/usr/bin/ssh'
-    assert argv[-2]=='root@192.0.2.2' and 'IdentityAgent=none' in argv
+    assert argv[-2]=='root@192.0.2.2' and 'IdentityAgent=none' in argv and 'LogLevel=ERROR' in argv
     return 0,boot if argv[-1]==h.PROBES['boot-id'] else b'6.12.95-amd64\n' if argv[-1]=='uname -r' else b''
 with patch.object(h,'bounded',bounded), patch.object(h,'read_control',lambda *args:(nonce+'\n').encode()), \
      patch('builtins.open',lambda *args:io.BytesIO(boot.replace(b'001',b'002'))):
@@ -1729,7 +1735,7 @@ with patch.object(h,'read_control',return_value=key):
 # with no output is retryable, and every other outcome retains the generation.
 with patch.object(h,'bounded',return_value=(1,b'')) as bounded:
     assert h.host_key(state,5) is False
-    assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-T','2','-t','ed25519','192.0.2.2']
+    assert bounded.call_args.args[0]==['/usr/bin/ssh-keyscan','-q','-T','2','-t','ed25519','192.0.2.2']
     assert bounded.call_args.args[2:]==(5,5)
 for error,phase in ((h.BoundedDeadline(),'host-key-unavailable-deadline'),(h.BoundedBytes(),'host-key-mismatch'),(h.BoundedMalformed('stdout-utf8'),'host-key-mismatch')):
     with patch.object(h,'bounded',side_effect=error):

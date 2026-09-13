@@ -184,12 +184,16 @@ class OtlpSink {
     if (this.closed) return;
     this.closing = true;
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    // The active request may already be accepted by a collector. Let it read its
+    // acknowledgement unless this close budget actually expires or is cancelled.
+    const abort = () => {
+      controller.abort();
+      this.controller?.abort();
+    };
     const timer = setTimeout(abort, this.timeoutMs);
     try {
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
-      this.controller?.abort();
       await this.pumping?.catch(() => undefined);
       await this.pump(true, controller.signal).catch(() => undefined);
     } finally {

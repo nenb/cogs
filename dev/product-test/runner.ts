@@ -815,10 +815,8 @@ export class ProductToolResults {
       );
       check(flags.every((key) => result[key] === false) && zeros.every((key) => result[key] === 0));
       check(Number.isSafeInteger(result.elapsedMs) && result.elapsedMs >= 0 && result.elapsedMs <= 10000);
-      for (const key of ["stdout", "stderr"]) {
-        check(typeof result[key] === "string" && Buffer.byteLength(result[key]) <= 4096);
-        check(result[`${key}Bytes`] === Buffer.byteLength(result[key]));
-      }
+      check(result.stdout === "proxy-controls-passed\n" && result.stderr === "");
+      check(result.stdoutBytes === 22 && result.stderrBytes === 0);
       check(this.results.length === 0);
       this.results.push(hash(canonical(message)));
       return projected;
@@ -886,11 +884,21 @@ export function admitScenarioValue(value: unknown): void {
 }
 
 async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<void> {
-  check(pi.projectedEntry);
+  check(pi.projectedEntry && pi.frontier);
+  // This pin is independent of the fragment endpoint and excludes the JSONL header.
+  const frontier = await pi.frontier();
+  check(
+    Number.isSafeInteger(frontier.entries) &&
+      frontier.entries >= 0 &&
+      (frontier.entries === 0 ? frontier.lastEntryId === null : typeof frontier.lastEntryId === "string"),
+  );
   let cursor: string | undefined, after: string | undefined;
-  let held: { entryId: string; bytes: Buffer } | undefined;
+  let held: { entryId: string; bytes: Buffer; fragments: number } | undefined;
   let offset = 0,
-    total = 0;
+    total = 0,
+    complete = 0;
+  let oversizedFragmented = false;
+  const keys = (value: object) => Object.keys(value).sort().join(",");
   for (let pages = 0; pages < 128; pages++) {
     const path = `/v1/entry-fragments${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
     const response = await fetch(`http://127.0.0.1:18081${path}`, {
@@ -914,14 +922,48 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
       await reader.cancel();
       reader.releaseLock();
     }
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    check(value !== null && typeof value === "object" && !Array.isArray(value));
+    const envelope = value as Record<string, unknown>;
     check(
-      value.version === "cogs.entry-fragments/v1" &&
-        value.projection === "cogs.permitted-json/v1" &&
-        value.fragments.length <= 1,
+      envelope.version === "cogs.entry-fragments/v1" &&
+        envelope.projection === "cogs.permitted-json/v1" &&
+        Array.isArray(envelope.fragments) &&
+        envelope.fragments.length <= 1 &&
+        typeof envelope.snapshotFinal === "boolean",
     );
-    for (const fragment of value.fragments) {
-      held ??= await pi.projectedEntry({ after });
+    if (envelope.snapshotFinal) {
+      check(keys(envelope) === "fragments,projection,snapshotFinal,tail,version");
+      check(typeof envelope.tail === "string" && envelope.tail.length > 0 && envelope.tail.length <= 2048);
+    } else {
+      check(keys(envelope) === "fragments,next,projection,snapshotFinal,version");
+      check(typeof envelope.next === "string" && envelope.next.length > 0 && envelope.next.length <= 2048);
+    }
+    // A nonempty history starts with an empty pin handshake; no entry may be
+    // accepted before it. Empty histories have the corresponding terminal tail.
+    if (pages === 0) {
+      check(envelope.fragments.length === 0);
+      check(envelope.snapshotFinal === (frontier.entries === 0));
+      if (frontier.entries === 0) return;
+      cursor = envelope.next as string;
+      continue;
+    }
+    for (const rawFragment of envelope.fragments) {
+      check(rawFragment !== null && typeof rawFragment === "object" && !Array.isArray(rawFragment));
+      const fragment = rawFragment as Record<string, unknown>;
+      check(keys(fragment) === "data,encoding,entryId,final,offset,totalBytes");
+      check(
+        typeof fragment.entryId === "string" &&
+          typeof fragment.offset === "number" &&
+          Number.isSafeInteger(fragment.offset) &&
+          fragment.offset >= 0 &&
+          typeof fragment.totalBytes === "number" &&
+          Number.isSafeInteger(fragment.totalBytes) &&
+          fragment.totalBytes > 0 &&
+          typeof fragment.data === "string" &&
+          typeof fragment.final === "boolean",
+      );
+      held ??= { ...(await pi.projectedEntry({ after })), fragments: 0 };
       const data = Buffer.from(fragment.data, "base64");
       total += data.length;
       check(total <= 2 * 1024 * 1024 && data.length > 0);
@@ -933,20 +975,25 @@ async function verifyFragments(pi: CogsPiSessionPorts, bearer: string): Promise<
           fragment.totalBytes === held.bytes.length,
       );
       check(data.equals(held.bytes.subarray(offset, offset + data.length)));
+      held.fragments++;
       offset += data.length;
       if (fragment.final) {
         check(offset === held.bytes.length);
+        oversizedFragmented ||= held.bytes.length > 49_152 && held.fragments > 1;
         after = held.entryId;
+        complete++;
         held = undefined;
         offset = 0;
       }
     }
-    if (value.snapshotFinal) {
-      check(!held && after !== undefined);
+    if (envelope.snapshotFinal) {
+      check(!held && complete === frontier.entries && after === frontier.lastEntryId);
+      check(oversizedFragmented);
       return;
     }
-    check(typeof value.next === "string" && value.next.length <= 2048 && value.next !== cursor);
-    cursor = value.next;
+    const next = envelope.next as string;
+    check(next !== cursor);
+    cursor = next;
   }
   throw new Error("fragment bound crossed");
 }

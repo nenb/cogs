@@ -778,6 +778,41 @@ test("worker telemetry close uses one total deadline for hostile mixed queued ba
   assert.equal(sink.ready, false);
 });
 
+test("worker telemetry close drains an acknowledged active mixed batch within its one budget", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<Response>();
+  const calls: string[] = [];
+  const sink = createCogsWorkerTelemetrySink({
+    mode: "otlp",
+    tracesEndpoint: "http://127.0.0.1:9/v1/traces",
+    metricsEndpoint: "http://127.0.0.1:9/v1/metrics",
+    allowLoopbackHttpDevelopment: true,
+    fetch: Object.freeze((url: string) => {
+      calls.push(url);
+      if (calls.length === 1) {
+        entered.resolve();
+        return release.promise;
+      }
+      return Promise.resolve(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    }) as typeof fetch,
+    batchSize: 2,
+    clock: Object.freeze({ nowMs: Object.freeze(() => 1) }),
+    random: Object.freeze({ bytes: Object.freeze((length: number) => new Uint8Array(length).fill(16)) }),
+    timeoutMs: 100,
+  });
+  assert.equal(sink.span(goodSpan("pi.run")), true);
+  assert.equal(sink.metric(goodMetric()), true);
+  await entered.promise;
+  const close = sink.close();
+  release.resolve(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+  await close;
+  assert.deepEqual(
+    calls.map((url) => (url.endsWith("/v1/traces") ? "trace" : "metric")),
+    ["trace", "metric"],
+  );
+  assert.deepEqual(sink.snapshot(), { ready: false, queued: 0, exported: 2, dropped: 0, failed: 0, lag_ms: 0 });
+});
+
 test("worker telemetry active mixed batch does not start metric after close timeout", async () => {
   const calls: string[] = [];
   const fetchFn = Object.freeze((url: string) => {

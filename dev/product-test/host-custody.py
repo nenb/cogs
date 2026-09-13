@@ -248,9 +248,8 @@ def tool_result(entry):
     require(result["ok"] is True and type(result["exitCode"]) is int and result["exitCode"] == 0 and result["signal"] is None)
     require(all(result[k] is False for k in flags) and all(type(result[k]) is int and result[k] == 0 for k in zeros))
     require(type(result["elapsedMs"]) is int and 0 <= result["elapsedMs"] <= 10000)
-    for key in ("stdout", "stderr"):
-        require(isinstance(result[key], str) and len(result[key].encode()) <= 4096)
-        require(type(result[key + "Bytes"]) is int and result[key + "Bytes"] == len(result[key].encode()))
+    require(result["stdout"] == "proxy-controls-passed\n" and result["stderr"] == "")
+    require(result["stdoutBytes"] == 22 and result["stderrBytes"] == 0)
     return digest(canonical(message))
 
 

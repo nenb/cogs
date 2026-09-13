@@ -1125,6 +1125,14 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   public readonly port: CogsExecPort = this;
   readonly #stdout = new Set<(chunk: Buffer) => void>();
   readonly #stderr = new Set<(chunk: Buffer) => void>();
+  readonly #pendingStdout: Buffer[] = [];
+  readonly #pendingStderr: Buffer[] = [];
+  #pendingBytes = 0;
+  #stdoutRegistered = false;
+  #stderrRegistered = false;
+  #consumersActive = false;
+  #stdoutEnded = false;
+  #stderrEnded = false;
   #terminalResolve: ((value: CogsExecTerminal) => void) | undefined;
   #terminalReject: ((error: Error) => void) | undefined;
   #retirementResolve: (() => void) | undefined;
@@ -1142,6 +1150,8 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   readonly #onStderr = (chunk: unknown) => this.#data("stderr", chunk);
   readonly #onExit = (code: unknown, signal: unknown, coreDump: unknown, description: unknown) =>
     this.#exitEvent(code, signal, coreDump, description);
+  readonly #onStdoutEnd = () => this.#streamEnd("stdout");
+  readonly #onStderrEnd = () => this.#streamEnd("stderr");
   readonly #onClose = () => this.#closeEvent();
   readonly #onError = () => this.#fail();
   readonly #lateErrorSink = () => undefined;
@@ -1154,7 +1164,13 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
       this.#stderrStream.on("error", this.#lateErrorSink);
       channel.on("data", this.#onStdout);
       this.#stderrStream.on("data", this.#onStderr);
+      this.#stderrStream.on("end", this.#onStderrEnd);
+      channel.on("end", this.#onStdoutEnd);
       this.#stderrStream.on("error", this.#onError);
+      // ssh2 may parse success, data and close from one socket chunk. Do not
+      // enter flowing mode until the acquisition continuation has both sinks.
+      pauseReadable(channel);
+      pauseReadable(this.#stderrStream);
       channel.on("exit", this.#onExit);
       channel.on("error", this.#onError);
       channel.on("close", this.#onClose);
@@ -1166,10 +1182,14 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   public onStdout(listener: (chunk: Buffer) => void): void {
     if (this.#settled) throw new Error("exec channel closed");
     this.#stdout.add(listener);
+    this.#stdoutRegistered = true;
+    this.#activateConsumers();
   }
   public onStderr(listener: (chunk: Buffer) => void): void {
     if (this.#settled) throw new Error("exec channel closed");
     this.#stderr.add(listener);
+    this.#stderrRegistered = true;
+    this.#activateConsumers();
   }
   public terminal(): Promise<CogsExecTerminal> {
     return this.#terminal;
@@ -1203,6 +1223,18 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
       this.#fail();
       return;
     }
+    if (!this.#consumersActive) {
+      this.#pendingBytes += chunk.length;
+      if (this.#pendingBytes > 262_144) {
+        this.#fail();
+        return;
+      }
+      (kind === "stdout" ? this.#pendingStdout : this.#pendingStderr).push(chunk);
+      return;
+    }
+    this.#deliver(kind, chunk);
+  }
+  #deliver(kind: "stdout" | "stderr", chunk: Buffer): void {
     const listeners = kind === "stdout" ? this.#stdout : this.#stderr;
     for (const listener of [...listeners]) {
       try {
@@ -1212,6 +1244,25 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
         break;
       }
     }
+  }
+  #activateConsumers(): void {
+    if (this.#consumersActive || !this.#stdoutRegistered || !this.#stderrRegistered) return;
+    this.#consumersActive = true;
+    for (const chunk of this.#pendingStdout) this.#deliver("stdout", chunk);
+    for (const chunk of this.#pendingStderr) this.#deliver("stderr", chunk);
+    this.#pendingStdout.length = 0;
+    this.#pendingStderr.length = 0;
+    this.#pendingBytes = 0;
+    if (this.#settled) return;
+    resumeReadable(this.channel);
+    resumeReadable(this.#stderrStream);
+    this.#maybeSettle();
+  }
+  #streamEnd(kind: "stdout" | "stderr"): void {
+    if (this.#settled) return;
+    if (kind === "stdout") this.#stdoutEnded = true;
+    else this.#stderrEnded = true;
+    this.#maybeSettle();
   }
   #exitEvent(code: unknown, signal: unknown, coreDump: unknown, description: unknown): void {
     if (this.#settled || this.#exit !== undefined) {
@@ -1243,6 +1294,15 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
       this.#fail();
       return;
     }
+    this.#maybeSettle();
+  }
+  #maybeSettle(): void {
+    if (this.#settled || !this.#closed || !this.#consumersActive || this.#exit === undefined) return;
+    // Real ssh2 Readables must independently reach EOF; minimal test doubles
+    // have no readable state and are treated as already drained on close.
+    this.#stdoutEnded ||= readableEnded(this.channel);
+    this.#stderrEnded ||= readableEnded(this.#stderrStream);
+    if (!this.#stdoutEnded || !this.#stderrEnded) return;
     this.#settled = true;
     this.#cleanup();
     this.#terminalResolve?.(this.#exit);
@@ -1260,13 +1320,31 @@ class Ssh2ExecChannel implements SshExecChannel, CogsExecPort {
   #cleanup(): void {
     this.#stdout.clear();
     this.#stderr.clear();
+    this.#pendingStdout.length = 0;
+    this.#pendingStderr.length = 0;
+    this.#pendingBytes = 0;
     safeEmitterOff(this.channel, "data", this.#onStdout);
+    safeEmitterOff(this.channel, "end", this.#onStdoutEnd);
     safeEmitterOff(this.#stderrStream, "data", this.#onStderr);
+    safeEmitterOff(this.#stderrStream, "end", this.#onStderrEnd);
     safeEmitterOff(this.#stderrStream, "error", this.#onError);
     safeEmitterOff(this.channel, "exit", this.#onExit);
     safeEmitterOff(this.channel, "error", this.#onError);
     safeEmitterOff(this.channel, "close", this.#onClose);
   }
+}
+
+function pauseReadable(stream: { pause?: () => unknown }): void {
+  stream.pause?.();
+}
+
+function resumeReadable(stream: { resume?: () => unknown }): void {
+  stream.resume?.();
+}
+
+function readableEnded(stream: object): boolean {
+  const state = stream as { readonly readableEnded?: unknown };
+  return state.readableEnded === undefined || state.readableEnded === true;
 }
 
 function safeEmitterOff(

@@ -344,7 +344,7 @@ IDS = frozenset(PROBES) | {"readiness", "host-key", "qmp", "receipt-create", "re
 
 
 def ssh_argv(state, command):
-    return ["/usr/bin/ssh", "-F", "/dev/null", "-n", "-T", "-o", "BatchMode=yes",
+    return ["/usr/bin/ssh", "-F", "/dev/null", "-n", "-T", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
             "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1",
             "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={state}/known_hosts",
@@ -401,7 +401,9 @@ def host_key(state, deadline=None):
     # Keep two seconds inside the five-second outer bound: a keyscan timeout
     # cannot consume the retry scheduler's complete deadline.
     try:
-        code, raw = bounded(["/usr/bin/ssh-keyscan", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
+        # OpenSSH's pinned keyscan supports -q; suppress its local banner/progress
+        # without relaxing raw stderr validation in bounded().
+        code, raw = bounded(["/usr/bin/ssh-keyscan", "-q", "-T", "2", "-t", "ed25519", "192.0.2.2"], 4096, 5, deadline)
     except RetirementUncertain:
         # Keyscan retirement is custody uncertainty, not a host-key mismatch.
         raise
@@ -424,8 +426,8 @@ def host_key(state, deadline=None):
     return True
 
 
-def query_kvm(path):
-    end = time.monotonic() + 5
+def query_kvm(path, deadline=None):
+    end = min(time.monotonic() + 5, deadline if deadline is not None else float("inf"))
     pending = bytearray()
     total = count = 0
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client, selectors.DefaultSelector() as selector:
