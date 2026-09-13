@@ -49,6 +49,7 @@
           "gross_bytes": 3200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
+            ".github/workflows/kvm-qualification.yml",
             "dev/linux-kvm/driver.sh",
             "dev/product-test/host-custody.py",
             "dev/product-test/runner.ts",

@@ -129,6 +129,13 @@ jobs:
           printf 'COGS_KVM_NETNS=%s\n' "$ns" >>"$GITHUB_ENV"
           sudo ip -n "$ns" link set lo up
           identity=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net)
+          for tool in iptables ip6tables; do
+            for chain in INPUT FORWARD OUTPUT; do
+              sudo ip netns exec "$ns" "$tool" -w 5 -P "$chain" ACCEPT
+            done
+            expected=$'*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT'
+            test "$(sudo ip netns exec "$ns" "$tool"-save -t filter)" = "$expected"
+          done
           lease="/run/cogs-kvm-network-domain/$identity"
           printf 'COGS_KVM_NETNS_IDENTITY=%s\nCOGS_KVM_LEASE=%s\n' "$identity" "$lease" >>"$GITHUB_ENV"
           boot=$(cat /proc/sys/kernel/random/boot_id)

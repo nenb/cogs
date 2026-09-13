@@ -402,6 +402,94 @@ ${cleanup}`;
   }
 });
 
+test("KVM network-domain provisioning initializes complete empty dual-stack filter snapshots before driver handoff", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
+  const provision = workflowRunBlock(workflow, "Provision the exclusive disposable driver network domain");
+  const { spawnSync } = await import("node:child_process");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-filter-provision-"));
+  const empty = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT";
+  try {
+    for (const [mode, expectedStatus] of [
+      ["empty", 0],
+      ["unexpected-rule", 1],
+      ["unexpected-chain", 1],
+    ] as const) {
+      const calls = join(dir, `${mode}.calls`);
+      const githubEnv = join(dir, `${mode}.env`);
+      await writeFile(githubEnv, "");
+      const harness = `cat() {
+  if [[ "$#" -eq 1 && "$1" == /proc/sys/kernel/random/boot_id ]]; then
+    printf '00000000-0000-0000-0000-000000000042\\n'
+  else
+    command cat "$@"
+  fi
+}
+sudo() {
+  printf '%s\\n' "$*" >> "$CALLS"
+  case "$*" in
+    "ip netns add "*|"ip -n "*) ;;
+    "ip netns exec cogs-kvm-42-1 stat -Lc %d-%i /proc/self/ns/net") printf '4-42\\n' ;;
+    "ip netns exec cogs-kvm-42-1 iptables -w 5 -P "*|"ip netns exec cogs-kvm-42-1 ip6tables -w 5 -P "*) ;;
+    "ip netns exec cogs-kvm-42-1 iptables-save -t filter"|"ip netns exec cogs-kvm-42-1 ip6tables-save -t filter")
+      if [[ "$MODE" == unexpected-rule ]]; then
+        printf '*filter\\n:INPUT ACCEPT [0:0]\\n:FORWARD ACCEPT [0:0]\\n:OUTPUT ACCEPT [0:0]\\n-A INPUT -j DROP\\nCOMMIT\\n'
+      elif [[ "$MODE" == unexpected-chain ]]; then
+        printf '*filter\\n:INPUT ACCEPT [0:0]\\n:FORWARD ACCEPT [0:0]\\n:OUTPUT ACCEPT [0:0]\\n:foreign - [0:0]\\nCOMMIT\\n'
+      else
+        printf '%s\\n' "$EMPTY_FILTER"
+      fi
+      ;;
+    "ip netns pids cogs-kvm-42-1") ;;
+    "ip netns delete cogs-kvm-42-1"|"install -d "*|"tee /run/cogs-kvm-network-domain/4-42"|"chmod 0444 /run/cogs-kvm-network-domain/4-42") ;;
+    *) return 9 ;;
+  esac
+}
+${provision}`;
+      const result = spawnSync("bash", ["-c", harness], {
+        cwd: root,
+        env: {
+          ...process.env,
+          CALLS: calls,
+          EMPTY_FILTER: empty,
+          GITHUB_ENV: githubEnv,
+          GITHUB_RUN_ID: "42",
+          GITHUB_RUN_ATTEMPT: "1",
+          MODE: mode,
+        },
+        encoding: "utf8",
+      });
+      if (expectedStatus === 0) assert.equal(result.status, 0, result.stderr);
+      else assert.notEqual(result.status, 0, result.stderr);
+      const recorded = (await readFile(calls, "utf8")).trim().split("\n");
+      const policy = recorded.filter((call) => call.includes(" -w 5 -P "));
+      const expectedPolicy = [
+        "ip netns exec cogs-kvm-42-1 iptables -w 5 -P INPUT ACCEPT",
+        "ip netns exec cogs-kvm-42-1 iptables -w 5 -P FORWARD ACCEPT",
+        "ip netns exec cogs-kvm-42-1 iptables -w 5 -P OUTPUT ACCEPT",
+        "ip netns exec cogs-kvm-42-1 ip6tables -w 5 -P INPUT ACCEPT",
+        "ip netns exec cogs-kvm-42-1 ip6tables -w 5 -P FORWARD ACCEPT",
+        "ip netns exec cogs-kvm-42-1 ip6tables -w 5 -P OUTPUT ACCEPT",
+      ];
+      assert.deepEqual(policy, mode === "empty" ? expectedPolicy : expectedPolicy.slice(0, 3));
+      assert.ok(policy.every((call) => call.startsWith("ip netns exec cogs-kvm-42-1 ")));
+      const expectedSaves = [
+        "ip netns exec cogs-kvm-42-1 iptables-save -t filter",
+        "ip netns exec cogs-kvm-42-1 ip6tables-save -t filter",
+      ];
+      assert.deepEqual(
+        recorded.filter((call) => call.endsWith("-save -t filter")),
+        mode === "empty" ? expectedSaves : expectedSaves.slice(0, 1),
+      );
+      assert.equal(recorded.includes("ip netns delete cogs-kvm-42-1"), mode !== "empty");
+    }
+    assert.ok(
+      workflow.indexOf('"$tool"-save -t filter') < workflow.indexOf("Exercise the isolated Debian guest lifecycle"),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("KVM network-domain provisioning publishes custody and safely rolls back partial acquisition", async () => {
   const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
   const provision = workflowRunBlock(workflow, "Provision the exclusive disposable driver network domain");
@@ -431,6 +519,10 @@ sudo() {
     "ip netns exec "*" stat -Lc %d-%i /proc/self/ns/net")
       [[ "$MODE" != identity-fails ]] || return 7
       printf '4-42\\n'
+      ;;
+    "ip netns exec "*" iptables -w 5 -P "*|"ip netns exec "*" ip6tables -w 5 -P "*) ;;
+    "ip netns exec "*" iptables-save -t filter"|"ip netns exec "*" ip6tables-save -t filter")
+      printf '*filter\\n:INPUT ACCEPT [0:0]\\n:FORWARD ACCEPT [0:0]\\n:OUTPUT ACCEPT [0:0]\\nCOMMIT\\n'
       ;;
     "ip netns pids "*) ;;
     "ip netns delete "*) ;;

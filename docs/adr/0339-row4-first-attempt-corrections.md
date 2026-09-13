@@ -23,7 +23,7 @@ failure, not success or retry authority.
 
 ## Accounting
 
-ADR0338's literal task matrix admits this batch without changing any task,
-global, hard-cap, reserve, or source-inventory cap. Accounting remains
-cumulative from its protected checkpoint: deletion and replacement provide no
-credit.
+ADR0338's literal product task includes `.github/workflows/kvm-qualification.yml`
+and admits this batch without changing any task, global, hard-cap, reserve, or
+source-inventory cap. Accounting remains cumulative from its protected
+checkpoint: deletion and replacement provide no credit.
