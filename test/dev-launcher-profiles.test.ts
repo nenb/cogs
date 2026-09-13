@@ -286,9 +286,36 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
   const kvm = await readFile(join(process.cwd(), "dev/linux-kvm/driver.sh"), "utf8");
   assert.match(kvm, /read -r host_key_type host_key_data ignored/);
   assert.match(kvm, /printf '%s %s %s\\n' "\$guest_ip" "\$host_key_type" "\$host_key_data"/);
-  assert.match(kvm, /\/shared\/skills, \/user\/skills/);
-  assert.match(kvm, /realpath -e "\\\$skill_root"/);
-  assert.match(kvm, /0:0:700:directory/);
+  assert.ok(
+    kvm.includes(String.raw`      #!/usr/bin/env bash
+      set -euo pipefail
+      mountpoint -q /opt/cogs-git
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)ro(,|$)"
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nosuid(,|$)"
+      findmnt -rn -o OPTIONS /opt/cogs-git | grep -Eq "(^|,)nodev(,|$)"
+      test ! -e /usr/bin/git
+      test ! -L /usr/bin/git
+      ln -s /opt/cogs-git/bin/git /usr/bin/git
+      chown -h root:root /usr/bin/git
+      test -L /usr/bin/git
+      test "\$(readlink /usr/bin/git)" = /opt/cogs-git/bin/git
+      test "\$(stat -c "%u:%g:%F" /usr/bin/git)" = "0:0:symbolic link"
+      mkdir -p /shared/skills /user/skills
+      chown root:root /shared/skills /user/skills
+      chmod 0700 /shared/skills /user/skills
+      for skill_root in /shared/skills /user/skills; do
+        test -d "\$skill_root"
+        test ! -L "\$skill_root"
+        test "\$(realpath -e "\$skill_root")" = "\$skill_root"
+        test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"
+      done
+      systemctl restart ssh
+mounts:
+  - [LABEL=COGS_WORKSPACE, /workspace, auto, 'defaults,nosuid,nodev', '0', '2']
+  - [LABEL=COGS_GITTOOLS, /opt/cogs-git, auto, 'ro,nosuid,nodev', '0', '2']
+runcmd:
+  - [bash, /usr/local/sbin/cogs-cloud-init-setup]`),
+  );
   assert(!kvm.includes('"$(<"$state/control/host_ed25519_key.pub")"'));
 });
 

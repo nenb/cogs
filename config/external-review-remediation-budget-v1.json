@@ -59,6 +59,7 @@
             "dev/product-test/snapshot-owner.ts",
             "docs/adr/0337-correct-protected-product-runtime-ancestry.md",
             "test/linux-kvm-git-tools.test.ts",
+            "test/dev-launcher-profiles.test.ts",
             "test/production-compose.test.ts"
           ]
         },

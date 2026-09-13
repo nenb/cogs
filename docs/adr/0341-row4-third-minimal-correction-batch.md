@@ -12,4 +12,4 @@ Authorize only source correction, focused review, source review, full validation
 
 ## Accounting
 
-The existing `governance` task includes this ADR and index only. All caps and the final-HGQ reserve are unchanged.
+The existing `governance` task includes this ADR and index only. The existing `product` task includes `test/dev-launcher-profiles.test.ts` for exact fail-fast guest setup assertions. All caps and the final-HGQ reserve are unchanged.
