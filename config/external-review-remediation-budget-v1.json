@@ -32,7 +32,7 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 6000,
+          "gross_lines": 5800,
           "gross_bytes": 1100000,
           "paths": [
             "config/external-review-remediation-budget-v1.json",
@@ -44,6 +44,7 @@
             "docs/adr/0343-row4-fifth-minimal-correction-batch.md",
             "docs/adr/0344-row4-proactive-confirmed-domain-batch.md",
             "docs/adr/0345-row4-sixth-runtime-correction.md",
+            "docs/adr/0346-row4-post-merge-product-correction.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -51,7 +52,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 4600,
+          "gross_lines": 4800,
           "gross_bytes": 3200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -86,10 +87,12 @@
             "src/runtime/compose.ts",
             "src/skills/snapshot-session-preparer.ts",
             "src/ssh/connection.ts",
+            "src/telemetry/otlp-http.ts",
             "src/telemetry/worker-telemetry.ts",
             "test/egress-otlp-telemetry.test.ts",
             "test/egress-runtime-manager.test.ts",
             "test/linux-kvm-git-tools.test.ts",
+            "test/otlp-http.test.ts",
             "test/ssh-connection.test.ts",
             "test/worker-telemetry.test.ts",
             "test/dev-launcher-profiles.test.ts",
@@ -585,6 +588,7 @@
         "docs/adr/0343-row4-fifth-minimal-correction-batch.md",
         "docs/adr/0344-row4-proactive-confirmed-domain-batch.md",
         "docs/adr/0345-row4-sixth-runtime-correction.md",
+        "docs/adr/0346-row4-post-merge-product-correction.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

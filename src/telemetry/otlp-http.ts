@@ -125,7 +125,6 @@ async function observePost(input: OtlpPostConfig, retain: (work: Promise<void>) 
       headers: Object.freeze({
         "content-type": "application/json",
         accept: "application/json",
-        "content-length": String(Buffer.byteLength(body)),
       }),
       body,
       signal: controller.signal,
