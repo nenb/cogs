@@ -32,7 +32,7 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 5800,
+          "gross_lines": 5400,
           "gross_bytes": 1100000,
           "paths": [
             "config/external-review-remediation-budget-v1.json",
@@ -45,6 +45,7 @@
             "docs/adr/0344-row4-proactive-confirmed-domain-batch.md",
             "docs/adr/0345-row4-sixth-runtime-correction.md",
             "docs/adr/0346-row4-post-merge-product-correction.md",
+            "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -52,10 +53,11 @@
         },
         {
           "name": "product",
-          "gross_lines": 4800,
+          "gross_lines": 5200,
           "gross_bytes": 3200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
+            ".github/workflows/kvm-driver-diagnostic.yml",
             ".github/workflows/kvm-qualification.yml",
             ".github/workflows/release-images.yml",
             "config/release-image-set-pins-v1.json",
@@ -157,6 +159,7 @@
             "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
             "test/aws-stage2-completion-kata-runtime.py",
             "test/aws-stage2-completion-kata-runtime.test.ts",
+            "test/aws-stage2-completion-local-result.py",
             "test/aws-stage2-completion-local-result.test.ts",
             "test/stage2-prebuilt-local-kata-workflow.test.ts"
           ],
@@ -399,6 +402,7 @@
       "paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/insecure-container.yml",
+        ".github/workflows/kvm-driver-diagnostic.yml",
         ".github/workflows/kvm-qualification.yml",
         ".github/workflows/production-turn-timeout-composed.yml",
         ".github/workflows/release-images.yml",
@@ -589,6 +593,7 @@
         "docs/adr/0344-row4-proactive-confirmed-domain-batch.md",
         "docs/adr/0345-row4-sixth-runtime-correction.md",
         "docs/adr/0346-row4-post-merge-product-correction.md",
+        "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

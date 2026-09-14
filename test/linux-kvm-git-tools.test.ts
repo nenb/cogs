@@ -343,6 +343,34 @@ test("KVM workflow artifacts remain metadata reports and do not upload Git tools
   assert.match(workflow, /trap rollback EXIT/u);
 });
 
+test("direct KVM diagnostic is protected-main, fresh, no-upload, and non-authorizing", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/kvm-driver-diagnostic.yml"), "utf8");
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /permissions: \{\}/u);
+  assert.match(workflow, /test "\$GITHUB_REF" = refs\/heads\/main/u);
+  assert.match(workflow, /test "\$GITHUB_REF_PROTECTED" = true/u);
+  assert.match(workflow, /test "\$GITHUB_RUN_ATTEMPT" = 1/u);
+  assert.match(workflow, /GIT_TERMINAL_PROMPT=0/u);
+  assert.match(workflow, /-c credential\.helper= .* fetch --quiet --no-tags --depth=1 origin "\$GITHUB_SHA"/u);
+  assert.match(workflow, /dev\/linux-kvm\/qualify\.sh "\$QUALIFICATION"/u);
+  assert.match(workflow, /dev\/linux-kvm\/driver\.sh prepare-cache/u);
+  assert.match(workflow, /dev\/linux-kvm\/ci-smoke\.sh "\$SMOKE"/u);
+  assert.ok(workflow.indexOf("driver.sh prepare-cache") < workflow.indexOf('sudo ip netns add "$ns"'));
+  assert.ok(
+    workflow.indexOf('sudo ip netns delete "$COGS_KVM_NETNS"') < workflow.indexOf('sudo rm -- "$COGS_KVM_LEASE"'),
+  );
+  assert.match(workflow, /'authority':'diagnostic-only'/u);
+  assert.match(workflow, /Validate diagnostic reports without publishing evidence/u);
+  assert.match(workflow, /package-manager-cache: false/u);
+  assert.match(workflow, /token: ""/u);
+  assert.ok(
+    workflow.indexOf('sudo rm -- "$COGS_KVM_EXECUTION_RECEIPT"') < workflow.indexOf("'authority':'diagnostic-only'"),
+  );
+  assert.doesNotMatch(workflow, /\$\{\{ runner\.temp \}\}|cache: npm/u);
+  assert.doesNotMatch(workflow, /upload-artifact|GITHUB_TOKEN|github\.token|secrets\.|\bgh api\b/u);
+  assert.doesNotMatch(workflow, /opentofu|terraform|aws|provider|ssm/iu);
+});
+
 function workflowRunBlock(workflow: string, name: string): string {
   const marker = `      - name: ${name}\n`;
   const start = workflow.indexOf(marker);
@@ -357,6 +385,107 @@ function workflowRunBlock(workflow: string, name: string): string {
     .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
     .join("\n");
 }
+
+test("direct KVM diagnostic validator binds actual report grammar to its root receipt", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const workflow = await readFile(join(root, ".github/workflows/kvm-driver-diagnostic.yml"), "utf8");
+  const validator = workflowRunBlock(workflow, "Validate diagnostic reports without publishing evidence")
+    .replace(/^npm run schemas -- .*$/mu, ":")
+    .replace("sudo -n env ", "env ")
+    .replace("/usr/bin/python3 -I -B -", "python3 -I -B -");
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-diagnostic-validator-"));
+  const candidate = "a".repeat(40),
+    generation = "b".repeat(32),
+    runId = "42";
+  const receipt = join(dir, "receipt.json"),
+    qualification = join(dir, "qualification.json"),
+    smoke = join(dir, "smoke.json");
+  const report = (reportId: string, testId: string) => ({
+    version: "cogs.security-report/v1alpha1",
+    report_id: reportId,
+    source_revision: candidate,
+    profile: "linux-kvm",
+    authority: "authoritative-local",
+    tests: [{ id: testId, result: "pass", release_eligible: false }],
+    environment: {
+      os: "linux",
+      architecture: "x86_64",
+      metadata: { kvm_present: true, kvm_enabled: true, guest_root: true, distinct_boot_ids: true },
+    },
+  });
+  const env = {
+    ...process.env,
+    GITHUB_SHA: candidate,
+    GITHUB_RUN_ID: runId,
+    GITHUB_RUN_ATTEMPT: "1",
+    COGS_KVM_GENERATION: generation,
+    COGS_KVM_EXECUTION_RECEIPT: receipt,
+    QUALIFICATION: qualification,
+    SMOKE: smoke,
+  };
+  try {
+    await writeFile(
+      receipt,
+      `${JSON.stringify({ version: "cogs.linux-kvm-execution/v1", run_id: runId, run_attempt: "1", candidate, source_revision: candidate, generation, expires: Date.now() + 60_000 })}\n`,
+    );
+    await writeFile(qualification, JSON.stringify(report(`kvm-qualification-${runId}`, "runner.kvm-acceleration")));
+    const smokeReport = report(`kvm-driver-${runId}`, "runner.kvm-isolated-driver");
+    await writeFile(smoke, JSON.stringify(smokeReport));
+    const passed = spawnSync("bash", ["-c", validator], { cwd: root, env, encoding: "utf8" });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.doesNotMatch(passed.stdout, /"authority":"diagnostic-only"/u);
+    const smokeTest = smokeReport.tests[0];
+    assert.ok(smokeTest);
+    smokeTest.result = "fail";
+    await writeFile(smoke, JSON.stringify(smokeReport));
+    const failed = spawnSync("bash", ["-c", validator], { cwd: root, env, encoding: "utf8" });
+    assert.notEqual(failed.status, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("direct KVM diagnostic emits pass only after successful cleanup and receipt retirement", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const workflow = await readFile(join(root, ".github/workflows/kvm-driver-diagnostic.yml"), "utf8");
+  const final = workflowRunBlock(workflow, "Enforce pass and remove the local diagnostic receipt").replace(
+    'sudo rm -- "$COGS_KVM_EXECUTION_RECEIPT"',
+    'rm -- "$COGS_KVM_EXECUTION_RECEIPT"',
+  );
+  const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-diagnostic-final-"));
+  const receipt = join(dir, "receipt"),
+    lease = join(dir, "absent-lease");
+  const baseEnv = {
+    ...process.env,
+    QUALIFICATION_OUTCOME: "success",
+    DOMAIN_OUTCOME: "success",
+    SMOKE_OUTCOME: "success",
+    CLEANUP_OUTCOME: "success",
+    EVIDENCE_OUTCOME: "success",
+    COGS_KVM_EXECUTION_RECEIPT: receipt,
+    COGS_KVM_LEASE: lease,
+    COGS_KVM_GENERATION: "b".repeat(32),
+    GITHUB_SHA: "a".repeat(40),
+  };
+  try {
+    await writeFile(receipt, "diagnostic\n");
+    const passed = spawnSync("bash", ["-c", final], { cwd: root, env: baseEnv, encoding: "utf8" });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.match(passed.stdout, /"authority":"diagnostic-only"/u);
+    await assert.rejects(readFile(receipt));
+    await writeFile(receipt, "diagnostic\n");
+    const failed = spawnSync("bash", ["-c", final], {
+      cwd: root,
+      env: { ...baseEnv, CLEANUP_OUTCOME: "failure" },
+      encoding: "utf8",
+    });
+    assert.notEqual(failed.status, 0);
+    assert.doesNotMatch(failed.stdout, /"authority":"diagnostic-only"/u);
+    assert.equal(await readFile(receipt, "utf8"), "diagnostic\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("KVM network-domain cleanup rejects uncertain or live observations and retains its lease until deletion", async () => {
   const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
@@ -513,20 +642,26 @@ ${provision}`;
 });
 
 test("KVM network-domain provisioning publishes custody and safely rolls back partial acquisition", async () => {
-  const workflow = await readFile(join(root, ".github/workflows/kvm-qualification.yml"), "utf8");
-  const provision = workflowRunBlock(workflow, "Provision the exclusive disposable driver network domain");
+  const workflows = [
+    [".github/workflows/kvm-qualification.yml", "Provision the exclusive disposable driver network domain"],
+    [".github/workflows/kvm-driver-diagnostic.yml", "Create the exclusive disposable network domain"],
+  ] as const;
   const { spawnSync } = await import("node:child_process");
   const dir = await mkdtemp(join(tmpdir(), "cogs-kvm-provision-faults-"));
   try {
-    for (const [mode, expected] of [
-      ["link-fails", { deleted: true, removed: false, reachedChmod: false }],
-      ["identity-fails", { deleted: false, removed: false, reachedChmod: false }],
-      ["chmod-fails", { deleted: true, removed: true, reachedChmod: true }],
-    ] as const) {
-      const calls = join(dir, `${mode}.calls`);
-      const githubEnv = join(dir, `${mode}.env`);
-      await writeFile(githubEnv, "");
-      const harness = `cat() {
+    for (const [workflowPath, stepName] of workflows) {
+      const workflow = await readFile(join(root, workflowPath), "utf8");
+      const provision = workflowRunBlock(workflow, stepName);
+      for (const [mode, expected] of [
+        ["link-fails", { deleted: true, removed: false, reachedChmod: false }],
+        ["identity-fails", { deleted: false, removed: false, reachedChmod: false }],
+        ["chmod-fails", { deleted: true, removed: true, reachedChmod: true }],
+      ] as const) {
+        const prefix = workflowPath.split("/").at(-1);
+        const calls = join(dir, `${prefix}-${mode}.calls`);
+        const githubEnv = join(dir, `${prefix}-${mode}.env`);
+        await writeFile(githubEnv, "");
+        const harness = `cat() {
   if [[ "$#" -eq 1 && "$1" == /proc/sys/kernel/random/boot_id ]]; then
     printf '00000000-0000-0000-0000-000000000042\\n'
   else
@@ -556,27 +691,28 @@ sudo() {
   esac
 }
 ${provision}`;
-      const result = spawnSync("bash", ["-c", harness], {
-        cwd: root,
-        env: {
-          ...process.env,
-          CALLS: calls,
-          MODE: mode,
-          GITHUB_ENV: githubEnv,
-          GITHUB_RUN_ID: "42",
-          GITHUB_RUN_ATTEMPT: "1",
-        },
-        encoding: "utf8",
-      });
-      assert.notEqual(result.status, 0, `${mode}: ${result.stderr}`);
-      assert.match(await readFile(githubEnv, "utf8"), /^COGS_KVM_NETNS=cogs-kvm-42-1$/mu);
-      const recorded = await readFile(calls, "utf8");
-      const deleted = recorded.includes("ip netns delete cogs-kvm-42-1");
-      const removed = /rm -- .*cogs-kvm-network-domain/u.test(recorded);
-      const reachedChmod = recorded.includes("chmod 0444 /run/cogs-kvm-network-domain/4-42");
-      assert.deepEqual({ deleted, removed, reachedChmod }, expected, mode);
-      if (removed) {
-        assert.ok(recorded.indexOf("ip netns delete cogs-kvm-42-1") < recorded.indexOf("rm -- "), mode);
+        const result = spawnSync("bash", ["-c", harness], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CALLS: calls,
+            MODE: mode,
+            GITHUB_ENV: githubEnv,
+            GITHUB_RUN_ID: "42",
+            GITHUB_RUN_ATTEMPT: "1",
+          },
+          encoding: "utf8",
+        });
+        assert.notEqual(result.status, 0, `${mode}: ${result.stderr}`);
+        assert.match(await readFile(githubEnv, "utf8"), /^COGS_KVM_NETNS=cogs-kvm-42-1$/mu);
+        const recorded = await readFile(calls, "utf8");
+        const deleted = recorded.includes("ip netns delete cogs-kvm-42-1");
+        const removed = /rm -- .*cogs-kvm-network-domain/u.test(recorded);
+        const reachedChmod = recorded.includes("chmod 0444 /run/cogs-kvm-network-domain/4-42");
+        assert.deepEqual({ deleted, removed, reachedChmod }, expected, `${workflowPath}:${mode}`);
+        if (removed) {
+          assert.ok(recorded.indexOf("ip netns delete cogs-kvm-42-1") < recorded.indexOf("rm -- "), mode);
+        }
       }
     }
   } finally {

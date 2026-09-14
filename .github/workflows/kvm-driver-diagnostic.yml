@@ -1,0 +1,196 @@
+name: Reusable direct KVM driver diagnostic
+run-name: Direct KVM driver diagnostic source=${{ github.sha }} run=${{ github.run_id }}
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      COGS_SOURCE_REVISION: ${{ github.sha }}
+      COGS_KVM_EXECUTION_RECEIPT: /run/cogs-kvm-diagnostic-receipt.json
+    steps:
+      - name: Admit only a fresh protected-main attempt-one diagnostic
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = nenb
+          test "$GITHUB_TRIGGERING_ACTOR" = nenb
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Root-create this diagnostic generation before source effects
+        run: |
+          set -euo pipefail
+          sudo -n env CANDIDATE="$GITHUB_SHA" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" /usr/bin/python3 -I -B - <<'PY'
+          import hashlib,json,os,time
+          candidate=os.environ['CANDIDATE']; run=os.environ['GITHUB_RUN_ID']; attempt=os.environ['GITHUB_RUN_ATTEMPT']
+          generation=hashlib.sha256(f'{run}:{attempt}:{candidate}'.encode()).hexdigest()[:32]
+          value={'version':'cogs.linux-kvm-execution/v1','run_id':run,'run_attempt':attempt,'candidate':candidate,'source_revision':candidate,'generation':generation,'expires':time.time_ns()//1_000_000+3_600_000}
+          path=os.environ['RECEIPT']; fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444)
+          try: os.write(fd,(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode()); os.fsync(fd)
+          finally: os.close(fd)
+          os.chown(path,0,0); os.chmod(path,0o444)
+          PY
+          generation=$(printf '%s:%s:%s' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" | sha256sum | cut -d' ' -f1 | cut -c1-32)
+          printf 'COGS_KVM_GENERATION=%s\nQUALIFICATION=%s\nSMOKE=%s\n' \
+            "$generation" "$RUNNER_TEMP/kvm-qualification.json" "$RUNNER_TEMP/kvm-driver-smoke.json" >>"$GITHUB_ENV"
+          sudo -n test "$(stat -c '%u:%g:%a' "$COGS_KVM_EXECUTION_RECEIPT")" = 0:0:444
+
+      - name: Acquire the exact public source without credentials
+        run: |
+          set -euo pipefail
+          test -z "$(/usr/bin/find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" /usr/bin/git init --quiet "$GITHUB_WORKSPACE"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" /usr/bin/git -c credential.helper= -C "$GITHUB_WORKSPACE" fetch --quiet --no-tags --depth=1 origin "$GITHUB_SHA"
+          "${clean[@]}" /usr/bin/git -C "$GITHUB_WORKSPACE" checkout --quiet --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+          token: ""
+
+      - name: Install locked dependencies and KVM prerequisites
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends busybox-static cloud-image-utils cpio curl e2fsprogs file iptables linux-image-virtual openssh-client qemu-system-x86 qemu-utils socat
+          sudo chmod 0660 /dev/kvm
+          sudo chgrp "$(id -gn)" /dev/kvm
+
+      - name: Prove KVM and prepare the authenticated guest cache
+        id: qualification
+        run: |
+          set -euo pipefail
+          env COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" dev/linux-kvm/qualify.sh "$QUALIFICATION"
+          env COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" dev/linux-kvm/driver.sh prepare-cache
+
+      - name: Create the exclusive disposable network domain
+        id: domain
+        run: |
+          set -euo pipefail
+          ns="cogs-kvm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          identity=
+          lease=
+          lease_may_exist=false
+          acquired=false
+          rollback() {
+            status=$?
+            trap - EXIT
+            if [[ "$status" -ne 0 && "$acquired" == true ]]; then
+              current=
+              pids=
+              if ! current=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net) ||
+                 [[ -n "$identity" && "$current" != "$identity" ]] ||
+                 ! pids=$(sudo ip netns pids "$ns") || [[ -n "$pids" ]] ||
+                 ! sudo ip netns delete "$ns"; then
+                echo 'FAIL: uncertain partial diagnostic network-domain provisioning; custody retained' >&2
+              elif [[ "$lease_may_exist" == true ]] && ! sudo rm -- "$lease"; then
+                echo 'FAIL: retired diagnostic namespace left a lease residue' >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+          sudo ip netns add "$ns"
+          acquired=true
+          printf 'COGS_KVM_NETNS=%s\n' "$ns" >>"$GITHUB_ENV"
+          sudo ip -n "$ns" link set lo up
+          identity=$(sudo ip netns exec "$ns" stat -Lc '%d-%i' /proc/self/ns/net)
+          printf 'COGS_KVM_NETNS_IDENTITY=%s\n' "$identity" >>"$GITHUB_ENV"
+          for tool in iptables ip6tables; do
+            for chain in INPUT FORWARD OUTPUT; do sudo ip netns exec "$ns" "$tool" -w 5 -P "$chain" ACCEPT; done
+            expected=$'*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT'
+            observed=$(sudo ip netns exec "$ns" "$tool"-save -t filter)
+            test "$(printf '%s\n' "$observed" | sed '/^#/d')" = "$expected"
+          done
+          lease="/run/cogs-kvm-network-domain/$identity"
+          printf 'COGS_KVM_LEASE=%s\n' "$lease" >>"$GITHUB_ENV"
+          sudo install -d -o root -g root -m 0755 /run/cogs-kvm-network-domain
+          lease_may_exist=true
+          printf 'cogs-exclusive-netns-v1 %s\n' "$(cat /proc/sys/kernel/random/boot_id)" | sudo tee "$lease" >/dev/null
+          sudo chmod 0444 "$lease"
+          trap - EXIT
+
+      - name: Exercise the exact isolated guest lifecycle
+        id: smoke
+        run: |
+          sudo -n ip netns exec "$COGS_KVM_NETNS" sudo -n -u "$USER" env HOME="$HOME" PATH="$PATH" COGS_SOURCE_REVISION="$COGS_SOURCE_REVISION" COGS_KVM_GENERATION="$COGS_KVM_GENERATION" COGS_KVM_EXECUTION_RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" dev/linux-kvm/ci-smoke.sh "$SMOKE"
+
+      - name: Retire the exact disposable network domain
+        id: cleanup
+        if: always() && env.COGS_KVM_NETNS != ''
+        run: |
+          set -euo pipefail
+          test -n "${COGS_KVM_NETNS_IDENTITY:-}"
+          current=$(sudo ip netns exec "$COGS_KVM_NETNS" stat -Lc '%d-%i' /proc/self/ns/net)
+          test "$current" = "$COGS_KVM_NETNS_IDENTITY"
+          pids=
+          if ! pids=$(sudo ip netns pids "$COGS_KVM_NETNS"); then
+            echo 'FAIL: diagnostic network-domain process enumeration was uncertain' >&2
+            exit 1
+          fi
+          test -z "$pids"
+          sudo ip netns delete "$COGS_KVM_NETNS"
+          if test -n "${COGS_KVM_LEASE:-}"; then sudo rm -- "$COGS_KVM_LEASE"; test ! -e "$COGS_KVM_LEASE"; fi
+
+      - name: Validate diagnostic reports without publishing evidence
+        id: evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          npm run schemas -- "$QUALIFICATION" "$SMOKE"
+          sudo -n env CANDIDATE="$GITHUB_SHA" GENERATION="$COGS_KVM_GENERATION" RUN_ID="$GITHUB_RUN_ID" RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" RECEIPT="$COGS_KVM_EXECUTION_RECEIPT" QUALIFICATION="$QUALIFICATION" SMOKE="$SMOKE" /usr/bin/python3 -I -B - <<'PY'
+          import json,os,re,stat,time
+          def load(path,maximum):
+              info=os.lstat(path); assert stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_size<=maximum
+              def pairs(items):
+                  value={}
+                  for key,item in items: assert key not in value; value[key]=item
+                  return value
+              return json.loads(open(path,'rb').read(),object_pairs_hook=pairs)
+          candidate=os.environ['CANDIDATE']; generation=os.environ['GENERATION']; run=os.environ['RUN_ID']; attempt=os.environ['RUN_ATTEMPT']
+          assert re.fullmatch(r'[0-9a-f]{40}',candidate) and re.fullmatch(r'[0-9a-f]{32}',generation) and re.fullmatch(r'[1-9][0-9]*',run) and attempt=='1'
+          receipt=load(os.environ['RECEIPT'],2048)
+          assert receipt=={'version':'cogs.linux-kvm-execution/v1','run_id':run,'run_attempt':attempt,'candidate':candidate,'source_revision':candidate,'generation':generation,'expires':receipt['expires']}
+          assert type(receipt['expires']) is int and receipt['expires']>time.time_ns()//1_000_000
+          for report,path,report_id,test_id in (("qualification",os.environ['QUALIFICATION'],f'kvm-qualification-{run}','runner.kvm-acceleration'),("smoke",os.environ['SMOKE'],f'kvm-driver-{run}','runner.kvm-isolated-driver')):
+              value=load(path,65536)
+              assert value['version']=='cogs.security-report/v1alpha1' and value['report_id']==report_id and value['source_revision']==candidate and value['profile']=='linux-kvm' and value['authority']=='authoritative-local'
+              assert len(value['tests'])==1 and value['tests'][0]['id']==test_id and value['tests'][0]['result']=='pass' and value['tests'][0]['release_eligible'] is False
+              metadata=value['environment']['metadata']
+              assert value['environment']['os']=='linux' and value['environment']['architecture']=='x86_64'
+              assert metadata['kvm_present'] is True and metadata['kvm_enabled'] is True and metadata['guest_root'] is True and metadata['distinct_boot_ids'] is True
+          PY
+
+      - name: Enforce pass and remove the local diagnostic receipt
+        if: always()
+        env:
+          QUALIFICATION_OUTCOME: ${{ steps.qualification.outcome }}
+          DOMAIN_OUTCOME: ${{ steps.domain.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+        run: |
+          set -euo pipefail
+          for result in "$QUALIFICATION_OUTCOME" "$DOMAIN_OUTCOME" "$SMOKE_OUTCOME" "$CLEANUP_OUTCOME" "$EVIDENCE_OUTCOME"; do test "$result" = success; done
+          sudo rm -- "$COGS_KVM_EXECUTION_RECEIPT"
+          test ! -e "$COGS_KVM_EXECUTION_RECEIPT"
+          test ! -e "${COGS_KVM_LEASE:-/run/cogs-kvm-network-domain/absent}"
+          env CANDIDATE="$GITHUB_SHA" GENERATION="$COGS_KVM_GENERATION" python3 - <<'PY'
+          import json,os
+          print(json.dumps({'authority':'diagnostic-only','candidate':os.environ['CANDIDATE'],'generation':os.environ['GENERATION'],'status':'pass'},sort_keys=True,separators=(',',':')))
+          PY
