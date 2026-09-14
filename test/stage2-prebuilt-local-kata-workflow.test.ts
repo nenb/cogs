@@ -137,13 +137,13 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "11c03441468d4c3130667321018e1cb6f626a303"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "a9b54c1a823601c3e938e2a616abd0222c0a2846"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "1ef6aae3506fded805d8277ec4bce02e585c0650"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "fce64662b39b2a21e9b384eba8408ecd5311047a"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "e2e092bd14161425aacaead2abbe1eb41de50c2f78fdea3d6fffdcaf6711115f"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09cadffc28159e2f459d0da2003648934710baed9c6a5d29132b0f0ae2300314"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "b568b71d04002303edd77f5925e81ffb6c29f2259274ef544de1a4a478a8132d"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656"/u);
   assert.equal(
     /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(workflow).digest("hex"),
@@ -158,19 +158,19 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   );
   assert.match(
     guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "7e060278933ff79d0b9b40138afbf8bb9e799e6a2951b9c0c021f63069ebf71b"/u,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "757d1ddff8b58febc5686fd81ae14d03a0bbb6eb689549da5918c5acc924a17e"/u,
   );
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34486733842/u);
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10155984475/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34876857175/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10361229317/u);
   assert.match(
     guard,
-    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:4229c9a8acd3f54992edb39a7ccdcda0c5c23a53691e93e16cbe956fc253a068"/u,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:478275cdb16c9614a32854239d98d6f9d9ce6e5cffd466b5def69a1760108b5d"/u,
   );
-  assert.match(preflight, /H=11c03441468d4c3130667321018e1cb6f626a303/u);
-  assert.match(preflight, /G=a9b54c1a823601c3e938e2a616abd0222c0a2846/u);
-  assert.match(preflight, /MANIFEST=e2e092bd14161425aacaead2abbe1eb41de50c2f78fdea3d6fffdcaf6711115f/u);
-  assert.match(preflight, /CONTROL=b568b71d04002303edd77f5925e81ffb6c29f2259274ef544de1a4a478a8132d/u);
-  assert.match(preflight, /DESCRIPTOR=7e060278933ff79d0b9b40138afbf8bb9e799e6a2951b9c0c021f63069ebf71b/u);
+  assert.match(preflight, /H=1ef6aae3506fded805d8277ec4bce02e585c0650/u);
+  assert.match(preflight, /G=fce64662b39b2a21e9b384eba8408ecd5311047a/u);
+  assert.match(preflight, /MANIFEST=09cadffc28159e2f459d0da2003648934710baed9c6a5d29132b0f0ae2300314/u);
+  assert.match(preflight, /CONTROL=4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656/u);
+  assert.match(preflight, /DESCRIPTOR=757d1ddff8b58febc5686fd81ae14d03a0bbb6eb689549da5918c5acc924a17e/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(
@@ -180,7 +180,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 stays historical while the exact G retirement bridge is pinned", () => {
+test("checked-in v7 authenticates the replacement H/G static package through the exact G bridge", () => {
   const result = spawnSync(
     "python3",
     [
@@ -188,61 +188,31 @@ test("checked-in v7 stays historical while the exact G retirement bridge is pinn
       "-B",
       "-c",
       `
-import io,runpy,subprocess,sys,tarfile,tempfile
+import hashlib,runpy,sys
 from pathlib import Path
 current=Path.cwd()
-package_relative=Path('deploy/aws-feasibility/remote/stage2-completion-local-control-v7')
-historical_q='8ddd4c3164bae32dbe02c67d2ee9b82eb8315a38'
+package=current/'deploy/aws-feasibility/remote/stage2-completion-local-control-v7'
 def require(condition, message):
  if not condition: raise AssertionError(message)
-def package_bytes(root):
- package=root/package_relative; require(package.is_dir(), 'v7 package missing')
- rows=[]
- for path in sorted(package.rglob('*')):
-  require(not path.is_symlink(), 'unsafe v7 member')
-  if path.is_dir(): continue
-  require(path.is_file(), 'unsafe v7 member')
-  rows.append((str(path.relative_to(package)), path.read_bytes()))
- return rows
-# V7 still binds the historical H. Current H differences remain rejected even
-# though the two future G retirement consumers are separately exact-pinned.
-current_guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-selected=current_guard['_selected_bytes']
-for target,digest in current_guard['G_RETIREMENT_CONSUMERS'].items():
- require(current_guard['_sha'](selected(target))==digest, 'G retirement pin differs')
-try: current_guard['_authenticate_control']()
-except current_guard['GuardError'] as error:
- require(str(error)=='selected H source differs at Q', 'current source denied for the wrong reason')
-else: raise AssertionError('current source borrowed historical Q authority')
-archive=subprocess.run(['git','archive','--format=tar',historical_q],cwd=current,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-require(archive.returncode==0 and archive.stderr==b'', 'historical Q archive failed')
-with tempfile.TemporaryDirectory(prefix='cogs-historical-q-') as directory:
- historical=Path(directory)
- with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as source:
-  members=source.getmembers()
-  require(all((member.isfile() or member.isdir()) and member.size<=134217728 and not Path(member.name).is_absolute() and '..' not in Path(member.name).parts for member in members), 'unsafe historical archive')
-  for member in members:
-   target=historical/member.name
-   if member.isdir(): target.mkdir(parents=True, exist_ok=True)
-   else:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload=source.extractfile(member); require(payload is not None, 'historical member missing')
-    with payload: target.write_bytes(payload.read())
- # The checked-in Q package itself is exact historical data; only H-owned source
- # bytes are supplied from the historical archive for its authentication.
- require(package_bytes(current)==package_bytes(historical), 'checked-in v7 package drifted')
- sys.path.insert(0,str(historical/'deploy/aws-feasibility/remote'))
- import completion_kata_preparation as codec
- guard=runpy.run_path(str(historical/'scripts/stage2-prebuilt-local-qualification-guard.py'))
- guard['_reviewed_constants'](); guard['_authenticate_control']()
- package=historical/package_relative
- control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
- members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
- envelope,runtime,contracts=codec.validate_control_members(control,members)
- require(envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD'], 'historical H differs')
- require(envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD'], 'historical G differs')
- require(envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256'], 'historical descriptor differs')
- require(len(contracts)==10 and len(runtime.value['executables'])==10, 'historical control codec differs')
+def sha(raw): return hashlib.sha256(raw).hexdigest()
+paths=sorted(path for path in package.rglob('*') if path.is_file())
+require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
+guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
+guard['_reviewed_constants'](); guard['_authenticate_control']()
+for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
+ require(sha((current/target).read_bytes())==digest, 'G retirement pin differs')
+sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
+import completion_kata_preparation as codec
+control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
+members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
+envelope,runtime,contracts=codec.validate_control_members(control,members)
+require(envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD'], 'H differs')
+require(envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD'], 'G differs')
+require(envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256'], 'descriptor differs')
+require(len(contracts)==10 and len(runtime.value['executables'])==10, 'control codec differs')
+require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656', 'control differs')
+require(sha((package/'stage2-local-execution-envelope-v3.json').read_bytes())=='2b77e9d24d009f5b4c509cc6a5f05bd852550f9ad14584bc05139dc45e081954', 'envelope differs')
+require(sha((package/'stage2-local-runtime-manifest-v3.json').read_bytes())=='dfd088149455789a4e3992c5211892a0256c13558273f7a154d968d539498c67', 'runtime differs')
 `,
     ],
     { encoding: "utf8", timeout: 30_000 },
@@ -403,9 +373,80 @@ test("retired preflight admission preserves the independent cleanup-only dispatc
   assert.equal(partial.stdout, "");
 });
 
+test("mixed preflight rejects stale repository variables before acquisition", () => {
+  const admission = preflight
+    .slice(preflight.indexOf("admit() {"), preflight.indexOf("acquire_h() {"))
+    .replace(`\${BASH_SOURCE[0]%/*}`, `${process.cwd()}/scripts`);
+  const qualification = "c".repeat(40);
+  const base = {
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_REPOSITORY: "nenb/cogs",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REF_PROTECTED: "true",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_SHA: qualification,
+    GITHUB_ACTOR: "nenb",
+    GITHUB_TRIGGERING_ACTOR: "nenb",
+    H: "1ef6aae3506fded805d8277ec4bce02e585c0650",
+    G: "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    EXACT_IMPLEMENTATION_HEAD: "1ef6aae3506fded805d8277ec4bce02e585c0650",
+    EXACT_CONTROL_HEAD: "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    EXACT_QUALIFICATION_HEAD: qualification,
+    CONFIGURED_IMPLEMENTATION_HEAD: "1ef6aae3506fded805d8277ec4bce02e585c0650",
+    CONFIGURED_CONTROL_HEAD: "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    CONFIGURED_QUALIFICATION_HEAD: qualification,
+    CONFIGURED_AUTHORIZED_ACTOR: "nenb",
+  };
+  const run = (env: Record<string, string>) =>
+    spawnSync("bash", ["--noprofile", "--norc", "-c", `${admission}\nphase() { :; }\nadmit`], {
+      encoding: "utf8",
+      env,
+    });
+  const pass = run(base);
+  assert.equal(pass.status, 0, pass.stderr);
+  for (const [name, value] of [
+    ["CONFIGURED_IMPLEMENTATION_HEAD", "d".repeat(40)],
+    ["CONFIGURED_CONTROL_HEAD", "d".repeat(40)],
+    ["CONFIGURED_QUALIFICATION_HEAD", "d".repeat(40)],
+    ["CONFIGURED_AUTHORIZED_ACTOR", "other"],
+    ["GITHUB_TRIGGERING_ACTOR", "other"],
+  ] as const) {
+    const rejected = run({ ...base, [name]: value });
+    assert.notEqual(rejected.status, 0, `${name}: ${rejected.stderr}`);
+    assert.equal(rejected.stdout, "");
+  }
+});
+
 test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () => {
   assert.match(preflightWorkflow, /^name: Stage 2 exact mixed H-G-Q no-KVM preflight$/mu);
   assert.match(preflightWorkflow, /qualification_head/u);
+  for (const binding of [
+    "CONFIGURED_IMPLEMENTATION_HEAD: $" + "{{ vars.STAGE2_LOCAL_IMPLEMENTATION_HEAD }}",
+    "CONFIGURED_CONTROL_HEAD: $" + "{{ vars.STAGE2_LOCAL_CONTROL_HEAD }}",
+    "CONFIGURED_QUALIFICATION_HEAD: $" + "{{ vars.STAGE2_LOCAL_QUALIFICATION_HEAD }}",
+    "CONFIGURED_AUTHORIZED_ACTOR: $" + "{{ vars.STAGE2_LOCAL_AUTHORIZED_ACTOR }}",
+  ])
+    assert.ok(preflightWorkflow.includes(binding));
+  const configuredAdmission = preflightWorkflow.indexOf(
+    'test "$EXACT_IMPLEMENTATION_HEAD" = "$CONFIGURED_IMPLEMENTATION_HEAD"',
+  );
+  assert.ok(configuredAdmission > preflightWorkflow.indexOf(imageGate));
+  assert.ok(configuredAdmission < preflightWorkflow.indexOf("gh api --paginate"));
+  for (const assertion of [
+    'test "$EXACT_CONTROL_HEAD" = "$CONFIGURED_CONTROL_HEAD"',
+    'test "$EXACT_QUALIFICATION_HEAD" = "$CONFIGURED_QUALIFICATION_HEAD"',
+    'test "$GITHUB_ACTOR" = "$CONFIGURED_AUTHORIZED_ACTOR"',
+    'test "$GITHUB_TRIGGERING_ACTOR" = "$CONFIGURED_AUTHORIZED_ACTOR"',
+  ])
+    assert.ok(preflightWorkflow.includes(assertion));
+  assert.match(preflightWorkflow, /CONFIGURED_IMPLEMENTATION_HEAD="\$CONFIGURED_IMPLEMENTATION_HEAD"/u);
+  assert.match(preflightWorkflow, /CONFIGURED_CONTROL_HEAD="\$CONFIGURED_CONTROL_HEAD"/u);
+  assert.match(preflightWorkflow, /CONFIGURED_QUALIFICATION_HEAD="\$CONFIGURED_QUALIFICATION_HEAD"/u);
+  assert.match(preflightWorkflow, /CONFIGURED_AUTHORIZED_ACTOR="\$CONFIGURED_AUTHORIZED_ACTOR"/u);
+  assert.match(preflight, /test "\$EXACT_IMPLEMENTATION_HEAD" = "\$CONFIGURED_IMPLEMENTATION_HEAD" \|\| return/u);
+  assert.match(preflight, /test "\$EXACT_CONTROL_HEAD" = "\$CONFIGURED_CONTROL_HEAD" \|\| return/u);
+  assert.match(preflight, /test "\$EXACT_QUALIFICATION_HEAD" = "\$CONFIGURED_QUALIFICATION_HEAD" \|\| return/u);
+  assert.match(preflight, /test "\$GITHUB_ACTOR" = "\$CONFIGURED_AUTHORIZED_ACTOR" \|\| return/u);
   assert.match(preflightWorkflow, /map\(\.id\) == \[\$current\]/u);
   assert.match(
     preflightWorkflow,
