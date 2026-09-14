@@ -28,9 +28,17 @@ OPERATIONS = frozenset(("authenticate", "capability-probe", "create", "evidence"
 PROVENANCE_SUBSTAGES = frozenset(("final-head", "status", "baseline", "source", "inventory", "build-receipt", "layer-prefix", "layer-count", "environment", "persistence"))
 AUTHENTICATE_SUBSTAGES = frozenset(("inspect", "image-running", "labels", "environment", "isolation", "cap-add", "limits", "mount-inventory", "bind-identity", "tmpfs-config", "mountinfo", "cgroup-membership", "cgroup-limits", "process-security", "namespace-pidfd"))
 CAPABILITY_PROBE_SUBSTAGES = frozenset(("inspect", "result", "namespace", "ssh", "sftp", "persistence"))
+STATUS_SUBSTAGES = frozenset(("application-exit", "skill-gate-exit", "other-exit"))
 DIAGNOSTICS = frozenset(("constructor", "helper", "helper-finalize", *OPERATIONS))
 CAPABILITIES = dict(zip("CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL NET_BIND_SERVICE SYS_CHROOT".split(), (0, 1, 3, 6, 7, 5, 10, 18)))
 LIMITS = {"memory.max": "4294967296", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
+HELPER_COMMAND_BOUND_SECONDS = 15
+HELPER_RETIREMENT_BOUND_SECONDS = 5  # two 2-second waits plus bounded local overhead
+HELPER_SERVICE_BOUND_SECONDS = HELPER_COMMAND_BOUND_SECONDS + HELPER_RETIREMENT_BOUND_SECONDS
+CONTROL_ACQUIRE_HELPER_HIGH = 3  # peer authentication plus the first receipt's two authentications
+CONTROL_REPLY_BOUND_SECONDS = CONTROL_ACQUIRE_HELPER_HIGH * HELPER_SERVICE_BOUND_SECONDS + 5
+PEER_IDLE_BOUND_SECONDS = CONTROL_REPLY_BOUND_SECONDS
+WORKER_EXIT_STATE_OBSERVATIONS = 3
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexistent",
        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0"}
 
@@ -38,6 +46,16 @@ ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "HOME": "/nonexis
 def require(ok):
     if not ok:
         raise RuntimeError("product custody unavailable")
+
+
+require(HELPER_SERVICE_BOUND_SECONDS >= HELPER_COMMAND_BOUND_SECONDS + 4)
+require(CONTROL_ACQUIRE_HELPER_HIGH == 3)
+require(CONTROL_REPLY_BOUND_SECONDS > CONTROL_ACQUIRE_HELPER_HIGH * HELPER_SERVICE_BOUND_SECONDS)
+require(PEER_IDLE_BOUND_SECONDS >= CONTROL_REPLY_BOUND_SECONDS)
+
+
+class PeerClosed(RuntimeError):
+    pass
 
 
 def canonical(value):
@@ -57,7 +75,9 @@ def line(fd, maximum, deadline=float("inf")):
     while True:
         require(len(data) < maximum and time.monotonic() < end)
         require(select.select([fd], [], [], max(0, end - time.monotonic()))[0])
-        chunk = os.read(fd, min(32768, maximum - len(data))); require(chunk)
+        chunk = os.read(fd, min(32768, maximum - len(data)))
+        if not chunk:
+            raise PeerClosed("product custody peer closed")
         data.extend(chunk)
         newline = data.find(b"\n")
         if newline >= 0:
@@ -77,7 +97,7 @@ def emit(value):
 
 def emit_diagnostic(generation, stage, substage=None, cleanup_uncertain=False):
     require(NONCE.fullmatch(generation) and stage in DIAGNOSTICS)
-    allowed = PROVENANCE_SUBSTAGES if stage == "provenance" else AUTHENTICATE_SUBSTAGES if stage == "authenticate" else AUTHENTICATE_SUBSTAGES | CAPABILITY_PROBE_SUBSTAGES if stage == "capability-probe" else frozenset()
+    allowed = PROVENANCE_SUBSTAGES if stage == "provenance" else AUTHENTICATE_SUBSTAGES if stage == "authenticate" else AUTHENTICATE_SUBSTAGES | CAPABILITY_PROBE_SUBSTAGES if stage == "capability-probe" else STATUS_SUBSTAGES if stage == "status" else frozenset()
     require((substage in allowed) if allowed else substage is None)
     require(type(cleanup_uncertain) is bool)
     value = {"diagnostic": stage, "generation": generation}
@@ -261,10 +281,11 @@ class Custody:
         require(config.get("purpose", "run") in ("run", "capability-probe")); self.probe = config.get("purpose") == "capability-probe"
         require(type(config["seconds"]) is int and 60 <= config["seconds"] <= 600); require("cleanup_only" not in config or config["cleanup_only"] is True)
         require(NONCE.fullmatch(self.generation)); self.deadline = time.monotonic() + config["seconds"]
-        self.ids, self.peers, self.mounts, self.images, self.sealed = {}, {}, [], {}, []; self.fd = self.control = self.lock = self.disk = None
+        self.ids, self.peers, self.mounts, self.images, self.sealed = {}, {}, [], {}, []; self.authenticated = set()
+        self.fd = self.control = self.lock = self.disk = None
         self.cgroup_parent = self.cgroup_fd = self.helpers_fd = None; self.cgroup_veto = False
         self.publication, self.history, self.shutdown = None, None, False; self.admissions, self.nodes, self.publications, self.records = [], 0, [], set()
-        self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True; self.failure_stage = "constructor"; self.failure_substage = None
+        self.receipt_bound = False; self.bound_receipt, self.bound_sources = None, []; self.selector = selectors.DefaultSelector(); self.recovery = config.get("cleanup_only") is True; self.failure_stage = "constructor"; self.failure_substage = None
         self.cleanup_uncertain = False; self.failed, self.released = False, False; self.used, self.events, self.turns, self.headers = set(), 0, 0, False
         self.root = "/var/lib/cogs-product-test/" + self.generation
         parent = os.open("/var/lib/cogs-product-test", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); s = os.fstat(parent)
@@ -523,7 +544,7 @@ class Custody:
                 os.close(held)
             raise
         pidfd = None  # ownership is armed at Popen return, including pidfd/stop-handshake failure
-        out, err = bytearray(), bytearray(); end = min(self.deadline, time.monotonic() + 15)
+        out, err = bytearray(), bytearray(); end = min(self.deadline, time.monotonic() + HELPER_COMMAND_BOUND_SECONDS)
         try:
             pidfd = os.pidfd_open(p.pid)
             while True:
@@ -713,10 +734,19 @@ class Custody:
         if "pid" in held: require(held["pid"] == p and held["namespace"] == namespace)
         else: held["pidfd"] = os.pidfd_open(p)
         require(not select.select([held["pidfd"]], [], [], 0)[0]); held.update(pid=p, namespace=namespace)
+        self.authenticated.add(role)
         return held
 
     def bind_receipt(self):
-        require(not self.probe); worker, sandbox = self.authenticate("worker"), self.authenticate("sandbox")
+        require(not self.probe)
+        if self.receipt_bound:
+            require(canonical(self.receipt) == self.bound_receipt)
+            require(all(identity(os.stat(path, follow_symlinks=False))[:2] == expected for path, expected in self.bound_sources))
+            for role in ("worker", "sandbox"):
+                held = self.ids[role]
+                require(role in self.authenticated and "pidfd" in held and not select.select([held["pidfd"]], [], [], 0)[0])
+            return
+        worker, sandbox = self.authenticate("worker"), self.authenticate("sandbox")
         r = self.receipt
         require(set(r) == set("version generation consumer_id session_id launch_digest worker_id sandbox_id sandbox_mount_namespace shared user".split()))
         require(r["version"] == "cogs.skill-snapshot-receipt/v1" and r["generation"] == self.generation and NONCE.fullmatch(r["consumer_id"]))
@@ -731,10 +761,12 @@ class Custody:
                         "read_only": True, "bundle_digest": "sha256:" + bundle}
             require(r[scope] == expected and type(r[scope]["read_only"]) is bool); source = f"{self.root}/publication/{self.generation}/{scope}/{bundle}"
             s = os.stat(source, follow_symlinks=False); require((str(s.st_dev), str(s.st_ino)) == (expected["source_device"], expected["source_inode"]))
+            self.bound_sources.append((source, (s.st_dev, s.st_ino)))
             require({"source": source, "target": expected["destination"], "ro": True} in sandbox["spec"]["mounts"])
             with closing_fd(os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)) as fd:
                 tree(fd, {p.split("/", 1)[1]: v for p, v in entries.items()}, True)
                 require(digest(capture(fd, ".cogs-skills-bundle.json")) == expected["bundle_digest"])
+        self.bound_receipt = canonical(r); self.receipt_bound = True
 
     def storage_observation(self, name):
         path = self.root + "/control/" + name + ".img"; backing = self.saved(name + "-backing")
@@ -1021,8 +1053,11 @@ class Custody:
         elif op == "lease-directory":
             os.chown(self.root + "/lease", 0, 65532)
         elif op == "status":
-            v = self.inspect(self.ids["worker"]["id"])
-            return {"running": v["State"]["Running"], "code": v["State"]["ExitCode"]}
+            running, code = self.worker_status()
+            if not running and code != 0:
+                self.classify_worker_exit(code)
+                require(False)
+            return {"running": running}
         elif op == "create":
             role, spec = q["role"], q["spec"]; require(role in ("trust", "sandbox", "worker") and role not in self.ids)
             require(not self.probe or role != "worker"); expected = list(CAPABILITIES) if role == "sandbox" else []
@@ -1081,8 +1116,26 @@ class Custody:
             raise RuntimeError("unknown custody operation")
         return None
 
+    def worker_status(self):
+        require("worker" in self.authenticated); held = self.ids["worker"]
+        require("pidfd" in held)
+        if not select.select([held["pidfd"]], [], [], 0)[0]:
+            return True, 0
+        for observation in range(WORKER_EXIT_STATE_OBSERVATIONS):
+            v = self.inspect(held["id"]); require(v["Image"] == held["spec"]["image"])
+            running, code = v["State"]["Running"], v["State"]["ExitCode"]
+            require(type(running) is bool and type(code) is int)
+            if not running: return running, code
+            if observation + 1 < WORKER_EXIT_STATE_OBSERVATIONS: time.sleep(0.05)
+        require(False)
+
+    def classify_worker_exit(self, code):
+        require(type(code) is int and code != 0)
+        self.failure_stage = "status"
+        self.failure_substage = "application-exit" if code == 1 else "skill-gate-exit" if 70 <= code <= 74 else "other-exit"
+
     def peer(self, listener, kind):
-        conn, _ = listener.accept(); conn.settimeout(2)
+        conn, _ = listener.accept(); conn.settimeout(CONTROL_REPLY_BOUND_SECONDS)
         try:
             pid, uid, gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             require(kind not in self.used and (pid, uid, gid) == (self.authenticate("worker")["pid"], 65532, 65532)); self.used.add(kind)
@@ -1093,7 +1146,16 @@ class Custody:
             raise
 
     def message(self, conn):
-        held = self.peers[conn]; raw = line(conn.fileno(), 131072, self.deadline)
+        held = self.peers[conn]
+        try:
+            raw = line(conn.fileno(), 131072, self.deadline)
+        except PeerClosed:
+            # Only an already authenticated exact worker's stopped nonzero state
+            # may replace the generic peer-EOF diagnosis with a closed exit class.
+            running, code = self.worker_status()
+            if not running and code != 0:
+                self.classify_worker_exit(code)
+            raise
         q = json.loads(raw); keys = {"version", "op", "nonce", "sequence", "receipt_digest", "consumer_id", "pid"}
         require(set(q) == keys | ({"entry"} if q["op"] == "persist" else {"event"} if q["op"] == "event" else set()))
         require(canonical(q) == raw and NONCE.fullmatch(q["nonce"]))
@@ -1251,7 +1313,7 @@ class Custody:
         try:
             while True:
                 require(time.monotonic() < self.deadline)
-                require(all(time.monotonic() - h["last"] < 5 for h in self.peers.values()))
+                require(all(time.monotonic() - h["last"] < PEER_IDLE_BOUND_SECONDS for h in self.peers.values()))
                 for key, _ in self.selector.select(0.1):
                     if key.data == "supervisor":
                         raw = line(sys.stdin.fileno(), 4 * 1048576, self.deadline)

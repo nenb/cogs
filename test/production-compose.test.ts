@@ -15,6 +15,12 @@ import {
   capabilityRemovalScenario,
   PROBE_GENERATION_SECONDS,
   PROBE_SUITE_SECONDS,
+  PRODUCT_CONTROL_ACQUIRE_HELPER_HIGH,
+  PRODUCT_CONTROL_REPLY_BOUND_MS,
+  PRODUCT_LEASE_PUBLICATION_BOUND_MS,
+  PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS,
+  PRODUCT_STATUS_POLL_INTERVAL_MS,
+  PRODUCT_SYNCHRONOUS_GATE_REPLY_BOUND_MS,
   productFailureDiagnostic,
   requireProbeSuiteWindow,
   syntheticPkiArgv,
@@ -58,6 +64,9 @@ import {
   createAuthenticatedCogsPiSession,
 } from "../src/pi/session.ts";
 import {
+  PRODUCTION_EGRESS_MANAGER_OPERATION_TIMEOUT_MS,
+  PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS,
+  PRODUCTION_ENVOY_STARTUP_TIMEOUT_MS,
   ProductionWorkerError,
   type ProductionWorkerRuntime,
   type ProductionWorkerSeams,
@@ -89,20 +98,45 @@ test("protected workflow separates profile jobs and preserves probe-only no-pass
 test("product worker owns partial startup, samples audit once, and cannot race shutdown evidence", async () => {
   const runner = await readFile("dev/product-test/runner.ts", "utf8");
   assert.ok(runner.indexOf("try {\n    // Own all partial startup") < runner.indexOf("heartbeat = setInterval"));
+  assert.ok(runner.indexOf("worker = await startProductionWorker") < runner.indexOf("heartbeat = setInterval"));
   assert.doesNotMatch(runner, /auditRecords\?\.\(128\)|auditTimer|setInterval\([^\n]*audit/u);
   assert.match(runner, /auditOwner\?\.ready === true && auditOwner\.auditRecords !== undefined/u);
-  assert.match(runner, /audit = auditOwner\.auditRecords\(64\)\.length;\n    check\(audit > 0\);/u);
+  assert.match(runner, /audit = auditOwner\.auditRecords\(64\)\.length;\n {4}check\(audit > 0\);/u);
   assert.ok(runner.indexOf("auditOwner") > runner.lastIndexOf('await client.request("run", { content: "synthetic" })'));
   assert.ok(runner.indexOf("auditOwner") < runner.indexOf('await client.request("shutdown")'));
-  assert.match(runner, /while \(!shutdown \|\| !workerSettled\) \{\n      check\(!streamFailed && !workerFailed/u);
+  assert.match(runner, /while \(!shutdown \|\| !workerSettled\) \{\n {6}check\(!streamFailed && !workerFailed/u);
+  assert.match(runner, /host\.request<unknown>\("status"\)/u);
+  assert.doesNotMatch(runner, /status\.code/u);
   assert.ok(runner.indexOf("if (worker) await worker.close()") < runner.indexOf("streamAbort?.abort()"));
   assert.match(runner, /await closeServer\(server\)/u);
 });
 
 test("worker gate retries only the late lease socket and imports only after its exact lease", async () => {
+  assert.equal(PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS, 20_000);
+  assert.equal(PRODUCT_CONTROL_ACQUIRE_HELPER_HIGH, 3);
+  assert.equal(PRODUCT_CONTROL_REPLY_BOUND_MS, 65_000);
+  assert.equal(PRODUCT_SYNCHRONOUS_GATE_REPLY_BOUND_MS, 5_000);
+  assert.equal(PRODUCT_LEASE_PUBLICATION_BOUND_MS, 105_000);
+  assert.equal(PRODUCT_STATUS_POLL_INTERVAL_MS, 500);
   assert.ok(
-    WORKER_GATE.indexOf("const timer=setTimeout") < WORKER_GATE.indexOf("net.createConnection(gatePath)"),
+    PRODUCT_CONTROL_REPLY_BOUND_MS > PRODUCT_CONTROL_ACQUIRE_HELPER_HIGH * PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS,
+  );
+  assert.ok(PRODUCT_LEASE_PUBLICATION_BOUND_MS > 5 * PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS);
+  assert.match(WORKER_GATE, /const until=performance\.now\(\)\+105000/u);
+  const skillControl = await readFile("src/skills/snapshot-session-preparer.ts", "utf8");
+  assert.match(skillControl, /COGS_SKILL_CONTROL_ACQUIRE_REPLY_BOUND_MS = 25_000/u);
+  assert.match(skillControl, /COGS_SKILL_CONTROL_RUNTIME_REPLY_BOUND_MS = 2_000/u);
+  assert.match(
+    skillControl,
+    /op === "acquire" \? COGS_SKILL_CONTROL_ACQUIRE_REPLY_BOUND_MS : COGS_SKILL_CONTROL_RUNTIME_REPLY_BOUND_MS/u,
+  );
+  assert.ok(
+    WORKER_GATE.indexOf("const connectTimer=setTimeout") < WORKER_GATE.indexOf("net.createConnection(gatePath)"),
     "gate deadline must be armed before a connection can remain pending",
+  );
+  assert.match(
+    WORKER_GATE,
+    /clearTimeout\(connectTimer\)[\s\S]*const replyTimer=setTimeout\(\(\)=>process\.exit\(74\),65000\)/u,
   );
   const root = await mkdtemp(resolve(tmpdir(), "cogs-worker-gate-"));
   const receipt = resolve(tmpdir(), `cogs-worker-gate-receipt-${process.pid}-${Date.now()}`);
@@ -175,6 +209,13 @@ test("worker gate retries only the late lease socket and imports only after its 
     await rm(root, { recursive: true, force: true });
     await rm(receipt, { force: true });
   }
+});
+
+test("production manager startup observation strictly contains Envoy startup without weakening runtime operations", async () => {
+  assert.equal(PRODUCTION_EGRESS_MANAGER_OPERATION_TIMEOUT_MS, 1_000);
+  assert.equal(PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS, 20_000);
+  assert.equal(PRODUCTION_ENVOY_STARTUP_TIMEOUT_MS, 15_000);
+  assert.ok(PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS > PRODUCTION_ENVOY_STARTUP_TIMEOUT_MS);
 });
 
 test("protected product and KVM admissions settle complete validated history before enabling exact effects", async () => {
@@ -580,12 +621,42 @@ else: raise AssertionError('pipelined frame accepted')
 os.close(r);os.close(w)
 assert m.OPERATIONS==frozenset(('authenticate','capability-probe','create','evidence','exec','file','image','lease','lease-directory','mkdir','pair','provenance','seal','settle','status','storage'))
 assert m.PROVENANCE_SUBSTAGES==frozenset(('final-head','status','baseline','source','inventory','build-receipt','layer-prefix','layer-count','environment','persistence'))
+assert m.STATUS_SUBSTAGES==frozenset(('application-exit','skill-gate-exit','other-exit'))
+assert (m.HELPER_COMMAND_BOUND_SECONDS,m.HELPER_RETIREMENT_BOUND_SECONDS,m.HELPER_SERVICE_BOUND_SECONDS,m.WORKER_EXIT_STATE_OBSERVATIONS)==(15,5,20,3)
+assert (m.CONTROL_ACQUIRE_HELPER_HIGH,m.CONTROL_REPLY_BOUND_SECONDS,m.PEER_IDLE_BOUND_SECONDS)==(3,65,65) and m.CONTROL_REPLY_BOUND_SECONDS>m.CONTROL_ACQUIRE_HELPER_HIGH*m.HELPER_SERVICE_BOUND_SECONDS
 assert m.IMAGE_SOURCE=='371cfa58a90888d12d6ae5a857275323ab3f43c4'
+r1,w1=os.pipe();r2,w2=os.pipe();owner=m.Custody.__new__(m.Custody);owner.probe=False;owner.receipt={};owner.bound_receipt=m.canonical({});owner.bound_sources=[];owner.receipt_bound=True;owner.authenticated={'worker','sandbox'};owner.ids={'worker':{'pidfd':r1},'sandbox':{'pidfd':r2}}
+owner.authenticate=lambda _role: (_ for _ in ()).throw(AssertionError('cached bind reauthenticated'));owner.bind_receipt();os.close(w1);os.close(w2)
+try: owner.bind_receipt()
+except RuntimeError: pass
+else: raise AssertionError('retired cached peer admitted')
+os.close(r1);os.close(r2);image='sha256:'+'c'*64
+r,w=os.pipe();os.close(w);owner=m.Custody.__new__(m.Custody);owner.authenticated={'worker'};owner.ids={'worker':{'id':'b'*64,'pidfd':r,'spec':{'image':image}}};states=iter(({'Image':image,'State':{'Running':True,'ExitCode':0}},{'Image':image,'State':{'Running':False,'ExitCode':0}}));owner.inspect=lambda _cid:next(states);assert owner.worker_status()==(False,0);os.close(r)
+r,w=os.pipe();os.close(w);owner=m.Custody.__new__(m.Custody);owner.authenticated={'worker'};owner.ids={'worker':{'id':'b'*64,'pidfd':r,'spec':{'image':image}}};owner.inspect=lambda _cid:{'Image':image,'State':{'Running':True,'ExitCode':0}}
+try: owner.worker_status()
+except RuntimeError: pass
+else: raise AssertionError('unsettled Docker exit admitted')
+os.close(r)
+for code,substage in ((1,'application-exit'),(70,'skill-gate-exit'),(74,'skill-gate-exit'),(137,'other-exit'),(-9,'other-exit')):
+ owner=m.Custody.__new__(m.Custody);owner.recovery=False;owner.probe=False;owner.generation='a'*32
+ owner.worker_status=lambda code=code:(False,code)
+ try: owner.dispatch({'generation':owner.generation,'op':'status'})
+ except RuntimeError: assert owner.failure_stage=='status' and owner.failure_substage==substage
+ else: raise AssertionError('stopped nonzero worker returned a raw status')
+for running,code in ((True,0),(False,0)):
+ owner=m.Custody.__new__(m.Custody);owner.recovery=False;owner.probe=False;owner.generation='a'*32
+ owner.worker_status=lambda running=running,code=code:(running,code)
+ assert owner.dispatch({'generation':owner.generation,'op':'status'})=={'running':running}
+left,right=__import__('socket').socketpair();owner=m.Custody.__new__(m.Custody);owner.failure_stage='helper';owner.failure_substage=None;owner.deadline=float('inf');owner.authenticated={'worker'};owner.ids={'worker':{'id':'b'*64,'spec':{'image':image}}};owner.peers={left:{}};owner.worker_status=lambda:(False,1);right.close()
+try: owner.message(left)
+except m.PeerClosed: assert owner.failure_stage=='status' and owner.failure_substage=='application-exit'
+else: raise AssertionError('worker EOF admitted')
+left.close()
 r,w=os.pipe();old=os.dup(1);os.dup2(w,1)
-try: m.emit_diagnostic('a'*32,'provenance','layer-count',True)
+try: m.emit_diagnostic('a'*32,'status','skill-gate-exit',True)
 finally: os.dup2(old,1);os.close(old);os.close(w)
-assert os.read(r,256)==b'{"cleanup":"uncertain","diagnostic":"provenance","generation":"'+b'a'*32+b'","substage":"layer-count"}\n';os.close(r)
-for stage,substage in (('operation',None),('image','inventory'),('provenance','unknown')):
+assert os.read(r,256)==b'{"cleanup":"uncertain","diagnostic":"status","generation":"'+b'a'*32+b'","substage":"skill-gate-exit"}\n';os.close(r)
+for stage,substage in (('operation',None),('image','inventory'),('provenance','unknown'),('status','70'),('status',None)):
  try: m.emit_diagnostic('a'*32,stage,substage)
  except RuntimeError: pass
  else: raise AssertionError('unknown diagnostic admitted')
@@ -709,6 +780,41 @@ test("host custody rejects pending diagnostics generically until terminal EOF va
   }
 });
 
+test("host custody terminal status diagnostics accept only closed exit classes", async () => {
+  const generation = "a".repeat(32);
+  class Pipe extends EventEmitter {
+    write(): boolean {
+      return true;
+    }
+    end(): void {}
+  }
+  class Child extends EventEmitter {
+    stdin = new Pipe();
+    stdout = new EventEmitter();
+    stderr = Object.assign(new EventEmitter(), { resume() {} });
+  }
+  const observe = async (frame: Record<string, unknown>) => {
+    const child = new Child();
+    const host = new HostCustody(generation, 60, "run", () => child as never);
+    child.stdout.emit("data", Buffer.from(`{"generation":"${generation}","result":"ready"}\n`));
+    child.stdout.emit("data", Buffer.from(`${JSON.stringify(frame)}\n`));
+    child.emit("close", 1);
+    await assert.rejects(host.closed);
+    return host.failureDiagnostic;
+  };
+  for (const substage of ["application-exit", "skill-gate-exit", "other-exit"])
+    assert.deepEqual(await observe({ diagnostic: "status", generation, substage }), {
+      diagnostic: "status",
+      generation,
+      substage,
+    });
+  for (const substage of [undefined, "70", "signal-9", "unknown"])
+    assert.equal(
+      await observe({ diagnostic: "status", generation, ...(substage === undefined ? {} : { substage }) }),
+      undefined,
+    );
+});
+
 test("host custody latches terminal stream failures after a successful settle response", async () => {
   const generation = "a".repeat(32);
   const ready = Buffer.from(`{"generation":"${generation}","result":"ready"}\n`);
@@ -806,6 +912,13 @@ test("product custody diagnostics are closed, provenance-paired, and failure art
     assert.ok(owner.includes(`"${stage}"`), stage);
   }
   assert.match(workflow, /if 'substage' in value: evidence\['substage'\]=value\['substage'\]/u);
+  assert.equal(workflow.split("status_failure={'application-exit','skill-gate-exit','other-exit'}").length - 1, 3);
+  assert.equal(
+    workflow.split(
+      "(value['diagnostic']=='status')!=('generation' in value and value.get('substage') in status_failure)",
+    ).length - 1,
+    2,
+  );
   assert.match(workflow, /'pass_authority':False,'probe_authority':False/u);
   assert.doesNotMatch(workflow, /partial_output_sha256/u);
   assert.match(workflow, /'run_id':build\['run_id'\],'run_attempt':build\['run_attempt'\]/u);
@@ -828,7 +941,7 @@ class Stat:
 class Vfs:
  def __init__(self,blocks=256): self.f_frsize=4096; self.f_blocks=blocks
 def make(capadd=['CAP_CHOWN','CAP_KILL'],mounts=None):
- owner=m.Custody.__new__(m.Custody);owner.generation=generation;owner.cg='/sys/fs/cgroup/cogs-product-'+generation;owner.failure_stage='authenticate';owner.failure_substage=None
+ owner=m.Custody.__new__(m.Custody);owner.generation=generation;owner.cg='/sys/fs/cgroup/cogs-product-'+generation;owner.failure_stage='authenticate';owner.failure_substage=None;owner.authenticated=set()
  owner.ids={'sandbox':{'id':cid,'spec':{'image':'sha256:'+'c'*64,'caps':['CHOWN','KILL'],'mask':(1<<0)+(1<<5),'network':'none','mounts':[{'source':'/source','target':'/bind','ro':True}],'tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}},'environment':[],'sources':{'/bind':(1,2)}}};owner.images={'sha256:'+'c'*64:{'Config':{'Labels':{}}}}
  host={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':capadd,'SecurityOpt':['no-new-privileges'],'CgroupParent':'/cogs-product-'+generation,'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=1m,mode=1777'}}
  owner.host=host; owner.mounts=mounts if mounts is not None else [{'Type':'bind','Source':'/source','Destination':'/bind','RW':False,'Propagation':'rprivate'},{'Type':'tmpfs','Source':'','Destination':'/tmp','RW':True,'Propagation':''}]
@@ -914,6 +1027,14 @@ with tempfile.TemporaryDirectory() as root:
  certain={k:v for k,v in failure.items() if k!='cleanup'}
  accepted=convert([probe,certain])
  assert accepted['generation']=='f'*32 and accepted['cleanup_uncertain'] is False
+ status={**failure,'diagnostic':'status','substage':'skill-gate-exit'}
+ accepted=convert([probe,status])
+ assert accepted['diagnostic']=='status' and accepted['substage']=='skill-gate-exit'
+ for closed in ('application-exit','skill-gate-exit','other-exit'):
+  assert convert([{**status,'substage':closed}],'candidate-pass')['substage']==closed
+ for raw in ('70','137','signal-9','unknown'):
+  rejected=convert([{**status,'substage':raw}],'candidate-pass')
+  assert rejected['diagnostic']=='constructor' and 'substage' not in rejected
  for hostile in ([probe,failure,{'unknown':True}], [probe,failure,failure], [probe,failure]):
   result=convert(hostile,trailing=(b'unknown\n' if len(hostile)==2 else b''))
   assert result['diagnostic']=='constructor' and result['cleanup_uncertain'] is True and 'generation' not in result
@@ -957,6 +1078,26 @@ test("product failure diagnostics retain only a closed provenance frame or conse
       pass_authority: false,
       probe_authority: false,
     },
+  );
+  assert.deepEqual(
+    productFailureDiagnostic(
+      "a".repeat(32),
+      Object.freeze({ generation: "a".repeat(32), diagnostic: "status", substage: "skill-gate-exit" }),
+    ),
+    {
+      version: "cogs.product-failure-diagnostic/v1",
+      generation: "a".repeat(32),
+      diagnostic: "status",
+      substage: "skill-gate-exit",
+      pass_authority: false,
+      probe_authority: false,
+    },
+  );
+  assert.throws(() =>
+    productFailureDiagnostic(
+      "a".repeat(32),
+      Object.freeze({ generation: "a".repeat(32), diagnostic: "status", substage: "exit-70" }),
+    ),
   );
   assert.deepEqual(productFailureDiagnostic("b".repeat(32), frame), {
     version: "cogs.product-failure-diagnostic/v1",
@@ -1712,6 +1853,8 @@ function harness() {
       assert.equal(options.launch.user_id, "alice");
       assert.equal(options.revocation.mode, "openbao");
       assert.equal(options.telemetry.mode, "otlp");
+      assert.equal(options.operationTimeoutMs, PRODUCTION_EGRESS_MANAGER_OPERATION_TIMEOUT_MS);
+      assert.equal(options.startupObservationTimeoutMs, PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS);
       return egress;
     },
     createLifecycle: (options: LaunchLifecycleOptions) => {

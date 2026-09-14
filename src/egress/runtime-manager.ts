@@ -167,6 +167,7 @@ export type CogsEgressRuntimeManagerOptions = Readonly<{
   revocationPollIntervalMs?: number;
   revocationMinPkiRemainingMs?: number;
   operationTimeoutMs?: number;
+  startupObservationTimeoutMs?: number;
   ports?: Partial<RuntimeManagerPorts>;
 }>;
 
@@ -342,7 +343,7 @@ class RuntimeManager {
     try {
       readinessTimer = this.options.timers.setTimeout(
         () => this.readyReject(new Error("startup observation deadline")),
-        Math.min(60_000, this.options.operationTimeoutMs * 4),
+        this.options.startupObservationTimeoutMs,
       );
       await ready;
     } finally {
@@ -862,6 +863,12 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
   try {
     validateRequiredPorts(options);
     if (aborted(options.signal)) throw new Error("aborted");
+    const operationTimeoutMs = integer(options.operationTimeoutMs ?? 1000, 50, 5000);
+    const startupObservationTimeoutMs = integer(
+      options.startupObservationTimeoutMs ?? Math.min(60_000, operationTimeoutMs * 4),
+      50,
+      60_000,
+    );
     return Object.freeze({
       ...options,
       walPath: validPath(options.walPath),
@@ -873,7 +880,8 @@ function capture(options: CogsEgressRuntimeManagerOptions): Captured {
       workerTelemetry: captureTelemetry(options.workerTelemetry),
       revocationPollIntervalMs: integer(options.revocationPollIntervalMs ?? 1000, 50, 60_000),
       revocationMinPkiRemainingMs: integer(options.revocationMinPkiRemainingMs ?? 60_000, 1000, 3_600_000),
-      operationTimeoutMs: integer(options.operationTimeoutMs ?? 1000, 50, 5000),
+      operationTimeoutMs,
+      startupObservationTimeoutMs,
       ...(options.policyAuthorizer === undefined
         ? {}
         : { policyAuthorizer: validPolicyAuthorizer(options.policyAuthorizer) }),

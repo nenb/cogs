@@ -42,6 +42,11 @@ export type CustodyPort = Readonly<{
   closed?: Promise<void>;
   request<T = unknown>(op: string, fields?: Record<string, unknown>): Promise<T>;
 }>;
+export const PRODUCT_STATUS_FAILURE_SUBSTAGES = Object.freeze([
+  "application-exit",
+  "skill-gate-exit",
+  "other-exit",
+] as const);
 export type ProductDiagnosticFrame = Readonly<{
   generation: string;
   diagnostic: string;
@@ -209,6 +214,7 @@ export class HostCustody implements CustodyPort {
               "namespace-pidfd",
             ]);
             const probe = new Set(["inspect", "result", "namespace", "ssh", "sftp", "persistence"]);
+            const status = new Set<string>(PRODUCT_STATUS_FAILURE_SUBSTAGES);
             const keys = Object.keys(result).sort().join();
             const paired =
               result.diagnostic === "provenance"
@@ -217,7 +223,9 @@ export class HostCustody implements CustodyPort {
                   ? authenticate.has(result.substage as string)
                   : result.diagnostic === "capability-probe"
                     ? authenticate.has(result.substage as string) || probe.has(result.substage as string)
-                    : result.substage === undefined;
+                    : result.diagnostic === "status"
+                      ? status.has(result.substage as string)
+                      : result.substage === undefined;
             const cleanup = result.cleanup === undefined || result.cleanup === "uncertain";
             check(
               diagnostics.has(result.diagnostic as string) &&

@@ -58,6 +58,9 @@ import { parseRuntimeConfigBytes, type RuntimeConfig } from "./config.ts";
 import { type TrustedFileCaptureOptions, withTrustedFileBytes } from "./trusted-files.ts";
 
 export const PRODUCTION_RUNTIME_DOCUMENT = "/etc/cogs/runtime.json";
+export const PRODUCTION_EGRESS_MANAGER_OPERATION_TIMEOUT_MS = 1_000;
+export const PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS = 20_000;
+export const PRODUCTION_ENVOY_STARTUP_TIMEOUT_MS = 15_000;
 const GENERIC = "production worker unavailable";
 const POLICY = Object.freeze(authorizeCogsPolicyAction);
 
@@ -314,6 +317,8 @@ export async function startProductionWorker(
         listenerPort: runtime.egress.listener_port,
         maxSessionExpiresAtMs: seams.now() + runtime.lifecycle.maximum_session_seconds * 1000,
         completionCapacity: runtime.egress.completion_capacity,
+        operationTimeoutMs: PRODUCTION_EGRESS_MANAGER_OPERATION_TIMEOUT_MS,
+        startupObservationTimeoutMs: PRODUCTION_EGRESS_MANAGER_STARTUP_TIMEOUT_MS,
         revocation: {
           mode: "openbao",
           openbao: {
@@ -333,7 +338,7 @@ export async function startProductionWorker(
         }),
         envoyProcess: createNodeCogsEnvoyProcessPort({
           executablePath: runtime.paths.envoy_executable,
-          startupTimeoutMs: 5000,
+          startupTimeoutMs: PRODUCTION_ENVOY_STARTUP_TIMEOUT_MS,
           closeTimeoutMs: runtime.lifecycle.shutdown_timeout_seconds * 1000,
         }),
         randomSecret: seams.randomSecret,
