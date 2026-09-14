@@ -46,6 +46,7 @@
             "docs/adr/0345-row4-sixth-runtime-correction.md",
             "docs/adr/0346-row4-post-merge-product-correction.md",
             "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
+            "docs/adr/0348-retire-transient-H-producer.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -93,6 +94,7 @@
             "src/telemetry/worker-telemetry.ts",
             "test/egress-otlp-telemetry.test.ts",
             "test/egress-runtime-manager.test.ts",
+            "test/launcher-smoke-evidence.test.ts",
             "test/linux-kvm-git-tools.test.ts",
             "test/otlp-http.test.ts",
             "test/ssh-connection.test.ts",
@@ -112,7 +114,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 8400000,
+          "gross_bytes": 7400000,
           "paths": [
             ".github/workflows/stage2-production-approval.yml",
             ".github/workflows/stage2-production-campaign.yml",
@@ -134,7 +136,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 3300000,
+          "gross_bytes": 4300000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -594,6 +596,7 @@
         "docs/adr/0345-row4-sixth-runtime-correction.md",
         "docs/adr/0346-row4-post-merge-product-correction.md",
         "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
+        "docs/adr/0348-retire-transient-H-producer.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

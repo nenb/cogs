@@ -8,14 +8,14 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0347 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0348 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,8400000),(1800,3300000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,7400000),(1800,4300000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
@@ -29,12 +29,14 @@ assert 'docs/adr/0344-row4-proactive-confirmed-domain-batch.md' in tasks[0]['pat
 assert 'docs/adr/0345-row4-sixth-runtime-correction.md' in tasks[0]['paths']
 assert 'docs/adr/0346-row4-post-merge-product-correction.md' in tasks[0]['paths']
 assert 'docs/adr/0347-add-direct-kvm-diagnostic-lane.md' in tasks[0]['paths']
-assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-driver-diagnostic.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/otlp-http.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/linux-kvm-git-tools.test.ts','test/otlp-http.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
+assert 'docs/adr/0348-retire-transient-H-producer.md' in tasks[0]['paths']
+assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-driver-diagnostic.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/otlp-http.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/launcher-smoke-evidence.test.ts','test/linux-kvm-git-tools.test.ts','test/otlp-http.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 8400000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 7400000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 4300000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1540,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
@@ -238,6 +240,25 @@ test("ADR0347 requires three non-authorizing KVM diagnostics before one protecte
   ])
     assert.ok(adr.includes(phrase), phrase);
   assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0347](0347-add-direct-kvm-diagnostic-lane.md)"));
+});
+
+test("ADR0348 retires the failed H producer and requires full replacement convergence", () => {
+  const adr = readFileSync("docs/adr/0348-retire-transient-H-producer.md", "utf8");
+  for (const phrase of [
+    "34831102547",
+    "34831105333",
+    "34831612221",
+    "failed before building at closed stage `artifact.redirect.status`",
+    "Three subsequent unique local diagnostic generations each downloaded and verified all 16 fixed public artifacts",
+    "Retire H `9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e` and producer run `34831612221`",
+    "Make no acquisition, retry, redirect, timeout, rootfs, runtime, image, provider, or campaign behavior change",
+    "repeat exact-source Product diagnostics, three fresh direct KVM diagnostics, and exactly one fresh first-created attempt-one protected Product/KVM pair",
+    "Transfer 1,000,000 unused bytes from local-tofu-ssm to readiness-ci",
+    "No AWS, provider initialization, OpenTofu, SSM, inventory, deployment, or campaign operation",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(adr.includes("Do not mutate the old Q-authenticated retirement parser or policy in place"));
+  assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0348](0348-retire-transient-H-producer.md)"));
 });
 
 test("central checker accepts the current cumulative linear plan", () => {
