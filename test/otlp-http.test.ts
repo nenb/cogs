@@ -35,8 +35,8 @@ test("shared OTLP response validator accepts empty and zero partial success only
     assert.throws(() => validateOtlpResponse("logs", body));
 });
 
-test("shared OTLP post sets content length and bounds fetch/abort failures", async () => {
-  let length = "";
+test("shared OTLP post delegates content length and bounds fetch/abort failures", async () => {
+  let manualContentLength = false;
   await postOtlpJson({
     url: "http://127.0.0.1:9/v1/logs",
     kind: "logs",
@@ -45,11 +45,11 @@ test("shared OTLP post sets content length and bounds fetch/abort failures", asy
     maxRequestBytes: 65_536,
     maxResponseBytes: 1024,
     fetch: Object.freeze(async (_url, init) => {
-      length = (init.headers as Record<string, string>)["content-length"] ?? "";
+      manualContentLength = Object.hasOwn(init.headers as object, "content-length");
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
     }),
   });
-  assert.equal(length, String(Buffer.byteLength(JSON.stringify({ resourceLogs: [] }))));
+  assert.equal(manualContentLength, false);
   await assert.rejects(() =>
     postOtlpJson({
       url: "http://127.0.0.1:9/v1/logs",
@@ -79,7 +79,9 @@ test("shared OTLP post sets content length and bounds fetch/abort failures", asy
 
 test("shared OTLP oversize real streaming response cancels connection without hanging", async () => {
   let closed = false;
-  const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+  let generatedContentLength = "";
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    generatedContentLength = request.headers["content-length"] ?? "";
     response.writeHead(200, { "content-type": "application/json" });
     response.on("close", () => {
       closed = true;
@@ -103,6 +105,7 @@ test("shared OTLP oversize real streaming response cancels connection without ha
       }),
     );
     await eventually(() => assert.equal(closed, true));
+    assert.equal(generatedContentLength, String(Buffer.byteLength(JSON.stringify({}))));
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

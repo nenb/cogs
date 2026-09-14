@@ -624,10 +624,7 @@ test("worker telemetry mixed batches count once and never duplicate successful t
   const calls: Array<{ url: string; body: string }> = [];
   const fetchFn = Object.freeze(async (url: string, init: RequestInit) => {
     calls.push({ url, body: String(init.body) });
-    assert.equal(
-      (init.headers as Record<string, string>)["content-length"],
-      String(Buffer.byteLength(String(init.body))),
-    );
+    assert.equal(Object.hasOwn(init.headers as object, "content-length"), false);
     if (url.endsWith("/v1/metrics"))
       return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });

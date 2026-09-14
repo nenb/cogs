@@ -109,6 +109,7 @@ test("product worker owns partial startup, samples audit once, and cannot race s
   assert.doesNotMatch(runner, /status\.code/u);
   assert.ok(runner.indexOf("if (worker) await worker.close()") < runner.indexOf("streamAbort?.abort()"));
   assert.match(runner, /await closeServer\(server\)/u);
+  assert.match(runner, /host: server === upstreamServer \? "::" : "127\.0\.0\.1", ipv6Only: false/u);
 });
 
 test("worker gate retries only the late lease socket and imports only after its exact lease", async () => {

@@ -1135,7 +1135,7 @@ export async function workerMain(): Promise<void> {
       server.maxConnections = 8;
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
-        server.listen(port, "127.0.0.1", resolve);
+        server.listen({ host: server === upstreamServer ? "::" : "127.0.0.1", ipv6Only: false, port }, resolve);
       });
     }
     let pi: CogsPiSessionPorts | undefined, api: ApiServer | undefined;
