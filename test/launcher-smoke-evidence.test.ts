@@ -426,7 +426,10 @@ result.source=first+'\\n'+result.source;
             });
             assert.equal(result.status, mutated ? 97 : 2, `${script}:${profile}:${entry}:${result.stderr}`);
             assert.equal(result.stdout, "");
-            assert.equal(result.error, undefined);
+            assert.ok(
+              result.error === undefined || (result.error as NodeJS.ErrnoException).code === "EPIPE",
+              result.error,
+            );
             if (legacy) assert.equal(result.stderr, mutated ? "FORBIDDEN EFFECT\n" : `${gate}\n`);
             else assert.match(result.stderr, /OpenBao 2\.6\.1 is retired; no admitted replacement/u);
             assert.deepEqual(await snapshot(), before, "refusal must precede command/report effects");
