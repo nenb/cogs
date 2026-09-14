@@ -26,6 +26,10 @@ import {
 
 const RECEIPT_VERSION = "cogs.skill-snapshot-receipt/v1";
 const CONTROL_VERSION = "cogs.skill-snapshot-control/v1";
+// Snapshot control connects only after the initial gate bound the receipt, so
+// acquisition contains one complete peer-authentication helper plus headroom.
+export const COGS_SKILL_CONTROL_ACQUIRE_REPLY_BOUND_MS = 25_000;
+export const COGS_SKILL_CONTROL_RUNTIME_REPLY_BOUND_MS = 2_000;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const HEX_ID = /^[a-f0-9]{64}$/;
 const NONCE = /^[a-f0-9]{32}$/;
@@ -382,7 +386,10 @@ class SnapshotLease {
         expected: canonical({ ...message, op: reply }),
         resolve: resolveReply,
         reject: () => reject(new CogsSkillPreparationError()),
-        timer: setTimeout(() => this.#lose(), 2000),
+        timer: setTimeout(
+          () => this.#lose(),
+          op === "acquire" ? COGS_SKILL_CONTROL_ACQUIRE_REPLY_BOUND_MS : COGS_SKILL_CONTROL_RUNTIME_REPLY_BOUND_MS,
+        ),
       };
       this.#socket.write(canonical(message), (error) => {
         if (error) this.#lose();

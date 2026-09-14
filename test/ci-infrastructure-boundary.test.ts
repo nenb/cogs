@@ -955,7 +955,7 @@ with tempfile.TemporaryDirectory() as root:
  assert 'retired' not in journal
  os.close(owner.control);os.close(owner.fd);owner.selector.close()
 # Full authenticate() consumes live proc/mount/cgroup observations, not an authentication stub.
-owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.cg='/sys/fs/cgroup/cogs-product-'+owner.generation;owner.failure_stage='authenticate';owner.failure_substage=None
+owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.cg='/sys/fs/cgroup/cogs-product-'+owner.generation;owner.failure_stage='authenticate';owner.failure_substage=None;owner.authenticated=set()
 spec={'image':'sha256:'+'c'*64,'caps':[],'mask':0,'network':'none','tmpfs':{},'mounts':[{'source':'/source','target':'/skills','ro':True}]}
 held={'id':'b'*64,'spec':spec,'environment':[],'sources':{'/skills':(7,8)}};owner.ids={'sandbox':held};owner.images={spec['image']:{'Config':{'Labels':{}}}}
 h={'ReadonlyRootfs':True,'Privileged':False,'PidMode':'','LogConfig':{'Type':'none'},'CapDrop':['ALL'],'CapAdd':[], 'SecurityOpt':['no-new-privileges'],'CgroupParent':owner.cg[14:],'Memory':4294967296,'MemorySwap':4294967296,'MemorySwappiness':0,'PidsLimit':128,'NanoCpus':2000000000,'PortBindings':{},'ShmSize':16777216,'NetworkMode':'none','Devices':[],'Binds':[],'Tmpfs':{}}
@@ -975,7 +975,7 @@ with patch('builtins.open',side_effect=lambda p,**kw:m.io.StringIO(proc[p])),pat
  veto(lambda:owner.authenticate('sandbox'),'live environment changed')
 # Live receipt identity uses retained publication, not a newly substituted source inode.
 with tempfile.TemporaryDirectory() as root:
- owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY)
+ owner=m.Custody.__new__(m.Custody);owner.root=root;owner.generation='a'*32;owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);owner.receipt_bound=False;owner.bound_sources=[];owner.bound_receipt=None
  os.mkdir(root+'/documents');launch={'session_id':'product-session'};open(root+'/documents/launch.json','wb').write(m.canonical(launch))
  bundle=m.digest(b'{}');pair={};sources={};mounts=[]
  for scope in ('shared','user'):

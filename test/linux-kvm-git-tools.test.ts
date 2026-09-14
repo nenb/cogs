@@ -619,7 +619,16 @@ function serialContract(text: string) {
   assert.match(text, /grep -F '\$\(stat -c "%u:%g:%F" \/usr\/bin\/git\)' "\$state\/user-data"/u);
   assert.match(
     text,
-    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*set -Eeuo pipefail[\s\S]*systemctl restart ssh[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+    /bootcmd:\n {2}- \[\/bin\/bash, -Eeuo, pipefail, -c, '\/usr\/bin\/systemctl stop ssh\.socket ssh\.service; \/usr\/bin\/systemctl mask --runtime ssh\.socket ssh\.service; \/usr\/bin\/install -o root -g root -m 0400 \/dev\/null \/run\/cogs-ssh-held'\]\nwrite_files:/u,
+  );
+  assert.match(
+    text,
+    /path: \/usr\/local\/sbin\/cogs-cloud-init-setup[\s\S]*test "\\\$\(stat -c '%u:%g:%a:%F:%h' \/run\/cogs-ssh-held\)" = '0:0:400:regular empty file:1'[\s\S]*install -d -o root -g root -m 0755 \/run\/sshd\n {6}test ! -L \/run\/sshd\n {6}test "\\\$\(stat -c '%u:%g:%a:%F' \/run\/sshd\)" = '0:0:755:directory'[\s\S]*\/usr\/sbin\/sshd -t -f \/etc\/ssh\/sshd_config\n {6}\/usr\/bin\/systemctl unmask --runtime ssh\.socket ssh\.service\n {6}\/usr\/bin\/systemctl start ssh\.service\n {6}\/usr\/bin\/systemctl is-active --quiet ssh\.service\n {6}rm -f \/run\/cogs-ssh-held[\s\S]*runcmd:\n {2}- \[bash, \/usr\/local\/sbin\/cogs-cloud-init-setup\]/u,
+  );
+  assert.doesNotMatch(text, /systemctl (?:reload|restart) ssh/u);
+  assert.ok(text.indexOf("systemctl, mask, --runtime") < text.indexOf("/usr/sbin/sshd -t -f /etc/ssh/sshd_config"));
+  assert.ok(
+    text.indexOf("/usr/sbin/sshd -t -f /etc/ssh/sshd_config") < text.indexOf("/usr/bin/systemctl start ssh.service"),
   );
   const routes = text.slice(text.indexOf('case "$operation" in'));
   assert.match(routes, /create\)[\s\S]*owner_stage seed\n {4}prepare_seed[\s\S]*owner_stage runtime\n {4}start_vm/u);
@@ -1877,6 +1886,8 @@ test("campaign setup final stage sync failure removes completion and fails readi
   const shared = join(temp, "shared", "skills");
   const user = join(temp, "user", "skills");
   const setupPath = join(temp, "setup");
+  const sshHeld = join(temp, "cogs-ssh-held");
+  const sshRuntime = join(temp, "sshd");
   try {
     await mkdir(bin, { recursive: true });
     await Promise.all([
@@ -1886,7 +1897,9 @@ test("campaign setup final stage sync failure removes completion and fails readi
       mkdir(user, { recursive: true }),
     ]);
     await writeFile(join(gitToolsRoot, "bin", "git"), "");
+    await writeFile(sshHeld, "", { mode: 0o400 });
     const tools: Record<string, string> = {
+      "cloud-init": "#!/bin/sh\nexit 0\n",
       chown: "#!/bin/sh\nexit 0\n",
       chmod: "#!/bin/sh\nexit 0\n",
       findmnt: "#!/bin/sh\nprintf 'ro,nosuid,nodev\\n'\n",
@@ -1896,6 +1909,8 @@ test("campaign setup final stage sync failure removes completion and fails readi
       stat: `#!/bin/sh
 case "$*" in
   *${git}*) printf '0:0:symbolic link\\n' ;;
+  *${sshHeld}*) printf '0:0:400:regular empty file:1\\n' ;;
+  *${sshRuntime}*) printf '0:0:755:directory\\n' ;;
   *) printf '0:0:700:directory\\n' ;;
 esac
 `,
@@ -1903,7 +1918,15 @@ esac
 if test "\${2:-}" = "${state}/campaign-setup.stage" && test "$(cat "$2")" = COMPLETE; then exit 97; fi
 exit 0
 `,
-      systemctl: "#!/bin/sh\nexit 0\n",
+      sshd: `#!/bin/sh
+test "$*" = "-t -f ${join(temp, "sshd_config")}" || exit 89
+`,
+      systemctl: `#!/bin/sh
+case "$*" in
+  "unmask --runtime ssh.socket ssh.service"|"start ssh.service"|"is-active --quiet ssh.service") exit 0 ;;
+  *) exit 90 ;;
+esac
+`,
     };
     await Promise.all(
       Object.entries(tools).map(async ([name, body]) => {
@@ -1918,6 +1941,11 @@ exit 0
       .replaceAll("/usr/bin/git", git)
       .replaceAll("/shared/skills", shared)
       .replaceAll("/user/skills", user)
+      .replaceAll("/usr/sbin/sshd", join(bin, "sshd"))
+      .replaceAll("/etc/ssh/sshd_config", join(temp, "sshd_config"))
+      .replaceAll("/usr/bin/systemctl", join(bin, "systemctl"))
+      .replaceAll("/run/cogs-ssh-held", sshHeld)
+      .replaceAll("/run/sshd", sshRuntime)
       .replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin", `export PATH=${bin}:/usr/bin:/bin`);
     await writeFile(setupPath, injected, { mode: 0o700 });
     const { spawnSync } = await import("node:child_process");

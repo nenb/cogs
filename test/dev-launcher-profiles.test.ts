@@ -350,8 +350,15 @@ test("profile drivers use exact launcher-compatible local controls", async () =>
         test "\$(stat -c "%u:%g:%a:%F" "\$skill_root")" = "0:0:700:directory"
       done
       mark SSHD
-      systemctl restart ssh
-      systemctl is-active --quiet ssh
+      test "\$(stat -c '%u:%g:%a:%F:%h' /run/cogs-ssh-held)" = '0:0:400:regular empty file:1'
+      install -d -o root -g root -m 0755 /run/sshd
+      test ! -L /run/sshd
+      test "\$(stat -c '%u:%g:%a:%F' /run/sshd)" = '0:0:755:directory'
+      /usr/sbin/sshd -t -f /etc/ssh/sshd_config
+      /usr/bin/systemctl unmask --runtime ssh.socket ssh.service
+      /usr/bin/systemctl start ssh.service
+      /usr/bin/systemctl is-active --quiet ssh.service
+      rm -f /run/cogs-ssh-held
       mark COMPLETE
       printf COMPLETE > "\$pending"
       chown root:root "\$pending"

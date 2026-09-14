@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0344 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0345 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -26,7 +26,8 @@ assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths
 assert 'docs/adr/0342-row4-fourth-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0343-row4-fifth-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0344-row4-proactive-confirmed-domain-batch.md' in tasks[0]['paths']
-assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/ssh/connection.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/linux-kvm-git-tools.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
+assert 'docs/adr/0345-row4-sixth-runtime-correction.md' in tasks[0]['paths']
+assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/linux-kvm-git-tools.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
@@ -160,6 +161,46 @@ test("ADR0343 records failed old-byte probes as non-authorizing and retains exec
   ])
     assert.ok(adr.includes(phrase), phrase);
   assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0343](0343-row4-fifth-minimal-correction-batch.md)"));
+});
+
+test("ADR0345 records sixth failures, bounded diagnosis, exact corrections, and no present effects", () => {
+  const adr = readFileSync("docs/adr/0345-row4-sixth-runtime-correction.md", "utf8");
+  for (const phrase of [
+    "533341db2cb4601fa47cf9ad0fbc92eb3b9036dd",
+    "34782632633",
+    "34782634239",
+    "same bytes are retired as a Product/KVM dispatch candidate",
+    "non-authoritative, and non-authorizing",
+    "fresh local x86_64 Lima execution used diagnostic-modified bytes",
+    "diagnostic only, too slow for pass authority",
+    "two-second worker/skill reply waits",
+    "15-second synchronous helper-command bound",
+    "complete 20-second service bound",
+    "65-second initial gate-acquisition bound",
+    "25-second snapshot-control acquisition bound",
+    "retained exact worker/sandbox pidfds alive",
+    "105-second initial receipt-publication wait",
+    "four-second outer observation deadline",
+    "five-second startup window",
+    '`diagnostic:"status"`',
+    "`application-exit` for application exit 1",
+    "`skill-gate-exit` for skill-gate exits 70–74",
+    "`other-exit` for every other/signal-like exit",
+    "1,000-millisecond runtime operation/revocation bound",
+    "20,000-millisecond manager startup-observation bound",
+    "15,000-millisecond Envoy startup bound",
+    "runtime-mask `ssh.socket` and `ssh.service` in one fail-fast early cloud-init transaction",
+    "with no late reload/restart",
+    "source implementation, focused review, full and readiness validation, protected PR CI, merge",
+    "protected pair remains denied until the exact merged source and consumed image pass suitable Product and KVM diagnostics",
+    "exactly one fresh first-created attempt-one pair",
+    "Same-byte retry remains denied",
+    "H, G, Q, AWS, OpenTofu, SSM",
+    "No image definition, release pin, cap, allocation, source-inventory bound, or final-HGQ reserve changes",
+    "no cap raise, transfer, deletion credit, or reserve use",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0345](0345-row4-sixth-runtime-correction.md)"));
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

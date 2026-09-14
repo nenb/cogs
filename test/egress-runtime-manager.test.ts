@@ -594,6 +594,27 @@ test("startup observation deadline retains late PKI owner and prevents post-clos
   assert.equal(fixture.events.includes("process.start"), false);
 });
 
+test("startup observation timeout is independent from the runtime operation timeout", async () => {
+  const fixture = fixtureRuntime();
+  const base = fixture.options();
+  const scheduled: number[] = [];
+  const manager = await startCogsEgressRuntimeManager({
+    ...base,
+    operationTimeoutMs: 50,
+    startupObservationTimeoutMs: 400,
+    timers: {
+      setTimeout(callback, ms) {
+        scheduled.push(ms);
+        return base.timers.setTimeout(callback, ms);
+      },
+      clearTimeout: (timer) => base.timers.clearTimeout(timer),
+    },
+  });
+  assert.ok(scheduled.includes(400), "startup uses its separate observation bound");
+  assert.ok(scheduled.includes(50), "runtime revocation polling retains its shorter bound");
+  await manager.close();
+});
+
 test("initial watcher timeout rejects observation while lexical material waits for source retirement", async () => {
   const fixture = fixtureRuntime();
   const base = fixture.options();

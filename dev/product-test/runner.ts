@@ -42,6 +42,7 @@ import {
   hash,
   LocalSkillSnapshotOwner,
   type Mount,
+  PRODUCT_STATUS_FAILURE_SUBSTAGES,
   type ProductDiagnosticFrame,
   pinnedTrust,
   put,
@@ -58,6 +59,16 @@ export const PROBE_GENERATIONS = 8;
 export const PROBE_GENERATION_SECONDS = 600;
 export const PROBE_CLEANUP_SECONDS = 60;
 export const PROBE_SUITE_SECONDS = PROBE_GENERATIONS * (PROBE_GENERATION_SECONDS + PROBE_CLEANUP_SECONDS);
+export const PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS = 20_000;
+export const PRODUCT_CONTROL_ACQUIRE_HELPER_HIGH = 3;
+export const PRODUCT_CONTROL_REPLY_BOUND_MS = 65_000;
+export const PRODUCT_SYNCHRONOUS_GATE_REPLY_BOUND_MS = 5_000;
+// The worker begins waiting before its start helper retires; publication then
+// performs four more authentications, for five complete helper services.
+export const PRODUCT_LEASE_PUBLICATION_BOUND_MS = 105_000;
+export const PRODUCT_STATUS_POLL_INTERVAL_MS = 500;
+check(PRODUCT_CONTROL_REPLY_BOUND_MS > PRODUCT_CONTROL_ACQUIRE_HELPER_HIGH * PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS);
+check(PRODUCT_LEASE_PUBLICATION_BOUND_MS > 5 * PRODUCT_OWNER_HELPER_SERVICE_BOUND_MS);
 const admittedRestrictions = new WeakSet<object>();
 // In-memory build input only. No build, pull, registry, workflow, or image-definition mutation here.
 export const WORKER_DOCKERFILE = `ARG PINNED_WORKER
@@ -295,7 +306,7 @@ export class RestrictionCounters {
 // Runs as image PID 1, using built-ins ONLY until the authenticated host reply.
 export const WORKER_GATE = `
 const fs=await import('node:fs'); const net=await import('node:net'); const crypto=await import('node:crypto');
-const until=performance.now()+10000; let receipt,raw;
+const until=performance.now()+${PRODUCT_LEASE_PUBLICATION_BOUND_MS}; let receipt,raw;
 while(!receipt){
  try{const fd=fs.openSync('/run/cogs/skills/snapshot-receipt.json',fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
  const s=fs.fstatSync(fd);if(!s.isFile()||s.uid!==0||s.nlink!==1||s.size>8192)throw Error();
@@ -305,17 +316,18 @@ while(!receipt){
 const encode=v=>typeof v==='object'&&v!==null?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+encode(v[k])).join(',')+'}':JSON.stringify(v);
 const q={version:'cogs.skill-snapshot-control/v1',op:'acquire',nonce:crypto.randomBytes(16).toString('hex'),sequence:1,receipt_digest:'sha256:'+crypto.createHash('sha256').update(raw).digest('hex'),consumer_id:receipt.consumer_id,pid:process.pid};
 const gatePath='/run/cogs/skills/gate.sock',gateDeadline=performance.now()+5000;let socket;
-const timer=setTimeout(()=>process.exit(71),Math.max(0,gateDeadline-performance.now()));
+const connectTimer=setTimeout(()=>process.exit(71),Math.max(0,gateDeadline-performance.now()));
 while(!socket){
  if(performance.now()>=gateDeadline)process.exit(71);
  const next=net.createConnection(gatePath);
  const connected=await new Promise(resolve=>{const fail=e=>{next.destroy();if((e?.code==='ENOENT'||e?.code==='ECONNREFUSED')&&performance.now()<gateDeadline)resolve(false);else process.exit(72)};next.once('error',fail);next.once('connect',()=>{next.off('error',fail);resolve(true)});});
  if(connected)socket=next;else await new Promise(r=>setTimeout(r,Math.min(20,Math.max(0,gateDeadline-performance.now()))));
 }
-socket.on('error',()=>process.exit(72));socket.on('end',()=>process.exit(73));socket.on('close',()=>process.exit(73));
+clearTimeout(connectTimer);socket.on('error',()=>process.exit(72));socket.on('end',()=>process.exit(73));socket.on('close',()=>process.exit(73));
+const replyTimer=setTimeout(()=>process.exit(74),${PRODUCT_CONTROL_REPLY_BOUND_MS});
 await new Promise((resolve,reject)=>{let data='';socket.on('data',function onData(b){data+=b;if(data.length>1024)reject(Error());if(!data.includes('\\n'))return;
  if(data!==encode({...q,op:'leased'})+'\\n')reject(Error());else{socket.off('data',onData);resolve();}});socket.write(encode(q)+'\\n');}).catch(()=>process.exit(74));
-clearTimeout(timer);socket.pause();globalThis.__cogsGate={fd:socket._handle.fd,q};
+clearTimeout(replyTimer);socket.pause();globalThis.__cogsGate={fd:socket._handle.fd,q};
 await (await import('/opt/cogs/dev/product-test/runner.ts')).workerMain();
 socket.removeAllListeners('error');socket.removeAllListeners('end');socket.removeAllListeners('close');socket.destroy();
 `;
@@ -328,7 +340,7 @@ function gate(op: string, counts: Record<string, unknown> = {}): void {
   check(writeSync(state.fd, request) === request.length);
   const bytes = Buffer.alloc(131073);
   let length = 0;
-  const deadline = performance.now() + 2000;
+  const deadline = performance.now() + PRODUCT_SYNCHRONOUS_GATE_REPLY_BOUND_MS;
   while (!bytes.subarray(0, length).includes(10)) {
     check(performance.now() < deadline && length < 131072);
     try {
@@ -502,6 +514,8 @@ export function productFailureDiagnostic(
   frame: ProductDiagnosticFrame | undefined,
 ): ProductFailureDiagnostic {
   const diagnostic = frame?.generation === generation ? frame : undefined;
+  if (diagnostic?.diagnostic === "status")
+    check((PRODUCT_STATUS_FAILURE_SUBSTAGES as readonly string[]).includes(diagnostic.substage ?? ""));
   return Object.freeze({
     version: "cogs.product-failure-diagnostic/v1",
     generation,
@@ -650,12 +664,13 @@ export async function productMain(
       const worker = await host.request<ContainerReceipt>("authenticate", { role: "worker" });
       await skills.lease(launch, worker, sandbox);
       for (;;) {
-        const status = await host.request<{ running: boolean; code: number }>("status");
-        if (!status.running) {
-          check(status.code === 0);
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 100));
+        const status = await host.request<unknown>("status");
+        check(status !== null && typeof status === "object" && !Array.isArray(status));
+        check(
+          Object.keys(status).join() === "running" && typeof (status as { running?: unknown }).running === "boolean",
+        );
+        if (!(status as { running: boolean }).running) break;
+        await new Promise((r) => setTimeout(r, PRODUCT_STATUS_POLL_INTERVAL_MS));
       }
       const evidence = JSON.parse(await host.request<string>("evidence"));
       check(evidence.outcome === "pass" && evidence.generation === generation && evidence.upstream === 1);
@@ -1055,13 +1070,6 @@ export async function workerMain(): Promise<void> {
   };
   try {
     // Own all partial startup acquisitions before arming timers or listeners.
-    heartbeat = setInterval(() => {
-      try {
-        gate("ping");
-      } catch {
-        process.exit(74);
-      }
-    }, 1000);
     const runtime = parseRuntimeConfigBytes(await readFile("/etc/cogs/runtime.json"));
     const launch = validateLaunchConfig(JSON.parse(await readFile("/etc/cogs/launch.json", "utf8")));
     admitProfile(runtime, launch);
@@ -1200,6 +1208,15 @@ export async function workerMain(): Promise<void> {
         },
       },
     });
+    // Startup includes the one asynchronous snapshot-control acquisition. Only
+    // after it settles may periodic synchronous gate liveness occupy this loop.
+    heartbeat = setInterval(() => {
+      try {
+        gate("ping");
+      } catch {
+        process.exit(74);
+      }
+    }, 1000);
     void worker.closed.then(
       () => {
         workerSettled = true;
