@@ -286,6 +286,31 @@ test("ADR0349 freezes replacement H, producer, and additive retirement V2", () =
   );
 });
 
+test("ADR0350 binds the replacement static observation and authorizes qualification only", () => {
+  const adr = readFileSync("docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md", "utf8");
+  for (const phrase of [
+    "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    "34872020437",
+    "10359751882",
+    "34876857175",
+    "10361229317",
+    "sha256:478275cdb16c9614a32854239d98d6f9d9ce6e5cffd466b5def69a1760108b5d",
+    "exact thirteen independently read-back members",
+    "byte for byte and without reserialization",
+    "one commit whose sole parent is exact G",
+    "final pre-effect repository-variable interlock",
+    "exactly one first-created attempt-one exact H/G/Q mixed preflight",
+    "exactly one first-created attempt-one seven-runner qualification run",
+    "stop immediately before `.github/workflows/stage2-production-plan.yml`",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes(
+      "[0350](0350-establish-replacement-Q-and-authorize-qualification.md)",
+    ),
+  );
+});
+
 test("central checker accepts the current cumulative linear plan", () => {
   const result = spawnSync("python3", ["-I", "-B", "scripts/check-stage2-retained-lines.py"], {
     encoding: "utf8",
