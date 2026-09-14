@@ -13,9 +13,15 @@ WORKFLOW = ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.ym
 RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
 CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
-# The guard alone is Q's reviewed binding adapter. All H-owned consumers,
-# including the qualifier and control stager, must remain byte-identical at Q.
+# The guard is Q's binding adapter. Static data binds H; the two exact G-only
+# retirement consumers are separately pinned so no broader H drift is admitted.
 Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
+G_RETIREMENT_CONSUMERS = {
+    ".github/workflows/stage2-prebuilt-local-kata-qualification.yml":
+        "fcd78bff59c14c932a4357c6fda7a12f91b7a09814ce22da478436efd2560ee9",
+    "scripts/stage2-revision-retirement.py":
+        "cf7e4c8e889595d0d020eba11bdc821d0c7d019927a5c570350024d4d235705f",
+}
 REQUIRED_CONSUMERS = frozenset({
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
     "scripts/stage2-formal-local-qualification.py",
@@ -42,7 +48,7 @@ REVIEWED_IMPLEMENTATION_HEAD = "11c03441468d4c3130667321018e1cb6f626a303"
 REVIEWED_CONTROL_HEAD = "a9b54c1a823601c3e938e2a616abd0222c0a2846"
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "e2e092bd14161425aacaead2abbe1eb41de50c2f78fdea3d6fffdcaf6711115f"
 REVIEWED_CONTROL_SHA256 = "b568b71d04002303edd77f5925e81ffb6c29f2259274ef544de1a4a478a8132d"
-REVIEWED_WORKFLOW_SHA256 = "9c4575c9b0f63863d50b45e6461855704a053e04fefe420881936ac74227bf7f"
+REVIEWED_WORKFLOW_SHA256 = "fcd78bff59c14c932a4357c6fda7a12f91b7a09814ce22da478436efd2560ee9"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
@@ -67,7 +73,7 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 # Bootstrap veto code must be authenticated before it executes, even when v6
 # does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "51c8b12ed68648d736834b13a28601660a43c7a689dbc0f8853ed444441c33b5"
+RETIREMENT_SOURCE_SHA256 = "cf7e4c8e889595d0d020eba11bdc821d0c7d019927a5c570350024d4d235705f"
 
 
 class GuardError(Exception):
@@ -184,8 +190,13 @@ def _authenticate_control():
                  and type(row["sha256"]) is str and SHA256.fullmatch(row["sha256"]) is not None)
         if relative == Q_BINDING_ADAPTER: continue  # H snapshot, not an H-owned consumer.
         source_raw = _selected_bytes(relative)
+        if relative in G_RETIREMENT_CONSUMERS:
+            _require(_sha(source_raw) == G_RETIREMENT_CONSUMERS[relative],
+                     "selected G retirement consumer differs at Q")
+            continue
         _require(len(source_raw) == row["size"] and _sha(source_raw) == row["sha256"], "selected H source differs at Q")
-    _require(paths == sorted(set(paths)) and REQUIRED_CONSUMERS <= set(paths), "required consumer coverage differs")
+    _require(paths == sorted(set(paths)) and REQUIRED_CONSUMERS <= set(paths)
+             and set(G_RETIREMENT_CONSUMERS) <= set(paths), "required consumer coverage differs")
     _require(_sha(_read_bytes(WORKFLOW, MAX_API_BYTES)) == REVIEWED_WORKFLOW_SHA256, "reviewed workflow bytes differ")
     _require(_sha(_read_bytes(RESULT_SCHEMA, MAX_API_BYTES)) == REVIEWED_RESULT_SCHEMA_SHA256, "receipt.schema")
 

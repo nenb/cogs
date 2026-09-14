@@ -18,7 +18,12 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,7400000),(1800,4300000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert tasks[-1]['paths'] == ['test/aws-stage2-completion-kata-mutable-bridges.test.ts','test/aws-stage2-completion-kata-runtime.py','test/aws-stage2-completion-kata-runtime.test.ts','test/aws-stage2-completion-local-result.py','test/aws-stage2-completion-local-result.test.ts','test/stage2-prebuilt-local-kata-workflow.test.ts']
+assert len(tasks[-1]['paths']) == 40
+assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
+for path in ['config/stage2-retired-revisions-v2.json','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/stage2-prebuilt-rehearsal-grant.py']:
+ assert path in tasks[-1]['paths']
+assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
+assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
 assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage4-offline-readiness-package.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
 assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
@@ -259,6 +264,26 @@ test("ADR0348 retires the failed H producer and requires full replacement conver
     assert.ok(adr.includes(phrase), phrase);
   assert.ok(adr.includes("Do not mutate the old Q-authenticated retirement parser or policy in place"));
   assert.ok(readFileSync("docs/adr/README.md", "utf8").includes("[0348](0348-retire-transient-H-producer.md)"));
+});
+
+test("ADR0349 freezes replacement H, producer, and additive retirement V2", () => {
+  const adr = readFileSync("docs/adr/0349-freeze-replacement-H-and-authorize-control.md", "utf8");
+  for (const phrase of [
+    "1ef6aae3506fded805d8277ec4bce02e585c0650",
+    "34852537897",
+    "34852537647",
+    "34853517895",
+    "10352673587",
+    "two byte-identical builds",
+    "Preserve `config/stage2-retired-revisions-v1.json` byte-identically",
+    "Update the closed Python selector and all nineteen pre-effect workflow mirror occurrences together",
+    "sole parent is H",
+    "no AWS, credentials, provider initialization, OpenTofu, SSM, inventory, deployment, campaign",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0349](0349-freeze-replacement-H-and-authorize-control.md)"),
+  );
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

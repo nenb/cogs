@@ -55,6 +55,15 @@ with tempfile.TemporaryDirectory() as directory:
     bad = [b"", b"{", b"[]", b"null", b"{}", b"x" * 4097, b'{"version":NaN}',
            b'{"version":1,"version":2}', b'[' * 1100 + b']' * 1100, b'\xff']
     policy = json.loads(good)
+    assert policy["version"] == "cogs.stage2-retired-revisions/v2"
+    assert policy["predecessor"] == {
+        "version": "cogs.stage2-retired-revisions/v1",
+        "sha256": "2fe7b704438d9e3f7493ee8be43760ac9f213d095d5411bee137126bc72153b5"}
+    assert policy["revisions"]["9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e"] == "ADR0348"
+    assert policy["runs"]["34831612221"] == "ADR0348"
+    assert retirement["POLICY_V1"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v1.json").read_bytes()
+    changed = copy.deepcopy(policy); changed["predecessor"]["sha256"] = "0" * 64
+    bad.append(json.dumps(changed).encode())
     for group in ("revisions", "runs", "artifacts"):
         changed = copy.deepcopy(policy); changed[group].pop(next(iter(changed[group]))); bad.append(json.dumps(changed).encode())
         changed = copy.deepcopy(policy); changed[group] = []; bad.append(json.dumps(changed).encode())
@@ -76,6 +85,12 @@ with tempfile.TemporaryDirectory() as directory:
     # No git/ancestor inspection exists: a selected descendant is not its parent.
     assert "subprocess" not in (ROOT / "scripts/stage2-revision-retirement.py").read_text()
     retirement["select"]((fresh,))
+
+mirrors = [path for path in (ROOT / ".github/workflows").glob("*.yml")
+           if "9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221)" in path.read_text()]
+assert len(mirrors) == 12
+assert sum(path.read_text().count("9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221)")
+           for path in mirrors) == 19
 
 producer = load("stage2-prebuilt-rootfs-producer")
 publisher = load("stage2-prebuilt-rootfs-publisher")
