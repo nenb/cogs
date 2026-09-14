@@ -148,6 +148,10 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
     /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(workflow).digest("hex"),
   );
+  assert.match(guard, /G_RETIREMENT_CONSUMERS = \{/u);
+  assert.match(guard, /"scripts\/stage2-revision-retirement\.py":/u);
+  assert.match(guard, /"\.github\/workflows\/stage2-prebuilt-local-kata-qualification\.yml":/u);
+  assert.match(guard, /selected G retirement consumer differs at Q/u);
   assert.equal(
     /REVIEWED_RESULT_SCHEMA_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(readFileSync("schemas/stage2-formal-local-cycle-receipt-v2.json")).digest("hex"),
@@ -176,7 +180,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 authenticates only against its historical Q/H source bytes", () => {
+test("checked-in v7 stays historical while the exact G retirement bridge is pinned", () => {
   const result = spawnSync(
     "python3",
     [
@@ -200,8 +204,12 @@ def package_bytes(root):
   require(path.is_file(), 'unsafe v7 member')
   rows.append((str(path.relative_to(package)), path.read_bytes()))
  return rows
-# Current source intentionally differs from H and may not borrow Q's authority.
+# V7 still binds the historical H. Current H differences remain rejected even
+# though the two future G retirement consumers are separately exact-pinned.
 current_guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
+selected=current_guard['_selected_bytes']
+for target,digest in current_guard['G_RETIREMENT_CONSUMERS'].items():
+ require(current_guard['_sha'](selected(target))==digest, 'G retirement pin differs')
 try: current_guard['_authenticate_control']()
 except current_guard['GuardError'] as error:
  require(str(error)=='selected H source differs at Q', 'current source denied for the wrong reason')
