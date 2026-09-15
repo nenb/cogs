@@ -15,11 +15,12 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,7400000),(1800,4300000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,7300000),(1800,4400000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
+assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
 for path in ['config/stage2-retired-revisions-v2.json','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
@@ -40,11 +41,11 @@ assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 7400000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 4300000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 7300000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 4400000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1540,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1541,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})

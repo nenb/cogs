@@ -75,3 +75,24 @@ normal path: it still destroys and confirms zero before the next cycle.
 Row 1 validation is limited to the central checker, focused fake tests, format
 and diff checks, and PR CI. No check or merge authorizes product/KVM dispatch,
 AWS/OpenTofu/SSM activity, or a later H/G/Q transition.
+
+## Post-Q documentation revision allocation
+
+After replacement Q `4e16c314b220c59330a1b4fb898c532f9ca6460e` completed the
+non-AWS qualification, the owner requested one documentation/governance-only
+protected planning revision. The new `BUGS-TO-FIX.md` records explicitly
+accepted deferred review findings without changing campaign implementation or
+workflow bytes. Admit that file only to the existing governance and integration
+inventories.
+
+A deterministic readiness refresh replaces one already large generated
+validation line. Without deletion credit, reallocate 100,000 prospective bytes
+from the otherwise unused `local-tofu-ssm` task to `readiness-ci`: their active
+highs become 7,300,000 and 4,400,000 bytes. Their line highs, every other task
+high, the 21,500,000-byte remaining-tranche total, the 29,500,000-byte forecast,
+and all global/source byte hard stops remain unchanged. Raise only the complete
+tracked-file maximum from 1,540 to 1,541 for the one new documentation file.
+This one-time reallocation and cardinality increment fund only the post-Q
+documentation, synchronized governance assertions, and required deterministic
+readiness refresh. It grants no AWS identity, API,
+provider, OpenTofu, SSM, inventory, deployment, or campaign authority.
