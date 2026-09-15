@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1540,
+    "tracked_files": 1541,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -35,6 +35,7 @@
           "gross_lines": 5400,
           "gross_bytes": 1100000,
           "paths": [
+            "BUGS-TO-FIX.md",
             "config/external-review-remediation-budget-v1.json",
             "docs/adr/0338-plan-pre-h-final-corrections.md",
             "docs/adr/0339-row4-first-attempt-corrections.md",
@@ -114,7 +115,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 7400000,
+          "gross_bytes": 7300000,
           "paths": [
             ".github/workflows/stage2-production-approval.yml",
             ".github/workflows/stage2-production-campaign.yml",
@@ -136,7 +137,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 4300000,
+          "gross_bytes": 4400000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -463,6 +464,7 @@
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
         ".gitleaksignore",
+        "BUGS-TO-FIX.md",
         "README.md",
         "biome.json",
         "config/external-review-remediation-budget-v1.json",
