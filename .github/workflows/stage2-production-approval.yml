@@ -153,13 +153,17 @@ jobs:
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/approval"
+          runner_uid=$(id -u); runner_gid=$(id -g)
+          [[ "$runner_uid" =~ ^[1-9][0-9]*$ ]]
+          [[ "$runner_gid" =~ ^[1-9][0-9]*$ ]]
           cp config/stage2-sigstore-trusted-root-v1.json "$out/sigstore-trusted-root.json"
-          docker run --rm --network host \
+          docker run --rm --network host --user "$runner_uid:$runner_gid" \
             -e COSIGN_EXPERIMENTAL=1 -e ACTIONS_ID_TOKEN_REQUEST_TOKEN -e ACTIONS_ID_TOKEN_REQUEST_URL \
             -v "$out:/work" -w /work "$COSIGN_IMAGE" sign-blob --yes \
             --bundle approval-authentication.bundle.json approval-authentication.json >/dev/null
           identity="https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main"
-          docker run --rm --network none -v "$out:/work:ro" -w /work "$COSIGN_IMAGE" verify-blob \
+          docker run --rm --network none --user "$runner_uid:$runner_gid" \
+            -v "$out:/work:ro" -w /work "$COSIGN_IMAGE" verify-blob \
             --trusted-root sigstore-trusted-root.json \
             --bundle approval-authentication.bundle.json --certificate-identity "$identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \

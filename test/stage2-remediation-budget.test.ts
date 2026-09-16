@@ -40,6 +40,7 @@ assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert 'scripts/stage2-stage-production-approval.py' in local
+assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
 assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6700000
 assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5000000
@@ -79,6 +80,26 @@ test("ADR0338 records temporary runner-loss handling without effect authority", 
     "test/aws-stage2-completion-local-result.test.ts",
   ])
     assert.ok(compact.includes(path), path);
+});
+
+test("ADR0338 and the bug register retire failed R2 approval authority", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "89b0a5b5843373ab92710ce92008fe1b4e6ca658",
+      "35114827724",
+      "35118929555",
+      "mode-`0700`",
+      "terminal",
+      "non-authorizing",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(bugs.includes("produced no approval artifact"));
+  assert.ok(bugs.includes("No campaign was dispatched"));
+  assert.ok(adr.includes("exact positive numeric UID/GID"));
+  assert.ok(adr.includes("grants no retry, planning, approval, provider, or AWS-effect authority"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {

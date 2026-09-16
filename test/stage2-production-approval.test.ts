@@ -125,7 +125,10 @@ test("production approval issuance is canonical, provider-free, signed, and firs
   assert.match(workflow, /sign-blob --yes/u);
   assert.match(workflow, /verify-blob/u);
   assert.match(workflow, /approval-authentication\.bundle\.json/u);
-  assert.match(workflow, /--network none/u);
+  const uidBinding = workflow.indexOf("runner_uid=$(id -u); runner_gid=$(id -g)");
+  assert.ok(uidBinding > authenticate && uidBinding < signing);
+  assert.match(workflow, /--network host --user "\$runner_uid:\$runner_gid"/u);
+  assert.match(workflow, /--network none --user "\$runner_uid:\$runner_gid"/u);
   assert.match(workflow, /sigstore-trusted-root\.json/u);
   assert.doesNotMatch(workflow, /aws-actions|AWS_ACCESS_KEY_ID|opentofu|terraform|\bssm\b/u);
   assert.doesNotMatch(workflow, /actions\/(?:upload|download)-artifact@v[0-9]/u);

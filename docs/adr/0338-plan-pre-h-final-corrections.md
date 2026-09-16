@@ -108,3 +108,24 @@ tracked-file maximum, campaign implementation, and workflow bytes unchanged.
 This R2 accounting permits only the expired-generation record and synchronized
 local readiness evidence; fresh planning and every AWS effect still require
 their separate authorization gates.
+
+Protected R2 `89b0a5b5843373ab92710ce92008fe1b4e6ca658` planning run
+`35114827724` and artifact `10454702483`
+(`sha256:1159450680d732f03f398a04e19b442cf022436e05714defab66575a7683d379`)
+passed independent readback and semantic review, but its sole attempt-one
+approval run `35118929555` failed before signing or artifact publication: the
+pinned non-root Cosign container could not traverse the runner-owned
+mode-`0700` approval directory. It produced no approval artifact, no campaign
+was dispatched, and all temporary IAM roles and ARN variables were removed.
+Treat the complete R2 planning and approval generation as terminal and
+non-authorizing. Authorize one narrow R3 correction that runs both
+pinned Cosign invocations under the exact positive numeric UID/GID owning that
+private directory, asserts that binding in synchronized tests, records the
+failed run and absent artifact additively, and refreshes deterministic readiness
+evidence. The correction must preserve the private directory, pinned image,
+keyless identity, offline verification, H/G/Q, all campaign implementation, and
+all non-approval workflow bytes. Admit the existing synchronized production-
+approval test path to the `local-tofu-ssm` task without changing any task high,
+forecast, global limit, or tracked-file maximum. The correction remains inside
+those existing task and source highs and grants no retry, planning, approval,
+provider, or AWS-effect authority.
