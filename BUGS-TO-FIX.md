@@ -32,3 +32,9 @@ The owner also explicitly accepts and defers, for this single campaign:
 - the post-Q campaign revision's credentialed/root stager not being mechanically required to equal the qualified H copy, with complete-R review and unchanged executable bytes used as compensating controls.
 
 The existing runner-loss policy remains unchanged: runner loss is failed or uncertain, grants no success or retry authority, and may require separately verified manual cleanup. The AWS planning and destructive campaign authorization phrases remain separate mandatory gates.
+
+## 3. Retire the first protected planning generation unused
+
+Protected R `73e4188ff306ead82cfa1b9c35729a7e25030c17` produced the sole successful attempt-one read-only planning run `35041075222` and artifact `10424913996` (`sha256:5b758ef52b8d042ca9c4de7e00dc3251dc6afe17b22663f97a56578e13db559c`). Independent readback and expanded review accepted all seven exact saved plans, but the operator intentionally did not issue approval or dispatch the campaign before their admission window closed. No campaign resource was created, and the read-only planning role was removed.
+
+Disposition: that planning generation is historical, non-authorizing, expired, and must never be reused or retried at R. A protected documentation/governance-only direct successor R2 may support one separately authorized fresh planning observation only after the planning, executor, and inventory-observer roles are preconfigured and verified and a fully supervised campaign window is available. R2 does not change or repeat H/G/Q, alter campaign or workflow bytes, approve resource creation, authorize the destructive campaign, or close Issue #42.

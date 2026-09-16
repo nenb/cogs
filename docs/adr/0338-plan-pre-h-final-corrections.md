@@ -96,3 +96,15 @@ This one-time reallocation and cardinality increment fund only the post-Q
 documentation, synchronized governance assertions, and required deterministic
 readiness refresh. It grants no AWS identity, API,
 provider, OpenTofu, SSM, inventory, deployment, or campaign authority.
+
+The first protected planning generation later completed successfully but expired
+unused before destructive approval. Recording that disposition in the same
+tracked governance document requires a second deterministic readiness refresh,
+whose one-line generated inventories receive no deletion credit. Reallocate a
+further 600,000 prospective bytes from the unused `local-tofu-ssm` task to
+`readiness-ci`; their active highs become 6,700,000 and 5,000,000 bytes. Keep
+all line highs, the total remaining-tranche bytes, forecasts, global limits,
+tracked-file maximum, campaign implementation, and workflow bytes unchanged.
+This R2 accounting permits only the expired-generation record and synchronized
+local readiness evidence; fresh planning and every AWS effect still require
+their separate authorization gates.
