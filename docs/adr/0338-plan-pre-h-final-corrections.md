@@ -129,3 +129,32 @@ approval test path to the `local-tofu-ssm` task without changing any task high,
 forecast, global limit, or tracked-file maximum. The correction remains inside
 those existing task and source highs and grants no retry, planning, approval,
 provider, or AWS-effect authority.
+
+Protected R3 `cb30f534ce8801f605a5c021656d7569ff35306c` planning run
+`35148506458` and artifact `10468186158`
+(`sha256:f84383926493be9e7f98592c38b9479a18c1a1676891ab11f5c682e6fe44c80b`)
+also passed exact archive readback and semantic review. Its sole attempt-one
+approval run `35150577796` failed before signing or publication because the
+exact runner UID had no writable container home and pinned Cosign attempted
+`mkdir /.sigstore` during TUF initialization. It produced no approval artifact,
+no campaign was dispatched, and all temporary IAM roles and ARN variables were
+removed. Treat the complete R3 planning and approval generation as terminal and
+non-authorizing.
+
+Authorize one narrow R4 correction that centralizes the exact pinned signer,
+uses separate mode-`0700` runner-owned signing and verification homes, and adds
+one singleton protected diagnostic exercising the complete keyless path before
+any IAM setup or fresh planning: live TUF initialization, GitHub OIDC,
+Fulcio/Rekor signing, bounded bundle creation, fresh-home network-disabled
+verification against the committed trusted root and exact identity/issuer,
+pinned binary extraction/hash, and diagnostic artifact upload. Preserve H/G/Q,
+all campaign execution implementation, the private approval directory, and
+every non-approval production workflow byte. Add only the signer and diagnostic workflow
+to the existing `local-tofu-ssm` task, and raise the tracked-file source limit
+from 1,541 to 1,543 for those two files. The deterministic readiness refresh
+needs no deletion credit; reallocate 300,000 prospective bytes from the unused
+`local-tofu-ssm` task to `readiness-ci`, making their active byte highs 6,400,000
+and 5,300,000. Keep every line high, the 21,500,000-byte tranche total,
+forecasts, global limits, and all other source limits unchanged. Neither R4 nor
+its diagnostic grants a retry, planning, approval, provider, campaign, or AWS-
+effect authority.

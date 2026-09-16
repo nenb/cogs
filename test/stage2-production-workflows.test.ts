@@ -7,7 +7,9 @@ import test from "node:test";
 
 const planning = readFileSync(".github/workflows/stage2-production-plan.yml", "utf8");
 const approval = readFileSync(".github/workflows/stage2-production-approval.yml", "utf8");
+const approvalDiagnostic = readFileSync(".github/workflows/stage2-production-approval-signing-diagnostic.yml", "utf8");
 const campaign = readFileSync(".github/workflows/stage2-production-campaign.yml", "utf8");
+const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
 const stager = readFileSync("scripts/stage2-stage-production-approval.py", "utf8");
@@ -70,15 +72,23 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
 test("approval authenticates only the exact planning workflow artifact", () => {
   assert.match(approval, /stage2-production-plan\.yml/u);
   assert.match(approval, /COGS_STAGE2_CONTROL_REVISION/u);
-  assert.match(approval, /approval-authentication\.bundle\.json/u);
+  assert.match(signer, /approval-authentication\.bundle\.json/u);
   assert.match(approval, /provider-package\.tar\.sha256/u);
   assert.match(approval, /install -m 0600 "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
   assert.doesNotMatch(approval, /tar -xf "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
-  assert.match(approval, /runner_uid=\$\(id -u\); runner_gid=\$\(id -g\)/u);
-  assert.match(approval, /\[\[ "\$runner_uid" =~ \^\[1-9\]\[0-9\]\*\$ \]\]/u);
-  assert.match(approval, /--network host --user "\$runner_uid:\$runner_gid"/u);
-  assert.match(approval, /--network none --user "\$runner_uid:\$runner_gid"/u);
-  assert.match(approval, /5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68/u);
+  assert.match(approval, /scripts\/stage2-cosign-keyless-sign\.sh "\$out" "\$identity"/u);
+  assert.match(approval, /chmod 0600 "\$RUNNER_TEMP\/approval\/approval-authentication\.json"/u);
+  assert.match(approval, /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
+  assert.doesNotMatch(approval, /docker run/u);
+  assert.match(signer, /runner_uid="\$\(id -u\)"/u);
+  assert.match(signer, /--network host/u);
+  assert.match(signer, /--network none/u);
+  assert.match(signer, /-e HOME=\/cosign-home/u);
+  assert.match(signer, /cogs-cosign-sign-home\.XXXXXX/u);
+  assert.match(signer, /cogs-cosign-verify-home\.XXXXXX/u);
+  assert.match(signer, /--oidc-provider github-actions/u);
+  assert.match(signer, /--trusted-root sigstore-trusted-root\.json/u);
+  assert.match(signer, /5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68/u);
   assert.ok(approval.indexOf(retiredH) < approval.indexOf("gh api --paginate"));
   assert.match(issuer, /stage2-revision-retirement\.py/u);
   const issueStart = issuer.indexOf("def issue(path):");
@@ -88,6 +98,47 @@ test("approval authenticates only the exact planning workflow artifact", () => {
   const publication = issuer.indexOf("emit(canonical(output))", packageCheck);
   assert.ok(issueStart >= 0 && eligibility > issueStart && construction > eligibility);
   assert.ok(packageCheck > construction && publication > packageCheck);
+});
+
+test("shared signer closes pinned Cosign identity, filesystem, TUF, network, and binary custody", () => {
+  assert.match(signer, /set -Eeuo pipefail/u);
+  assert.match(signer, /umask 077/u);
+  assert.match(signer, /cosign\/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb/u);
+  assert.match(signer, /case "\$identity" in/u);
+  assert.match(signer, /stage2-production-approval\.yml@refs\/heads\/main/u);
+  assert.match(signer, /stage2-production-approval-signing-diagnostic\.yml@refs\/heads\/main/u);
+  assert.match(signer, /directory:\$runner_uid:\$runner_gid:700/u);
+  assert.match(signer, /regular file:\$runner_uid:\$runner_gid:1/u);
+  assert.match(signer, /--user "\$runner_uid:\$runner_gid"/u);
+  assert.match(signer, /--cap-drop ALL/u);
+  assert.match(signer, /--security-opt no-new-privileges/u);
+  assert.match(signer, /--read-only/u);
+  assert.match(signer, /-e HOME=\/cosign-home/u);
+  assert.match(signer, /-v "\$sign_home:\/cosign-home"/u);
+  assert.match(signer, /-v "\$verify_home:\/cosign-home"/u);
+  assert.match(signer, /sign-blob --yes --timeout 180s --oidc-provider github-actions/u);
+  assert.match(signer, /\[ -d "\$sign_home\/\.sigstore\/root" \]/u);
+  assert.match(signer, /--network none/u);
+  assert.match(signer, /-v "\$out:\/work:ro"/u);
+  assert.match(signer, /--certificate-identity "\$identity"/u);
+  assert.match(signer, /--certificate-oidc-issuer "\$issuer"/u);
+  assert.match(signer, /docker cp "\$container:\/ko-app\/cosign" "\$binary"/u);
+  assert.doesNotMatch(signer, /AWS_|authorize-seven|authorize-read-only|opentofu|terraform|\bssm\b/iu);
+});
+
+test("protected signing diagnostic is singleton, exact-main, non-authorizing, and uses the production signer", () => {
+  assert.match(approvalDiagnostic, /^on:\n {2}workflow_dispatch:/mu);
+  assert.match(approvalDiagnostic, /id-token: write/u);
+  assert.match(approvalDiagnostic, /test "\$GITHUB_REF" = refs\/heads\/main/u);
+  assert.match(approvalDiagnostic, /test "\$GITHUB_REF_PROTECTED" = true/u);
+  assert.match(approvalDiagnostic, /test "\$GITHUB_RUN_ATTEMPT" = 1/u);
+  assert.match(approvalDiagnostic, /stage2-production-approval-signing-diagnostic\.yml\/runs/u);
+  assert.match(approvalDiagnostic, /map\(\.id\) == \[\$current\]/u);
+  assert.match(approvalDiagnostic, /authority":"non-authorizing-cosign-diagnostic-only/u);
+  assert.match(approvalDiagnostic, /scripts\/stage2-cosign-keyless-sign\.sh "\$out" "\$identity"/u);
+  assert.match(approvalDiagnostic, /--network|TUF home|offline verification/u);
+  assert.match(approvalDiagnostic, /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
+  assert.doesNotMatch(approvalDiagnostic, /configure-aws-credentials|AWS_ACCESS_KEY_ID=|opentofu|terraform|\bssm\b/iu);
 });
 
 test("production entry initialization failures emit only fixed diagnostics", () => {

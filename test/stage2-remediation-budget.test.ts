@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,6700000),(1800,5000000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,6400000),(1800,5300000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -39,14 +39,16 @@ assert 'docs/adr/0348-retire-transient-H-producer.md' in tasks[0]['paths']
 assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-driver-diagnostic.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/otlp-http.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/launcher-smoke-evidence.test.ts','test/linux-kvm-git-tools.test.ts','test/otlp-http.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
+assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
+assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6700000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5000000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6400000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5300000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1541,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1543,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -100,6 +102,27 @@ test("ADR0338 and the bug register retire failed R2 approval authority", () => {
   assert.ok(bugs.includes("No campaign was dispatched"));
   assert.ok(adr.includes("exact positive numeric UID/GID"));
   assert.ok(adr.includes("grants no retry, planning, approval, provider, or AWS-effect authority"));
+});
+
+test("ADR0338 and the bug register retire failed R3 approval and gate R4 on diagnostics", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "cb30f534ce8801f605a5c021656d7569ff35306c",
+      "35148506458",
+      "10468186158",
+      "35150577796",
+      "mkdir /.sigstore",
+      "terminal",
+      "non-authorizing",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(bugs.includes("It produced no approval artifact"));
+  assert.ok(adr.includes("live TUF initialization, GitHub OIDC"));
+  assert.ok(adr.includes("raise the tracked-file source limit from 1,541 to 1,543"));
+  assert.ok(adr.includes("Neither R4 nor its diagnostic grants a retry"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {

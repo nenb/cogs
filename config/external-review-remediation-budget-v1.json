@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1541,
+    "tracked_files": 1543,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -115,8 +115,9 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 6700000,
+          "gross_bytes": 6400000,
           "paths": [
+            ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
             ".github/workflows/stage2-production-campaign.yml",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
@@ -124,6 +125,7 @@
             "deploy/aws-feasibility/completion_campaign_controller.py",
             "deploy/aws-feasibility/completion_campaign_production.py",
             "deploy/aws-feasibility/destroy.sh",
+            "scripts/stage2-cosign-keyless-sign.sh",
             "scripts/stage2-production-planner.py",
             "scripts/stage2-stage-production-approval.py",
             "test/aws-stage2-completion-campaign-aws-adapter.test.ts",
@@ -138,7 +140,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 5000000,
+          "gross_bytes": 5300000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -459,6 +461,7 @@
         ".github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml",
         ".github/workflows/stage2-prebuilt-rootfs-producer.yml",
         ".github/workflows/stage2-prebuilt-rootfs-publisher.yml",
+        ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
         ".github/workflows/stage2-production-approval.yml",
         ".github/workflows/stage2-production-campaign.yml",
         ".github/workflows/stage2-production-plan.yml",
@@ -685,6 +688,7 @@
         "scripts/release-image-set-review-v3.ts",
         "scripts/render-aws-stage2-completion-report-v3.ts",
         "scripts/run-launcher-smoke-evidence.ts",
+        "scripts/stage2-cosign-keyless-sign.sh",
         "scripts/stage2-formal-local-qualification.py",
         "scripts/stage2-hosted-opt-mode.py",
         "scripts/stage2-local-settlement.py",

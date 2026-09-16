@@ -37,13 +37,12 @@ concurrency:
 jobs:
   approve:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       COGS_STAGE2_CONTROL_REVISION: ${{ inputs.control_head }}
       PLAN_RUN_ID: ${{ inputs.planning_run_id }}
       PLAN_ARTIFACT_ID: ${{ inputs.planning_artifact_id }}
       PLAN_ARTIFACT_DIGEST: ${{ inputs.planning_artifact_digest }}
-      COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb
     steps:
       - name: Admit sole first-created protected approval before source effects
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
@@ -90,7 +89,8 @@ jobs:
           gh api "repos/nenb/cogs/actions/artifacts/$PLAN_ARTIFACT_ID" >"$RUNNER_TEMP/plan-artifact.json"
           jq -e --arg digest "$PLAN_ARTIFACT_DIGEST" --argjson run "$PLAN_RUN_ID" \
             --arg name "stage2-production-planning-$GITHUB_SHA-$PLAN_RUN_ID" \
-            '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name' \
+            '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name and
+             .size_in_bytes > 7000000000 and .size_in_bytes < 8000000000' \
             "$RUNNER_TEMP/plan-artifact.json" >/dev/null
 
       - name: Check out exact approval implementation without credentials
@@ -148,32 +148,20 @@ jobs:
             /usr/bin/python3 -I -B scripts/stage2-production-approval.py authenticate \
             "$RUNNER_TEMP/approval/approval.json" \
             >"$RUNNER_TEMP/approval/approval-authentication.json"
+          chmod 0600 "$RUNNER_TEMP/approval/approval-authentication.json"
 
       - name: Keyless sign authentication and retain the exact offline verifier
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/approval"
-          runner_uid=$(id -u); runner_gid=$(id -g)
-          [[ "$runner_uid" =~ ^[1-9][0-9]*$ ]]
-          [[ "$runner_gid" =~ ^[1-9][0-9]*$ ]]
-          cp config/stage2-sigstore-trusted-root-v1.json "$out/sigstore-trusted-root.json"
-          docker run --rm --network host --user "$runner_uid:$runner_gid" \
-            -e COSIGN_EXPERIMENTAL=1 -e ACTIONS_ID_TOKEN_REQUEST_TOKEN -e ACTIONS_ID_TOKEN_REQUEST_URL \
-            -v "$out:/work" -w /work "$COSIGN_IMAGE" sign-blob --yes \
-            --bundle approval-authentication.bundle.json approval-authentication.json >/dev/null
           identity="https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main"
-          docker run --rm --network none --user "$runner_uid:$runner_gid" \
-            -v "$out:/work:ro" -w /work "$COSIGN_IMAGE" verify-blob \
-            --trusted-root sigstore-trusted-root.json \
-            --bundle approval-authentication.bundle.json --certificate-identity "$identity" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            approval-authentication.json >/dev/null
-          container=$(docker create "$COSIGN_IMAGE")
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          docker cp "$container:/ko-app/cosign" "$out/cosign"
-          test "$(sha256sum "$out/cosign" | cut -d' ' -f1)" = \
-            5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68
-          chmod 0555 "$out/cosign"; chmod 0444 "$out/sigstore-trusted-root.json"
+          scripts/stage2-cosign-keyless-sign.sh "$out" "$identity"
+
+      - name: Retire signing OIDC request environment after every outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          printf 'ACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
 
       - name: Upload one non-replace approval and seven exact plans
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

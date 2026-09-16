@@ -11,6 +11,7 @@ import {
 } from "../scripts/validate-aws-stage2-completion-evidence-v3.ts";
 
 const workflow = readFileSync(".github/workflows/stage2-production-approval.yml", "utf8");
+const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 
 test("audit-blocked formal bytes compose through approval, production private serializers, adapter, controller and v3 evidence", () => {
   const result = spawnSync("python3", ["-I", "-B", "test/stage2-production-approval.py", "--composition-samples"], {
@@ -110,26 +111,29 @@ test("production approval issuance is canonical, provider-free, signed, and firs
   assert.match(issuer, /validate_package\(approval_path, approval\)/u);
   assert.match(workflow, /stage2-production-approval\.yml\/runs/u);
   assert.match(workflow, /map\(\.id\) == \[\$current\]/u);
-  assert.match(workflow, /cosign\/cosign@sha256:/u);
+  assert.match(workflow, /timeout-minutes: 30/u);
+  assert.match(workflow, /\.size_in_bytes > 7000000000 and \.size_in_bytes < 8000000000/u);
+  assert.match(signer, /cosign\/cosign@sha256:/u);
   const copy = workflow.indexOf('install -m 0600 "$RUNNER_TEMP/planning/pre-aws-package-v5.json"');
   const digest = workflow.indexOf('sha256sum "$out/pre-aws-package-v5.json"', copy);
   const authenticate = workflow.indexOf("scripts/stage2-production-approval.py authenticate");
-  const signing = workflow.indexOf("sign-blob --yes");
-  assert.ok(copy >= 0 && digest > copy && authenticate > digest && signing > authenticate);
+  const signerCall = workflow.indexOf('scripts/stage2-cosign-keyless-sign.sh "$out" "$identity"');
+  assert.ok(copy >= 0 && digest > copy && authenticate > digest && signerCall > authenticate);
   assert.match(
     workflow,
     /install -m 0600 "\$RUNNER_TEMP\/planning\/pre-aws-package-v5\.json" \\\n\s+"\$out\/pre-aws-package-v5\.json"/u,
   );
   assert.match(workflow.slice(copy, authenticate), /\.pre_aws_package_sha256/u);
   assert.match(workflow, /path: \$\{\{ runner.temp \}\}\/approval/u);
-  assert.match(workflow, /sign-blob --yes/u);
-  assert.match(workflow, /verify-blob/u);
-  assert.match(workflow, /approval-authentication\.bundle\.json/u);
-  const uidBinding = workflow.indexOf("runner_uid=$(id -u); runner_gid=$(id -g)");
-  assert.ok(uidBinding > authenticate && uidBinding < signing);
-  assert.match(workflow, /--network host --user "\$runner_uid:\$runner_gid"/u);
-  assert.match(workflow, /--network none --user "\$runner_uid:\$runner_gid"/u);
-  assert.match(workflow, /sigstore-trusted-root\.json/u);
+  assert.doesNotMatch(workflow, /sign-blob --yes|verify-blob/u);
+  assert.match(signer, /sign-blob --yes/u);
+  assert.match(signer, /verify-blob/u);
+  assert.match(signer, /approval-authentication\.bundle\.json/u);
+  assert.match(signer, /--network host/u);
+  assert.match(signer, /--network none/u);
+  assert.match(signer, /-e HOME=\/cosign-home/u);
+  assert.match(signer, /--trusted-root sigstore-trusted-root\.json/u);
+  assert.match(signer, /--oidc-provider github-actions/u);
   assert.doesNotMatch(workflow, /aws-actions|AWS_ACCESS_KEY_ID|opentofu|terraform|\bssm\b/u);
   assert.doesNotMatch(workflow, /actions\/(?:upload|download)-artifact@v[0-9]/u);
 });
