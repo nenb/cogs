@@ -129,6 +129,7 @@
             "test/aws-stage2-completion-campaign-aws-adapter.test.ts",
             "test/aws-stage2-completion-campaign-aws-provider.py",
             "test/aws-stage2-completion-campaign-aws-provider.test.ts",
+            "test/stage2-production-approval.test.ts",
             "test/stage2-production-planner.py",
             "test/stage2-production-planner.test.ts",
             "test/stage2-production-workflows.test.ts"

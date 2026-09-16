@@ -74,7 +74,10 @@ test("approval authenticates only the exact planning workflow artifact", () => {
   assert.match(approval, /provider-package\.tar\.sha256/u);
   assert.match(approval, /install -m 0600 "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
   assert.doesNotMatch(approval, /tar -xf "\$RUNNER_TEMP\/planning\/provider-package\.tar"/u);
-  assert.match(approval, /--network none/u);
+  assert.match(approval, /runner_uid=\$\(id -u\); runner_gid=\$\(id -g\)/u);
+  assert.match(approval, /\[\[ "\$runner_uid" =~ \^\[1-9\]\[0-9\]\*\$ \]\]/u);
+  assert.match(approval, /--network host --user "\$runner_uid:\$runner_gid"/u);
+  assert.match(approval, /--network none --user "\$runner_uid:\$runner_gid"/u);
   assert.match(approval, /5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68/u);
   assert.ok(approval.indexOf(retiredH) < approval.indexOf("gh api --paginate"));
   assert.match(issuer, /stage2-revision-retirement\.py/u);
