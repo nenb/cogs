@@ -180,6 +180,24 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
 
+      - name: Verify executor budget tag-read closure before any resource effect
+        run: |
+          set -euo pipefail
+          umask 077
+          account=$(aws sts get-caller-identity --query Account --output text --no-cli-pager)
+          [[ "$account" =~ ^[0-9]{12}$ ]]
+          output="$RUNNER_TEMP/executor-budget-tag-read.stdout"
+          diagnostic="$RUNNER_TEMP/executor-budget-tag-read.stderr"
+          trap 'rm -f "$output" "$diagnostic"' EXIT
+          if aws budgets list-tags-for-resource \
+            --resource-arn "arn:aws:budgets::${account}:budget/cogs-s2-permission-probe-$GITHUB_RUN_ID" \
+            --output json --no-cli-pager >"$output" 2>"$diagnostic"; then
+            exit 2
+          fi
+          test ! -s "$output"
+          grep -Fq 'NotFoundException' "$diagnostic"
+          if grep -Fq 'AccessDenied' "$diagnostic"; then exit 2; fi
+
       - name: Seal executor credential bytes before acquiring independent observer
         run: |
           set -euo pipefail
