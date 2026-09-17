@@ -202,3 +202,46 @@ IAM setup, planning, approval, retry, AWS API, OpenTofu, SSM, resource, or
 campaign authority. Only after R5 is protected may fresh temporary roles be
 separately established; fresh planning still requires the exact read-only
 authorization phrase and a new complete supervised window.
+
+Protected R5 `87be0712de3889721b7c4ed3194c32646f823356`
+produced sole successful attempt-one planning run `35225324388` and artifact
+`10498263515`
+(`sha256:1df0a4f015d225464929b1dece0b4a2d24fe75bf3cddf5ecb8ea9c0360101350`).
+Independent exact archive readback accepted all seven distinct create-only plans
+under batch
+`5a29a9601d008640d7789adef3b0a7914b1bff5e71b520d5ea07a0eb0db4f931`.
+The draft began at `2026-09-17T13:09:43Z` and stated expiry at
+`2026-09-17T20:09:43Z`. The campaign's unchanged 20,000-second minimum
+credential duration and 60-second margin nevertheless closed admission at
+`2026-09-17T14:35:23Z`, only 5,140 seconds after planning began. Independent
+review was not complete before that hidden cutoff. The pre-dispatch guard
+therefore rejected later approval authorization before any approval or campaign
+workflow dispatch.
+
+No approval or campaign run exists at R5. No campaign resource was created and
+campaign spend was zero. All three temporary IAM roles and ARN variables are
+absent, independent inventory reports zero campaign resources, and the inert
+GitHub OIDC provider remains. Treat R5 planning as terminal and permanently
+non-authorizing; it cannot be retried or used by a successor.
+
+The owner expressly supersedes the earlier no-production-control-plane-redesign
+constraint only for one narrow direct-child protected R6 correction. Change the
+campaign's minimum derived credential duration from 20,000 to 16,500 seconds.
+The existing seven-hour approval lifetime and 60-second margin then provide a
+visible 8,640-second (`2h24m`) planning-to-admission interval. The new minimum
+still contains the complete 14,700-second effect-and-cleanup envelope plus 1,800
+seconds for post-credential staging. The strict eight-hour maximum remains
+unchanged. Add focused exact-guard assertions and record this disposition in
+the existing governance surfaces.
+
+R6 must preserve exact H/G/Q, the qualified runtime, planner, approval signer,
+campaign controller, provider, Terraform graph, effect deadline, cleanup
+reserve, cost bound, evidence formats, terminators, and every destructive
+authorization gate. It may refresh deterministic readiness evidence for its
+exact source without deletion credit. Reallocate 200,000 prospective bytes from
+the unused `local-tofu-ssm` task to `readiness-ci`, making their active byte
+highs 5,900,000 and 5,800,000; keep every task line high, tracked-file limit,
+tranche total, forecast, and global/source limit unchanged. After protected CI,
+fresh IAM setup and read-only planning still require their separate
+authorization; authenticated approval and
+`authorize-seven-stage2-production-cycles` remain later human gates.

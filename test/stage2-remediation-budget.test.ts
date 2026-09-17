@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,6100000),(1800,5600000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,5900000),(1800,5800000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -44,8 +44,8 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6100000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5600000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 5900000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5800000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1543,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
@@ -149,6 +149,34 @@ test("ADR0338 and the bug register retire the successful unused R4 generation", 
   assert.ok(bugs.includes("No campaign was dispatched"));
   assert.ok(bugs.includes("independent inventory found zero campaign resources"));
   assert.ok(bugs.includes("R5 grants no IAM setup, planning, approval, campaign, retry, or AWS authority"));
+});
+
+test("ADR0338 retires R5 planning and authorizes only the bounded R6 window correction", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "87be0712de3889721b7c4ed3194c32646f823356",
+      "35225324388",
+      "10498263515",
+      "1df0a4f015d225464929b1dece0b4a2d24fe75bf3cddf5ecb8ea9c0360101350",
+      "5a29a9601d008640d7789adef3b0a7914b1bff5e71b520d5ea07a0eb0db4f931",
+      "2026-09-17T14:35:23Z",
+      "5,140 seconds",
+      "terminal and permanently non-authorizing",
+      "16,500 seconds",
+      "14,700-second effect-and-cleanup envelope",
+      "2h24m",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(adr.includes("expressly supersedes the earlier no-production-control-plane-redesign constraint"));
+  assert.ok(adr.includes("preserve exact H/G/Q"));
+  assert.ok(adr.includes("campaign's minimum derived credential duration from 20,000 to 16,500 seconds"));
+  assert.ok(adr.includes("active byte highs 5,900,000 and 5,800,000"));
+  assert.ok(adr.includes("authorize-seven-stage2-production-cycles"));
+  assert.ok(bugs.includes("No approval or campaign run exists at R5"));
+  assert.ok(bugs.includes("campaign spend was zero"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {

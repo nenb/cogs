@@ -201,6 +201,8 @@ test("future campaign has one sealed caller, explicit credential files, recovery
   assert.doesNotMatch(stager, /dev_overrides/u);
   assert.match(campaign, /role_duration_seconds/u);
   assert.match(campaign, /expires_unix_ns/u);
+  assert.match(campaign, /test "\$duration" -ge 16500/u);
+  assert.doesNotMatch(campaign, /test "\$duration" -ge 20000/u);
   for (const source of [planning, approval, campaign]) {
     assert.match(source, /&head_sha=\$GITHUB_SHA/u);
     assert.match(source, /\(\[\.\[\]\.total_count\] \| unique\) == \[1\]/u);
