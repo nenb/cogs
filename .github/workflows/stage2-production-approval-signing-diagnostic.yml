@@ -1,0 +1,114 @@
+name: Stage 2 production approval signing diagnostic
+run-name: Non-authorizing Stage 2 approval signing diagnostic R=${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: stage2-production-approval-signing-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Admit one protected non-authorizing diagnostic before source or OIDC effects
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = nenb
+          test "$GITHUB_TRIGGERING_ACTOR" = nenb
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          for key in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE; do
+            test -z "${!key:-}"
+          done
+          gh api --paginate --slurp \
+            "repos/nenb/cogs/actions/workflows/stage2-production-approval-signing-diagnostic.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" \
+            >"$RUNNER_TEMP/diagnostic-runs.json"
+          jq -e --arg r "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" \
+            '([.[].total_count] | unique) == [1] and
+             ([.[].workflow_runs[] | select(.head_sha == $r and
+               .path == ".github/workflows/stage2-production-approval-signing-diagnostic.yml")] |
+              map(.id) == [$current])' "$RUNNER_TEMP/diagnostic-runs.json" >/dev/null
+
+      - name: Check out exact diagnostic source without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+
+      - name: Exercise exact keyless signing, TUF home, offline verification, and binary custody
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/approval-diagnostic"
+          install -d -m 0700 "$out"
+          workflow_sha=$(sha256sum .github/workflows/stage2-production-approval-signing-diagnostic.yml | cut -d' ' -f1)
+          signer_sha=$(sha256sum scripts/stage2-cosign-keyless-sign.sh | cut -d' ' -f1)
+          /usr/bin/python3 -I -B - "$out/approval-authentication.json" \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$workflow_sha" "$signer_sha" <<'PY'
+          import json,sys
+          path,head,run,workflow,signer=sys.argv[1:]
+          value={
+              "authority":"non-authorizing-cosign-diagnostic-only",
+              "head_sha":head,
+              "run_id":int(run),
+              "signer_sha256":signer,
+              "version":"cogs.stage2-cosign-signing-diagnostic/v1",
+              "workflow_sha256":workflow,
+          }
+          open(path,"wb").write(json.dumps(value,sort_keys=True,separators=(",",":"),
+              ensure_ascii=True,allow_nan=False).encode("ascii")+b"\n")
+          PY
+          chmod 0600 "$out/approval-authentication.json"
+          identity="https://github.com/nenb/cogs/.github/workflows/stage2-production-approval-signing-diagnostic.yml@refs/heads/main"
+          scripts/stage2-cosign-keyless-sign.sh "$out" "$identity"
+          /usr/bin/python3 -I -B - "$out" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            "$workflow_sha" "$signer_sha" <<'PY'
+          import hashlib,json,pathlib,sys
+          root=pathlib.Path(sys.argv[1]); head,run,workflow,signer=sys.argv[2:]
+          names=("approval-authentication.bundle.json","approval-authentication.json",
+                 "cosign","sigstore-trusted-root.json")
+          assert {p.name for p in root.iterdir()} == set(names)
+          files=[]
+          for name in names:
+              path=root/name
+              assert path.is_file() and not path.is_symlink()
+              raw=path.read_bytes()
+              files.append({"name":name,"sha256":hashlib.sha256(raw).hexdigest(),"size":len(raw)})
+          value={
+              "authority":"non-authorizing-cosign-diagnostic-only",
+              "files":files,
+              "head_sha":head,
+              "image":"ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb",
+              "run_id":int(run),
+              "signer_sha256":signer,
+              "version":"cogs.stage2-cosign-signing-diagnostic-receipt/v1",
+              "workflow_sha256":workflow,
+          }
+          (root/"diagnostic-receipt.json").write_bytes(json.dumps(value,sort_keys=True,
+              separators=(",",":"),ensure_ascii=True,allow_nan=False).encode("ascii")+b"\n")
+          PY
+          chmod 0400 "$out/diagnostic-receipt.json"
+
+      - name: Retire OIDC request environment after every diagnostic outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          printf 'ACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
+
+      - name: Upload non-authorizing diagnostic receipt and exact outputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stage2-production-approval-signing-diagnostic-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/approval-diagnostic
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
