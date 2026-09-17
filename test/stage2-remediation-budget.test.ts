@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,6400000),(1800,5300000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,6100000),(1800,5600000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -44,8 +44,8 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6400000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5300000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 6100000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5600000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1543,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
@@ -123,6 +123,32 @@ test("ADR0338 and the bug register retire failed R3 approval and gate R4 on diag
   assert.ok(adr.includes("live TUF initialization, GitHub OIDC"));
   assert.ok(adr.includes("raise the tracked-file source limit from 1,541 to 1,543"));
   assert.ok(adr.includes("Neither R4 nor its diagnostic grants a retry"));
+});
+
+test("ADR0338 and the bug register retire the successful unused R4 generation", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "1116692df81f40c9f3f60c0a7448bcb46167cc61",
+      "35170392903",
+      "10476681104",
+      "35172329037",
+      "10476784540",
+      "447f6e4a73aab1911bb66f07e4b86f92501592dd58e9e341c4ddb1cbb337e4a8",
+      "2026-09-17T08:24:18Z",
+      "expired unused",
+      "terminal",
+      "permanently non-authorizing",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(adr.includes("successful R4 signing diagnostic"));
+  assert.ok(adr.includes("all signer, approval, planning, campaign, provider, and executable bytes"));
+  assert.ok(adr.includes("active byte highs 6,100,000 and 5,600,000"));
+  assert.ok(bugs.includes("No campaign was dispatched"));
+  assert.ok(bugs.includes("independent inventory found zero campaign resources"));
+  assert.ok(bugs.includes("R5 grants no IAM setup, planning, approval, campaign, retry, or AWS authority"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {

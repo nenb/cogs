@@ -158,3 +158,47 @@ and 5,300,000. Keep every line high, the 21,500,000-byte tranche total,
 forecasts, global limits, and all other source limits unchanged. Neither R4 nor
 its diagnostic grants a retry, planning, approval, provider, campaign, or AWS-
 effect authority.
+
+Protected R4 `1116692df81f40c9f3f60c0a7448bcb46167cc61` first passed
+singleton non-authorizing signing diagnostic run `35168491742` and artifact
+`10475417794`
+(`sha256:c43103ce7b93c62f3345bb93fe7ce8945ad6ae1f21a6889d123aba46a39a0b08`).
+Its exact pinned signer completed live TUF initialization, GitHub OIDC,
+Fulcio/Rekor signing, bundle publication, fresh-home network-disabled
+verification, binary custody, and artifact readback. That diagnostic remains
+valid and grants no campaign authority.
+
+R4 then produced sole attempt-one planning run `35170392903` and artifact
+`10476681104`
+(`sha256:a99eb16c3766a6021e177753d3be9d49279f30d598491c862e6df303d6f52182`).
+Exact archive readback and expanded review accepted all seven distinct
+create-only plans under batch
+`447f6e4a73aab1911bb66f07e4b86f92501592dd58e9e341c4ddb1cbb337e4a8`.
+Sole attempt-one approval run `35172329037` and artifact `10476784540`
+(`sha256:60680ae214d4ea43e4bf0c4214800a915ebe1f7d7a8e9cac9c3fbfe12ed24ffc`)
+also passed. Independent readback proved exact inherited plan bytes, canonical
+approval bindings, pinned binary and provider custody, one Rekor inclusion
+proof, one RFC3161 timestamp, and offline verification of the exact protected
+approval-workflow identity and GitHub issuer.
+
+No destructive authorization was issued before the approval expired at
+`2026-09-17T08:24:18Z`; no campaign run or campaign resource was created. The
+three temporary IAM roles and ARN variables were removed, and independent
+inventory found zero campaign instances, volumes, networks, IAM resources,
+schedules, or budgets. Treat the complete R4 planning and approval generation
+as expired unused, terminal, and permanently non-authorizing. Neither workflow
+may be retried at R4, and neither artifact may authorize a later campaign.
+
+Authorize one direct-child protected R5 governance-only successor to record
+that disposition, add synchronized assertions, and refresh deterministic
+readiness evidence. R5 must preserve H/G/Q, the successful R4 signing
+diagnostic, all signer, approval, planning, campaign, provider, and executable
+bytes, and the immutable historical artifacts. Its deterministic readiness
+refresh receives no deletion credit; reallocate another 300,000 prospective
+bytes from the unused `local-tofu-ssm` task to `readiness-ci`, making their
+active byte highs 6,100,000 and 5,600,000. Keep every line high, tracked-file
+limit, tranche total, forecast, and global/source limit unchanged. R5 grants no
+IAM setup, planning, approval, retry, AWS API, OpenTofu, SSM, resource, or
+campaign authority. Only after R5 is protected may fresh temporary roles be
+separately established; fresh planning still requires the exact read-only
+authorization phrase and a new complete supervised window.
