@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,5900000),(1800,5800000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,5600000),(1800,6100000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -44,8 +44,8 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 5900000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 5800000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 5600000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 6100000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1543,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
@@ -177,6 +177,32 @@ test("ADR0338 retires R5 planning and authorizes only the bounded R6 window corr
   assert.ok(adr.includes("authorize-seven-stage2-production-cycles"));
   assert.ok(bugs.includes("No approval or campaign run exists at R5"));
   assert.ok(bugs.includes("campaign spend was zero"));
+});
+
+test("ADR0338 retires failed exact-head R6 CI and authorizes governance-only R7", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "2975deffaf20f518d6611f5757fc2778f7e53d50",
+      "48c379d2027df7016f7aca5a1eca09b45cdb9cd3",
+      "35259074785",
+      "35259074947",
+      "attempt 1",
+      "TooManyRequests 503 No healthy backends",
+      "terminal",
+      "governance-only successor",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(adr.includes("active byte highs 5,600,000 and 6,100,000"));
+  assert.ok(adr.includes("must not change H/G/Q, the 16,500-second campaign guard"));
+  assert.ok(
+    bugs.includes(
+      "No R6 IAM setup, planning, approval, campaign, provider, OpenTofu, SSM, or resource operation occurred",
+    ),
+  );
+  assert.ok(bugs.includes("cannot be retried into authority"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {
