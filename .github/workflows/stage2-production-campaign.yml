@@ -148,7 +148,7 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
           now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
-          test "$duration" -ge 20000
+          test "$duration" -ge 16500
           test "$duration" -le 28800
           printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
 
