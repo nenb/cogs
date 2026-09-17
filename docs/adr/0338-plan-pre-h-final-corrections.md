@@ -245,3 +245,31 @@ tranche total, forecast, and global/source limit unchanged. After protected CI,
 fresh IAM setup and read-only planning still require their separate
 authorization; authenticated approval and
 `authorize-seven-stage2-production-cycles` remain later human gates.
+
+PR #557 passed every required protected check and merged as R6
+`2975deffaf20f518d6611f5757fc2778f7e53d50`, sole child of R5, with reviewed
+tree `48c379d2027df7016f7aca5a1eca09b45cdb9cd3`. Exact-R6 Linux foundations run
+`35259074785`, attempt 1, passed. Exact-R6 CI run `35259074947`, attempt 1,
+failed only while downloading pinned packages for the unchanged insecure-
+container image: Debian Snapshot returned `TooManyRequests 503 No healthy
+backends` for seven package archives. Quality, secret scanning, worker and
+sandbox image builds, and all completed jobs passed. This external snapshot-
+availability failure is not evidence against the campaign-admission change, but
+a failed exact-head generation grants no production planning authority and
+cannot be retried into authority.
+
+No R6 IAM setup, planning, approval, campaign, provider, OpenTofu, SSM, or
+resource operation occurred. Treat R6 as terminal for production planning.
+Authorize one direct-child protected R7 governance-only successor that records
+this failure and preserves the complete R6 tree except synchronized governance,
+accounting assertions, and deterministic readiness evidence. Reallocate another
+300,000 prospective bytes from `local-tofu-ssm` to `readiness-ci`, making their
+active byte highs 5,600,000 and 6,100,000, while keeping every task line high,
+tranche total, forecast, and global/source limit unchanged.
+
+R7 must not change H/G/Q, the 16,500-second campaign guard, or any planner,
+signer, campaign controller, provider, Terraform, cost, cleanup, terminator, or
+evidence behavior. Only a clean first-created attempt-one protected R7 and
+successful exact-R7 post-merge CI/foundations may proceed to temporary IAM
+setup. Fresh read-only planning, authenticated approval, and destructive
+campaign authorization remain separate later gates.
