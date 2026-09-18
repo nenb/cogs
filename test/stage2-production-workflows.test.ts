@@ -157,6 +157,7 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
     diagnosticPreparation.indexOf('bootstrap="$RUNNER_TEMP/planning/plans/.provider-tf-data"') <
       diagnosticPreparation.indexOf("Upload diagnostic planning bytes"),
   );
+  assert.match(diagnosticPreparation, /COGS_STAGE2_CONTROL_REVISION: \$\{\{ inputs\.control_head \}\}/u);
   assert.match(diagnosticPreparation, /stage2-production-approval\.py issue/u);
   assert.match(diagnosticPreparation, /stage2-cosign-keyless-sign\.sh/u);
   assert.match(diagnosticPreparation, /diff -r --no-dereference/u);

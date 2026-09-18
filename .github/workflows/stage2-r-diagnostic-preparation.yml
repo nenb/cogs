@@ -65,6 +65,7 @@ jobs:
       CONTROL_HEAD: ${{ inputs.control_head }}
       QUALIFICATION_HEAD: ${{ inputs.qualification_head }}
       QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+      COGS_STAGE2_CONTROL_REVISION: ${{ inputs.control_head }}
       PACKAGE_ARTIFACT_ID: ${{ inputs.package_artifact_id }}
       PACKAGE_ARTIFACT_DIGEST: ${{ inputs.package_artifact_digest }}
       AUTHORIZATION_PHRASE: ${{ inputs.authorization_phrase }}

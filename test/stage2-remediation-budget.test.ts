@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,4700000),(1800,7000000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,4400000),(1800,7300000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -46,8 +46,8 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 4700000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 7000000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 4400000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 7300000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1545,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
@@ -291,6 +291,29 @@ test("ADR0338 retires the first diagnostic planning export without retry authori
   assert.ok(adr.includes("No approval was issued or signed"));
   assert.ok(bugs.includes("No signing, approval artifact, campaign dispatch, resource creation"));
   assert.ok(adr.includes("active byte highs 4,700,000 and 7,000,000"));
+});
+
+test("ADR0338 retires the approval-environment diagnostic failure without campaign authority", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "ce4b5895e16e882067cd01bc258394e25bc42048",
+      "bb324ac7763caca746e734353d7b60257f2c5ec7",
+      "35377483991",
+      "35377483993",
+      "35390352878",
+      "10566006682",
+      "65ed5766f877e3302a2d3f0c96c685269827305bf54d1586b96971c94526ea18",
+      "COGS_STAGE2_CONTROL_REVISION",
+      "terminal and permanently non-authorizing",
+      "active byte highs 4,400,000 and 7,300,000",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(adr.includes("passed exact artifact readback"));
+  assert.ok(adr.includes("No approval or signature was produced"));
+  assert.ok(bugs.includes("No approval artifact, campaign dispatch, resource creation"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {
