@@ -160,6 +160,14 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.match(diagnosticPreparation, /COGS_STAGE2_CONTROL_REVISION: \$\{\{ inputs\.control_head \}\}/u);
   assert.match(diagnosticPreparation, /stage2-production-approval\.py issue/u);
   assert.match(diagnosticPreparation, /stage2-cosign-keyless-sign\.sh/u);
+  assert.ok(
+    diagnosticPreparation.indexOf("COGS_STAGE2_CONTROL_REVISION:") <
+      diagnosticPreparation.indexOf("stage2-production-approval.py issue") &&
+      diagnosticPreparation.indexOf("stage2-production-approval.py issue") <
+        diagnosticPreparation.indexOf("stage2-production-approval.py authenticate") &&
+      diagnosticPreparation.indexOf("stage2-production-approval.py authenticate") <
+        diagnosticPreparation.indexOf("stage2-cosign-keyless-sign.sh"),
+  );
   assert.match(diagnosticPreparation, /diff -r --no-dereference/u);
   assert.ok(diagnosticPreparation.includes('"production_evidence_eligible":False'));
   assert.ok(diagnosticPreparation.includes('"issue42_closure_eligible":False'));

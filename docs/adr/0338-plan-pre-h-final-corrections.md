@@ -462,3 +462,37 @@ or IAM operation. Reallocate another 300,000 prospective bytes from
 `local-tofu-ssm` to `readiness-ci`, making their active byte highs 4,400,000 and
 7,300,000 while preserving all line highs, totals, forecasts, source limits,
 and the global high.
+
+Protected main `3be83879c87b552f7cdb07480ceda5e843add905`, tree
+`570b8f4c527d8156ca14d4db389a999f060be70a`, contains that exact environment
+mapping. PR checks CI `35392818607` and Linux foundations `35392818603` passed
+at its identical reviewed tree. At the owner's request to stop spending CI
+before a complete diagnostic audit, post-merge CI `35397053515` and Linux
+foundations `35397053474` were explicitly cancelled. They grant no exact-head
+candidate authority and must not be retried or combined with the PR checks.
+
+The subsequent no-cloud audit downloaded exact failed-run artifact `10566006682`
+and matched its GitHub digest. All seven plan binaries matched the draft, all
+seven JSON plans passed the production plan checker, and every staged-plan
+binding matched. The exact failed draft and prerequisite package then passed
+the real approval issuer and authenticator with the corrected environment.
+Forty-one focused workflow, approval, adapter, provider, controller, receipt,
+state, remote, cycle-authority, Linux-integration, and V3-evidence tests passed.
+Diagnostic normal and recovery entries also executed with a fake adapter under
+the exact clean selector environment. Every preparation and campaign input,
+environment, artifact member, identity selector, overlay, execution, recovery,
+and evidence handoff was reviewed; no additional diagnostic defect was found.
+No workflow or AWS operation occurred, exact inventory remained zero, and the
+temporary roles and variables remained absent.
+
+Authorize one replacement candidate that adds only durable versions of those
+diagnostic entry/recovery and handoff assertions plus this cancellation/audit
+disposition. It must preserve every R-path implementation byte, perform complete
+local validation before publication, and receive one protected PR and exact-main
+check sequence. No IAM or AWS workflow is authorized. After a clean candidate,
+one later upfront `authorize-complete-stage2-r-non-authoritative-diagnostic`
+may cover preparation, signing, all seven real cycles, evidence validation,
+zero inventory, and IAM cleanup without intermediate human gates. Reallocate
+300,000 further prospective bytes from `local-tofu-ssm` to `readiness-ci`,
+making active byte highs 4,100,000 and 7,600,000 while preserving all line
+highs, totals, forecasts, source limits, and the global high.
