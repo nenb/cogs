@@ -115,7 +115,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 5000000,
+          "gross_bytes": 4700000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
@@ -142,7 +142,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 6700000,
+          "gross_bytes": 7000000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",

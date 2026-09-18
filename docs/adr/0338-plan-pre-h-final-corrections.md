@@ -397,3 +397,39 @@ release, or Issue 42 closure authority. Raise only the tracked-file high from
 300,000 prospective bytes from `local-tofu-ssm` to `readiness-ci`, making their
 active byte highs 5,000,000 and 6,700,000. Keep every line high, tranche total,
 forecast, serialized-inventory bound, and global source-byte limit unchanged.
+
+Protected diagnostic candidate `8f1bf3032668c6f986fa31145911a42c0ece7925`,
+tree `a9d3635aa67be3d047f97dc57a9e2c7242d1b140`, passed exact-head
+attempt-one CI `35354704622` and Linux foundations `35354704494`. Fresh
+account-wide inventory found zero active resources in all 17 enabled regions,
+exact Stage 2 inventory was zero, and the temporary OIDC roles passed
+independent allow/deny simulation. Sole attempt-one diagnostic preparation run
+`35369019149` authenticated the exact historical fixture, assumed only the
+read-only planning role, generated seven fresh plans, retired credentials, and
+published explicitly non-authoritative planning artifact `10557980075`
+(`sha256:3cd400242d442cbb741d50a3e737c4e1cce87cbcf61dcf41612755c91c5fc862`).
+
+The run failed at its first exact artifact readback comparison because the
+planner output retained local scratch directory `plans/.provider-tf-data`, while
+`actions/upload-artifact` correctly omitted that hidden, explicitly unstaged
+bootstrap cache. No approval was issued or signed, no diagnostic campaign was
+dispatched, and no EC2, OpenTofu apply, SSM, Kata, workload, or campaign effect
+occurred. Exact inventory remained zero; all three temporary roles and ARN
+variables were removed. The run, artifact, plans, window authorization, and
+candidate are terminal and permanently non-authorizing.
+
+Authorize a direct-child diagnostic preparation correction that verifies and
+removes only the disposable `.provider-tf-data` tree after the production
+planner returns, rejects every remaining hidden planning path, and performs the
+existing exact readback over the published planning bytes. This preserves the
+planner, provider, adapter, qualified fixture, seven plans, signer, campaign,
+AWS graph, deadlines, costs, recovery, and evidence behavior. The correction
+may receive local validation, protected CI, and merge, but no workflow retry,
+IAM setup, planning, signing, approval, or AWS effect. A fresh
+`start-stage2-r-diagnostic-window` remains mandatory for the replacement
+candidate; destructive diagnostic authority remains separately absent. The
+regenerated one-line source inventory exhausts the prior `readiness-ci` byte
+margin, so reallocate 300,000 prospective bytes from `local-tofu-ssm` to
+`readiness-ci`, making their active byte highs 4,700,000 and 7,000,000. Keep all
+line highs, tranche totals, forecasts, source limits, and the global high
+unchanged.

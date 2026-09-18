@@ -150,6 +150,13 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-planning/u);
   assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-approval/u);
   assert.match(diagnosticPreparation, /stage2-production-planner\.py/u);
+  assert.match(diagnosticPreparation, /plans\/\.provider-tf-data/u);
+  assert.match(diagnosticPreparation, /rm -rf --one-file-system -- "\$bootstrap"/u);
+  assert.match(diagnosticPreparation, /find "\$RUNNER_TEMP\/planning" -mindepth 1 -name '\.\*'/u);
+  assert.ok(
+    diagnosticPreparation.indexOf('bootstrap="$RUNNER_TEMP/planning/plans/.provider-tf-data"') <
+      diagnosticPreparation.indexOf("Upload diagnostic planning bytes"),
+  );
   assert.match(diagnosticPreparation, /stage2-production-approval\.py issue/u);
   assert.match(diagnosticPreparation, /stage2-cosign-keyless-sign\.sh/u);
   assert.match(diagnosticPreparation, /diff -r --no-dereference/u);
