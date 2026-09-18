@@ -433,3 +433,32 @@ margin, so reallocate 300,000 prospective bytes from `local-tofu-ssm` to
 `readiness-ci`, making their active byte highs 4,700,000 and 7,000,000. Keep all
 line highs, tranche totals, forecasts, source limits, and the global high
 unchanged.
+
+Protected replacement diagnostic candidate
+`ce4b5895e16e882067cd01bc258394e25bc42048`, tree
+`bb324ac7763caca746e734353d7b60257f2c5ec7`, passed exact-head attempt-one CI
+`35377483991` and Linux foundations `35377483993`. Under the single complete
+non-authoritative diagnostic authorization, fresh account-wide and exact Stage
+2 inventories were zero and temporary OIDC roles passed independent policy
+verification. Sole attempt-one preparation `35390352878` again generated seven
+plans, removed the disposable bootstrap cache, passed exact artifact readback,
+and published non-authoritative planning artifact `10566006682`
+(`sha256:65ed5766f877e3302a2d3f0c96c685269827305bf54d1586b96971c94526ea18`).
+It then failed at approval issuance because the diagnostic workflow exported
+`CONTROL_HEAD` but omitted the issuer's closed environment name
+`COGS_STAGE2_CONTROL_REVISION`.
+
+No approval or signature was produced, no campaign was dispatched, and no AWS
+resource effect occurred. Exact inventory remained zero and all temporary roles
+and ARN variables were removed. The candidate, run, artifact, plans, and
+complete-run authorization are terminal and permanently non-authorizing.
+Authorize only a direct-child preparation correction that maps the existing
+exact control input to the issuer's required environment name and asserts that
+mapping. Preserve every planner, provider, adapter, immutable-preparation,
+signer, campaign, graph, deadline, cost, recovery, and evidence byte. The
+replacement receives validation and protected merge authority only; one new
+upfront complete diagnostic authorization remains required before any workflow
+or IAM operation. Reallocate another 300,000 prospective bytes from
+`local-tofu-ssm` to `readiness-ci`, making their active byte highs 4,400,000 and
+7,300,000 while preserving all line highs, totals, forecasts, source limits,
+and the global high.
