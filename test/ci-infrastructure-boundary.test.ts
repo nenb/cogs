@@ -78,6 +78,8 @@ test("parsed workflow run commands cannot invoke infrastructure validation", () 
     "stage2-production-plan.yml",
     "stage2-production-approval.yml",
     "stage2-production-campaign.yml",
+    "stage2-r-diagnostic-campaign.yml",
+    "stage2-r-diagnostic-preparation.yml",
   ]);
   const workflowPaths = readdirSync(workflowDirectory)
     .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))

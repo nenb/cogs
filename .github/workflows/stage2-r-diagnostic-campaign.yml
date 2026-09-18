@@ -1,0 +1,366 @@
+name: Stage 2 R non-authoritative seven-cycle diagnostic
+run-name: Stage 2 R diagnostic campaign candidate=${{ github.sha }} preparation=${{ inputs.preparation_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_phrase:
+        {
+          description: Fresh destructive non-authoritative diagnostic authorization,
+          required: true,
+          type: string,
+        }
+      control_head:
+        {
+          description: Exact qualified fixture control G,
+          required: true,
+          type: string,
+        }
+      preparation_run_id:
+        {
+          description: Exact diagnostic preparation run,
+          required: true,
+          type: string,
+        }
+      approval_artifact_id:
+        {
+          description: Exact diagnostic approval artifact ID,
+          required: true,
+          type: string,
+        }
+      approval_artifact_digest:
+        {
+          description: Exact diagnostic approval archive digest,
+          required: true,
+          type: string,
+        }
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: stage2-r-non-authoritative-diagnostic-campaign
+  cancel-in-progress: false
+
+jobs:
+  campaign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      PREPARATION_RUN_ID: ${{ inputs.preparation_run_id }}
+      APPROVAL_ARTIFACT_ID: ${{ inputs.approval_artifact_id }}
+      APPROVAL_ARTIFACT_DIGEST: ${{ inputs.approval_artifact_digest }}
+      AUTHORIZATION_PHRASE: ${{ inputs.authorization_phrase }}
+    steps:
+      - name: Admit one protected destructive diagnostic without production authority
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          test "$AUTHORIZATION_PHRASE" = authorize-seven-stage2-non-authoritative-diagnostic-cycles
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_ACTOR" = nenb
+          test "$GITHUB_TRIGGERING_ACTOR" = nenb
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PREPARATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$APPROVAL_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$APPROVAL_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh api --paginate --slurp \
+            "repos/nenb/cogs/actions/workflows/stage2-r-diagnostic-campaign.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" \
+            >"$RUNNER_TEMP/diagnostic-campaign-runs.json"
+          jq -e --arg r "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" \
+            '([.[].total_count] | unique) == [1] and
+             ([.[].workflow_runs[] | select(.head_sha == $r and
+               .path == ".github/workflows/stage2-r-diagnostic-campaign.yml")] |
+              map(.id) == [$current])' "$RUNNER_TEMP/diagnostic-campaign-runs.json" >/dev/null
+          for workflow in stage2-production-plan.yml stage2-production-approval.yml stage2-production-campaign.yml; do
+            test "$(gh api "repos/nenb/cogs/actions/workflows/$workflow/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" --jq .total_count)" = 0
+          done
+
+      - name: Authenticate exact diagnostic preparation and artifact identity
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          gh api "repos/nenb/cogs/actions/runs/$PREPARATION_RUN_ID" >"$RUNNER_TEMP/preparation-run.json"
+          jq -e --arg r "$GITHUB_SHA" \
+            '.path == ".github/workflows/stage2-r-diagnostic-preparation.yml" and .head_sha == $r and
+             .head_branch == "main" and .event == "workflow_dispatch" and .run_attempt == 1 and
+             .status == "completed" and .conclusion == "success"' \
+            "$RUNNER_TEMP/preparation-run.json" >/dev/null
+          gh api "repos/nenb/cogs/actions/artifacts/$APPROVAL_ARTIFACT_ID" >"$RUNNER_TEMP/approval-artifact.json"
+          jq -e --arg digest "$APPROVAL_ARTIFACT_DIGEST" --argjson run "$PREPARATION_RUN_ID" \
+            --arg name "NON-AUTHORITATIVE-stage2-r-diagnostic-approval-$GITHUB_SHA-$PREPARATION_RUN_ID" \
+            '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name' \
+            "$RUNNER_TEMP/approval-artifact.json" >/dev/null
+
+      - name: Check out exact diagnostic candidate without persistent credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+
+      - name: Install locked schema validator before credentials
+        run: npm ci --ignore-scripts
+
+      - name: Download exact diagnostic approval artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.approval_artifact_id }}
+          path: ${{ runner.temp }}/approval
+          run-id: ${{ inputs.preparation_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          digest-mismatch: error
+
+      - name: Verify diagnostic marker, signed approval, and remaining window
+        id: approval_verification
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/approval"
+          jq -e --arg candidate "$GITHUB_SHA" --arg g "$CONTROL_HEAD" --argjson run "$PREPARATION_RUN_ID" \
+            '.version == "cogs.stage2-r-diagnostic-marker/v1" and
+             .authority == "non-authoritative-diagnostic-only" and
+             .result == "approved-for-diagnostic-only" and
+             .candidate_revision == $candidate and .fixture_control_revision == $g and
+             .workflow_run_id == $run and .workflow_run_attempt == 1 and
+             .production_evidence_eligible == false and .issue42_closure_eligible == false' \
+            "$out/DIAGNOSTIC-NON-AUTHORITATIVE.json" >/dev/null
+          test "$(sha256sum "$out/cosign" | cut -d' ' -f1)" = \
+            5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68
+          test "$(sha256sum "$out/tofu" | cut -d' ' -f1)" = \
+            e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88
+          test "$(sha256sum "$out/sigstore-trusted-root.json" | cut -d' ' -f1)" = \
+            844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e
+          test "$(cat "$out/provider-package.tar.sha256")" = \
+            "sha256:$(sha256sum "$out/provider-package.tar" | cut -d' ' -f1)"
+          /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py verify-provider-package "$out"
+          chmod 0555 "$out/cosign"
+          "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" \
+            --bundle "$out/approval-authentication.bundle.json" \
+            --certificate-identity \
+            https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$out/approval-authentication.json" >/dev/null
+          test "$(sha256sum "$out/approval.json" | cut -d' ' -f1)" = \
+            "$(jq -er '.approval_sha256 | select(test("^[0-9a-f]{64}$"))' "$out/approval-authentication.json")"
+          jq -e --arg g "$CONTROL_HEAD" \
+            '.version == "cogs.stage2-completion-production-approval/v5" and
+             .control_revision == $g and .one_attempt == true' "$out/approval.json" >/dev/null
+          /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
+          expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
+          now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
+          test "$duration" -ge 16500
+          test "$duration" -le 28800
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
+      - name: Acquire exact fixture H without credentials
+        run: |
+          set -euo pipefail
+          h=$(jq -er '.implementation_revision | select(test("^[0-9a-f]{40}$"))' \
+            "$RUNNER_TEMP/approval/approval.json")
+          destination="$RUNNER_TEMP/implementation-H"; test ! -e "$destination"
+          clean=(env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+          "${clean[@]}" git init --quiet "$destination"
+          "${clean[@]}" git -C "$destination" remote add origin https://github.com/nenb/cogs.git
+          "${clean[@]}" git -C "$destination" fetch --quiet --no-tags --depth=1 origin "$h"
+          "${clean[@]}" git -C "$destination" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$destination" rev-parse HEAD)" = "$h"
+
+      - name: Stage exact fixture H before AWS credentials
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/python3 -I -B \
+            "$RUNNER_TEMP/implementation-H/scripts/prepare-stage2-fixed-source.py" >/dev/null
+
+      - name: Acquire short-lived executor credentials after diagnostic verification
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
+          role-session-name: cogs-stage2-r-diagnostic-${{ github.run_id }}
+          aws-region: us-east-1
+          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+
+      - name: Verify executor budget tag-read closure before resource effects
+        run: |
+          set -euo pipefail
+          umask 077
+          account=$(aws sts get-caller-identity --query Account --output text --no-cli-pager)
+          output="$RUNNER_TEMP/executor-budget-tag-read.stdout"
+          diagnostic="$RUNNER_TEMP/executor-budget-tag-read.stderr"
+          trap 'rm -f "$output" "$diagnostic"' EXIT
+          if aws budgets list-tags-for-resource \
+            --resource-arn "arn:aws:budgets::${account}:budget/cogs-s2-diagnostic-probe-$GITHUB_RUN_ID" \
+            --output json --no-cli-pager >"$output" 2>"$diagnostic"; then exit 2; fi
+          test ! -s "$output"
+          grep -Fq 'NotFoundException' "$diagnostic"
+          if grep -Fq 'AccessDenied' "$diagnostic"; then exit 2; fi
+
+      - name: Seal executor credentials before independent observer
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' \
+            "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" \
+            >"$RUNNER_TEMP/aws-credentials"
+
+      - name: Acquire independent inventory-observer credentials
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
+          role-session-name: cogs-stage2-r-diagnostic-observer-${{ github.run_id }}
+          aws-region: us-east-1
+          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+
+      - name: Stage approval, credentials, provider package, and plans
+        id: production_staging
+        run: |
+          set -euo pipefail
+          umask 077
+          input="$RUNNER_TEMP/approval-input"; install -d -m 0700 "$input"
+          for name in approval.json approval-authentication.json approval-authentication.bundle.json \
+            cosign pre-aws-package-v5.json provider-package.json provider-package.tar \
+            provider-package.tar.sha256 sigstore-trusted-root.json tofu; do
+            cp --no-preserve=mode,ownership "$RUNNER_TEMP/approval/$name" "$input/$name"
+          done
+          cp -R "$RUNNER_TEMP/approval/plans" "$input/plans"
+          printf '[profile nebula]\nregion = us-east-1\noutput = json\n[profile observer]\nregion = us-east-1\noutput = json\n' \
+            >"$RUNNER_TEMP/aws-config"
+          printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' \
+            "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" \
+            >>"$RUNNER_TEMP/aws-credentials"
+          printf '%s\n' '${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}' >"$RUNNER_TEMP/budget-email"
+          sudo -n env COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+            /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
+            "$input" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
+
+      - name: Overlay only the exact diagnostic adapter and provider after fixed-source admission
+        id: diagnostic_overlay
+        run: |
+          set -euo pipefail
+          root=/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility
+          for name in completion_campaign_aws_adapter.py completion_campaign_aws_provider.py; do
+            source="deploy/aws-feasibility/$name"; target="$root/$name"
+            candidate_sha=$(sha256sum "$source" | cut -d' ' -f1)
+            fixture_sha=$(sudo -n sha256sum "$target" | cut -d' ' -f1)
+            test "$candidate_sha" != "$fixture_sha"
+            sudo -n install -o root -g root -m 0444 "$source" "$target.diagnostic-candidate"
+            sudo -n mv -f "$target.diagnostic-candidate" "$target"
+            test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = "$candidate_sha"
+            printf '%s %s %s\n' "$name" "$fixture_sha" "$candidate_sha" \
+              >>"$RUNNER_TEMP/diagnostic-overlays"
+          done
+          grep -Fq '/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC' \
+            deploy/aws-feasibility/completion_campaign_aws_provider.py
+          grep -Fq 'COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC' \
+            deploy/aws-feasibility/completion_campaign_aws_adapter.py
+
+      - name: Recover only exact pre-campaign staging after failed staging or overlay
+        if: always() && (steps.production_staging.outcome != 'success' || steps.diagnostic_overlay.outcome != 'success')
+        run: |
+          set -euo pipefail
+          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2 || \
+             sudo -n test -e /var/lib/cogs/stage2-aws-production-v2.staging; then
+            sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 \
+              COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+              /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
+              "$RUNNER_TEMP/approval-input" "$RUNNER_TEMP/budget-email" \
+              "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
+          fi
+
+      - name: Retire runner credential files and exported environment
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/budget-email"
+          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
+
+      - name: Execute seven cycles with the candidate provider overlay
+        id: campaign
+        timeout-minutes: 265
+        run: |
+          set -euo pipefail
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py
+
+      - name: Invoke cleanup-only recovery after any uncertain diagnostic outcome
+        if: always() && steps.campaign.outcome != 'success'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials; then
+            sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+              COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+              /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py
+          fi
+          sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json
+          sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
+
+      - name: Validate generated evidence but publish only a non-authoritative digest manifest
+        if: steps.campaign.outcome == 'success'
+        run: |
+          set -euo pipefail
+          private="$RUNNER_TEMP/evidence-private"; install -d -m 0700 "$private"
+          sudo -n find /var/lib/cogs/stage2-aws-production-v2/evidence-publication \
+            -mindepth 1 -maxdepth 1 -type f -exec cp --no-preserve=ownership {} "$private"/ \;
+          sudo -n chown -R "$(id -u):$(id -g)" "$private"
+          chmod 0400 "$private"/*
+          npx tsx scripts/validate-aws-stage2-completion-evidence-v3.ts \
+            "$private/aws-stage2-completion-evidence-v3.json"
+          public="$RUNNER_TEMP/diagnostic-publication"; install -d -m 0700 "$public"
+          python3 -I -B - "$private" "$public/diagnostic-result.json" <<'PY'
+          import hashlib,json,os,pathlib,sys
+          root=pathlib.Path(sys.argv[1]); members=[]
+          for path in sorted(root.iterdir()):
+              raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),
+                  "sha256":hashlib.sha256(raw).hexdigest()})
+          expected=["aws-stage2-completion-evidence-v3.json",
+              "aws-stage2-completion-publication-v1.json","aws-stage2-completion-report-v3.md"]
+          if [row["name"] for row in members] != expected: raise SystemExit(2)
+          evidence=json.loads((root/expected[0]).read_bytes())
+          if len(evidence.get("cycles",[])) != 7: raise SystemExit(2)
+          value={"version":"cogs.stage2-r-diagnostic-result/v1",
+            "authority":"non-authoritative-diagnostic-only","result":"pass",
+            "candidate_revision":os.environ["GITHUB_SHA"],
+            "workflow_run_id":int(os.environ["GITHUB_RUN_ID"]),"workflow_run_attempt":1,
+            "cycle_count":7,"generated_evidence_members":members,
+            "production_evidence_eligible":False,"issue42_closure_eligible":False}
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False)+"\n")
+          PY
+          rm -rf "$private"
+
+      - name: Upload diagnostic-only result manifest
+        id: diagnostic_upload
+        if: steps.campaign.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: NON-AUTHORITATIVE-stage2-r-diagnostic-result-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/diagnostic-publication/diagnostic-result.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Download diagnostic result by exact artifact ID
+        if: steps.diagnostic_upload.outcome == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.diagnostic_upload.outputs.artifact-id }}
+          path: ${{ runner.temp }}/diagnostic-readback
+          digest-mismatch: error
+
+      - name: Require exact diagnostic readback and final non-authority
+        if: steps.diagnostic_upload.outcome == 'success'
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/diagnostic-publication/diagnostic-result.json" \
+            "$RUNNER_TEMP/diagnostic-readback/diagnostic-result.json"
+          jq -e '.authority == "non-authoritative-diagnostic-only" and .result == "pass" and
+            .cycle_count == 7 and .production_evidence_eligible == false and
+            .issue42_closure_eligible == false' \
+            "$RUNNER_TEMP/diagnostic-readback/diagnostic-result.json" >/dev/null
+          sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json
+          sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials

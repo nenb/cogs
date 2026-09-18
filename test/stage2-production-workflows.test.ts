@@ -9,6 +9,8 @@ const planning = readFileSync(".github/workflows/stage2-production-plan.yml", "u
 const approval = readFileSync(".github/workflows/stage2-production-approval.yml", "utf8");
 const approvalDiagnostic = readFileSync(".github/workflows/stage2-production-approval-signing-diagnostic.yml", "utf8");
 const campaign = readFileSync(".github/workflows/stage2-production-campaign.yml", "utf8");
+const diagnosticPreparation = readFileSync(".github/workflows/stage2-r-diagnostic-preparation.yml", "utf8");
+const diagnosticCampaign = readFileSync(".github/workflows/stage2-r-diagnostic-campaign.yml", "utf8");
 const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
@@ -107,6 +109,7 @@ test("shared signer closes pinned Cosign identity, filesystem, TUF, network, and
   assert.match(signer, /case "\$identity" in/u);
   assert.match(signer, /stage2-production-approval\.yml@refs\/heads\/main/u);
   assert.match(signer, /stage2-production-approval-signing-diagnostic\.yml@refs\/heads\/main/u);
+  assert.match(signer, /stage2-r-diagnostic-preparation\.yml@refs\/heads\/main/u);
   assert.match(signer, /directory:\$runner_uid:\$runner_gid:700/u);
   assert.match(signer, /regular file:\$runner_uid:\$runner_gid:1/u);
   assert.match(signer, /--user "\$runner_uid:\$runner_gid"/u);
@@ -139,6 +142,50 @@ test("protected signing diagnostic is singleton, exact-main, non-authorizing, an
   assert.match(approvalDiagnostic, /--network|TUF home|offline verification/u);
   assert.match(approvalDiagnostic, /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
   assert.doesNotMatch(approvalDiagnostic, /configure-aws-credentials|AWS_ACCESS_KEY_ID=|opentofu|terraform|\bssm\b/iu);
+});
+
+test("R diagnostic lane exercises production bytes without creating evidence authority", () => {
+  assert.match(diagnosticPreparation, /start-stage2-r-diagnostic-window/u);
+  assert.match(diagnosticPreparation, /stage2-r-diagnostic-preparation\.yml\/runs/u);
+  assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-planning/u);
+  assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-approval/u);
+  assert.match(diagnosticPreparation, /stage2-production-planner\.py/u);
+  assert.match(diagnosticPreparation, /stage2-production-approval\.py issue/u);
+  assert.match(diagnosticPreparation, /stage2-cosign-keyless-sign\.sh/u);
+  assert.match(diagnosticPreparation, /diff -r --no-dereference/u);
+  assert.ok(diagnosticPreparation.includes('"production_evidence_eligible":False'));
+  assert.ok(diagnosticPreparation.includes('"issue42_closure_eligible":False'));
+  assert.doesNotMatch(diagnosticPreparation, /gh variable set/u);
+
+  assert.match(diagnosticCampaign, /authorize-seven-stage2-non-authoritative-diagnostic-cycles/u);
+  assert.match(diagnosticCampaign, /stage2-r-diagnostic-campaign\.yml\/runs/u);
+  assert.match(diagnosticCampaign, /stage2-r-diagnostic-preparation\.yml/u);
+  assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-approval/u);
+  assert.match(diagnosticCampaign, /Verify executor budget tag-read closure before resource effects/u);
+  assert.match(diagnosticCampaign, /stage2-stage-production-approval\.py/u);
+  assert.match(diagnosticCampaign, /Overlay only the exact diagnostic adapter and provider/u);
+  assert.match(diagnosticCampaign, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1/u);
+  assert.match(stager, /identity = adapter\.approval_identity\(\)/u);
+  assert.doesNotMatch(campaign, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC/u);
+  assert.ok(
+    diagnosticCampaign.indexOf("stage2-stage-production-approval.py") <
+      diagnosticCampaign.indexOf("root=/var/lib/cogs/stage2-completion-v1/source"),
+  );
+  assert.ok(
+    diagnosticCampaign.indexOf('target="$root/$name"') < diagnosticCampaign.indexOf("completion_campaign_aws_entry.py"),
+  );
+  assert.match(diagnosticCampaign, /completion_campaign_aws_recovery_entry\.py/u);
+  assert.match(diagnosticCampaign, /validate-aws-stage2-completion-evidence-v3\.ts/u);
+  assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-result/u);
+  assert.ok(diagnosticCampaign.includes('rm -rf "$private"'));
+  assert.ok(diagnosticCampaign.includes('"production_evidence_eligible":False'));
+  assert.ok(diagnosticCampaign.includes('"issue42_closure_eligible":False'));
+  assert.doesNotMatch(diagnosticCampaign, /gh variable set/u);
+  assert.doesNotMatch(diagnosticCampaign, /name: stage2-production-evidence-/u);
+
+  const cleanImmutable =
+    /\/usr\/bin\/env -i HOME=\/nonexistent LANG=C LC_ALL=C PATH=\/usr\/bin:\/bin TZ=UTC "\s*\n\s*"\/usr\/bin\/python3 -I -B \/var\/lib\/cogs\/stage2-completion-v1\/source\//u;
+  assert.match(providerEntry, cleanImmutable);
 });
 
 test("production entry initialization failures emit only fixed diagnostics", () => {

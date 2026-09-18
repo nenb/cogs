@@ -333,3 +333,67 @@ protected R8 and successful exact-head post-merge checks may proceed to fresh
 IAM setup. Fresh read-only planning authorization, authenticated approval
 authorization, and `authorize-seven-stage2-production-cycles` remain separate
 later gates.
+
+Protected R8 `fff2b20f89b1aae26158376104ada8425f8a0d19`, tree
+`7213123761ef06efbae50a653a3a17604d96cb3d`, passed exact-head attempt-one CI
+`35289516189` and Linux foundations `35289516201`. Sole planning run
+`35293994076` produced independently accepted artifact `10526314592`
+(`sha256:6d4c5deb521734dcde4ecbca203fdf1b94f7d945fe586a7e110ee9214c29130d`)
+under batch `596afdde2cb6c6ae20c6e6e7b385c1829c87bfcf34b61dd58be68d5fc7b1b187`.
+Sole authenticated approval run `35295519831` produced independently verified
+artifact `10527701595`
+(`sha256:7b1ecc45c2818c884ae112d8ca28b7431585612bc909100d05a90f87ba163b5f`).
+
+Sole attempt-one campaign `35297082154` passed approval verification, acquired
+both OIDC identities, and proved the corrected pre-effect Budget tag-read
+permission through the required `NotFoundException`. Cycle 1 then applied its
+resource graph, launched `i-00d50d862530755a0`, and sent sole SSM command
+`06a3f62c-20b4-4bfa-9f75-b45e2196bacc`. That command failed after nine seconds
+with response code 2 and exact diagnostic `immutable Stage 2 preparation failed
+at entry`. No Kata launch, workload, measurement, successful cycle, or evidence
+artifact occurred.
+
+The fixed immutable preparer rejects all ambient `AWS_*` and acquisition-
+authority variables before changing its diagnostic stage from `entry`.
+`completion_campaign_aws_provider.py` generated the SSM shell with a direct
+`python3 -I -B .../completion_kata_immutable_preparation.py` invocation instead
+of the fixed clean environment used by every reviewed local owner entry. Root,
+zero-argument, Linux x86_64, and exact source-path conditions were established;
+the AWS SSM ambient environment was the remaining entry mismatch. The provider
+must invoke immutable preparation through exact `/usr/bin/env -i` values before
+`/usr/bin/python3 -I -B`. This is an H-owned provider correction, not a
+same-byte R8 retry.
+
+CloudTrail recorded immediate destruction of the cycle-1 graph. Independent
+inventory returned exact zero at `2026-09-18T02:06:33Z`, `02:07:15Z`, and
+`02:07:58Z`, and again after temporary IAM cleanup. The terminated instance has
+no attached volume or network interface; its volume returns
+`InvalidVolume.NotFound`. All three temporary roles and ARN variables were
+removed, no static credential exists, and the inert OIDC provider remains.
+R8 planning, approval, campaign, and destructive authorization are terminal.
+
+Before another formal H/G/Q chain, authorize one protected non-authoritative R
+diagnostic candidate. It may change only the H-owned provider's immutable-
+preparation invocation to the exact clean environment, add executable hostile-
+environment regression coverage, add distinct diagnostic-only planning,
+signing, seven-cycle campaign, readback and cleanup workflows, synchronized
+governance assertions, and deterministic readiness refresh. The diagnostic
+workflows must use distinct phrases and artifact names, set production and Issue
+42 eligibility false, publish no accepted production evidence, and refuse every
+formal production workflow run at the candidate revision. They retain the same
+OIDC roles, pinned tools, plans, cost controls, deadlines, independent observer,
+seven sequential cycles, recovery and zero-inventory requirements.
+
+The preparation authorization grants source changes, local validation,
+protected CI, merge, and later read-only diagnostic planning only. It grants no
+AWS resource effect. A real diagnostic campaign still requires the distinct
+phrase `authorize-seven-stage2-non-authoritative-diagnostic-cycles`. A failed or
+uncertain diagnostic grants no evidence credit and cannot be rerun without new
+destructive authorization. Only an end-to-end seven-cycle diagnostic pass may
+make its exact unchanged candidate bytes eligible to enter a fresh formal
+H -> G -> Q process; the diagnostic itself grants no H, G, Q, R, production,
+release, or Issue 42 closure authority. Raise only the tracked-file high from
+1,543 to 1,545 for the two literal diagnostic workflow files. Reallocate
+300,000 prospective bytes from `local-tofu-ssm` to `readiness-ci`, making their
+active byte highs 5,000,000 and 6,700,000. Keep every line high, tranche total,
+forecast, serialized-inventory bound, and global source-byte limit unchanged.
