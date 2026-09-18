@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const path = "deploy/aws-feasibility/completion_campaign_aws_adapter.py";
@@ -37,6 +39,56 @@ test("concrete AWS adapter is import-inert and owns the sole production port iss
   assert.match(source, /LOCK = ROOT/u);
   assert.match(source, /ACTIVE = ROOT/u);
   assert.doesNotMatch(source.slice(source.indexOf("def recover(")), /self\.effect\(/u);
+});
+
+test("diagnostic normal and recovery entries preserve only the clean selector environment", () => {
+  const root = mkdtempSync(join(tmpdir(), "cogs-stage2-r-diagnostic-entry-"));
+  try {
+    for (const name of ["completion_campaign_aws_entry.py", "completion_campaign_aws_recovery_entry.py"])
+      copyFileSync(`deploy/aws-feasibility/${name}`, join(root, name));
+    writeFileSync(
+      join(root, "completion_campaign_aws_adapter.py"),
+      [
+        "import os",
+        "from dataclasses import dataclass",
+        "@dataclass(frozen=True)",
+        "class Receipt: result: str",
+        "def check():",
+        "    expected={'HOME':'/nonexistent','LANG':'C','LC_ALL':'C','PATH':'/usr/bin:/bin','TZ':'UTC','COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC':'1'}",
+        "    assert all(os.environ.get(key)==value for key,value in expected.items())",
+        "    assert not any(key.startswith('AWS_') for key in os.environ)",
+        "    return Receipt('pass')",
+        "def run_fixed_campaign(): return check()",
+        "def recover_fixed_campaign(): return check()",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    for (const name of ["completion_campaign_aws_entry.py", "completion_campaign_aws_recovery_entry.py"]) {
+      const result = spawnSync(
+        "/usr/bin/env",
+        [
+          "-i",
+          "HOME=/nonexistent",
+          "LANG=C",
+          "LC_ALL=C",
+          "PATH=/usr/bin:/bin",
+          "TZ=UTC",
+          "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1",
+          "/usr/bin/python3",
+          "-I",
+          "-B",
+          join(root, name),
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+      assert.equal(result.stdout, '{"result":"pass"}\n');
+      assert.equal(result.stderr, "");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("adapter commands and custody paths are fixed with one closed diagnostic identity selector", () => {
