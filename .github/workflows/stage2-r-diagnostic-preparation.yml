@@ -171,6 +171,13 @@ jobs:
             "$RUNNER_TEMP/qualification/pre-aws-package-v5.json" \
             deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json \
             "$RUNNER_TEMP/descriptor.json" "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/planning"
+          # The planner intentionally never stages its local provider bootstrap
+          # cache. Remove that one disposable hidden tree before exact readback.
+          bootstrap="$RUNNER_TEMP/planning/plans/.provider-tf-data"
+          test -d "$bootstrap" && test ! -L "$bootstrap"
+          rm -rf --one-file-system -- "$bootstrap"
+          test ! -e "$bootstrap" && test ! -L "$bootstrap"
+          test -z "$(find "$RUNNER_TEMP/planning" -mindepth 1 -name '.*' -print -quit)"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/planning/DIAGNOSTIC-NON-AUTHORITATIVE.json"
           import json,os
           value={"version":"cogs.stage2-r-diagnostic-marker/v1",
