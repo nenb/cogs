@@ -180,7 +180,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 authenticates the replacement H/G static package through the exact G bridge", () => {
+test("checked-in v7 remains exact old H/G data and rejects the changed diagnostic candidate", () => {
   const result = spawnSync(
     "python3",
     [
@@ -198,7 +198,11 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 paths=sorted(path for path in package.rglob('*') if path.is_file())
 require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
 guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-guard['_reviewed_constants'](); guard['_authenticate_control']()
+guard['_reviewed_constants'](); GuardError=guard['GuardError']
+try: guard['_authenticate_control']()
+except GuardError as error:
+ require(str(error)=='selected H source differs at Q', 'candidate mismatch diagnostic differs')
+else: raise AssertionError('old Q authenticated changed candidate H bytes')
 for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
  require(sha((current/target).read_bytes())==digest, 'G retirement pin differs')
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))

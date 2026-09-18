@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -293,7 +294,29 @@ with tempfile.TemporaryDirectory() as temporary:
     assert '"$w/H/scripts/stage2-stage-prebuilt-control.py" stage-qualification' in shell
     assert '"$w/Q/scripts/' not in shell and "root:root:700 || rm -rf" in shell
     assert "trap 'exit 125' HUP INT TERM" in shell and 'trap - EXIT HUP INT TERM' in shell
-    assert shell.index('$w/Q" fetch') < shell.index('stage-qualification') < shell.index('trap - EXIT')
+    immutable = (
+        "/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC "
+        "/usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/"
+        "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py >/dev/null"
+    )
+    assert shell.count("completion_kata_immutable_preparation.py") == 1
+    assert immutable in shell
+    assert shell.index('$w/Q" fetch') < shell.index('stage-qualification') < shell.index(immutable)
+    hostile = {
+        **os.environ,
+        "AWS_SSM_INSTANCE_ID": "i-ssm-ambient",
+        "AWS_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "ambient-must-not-cross",
+        "HTTPS_PROXY": "http://ambient.invalid",
+    }
+    clean_probe = subprocess.run((
+        "/usr/bin/env", "-i", "HOME=/nonexistent", "LANG=C", "LC_ALL=C",
+        "PATH=/usr/bin:/bin", "TZ=UTC", "/usr/bin/python3", "-I", "-B", "-c",
+        "import os; assert not any(k.startswith('AWS_') for k in os.environ); "
+        "assert 'HTTPS_PROXY' not in os.environ",
+    ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+       close_fds=True, env=hostile, check=False)
+    assert clean_probe.returncode == 0, clean_probe.stderr
 
     receipt_value = json.loads(boundary.effect(
         "plan", 1, "full", grants[1].grant_commitment, d("intent")))

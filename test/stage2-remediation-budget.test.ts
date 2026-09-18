@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,5300000),(1800,6400000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,5000000),(1800,6700000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 40
@@ -40,15 +40,17 @@ assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
+assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
+assert '.github/workflows/stage2-r-diagnostic-preparation.yml' in local
 assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 5300000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 6400000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 5000000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 6700000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1543,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1545,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -235,6 +237,36 @@ test("ADR0338 retires the failed R7 campaign and authorizes only the tag-read gu
   assert.ok(adr.includes("active byte highs 5,300,000 and 6,400,000"));
   assert.ok(bugs.includes("Fresh IAM bootstrap must add and simulate `budgets:ListTagsForResource`"));
   assert.ok(bugs.includes("protected CI, fresh IAM setup, fresh read-only planning authorization"));
+});
+
+test("ADR0338 retires R8 and permits only a non-authoritative end-to-end diagnostic", () => {
+  const adr = readFileSync("docs/adr/0338-plan-pre-h-final-corrections.md", "utf8").replace(/\s+/gu, " ");
+  const bugs = readFileSync("BUGS-TO-FIX.md", "utf8").replace(/\s+/gu, " ");
+  for (const source of [adr, bugs]) {
+    for (const phrase of [
+      "fff2b20f89b1aae26158376104ada8425f8a0d19",
+      "35293994076",
+      "10526314592",
+      "6d4c5deb521734dcde4ecbca203fdf1b94f7d945fe586a7e110ee9214c29130d",
+      "35295519831",
+      "10527701595",
+      "7b1ecc45c2818c884ae112d8ca28b7431585612bc909100d05a90f87ba163b5f",
+      "35297082154",
+      "06a3f62c-20b4-4bfa-9f75-b45e2196bacc",
+      "immutable Stage 2 preparation failed at entry",
+      "/usr/bin/env -i",
+      "authorize-seven-stage2-non-authoritative-diagnostic-cycles",
+      "1,543 to 1,545",
+      "terminal",
+    ])
+      assert.ok(source.includes(phrase), phrase);
+  }
+  assert.ok(adr.includes("No Kata launch, workload, measurement, successful cycle, or evidence"));
+  assert.ok(adr.includes("publish no accepted production evidence"));
+  assert.ok(adr.includes("grants no H, G, Q, R, production"));
+  assert.ok(bugs.includes("publish only a digest manifest"));
+  assert.ok(bugs.includes("Only a seven-cycle pass"));
+  assert.ok(adr.includes("active byte highs 5,000,000 and 6,700,000"));
 });
 
 test("ADR0339 records failed first attempts and its exact post-merge authority", () => {

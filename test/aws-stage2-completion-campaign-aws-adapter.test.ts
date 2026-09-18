@@ -39,7 +39,7 @@ test("concrete AWS adapter is import-inert and owns the sole production port iss
   assert.doesNotMatch(source.slice(source.indexOf("def recover(")), /self\.effect\(/u);
 });
 
-test("adapter commands and custody paths are fixed rather than caller-selected", () => {
+test("adapter commands and custody paths are fixed with one closed diagnostic identity selector", () => {
   for (const command of [
     "run-production-effect.sh",
     "run-production-remote.sh",
@@ -47,7 +47,34 @@ test("adapter commands and custody paths are fixed rather than caller-selected",
     "recover-production-campaign.sh",
   ])
     assert.match(source, new RegExp(command.replace(".", "\\."), "u"));
-  assert.doesNotMatch(source, /sys\.argv|argparse|getenv\(|environ\.get/u);
+  assert.doesNotMatch(source, /sys\.argv|argparse|getenv\(/u);
+  assert.equal(source.match(/os\.environ\.get/g)?.length, 1);
+  assert.match(source, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC/u);
+  assert.match(source, /diagnostic in \{None, "1"\}/u);
+  const identityProbe = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      [
+        "import os,sys",
+        "sys.path.insert(0,'deploy/aws-feasibility')",
+        "import completion_campaign_aws_adapter as a",
+        "assert a.approval_identity()==a.PRODUCTION_APPROVAL_IDENTITY",
+        "os.environ[a.DIAGNOSTIC_ENVIRONMENT]='1'",
+        "assert a.approval_identity()==a.DIAGNOSTIC_APPROVAL_IDENTITY",
+        "os.environ[a.DIAGNOSTIC_ENVIRONMENT]='invalid'",
+        "def rejected():",
+        "    try: a.approval_identity()",
+        "    except a.AwsAdapterError: return True",
+        "    return False",
+        "assert rejected()",
+      ].join("\n"),
+    ],
+    { encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } },
+  );
+  assert.equal(identityProbe.status, 0, identityProbe.stderr);
   assert.match(source, /run_fixed_campaign/u);
   assert.match(source, /issue_completion_evidence\(candidate, custody\)/u);
   assert.match(source, /approval-authentication\.json/u);

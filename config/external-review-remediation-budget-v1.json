@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1543,
+    "tracked_files": 1545,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -115,11 +115,13 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 5300000,
+          "gross_bytes": 5000000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
             ".github/workflows/stage2-production-campaign.yml",
+            ".github/workflows/stage2-r-diagnostic-campaign.yml",
+            ".github/workflows/stage2-r-diagnostic-preparation.yml",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
             "deploy/aws-feasibility/completion_campaign_controller.py",
@@ -140,7 +142,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 6400000,
+          "gross_bytes": 6700000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -465,6 +467,8 @@
         ".github/workflows/stage2-production-approval.yml",
         ".github/workflows/stage2-production-campaign.yml",
         ".github/workflows/stage2-production-plan.yml",
+        ".github/workflows/stage2-r-diagnostic-campaign.yml",
+        ".github/workflows/stage2-r-diagnostic-preparation.yml",
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
         ".gitleaksignore",

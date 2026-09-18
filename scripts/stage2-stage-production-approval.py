@@ -360,7 +360,7 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
             write(directory / "campaign.plan.json", plan_json)
             sync(directory)
         sync(state); sync(STAGING)
-        identity = "https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main"
+        identity = adapter.approval_identity()
         result = subprocess.run(("/usr/bin/unshare", "--net", "--",
             str(STAGING / "cosign"), "verify-blob", "--trusted-root",
             str(STAGING / "sigstore-trusted-root.json"), "--bundle",

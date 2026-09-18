@@ -27,6 +27,13 @@ COSIGN = ROOT / "cosign"
 TRUSTED_ROOT = ROOT / "sigstore-trusted-root.json"
 COSIGN_SHA256 = "5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68"
 TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e"
+PRODUCTION_APPROVAL_IDENTITY = (
+    "https://github.com/nenb/cogs/.github/workflows/"
+    "stage2-production-approval.yml@refs/heads/main")
+DIAGNOSTIC_APPROVAL_IDENTITY = (
+    "https://github.com/nenb/cogs/.github/workflows/"
+    "stage2-r-diagnostic-preparation.yml@refs/heads/main")
+DIAGNOSTIC_ENVIRONMENT = "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC"
 AWS_CONFIG = ROOT / "aws-config"
 AWS_CREDENTIALS = ROOT / "aws-credentials"
 TOFU = ROOT / "tofu"
@@ -213,6 +220,14 @@ def _replace_durable(path, raw):
             temporary.unlink()
 
 
+def approval_identity():
+    """Select only the production identity or an explicit diagnostic identity."""
+    diagnostic = os.environ.get(DIAGNOSTIC_ENVIRONMENT)
+    _require(diagnostic in {None, "1"})
+    return (DIAGNOSTIC_APPROVAL_IDENTITY if diagnostic == "1"
+            else PRODUCTION_APPROVAL_IDENTITY)
+
+
 def _approval():
     raw = _read_fixed(APPROVAL, 64 * 1024)
     _read_fixed(AWS_CONFIG, 4096); _read_fixed(AWS_CREDENTIALS, 16 * 1024)
@@ -229,8 +244,7 @@ def _approval():
     verification = subprocess.run(
         ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
          "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(AUTHENTICATION_BUNDLE),
-         "--certificate-identity",
-         "https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main",
+         "--certificate-identity", approval_identity(),
          "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
          str(AUTHENTICATION)), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, env={"HOME": "/nonexistent", "LANG": "C",

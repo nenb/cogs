@@ -16,7 +16,8 @@ readonly issuer='https://token.actions.githubusercontent.com'
 
 case "$identity" in
   'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main' | \
-    'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval-signing-diagnostic.yml@refs/heads/main') ;;
+    'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval-signing-diagnostic.yml@refs/heads/main' | \
+    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main') ;;
   *) fail ;;
 esac
 
