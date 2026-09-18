@@ -177,6 +177,18 @@ test("future campaign has one sealed caller, explicit credential files, recovery
     campaign.indexOf("prepare-stage2-fixed-source.py") <
       campaign.indexOf("Acquire short-lived fixed executor credentials"),
   );
+  assert.match(campaign, /Verify executor budget tag-read closure before any resource effect/u);
+  assert.match(campaign, /budgets list-tags-for-resource/u);
+  assert.match(campaign, /cogs-s2-permission-probe-\$GITHUB_RUN_ID/u);
+  assert.match(campaign, /NotFoundException/u);
+  assert.match(campaign, /AccessDenied/u);
+  assert.ok(
+    campaign.indexOf("Acquire short-lived fixed executor credentials") <
+      campaign.indexOf("Verify executor budget tag-read closure") &&
+      campaign.indexOf("Verify executor budget tag-read closure") <
+        campaign.indexOf("Seal executor credential bytes") &&
+      campaign.indexOf("Seal executor credential bytes") < campaign.indexOf("run-production-campaign.sh"),
+  );
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);

@@ -273,3 +273,63 @@ evidence behavior. Only a clean first-created attempt-one protected R7 and
 successful exact-R7 post-merge CI/foundations may proceed to temporary IAM
 setup. Fresh read-only planning, authenticated approval, and destructive
 campaign authorization remain separate later gates.
+
+Protected R7 `6a28492a70ee3b0eaffa57e8355070ee865492b9`, tree
+`e52a42a82456182d5a0e5cb618b2430d3550d74f`, passed exact-head attempt-one CI
+`35269083825` and Linux foundations `35269083795`. Sole read-only planning run
+`35275965649` produced artifact `10519889589`
+(`sha256:22948dfcc672cd9ec2c15457d205fde5f8a79e6784d9e295d2f63e3f50a9acb5`)
+and seven independently accepted plans under batch
+`1e6f37299df6bd92ced863afca4b5298b61311f1a43cd5a4da1f5a0905f31151`.
+Sole authenticated approval run `35278527916` produced independently verified
+artifact `10521084322`
+(`sha256:43e775acd96f7994612c6db70370d97e921fe42e2039586731647ad911ef9fe7`).
+
+Sole attempt-one campaign run `35281016121` authenticated and staged those
+exact bytes, acquired the independently committed executor and observer
+identities, and created the first cycle graph. It then failed during OpenTofu
+apply before a provider apply receipt, SSM command, workload, or measurement.
+Its cleanup-only recovery also failed before any delete call. CloudTrail
+independently recorded `budgets:ListTagsForResource` `AccessDenied` during the
+Budget create readback at `2026-09-17T22:17:56Z`, apply refresh at
+`2026-09-17T22:18:25Z`, and recovery refresh at
+`2026-09-17T22:18:38Z`. The temporary executor policy allowed Budget
+modification, tagging, untagging, and viewing but omitted that distinct
+provider-required tag-read action. Pinned provider v6.54.0 calls
+`ListTagsForResource` while reading a Budget and propagates the error, so apply
+could not settle and recovery could not reach destroy. The provider's observed
+`GetInstanceUefiData` call with an AMI ID is explicitly ignored on error by its
+pinned AMI reader and is not the causal failure.
+
+The operator authenticated the exact batch tags and graph identities, deleted
+the termination schedule, terminated the sole instance, waited for its
+DeleteOnTermination volume and network interface, and then removed the exact
+launch template, route association and table, gateway, security group, subnet,
+VPC, two campaign roles, instance profile, and budget. Repeated independent
+inventory returned total zero by `2026-09-17T22:23:06Z`. The three temporary
+GitHub OIDC roles and ARN variables were then removed; the inert OIDC provider
+remains. Campaign run `35281016121` published no artifact. No cycle succeeded,
+no SSM command or workload ran, and R7 planning, approval, and campaign bytes
+are terminal and permanently non-authorizing.
+
+Authorize one direct-child protected R8 correction. After approval verification
+and acquiring the executor identity but before sealing credentials or any
+resource effect, call `budgets:ListTagsForResource` on an exact nonexistent
+`cogs-s2-permission-probe-<run>` budget ARN. Require the authorized
+`NotFoundException`, reject `AccessDenied`, retain no probe output, and perform
+no write. Fresh IAM bootstrap must add and independently simulate
+`budgets:ListTagsForResource` before planning. Add synchronized workflow and
+governance assertions and refresh deterministic readiness evidence without
+deletion credit. Reallocate 300,000 prospective bytes from `local-tofu-ssm` to
+`readiness-ci`, making their active byte highs 5,300,000 and 6,400,000, while
+keeping every task line high, tranche total, forecast, and global/source limit
+unchanged.
+
+R8 must preserve exact H/G/Q, the 16,500-second campaign guard, planner,
+approval issuer, controller, provider, Terraform graph, effect and cleanup
+deadlines, cost bound, terminators, and evidence formats. It grants no same-byte
+retry or inherited planning, approval, or destructive authority. Only a clean
+protected R8 and successful exact-head post-merge checks may proceed to fresh
+IAM setup. Fresh read-only planning authorization, authenticated approval
+authorization, and `authorize-seven-stage2-production-cycles` remain separate
+later gates.
