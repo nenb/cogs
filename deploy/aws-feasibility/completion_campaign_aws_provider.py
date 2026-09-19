@@ -57,6 +57,9 @@ AWS_CONFIG = ROOT / "aws-config"
 AWS_CREDENTIALS = ROOT / "aws-credentials"
 TOFU_CONFIG = ROOT / "tofu-cli.tfrc"
 STATE_ROOT = ROOT / "provider-state"
+TRACE_MARKER = ROOT / "diagnostic-full-cycle-trace"
+TRACE_SOURCE = SOURCE / "deploy/aws-feasibility/remote/completion_aws_full_cycle_trace.py"
+TRACE_REMOTE = "/root/cogs-stage2-aws-full-cycle-trace.py"
 MAX_OUTPUT = 32 * 1024 * 1024
 ZERO = "0" * 64
 ENV = {
@@ -680,6 +683,23 @@ class FixedProvider:
         self._claim(directory, "remote", claim)
         grant_raw = _read(directory / "grant.json", 64 * 1024)
         command = remote_adapter.invocation(grant).command
+        trace_script = None
+        trace_install = ""
+        if TRACE_MARKER.exists():
+            _require(_read(TRACE_MARKER, 64) == b"trace-one-full-cycle\n"
+                     and ordinal == 1 and mode == "full",
+                     "invalid one-cycle trace marker")
+            trace_script = _read(TRACE_SOURCE, 64 * 1024)
+            _require(trace_script.startswith(b"#!/usr/bin/env python3\n")
+                     and b"_run_fixed_full_cycle()" in trace_script,
+                     "invalid one-cycle trace script")
+            trace_encoded = base64.b64encode(trace_script).decode("ascii")
+            trace_install = (
+                f"printf '%s' '{trace_encoded}' | base64 -d >{TRACE_REMOTE}; "
+                f"chmod 500 {TRACE_REMOTE}; ")
+            command = ("/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C "
+                       "PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC "
+                       f"/usr/bin/python3 -I -B {TRACE_REMOTE}")
         encoded = base64.b64encode(grant_raw).decode("ascii")
         remote_shell = (
             "set -eu; umask 077; test ! -e /var/lib/cogs; "
@@ -701,6 +721,7 @@ class FixedProvider:
             "/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC "
             "/usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/"
             "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py >/dev/null; "
+            + trace_install +
             "python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/"
             "provision-stage2-nft-owner.py; "
             "d=/var/lib/cogs/stage2-completion-v1/cycle-authority-v1; install -d -m 700 \"$d\"; "
@@ -771,6 +792,22 @@ class FixedProvider:
             _require(observed.get("CommandId") == command_id and observed.get("InstanceId") == instance,
                      "SSM command or instance identity mismatch")
             status = observed.get("Status")
+            if trace_script is not None and status in {
+                    "Success", "Cancelled", "Failed", "TimedOut", "Cancelling"}:
+                trace_value = {
+                    "version": "cogs.stage2-aws-full-cycle-ssm-trace/v1",
+                    "instance_id": instance,
+                    "command_id": command_id,
+                    "status": status,
+                    "response_code": observed.get("ResponseCode"),
+                    "execution_start": observed.get("ExecutionStartDateTime"),
+                    "execution_end": observed.get("ExecutionEndDateTime"),
+                    "stdout": observed.get("StandardOutputContent", ""),
+                    "stderr": observed.get("StandardErrorContent", ""),
+                }
+                _write_once(directory / "aws-full-cycle-trace.json",
+                            canonical(trace_value), 0o400)
+                raise ProviderBoundaryError("one-cycle diagnostic trace captured")
             if status == "Success":
                 _require(self.clock() < deadline, "late SSM success")
                 break

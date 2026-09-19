@@ -34,6 +34,13 @@ on:
           required: true,
           type: string,
         }
+      trace_full_cycle:
+        {
+          description: Stop after one full cycle and preserve its private SSM diagnostic,
+          required: true,
+          type: boolean,
+          default: false,
+        }
 
 permissions:
   actions: read
@@ -54,6 +61,7 @@ jobs:
       APPROVAL_ARTIFACT_ID: ${{ inputs.approval_artifact_id }}
       APPROVAL_ARTIFACT_DIGEST: ${{ inputs.approval_artifact_digest }}
       AUTHORIZATION_PHRASE: ${{ inputs.authorization_phrase }}
+      TRACE_FULL_CYCLE: ${{ inputs.trace_full_cycle }}
     steps:
       - name: Admit one protected destructive diagnostic without production authority
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
@@ -70,6 +78,7 @@ jobs:
           [[ "$PREPARATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$APPROVAL_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$APPROVAL_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$TRACE_FULL_CYCLE" =~ ^(true|false)$ ]]
           gh api --paginate --slurp \
             "repos/nenb/cogs/actions/workflows/stage2-r-diagnostic-campaign.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" \
             >"$RUNNER_TEMP/diagnostic-campaign-runs.json"
@@ -256,6 +265,16 @@ jobs:
             deploy/aws-feasibility/completion_campaign_aws_provider.py
           grep -Fq 'COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC' \
             deploy/aws-feasibility/completion_campaign_aws_adapter.py
+          if [ "$TRACE_FULL_CYCLE" = true ]; then
+            trace=deploy/aws-feasibility/remote/completion_aws_full_cycle_trace.py
+            target="$root/remote/completion_aws_full_cycle_trace.py"
+            sudo -n install -o root -g root -m 0400 "$trace" "$target"
+            test "$(sudo -n sha256sum "$target" | cut -d' ' -f1)" = \
+              "$(sha256sum "$trace" | cut -d' ' -f1)"
+            printf 'trace-one-full-cycle\n' >"$RUNNER_TEMP/full-cycle-trace-marker"
+            sudo -n install -o root -g root -m 0400 "$RUNNER_TEMP/full-cycle-trace-marker" \
+              /var/lib/cogs/stage2-aws-production-v2/diagnostic-full-cycle-trace
+          fi
 
       - name: Recover only exact pre-campaign staging after failed staging or overlay
         if: always() && (steps.production_staging.outcome != 'success' || steps.diagnostic_overlay.outcome != 'success')
@@ -278,7 +297,7 @@ jobs:
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
           printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
 
-      - name: Execute seven cycles with the candidate provider overlay
+      - name: Execute diagnostic campaign (trace mode stops after cycle 1)
         id: campaign
         timeout-minutes: 265
         run: |
@@ -299,6 +318,33 @@ jobs:
           fi
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
+
+      - name: Collect private one-cycle AWS traceback
+        id: trace_collection
+        if: always() && inputs.trace_full_cycle
+        run: |
+          set -euo pipefail
+          source=/var/lib/cogs/stage2-aws-production-v2/provider-state/cycle-1/aws-full-cycle-trace.json
+          destination="$RUNNER_TEMP/aws-full-cycle-trace"
+          install -d -m 0700 "$destination"
+          sudo -n test -f "$source"
+          sudo -n cp --no-preserve=mode,ownership "$source" "$destination/trace.json"
+          sudo -n chown "$(id -u):$(id -g)" "$destination/trace.json"
+          chmod 0400 "$destination/trace.json"
+          jq -e '.version == "cogs.stage2-aws-full-cycle-ssm-trace/v1" and
+            (.status | IN("Success","Cancelled","Failed","TimedOut","Cancelling")) and
+            (.stderr | contains("cogs.stage2-aws-full-cycle-trace/v1"))' \
+            "$destination/trace.json" >/dev/null
+
+      - name: Upload private one-cycle AWS traceback
+        if: always() && inputs.trace_full_cycle && steps.trace_collection.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PRIVATE-stage2-aws-full-cycle-trace-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/aws-full-cycle-trace/trace.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Validate generated evidence but publish only a non-authoritative digest manifest
         if: steps.campaign.outcome == 'success'
