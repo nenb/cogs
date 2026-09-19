@@ -20,7 +20,7 @@ concurrency:
 jobs:
   trace:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Admit this branch-only throwaway trace
         run: |
@@ -143,10 +143,10 @@ jobs:
             "d=/var/lib/cogs/stage2-completion-v1/cycle-authority-v1; install -d -m 700 \"$d\"; "
             f"printf '%s' '{grant}' | base64 -d >\"$d/grant.json\"; chmod 400 \"$d/grant.json\"; "
             "/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B /root/cogs-stage2-trace.py")
-          print(json.dumps({'commands':[shell],'executionTimeout':['2400']},separators=(',',':')))
+          print(json.dumps({'commands':[shell],'executionTimeout':['5400']},separators=(',',':')))
           PY
           command=$(aws ssm send-command --instance-ids "$instance" \
-            --document-name AWS-RunShellScript --timeout-seconds 2400 \
+            --document-name AWS-RunShellScript --timeout-seconds 5400 \
             --parameters "file://$RUNNER_TEMP/ssm-parameters.json" \
             --query Command.CommandId --output text)
           while :; do

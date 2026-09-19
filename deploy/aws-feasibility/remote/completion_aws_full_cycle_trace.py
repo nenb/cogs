@@ -88,7 +88,29 @@ def main() -> None:
     sys.path.insert(0, str(module_root))
     import completion_cycle_evidence as evidence
     import completion_kata_coordinator as coordinator
+    import completion_kata_network as network
 
+    original_causal_proof = network.prove_causal_network
+
+    def traced_causal_proof(before, after, guest):
+        try:
+            return original_causal_proof(before, after, guest)
+        except BaseException:
+            try:
+                first, second = network._counter_map(before), network._counter_map(after)
+                names = (*network.CAUSAL_POSITIVE_SENSORS,
+                         *network.CAUSAL_MONOTONIC_SENSORS,
+                         *network.CAUSAL_ZERO_SENSORS)
+                _emit("causal-network-deltas", deltas=[
+                    [name, second[name].packets - first[name].packets,
+                     second[name].bytes - first[name].bytes]
+                    for name in names])
+            except BaseException as trace_error:
+                _emit("causal-network-trace-failed",
+                      exception_type=type(trace_error).__name__)
+            raise
+
+    network.prove_causal_network = traced_causal_proof
     coordinator._owners = _TracingOwners(coordinator._owners)
     _emit("full-cycle-start")
     receipt = coordinator._run_fixed_full_cycle()
