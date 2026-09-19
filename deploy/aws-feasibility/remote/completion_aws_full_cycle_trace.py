@@ -58,6 +58,10 @@ class _TracingOwners:
 
         def traced(*args, **kwargs):
             _emit("owner-call-start", owner_call=name)
+            previous_umask = None
+            if name == "create_inputs":
+                previous_umask = os.umask(0o022)
+                _emit("diagnostic-hotpatch", owner_call=name, umask="0022")
             try:
                 result = value(*args, **kwargs)
             except BaseException as error:
@@ -65,6 +69,9 @@ class _TracingOwners:
                       exception_type=type(error).__name__, message=str(error)[:1000])
                 _exception(error)
                 raise
+            finally:
+                if previous_umask is not None:
+                    os.umask(previous_umask)
             _emit("owner-call-passed", owner_call=name)
             return result
 
