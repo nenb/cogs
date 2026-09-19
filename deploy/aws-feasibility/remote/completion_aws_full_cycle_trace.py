@@ -11,6 +11,11 @@ import traceback
 # GetCommandInvocation returns only the first 8,000 stderr characters.
 _MAX_DIAGNOSTIC_BYTES = 7_500
 _written = 0
+_var_lib_baseline: tuple[str, ...] | None = None
+
+
+def _var_lib_names() -> tuple[str, ...]:
+    return tuple(sorted(os.listdir("/var/lib")))
 
 
 def _emit(event: str, **fields: object) -> None:
@@ -74,6 +79,9 @@ class _TracingOwners:
             finally:
                 if previous_umask is not None:
                     os.umask(previous_umask)
+            if name == "acquire_rootfs":
+                global _var_lib_baseline
+                _var_lib_baseline = _var_lib_names()
             _emit("owner-call-passed", owner_call=name)
             return result
 
@@ -135,8 +143,16 @@ def main() -> None:
                     parts.append(component.name.text)
                     changed = generation_delta(expected, node.generation)
                     if changed:
+                        path = "/" + "/".join(parts)
+                        details = {}
+                        if path == "/var/lib" and _var_lib_baseline is not None:
+                            current = _var_lib_names()
+                            details = {
+                                "added_names": sorted(set(current) - set(_var_lib_baseline)),
+                                "removed_names": sorted(set(_var_lib_baseline) - set(current)),
+                            }
                         _emit("rootfs-generation-mismatch",
-                              path="/" + "/".join(parts), changed=changed)
+                              path=path, changed=changed, **details)
                         break
                     parent = node
             except BaseException as trace_error:
