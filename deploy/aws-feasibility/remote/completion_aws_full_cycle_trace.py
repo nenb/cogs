@@ -15,6 +15,8 @@ _written = 0
 
 def _emit(event: str, **fields: object) -> None:
     global _written
+    if event in {"owner-call-start", "owner-call-passed"} and _written >= 3_500:
+        return
     value = {"version": "cogs.stage2-aws-full-cycle-trace/v1", "event": event, **fields}
     raw = (json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
