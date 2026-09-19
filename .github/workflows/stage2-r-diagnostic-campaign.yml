@@ -113,7 +113,7 @@ jobs:
           fields={'batch_commitment':batch,'ordinal':1,'mode':'full',
             'implementation_revision':h,'control_revision':g,
             'static_control_sha256':control,'rootfs_descriptor_sha256':rootfs,
-            'ami_commitment':ami,'plan_sha256':'0'*64}
+            'ami_commitment':ami,'plan_sha256':'e55812f8acef92083da92c875288c1b3761ce61267c03fd066866cc7e2a42f0d'}
           grant=p.CycleLaunchGrant(**fields,grant_commitment=p._commit(
             b'cogs.stage2-cycle-launch-grant/v1',fields))
           print(json.dumps({'version':'cogs.stage2-cycle-launch-grant/v1',
