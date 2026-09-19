@@ -1,11 +1,11 @@
-name: Throwaway Stage 2 AWS full-cycle trace
-run-name: Throwaway AWS full-cycle trace ${{ github.sha }}
+name: Throwaway Stage 2 AWS seven-cycle rehearsal
+run-name: Throwaway AWS seven-cycle rehearsal ${{ github.sha }}
 
 on:
   workflow_dispatch:
     inputs:
       authorization_phrase:
-        description: Confirm one disposable AWS full-cycle trace
+        description: Confirm one disposable seven-cycle AWS rehearsal
         required: true
         type: string
 
@@ -20,9 +20,9 @@ concurrency:
 jobs:
   trace:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
-      - name: Admit this branch-only throwaway trace
+      - name: Admit this branch-only throwaway rehearsal
         run: |
           set -euo pipefail
           test '${{ inputs.authorization_phrase }}' = run-one-throwaway-stage2-aws-trace
@@ -41,11 +41,11 @@ jobs:
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: arn:aws:iam::372495030090:role/cogs-stage2-throwaway-trace
-          role-session-name: cogs-stage2-throwaway-trace-${{ github.run_id }}
+          role-session-name: cogs-stage2-seven-cycle-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: 7200
+          role-duration-seconds: 21600
 
-      - name: Launch, trace, and always destroy one exact full-cycle host
+      - name: Run seven sequential create-measure-destroy cycles
         id: trace
         env:
           H: 1ef6aae3506fded805d8277ec4bce02e585c0650
@@ -59,58 +59,70 @@ jobs:
         run: |
           set -Eeuo pipefail
           umask 077
-          work="$RUNNER_TEMP/aws-trace-tofu"
-          trace="$RUNNER_TEMP/aws-full-cycle-trace.json"
-          install -d -m 0700 "$work" "$HOME/.aws"
+          work="$RUNNER_TEMP/aws-seven-cycle-tofu"
+          trace_root="$RUNNER_TEMP/seven-cycle-trace"
+          install -d -m 0700 "$work" "$trace_root" "$HOME/.aws"
           cp deploy/aws-feasibility/{main.tf,outputs.tf,variables.tf,versions.tf,.terraform.lock.hcl} "$work/"
           printf '[profile nebula]\nregion = us-east-1\noutput = json\n' >"$HOME/.aws/config"
           printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' \
             "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >"$HOME/.aws/credentials"
           export AWS_PROFILE=nebula AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 AWS_PAGER=
-          batch=$(printf '%s' "throwaway-$GITHUB_RUN_ID-$GITHUB_SHA" | sha256sum | cut -d' ' -f1)
-          expiry=$(date -u -d '+3 hours' +%Y-%m-%dT%H:%M:%SZ)
+          batch=$(printf '%s' "throwaway-seven-$GITHUB_RUN_ID-$GITHUB_SHA" | sha256sum | cut -d' ' -f1)
           export TF_VAR_aws_profile=nebula TF_VAR_aws_region=us-east-1
           export TF_VAR_availability_zone=us-east-1a TF_VAR_instance_type=c8i-flex.large
           export TF_VAR_ami_id="$AMI_ID" TF_VAR_ami_commitment="$AMI_COMMITMENT"
-          export TF_VAR_batch_commitment="$batch" TF_VAR_cycle_ordinal=1
+          export TF_VAR_batch_commitment="$batch"
           export TF_VAR_source_revision="$H" TF_VAR_control_revision="$G"
           export TF_VAR_rootfs_descriptor_sha256="$ROOTFS_DESCRIPTOR_SHA256"
-          export TF_VAR_expires_at="$expiry" TF_VAR_budget_alert_email="$BUDGET_EMAIL"
+          export TF_VAR_budget_alert_email="$BUDGET_EMAIL"
           tofu=$(COGS_TOFU_BIN="$RUNNER_TEMP/tofu" scripts/install-opentofu.sh)
+          "$tofu" -chdir="$work" init -input=false
+
           cleanup() {
             rc=$?
             trap - EXIT HUP INT TERM
             set +e
             "$tofu" -chdir="$work" destroy -auto-approve -input=false
             destroy_rc=$?
-            AWS_PROFILE=nebula bash deploy/aws-feasibility/inventory.sh >"$RUNNER_TEMP/final-inventory.json"
+            AWS_PROFILE=nebula bash deploy/aws-feasibility/inventory.sh \
+              >"$trace_root/trap-final-inventory.json"
             inventory_rc=$?
             rm -f "$HOME/.aws/credentials" "$HOME/.aws/config"
             if [ "$destroy_rc" -ne 0 ] || [ "$inventory_rc" -ne 0 ]; then exit 97; fi
             exit "$rc"
           }
           trap cleanup EXIT HUP INT TERM
-          "$tofu" -chdir="$work" init -input=false
-          "$tofu" -chdir="$work" apply -auto-approve -input=false
-          "$tofu" -chdir="$work" output -json campaign >"$RUNNER_TEMP/campaign.json"
-          instance=$(jq -er .instance_id "$RUNNER_TEMP/campaign.json")
-          aws ec2 wait instance-running --instance-ids "$instance"
-          for _ in $(seq 1 120); do
-            status=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=$instance" \
-              --query 'InstanceInformationList[0].PingStatus' --output text)
-            [ "$status" = Online ] && break
-            sleep 5
-          done
-          test "$status" = Online
 
-          python3 - "$batch" "$H" "$G" "$STATIC_CONTROL_SHA256" \
-            "$ROOTFS_DESCRIPTOR_SHA256" "$AMI_COMMITMENT" >"$RUNNER_TEMP/grant.json" <<'PY'
+          tracer64=$(base64 -w0 deploy/aws-feasibility/remote/completion_aws_full_cycle_trace.py)
+          for ordinal in 1 2 3 4 5 6 7; do
+            if [ "$ordinal" -eq 1 ]; then mode=full; else mode=readiness; fi
+            cycle="$trace_root/cycle-$ordinal"
+            install -d -m 0700 "$cycle"
+            export TF_VAR_cycle_ordinal="$ordinal"
+            TF_VAR_expires_at="$(date -u -d '+3 hours' +%Y-%m-%dT%H:%M:%SZ)"
+            export TF_VAR_expires_at
+            "$tofu" -chdir="$work" apply -auto-approve -input=false
+            "$tofu" -chdir="$work" output -json campaign >"$cycle/campaign.json"
+            instance=$(jq -er .instance_id "$cycle/campaign.json")
+            aws ec2 wait instance-running --instance-ids "$instance"
+            status=Offline
+            for _ in $(seq 1 120); do
+              status=$(aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=$instance" \
+                --query 'InstanceInformationList[0].PingStatus' --output text)
+              [ "$status" = Online ] && break
+              sleep 5
+            done
+            test "$status" = Online
+
+            python3 - "$batch" "$H" "$G" "$STATIC_CONTROL_SHA256" \
+              "$ROOTFS_DESCRIPTOR_SHA256" "$AMI_COMMITMENT" "$ordinal" "$mode" \
+              >"$cycle/grant.json" <<'PY'
           import dataclasses,json,pathlib,sys
           sys.path.insert(0,str(pathlib.Path('deploy/aws-feasibility').resolve()))
           import completion_campaign_production as p
-          batch,h,g,control,rootfs,ami=sys.argv[1:]
-          fields={'batch_commitment':batch,'ordinal':1,'mode':'full',
+          batch,h,g,control,rootfs,ami,ordinal,mode=sys.argv[1:]
+          fields={'batch_commitment':batch,'ordinal':int(ordinal),'mode':mode,
             'implementation_revision':h,'control_revision':g,
             'static_control_sha256':control,'rootfs_descriptor_sha256':rootfs,
             'ami_commitment':ami,'plan_sha256':'e55812f8acef92083da92c875288c1b3761ce61267c03fd066866cc7e2a42f0d'}
@@ -119,11 +131,11 @@ jobs:
           print(json.dumps({'version':'cogs.stage2-cycle-launch-grant/v1',
             **dataclasses.asdict(grant)},sort_keys=True,separators=(',',':')))
           PY
-          grant64=$(base64 -w0 "$RUNNER_TEMP/grant.json")
-          tracer64=$(base64 -w0 deploy/aws-feasibility/remote/completion_aws_full_cycle_trace.py)
-          python3 - "$H" "$Q" "$grant64" "$tracer64" >"$RUNNER_TEMP/ssm-parameters.json" <<'PY'
+            grant64=$(base64 -w0 "$cycle/grant.json")
+            python3 - "$H" "$Q" "$grant64" "$tracer64" "$mode" \
+              >"$cycle/ssm-parameters.json" <<'PY'
           import json,sys
-          h,q,grant,tracer=sys.argv[1:]
+          h,q,grant,tracer,mode=sys.argv[1:]
           shell=(
             "set -eu; umask 077; test ! -e /var/lib/cogs; "
             "for x in git python3 tar zstd; do command -v \"$x\" >/dev/null; done; "
@@ -142,38 +154,56 @@ jobs:
             "python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/provision-stage2-nft-owner.py; "
             "d=/var/lib/cogs/stage2-completion-v1/cycle-authority-v1; install -d -m 700 \"$d\"; "
             f"printf '%s' '{grant}' | base64 -d >\"$d/grant.json\"; chmod 400 \"$d/grant.json\"; "
-            "/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B /root/cogs-stage2-trace.py")
+            f"/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC /usr/bin/python3 -I -B /root/cogs-stage2-trace.py {mode}")
           print(json.dumps({'commands':[shell],'executionTimeout':['5400']},separators=(',',':')))
           PY
-          command=$(aws ssm send-command --instance-ids "$instance" \
-            --document-name AWS-RunShellScript --timeout-seconds 5400 \
-            --parameters "file://$RUNNER_TEMP/ssm-parameters.json" \
-            --query Command.CommandId --output text)
-          while :; do
-            if aws ssm get-command-invocation --command-id "$command" --instance-id "$instance" \
-              --output json >"$trace.tmp" 2>/dev/null; then
-              status=$(jq -r .Status "$trace.tmp")
-              case "$status" in
-                Success|Cancelled|Failed|TimedOut|Cancelling) mv "$trace.tmp" "$trace"; break ;;
-              esac
-            fi
-            sleep 5
-          done
-          jq '{Status,ResponseCode,ExecutionStartDateTime,ExecutionEndDateTime,
-            TraceEvents:(.StandardErrorContent | split("\n") |
-              map(select(length > 0) | try (fromjson | .event) catch "non-json"))}' "$trace"
-          test -s "$trace"
-          test "$(jq -r .Status "$trace")" = Success
-          test "$(jq -r .ResponseCode "$trace")" = 0
+            command=$(aws ssm send-command --instance-ids "$instance" \
+              --document-name AWS-RunShellScript --timeout-seconds 5400 \
+              --parameters "file://$cycle/ssm-parameters.json" \
+              --query Command.CommandId --output text)
+            trace="$cycle/aws-cycle-trace.json"
+            while :; do
+              if aws ssm get-command-invocation --command-id "$command" --instance-id "$instance" \
+                --output json >"$trace.tmp" 2>/dev/null; then
+                status=$(jq -r .Status "$trace.tmp")
+                case "$status" in
+                  Success|Cancelled|Failed|TimedOut|Cancelling) mv "$trace.tmp" "$trace"; break ;;
+                esac
+              fi
+              sleep 5
+            done
+            jq --argjson ordinal "$ordinal" --arg mode "$mode" \
+              '{ordinal:$ordinal,mode:$mode,Status,ResponseCode,ExecutionStartDateTime,
+                ExecutionEndDateTime,TraceEvents:(.StandardErrorContent | split("\n") |
+                map(select(length > 0) | try (fromjson | .event) catch "non-json"))}' "$trace"
+            cycle_rc=0
+            test -s "$trace" || cycle_rc=2
+            [ "$(jq -r .Status "$trace")" = Success ] || cycle_rc=2
+            [ "$(jq -r .ResponseCode "$trace")" = 0 ] || cycle_rc=2
 
-      - name: Upload private traceback and final inventory
+            set +e
+            "$tofu" -chdir="$work" destroy -auto-approve -input=false
+            destroy_rc=$?
+            AWS_PROFILE=nebula bash deploy/aws-feasibility/inventory.sh \
+              >"$cycle/final-inventory.json"
+            inventory_rc=$?
+            set -e
+            if [ "$destroy_rc" -ne 0 ] || [ "$inventory_rc" -ne 0 ]; then exit 97; fi
+            test "$(jq -r .total "$cycle/final-inventory.json")" = 0
+            if [ "$cycle_rc" -ne 0 ]; then exit "$cycle_rc"; fi
+          done
+
+          jq -n --arg run_id "$GITHUB_RUN_ID" --arg head_sha "$GITHUB_SHA" \
+            '{version:"cogs.stage2-throwaway-seven-cycle/v1",run_id:$run_id,
+              head_sha:$head_sha,cycles:7,status:"passed",authoritative:false}' \
+            >"$trace_root/summary.json"
+
+      - name: Upload private traces and final inventories
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: PRIVATE-throwaway-stage2-aws-trace-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/aws-full-cycle-trace.json
-            ${{ runner.temp }}/final-inventory.json
-          if-no-files-found: warn
+          name: PRIVATE-throwaway-stage2-aws-seven-cycle-${{ github.run_id }}
+          path: ${{ runner.temp }}/seven-cycle-trace
+          if-no-files-found: error
           retention-days: 1
           compression-level: 0

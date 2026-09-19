@@ -81,8 +81,9 @@ class _TracingOwners:
 
 
 def main() -> None:
-    if sys.argv != [sys.argv[0]]:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"full", "readiness"}:
         raise SystemExit(64)
+    mode = sys.argv[1]
     module_root = Path(
         "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
     if not module_root.is_dir():
@@ -200,12 +201,13 @@ def main() -> None:
     _emit("diagnostic-hotpatch", owner_call="full-cycle",
           ip_forward_before=previous_forwarding.decode("ascii").strip(),
           ip_forward_during="1")
-    _emit("full-cycle-start")
+    _emit("cycle-start", mode=mode)
     try:
-        receipt = coordinator._run_fixed_full_cycle()
+        receipt = (coordinator._run_fixed_full_cycle() if mode == "full"
+                   else coordinator._run_fixed_readiness_cycle())
     finally:
         write_forwarding(previous_forwarding)
-    _emit("full-cycle-passed")
+    _emit("cycle-passed", mode=mode)
     _write_stdout(evidence._consume_cycle_receipt(receipt))
 
 
