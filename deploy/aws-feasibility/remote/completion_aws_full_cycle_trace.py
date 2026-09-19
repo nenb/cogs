@@ -81,9 +81,12 @@ class _TracingOwners:
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"full", "readiness"}:
+    if sys.argv != [sys.argv[0]]:
         raise SystemExit(64)
-    mode = sys.argv[1]
+    mode_path = Path("/root/cogs-stage2-cycle-mode")
+    mode = mode_path.read_text(encoding="ascii").strip()
+    if mode not in {"full", "readiness"}:
+        raise RuntimeError("invalid diagnostic cycle mode")
     module_root = Path(
         "/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")
     if not module_root.is_dir():
