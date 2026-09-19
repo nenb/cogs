@@ -103,6 +103,7 @@ def main() -> None:
     import completion_cycle_evidence as evidence
     import completion_kata_coordinator as coordinator
     import completion_kata_network as network
+    import completion_kata_process as process
     import completion_rootfs_fs as rootfs_fs
 
     original_revalidate_chain = rootfs_fs._revalidate_chain
@@ -193,6 +194,49 @@ def main() -> None:
             raise
 
     network.prove_causal_network = traced_causal_proof
+    original_prepare_cgroup = process._prepare_cgroup
+
+    def traced_prepare_cgroup(context, daemon_profile=None):
+        try:
+            return original_prepare_cgroup(context, daemon_profile)
+        except BaseException:
+            if daemon_profile is not None:
+                try:
+                    base_fd, base = process._directory_identity(process.CGROUP_BASE)
+                    try:
+                        leaves = sorted(process._cgroup_leaf_names(base_fd))
+                    finally:
+                        os.close(base_fd)
+                    expected_leaves = [daemon_profile.leaf_name]
+                    if daemon_profile.runtime_leaf_name is not None:
+                        expected_leaves.append(daemon_profile.runtime_leaf_name)
+                    daemon_generation = None
+                    runtime_generation = None
+                    try:
+                        daemon_generation = process._cgroup_generation(
+                            daemon_profile.cgroup_path)
+                    except BaseException as error:
+                        daemon_generation = ["error", type(error).__name__]
+                    if daemon_profile.runtime_leaf_name is not None:
+                        try:
+                            runtime_generation = process._cgroup_generation(
+                                process.CGROUP_BASE + "/" + daemon_profile.runtime_leaf_name)
+                        except BaseException as error:
+                            runtime_generation = ["error", type(error).__name__]
+                    _emit("cgroup-baseline-mismatch",
+                          expected_base=list(daemon_profile.base_generation),
+                          actual_base=list(process._generation_tuple(base)),
+                          expected_leaves=sorted(expected_leaves),
+                          actual_leaves=leaves,
+                          expected_daemon=list(daemon_profile.leaf_generation),
+                          actual_daemon=daemon_generation,
+                          runtime_generation=runtime_generation)
+                except BaseException as trace_error:
+                    _emit("cgroup-baseline-trace-failed",
+                          exception_type=type(trace_error).__name__)
+            raise
+
+    process._prepare_cgroup = traced_prepare_cgroup
     coordinator._owners = _TracingOwners(coordinator._owners)
     forwarding_path = "/proc/sys/net/ipv4/ip_forward"
 
