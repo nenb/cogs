@@ -163,6 +163,8 @@ jobs:
             TraceEvents:(.StandardErrorContent | split("\n") |
               map(select(length > 0) | try (fromjson | .event) catch "non-json"))}' "$trace"
           test -s "$trace"
+          test "$(jq -r .Status "$trace")" = Success
+          test "$(jq -r .ResponseCode "$trace")" = 0
 
       - name: Upload private traceback and final inventory
         if: always()
