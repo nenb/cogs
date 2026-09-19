@@ -172,8 +172,37 @@ def main() -> None:
 
     network.prove_causal_network = traced_causal_proof
     coordinator._owners = _TracingOwners(coordinator._owners)
+    forwarding_path = "/proc/sys/net/ipv4/ip_forward"
+
+    def read_forwarding() -> bytes:
+        descriptor = os.open(forwarding_path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            return os.read(descriptor, 8)
+        finally:
+            os.close(descriptor)
+
+    def write_forwarding(value: bytes) -> None:
+        descriptor = os.open(forwarding_path, os.O_WRONLY | os.O_CLOEXEC)
+        try:
+            if os.write(descriptor, value) != len(value):
+                raise OSError("short ip_forward write")
+        finally:
+            os.close(descriptor)
+
+    previous_forwarding = read_forwarding()
+    if previous_forwarding not in {b"0\n", b"1\n"}:
+        raise RuntimeError("unexpected ip_forward value")
+    write_forwarding(b"1\n")
+    if read_forwarding() != b"1\n":
+        raise RuntimeError("ip_forward hotpatch did not apply")
+    _emit("diagnostic-hotpatch", owner_call="full-cycle",
+          ip_forward_before=previous_forwarding.decode("ascii").strip(),
+          ip_forward_during="1")
     _emit("full-cycle-start")
-    receipt = coordinator._run_fixed_full_cycle()
+    try:
+        receipt = coordinator._run_fixed_full_cycle()
+    finally:
+        write_forwarding(previous_forwarding)
     _emit("full-cycle-passed")
     _write_stdout(evidence._consume_cycle_receipt(receipt))
 
