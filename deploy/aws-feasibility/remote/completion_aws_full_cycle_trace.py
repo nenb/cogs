@@ -89,7 +89,67 @@ def main() -> None:
     import completion_cycle_evidence as evidence
     import completion_kata_coordinator as coordinator
     import completion_kata_network as network
+    import completion_rootfs_fs as rootfs_fs
 
+    original_revalidate_chain = rootfs_fs._revalidate_chain
+
+    def traced_revalidate_chain(chain, control, parent_delta=None):
+        try:
+            return original_revalidate_chain(chain, control, parent_delta)
+        except BaseException:
+            fresh = None
+            opened = []
+            try:
+                def generation_delta(expected, observed):
+                    fields = ("mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns")
+                    changed = {field: [getattr(expected, field), getattr(observed, field)]
+                               for field in fields
+                               if getattr(expected, field) != getattr(observed, field)}
+                    if expected.key != observed.key:
+                        changed["key"] = [
+                            [expected.key.mount_id, expected.key.device,
+                             expected.key.inode, expected.key.kind],
+                            [observed.key.mount_id, observed.key.device,
+                             observed.key.inode, observed.key.kind]]
+                    return changed
+
+                fresh = rootfs_fs._open_root_node(control)
+                changed = generation_delta(chain.anchor.generation, fresh.generation)
+                if changed:
+                    _emit("rootfs-generation-mismatch", path="/", changed=changed)
+                parent, parts = fresh, []
+                for component in chain.components:
+                    expected = component.node.generation
+                    if (parent_delta is not None
+                            and expected.key == parent_delta.after.generation.key):
+                        expected = parent_delta.after.generation
+                    node = rootfs_fs._open_path_node(
+                        parent, component.name, expected.key.kind, control)
+                    opened.append(node)
+                    parts.append(component.name.text)
+                    changed = generation_delta(expected, node.generation)
+                    if changed:
+                        _emit("rootfs-generation-mismatch",
+                              path="/" + "/".join(parts), changed=changed)
+                        break
+                    parent = node
+            except BaseException as trace_error:
+                _emit("rootfs-generation-trace-failed",
+                      exception_type=type(trace_error).__name__)
+            finally:
+                for node in reversed(opened):
+                    try:
+                        rootfs_fs._close_node(node)
+                    except BaseException:
+                        pass
+                if fresh is not None:
+                    try:
+                        rootfs_fs._close_node(fresh)
+                    except BaseException:
+                        pass
+            raise
+
+    rootfs_fs._revalidate_chain = traced_revalidate_chain
     original_causal_proof = network.prove_causal_network
 
     def traced_causal_proof(before, after, guest):
