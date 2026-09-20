@@ -196,8 +196,12 @@ def _inventory(item: production.InventoryReceipt) -> dict[str, Any]:
 
 def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, Any]:
     approval = candidate.approval
-    _require(approval.version == "cogs.stage2-completion-production-approval/v6",
-             "v6 approval required")
+    _require(approval.version == "cogs.stage2-completion-production-approval/v6"
+             and approval.effect_deadline_ns == 480 * 60 * 1_000_000_000
+             and approval.cleanup_reserve_ns == 30 * 60 * 1_000_000_000
+             and approval.maximum_cycle_duration_ns == 150 * 60 * 1_000_000_000
+             and approval.maximum_cost_micro_usd == 1_100_000,
+             "exact v6 approval bounds required")
     try:
         production._validate_admission(
             candidate.admission, candidate.continuation, approval)
@@ -253,7 +257,9 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  < apply.observed_ended_unix_ns < running.observed_started_unix_ns
                  < running.observed_ended_unix_ns < destroy.observed_started_unix_ns
                  < destroy.observed_ended_unix_ns
-                 < candidate.first_apply_unix_ns + approval.effect_deadline_ns,
+                 < candidate.first_apply_unix_ns + approval.effect_deadline_ns
+                 and destroy.observed_ended_unix_ns <
+                    apply.observed_started_unix_ns + approval.maximum_cycle_duration_ns,
                  "effect order/deadline")
         _require(len({item.state_commitment for item in effects}) == 1
                  and len({item.state_lineage_commitment for item in effects}) == 1,
@@ -279,6 +285,8 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         _require(cost.grant_commitment == grant.grant_commitment
                  and cost.cycle_ordinal == index
                  and cost.rate_source_commitment == expected_rate
+                 and cost.usage_commitment == production._commit(
+                    b"cogs.stage2-provider-usage/v1", {"duration_ns": duration})
                  and cost.cost_micro_usd == _ceil_cost(duration),
                  "typed cost receipt recomputation")
         running_resources = dict(running.resource_commitments)

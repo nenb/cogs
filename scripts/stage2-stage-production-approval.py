@@ -232,12 +232,34 @@ def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_t
                     and stat.S_IMODE(item.lstat().st_mode) == 0o400 for item in entries))
     continuation_path = source / adapter.CONTINUATION_NAME
     bundle_path = source / adapter.CONTINUATION_BUNDLE_NAME
-    continuation = read(continuation_path, 4 * 1024 * 1024)
-    bundle = read(bundle_path, 1024 * 1024)
-    approval, authentication_sha256 = adapter._approval()
-    adapter._verify_blob(continuation_path, bundle_path, adapter.CAMPAIGN_IDENTITY)
-    parsed = production.continuation_from_bytes(
-        continuation, approval, int(run_id_text), 1, "authenticated-aws-adapter")
+    captured_continuation = read(continuation_path, 4 * 1024 * 1024)
+    captured_bundle = read(bundle_path, 1024 * 1024)
+    verification = Path(tempfile.mkdtemp(
+        prefix=".continuation-verification-", dir=DESTINATION))
+    os.chown(verification, 0, 0); os.chmod(verification, 0o700); sync(DESTINATION)
+    verified_continuation = verification / adapter.CONTINUATION_NAME
+    verified_bundle = verification / adapter.CONTINUATION_BUNDLE_NAME
+    try:
+        write(verified_continuation, captured_continuation)
+        write(verified_bundle, captured_bundle)
+        continuation = read(verified_continuation, 4 * 1024 * 1024)
+        bundle = read(verified_bundle, 1024 * 1024)
+        require(continuation == captured_continuation and bundle == captured_bundle)
+        approval, authentication_sha256 = adapter._approval()
+        adapter._verify_blob(
+            verified_continuation, verified_bundle, adapter.CAMPAIGN_IDENTITY)
+        continuation = read(verified_continuation, 4 * 1024 * 1024)
+        bundle = read(verified_bundle, 1024 * 1024)
+        require(continuation == captured_continuation and bundle == captured_bundle)
+        parsed = production.continuation_from_bytes(
+            continuation, approval, int(run_id_text), 1,
+            "authenticated-aws-adapter")
+    except BaseException:
+        raise
+    finally:
+        for path in (verified_continuation, verified_bundle):
+            if path.exists(): path.unlink()
+        sync(verification); verification.rmdir(); sync(DESTINATION)
     require(parsed.consumption.authentication_receipt_sha256 == authentication_sha256
             and parsed.repository == "nenb/cogs"
             and parsed.workflow_path ==

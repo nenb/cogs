@@ -1200,7 +1200,11 @@ def _validate_continuation(value, approval, run_id, run_attempt, classification)
                  and (previous_zero is None or inventory.observed_started_unix_ns > previous_zero)
                  and cost.grant_commitment == grant.grant_commitment
                  and cost.cycle_ordinal == ordinal
-                 and cost.rate_source_commitment == approval.rate_source_commitment,
+                 and cost.rate_source_commitment == approval.rate_source_commitment
+                 and cost.usage_commitment == _commit(
+                    b"cogs.stage2-provider-usage/v1", {
+                        "duration_ns": destroy.observed_ended_unix_ns -
+                            apply.observed_started_unix_ns}),
                  ProductionReceiptError)
         expected_cycle = _commit(b"cogs.stage2-production-cycle/v2", {
             "grant": grant.grant_commitment,
@@ -1697,9 +1701,14 @@ class ProductionCampaignController:
                          ProductionReceiptError)
                 state["previous_zero"] = zero.observed_ended_unix_ns
                 cost = self.ports.cost(grant, apply, destroy)
+                duration = destroy.observed_ended_unix_ns - apply.observed_started_unix_ns
                 _require(type(cost) is CostReceipt
                          and cost.grant_commitment == grant.grant_commitment
-                         and cost.cycle_ordinal == ordinal, ProductionReceiptError)
+                         and cost.cycle_ordinal == ordinal
+                         and cost.rate_source_commitment == approval.rate_source_commitment
+                         and cost.usage_commitment == _commit(
+                            b"cogs.stage2-provider-usage/v1", {"duration_ns": duration}),
+                         ProductionReceiptError)
                 _require(sum(item.cost_micro_usd for item in (*state["costs"], cost))
                          <= approval.maximum_cost_micro_usd, ProductionApprovalError)
                 cycle = _commit(b"cogs.stage2-production-cycle/v2", {

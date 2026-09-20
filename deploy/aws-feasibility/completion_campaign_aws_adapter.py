@@ -5,6 +5,8 @@ The two normal entries admit cycles 1--3 or a signed continuation for cycles
 """
 
 from dataclasses import asdict, dataclass
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -214,19 +216,83 @@ def _provider_package():
     return binary
 
 
+def _rename_noreplace(directory, source, destination):
+    """Publish within one held directory without ever replacing a name."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        _require(os.uname().sysname != "Linux")
+        os.link(source, destination, src_dir_fd=directory, dst_dir_fd=directory,
+                follow_symlinks=False)
+        os.unlink(source, dir_fd=directory)
+        return
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    result = renameat2(directory, os.fsencode(source), directory,
+                       os.fsencode(destination), 1)
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise FileExistsError(error, "write-once destination exists", destination)
+        raise OSError(error, "atomic no-replace publication failed", destination)
+
+
 def _write_once(path, raw, mode=0o600):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                         os.O_NOFOLLOW | os.O_CLOEXEC, mode)
-    try:
-        _require(os.write(descriptor, raw) == len(raw))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    """Durably stage and atomically publish one root-owned immutable file."""
+    _require(isinstance(path, Path) and path.name not in {"", ".", ".."}
+             and type(raw) is bytes and len(raw) > 0 and mode in {0o400, 0o600})
+    temporary_name = f".write-once-{hashlib.sha256(path.name.encode()).hexdigest()}.tmp"
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
                         os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = None
+    owner_uid, owner_gid = os.geteuid(), os.getegid()
     try:
+        try:
+            descriptor = os.open(temporary_name, os.O_RDWR | os.O_CREAT | os.O_EXCL |
+                                 os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=directory)
+        except FileExistsError:
+            descriptor = os.open(temporary_name, os.O_RDWR | os.O_NOFOLLOW |
+                                 os.O_CLOEXEC, dir_fd=directory)
+            seen = os.fstat(descriptor)
+            _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == owner_uid
+                     and seen.st_gid == owner_gid and seen.st_nlink == 1
+                     and stat.S_IMODE(seen.st_mode) == mode)
+            staged = os.read(descriptor, len(raw) + 1)
+            if staged != raw:
+                os.close(descriptor); descriptor = None
+                os.unlink(temporary_name, dir_fd=directory)
+                os.fsync(directory)
+                descriptor = os.open(temporary_name, os.O_RDWR | os.O_CREAT |
+                                     os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                     mode, dir_fd=directory)
+        seen = os.fstat(descriptor)
+        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == owner_uid
+                 and seen.st_gid == owner_gid and seen.st_nlink == 1
+                 and stat.S_IMODE(seen.st_mode) == mode)
+        if seen.st_size == 0:
+            offset = 0
+            while offset < len(raw):
+                written = os.write(descriptor, raw[offset:])
+                _require(written > 0)
+                offset += written
+        else:
+            _require(seen.st_size == len(raw))
+        os.fsync(descriptor)
         os.fsync(directory)
+        staged = os.fstat(descriptor)
+        _require(staged.st_size == len(raw))
+        _rename_noreplace(directory, temporary_name, path.name)
+        os.fsync(directory)
+        published = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        _require((staged.st_dev, staged.st_ino, staged.st_mode, staged.st_uid,
+                  staged.st_gid, staged.st_nlink, staged.st_size) ==
+                 (published.st_dev, published.st_ino, published.st_mode,
+                  published.st_uid, published.st_gid, published.st_nlink,
+                  published.st_size))
     finally:
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(directory)
 
 
@@ -460,20 +526,21 @@ class AwsCampaignCustodian:
         _replace_durable(ACTIVE, _canonical(value))
 
     def journal(self, category, event, ordinal, mode, commitment):
+        if category == "cleanup" and event == "settled":
+            _require(ACTIVE.exists())
+            active = _decode(_read_fixed(ACTIVE, 64 * 1024, (0o600,)))
+            _require(active.get("ordinal") == ordinal and active.get("mode") == mode)
+            _settle_cleanup_transition(
+                self, active["grant_commitment"], active["state_commitment"],
+                ordinal, mode, commitment)
+            return
         self._append(category, event, ordinal, mode, commitment)
         if category == "cycle" and event == "opened":
             grant = production._grant(self.approval, ordinal)
             self._active(grant, grant.grant_commitment)
-        elif ((category == "cycle" and event == "sealed")
-              or (category == "cleanup" and event == "settled")):
+        elif category == "cycle" and event == "sealed":
             _require(ACTIVE.exists())
             ACTIVE.unlink()
-            if category == "cleanup":
-                _write_once(CLEANUP_COMPLETE, _canonical({
-                    "version": "cogs.stage2-cleanup-complete/v1",
-                    "reconciliation_commitment": commitment,
-                    "certain_zero": True,
-                }))
             directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY |
                                 os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
@@ -642,6 +709,72 @@ class AwsCampaignCustodian:
             return self._journal_state(descriptor)
         finally:
             os.close(descriptor)
+
+
+def _cleanup_completion_raw(grant_commitment, state_commitment,
+                            reconciliation_commitment):
+    fields = {
+        "version": "cogs.stage2-cleanup-complete/v2",
+        "grant_commitment": production._digest(grant_commitment),
+        "state_commitment": production._digest(state_commitment),
+        "reconciliation_commitment": production._digest(
+            reconciliation_commitment),
+        "certain_zero": True,
+    }
+    return _canonical({**fields, "completion_commitment": production._commit(
+        b"cogs.stage2-cleanup-completion/v2", fields)})
+
+
+def _ensure_cleanup_journal(custodian, ordinal, mode, commitment):
+    production._digest(commitment)
+    descriptor = os.open(JOURNAL, os.O_RDWR | os.O_APPEND | os.O_CREAT |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        seen = os.fstat(descriptor)
+        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                 and stat.S_IMODE(seen.st_mode) == 0o600 and seen.st_nlink == 1
+                 and seen.st_size <= MAX_JOURNAL_BYTES)
+        sequence, tip = custodian._journal_state(descriptor, True)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        rows = os.read(descriptor, MAX_JOURNAL_BYTES).splitlines(keepends=True)
+        expected_projection = {"category": "cleanup", "event": "settled",
+                               "ordinal": ordinal, "mode": mode,
+                               "commitment": commitment}
+        if rows:
+            last = _decode(rows[-1], 64 * 1024)
+            if all(last.get(name) == value for name, value in
+                   expected_projection.items()):
+                return
+        row = {"version": "cogs.stage2-production-campaign-journal/v1",
+               "sequence": sequence, "previous_sha256": tip,
+               **expected_projection}
+        line = _canonical(row)
+        end = os.lseek(descriptor, 0, os.SEEK_END)
+        _require(end + len(line) <= MAX_JOURNAL_BYTES
+                 and os.write(descriptor, line) == len(line))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _settle_cleanup_transition(custodian, grant_commitment, state_commitment,
+                               ordinal, mode, reconciliation_commitment):
+    """Publish proof, journal settlement, then and only then retire ACTIVE."""
+    raw = _cleanup_completion_raw(
+        grant_commitment, state_commitment, reconciliation_commitment)
+    if CLEANUP_COMPLETE.exists():
+        _require(_read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,)) == raw)
+    else:
+        _write_once(CLEANUP_COMPLETE, raw)
+    _ensure_cleanup_journal(
+        custodian, ordinal, mode, reconciliation_commitment)
+    _require(ACTIVE.exists())
+    ACTIVE.unlink()
+    directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY |
+                        os.O_NOFOLLOW | os.O_CLOEXEC)
+    try: os.fsync(directory)
+    finally: os.close(directory)
 
 
 def _retire_credentials():
@@ -888,6 +1021,58 @@ def run_fixed_diagnostic_campaign():
         os.close(lock)
 
 
+def _repair_first_journal_record(custodian, category, event, commitment):
+    """Repair only an interrupted deterministic first append under journal lock."""
+    descriptor = os.open(JOURNAL, os.O_RDWR | os.O_APPEND | os.O_CREAT |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        seen = os.fstat(descriptor)
+        _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == os.geteuid()
+                 and seen.st_gid == os.getegid()
+                 and stat.S_IMODE(seen.st_mode) == 0o600 and seen.st_nlink == 1
+                 and seen.st_size <= MAX_JOURNAL_BYTES)
+        custodian._journal_state(descriptor, True)
+        sequence, tip = 0, "0" * 64
+        if CONTINUATION_ANCHOR.exists():
+            anchor = _decode(_read_fixed(
+                CONTINUATION_ANCHOR, 64 * 1024, (0o600,)), 64 * 1024)
+            sequence, tip = anchor["sequence"], anchor["tip_sha256"]
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        rows = os.read(descriptor, MAX_JOURNAL_BYTES).splitlines(keepends=True)
+        expected = {"version": "cogs.stage2-production-campaign-journal/v1",
+                    "sequence": sequence, "previous_sha256": tip,
+                    "category": category, "event": event, "ordinal": None,
+                    "mode": None, "commitment": commitment}
+        if not rows:
+            line = _canonical(expected)
+            _require(os.write(descriptor, line) == len(line))
+            os.fsync(descriptor)
+            rows = [line]
+        _require(_decode(rows[0], 64 * 1024) == expected)
+    finally:
+        os.close(descriptor)
+
+
+def _phase_one_consumption(approval, authentication_sha256):
+    raw = _read_fixed(CONSUMED, 64 * 1024, (0o600,))
+    value = _decode(raw)
+    approval_commitment = production._commit(
+        b"cogs.stage2-production-approval/v6", asdict(approval))
+    _require(value == {
+        "version": "cogs.stage2-production-approval-consumption/v1",
+        "approval_commitment": approval_commitment,
+        "batch_commitment": approval.batch_commitment,
+        "consumed_unix_ns": value.get("consumed_unix_ns"),
+        "first_created": True}
+        and type(value["consumed_unix_ns"]) is int
+        and approval.not_before_unix_ns <= value["consumed_unix_ns"] <
+            approval.expires_unix_ns)
+    return production.ApprovalConsumptionReceipt(
+        approval_commitment, authentication_sha256,
+        hashlib.sha256(raw).hexdigest(), value["consumed_unix_ns"], True)
+
+
 def _repair_continuation_import(custodian, approval, authentication_sha256):
     """Finish an interrupted phase-2 import without resuming any campaign cycle."""
     value, admission = _continuation(approval, authentication_sha256)
@@ -909,22 +1094,18 @@ def _repair_continuation_import(custodian, approval, authentication_sha256):
     else:
         _require(not JOURNAL.exists()); _write_once(CONTINUATION_ANCHOR, expected_anchor)
     custodian.first_apply_started = value.first_apply_unix_ns
-    if not JOURNAL.exists():
-        custodian._append("batch", "continued", None, None,
-                          admission.admission_commitment)
-    else:
-        descriptor = os.open(JOURNAL, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            custodian._journal_state(descriptor, True)
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            rows = os.read(descriptor, MAX_JOURNAL_BYTES).splitlines(keepends=True)
-            _require(rows)
-            first = _decode(rows[0], 64 * 1024)
-            _require(first["category"] == "batch" and first["event"] == "continued"
-                     and first["commitment"] == admission.admission_commitment)
-        finally:
-            os.close(descriptor)
+    _repair_first_journal_record(
+        custodian, "batch", "continued", admission.admission_commitment)
+
+
+def _validated_recovery_receipt(receipt, grant, state, approval):
+    """Admit only a fully bound certain-zero receipt before durable settlement."""
+    try:
+        production._validate_cleanup_receipt(receipt, grant, state, approval)
+        _require(receipt.certain_zero)
+        return receipt
+    except (production.ProductionCampaignError, AwsAdapterError) as error:
+        raise production.ProductionUncertainty() from error
 
 
 def recover_fixed_campaign():
@@ -954,7 +1135,13 @@ def recover_fixed_campaign():
                      and CONTINUATION_ADMISSION.exists())
             _repair_continuation_import(
                 custodian, approval, authentication_sha256)
+        else:
+            consumption = _phase_one_consumption(approval, authentication_sha256)
+            _repair_first_journal_record(
+                custodian, "batch", "consumed",
+                consumption.durable_record_commitment)
         if not ACTIVE.exists():
+            last = None
             if JOURNAL.exists():
                 descriptor = os.open(JOURNAL, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
                 try:
@@ -971,21 +1158,44 @@ def recover_fixed_campaign():
                             ("cleanup", "settled")})
                 finally:
                     os.close(descriptor)
-            complete_raw = _canonical({
-                "version": "cogs.stage2-cleanup-complete/v1",
-                "reconciliation_commitment": production._commit(
-                    b"cogs.stage2-no-active-cleanup/v1", {"batch": approval.batch_commitment}),
-                "certain_zero": True})
+            reconciliation = production._commit(
+                b"cogs.stage2-no-active-cleanup/v1",
+                {"batch": approval.batch_commitment})
             if CLEANUP_COMPLETE.exists():
-                existing = _decode(_read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,)))
-                _require(existing.get("version") == "cogs.stage2-cleanup-complete/v1"
-                         and existing.get("certain_zero") is True)
-                production._digest(existing.get("reconciliation_commitment"))
-            else:
-                _write_once(CLEANUP_COMPLETE, complete_raw)
+                complete_raw = _read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,))
+                complete = _decode(complete_raw)
+                if complete.get("version") == "cogs.stage2-cleanup-complete/v2":
+                    _require(last is not None
+                             and (last["category"], last["event"]) ==
+                                ("cleanup", "settled")
+                             and set(complete) == {
+                                "version", "grant_commitment", "state_commitment",
+                                "reconciliation_commitment", "certain_zero",
+                                "completion_commitment"}
+                             and complete["certain_zero"] is True
+                             and last["commitment"] ==
+                                complete["reconciliation_commitment"]
+                             and production._grant(
+                                approval, last["ordinal"]).mode == last["mode"]
+                             and production._grant(
+                                approval, last["ordinal"]).grant_commitment ==
+                                complete["grant_commitment"]
+                             and complete_raw == _cleanup_completion_raw(
+                                complete["grant_commitment"],
+                                complete["state_commitment"],
+                                complete["reconciliation_commitment"]))
+                    reconciliation = complete["reconciliation_commitment"]
+                else:
+                    _require(set(complete) == {
+                        "version", "reconciliation_commitment", "certain_zero"}
+                        and complete["version"] ==
+                            "cogs.stage2-cleanup-complete/v1"
+                        and complete["certain_zero"] is True)
+                    reconciliation = production._digest(
+                        complete["reconciliation_commitment"])
             _retire_credentials()
-            return NoActiveCleanupReceipt(**_decode(
-                _read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,))))
+            return NoActiveCleanupReceipt(
+                "cogs.stage2-cleanup-complete/v1", reconciliation, True)
         active = _decode(_read_fixed(ACTIVE, 64 * 1024, (0o600,)))
         _require(active.get("version") == "cogs.stage2-cleanup-active/v1"
                  and active.get("batch_commitment") == approval.batch_commitment
@@ -995,12 +1205,32 @@ def recover_fixed_campaign():
         _require(active.get("mode") == grant.mode
                  and active.get("grant_commitment") == grant.grant_commitment)
         custodian.recovery_deadline = active["cleanup_deadline_unix_ns"]
+        if CLEANUP_COMPLETE.exists():
+            complete_raw = _read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,))
+            complete = _decode(complete_raw)
+            _require(set(complete) == {
+                "version", "grant_commitment", "state_commitment",
+                "reconciliation_commitment", "certain_zero",
+                "completion_commitment"}
+                and complete["grant_commitment"] == grant.grant_commitment
+                and complete["state_commitment"] == active["state_commitment"]
+                and complete["certain_zero"] is True
+                and complete_raw == _cleanup_completion_raw(
+                    grant.grant_commitment, active["state_commitment"],
+                    complete["reconciliation_commitment"]))
+            _settle_cleanup_transition(
+                custodian, grant.grant_commitment, active["state_commitment"],
+                grant.ordinal, grant.mode, complete["reconciliation_commitment"])
+            _retire_credentials()
+            return NoActiveCleanupReceipt(
+                "cogs.stage2-cleanup-complete/v1",
+                complete["reconciliation_commitment"], True)
         receipt = custodian.recover(grant, active["state_commitment"], None,
                                     production.ProductionUncertainty())
-        custodian.journal("cleanup", "settled" if receipt.certain_zero else "uncertain",
-                          grant.ordinal, grant.mode, receipt.reconciliation_commitment)
-        if not receipt.certain_zero:
-            raise production.ProductionUncertainty()
+        _validated_recovery_receipt(
+            receipt, grant, active["state_commitment"], approval)
+        custodian.journal("cleanup", "settled", grant.ordinal, grant.mode,
+                          receipt.reconciliation_commitment)
         _retire_credentials()
         return receipt
     finally:

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Ajv as AjvCore, Options } from "ajv";
+
+const require = createRequire(import.meta.url);
+const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
 
 const root = join(import.meta.dirname, "..");
 const probe = join(root, "test/aws-stage2-completion-campaign-production.py");
@@ -16,10 +22,43 @@ test("provider-free production controller enforces seven independent ordered cyc
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         PYTHONDONTWRITEBYTECODE: "1",
+        TMPDIR: tmpdir(),
       },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "stage2 provider-free production campaign controller checks passed\n");
+  }
+});
+
+test("actual canonical continuation and admission conform to their registered schemas", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-continuation-schema-"));
+  const output = join(temporary, "output");
+  try {
+    const result = spawnSync("python3", ["-I", "-B", probe], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        PYTHONDONTWRITEBYTECODE: "1",
+        TMPDIR: tmpdir(),
+        COGS_STAGE2_SCHEMA_OUTPUT: output,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    for (const [artifact, schema] of [
+      ["continuation.json", "aws-stage2-production-continuation-v1.json"],
+      ["admission.json", "aws-stage2-production-continuation-admission-v1.json"],
+    ] as const) {
+      const validate = ajv.compile(JSON.parse(readFileSync(join(root, "schemas", schema), "utf8")));
+      assert.equal(
+        validate(JSON.parse(readFileSync(join(output, artifact), "utf8"))),
+        true,
+        JSON.stringify(validate.errors),
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
 

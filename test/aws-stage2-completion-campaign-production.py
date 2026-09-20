@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Provider-free hostile matrix for the closed production controller."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 from pathlib import Path
 import json
 import os
+import runpy
 import stat
 import sys
 import tempfile
@@ -257,7 +258,8 @@ class Harness:
                   "cycle_ordinal": grant.ordinal,
                   "rate_source_commitment": production._commit(
                       b"cogs.stage2-fixed-rate/v1", {"micro_usd_per_hour": rate}),
-                  "usage_commitment": d(f"usage-{grant.ordinal}"),
+                  "usage_commitment": production._commit(
+                      b"cogs.stage2-provider-usage/v1", {"duration_ns": duration}),
                   "cost_micro_usd": (duration * rate + 3_600_000_000_000 - 1) // 3_600_000_000_000}
         return production.CostReceipt(**fields, receipt_commitment=production._commit(
             b"cogs.stage2-cost-receipt/v1", fields))
@@ -342,6 +344,11 @@ continuation, admission = close_phase(phase, h.approval, 101)
 assert tuple(item.ordinal for item in continuation.grants) == (1, 2, 3)
 assert [row[1] for row in h.calls if row[0] == "remote"] == [1, 2, 3]
 raw = continuation.canonical_bytes()
+schema_output = os.environ.get("COGS_STAGE2_SCHEMA_OUTPUT")
+if schema_output is not None:
+    output = Path(schema_output); output.mkdir(mode=0o700)
+    (output / "continuation.json").write_bytes(raw)
+    (output / "admission.json").write_bytes(admission.canonical_bytes())
 assert production.continuation_from_bytes(raw, h.approval, 101, 1, "test-only") == continuation
 for hostile in (raw[:-2] + b"x\n", raw.replace(b'"github_run_id":101', b'"github_run_id":102')):
     try: production.continuation_from_bytes(hostile, h.approval, 101, 1, "test-only")
@@ -440,6 +447,282 @@ finally:
             "CONTINUATION_ANCHOR", "_continuation", "_read_fixed", "_import_checkpoint"),
             original_imports, strict=True):
         setattr(aws_adapter, name, value)
+
+# Empty and every partial first-record boundary are reconstructible only from
+# authenticated continuation/consumption state; no cycle callback is reachable.
+original_boundaries = tuple(getattr(aws_adapter, name) for name in (
+    "CONSUMED", "JOURNAL", "CONTINUATION_ANCHOR", "_continuation", "_read_fixed"))
+continued_line = aws_adapter._canonical({
+    "version": "cogs.stage2-production-campaign-journal/v1",
+    "sequence": resume.journal_sequence, "previous_sha256": resume.journal_tip_sha256,
+    "category": "batch", "event": "continued", "ordinal": None, "mode": None,
+    "commitment": resume_admission.admission_commitment})
+consumed_raw = aws_adapter._canonical({
+    "version": "cogs.stage2-production-approval-consumption/v1",
+    "approval_commitment": resume.approval_commitment,
+    "batch_commitment": resume.batch_commitment,
+    "consumed_unix_ns": resume.consumption.consumed_unix_ns,
+    "first_created": True})
+anchor_raw = aws_adapter._canonical({
+    "version": "cogs.stage2-production-continuation-journal-anchor/v1",
+    "sequence": resume.journal_sequence, "tip_sha256": resume.journal_tip_sha256,
+    "continuation_commitment": resume.continuation_commitment,
+    "admission_commitment": resume_admission.admission_commitment})
+try:
+    for boundary in range(len(continued_line)):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            aws_adapter.CONSUMED = root / "consumed"
+            aws_adapter.JOURNAL = root / "journal"
+            aws_adapter.CONTINUATION_ANCHOR = root / "anchor"
+            aws_adapter.CONSUMED.write_bytes(consumed_raw)
+            aws_adapter.CONTINUATION_ANCHOR.write_bytes(anchor_raw)
+            aws_adapter.JOURNAL.write_bytes(continued_line[:boundary])
+            for path in (aws_adapter.CONSUMED, aws_adapter.CONTINUATION_ANCHOR,
+                         aws_adapter.JOURNAL): path.chmod(0o600)
+            aws_adapter._continuation = lambda *_args: (resume, resume_admission)
+            aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+            custodian = ImportCustodian(first_job.approval)
+            custodian._journal_state = aws_adapter.AwsCampaignCustodian._journal_state.__get__(
+                custodian, ImportCustodian)
+            aws_adapter._repair_continuation_import(
+                custodian, first_job.approval,
+                resume.consumption.authentication_receipt_sha256)
+            assert aws_adapter.JOURNAL.read_bytes() == continued_line
+            assert custodian.first_apply_started == resume.first_apply_unix_ns
+
+    consumed_line = aws_adapter._canonical({
+        "version": "cogs.stage2-production-campaign-journal/v1",
+        "sequence": 0, "previous_sha256": "0" * 64,
+        "category": "batch", "event": "consumed", "ordinal": None, "mode": None,
+        "commitment": hashlib.sha256(consumed_raw).hexdigest()})
+    for boundary in (0, 1, len(consumed_line) // 2, len(consumed_line) - 1):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            aws_adapter.CONSUMED = root / "consumed"
+            aws_adapter.JOURNAL = root / "journal"
+            aws_adapter.CONTINUATION_ANCHOR = root / "absent-anchor"
+            aws_adapter.CONSUMED.write_bytes(consumed_raw)
+            aws_adapter.JOURNAL.write_bytes(consumed_line[:boundary])
+            aws_adapter.CONSUMED.chmod(0o600); aws_adapter.JOURNAL.chmod(0o600)
+            aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+            consumption = aws_adapter._phase_one_consumption(
+                first_job.approval,
+                resume.consumption.authentication_receipt_sha256)
+            custodian = ImportCustodian(first_job.approval)
+            custodian._journal_state = aws_adapter.AwsCampaignCustodian._journal_state.__get__(
+                custodian, ImportCustodian)
+            aws_adapter._repair_first_journal_record(
+                custodian, "batch", "consumed", consumption.durable_record_commitment)
+            assert aws_adapter.JOURNAL.read_bytes() == consumed_line
+finally:
+    for name, value in zip(("CONSUMED", "JOURNAL", "CONTINUATION_ANCHOR",
+                            "_continuation", "_read_fixed"),
+                           original_boundaries, strict=True):
+        setattr(aws_adapter, name, value)
+
+# Interrupted write-once records recover through an fsynced staging inode and
+# atomic no-replace publication for every lifecycle record class.
+for leaf in ("approval-consumed.json", "continuation-journal-anchor.json",
+             "campaign-journal.jsonl", "cleanup-complete.json"):
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / leaf; payload = (leaf + "\n").encode()
+        original_write = aws_adapter.os.write
+        def interrupted(descriptor, value):
+            original_write(descriptor, value[:max(1, len(value) // 2)])
+            raise OSError("injected interrupted write")
+        aws_adapter.os.write = interrupted
+        try:
+            try: aws_adapter._write_once(target, payload)
+            except OSError: pass
+            else: raise AssertionError("interrupted write unexpectedly completed")
+        finally: aws_adapter.os.write = original_write
+        assert not target.exists()
+        aws_adapter._write_once(target, payload)
+        assert target.read_bytes() == payload
+        assert not any(path.name.startswith(".write-once-") for path in target.parent.iterdir())
+
+# Recovery receipt mismatches never reach settlement and cannot remove ACTIVE.
+grant = resume.grants[0]; state = resume.effects[0][1].state_commitment
+valid_cleanup = production.CleanupReceipt(
+    grant.grant_commitment, state, d("reconciliation"), resume.inventories[0],
+    False, True)
+with tempfile.TemporaryDirectory() as directory:
+    active = Path(directory) / "cleanup-active.json"; active.write_bytes(b"active\n")
+    def hostile_inventory(**changes):
+        inventory = valid_cleanup.inventory
+        values = {name: getattr(inventory, name) for name in (
+            "batch_commitment", "observation_sequence", "cycle_ordinal",
+            "observer_commitment", "session_commitment", "run_commitment",
+            "account_commitment", "region", "destroyed_state_commitment",
+            "observed_started_unix_ns", "observed_ended_unix_ns")}
+        values.update(changes)
+        preimage = {**values,
+                    "page_commitments": [item.page_commitment for item in inventory.pages]}
+        return replace(inventory, **changes, zero_commitment=production._commit(
+            b"cogs.stage2-zero-inventory/v2", preimage))
+    hostile_receipts = (
+        replace(valid_cleanup, grant_commitment=d("wrong-grant")),
+        replace(valid_cleanup, state_commitment=d("wrong-state")),
+        replace(valid_cleanup, certain_zero=False, inventory=None),
+        replace(valid_cleanup, inventory=hostile_inventory(
+            batch_commitment=d("wrong-batch"))),
+        replace(valid_cleanup, inventory=hostile_inventory(
+            destroyed_state_commitment=d("wrong-inventory-state"))),
+    )
+    for receipt in hostile_receipts:
+        try: aws_adapter._validated_recovery_receipt(
+            receipt, grant, state, first_job.approval)
+        except production.ProductionUncertainty: pass
+        else: raise AssertionError("hostile cleanup receipt settled")
+        assert active.read_bytes() == b"active\n"
+    assert aws_adapter._validated_recovery_receipt(
+        valid_cleanup, grant, state, first_job.approval) is valid_cleanup
+
+# Cleanup settlement is restartable after proof publication and after journal
+# publication; ACTIVE remains until both records are durable.
+original_cleanup_paths = tuple(getattr(aws_adapter, name) for name in (
+    "ROOT", "ACTIVE", "CLEANUP_COMPLETE", "JOURNAL", "_ensure_cleanup_journal",
+    "_read_fixed"))
+try:
+    for crash_after_journal in (False, True):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); aws_adapter.ROOT = root
+            aws_adapter.ACTIVE = root / "active"
+            aws_adapter.CLEANUP_COMPLETE = root / "complete"
+            aws_adapter.JOURNAL = root / "journal"
+            aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+            aws_adapter.ACTIVE.write_bytes(b"active\n"); aws_adapter.ACTIVE.chmod(0o600)
+            custodian = ImportCustodian(first_job.approval)
+            custodian._journal_state = aws_adapter.AwsCampaignCustodian._journal_state.__get__(
+                custodian, ImportCustodian)
+            production_ensure = original_cleanup_paths[-2]
+            def original_ensure(*args):
+                real_fstat = os.fstat
+                def root_fstat(descriptor):
+                    values = list(real_fstat(descriptor)); values[4:6] = (0, 0)
+                    return os.stat_result(values)
+                os.fstat = root_fstat
+                try: return production_ensure(*args)
+                finally: os.fstat = real_fstat
+            def interrupted_settlement(*args):
+                if crash_after_journal: original_ensure(*args)
+                raise RuntimeError("injected cleanup settlement crash")
+            aws_adapter._ensure_cleanup_journal = interrupted_settlement
+            try:
+                aws_adapter._settle_cleanup_transition(
+                    custodian, grant.grant_commitment, state, grant.ordinal,
+                    grant.mode, valid_cleanup.reconciliation_commitment)
+            except RuntimeError: pass
+            else: raise AssertionError("cleanup settlement crash missing")
+            assert aws_adapter.CLEANUP_COMPLETE.exists() and aws_adapter.ACTIVE.exists()
+            aws_adapter._ensure_cleanup_journal = original_ensure
+            aws_adapter._settle_cleanup_transition(
+                custodian, grant.grant_commitment, state, grant.ordinal,
+                grant.mode, valid_cleanup.reconciliation_commitment)
+            assert not aws_adapter.ACTIVE.exists()
+            rows = aws_adapter.JOURNAL.read_bytes().splitlines()
+            assert len(rows) == 1 and json.loads(rows[0])["event"] == "settled"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory); aws_adapter.ROOT = root
+        aws_adapter.ACTIVE = root / "active"
+        aws_adapter.CLEANUP_COMPLETE = root / "complete"
+        aws_adapter.JOURNAL = root / "journal"
+        aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+        aws_adapter.ACTIVE.write_bytes(b"active\n"); aws_adapter.ACTIVE.chmod(0o600)
+        custodian = ImportCustodian(first_job.approval)
+        custodian._journal_state = aws_adapter.AwsCampaignCustodian._journal_state.__get__(
+            custodian, ImportCustodian)
+        aws_adapter._ensure_cleanup_journal = original_ensure
+        real_fsync = os.fsync
+        def crash_after_active_retirement(descriptor):
+            if not aws_adapter.ACTIVE.exists():
+                raise RuntimeError("injected post-ACTIVE crash")
+            return real_fsync(descriptor)
+        os.fsync = crash_after_active_retirement
+        try:
+            try:
+                aws_adapter._settle_cleanup_transition(
+                    custodian, grant.grant_commitment, state, grant.ordinal,
+                    grant.mode, valid_cleanup.reconciliation_commitment)
+            except RuntimeError: pass
+            else: raise AssertionError("post-ACTIVE crash missing")
+        finally: os.fsync = real_fsync
+        assert (not aws_adapter.ACTIVE.exists()
+                and aws_adapter.CLEANUP_COMPLETE.exists()
+                and len(aws_adapter.JOURNAL.read_bytes().splitlines()) == 1)
+finally:
+    for name, value in zip(("ROOT", "ACTIVE", "CLEANUP_COMPLETE", "JOURNAL",
+                            "_ensure_cleanup_journal", "_read_fixed"),
+                           original_cleanup_paths, strict=True):
+        setattr(aws_adapter, name, value)
+
+# Runner-owned pathname swaps during cosign verification cannot split the
+# verified bytes from the continuation bytes admitted into root custody.
+stager = runpy.run_path(str(ROOT / "scripts/stage2-stage-production-approval.py"))
+original_os_routes = (os.geteuid, os.getegid, os.chown, os.fchown)
+original_adapter_routes = tuple(getattr(aws_adapter, name) for name in (
+    "ROOT", "CONSUMED", "JOURNAL", "CONTINUATION", "CONTINUATION_BUNDLE",
+    "CONTINUATION_ADMISSION", "_approval", "_verify_blob"))
+with tempfile.TemporaryDirectory() as directory:
+    base = Path(directory); source = base / "runner"; custody = base / "root"
+    source.mkdir(mode=0o700); custody.mkdir(mode=0o700)
+    authoritative_fields = asdict(continuation)
+    authoritative_fields["execution_authority"] = "authenticated-aws-adapter"
+    authoritative_fields.pop("continuation_commitment")
+    authoritative = replace(
+        continuation, execution_authority="authenticated-aws-adapter",
+        continuation_commitment=production._commit(
+            b"cogs.stage2-production-continuation/v1", authoritative_fields))
+    continuation_raw = authoritative.canonical_bytes(); bundle_raw = b"bundle"
+    (source / aws_adapter.CONTINUATION_NAME).write_bytes(continuation_raw)
+    (source / aws_adapter.CONTINUATION_BUNDLE_NAME).write_bytes(bundle_raw)
+    for path in source.iterdir(): path.chmod(0o400)
+    caller_uid, caller_gid = source.stat().st_uid, source.stat().st_gid
+    verified = []
+    try:
+        stager["stage_continuation"].__globals__["DESTINATION"] = custody
+        aws_adapter.ROOT = custody
+        aws_adapter.CONSUMED = custody / "consumed"
+        aws_adapter.JOURNAL = custody / "journal"
+        aws_adapter.CONTINUATION = custody / aws_adapter.CONTINUATION_NAME
+        aws_adapter.CONTINUATION_BUNDLE = custody / aws_adapter.CONTINUATION_BUNDLE_NAME
+        aws_adapter.CONTINUATION_ADMISSION = custody / aws_adapter.CONTINUATION_ADMISSION_NAME
+        aws_adapter._approval = lambda: (
+            h.approval, authoritative.consumption.authentication_receipt_sha256)
+        def verify_staged(payload, bundle, identity):
+            verified.extend((Path(payload), Path(bundle)))
+            assert Path(payload).parent != source and Path(bundle).parent != source
+            assert Path(payload).read_bytes() == continuation_raw
+            assert Path(bundle).read_bytes() == bundle_raw
+            (source / aws_adapter.CONTINUATION_NAME).unlink()
+            (source / aws_adapter.CONTINUATION_NAME).write_bytes(b"hostile swap\n")
+            (source / aws_adapter.CONTINUATION_NAME).chmod(0o400)
+        aws_adapter._verify_blob = verify_staged
+        os.geteuid = lambda: 0; os.getegid = lambda: 0
+        os.chown = lambda *_args, **_kwargs: None
+        os.fchown = lambda *_args, **_kwargs: None
+        prior_environment = dict(os.environ)
+        os.environ.update({"SUDO_UID": str(caller_uid), "SUDO_GID": str(caller_gid)})
+        try:
+            stager["stage_continuation"](
+                source, "4" * 40, "101", "20", "21", "22",
+                "sha256:" + d("archive"),
+                f"stage2-production-continuation-{'4' * 40}-101-1",
+                "10", "11", "sha256:" + "5" * 64,
+                f"stage2-production-approval-{'4' * 40}-10")
+        finally:
+            os.environ.clear(); os.environ.update(prior_environment)
+        assert len(verified) == 2
+        assert aws_adapter.CONTINUATION.read_bytes() == continuation_raw
+        assert aws_adapter.CONTINUATION_BUNDLE.read_bytes() == bundle_raw
+    finally:
+        os.geteuid, os.getegid, os.chown, os.fchown = original_os_routes
+        for name, value in zip((
+                "ROOT", "CONSUMED", "JOURNAL", "CONTINUATION",
+                "CONTINUATION_BUNDLE", "CONTINUATION_ADMISSION", "_approval",
+                "_verify_blob"), original_adapter_routes, strict=True):
+            setattr(aws_adapter, name, value)
 
 for field, hostile in (("ordinal", True), ("ordinal", 1.0),
                        ("observed_started_unix_ns", 0),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -102,6 +102,50 @@ test("split launcher admits phase two only through the staged capability", () =>
   assert.match(launcher, /clean\+=\(COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1\)/u);
   assert.doesNotMatch(launcher, /case "\$\{COGS_STAGE2_CAMPAIGN_SEGMENT/u);
   assert.doesNotMatch(launcher, /COGS_STAGE2_CONTINUATION_SHA256=/u);
+});
+
+test("launcher executable dispatch selects only the exact adapter-custody admission path", () => {
+  assert.match(
+    launcher,
+    /admission=\/var\/lib\/cogs\/stage2-aws-production-v2\/aws-stage2-production-continuation-admission-v1\.json/u,
+  );
+  const root = mkdtempSync(join(tmpdir(), "cogs-stage2-launcher-dispatch-"));
+  try {
+    const source = join(root, "source");
+    const custody = join(root, "stage2-aws-production-v2");
+    const wrong = join(root, "stage2-completion-v1");
+    mkdirSync(join(source, "deploy/aws-feasibility"), { recursive: true });
+    mkdirSync(custody);
+    mkdirSync(wrong);
+    const phaseOne = join(source, "deploy/aws-feasibility/completion_campaign_aws_entry.py");
+    const phaseTwo = join(source, "deploy/aws-feasibility/completion_campaign_aws_continuation_entry.py");
+    writeFileSync(phaseOne, "print('phase-one')\n", { mode: 0o700 });
+    writeFileSync(phaseTwo, "print('phase-two')\n", { mode: 0o700 });
+    const fakeSudo = join(root, "sudo");
+    writeFileSync(fakeSudo, '#!/bin/bash\ntest "$1" = -n || exit 90\nshift\nexec "$@"\n', { mode: 0o700 });
+    const executable = join(root, "launcher.sh");
+    writeFileSync(
+      executable,
+      launcher
+        .replaceAll("/var/lib/cogs/stage2-completion-v1/source", source)
+        .replaceAll("/var/lib/cogs/stage2-aws-production-v2", custody)
+        .replaceAll("/usr/bin/sudo", fakeSudo),
+    );
+    chmodSync(executable, 0o700);
+    const admission = "aws-stage2-production-continuation-admission-v1.json";
+    writeFileSync(join(custody, admission), "{}\n");
+    let result = spawnSync(executable, [], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "phase-one\n");
+
+    rmSync(join(custody, admission));
+    writeFileSync(join(wrong, admission), "{}\n");
+    result = spawnSync(executable, [], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    assert.equal(result.status, 64);
+    assert.equal(result.stdout, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("adapter commands and custody paths are fixed with one closed diagnostic identity selector", () => {

@@ -151,10 +151,9 @@ jobs:
              .phase_boundary_ordinal == 3 and .phase_cycle_counts == [3,4]'  "$out/approval.json" >/dev/null
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
-          now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
-          test "$duration" -ge 16500
-          test "$duration" -le 28800
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+          now_s=$(date +%s); remaining=$((expires_ns / 1000000000 - now_s - 900))
+          test "$remaining" -ge 16500
+          test "$remaining" -le 28800
 
       - name: Acquire exact fixture H without credentials
         run: |
@@ -176,13 +175,25 @@ jobs:
           sudo -n /usr/bin/python3 -I -B \
             "$RUNNER_TEMP/implementation-H/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
+      - name: Derive fresh bounded diagnostic executor role duration
+        id: diagnostic_executor_duration
+        run: |
+          set -euo pipefail
+          expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
+          remaining=$(( expiry_s - $(date +%s) - 900 ))
+          cap=21600; segment_min=16500; duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"; test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
       - name: Acquire short-lived executor credentials after diagnostic verification
+        timeout-minutes: 10
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
           role-session-name: cogs-stage2-r-diagnostic-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.diagnostic_executor_duration.outputs.role_duration_seconds }}
 
       - name: Verify executor budget tag-read closure before resource effects
         run: |
@@ -207,13 +218,25 @@ jobs:
             "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" \
             >"$RUNNER_TEMP/aws-credentials"
 
+      - name: Derive fresh bounded diagnostic observer role duration
+        id: diagnostic_observer_duration
+        run: |
+          set -euo pipefail
+          expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
+          remaining=$(( expiry_s - $(date +%s) - 900 ))
+          cap=21600; segment_min=16500; duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"; test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
       - name: Acquire independent inventory-observer credentials
+        timeout-minutes: 10
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
           role-session-name: cogs-stage2-r-diagnostic-observer-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.diagnostic_observer_duration.outputs.role_duration_seconds }}
 
       - name: Stage approval, credentials, provider package, and plans
         id: production_staging

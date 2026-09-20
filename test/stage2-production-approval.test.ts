@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { renderAwsStage2CompletionReport } from "../scripts/render-aws-stage2-completion-report-v4.ts";
 import {
@@ -16,7 +17,7 @@ const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 test("audit-blocked formal bytes compose through approval, serializers, split controller and v4 evidence", () => {
   const result = spawnSync("python3", ["-I", "-B", "test/stage2-production-approval.py", "--composition-samples"], {
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", TMPDIR: tmpdir() },
     timeout: 30_000,
   });
   assert.equal(result.status, 0, result.stderr);

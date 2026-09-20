@@ -8,7 +8,7 @@ for forbidden in COGS_STAGE2_CAMPAIGN_SEGMENT COGS_STAGE2_CONTINUATION_SHA256; d
 done
 
 clean=(HOME=/root LANG=C LC_ALL=C PATH=/usr/local/bin:/usr/bin:/bin TZ=UTC)
-admission=/var/lib/cogs/stage2-completion-v1/aws-stage2-production-continuation-admission-v1.json
+admission=/var/lib/cogs/stage2-aws-production-v2/aws-stage2-production-continuation-admission-v1.json
 if [ "${COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC:-}" = 1 ]; then
   [ ! -e "$admission" ] || exit 64
   clean+=(COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1)

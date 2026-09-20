@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noExplicitAny: hostile canonical package fixtures require deliberate dynamic mutation.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs, { readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import {
   parseAwsStage2CompletionEvidence,
   runAwsStage2CompletionEvidenceCli,
   validateAwsStage2CompletionEvidence,
+  validateAwsStage2CompletionPackage,
 } from "../scripts/validate-aws-stage2-completion-evidence-v4.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -24,9 +26,7 @@ const raw = (): string =>
   readFileSync(join(root, "test/fixtures/stage2-completion/production-v4-test-only.json"), "utf8");
 const issuerReport = (): string =>
   readFileSync(join(root, "test/fixtures/stage2-completion/production-v4-test-only.md"), "utf8");
-// biome-ignore lint/suspicious/noExplicitAny: hostile mutations deliberately cross the validated contract
 const fixture = (): Record<string, any> => structuredClone(JSON.parse(raw()));
-// biome-ignore lint/suspicious/noExplicitAny: hostile mutations deliberately cross the validated contract
 function reject(change: (value: Record<string, any>) => void, label: string): void {
   const value = fixture();
   change(value);
@@ -41,6 +41,264 @@ function canonical(value: unknown): string {
       .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
       .join(",")}}`;
   return JSON.stringify(value);
+}
+function commit(domain: string, value: unknown): string {
+  return createHash("sha256").update(domain).update("\0").update(canonical(value)).digest("hex");
+}
+function hash(raw: string | Buffer): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+// Build all six members from one validated public projection. The opaque test
+// bundle is hash-bound here; workflow tests separately require offline cosign.
+function packageFixture(directory: string, producerJobId = 20): void {
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const evidence = fixture();
+  const batch = evidence.batch;
+  const bindings = evidence.bindings;
+  const oldHandoff = evidence.custody.handoff;
+  const rawEffect = (cycle: Record<string, any>, kind: string) => {
+    const item = cycle.effects[kind];
+    const resources =
+      kind === "running"
+        ? ["instance", "root_volume", "launch_template_generation"].map((name) => [name, cycle.freshness[name]])
+        : kind === "destroy"
+          ? [["pre_destroy_receipt", cycle.freshness.pre_destroy_receipt]]
+          : [];
+    return {
+      kind,
+      grant_commitment: cycle.grant_commitment,
+      batch_commitment: batch.commitment,
+      ordinal: cycle.ordinal,
+      mode: cycle.mode,
+      state_commitment: item.state_commitment,
+      state_bytes_sha256: hash(`state-bytes-${cycle.ordinal}`),
+      state_lineage_commitment: item.state_lineage_commitment,
+      identity_commitment: item.identity_commitment,
+      intent_commitment: item.intent_commitment,
+      settlement_commitment: item.settlement_commitment,
+      ami_commitment: bindings.ami_commitment,
+      resource_commitments: resources,
+      observed_started_unix_ns: Number(item.observed_started_unix_ns),
+      observed_ended_unix_ns: Number(item.observed_ended_unix_ns),
+      invocation_count: 1,
+      certain: true,
+    };
+  };
+  const rawInventory = (inventory: Record<string, any>) => ({
+    batch_commitment: batch.commitment,
+    observation_sequence: inventory.observation_sequence,
+    cycle_ordinal: inventory.cycle_ordinal,
+    observer_commitment: inventory.observer_commitment,
+    session_commitment: inventory.session_commitment,
+    run_commitment: inventory.run_commitment,
+    account_commitment: inventory.account_commitment,
+    region: "us-east-1",
+    destroyed_state_commitment: inventory.destroyed_state_commitment,
+    observed_started_unix_ns: Number(inventory.observed_started_unix_ns),
+    observed_ended_unix_ns: Number(inventory.observed_ended_unix_ns),
+    pages: inventory.pages.map((page: Record<string, any>) => ({
+      ...page,
+      service: "test",
+      operation: "test",
+      query_scope: "test",
+      response_commitment: hash(`response-${inventory.observation_sequence}-${page.category}-${page.ordinal}`),
+      resources: page.resources.map((resource: Record<string, any>) => ({ ...resource, category: page.category })),
+    })),
+    zero_commitment: inventory.zero_commitment,
+    certain: true,
+  });
+  const phaseCycles = evidence.cycles.slice(0, 3);
+  const continuation: Record<string, any> = {
+    version: "cogs.stage2-production-continuation/v1",
+    execution_authority: "test-only",
+    repository: "nenb/cogs",
+    workflow_path: ".github/workflows/stage2-production-campaign.yml",
+    workflow_ref: "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+    workflow_revision: oldHandoff.workflow_revision,
+    event: "workflow_dispatch",
+    ref: "refs/heads/main",
+    producer_job_name: "cycles_1_3",
+    producer_job_id: producerJobId,
+    github_run_id: oldHandoff.workflow_run_id,
+    github_run_attempt: 1,
+    approval_artifact_run_id: 10,
+    approval_artifact_id: 11,
+    approval_artifact_digest: `sha256:${"5".repeat(64)}`,
+    approval_artifact_name: `stage2-production-approval-${oldHandoff.workflow_revision}-10`,
+    approval_commitment: bindings.approval_commitment,
+    batch_commitment: batch.commitment,
+    implementation_revision: batch.implementation_revision,
+    control_revision: batch.control_revision,
+    qualification_revision: "3".repeat(40),
+    source_manifest_sha256: bindings.source_manifest_commitment,
+    phase_boundary_ordinal: 3,
+    active_resource: false,
+    certain_zero: true,
+    credentials_retired: true,
+    consumption: {
+      approval_commitment: bindings.approval_commitment,
+      authentication_receipt_sha256: bindings.approval_authentication_commitment,
+      durable_record_commitment: batch.consumption_commitment,
+      consumed_unix_ns: 1000,
+      first_created: true,
+    },
+    grants: phaseCycles.map((cycle: Record<string, any>) => ({
+      batch_commitment: batch.commitment,
+      ordinal: cycle.ordinal,
+      mode: cycle.mode,
+      implementation_revision: batch.implementation_revision,
+      control_revision: batch.control_revision,
+      static_control_sha256: bindings.static_control_commitment,
+      rootfs_descriptor_sha256: bindings.rootfs_descriptor_commitment,
+      ami_commitment: bindings.ami_commitment,
+      plan_sha256: cycle.plan_sha256,
+      grant_commitment: cycle.grant_commitment,
+    })),
+    effects: phaseCycles.map((cycle: Record<string, any>) =>
+      ["plan", "apply", "running", "destroy"].map((kind) => rawEffect(cycle, kind)),
+    ),
+    remotes: phaseCycles.map((cycle: Record<string, any>) => {
+      const remote = cycle.remote;
+      const { source_bindings: source, ...remoteBindings } = remote.bindings;
+      return {
+        grant_commitment: cycle.grant_commitment,
+        batch_commitment: batch.commitment,
+        ordinal: cycle.ordinal,
+        mode: cycle.mode,
+        state_commitment: cycle.effects.apply.state_commitment,
+        state_lineage_commitment: cycle.effects.apply.state_lineage_commitment,
+        instance_commitment: remote.instance_commitment,
+        host_receipt_commitment: remote.host_receipt_commitment,
+        operation_commitment: remote.operation_commitment,
+        host_boot_commitment: remote.host_boot_commitment,
+        client_key_commitment: cycle.freshness.client_ssh_identity,
+        host_key_commitment: cycle.freshness.host_ssh_identity,
+        rootfs_descriptor_sha256: bindings.rootfs_descriptor_commitment,
+        ami_commitment: bindings.ami_commitment,
+        provider_launch_started_unix_ns: Number(cycle.effects.apply.observed_started_unix_ns),
+        provider_running_observed_unix_ns: Number(cycle.effects.running.observed_ended_unix_ns),
+        kata_launch_started_boottime_ns: 1,
+        ssh_ready_observed_boottime_ns: 1 + remote.kata_launch_to_ssh_ready_ns,
+        workloads: cycle.workloads ?? [],
+        bindings: { ...remoteBindings, source },
+        certain: true,
+      };
+    }),
+    inventories: evidence.inventories.slice(0, 3).map(rawInventory),
+    costs: phaseCycles.map((cycle: Record<string, any>) => ({
+      grant_commitment: cycle.grant_commitment,
+      cycle_ordinal: cycle.ordinal,
+      rate_source_commitment: cycle.cost.rate_source_commitment,
+      usage_commitment: cycle.cost.usage_commitment,
+      cost_micro_usd: cycle.cost.cost_micro_usd,
+      receipt_commitment: cycle.cost.receipt_commitment,
+    })),
+    cycle_commitments: phaseCycles.map((cycle: Record<string, any>) => cycle.cycle_commitment),
+    first_apply_unix_ns: Number(evidence.deadlines.first_apply_unix_ns),
+    effect_deadline_unix_ns: Number(evidence.deadlines.effect_deadline_unix_ns),
+    cleanup_deadline_unix_ns:
+      Number(evidence.deadlines.effect_deadline_unix_ns) + evidence.deadlines.cleanup_reserve_ns,
+    cumulative_cost_micro_usd: phaseCycles.reduce(
+      (total: number, cycle: Record<string, any>) => total + cycle.cost.cost_micro_usd,
+      0,
+    ),
+    journal_sequence: oldHandoff.journal_sequence,
+    journal_tip_sha256: oldHandoff.journal_tip_sha256,
+  };
+  continuation.continuation_commitment = commit("cogs.stage2-production-continuation/v1", continuation);
+  const continuationRaw = `${canonical(continuation)}\n`;
+  const bundle = Buffer.from(`bundle-${producerJobId}`, "ascii");
+  const admission: Record<string, any> = {
+    version: "cogs.stage2-production-continuation-admission/v1",
+    repository: "nenb/cogs",
+    workflow_path: ".github/workflows/stage2-production-campaign.yml",
+    workflow_revision: oldHandoff.workflow_revision,
+    ref: "refs/heads/main",
+    run_id: oldHandoff.workflow_run_id,
+    run_attempt: 1,
+    producer_job_name: "cycles_1_3",
+    producer_job_id: producerJobId,
+    consumer_job_name: "cycles_4_7",
+    consumer_job_id: producerJobId + 1,
+    continuation_sha256: hash(continuationRaw),
+    continuation_commitment: continuation.continuation_commitment,
+    bundle_sha256: hash(bundle),
+    trusted_root_sha256: hash("trusted-root"),
+    signer_identity: "https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+    artifact_id: oldHandoff.continuation_artifact_id,
+    artifact_digest: oldHandoff.continuation_artifact_digest,
+    artifact_name: `stage2-production-continuation-${oldHandoff.workflow_revision}-${oldHandoff.workflow_run_id}-1`,
+    approval_commitment: bindings.approval_commitment,
+    authentication_receipt_sha256: bindings.approval_authentication_commitment,
+    batch_commitment: batch.commitment,
+    implementation_revision: batch.implementation_revision,
+    control_revision: batch.control_revision,
+    qualification_revision: continuation.qualification_revision,
+    journal_sequence: continuation.journal_sequence,
+    journal_tip_sha256: continuation.journal_tip_sha256,
+    cycle3_zero_commitment: evidence.inventories[2].zero_commitment,
+  };
+  admission.admission_commitment = commit("cogs.stage2-production-handoff-authentication/v1", admission);
+  const admissionRaw = `${canonical(admission)}\n`;
+  evidence.custody.handoff = {
+    phase_boundary_ordinal: 3,
+    workflow_revision: admission.workflow_revision,
+    workflow_run_id: admission.run_id,
+    workflow_run_attempt: 1,
+    producer_job_id: admission.producer_job_id,
+    consumer_job_id: admission.consumer_job_id,
+    continuation_commitment: continuation.continuation_commitment,
+    continuation_file_sha256: admission.continuation_sha256,
+    continuation_bundle_sha256: admission.bundle_sha256,
+    continuation_artifact_id: admission.artifact_id,
+    continuation_artifact_digest: admission.artifact_digest,
+    continuation_admission_commitment: admission.admission_commitment,
+    journal_sequence: continuation.journal_sequence,
+    journal_tip_sha256: continuation.journal_tip_sha256,
+    cycle3_zero_commitment: admission.cycle3_zero_commitment,
+  };
+  evidence.batch.custody_root = commit("cogs.stage2-production-custody/v3", {
+    execution_authority: "authenticated-aws-adapter",
+    approval: bindings.approval_commitment,
+    consumption: batch.consumption_commitment,
+    cycles: evidence.cycles.map((cycle: Record<string, any>) => cycle.cycle_commitment),
+    inventories: evidence.inventories.map((inventory: Record<string, any>) => inventory.zero_commitment),
+    costs: evidence.cycles.map((cycle: Record<string, any>) => cycle.cost.receipt_commitment),
+    continuation: continuation.continuation_commitment,
+    continuation_sha256: admission.continuation_sha256,
+    continuation_bundle_sha256: admission.bundle_sha256,
+    handoff_authentication: admission.admission_commitment,
+  });
+  const evidenceRaw = `${canonical(evidence)}\n`;
+  const reportRaw = renderAwsStage2CompletionReport(validateAwsStage2CompletionEvidence(evidence));
+  const publication = {
+    version: "cogs.aws-stage2-completion-publication/v2",
+    result: "pass",
+    batch_commitment: batch.commitment,
+    candidate_custody_root: evidence.batch.custody_root,
+    handoff_authentication_commitment: admission.admission_commitment,
+    evidence_name: "aws-stage2-completion-evidence-v4.json",
+    evidence_sha256: hash(evidenceRaw),
+    report_name: "aws-stage2-completion-report-v4.md",
+    report_sha256: hash(reportRaw),
+    continuation_name: "aws-stage2-production-continuation-v1.json",
+    continuation_sha256: hash(continuationRaw),
+    continuation_bundle_name: "aws-stage2-production-continuation-v1.bundle.json",
+    continuation_bundle_sha256: hash(bundle),
+    continuation_admission_name: "aws-stage2-production-continuation-admission-v1.json",
+    continuation_admission_sha256: hash(admissionRaw),
+    readback_required: true,
+  };
+  for (const [name, bytes] of [
+    ["aws-stage2-completion-evidence-v4.json", evidenceRaw],
+    ["aws-stage2-completion-report-v4.md", reportRaw],
+    ["aws-stage2-completion-publication-v2.json", `${canonical(publication)}\n`],
+    ["aws-stage2-production-continuation-v1.json", continuationRaw],
+    ["aws-stage2-production-continuation-v1.bundle.json", bundle],
+    ["aws-stage2-production-continuation-admission-v1.json", admissionRaw],
+  ] as const)
+    fs.writeFileSync(join(directory, name), bytes, { mode: 0o400 });
 }
 
 const cliEvidence = join(root, "test/fixtures/stage2-completion/production-v4-test-only.json");
@@ -149,6 +407,42 @@ test("test-only canonical v4 projection validates and renderer requires its vali
   validateAwsStage2CompletionEvidence(shifted);
 });
 
+test("complete six-member package validator rejects coherent cross-package substitution", () => {
+  const rootDirectory = fs.mkdtempSync(join(tmpdir(), "cogs-completion-package-v4-"));
+  try {
+    const first = join(rootDirectory, "first");
+    const second = join(rootDirectory, "second");
+    packageFixture(first, 20);
+    packageFixture(second, 30);
+    validateAwsStage2CompletionPackage(first);
+    validateAwsStage2CompletionPackage(second);
+
+    for (const name of [
+      "aws-stage2-production-continuation-v1.json",
+      "aws-stage2-production-continuation-v1.bundle.json",
+      "aws-stage2-production-continuation-admission-v1.json",
+    ]) {
+      fs.chmodSync(join(first, name), 0o600);
+      fs.copyFileSync(join(second, name), join(first, name));
+      fs.chmodSync(join(first, name), 0o400);
+    }
+    const publicationPath = join(first, "aws-stage2-completion-publication-v2.json");
+    const publication = JSON.parse(fs.readFileSync(publicationPath, "utf8"));
+    publication.continuation_sha256 = hash(fs.readFileSync(join(first, "aws-stage2-production-continuation-v1.json")));
+    publication.continuation_bundle_sha256 = hash(
+      fs.readFileSync(join(first, "aws-stage2-production-continuation-v1.bundle.json")),
+    );
+    publication.continuation_admission_sha256 = hash(
+      fs.readFileSync(join(first, "aws-stage2-production-continuation-admission-v1.json")),
+    );
+    fs.chmodSync(publicationPath, 0o600);
+    fs.writeFileSync(publicationPath, `${canonical(publication)}\n`, { mode: 0o400 });
+    assert.throws(() => validateAwsStage2CompletionPackage(first), /handoff|producer|admission|continuation/u);
+  } finally {
+    fs.rmSync(rootDirectory, { recursive: true, force: true });
+  }
+});
+
 test("final-zero order and actual wall duration include cleanup reserve without extending effects", () => {
   const value = fixture();
   assert.ok(value.deadlines.actual_campaign_duration_ns > value.cost.aggregate_effect_duration_ns);
@@ -173,6 +467,62 @@ test("final-zero order and actual wall duration include cleanup reserve without 
   reject((item) => {
     item.cycles[6].effects.destroy.observed_ended_unix_ns = item.deadlines.effect_deadline_unix_ns;
   }, "normal effect at deadline");
+});
+
+test("v4 evidence accepts only the exact v6 authorization bounds", () => {
+  const value = fixture();
+  assert.equal(
+    BigInt(value.deadlines.effect_deadline_unix_ns) - BigInt(value.deadlines.first_apply_unix_ns),
+    480n * 60n * 1_000_000_000n,
+  );
+  assert.equal(value.deadlines.cleanup_reserve_ns, 30 * 60 * 1_000_000_000);
+  assert.equal(value.cost.approved_maximum_micro_usd, 1_100_000);
+  reject((item) => {
+    item.deadlines.effect_deadline_unix_ns = (
+      BigInt(item.deadlines.first_apply_unix_ns) +
+      90n * 60n * 1_000_000_000n
+    ).toString();
+  }, "old v5 effect window");
+  reject((item) => {
+    item.deadlines.cleanup_reserve_ns = 10 * 60 * 1_000_000_000;
+  }, "old v5 cleanup reserve");
+  reject((item) => {
+    item.cost.approved_maximum_micro_usd = 499_999;
+  }, "old v5 approved maximum");
+});
+
+test("usage commitment remains bound after coherent receipt, cycle, and custody rewriting", () => {
+  reject((value) => {
+    const cycle = value.cycles[0];
+    cycle.cost.usage_commitment = hash("unrelated-usage");
+    cycle.cost.receipt_commitment = commit("cogs.stage2-cost-receipt/v1", {
+      grant_commitment: cycle.grant_commitment,
+      cycle_ordinal: cycle.ordinal,
+      rate_source_commitment: cycle.cost.rate_source_commitment,
+      usage_commitment: cycle.cost.usage_commitment,
+      cost_micro_usd: cycle.cost.cost_micro_usd,
+    });
+    cycle.cycle_commitment = commit("cogs.stage2-production-cycle/v2", {
+      grant: cycle.grant_commitment,
+      effects: ["plan", "apply", "running", "destroy"].map((kind) => cycle.effects[kind].settlement_commitment),
+      remote: cycle.remote.host_receipt_commitment,
+      zero: cycle.zero_inventory_commitment,
+      cost: cycle.cost.receipt_commitment,
+    });
+    const handoff = value.custody.handoff;
+    value.batch.custody_root = commit("cogs.stage2-production-custody/v3", {
+      execution_authority: "authenticated-aws-adapter",
+      approval: value.bindings.approval_commitment,
+      consumption: value.batch.consumption_commitment,
+      cycles: value.cycles.map((item: Record<string, any>) => item.cycle_commitment),
+      inventories: value.inventories.map((item: Record<string, any>) => item.zero_commitment),
+      costs: value.cycles.map((item: Record<string, any>) => item.cost.receipt_commitment),
+      continuation: handoff.continuation_commitment,
+      continuation_sha256: handoff.continuation_file_sha256,
+      continuation_bundle_sha256: handoff.continuation_bundle_sha256,
+      handoff_authentication: handoff.continuation_admission_commitment,
+    });
+  }, "coherent unrelated usage commitment");
 });
 
 test("all six cycle boundaries require a plan strictly after the prior zero ends", () => {

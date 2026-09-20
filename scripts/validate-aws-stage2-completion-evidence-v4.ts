@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Ajv as AjvCore, Options, ValidateFunction } from "ajv";
 
@@ -28,6 +28,10 @@ function getSchemaValidator(): ValidateFunction<CompletionEvidence> {
 }
 
 const BILLING_HOUR_NS = 3_600_000_000_000n;
+const EFFECT_WINDOW_NS = 480n * 60n * 1_000_000_000n;
+const CLEANUP_RESERVE_NS = 30 * 60 * 1_000_000_000;
+const MAXIMUM_CYCLE_NS = 150n * 60n * 1_000_000_000n;
+const APPROVED_MAXIMUM_MICRO_USD = 1_100_000;
 const MAX_BYTES = 256 * 1024;
 const MODES = ["full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness"] as const;
 const CATEGORIES = [
@@ -479,7 +483,9 @@ function semantics(e: CompletionEvidence): void {
     e.deadlines.first_apply_unix_ns === e.cycles[0]?.effects.apply.observed_started_unix_ns,
     "first apply projection",
   );
-  check(effectDeadline > firstApply, "effect deadline order");
+  check(effectDeadline === firstApply + EFFECT_WINDOW_NS, "exact v6 effect deadline");
+  check(e.deadlines.cleanup_reserve_ns === CLEANUP_RESERVE_NS, "exact v6 cleanup reserve");
+  check(e.cost.approved_maximum_micro_usd === APPROVED_MAXIMUM_MICRO_USD, "exact v6 approved maximum");
   const cleanupDeadline = effectDeadline + BigInt(e.deadlines.cleanup_reserve_ns);
   check(cleanupDeadline <= expiry, "cleanup reserve exceeds expiry");
   check(finalZero < cleanupDeadline, "final zero exceeds cleanup deadline");
@@ -627,7 +633,15 @@ function semantics(e: CompletionEvidence): void {
     );
     settlements.push(...EFFECTS.map((name) => cycle.effects[name].settlement_commitment));
     const duration = elapsedNs(destroy.observed_ended_unix_ns, apply.observed_started_unix_ns, `cycle ${index + 1}`);
+    check(
+      unixNs(destroy.observed_ended_unix_ns) < unixNs(apply.observed_started_unix_ns) + MAXIMUM_CYCLE_NS,
+      `cycle ${index + 1} exact v6 duration bound`,
+    );
     check(cycle.cost.billable_duration_ns === duration, `cycle ${index + 1} billable duration`);
+    check(
+      cycle.cost.usage_commitment === commitment("cogs.stage2-provider-usage/v1", { duration_ns: duration }),
+      `cycle ${index + 1} usage commitment`,
+    );
     check(
       cycle.remote.apply_to_running_ns ===
         elapsedNs(running.observed_ended_unix_ns, apply.observed_started_unix_ns, `cycle ${index + 1} running`),
@@ -996,6 +1010,505 @@ export function runAwsStage2CompletionEvidenceCli(
   }
 }
 
+const NAMES = Object.freeze({
+  evidence: "aws-stage2-completion-evidence-v4.json",
+  report: "aws-stage2-completion-report-v4.md",
+  publication: "aws-stage2-completion-publication-v2.json",
+  continuation: "aws-stage2-production-continuation-v1.json",
+  bundle: "aws-stage2-production-continuation-v1.bundle.json",
+  admission: "aws-stage2-production-continuation-admission-v1.json",
+});
+const EXPECTED_NAMES: ReadonlySet<string> = new Set(Object.values(NAMES));
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const PACKAGE_MAXIMUM_CYCLE_NS = 150n * 60n * 1_000_000_000n;
+
+type JsonObject = Record<string, unknown>;
+type ExactJson = null | boolean | string | bigint | ExactJson[] | { [key: string]: ExactJson };
+type JsonBigParser = { parse: (raw: string) => ExactJson };
+
+let validators: Record<"publication" | "continuation" | "admission", ValidateFunction> | undefined;
+let jsonBig: JsonBigParser | undefined;
+
+export class CompletionPackageValidationError extends Error {}
+
+function object(value: unknown, label: string): JsonObject {
+  check(value !== null && typeof value === "object" && !Array.isArray(value), `${label} object`);
+  return value as JsonObject;
+}
+function array(value: unknown, label: string): unknown[] {
+  check(Array.isArray(value), `${label} array`);
+  return value;
+}
+function string(value: unknown, label: string): string {
+  check(typeof value === "string", `${label} string`);
+  return value;
+}
+function integer(value: unknown, label: string): bigint {
+  check(typeof value === "bigint" || (typeof value === "number" && Number.isSafeInteger(value)), `${label} integer`);
+  return BigInt(value);
+}
+function sha256(raw: Buffer | string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+function asciiJsonString(value: string): string {
+  return JSON.stringify(value).replace(/[\u007f-\u{10ffff}]/gu, (character) => {
+    const point = character.codePointAt(0);
+    check(point !== undefined, "invalid Unicode scalar");
+    if (point <= 0xffff) return `\\u${point.toString(16).padStart(4, "0")}`;
+    const adjusted = point - 0x10000;
+    const high = 0xd800 + (adjusted >> 10);
+    const low = 0xdc00 + (adjusted & 0x3ff);
+    return `\\u${high.toString(16)}\\u${low.toString(16)}`;
+  });
+}
+function packageCanonical(value: ExactJson, newline = false): string {
+  let result: string;
+  if (typeof value === "bigint") result = value.toString();
+  else if (typeof value === "string") result = asciiJsonString(value);
+  else if (value === null || typeof value === "boolean") result = JSON.stringify(value);
+  else if (Array.isArray(value)) result = `[${value.map((item) => packageCanonical(item)).join(",")}]`;
+  else
+    result = `{${Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => `${asciiJsonString(key)}:${packageCanonical(item)}`)
+      .join(",")}}`;
+  return newline ? `${result}\n` : result;
+}
+function packageCommitment(domain: string, value: ExactJson, newline = false): string {
+  return createHash("sha256").update(domain).update("\0").update(packageCanonical(value, newline)).digest("hex");
+}
+function without(value: JsonObject, key: string): ExactJson {
+  const result = { ...(value as { [name: string]: ExactJson }) };
+  delete result[key];
+  return result;
+}
+function equivalent(left: unknown, right: unknown): boolean {
+  if (
+    (typeof left === "bigint" || (typeof left === "number" && Number.isSafeInteger(left))) &&
+    (typeof right === "bigint" || (typeof right === "number" && Number.isSafeInteger(right)))
+  )
+    return BigInt(left) === BigInt(right);
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return left === right;
+  if (Array.isArray(left) || Array.isArray(right))
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => equivalent(item, right[index]))
+    );
+  const leftObject = left as JsonObject;
+  const rightObject = right as JsonObject;
+  const leftKeys = Object.keys(leftObject).sort();
+  const rightKeys = Object.keys(rightObject).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && equivalent(leftObject[key], rightObject[key]))
+  );
+}
+function requireEquivalent(left: unknown, right: unknown, label: string): void {
+  check(equivalent(left, right), label);
+}
+
+function getJsonBig(): JsonBigParser {
+  if (jsonBig) return jsonBig;
+  try {
+    const require = createRequire(import.meta.url);
+    const factory = require("json-bigint") as (options: object) => JsonBigParser;
+    jsonBig = factory({
+      useNativeBigInt: true,
+      alwaysParseAsBig: true,
+      protoAction: "error",
+      constructorAction: "error",
+    });
+    return jsonBig;
+  } catch {
+    fail("exact JSON parser unavailable");
+  }
+}
+function getValidators(): Record<"publication" | "continuation" | "admission", ValidateFunction> {
+  if (validators) return validators;
+  try {
+    const require = createRequire(import.meta.url);
+    const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCore;
+    const ajv = new Ajv2020({ allErrors: false, strict: true, ownProperties: true, logger: false });
+    const compile = (name: string) => {
+      const raw = fs.readFileSync(resolve(import.meta.dirname, `../schemas/${name}`), "utf8");
+      return ajv.compile(JSON.parse(raw) as object);
+    };
+    validators = {
+      publication: compile("aws-stage2-completion-publication-v2.json"),
+      continuation: compile("aws-stage2-production-continuation-v1.json"),
+      admission: compile("aws-stage2-production-continuation-admission-v1.json"),
+    };
+    return validators;
+  } catch {
+    fail("package schemas unavailable");
+  }
+}
+function readExactFile(directory: string, name: string): Buffer {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(join(directory, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    check(
+      before.isFile() && before.nlink === 1n && before.size > 0n && before.size <= BigInt(MAX_FILE_BYTES),
+      `${name} identity`,
+    );
+    const raw = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < raw.length) {
+      const count = fs.readSync(descriptor, raw, offset, raw.length - offset, null);
+      check(count > 0, `${name} short read`);
+      offset += count;
+    }
+    check(fs.readSync(descriptor, Buffer.alloc(1), 0, 1, null) === 0, `${name} grew`);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    for (const field of ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"] as const)
+      check(before[field] === after[field], `${name} changed`);
+    return raw;
+  } catch (error) {
+    if (error instanceof CompletionPackageValidationError) throw error;
+    throw new CompletionPackageValidationError(`${name} unavailable`);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+function parseCanonical(raw: Buffer, validator: ValidateFunction, label: string): JsonObject {
+  let regular: unknown;
+  let exact: ExactJson;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+    check(text.endsWith("\n") && !text.endsWith("\n\n"), `${label} final LF`);
+    regular = JSON.parse(text);
+    exact = getJsonBig().parse(text);
+    check(packageCanonical(exact, true) === text, `${label} canonical JSON`);
+  } catch (error) {
+    if (error instanceof CompletionPackageValidationError) throw error;
+    fail(`${label} JSON`);
+  }
+  check(validator(regular), `${label} schema`);
+  return object(exact, label);
+}
+
+function projectEffect(value: JsonObject): JsonObject {
+  return {
+    intent_commitment: value.intent_commitment,
+    settlement_commitment: value.settlement_commitment,
+    identity_commitment: value.identity_commitment,
+    state_commitment: value.state_commitment,
+    state_lineage_commitment: value.state_lineage_commitment,
+    observed_started_unix_ns: integer(value.observed_started_unix_ns, "effect start").toString(),
+    observed_ended_unix_ns: integer(value.observed_ended_unix_ns, "effect end").toString(),
+  };
+}
+function projectInventory(value: JsonObject): JsonObject {
+  return {
+    observation_sequence: value.observation_sequence,
+    cycle_ordinal: value.cycle_ordinal,
+    observer_commitment: value.observer_commitment,
+    session_commitment: value.session_commitment,
+    run_commitment: value.run_commitment,
+    account_commitment: value.account_commitment,
+    region_commitment: packageCommitment("cogs.stage2-redacted-region/v1", { region: value.region as ExactJson }),
+    destroyed_state_commitment: value.destroyed_state_commitment,
+    observed_started_unix_ns: integer(value.observed_started_unix_ns, "inventory start").toString(),
+    observed_ended_unix_ns: integer(value.observed_ended_unix_ns, "inventory end").toString(),
+    zero_commitment: value.zero_commitment,
+    pages: array(value.pages, "inventory pages").map((source) => {
+      const page = object(source, "inventory page");
+      return {
+        category: page.category,
+        ordinal: page.ordinal,
+        request_token_commitment: page.request_token_commitment,
+        next_token_commitment: page.next_token_commitment,
+        page_commitment: page.page_commitment,
+        resources: array(page.resources, "inventory resources").map((sourceResource) => {
+          const resource = object(sourceResource, "inventory resource");
+          return {
+            identity_commitment: resource.identity_commitment,
+            disposition: resource.disposition,
+            public_address_commitment: resource.public_address_commitment,
+          };
+        }),
+      };
+    }),
+  };
+}
+
+function crossValidate(
+  evidence: JsonObject,
+  publication: JsonObject,
+  continuation: JsonObject,
+  admission: JsonObject,
+  raw: Record<keyof typeof NAMES, Buffer>,
+): void {
+  const batch = object(evidence.batch, "evidence batch");
+  const bindings = object(evidence.bindings, "evidence bindings");
+  const custody = object(object(evidence.custody, "evidence custody").handoff, "evidence handoff");
+  const deadlines = object(evidence.deadlines, "evidence deadlines");
+  const cycles = array(evidence.cycles, "evidence cycles");
+  const inventories = array(evidence.inventories, "evidence inventories");
+  const cost = object(evidence.cost, "evidence cost");
+
+  check(sha256(raw.evidence) === publication.evidence_sha256, "publication evidence hash");
+  check(sha256(raw.report) === publication.report_sha256, "publication report hash");
+  check(sha256(raw.continuation) === publication.continuation_sha256, "publication continuation hash");
+  check(sha256(raw.bundle) === publication.continuation_bundle_sha256, "publication bundle hash");
+  check(sha256(raw.admission) === publication.continuation_admission_sha256, "publication admission hash");
+  check(publication.batch_commitment === batch.commitment, "publication batch");
+  check(publication.candidate_custody_root === batch.custody_root, "publication custody root");
+  check(
+    publication.handoff_authentication_commitment === custody.continuation_admission_commitment,
+    "publication handoff authentication",
+  );
+
+  const continuationCommitment = string(continuation.continuation_commitment, "continuation commitment");
+  check(
+    continuationCommitment ===
+      packageCommitment("cogs.stage2-production-continuation/v1", without(continuation, "continuation_commitment")),
+    "continuation commitment preimage",
+  );
+  const admissionCommitment = string(admission.admission_commitment, "admission commitment");
+  check(
+    admissionCommitment ===
+      packageCommitment("cogs.stage2-production-handoff-authentication/v1", without(admission, "admission_commitment")),
+    "admission commitment preimage",
+  );
+  check(admission.continuation_sha256 === sha256(raw.continuation), "admission continuation hash");
+  check(admission.bundle_sha256 === sha256(raw.bundle), "admission bundle hash");
+  check(admission.continuation_commitment === continuationCommitment, "admission continuation commitment");
+  check(custody.continuation_file_sha256 === admission.continuation_sha256, "evidence continuation hash");
+  check(custody.continuation_bundle_sha256 === admission.bundle_sha256, "evidence bundle hash");
+  check(custody.continuation_commitment === continuationCommitment, "evidence continuation commitment");
+  check(custody.continuation_admission_commitment === admissionCommitment, "evidence admission commitment");
+
+  for (const field of ["approval_commitment", "batch_commitment", "implementation_revision", "control_revision"])
+    check(continuation[field] === admission[field], `continuation/admission ${field}`);
+  for (const field of ["journal_sequence", "journal_tip_sha256"])
+    check(
+      equivalent(continuation[field], admission[field]) && equivalent(continuation[field], custody[field]),
+      `journal ${field}`,
+    );
+  check(continuation.batch_commitment === batch.commitment, "continuation batch");
+  check(continuation.implementation_revision === batch.implementation_revision, "continuation implementation");
+  check(continuation.control_revision === batch.control_revision, "continuation control");
+  check(continuation.approval_commitment === bindings.approval_commitment, "continuation approval");
+  const consumption = object(continuation.consumption, "continuation consumption");
+  check(consumption.durable_record_commitment === batch.consumption_commitment, "consumption commitment");
+  check(
+    consumption.authentication_receipt_sha256 === bindings.approval_authentication_commitment,
+    "consumption authentication",
+  );
+  check(
+    admission.authentication_receipt_sha256 === consumption.authentication_receipt_sha256,
+    "admission authentication",
+  );
+  check(
+    equivalent(admission.run_id, custody.workflow_run_id) &&
+      equivalent(admission.run_attempt, custody.workflow_run_attempt),
+    "handoff run",
+  );
+  check(admission.workflow_revision === custody.workflow_revision, "handoff workflow revision");
+  check(equivalent(admission.producer_job_id, custody.producer_job_id), "handoff producer");
+  check(equivalent(admission.consumer_job_id, custody.consumer_job_id), "handoff consumer");
+  check(equivalent(admission.artifact_id, custody.continuation_artifact_id), "handoff artifact id");
+  check(admission.artifact_digest === custody.continuation_artifact_digest, "handoff artifact digest");
+  check(admission.cycle3_zero_commitment === custody.cycle3_zero_commitment, "handoff cycle-three zero");
+
+  check(
+    integer(continuation.first_apply_unix_ns, "continuation first apply").toString() === deadlines.first_apply_unix_ns,
+    "first apply projection",
+  );
+  check(
+    integer(continuation.effect_deadline_unix_ns, "continuation effect deadline").toString() ===
+      deadlines.effect_deadline_unix_ns,
+    "effect deadline projection",
+  );
+  check(
+    integer(continuation.cleanup_deadline_unix_ns, "continuation cleanup deadline") ===
+      integer(continuation.effect_deadline_unix_ns, "continuation effect deadline") +
+        BigInt(deadlines.cleanup_reserve_ns as number),
+    "cleanup deadline projection",
+  );
+
+  const grants = array(continuation.grants, "continuation grants");
+  const effects = array(continuation.effects, "continuation effects");
+  const remotes = array(continuation.remotes, "continuation remotes");
+  const continuationInventories = array(continuation.inventories, "continuation inventories");
+  const costs = array(continuation.costs, "continuation costs");
+  const cycleCommitments = array(continuation.cycle_commitments, "continuation cycle commitments");
+  for (let index = 0; index < 3; index++) {
+    const cycle = object(cycles[index], `evidence cycle ${index + 1}`);
+    const grant = object(grants[index], `continuation grant ${index + 1}`);
+    for (const field of ["ordinal", "mode", "plan_sha256", "grant_commitment"])
+      check(equivalent(grant[field], cycle[field]), `cycle ${index + 1} grant ${field}`);
+    check(grant.batch_commitment === batch.commitment, `cycle ${index + 1} grant batch`);
+    check(grant.implementation_revision === batch.implementation_revision, `cycle ${index + 1} grant implementation`);
+    check(grant.control_revision === batch.control_revision, `cycle ${index + 1} grant control`);
+    check(
+      grant.static_control_sha256 === bindings.static_control_commitment,
+      `cycle ${index + 1} grant control binding`,
+    );
+    check(grant.rootfs_descriptor_sha256 === bindings.rootfs_descriptor_commitment, `cycle ${index + 1} grant rootfs`);
+    check(grant.ami_commitment === bindings.ami_commitment, `cycle ${index + 1} grant AMI`);
+    check(cycleCommitments[index] === cycle.cycle_commitment, `cycle ${index + 1} commitment`);
+
+    const cycleEffects = object(cycle.effects, `evidence effects ${index + 1}`);
+    const rawEffects = array(effects[index], `continuation effects ${index + 1}`);
+    for (const [effectIndex, kind] of ["plan", "apply", "running", "destroy"].entries()) {
+      const rawEffect = object(rawEffects[effectIndex], `continuation ${kind}`);
+      check(rawEffect.kind === kind, `cycle ${index + 1} effect kind`);
+      requireEquivalent(projectEffect(rawEffect), cycleEffects[kind], `cycle ${index + 1} ${kind} projection`);
+    }
+
+    const remote = object(remotes[index], `continuation remote ${index + 1}`);
+    const evidenceRemote = object(cycle.remote, `evidence remote ${index + 1}`);
+    const remoteBindings = object(remote.bindings, `continuation bindings ${index + 1}`);
+    requireEquivalent(
+      {
+        host_receipt_commitment: remote.host_receipt_commitment,
+        instance_commitment: remote.instance_commitment,
+        operation_commitment: remote.operation_commitment,
+        host_boot_commitment: remote.host_boot_commitment,
+        apply_to_running_ns:
+          integer(remote.provider_running_observed_unix_ns, "remote running") -
+          integer(remote.provider_launch_started_unix_ns, "remote launch"),
+        kata_launch_to_ssh_ready_ns:
+          integer(remote.ssh_ready_observed_boottime_ns, "remote SSH") -
+          integer(remote.kata_launch_started_boottime_ns, "remote Kata"),
+        bindings: {
+          source_bindings: remoteBindings.source,
+          cycle_capability_sha256: remoteBindings.cycle_capability_sha256,
+          program_sha256: remoteBindings.program_sha256,
+          parser_source_sha256: remoteBindings.parser_source_sha256,
+          marker_sha256: remoteBindings.marker_sha256,
+          qemu: remoteBindings.qemu,
+        },
+      },
+      evidenceRemote,
+      `cycle ${index + 1} remote projection`,
+    );
+
+    const continuationInventory = object(continuationInventories[index], `continuation inventory ${index + 1}`);
+    requireEquivalent(
+      projectInventory(continuationInventory),
+      inventories[index],
+      `cycle ${index + 1} inventory projection`,
+    );
+    const rawCost = object(costs[index], `continuation cost ${index + 1}`);
+    const evidenceCost = object(cycle.cost, `evidence cost ${index + 1}`);
+    for (const field of ["receipt_commitment", "rate_source_commitment", "usage_commitment", "cost_micro_usd"])
+      check(equivalent(rawCost[field], evidenceCost[field]), `cycle ${index + 1} cost ${field}`);
+    const duration =
+      integer(object(rawEffects[3], "destroy").observed_ended_unix_ns, "destroy end") -
+      integer(object(rawEffects[1], "apply").observed_started_unix_ns, "apply start");
+    check(duration > 0n && duration < PACKAGE_MAXIMUM_CYCLE_NS, `cycle ${index + 1} duration bound`);
+    check(
+      integer(evidenceCost.billable_duration_ns, "billable duration") === duration,
+      `cycle ${index + 1} billable duration`,
+    );
+    check(
+      rawCost.usage_commitment === packageCommitment("cogs.stage2-provider-usage/v1", { duration_ns: duration }),
+      `cycle ${index + 1} usage commitment`,
+    );
+  }
+  check(
+    integer(continuation.cumulative_cost_micro_usd, "continuation cumulative cost") ===
+      costs.reduce<bigint>((sum, item) => sum + integer(object(item, "continuation cost").cost_micro_usd, "cost"), 0n),
+    "continuation cumulative cost",
+  );
+  check(integer(cost.approved_maximum_micro_usd, "approved maximum") === 1_100_000n, "exact approved maximum");
+}
+
+function renderPackageReport(value: CompletionEvidence): string {
+  const lines = [
+    "# AWS Stage 2 completion report v4",
+    "",
+    "Status: pass-only rendering of validated, redacted completion evidence.",
+    "",
+    "## Batch",
+    "",
+    `- Implementation revision: \`${value.batch.implementation_revision}\``,
+    `- Batch commitment: \`${value.batch.commitment}\``,
+    "- Cycles: 7 (one full, six readiness)",
+    "- Fixed handoff boundary: after cycle 3",
+    `- Continuation artifact digest: \`${value.custody.handoff.continuation_artifact_digest}\``,
+    `- Handoff authentication commitment: \`${value.custody.handoff.continuation_admission_commitment}\``,
+    "",
+    "## Measurements",
+    "",
+    "| Cycle | Mode | Apply to running | Kata launch to SSH ready | Cost |",
+    "| ---: | --- | ---: | ---: | ---: |",
+    ...value.cycles.map(
+      (cycle) =>
+        `| ${cycle.ordinal} | ${cycle.mode} | ${cycle.remote.apply_to_running_ns} ns | ${cycle.remote.kata_launch_to_ssh_ready_ns} ns | ${cycle.cost.cost_micro_usd} micro-USD |`,
+    ),
+    "",
+    "- Full-cycle workload measurements: 21",
+    `- Actual first-apply through final-zero duration: ${value.deadlines.actual_campaign_duration_ns} ns`,
+    "",
+    "## Cleanup and cost",
+    "",
+    "- State-bound destroy attempts: 7",
+    "- Detailed inventory observations: 8",
+    `- Final zero commitment: \`${value.cleanup.final_zero_commitment}\``,
+    `- Aggregate cost: ${value.cost.aggregate_cost_micro_usd} micro-USD`,
+    "",
+    "## Limitations",
+    "",
+    ...value.limitations.map((item) => `- ${item}`),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+export function validateAwsStage2CompletionPackage(directoryPath: string): void {
+  let directory: string;
+  try {
+    directory = fs.realpathSync(resolve(directoryPath));
+    const identity = fs.lstatSync(directory);
+    check(identity.isDirectory() && !identity.isSymbolicLink(), "package directory identity");
+    const entries = fs.readdirSync(directory);
+    check(
+      entries.length === EXPECTED_NAMES.size && entries.every((name) => EXPECTED_NAMES.has(name)),
+      "exact package inventory",
+    );
+  } catch (error) {
+    if (error instanceof CompletionPackageValidationError) throw error;
+    fail("package directory unavailable");
+  }
+  const raw = Object.fromEntries(
+    Object.entries(NAMES).map(([key, name]) => [key, readExactFile(directory, name)]),
+  ) as Record<keyof typeof NAMES, Buffer>;
+  let validated: ValidatedCompletionEvidence;
+  try {
+    validated = parseAwsStage2CompletionEvidence(raw.evidence.toString("utf8"));
+  } catch (error) {
+    if (error instanceof CompletionEvidenceValidationError) fail("evidence validation");
+    fail("evidence validation internal");
+  }
+  check(raw.report.toString("utf8") === renderPackageReport(validated.evidence), "deterministic report");
+  const schema = getValidators();
+  const publication = parseCanonical(raw.publication, schema.publication, "publication");
+  const continuation = parseCanonical(raw.continuation, schema.continuation, "continuation");
+  const admission = parseCanonical(raw.admission, schema.admission, "admission");
+  crossValidate(validated.evidence as unknown as JsonObject, publication, continuation, admission, raw);
+}
+
+export function runAwsStage2CompletionPackageCli(args: readonly string[]): 0 | 2 {
+  try {
+    const [directory] = args;
+    if (!directory || args.length !== 1) fail("usage");
+    validateAwsStage2CompletionPackage(directory);
+    process.stdout.write("Validated closed AWS Stage 2 completion package v4.\n");
+    return 0;
+  } catch {
+    process.stderr.write("completion-package-v4: rejected\n");
+    return 2;
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  process.exitCode = runAwsStage2CompletionEvidenceCli(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  process.exitCode =
+    args[0] === "--package" ? runAwsStage2CompletionPackageCli(args.slice(1)) : runAwsStage2CompletionEvidenceCli(args);
 }

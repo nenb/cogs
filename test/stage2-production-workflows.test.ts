@@ -192,6 +192,20 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.match(diagnosticCampaign, /completion_campaign_aws_recovery_entry\.py/u);
   assert.doesNotMatch(diagnosticCampaign, /validate-aws-stage2-completion-evidence/u);
   assert.doesNotMatch(diagnosticCampaign, /aws-stage2-completion-evidence-v[0-9]/u);
+  assert.equal((diagnosticCampaign.match(/aws-actions\/configure-aws-credentials@[0-9a-f]{40}/gu) ?? []).length, 2);
+  assert.equal((diagnosticCampaign.match(/expiry_s - \$\(date \+%s\) - 900/gu) ?? []).length, 2);
+  assert.equal(
+    (diagnosticCampaign.match(/timeout-minutes: 10\n {8}uses: aws-actions\/configure-aws-credentials/gu) ?? []).length,
+    2,
+  );
+  assert.match(
+    diagnosticCampaign,
+    /id: diagnostic_executor_duration[\s\S]*role-duration-seconds: \$\{\{ steps\.diagnostic_executor_duration\.outputs\.role_duration_seconds \}\}/u,
+  );
+  assert.match(
+    diagnosticCampaign,
+    /id: diagnostic_observer_duration[\s\S]*role-duration-seconds: \$\{\{ steps\.diagnostic_observer_duration\.outputs\.role_duration_seconds \}\}/u,
+  );
   assert.match(diagnosticCampaign, /cogs\.stage2-r-diagnostic-result\/v2/u);
   assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-result/u);
   assert.match(diagnosticCampaign, /test ! -e \/var\/lib\/cogs\/stage2-aws-production-v2\/evidence-publication/u);
@@ -299,7 +313,9 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /stage2-cosign-keyless-sign\.sh[\s\S]*"\$name"/u);
   assert.match(campaign, /stage-continuation \\\n\s+"\$RUNNER_TEMP\/continuation" "\$GITHUB_SHA" "\$GITHUB_RUN_ID"/u);
   assert.match(stager, /def stage_continuation/u);
-  assert.match(stager, /adapter\._verify_blob\(continuation_path, bundle_path/u);
+  assert.match(stager, /adapter\._verify_blob\(\s*verified_continuation, verified_bundle/u);
+  assert.match(stager, /mkdtemp\(\s*prefix="\.continuation-verification-", dir=DESTINATION/u);
+  assert.doesNotMatch(stager, /adapter\._verify_blob\(continuation_path, bundle_path/u);
   assert.match(stager, /continuation_from_bytes/u);
   assert.match(stager, /os\.environ\.get\("SUDO_UID"\)/u);
   assert.match(stager, /\(item\.lstat\(\)\.st_uid, item\.lstat\(\)\.st_gid\) == caller/u);
@@ -324,7 +340,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   ] as const;
   assert.equal((campaign.match(/^ {8}id: segment_(?:one|two)_(?:executor|observer)_duration$/gmu) ?? []).length, 4);
   for (const [name, id, cap, segmentMinimum] of roleAssumptions) {
-    const actionMarker = `      - name: ${name}\n        uses: aws-actions/configure-aws-credentials@`;
+    const actionMarker = `      - name: ${name}\n        timeout-minutes: 10\n        uses: aws-actions/configure-aws-credentials@`;
     const actionAt = campaign.indexOf(actionMarker);
     assert.ok(actionAt >= 0, name);
     const priorStepAt = campaign.lastIndexOf("\n      - name: ", actionAt - 2);
@@ -332,7 +348,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(derivation, new RegExp(`id: ${id}`, "u"), name);
     assert.match(derivation, /expires_unix_ns/u, name);
     assert.match(derivation, /now_s=\$\(date \+%s\)/u, name);
-    assert.match(derivation, / - now_s - 60 \)\)/u, name);
+    assert.match(derivation, / - now_s - 900 \)\)/u, name);
     assert.match(derivation, new RegExp(`cap=${cap}`, "u"), name);
     assert.match(derivation, new RegExp(`segment_min=${segmentMinimum}`, "u"), name);
     assert.match(derivation, /if \(\( duration > cap \)\); then duration="\$cap"; fi/u, name);
@@ -345,6 +361,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
       new RegExp(`role-duration-seconds: \\$\\{\\{ steps\\.${id}\\.outputs\\.role_duration_seconds \\}\\}`, "u"),
       name,
     );
+    assert.match(action, /timeout-minutes: 10/u, name);
   }
 
   const firstJob = campaign.slice(campaign.indexOf("  cycles_1_3:"), campaign.indexOf("  cycles_4_7:"));
@@ -378,6 +395,15 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /evidence_upload\.outputs\.artifact-id/u);
   assert.match(campaign, /diff -r --no-dereference/u);
   assert.match(campaign, /production-evidence-upload-receipt\/v3/u);
+  assert.equal((campaign.match(/validate-aws-stage2-completion-evidence-v4\.ts --package/gu) ?? []).length, 2);
+  assert.equal(
+    (campaign.match(/\/usr\/bin\/unshare --net -- "\$RUNNER_TEMP\/approval\/cosign" verify-blob/gu) ?? []).length,
+    2,
+  );
+  assert.ok(
+    campaign.indexOf('validate-aws-stage2-completion-evidence-v4.ts --package "$destination"') <
+      campaign.indexOf("Upload pass-only canonical evidence after credential retirement"),
+  );
   assert.match(campaign, /aws-stage2-completion-evidence-v4\.json/u);
   assert.match(campaign, /aws-stage2-completion-publication-v2\.json/u);
   assert.match(

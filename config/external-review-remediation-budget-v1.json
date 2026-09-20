@@ -32,7 +32,7 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 5400,
+          "gross_lines": 6200,
           "gross_bytes": 1100000,
           "paths": [
             "BUGS-TO-FIX.md",
@@ -80,8 +80,8 @@
         },
         {
           "name": "product",
-          "gross_lines": 5200,
-          "gross_bytes": 3200000,
+          "gross_lines": 5057,
+          "gross_bytes": 2900000,
           "paths": [
             ".github/workflows/insecure-container.yml",
             ".github/workflows/kvm-driver-diagnostic.yml",
@@ -140,7 +140,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 4457,
+          "gross_lines": 5100,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -168,8 +168,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 1800,
-          "gross_bytes": 8400000,
+          "gross_lines": 500,
+          "gross_bytes": 8700000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",

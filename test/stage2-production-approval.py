@@ -508,7 +508,11 @@ def main():
 if __name__ == "__main__":
     blocked = []
     def forbidden_audit(event, args):
-        if (event.startswith(("subprocess.", "socket.", "ctypes.")) or event in {
+        local_rename = ((event == "ctypes.dlopen" and args == (None,))
+                        or (event == "ctypes.dlsym" and len(args) == 2
+                            and args[1] == "renameat2"))
+        if (event.startswith(("subprocess.", "socket."))
+                or (event.startswith("ctypes.") and not local_rename) or event in {
                 "os.system", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty"}
                 or (event == "import" and args[0].split(".")[0] in {
                     "boto3", "botocore", "completion_campaign_aws_provider"})
